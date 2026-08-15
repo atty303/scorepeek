@@ -1,9 +1,10 @@
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use tempfile::TempDir;
 
 use super::{
-    Catalog, DqnFixtureAdapter, FederationInput, InfinitasStatus, QuarantineReason, SourceRevision,
-    TachiFixtureAdapter, TextageFixtureAdapter,
+    AdapterError, Catalog, CatalogStore, DqnLiveAdapter, FederationInput, InfinitasStatus,
+    QuarantineReason, SourceRevision, TachiFixtureAdapter, TextageFixtureAdapter,
 };
 
 const GIT_REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -28,16 +29,38 @@ fn fixture_adapter_rejects_unknown_fields_and_duplicate_ids() {
 }
 
 #[test]
-fn fixture_adapter_enforces_revision_strategy_and_content_pin() {
-    let fixture = fixture(
-        "scorepeek-dqn-fixture-v1",
-        &[dqn_record("ALPHA", "ARTIST A")],
-    );
-    let bytes = serde_json::to_vec(&fixture).unwrap();
-    let error = DqnFixtureAdapter::parse(&bytes, git_revision()).unwrap_err();
+fn dqn_live_adapter_rejects_transport_truncation_and_schema_drift() {
+    let bytes = serde_json::to_vec(&vec![dqn_record("ALPHA", "ARTIST A")]).unwrap();
+    let truncated = &bytes[..bytes.len() - 1];
+    let error = DqnLiveAdapter::parse(truncated, content_revision(&bytes)).unwrap_err();
+    assert!(matches!(error, AdapterError::InvalidJson(_)));
+
+    let drifted = serde_json::to_vec(&json!([{
+        "title": "ALPHA",
+        "artist": "ARTIST A",
+        "packName": null,
+        "introducedBySchemaDrift": true
+    }]))
+    .unwrap();
+    let error = DqnLiveAdapter::parse(&drifted, content_revision(&drifted)).unwrap_err();
+    assert!(error.to_string().contains("unknown field"));
+
+    let missing = serde_json::to_vec(&json!([{
+        "title": "ALPHA",
+        "artist": "ARTIST A"
+    }]))
+    .unwrap();
+    let error = DqnLiveAdapter::parse(&missing, content_revision(&missing)).unwrap_err();
+    assert!(error.to_string().contains("missing field `packName`"));
+}
+
+#[test]
+fn dqn_live_adapter_enforces_revision_strategy_and_content_pin() {
+    let bytes = serde_json::to_vec(&vec![dqn_record("ALPHA", "ARTIST A")]).unwrap();
+    let error = DqnLiveAdapter::parse(&bytes, git_revision()).unwrap_err();
     assert!(error.to_string().contains("revision strategy"));
 
-    let error = DqnFixtureAdapter::parse(
+    let error = DqnLiveAdapter::parse(
         &bytes,
         SourceRevision::content_sha256(
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -46,6 +69,25 @@ fn fixture_adapter_enforces_revision_strategy_and_content_pin() {
     )
     .unwrap_err();
     assert!(error.to_string().contains("expected pinned digest"));
+}
+
+#[test]
+fn dqn_live_adapter_accepts_nullable_pack_name_and_rejects_duplicate_rows() {
+    let records = vec![
+        dqn_base_record("ALPHA", "ARTIST A"),
+        dqn_record("BETA", "ARTIST B"),
+    ];
+    let bytes = serde_json::to_vec(&records).unwrap();
+    let snapshot = DqnLiveAdapter::parse(&bytes, content_revision(&bytes)).unwrap();
+    assert_eq!(snapshot.evidence().record_count(), 2);
+    assert_eq!(
+        snapshot.policy().parser_version,
+        "scorepeek-dqn-live-json-parser-v1"
+    );
+
+    let duplicate = serde_json::to_vec(&vec![records[0].clone(), records[0].clone()]).unwrap();
+    let error = DqnLiveAdapter::parse(&duplicate, content_revision(&duplicate)).unwrap_err();
+    assert!(matches!(error, AdapterError::DuplicateRecord(_)));
 }
 
 #[test]
@@ -400,6 +442,29 @@ fn dqn_regression_keeps_last_known_good_binding_set() {
 }
 
 #[test]
+fn dqn_nullable_pack_evidence_survives_catalog_snapshot_round_trip() {
+    let catalog = catalog_with_tachi(&[tachi_record("anchor-1", "ALPHA", "ARTIST A", "V1", false)]);
+    let catalog = catalog
+        .federate(FederationInput {
+            dqn: Some(dqn_snapshot(&[dqn_base_record("ALPHA", "ARTIST A")])),
+            ..FederationInput::default()
+        })
+        .catalog;
+    let root = TempDir::new().unwrap();
+    let active = CatalogStore::new(root.path())
+        .begin_update()
+        .unwrap()
+        .publish(&catalog)
+        .unwrap();
+    let loaded = CatalogStore::new(root.path())
+        .load_active()
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.digest, active.digest);
+    assert_eq!(loaded.catalog, catalog);
+}
+
+#[test]
 fn source_record_count_regression_is_quarantined() {
     let base = catalog_with_tachi(&[
         tachi_record("anchor-1", "ALPHA", "ARTIST A", "V1", false),
@@ -443,9 +508,8 @@ fn textage_snapshot(records: &[serde_json::Value]) -> super::SourceSnapshot {
 }
 
 fn dqn_snapshot(records: &[serde_json::Value]) -> super::SourceSnapshot {
-    let fixture = fixture("scorepeek-dqn-fixture-v1", records);
-    let bytes = serde_json::to_vec(&fixture).unwrap();
-    DqnFixtureAdapter::parse(&bytes, content_revision(&bytes)).unwrap()
+    let bytes = serde_json::to_vec(records).unwrap();
+    DqnLiveAdapter::parse(&bytes, content_revision(&bytes)).unwrap()
 }
 
 fn fixture(schema: &str, records: &[serde_json::Value]) -> serde_json::Value {
@@ -490,7 +554,11 @@ fn textage_record(
 }
 
 fn dqn_record(title: &str, artist: &str) -> serde_json::Value {
-    json!({ "title": title, "artist": artist, "pack": "SYNTHETIC PACK" })
+    json!({ "title": title, "artist": artist, "packName": "SYNTHETIC PACK" })
+}
+
+fn dqn_base_record(title: &str, artist: &str) -> serde_json::Value {
+    json!({ "title": title, "artist": artist, "packName": null })
 }
 
 fn charts() -> serde_json::Value {

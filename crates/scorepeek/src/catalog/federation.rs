@@ -107,7 +107,7 @@ impl SourcePolicy {
             source_id: SourceId::DqnIidxapi,
             lineage_id: LineageId::OfficialInfinitasHtml,
             revision_strategy: RevisionStrategy::ContentSha256,
-            parser_version: "scorepeek-dqn-fixture-parser-v1",
+            parser_version: "scorepeek-dqn-live-json-parser-v1",
             declared_scope: "positive_infinitas_roster_signal",
             completeness: Completeness::NonExhaustive,
             field_authority: &["title", "artist", "pack"],
@@ -237,7 +237,7 @@ pub(crate) struct TextageObservation {
 pub(crate) struct DqnObservation {
     pub title: String,
     pub artist: String,
-    pub pack: String,
+    pub pack: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -363,7 +363,7 @@ pub struct Catalog {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(super) struct DqnBinding {
     pub(super) song_id: ScorepeekSongId,
-    pub(super) evidence_packs: BTreeMap<EvidenceId, BTreeSet<String>>,
+    pub(super) evidence_packs: BTreeMap<EvidenceId, BTreeSet<Option<String>>>,
 }
 
 impl CatalogSong {
@@ -683,9 +683,10 @@ fn validate_dqn_bindings(
                 id.source_id != SourceId::DqnIidxapi
                     || !all_evidence.contains_key(id)
                     || packs.is_empty()
-                    || packs
-                        .iter()
-                        .any(|pack| validate_catalog_text("dqn_pack", pack).is_err())
+                    || packs.iter().any(|pack| {
+                        pack.as_ref()
+                            .is_some_and(|pack| validate_catalog_text("dqn_pack", pack).is_err())
+                    })
             })
         {
             return Err(format!("dqn binding lacks evidence for song {song_id:?}"));

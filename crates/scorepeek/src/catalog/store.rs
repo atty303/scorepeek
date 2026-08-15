@@ -436,8 +436,11 @@ fn create_song_schema(connection: &Connection) -> Result<(), rusqlite::Error> {
              title TEXT NOT NULL,
              artist TEXT NOT NULL,
              evidence_digest TEXT NOT NULL,
-             pack TEXT NOT NULL,
-             PRIMARY KEY (title, artist, evidence_digest, pack)
+             availability_kind TEXT NOT NULL CHECK (availability_kind IN ('base', 'pack')),
+             pack_name TEXT NOT NULL,
+             CHECK ((availability_kind = 'base' AND pack_name = '') OR
+                    (availability_kind = 'pack' AND pack_name <> '')),
+             PRIMARY KEY (title, artist, evidence_digest, availability_kind, pack_name)
          ) WITHOUT ROWID;",
     )
 }
@@ -649,9 +652,19 @@ fn write_dqn_rows(transaction: &Transaction<'_>, catalog: &Catalog) -> Result<()
         )?;
         for (evidence_id, packs) in &binding.evidence_packs {
             for pack in packs {
+                let (availability_kind, pack_name) = match pack {
+                    Some(pack) => ("pack", pack.as_str()),
+                    None => ("base", ""),
+                };
                 transaction.execute(
-                    "INSERT INTO dqn_binding_evidence VALUES (?1, ?2, ?3, ?4)",
-                    params![tuple.title, tuple.artist, evidence_key(evidence_id), pack],
+                    "INSERT INTO dqn_binding_evidence VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        tuple.title,
+                        tuple.artist,
+                        evidence_key(evidence_id),
+                        availability_kind,
+                        pack_name
+                    ],
                 )?;
             }
         }
@@ -1011,15 +1024,29 @@ fn read_dqn_bindings(
     for row in rows {
         let (title, artist, song_id) = row?;
         let mut evidence_statement = connection.prepare(
-            "SELECT evidence_digest, pack FROM dqn_binding_evidence
-             WHERE title = ?1 AND artist = ?2 ORDER BY evidence_digest, pack",
+            "SELECT evidence_digest, availability_kind, pack_name FROM dqn_binding_evidence
+             WHERE title = ?1 AND artist = ?2
+             ORDER BY evidence_digest, availability_kind, pack_name",
         )?;
         let evidence_rows = evidence_statement.query_map(params![title, artist], |evidence| {
-            Ok((evidence.get::<_, String>(0)?, evidence.get::<_, String>(1)?))
+            Ok((
+                evidence.get::<_, String>(0)?,
+                evidence.get::<_, String>(1)?,
+                evidence.get::<_, String>(2)?,
+            ))
         })?;
         let mut evidence_packs = BTreeMap::new();
         for evidence in evidence_rows {
-            let (content_sha256, pack) = evidence?;
+            let (content_sha256, availability_kind, pack_name) = evidence?;
+            let pack = match (availability_kind.as_str(), pack_name.as_str()) {
+                ("base", "") => None,
+                ("pack", pack_name) if !pack_name.is_empty() => Some(pack_name.to_owned()),
+                _ => {
+                    return Err(CatalogStoreError::InvalidSnapshot(
+                        "invalid dqn availability evidence".to_owned(),
+                    ));
+                }
+            };
             evidence_packs
                 .entry(parse_evidence_key(SourceId::DqnIidxapi, &content_sha256)?)
                 .or_insert_with(BTreeSet::new)

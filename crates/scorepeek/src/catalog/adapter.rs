@@ -3,8 +3,8 @@ use std::error::Error;
 use std::fmt;
 use std::fmt::Write as _;
 
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer};
 use sha2::{Digest, Sha256};
 
 use super::federation::{
@@ -13,7 +13,7 @@ use super::federation::{
     SourcePolicy, SourceSnapshot, TachiObservation, TextageObservation,
 };
 
-const MAX_FIXTURE_BYTES: usize = 1024 * 1024;
+const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 const MAX_RECORDS: usize = 10_000;
 const MAX_TEXT_BYTES: usize = 512;
 
@@ -62,7 +62,7 @@ impl SourceRevision {
 
 #[derive(Debug)]
 pub enum AdapterError {
-    FixtureTooLarge {
+    SourceTooLarge {
         actual: usize,
         maximum: usize,
     },
@@ -76,6 +76,7 @@ pub enum AdapterError {
         maximum: usize,
     },
     DuplicateSourceId(String),
+    DuplicateRecord(String),
     DuplicateChart {
         source_id: String,
         chart: ChartKey,
@@ -97,13 +98,13 @@ pub enum AdapterError {
 impl fmt::Display for AdapterError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::FixtureTooLarge { actual, maximum } => {
+            Self::SourceTooLarge { actual, maximum } => {
                 write!(
                     formatter,
-                    "fixture has {actual} bytes; maximum is {maximum}"
+                    "source input has {actual} bytes; maximum is {maximum}"
                 )
             }
-            Self::InvalidJson(error) => write!(formatter, "invalid fixture JSON: {error}"),
+            Self::InvalidJson(error) => write!(formatter, "invalid source JSON: {error}"),
             Self::InvalidSchema { expected, actual } => {
                 write!(
                     formatter,
@@ -119,6 +120,7 @@ impl fmt::Display for AdapterError {
             Self::DuplicateSourceId(source_id) => {
                 write!(formatter, "duplicate source ID {source_id:?}")
             }
+            Self::DuplicateRecord(record) => write!(formatter, "duplicate source record {record}"),
             Self::DuplicateChart { source_id, chart } => {
                 write!(
                     formatter,
@@ -151,7 +153,7 @@ impl Error for AdapterError {
 
 pub struct TachiFixtureAdapter;
 pub struct TextageFixtureAdapter;
-pub struct DqnFixtureAdapter;
+pub struct DqnLiveAdapter;
 
 impl TachiFixtureAdapter {
     /// Parses the bounded, synthetic Tachi fixture contract.
@@ -223,22 +225,40 @@ impl TextageFixtureAdapter {
     }
 }
 
-impl DqnFixtureAdapter {
-    /// Parses the bounded, synthetic dqn/iidxapi fixture contract.
+impl DqnLiveAdapter {
+    /// Parses pinned bytes from the public dqn/iidxapi INFINITAS music endpoint.
+    ///
+    /// This boundary is deliberately independent of HTTP clients, credentials, response headers,
+    /// and caches. Acquisition code must supply the exact response body and its expected SHA-256
+    /// revision.
     ///
     /// # Errors
     ///
-    /// Returns an error when the fixture exceeds a bound, violates its versioned schema, or
-    /// contains an invalid record.
+    /// Returns an error when the source exceeds a bound, violates the strict live schema, has a
+    /// duplicate row, contains an invalid record, or does not match its pinned content revision.
     pub fn parse(bytes: &[u8], revision: SourceRevision) -> Result<SourceSnapshot, AdapterError> {
-        let fixture: DqnFixture = parse_fixture(bytes, "scorepeek-dqn-fixture-v1")?;
-        validate_record_count(fixture.records.len())?;
-        let mut observations = Vec::with_capacity(fixture.records.len());
-        for record in fixture.records {
+        validate_source_size(bytes)?;
+        let records: Vec<DqnLiveRecord> =
+            serde_json::from_slice(bytes).map_err(AdapterError::InvalidJson)?;
+        validate_record_count(records.len())?;
+        let mut unique_records = BTreeSet::new();
+        let mut observations = Vec::with_capacity(records.len());
+        for record in records {
+            let title = validate_text("title", record.title)?;
+            let artist = validate_text("artist", record.artist)?;
+            let pack = record
+                .pack_name
+                .map(|pack| validate_text("packName", pack))
+                .transpose()?;
+            if !unique_records.insert((title.clone(), artist.clone(), pack.clone())) {
+                return Err(AdapterError::DuplicateRecord(format!(
+                    "({title:?}, {artist:?}, {pack:?})"
+                )));
+            }
             observations.push(SourceObservation::Dqn(DqnObservation {
-                title: validate_text("title", record.title)?,
-                artist: validate_text("artist", record.artist)?,
-                pack: validate_text("pack", record.pack)?,
+                title,
+                artist,
+                pack,
             }));
         }
         snapshot(SourcePolicy::dqn(), revision, bytes, observations)
@@ -298,12 +318,7 @@ fn parse_fixture<T>(bytes: &[u8], expected_schema: &'static str) -> Result<T, Ad
 where
     T: DeserializeOwned + Fixture,
 {
-    if bytes.len() > MAX_FIXTURE_BYTES {
-        return Err(AdapterError::FixtureTooLarge {
-            actual: bytes.len(),
-            maximum: MAX_FIXTURE_BYTES,
-        });
-    }
+    validate_source_size(bytes)?;
     let fixture: T = serde_json::from_slice(bytes).map_err(AdapterError::InvalidJson)?;
     if fixture.schema() != expected_schema {
         return Err(AdapterError::InvalidSchema {
@@ -312,6 +327,16 @@ where
         });
     }
     Ok(fixture)
+}
+
+fn validate_source_size(bytes: &[u8]) -> Result<(), AdapterError> {
+    if bytes.len() > MAX_SOURCE_BYTES {
+        return Err(AdapterError::SourceTooLarge {
+            actual: bytes.len(),
+            maximum: MAX_SOURCE_BYTES,
+        });
+    }
+    Ok(())
 }
 
 fn hex_digest(bytes: &[u8]) -> String {
@@ -478,23 +503,21 @@ struct TextageRecord {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DqnFixture {
-    schema: String,
-    records: Vec<DqnRecord>,
-}
-
-impl Fixture for DqnFixture {
-    fn schema(&self) -> &str {
-        &self.schema
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DqnRecord {
+struct DqnLiveRecord {
     title: String,
     artist: String,
-    pack: String,
+    #[serde(
+        rename = "packName",
+        deserialize_with = "deserialize_nullable_pack_name"
+    )]
+    pack_name: Option<String>,
+}
+
+fn deserialize_nullable_pack_name<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::deserialize(deserializer)
 }
 
 #[derive(Clone, Deserialize)]

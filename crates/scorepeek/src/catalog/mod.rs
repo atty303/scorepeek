@@ -3,7 +3,7 @@ mod federation;
 mod store;
 
 pub use adapter::{
-    AdapterError, DqnFixtureAdapter, SourceRevision, TachiFixtureAdapter, TextageFixtureAdapter,
+    AdapterError, DqnLiveAdapter, SourceRevision, TachiFixtureAdapter, TextageFixtureAdapter,
 };
 pub use federation::{
     Catalog, CatalogSong, Chart, ChartAssertion, ChartKey, Difficulty, DisplayVariant,

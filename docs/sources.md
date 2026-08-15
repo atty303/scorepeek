@@ -17,6 +17,13 @@ normalized source snapshots.
 | [Textage](https://textage.cc/score/index.html) | Textage capture/manual data | Independent corroboration and display variants | title, artist, genre, BPM, version, SP/DP level and notes, INFINITAS flag | The [site readme](https://textage.cc/score/readme.html) permits common-sense use and recommends a link but is not a standard data license. Fetch [title](https://textage.cc/score/titletbl.js), [availability](https://textage.cc/score/actbl.js), and [chart](https://textage.cc/score/datatbl.js) bytes locally; do not republish them. |
 | [dqn/iidxapi](https://github.com/dqn/iidxapi) | official INFINITAS HTML | Positive INFINITAS roster/pack signal | exact title, artist, pack name | The adapter output has no stable song identity or chart data. Treat it as corroboration of the official page, preserve its content hash, and do not redistribute the derived roster. [Current JSON endpoint](https://dqn.github.io/iidxapi/infinitas/music.json) |
 
+The dqn/iidxapi contract inspected at repository commit
+`6f76e8e0286f8a91a688a549e023ce5261b4b7c2` is a top-level JSON array whose
+rows contain exactly `title`, `artist`, and nullable `packName` fields. The live
+adapter accepts that bounded shape only, keeps a null pack distinct from every
+named pack, and rejects duplicate rows and unknown fields. Synthetic tests use
+the same wire shape; current endpoint bytes remain private and uncommitted.
+
 Tachi's opaque IDs are stable source bindings, not semantic universal IDs.
 Textage numeric and slug IDs remain Textage-local. dqn rows never create an
 identity by themselves. v1 derives the public UUIDv5 song ID from the exact
