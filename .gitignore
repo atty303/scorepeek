@@ -1,0 +1,26 @@
+# Build and tool state
+/target/
+/.direnv/
+/.mise.local.toml
+
+# Generated or externally acquired artifacts
+/artifacts/
+/upstream-cache/
+*.onnx
+*.ort
+*.pdmodel
+/models/artifacts/
+/models/cache/
+
+# Private capture and calibration data
+/fixtures/captured/
+/fixtures/private/
+/private/
+
+# Credentials and local environment
+*.password
+.env*
+!.env.example
+
+# Platform noise
+.DS_Store
