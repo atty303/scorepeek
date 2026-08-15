@@ -48,3 +48,7 @@ exec cargo test --locked --workspace
 [tasks.doctor]
 description = "Print the local target inventory as versioned JSON"
 run = "cargo run --locked --quiet -- doctor"
+
+[tasks."catalog:sync"]
+description = "Synchronize and conditionally activate the live catalog"
+run = "cargo run --locked --quiet -- catalog sync"

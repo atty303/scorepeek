@@ -5,8 +5,8 @@
 - 決定日: 2026-08-15
 - repository bootstrapとtarget inventory probe: 完了
 - M1.1 catalog contractとlocal federation core: 完了
-- M1.2 live acquisitionとsync orchestration: 次
-- live catalog adapter/sync、capture、認識、OCR学習、event daemon: 未着手
+- M1.2 live acquisitionとsync orchestration: dqn manual syncまで完了、継続中
+- Tachi/Textage live adapter、scheduled sync、capture、認識、OCR学習、event daemon: 未着手
 - Bazzite実機検証とprivate corpus収集: 未着手
 
 現在commitに含まれるcheckpointは[`STATUS.md`](../STATUS.md)を参照する。この文書は

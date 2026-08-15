@@ -3,14 +3,14 @@ use std::error::Error;
 use std::fmt;
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read as _, Write};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension as _, Transaction, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tempfile::{Builder, NamedTempFile};
+use tempfile::Builder;
 use uuid::Uuid;
 
 use super::federation::{
@@ -22,6 +22,12 @@ use super::federation::{
 const MANIFEST_SCHEMA: &str = "scorepeek-active-catalog-v1";
 const SNAPSHOT_SCHEMA: &str = "scorepeek-catalog-snapshot-v1";
 const SNAPSHOT_FILE: &str = "catalog.sqlite3";
+const MAX_MANIFEST_BYTES: usize = 4 * 1024;
+const MAX_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_SNAPSHOT_GENERATIONS: usize = 32;
+const MAX_SNAPSHOT_STORAGE_BYTES: u64 = 512 * 1024 * 1024;
+const SNAPSHOT_STAGING_PREFIX: &str = ".catalog-staging-";
+const MANIFEST_STAGING_PREFIX: &str = ".catalog-manifest-staging-";
 
 #[derive(Clone, Debug)]
 pub struct CatalogStore {
@@ -51,6 +57,7 @@ pub enum CatalogStoreError {
         expected: Option<String>,
         actual: Option<String>,
     },
+    CapacityExceeded,
 }
 
 impl fmt::Display for CatalogStoreError {
@@ -67,6 +74,7 @@ impl fmt::Display for CatalogStoreError {
                 formatter,
                 "active catalog changed while update was built: expected {expected:?}, found {actual:?}"
             ),
+            Self::CapacityExceeded => formatter.write_str("catalog snapshot capacity is exhausted"),
         }
     }
 }
@@ -79,7 +87,8 @@ impl Error for CatalogStoreError {
             Self::Json(error) => Some(error),
             Self::InvalidManifest(_)
             | Self::InvalidSnapshot(_)
-            | Self::BaseDigestChanged { .. } => None,
+            | Self::BaseDigestChanged { .. }
+            | Self::CapacityExceeded => None,
         }
     }
 }
@@ -127,6 +136,7 @@ impl CatalogStore {
             .mode(0o600)
             .open(self.root.join("catalog-sync.lock"))?;
         lock.lock()?;
+        recover_staging(&self.content_dir(), &self.manifest_dir())?;
         let base_digest = self
             .read_manifest()?
             .map(|manifest| manifest.catalog_digest);
@@ -182,11 +192,31 @@ impl CatalogStore {
     }
 
     fn read_manifest(&self) -> Result<Option<ActiveManifest>, CatalogStoreError> {
-        let bytes = match fs::read(self.active_manifest_path()) {
-            Ok(bytes) => bytes,
+        let path = self.active_manifest_path();
+        let metadata = match path.symlink_metadata() {
+            Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
+        if !metadata.is_file() || metadata.len() > MAX_MANIFEST_BYTES as u64 {
+            return Err(CatalogStoreError::InvalidManifest(
+                "active manifest is not a bounded regular file".to_owned(),
+            ));
+        }
+        let capacity = usize::try_from(metadata.len()).map_err(|_| {
+            CatalogStoreError::InvalidManifest(
+                "active manifest size is not representable".to_owned(),
+            )
+        })?;
+        let mut bytes = Vec::with_capacity(capacity);
+        File::open(path)?
+            .take((MAX_MANIFEST_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > MAX_MANIFEST_BYTES {
+            return Err(CatalogStoreError::InvalidManifest(
+                "active manifest exceeds the size limit while reading".to_owned(),
+            ));
+        }
         let manifest: ActiveManifest = serde_json::from_slice(&bytes)?;
         if manifest.schema != MANIFEST_SCHEMA {
             return Err(CatalogStoreError::InvalidManifest(format!(
@@ -221,11 +251,15 @@ impl CatalogUpdate {
         mut checkpoint: impl FnMut(PublishPoint) -> io::Result<()>,
     ) -> Result<ActiveCatalog, CatalogStoreError> {
         let staging = Builder::new()
-            .prefix(".catalog-staging-")
+            .prefix(SNAPSHOT_STAGING_PREFIX)
             .permissions(fs::Permissions::from_mode(0o700))
             .tempdir_in(self.store.content_dir())?;
         let staging_snapshot = staging.path().join(SNAPSHOT_FILE);
         write_snapshot(&staging_snapshot, catalog)?;
+        let staging_size = staging_snapshot.metadata()?.len();
+        if staging_size > MAX_SNAPSHOT_BYTES {
+            return Err(CatalogStoreError::CapacityExceeded);
+        }
         File::open(&staging_snapshot)?.sync_all()?;
         checkpoint(PublishPoint::SnapshotFileSynced)?;
         File::open(staging.path())?.sync_all()?;
@@ -241,6 +275,7 @@ impl CatalogUpdate {
                 ));
             }
         } else {
+            ensure_snapshot_capacity(&self.store.content_dir(), staging.path(), staging_size)?;
             fs::rename(staging.path(), &destination)?;
         }
         checkpoint(PublishPoint::SnapshotRenamed)?;
@@ -252,7 +287,9 @@ impl CatalogUpdate {
             catalog_digest: digest.clone(),
             snapshot_path: format!("content/{digest}/{SNAPSHOT_FILE}"),
         };
-        let mut temporary = NamedTempFile::new_in(self.store.manifest_dir())?;
+        let mut temporary = Builder::new()
+            .prefix(MANIFEST_STAGING_PREFIX)
+            .tempfile_in(self.store.manifest_dir())?;
         serde_json::to_writer(&mut temporary, &manifest)?;
         temporary.write_all(b"\n")?;
         temporary.flush()?;
@@ -283,6 +320,94 @@ impl CatalogUpdate {
     }
 }
 
+fn recover_staging(content_directory: &Path, manifest_directory: &Path) -> io::Result<()> {
+    let mut removed_content = false;
+    for entry in fs::read_dir(content_directory)? {
+        let entry = entry?;
+        let is_staging = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(SNAPSHOT_STAGING_PREFIX));
+        if !is_staging {
+            continue;
+        }
+        if !entry.path().symlink_metadata()?.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "catalog snapshot staging entry is not a directory",
+            ));
+        }
+        fs::remove_dir_all(entry.path())?;
+        removed_content = true;
+    }
+    if removed_content {
+        File::open(content_directory)?.sync_all()?;
+    }
+
+    let mut removed_manifest = false;
+    for entry in fs::read_dir(manifest_directory)? {
+        let entry = entry?;
+        let is_staging = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(MANIFEST_STAGING_PREFIX));
+        if !is_staging {
+            continue;
+        }
+        if !entry.path().symlink_metadata()?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "catalog manifest staging entry is not a file",
+            ));
+        }
+        fs::remove_file(entry.path())?;
+        removed_manifest = true;
+    }
+    if removed_manifest {
+        File::open(manifest_directory)?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn ensure_snapshot_capacity(
+    content_directory: &Path,
+    current_staging: &Path,
+    incoming_bytes: u64,
+) -> Result<(), CatalogStoreError> {
+    let mut generations = 0_usize;
+    let mut total_bytes = 0_u64;
+    for entry in fs::read_dir(content_directory)? {
+        let entry = entry?;
+        if entry.path() == current_staging {
+            continue;
+        }
+        let metadata = entry.path().symlink_metadata()?;
+        if !metadata.is_dir() {
+            return Err(CatalogStoreError::CapacityExceeded);
+        }
+        let snapshot = entry.path().join(SNAPSHOT_FILE);
+        let snapshot_metadata = snapshot.symlink_metadata()?;
+        if !snapshot_metadata.is_file() || snapshot_metadata.len() > MAX_SNAPSHOT_BYTES {
+            return Err(CatalogStoreError::CapacityExceeded);
+        }
+        let mut children = fs::read_dir(entry.path())?;
+        let first = children.next().transpose()?;
+        let second = children.next().transpose()?;
+        if first.as_ref().map(std::fs::DirEntry::path) != Some(snapshot) || second.is_some() {
+            return Err(CatalogStoreError::CapacityExceeded);
+        }
+        generations = generations.saturating_add(1);
+        total_bytes = total_bytes.saturating_add(snapshot_metadata.len());
+        if generations >= MAX_SNAPSHOT_GENERATIONS || total_bytes > MAX_SNAPSHOT_STORAGE_BYTES {
+            return Err(CatalogStoreError::CapacityExceeded);
+        }
+    }
+    if total_bytes.saturating_add(incoming_bytes) > MAX_SNAPSHOT_STORAGE_BYTES {
+        return Err(CatalogStoreError::CapacityExceeded);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ActiveManifest {
@@ -303,14 +428,35 @@ enum PublishPoint {
 }
 
 fn create_private_directory(path: &Path) -> io::Result<()> {
-    let existed = path.exists();
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(path)?;
+    let mut missing = Vec::new();
+    let mut candidate = path;
+    while !candidate.exists() {
+        missing.push(candidate.to_owned());
+        candidate = candidate.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "directory has no existing ancestor",
+            )
+        })?;
+    }
+    if !candidate.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "catalog ancestor is not a directory",
+        ));
+    }
+    for directory in missing.into_iter().rev() {
+        fs::DirBuilder::new().mode(0o700).create(&directory)?;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+        sync_directory_and_parent(&directory)?;
+    }
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    sync_directory_and_parent(path)
+}
+
+fn sync_directory_and_parent(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()?;
-    if !existed && let Some(parent) = path.parent() {
+    if let Some(parent) = path.parent() {
         File::open(parent)?.sync_all()?;
     }
     Ok(())
@@ -673,6 +819,7 @@ fn write_dqn_rows(transaction: &Transaction<'_>, catalog: &Catalog) -> Result<()
 }
 
 fn read_snapshot(path: &Path) -> Result<Catalog, CatalogStoreError> {
+    validate_snapshot_file(path)?;
     let connection = Connection::open_with_flags(
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -1142,9 +1289,38 @@ fn parse_song_id(value: &str) -> Result<ScorepeekSongId, CatalogStoreError> {
         .map_err(|error| CatalogStoreError::InvalidSnapshot(format!("invalid song UUID: {error}")))
 }
 
+fn validate_snapshot_file(path: &Path) -> io::Result<()> {
+    let metadata = path.symlink_metadata()?;
+    if !metadata.is_file() || metadata.len() > MAX_SNAPSHOT_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "catalog snapshot is not a bounded regular file",
+        ));
+    }
+    Ok(())
+}
+
 fn digest_file(path: &Path) -> io::Result<String> {
-    let bytes = fs::read(path)?;
-    let digest = Sha256::digest(bytes);
+    validate_snapshot_file(path)?;
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut total = 0_u64;
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        total = total.saturating_add(read as u64);
+        if total > MAX_SNAPSHOT_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "catalog snapshot exceeds the size limit while reading",
+            ));
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let digest = hasher.finalize();
     let mut encoded = String::with_capacity(digest.len() * 2);
     for byte in digest {
         write!(encoded, "{byte:02x}").expect("writing to a String cannot fail");
@@ -1337,15 +1513,143 @@ mod tests {
     use std::fs;
     use std::io;
     use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::fs::symlink;
 
     use rusqlite::Connection;
     use serde_json::json;
     use tempfile::TempDir;
 
-    use super::{CatalogStore, PublishPoint};
+    use super::{
+        CatalogStore, CatalogStoreError, MANIFEST_STAGING_PREFIX, MAX_MANIFEST_BYTES,
+        MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_GENERATIONS, MAX_SNAPSHOT_STORAGE_BYTES, PublishPoint,
+        SNAPSHOT_FILE, SNAPSHOT_STAGING_PREFIX, digest_file, ensure_snapshot_capacity,
+    };
     use crate::catalog::{Catalog, FederationInput, SourceRevision, TachiFixtureAdapter};
 
     const REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn active_manifest_rejects_oversized_files_and_symlinks_before_reading() {
+        let root = TempDir::new().unwrap();
+        let store = CatalogStore::new(root.path());
+        drop(store.begin_update().unwrap());
+        let manifest = store.active_manifest_path();
+        fs::File::create(&manifest)
+            .unwrap()
+            .set_len((MAX_MANIFEST_BYTES + 1) as u64)
+            .unwrap();
+        let oversized = store.load_active().unwrap_err();
+        assert!(matches!(oversized, CatalogStoreError::InvalidManifest(_)));
+
+        fs::remove_file(&manifest).unwrap();
+        let target = root.path().join("manifest-target.json");
+        fs::write(&target, b"{}").unwrap();
+        symlink(&target, &manifest).unwrap();
+        let linked = store.load_active().unwrap_err();
+        assert!(matches!(linked, CatalogStoreError::InvalidManifest(_)));
+    }
+
+    #[test]
+    fn snapshot_generation_limit_rejects_new_content() {
+        let root = TempDir::new().unwrap();
+        let content = root.path().join("content");
+        fs::create_dir(&content).unwrap();
+        for index in 0..MAX_SNAPSHOT_GENERATIONS {
+            let generation = content.join(format!("{index:064x}"));
+            fs::create_dir(&generation).unwrap();
+            fs::write(generation.join(SNAPSHOT_FILE), []).unwrap();
+        }
+
+        let error = ensure_snapshot_capacity(&content, &content.join("current"), 1).unwrap_err();
+        assert!(matches!(error, CatalogStoreError::CapacityExceeded));
+    }
+
+    #[test]
+    fn snapshot_storage_limit_rejects_new_content_at_exact_capacity() {
+        let root = TempDir::new().unwrap();
+        let content = root.path().join("content");
+        fs::create_dir(&content).unwrap();
+        let generation_bytes = MAX_SNAPSHOT_STORAGE_BYTES / 8;
+        assert!(generation_bytes <= MAX_SNAPSHOT_BYTES);
+        for index in 0..8 {
+            let generation = content.join(format!("{index:064x}"));
+            fs::create_dir(&generation).unwrap();
+            fs::File::create(generation.join(SNAPSHOT_FILE))
+                .unwrap()
+                .set_len(generation_bytes)
+                .unwrap();
+        }
+
+        let error = ensure_snapshot_capacity(&content, &content.join("current"), 1).unwrap_err();
+        assert!(matches!(error, CatalogStoreError::CapacityExceeded));
+    }
+
+    #[test]
+    fn bounded_digest_rejects_oversized_existing_snapshot_without_reading_it() {
+        let root = TempDir::new().unwrap();
+        let snapshot = root.path().join(SNAPSHOT_FILE);
+        fs::File::create(&snapshot)
+            .unwrap()
+            .set_len(MAX_SNAPSHOT_BYTES + 1)
+            .unwrap();
+
+        let error = digest_file(&snapshot).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn begin_update_recovers_only_owned_staging_entries() {
+        let root = TempDir::new().unwrap();
+        let store = CatalogStore::new(root.path());
+        drop(store.begin_update().unwrap());
+        let stale_snapshot = root
+            .path()
+            .join("content")
+            .join(format!("{SNAPSHOT_STAGING_PREFIX}interrupted"));
+        fs::create_dir(&stale_snapshot).unwrap();
+        fs::write(stale_snapshot.join(SNAPSHOT_FILE), b"partial").unwrap();
+        let stale_manifest = root
+            .path()
+            .join("manifests")
+            .join(format!("{MANIFEST_STAGING_PREFIX}interrupted"));
+        fs::write(&stale_manifest, b"partial").unwrap();
+
+        drop(store.begin_update().unwrap());
+
+        assert!(!stale_snapshot.exists());
+        assert!(!stale_manifest.exists());
+    }
+
+    #[test]
+    fn existing_snapshot_remains_publishable_at_generation_capacity() {
+        let root = TempDir::new().unwrap();
+        let store = CatalogStore::new(root.path());
+        let catalog = synthetic_catalog("ALPHA");
+        let active = store.begin_update().unwrap().publish(&catalog).unwrap();
+        let content = root.path().join("content");
+        let mut created = 0;
+        let mut index = 0_u64;
+        while created < MAX_SNAPSHOT_GENERATIONS - 1 {
+            let generation = content.join(format!("{index:064x}"));
+            index += 1;
+            if generation.exists() {
+                continue;
+            }
+            fs::create_dir(&generation).unwrap();
+            fs::write(generation.join(SNAPSHOT_FILE), []).unwrap();
+            created += 1;
+        }
+
+        let republished = store.begin_update().unwrap().publish(&catalog).unwrap();
+        assert_eq!(republished.digest, active.digest);
+        let error = store
+            .begin_update()
+            .unwrap()
+            .publish(&synthetic_catalog("BETA"))
+            .unwrap_err();
+        assert!(matches!(error, CatalogStoreError::CapacityExceeded));
+        assert_eq!(store.load_active().unwrap().unwrap(), active);
+    }
 
     #[test]
     fn snapshot_round_trip_is_content_deterministic() {
@@ -1510,6 +1814,22 @@ mod tests {
             assert_eq!(
                 fs::metadata(file).unwrap().permissions().mode() & 0o777,
                 0o600
+            );
+        }
+    }
+
+    #[test]
+    fn nested_store_creation_makes_every_missing_component_private() {
+        let root = TempDir::new().unwrap();
+        let scorepeek = root.path().join("scorepeek");
+        let catalog = scorepeek.join("catalog");
+
+        drop(CatalogStore::new(&catalog).begin_update().unwrap());
+
+        for directory in [scorepeek, catalog] {
+            assert_eq!(
+                fs::metadata(directory).unwrap().permissions().mode() & 0o777,
+                0o700
             );
         }
     }

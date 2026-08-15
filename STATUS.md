@@ -31,35 +31,47 @@ is outside this checkpoint.
   that accepts only content-SHA-256-pinned bytes, preserves nullable pack
   evidence, and rejects truncation, schema drift, revision mismatch, and
   duplicate rows before federation.
+- A bounded serial dqn acquisition and private content-addressed cache using
+  HTTPS-only `ureq`/rustls, a 30-second whole-request timeout, a reject-all
+  redirect policy, 1 MiB declared/actual body limit, a 64-revision/64 MiB raw
+  cache cap, and an honest scorepeek user agent.
+- `scorepeek catalog sync`, which acquires the existing writer lock before
+  network access, validates and caches exact bytes, federates against the
+  active catalog, blocks snapshot-wide regressions, conditionally activates a
+  durable snapshot under 32-generation, 64 MiB-per-file, and 512 MiB-total
+  caps, and emits only aggregate quarantine counts.
 
 ## Verified in this checkpoint
 
 - `mise run test`: passed on the development host, including all Rust library
   and binary tests and repository checks.
 - The tests use synthetic, independently created fixture data only.
-- The dqn live adapter parsed the 2026-08-15 endpoint response as 1,879 records
-  at content SHA-256
+- An isolated live `scorepeek catalog sync` fetched, validated, privately
+  cached, persisted, and activated the 2026-08-16 dqn endpoint response as
+  1,879 records at content SHA-256
   `b92bbba31b8f9c3f968afe8481f65aec411f95d4f211c19f671c67752d8d275d`.
-  Those external bytes were used only for local verification and were not
-  added to the repository.
+  With no Tachi anchor in the isolated store, all 1,879 observations remained
+  provisional and no song or availability binding was accepted. The command
+  output contained only that aggregate count. The temporary private XDG roots,
+  external bytes, and generated snapshot were removed after verification and
+  were not added to the repository.
 
 ## Unverified and target-only boundaries
 
-- No Tachi or Textage live adapter exists yet. The dqn adapter consumes pinned
-  bytes but no HTTP acquisition transport, cache, or scheduled/manual
-  synchronization command exists yet.
-- No real external-source snapshot has been federated, persisted, or activated.
-  Catalog-update recognition replay, private capture corpus, OCR model, capture
-  backend, field recognizer, event daemon, and the integrated live flow also
-  remain unvalidated.
+- No Tachi or Textage live adapter exists yet, and no scheduled synchronization
+  exists. The dqn-only live snapshot cannot accept song or availability
+  bindings without an active Tachi-anchored catalog.
+- No live multi-source catalog has been federated or activated. Catalog-update
+  recognition replay, private capture corpus, OCR model, capture backend, field
+  recognizer, event daemon, and the integrated live flow also remain
+  unvalidated.
 - Bazzite Portal, Gamescope, OBS, GPU, lifecycle, performance, and soak gates
   remain target-machine-only and unrun.
 
 ## Blockers and required approvals
 
-- Connecting the first live adapter to acquisition requires selection and user
-  approval of an HTTP runtime dependency, unless a dependency-free transport
-  design with the same correctness and maintenance properties is established.
+- `ureq` 3.4.0 with rustls was approved for the bounded live HTTP transport;
+  no additional transport dependency is currently required.
 - Any new runtime, parser, capture, or training dependency requires user
   approval after version, license, alternatives, and host/bundle impact are
   presented.
@@ -69,15 +81,16 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Continue **M1.2 — live catalog acquisition and sync orchestration** by selecting
-an HTTP runtime dependency and, after approval, implementing a bounded serial
-dqn acquisition/cache vertical slice plus `scorepeek catalog sync`. Acquire the
-existing per-host writer lock before network access, verify the pinned response
-through `DqnLiveAdapter`, federate against the active catalog, and activate only
-a healthy candidate. Add transport-status, content-length/size-limit, timeout,
-and cache-write failure coverage before adding scheduled sync or the Tachi and
-Textage paths. Do not mark M1 complete until all three source paths and manual
-and scheduled sync satisfy the catalog activation gates. Catalog-update
+Continue **M1.2 — live catalog acquisition and sync orchestration** with the
+Tachi live path so the active catalog has independently pinned identity/chart
+anchors before adding Textage corroboration. Inspect and version the current
+Tachi seed schema, keep Git inputs fixed to an exact commit, parse downloaded
+data without executing it, and request approval before adding any required
+parser dependency. Reuse the dqn writer-lock, bounded acquisition, private
+cache, source-health, federation, activation, and aggregate-reporting
+orchestration rather than creating a second sync path. Add scheduled sync only
+after all three manual source paths satisfy their activation gates. Do not mark
+M1 complete until manual and scheduled sync both pass. Catalog-update
 recognition replay remains part of M8 because it depends on the later
 recognition pipeline.
 

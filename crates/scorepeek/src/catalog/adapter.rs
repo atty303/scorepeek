@@ -13,7 +13,7 @@ use super::federation::{
     SourcePolicy, SourceSnapshot, TachiObservation, TextageObservation,
 };
 
-const MAX_SOURCE_BYTES: usize = 1024 * 1024;
+pub(super) const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 const MAX_RECORDS: usize = 10_000;
 const MAX_TEXT_BYTES: usize = 512;
 
@@ -24,6 +24,11 @@ pub enum SourceRevision {
 }
 
 impl SourceRevision {
+    #[must_use]
+    pub fn from_content(bytes: &[u8]) -> Self {
+        Self::ContentSha256(hex_digest(&Sha256::digest(bytes)))
+    }
+
     /// Creates a revision pinned to an exact Git commit.
     ///
     /// # Errors

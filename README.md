@@ -10,9 +10,10 @@ runtime, catalog, resource, or release input.
 The repository currently contains the accepted design, research evidence,
 validation scaffold, a Rust target-inventory probe, and the first catalog-core
 slice: strict synthetic fixture adapters, deterministic fail-closed federation,
-quarantine results, and durable content-addressed local snapshots. Live source
-adapters and synchronization are not implemented. It does **not** yet contain a
-runnable capture or recognition service.
+quarantine results, durable content-addressed local snapshots, and bounded live
+dqn/iidxapi acquisition through `scorepeek catalog sync`. Tachi and Textage live
+acquisition and scheduled synchronization are not implemented. It does **not**
+yet contain a runnable capture or recognition service.
 
 The first implementation milestone is:
 
@@ -57,6 +58,7 @@ mise run check
 mise run fix
 mise run test
 mise run doctor
+mise run catalog:sync
 ```
 
 `check` is non-mutating, `fix` applies supported formatting fixes, and `test`
@@ -67,6 +69,17 @@ Gamescope, and GPU verification remains in explicit target-only tasks.
 and allowlisted parsers. Missing target tools are reported as `unavailable`;
 command stderr is never included. Running Gamescope flags and authenticated OBS
 state remain unavailable until an exact, secret-safe probe contract exists.
+
+`scorepeek catalog sync` serially fetches the dqn/iidxapi INFINITAS roster after
+acquiring the catalog writer lock. It applies strict status, timeout, size,
+schema, digest, source-health, and federation gates before activation. Verified
+source bytes are kept privately below `$XDG_CACHE_HOME/scorepeek`, while the
+content-addressed catalog is stored below `$XDG_DATA_HOME/scorepeek`; the usual
+`$HOME/.cache` and `$HOME/.local/share` fallbacks apply when those variables are
+unset. The dqn cache admits at most 64 verified revisions (64 MiB total), and
+the store admits at most 32 snapshots, 64 MiB per snapshot and 512 MiB total;
+a new revision fails closed when a limit is reached. The command emits a JSON
+summary without raw source records.
 
 ## Licensing
 
