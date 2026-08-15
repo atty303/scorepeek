@@ -15,6 +15,22 @@
 - The current milestone is capture, recognition, and the versioned event API.
   UI and persistence are out of scope until explicitly requested.
 
+## Checkpoint and resumption
+
+- At task start, take the repository VCS snapshot first, then read `STATUS.md`,
+  `docs/plan.ja.md`, and the active ADR index at `docs/decisions/README.md`.
+- `STATUS.md` is the single source of truth for the state included in its
+  commit. Replace it when updating; do not use it as an append-only log.
+- When a logical commit changes the milestone, verified/unverified boundary,
+  blocker or required approval, or next executable task, update `STATUS.md` in
+  that same commit.
+- A dirty working tree is outside the committed checkpoint. Inspect every
+  existing change and preserve it; never discard, overwrite, or describe it as
+  checkpoint state.
+- Use Git history for work history. Keep conversation history, experiments,
+  rejected candidates, and trial-and-error details out of `STATUS.md`; record
+  only verified facts and the next execution boundary.
+
 ## Engineering rules
 
 - Prefer Rust for the runtime. Python is permitted only in reproducible offline

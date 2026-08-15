@@ -8,8 +8,11 @@ runtime, catalog, resource, or release input.
 ## Status
 
 The repository currently contains the accepted design, research evidence,
-validation scaffold, and a Rust target-inventory probe. It does **not** yet
-contain a runnable capture or recognition service.
+validation scaffold, a Rust target-inventory probe, and the first catalog-core
+slice: strict synthetic fixture adapters, deterministic fail-closed federation,
+quarantine results, and durable content-addressed local snapshots. Live source
+adapters and synchronization are not implemented. It does **not** yet contain a
+runnable capture or recognition service.
 
 The first implementation milestone is:
 
@@ -38,7 +41,8 @@ offline OCR training and ONNX export.
   post-scale OBS path on the target Bazzite machine before selecting a backend.
 - Keep UI, score persistence, and external-service integration outside v1.
 
-See [the Japanese implementation plan](docs/plan.ja.md), the
+See [the current committed checkpoint](STATUS.md),
+[the Japanese implementation plan](docs/plan.ja.md), the
 [architecture overview](docs/architecture.md), the
 [source policy](docs/sources.md), and [research evidence](docs/research.md).
 

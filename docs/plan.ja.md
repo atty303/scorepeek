@@ -4,10 +4,13 @@
 
 - 決定日: 2026-08-15
 - repository bootstrapとtarget inventory probe: 完了
-- catalog adapter、capture、認識、OCR学習、event daemon: 未着手
+- M1.1 catalog contractとlocal federation core: 完了
+- M1.2 live acquisitionとsync orchestration: 次
+- live catalog adapter/sync、capture、認識、OCR学習、event daemon: 未着手
 - Bazzite実機検証とprivate corpus収集: 未着手
 
-この文書は実装順序とrelease gateの原典である。長期的な判断理由は
+現在commitに含まれるcheckpointは[`STATUS.md`](../STATUS.md)を参照する。この文書は
+stable milestoneの実装順序とrelease gateの原典である。長期的な判断理由は
 [`decisions/`](decisions/README.md)に、外部dataの利用境界は
 [`sources.md`](sources.md)に置く。
 
@@ -230,16 +233,19 @@ mixingは禁止する。候補がgateに失敗してもFHD、NV12、別color pro
 
 ## 実装順序
 
-1. source schema/policy、fixture-only adapters、deterministic federation、quarantine report、
-   atomic local snapshotを実装する。
-2. private corpus schema、layout measurement、synthetic renderer、label/replay CLIを実装する。
-3. PP-OCR fine-tune/exportとPython-to-Rust parity spikeを通す。
-4. Portal reference adapterを実装し、Bazziteでpost-scale canonical contractを確定する。
-5. Gamescope directと条件付きOBS candidateをvertical spikeし、correctness/performanceを比較する。
-6. screen、savable、play mode、difficulty/level、digits、title decoder、cross-field validationの順で
+1. **M0**: independent design、repository bootstrap、target inventoryを確立する。
+2. **M1.1**: source schema/policy、fixture-only adapters、deterministic federation、
+   quarantine report、atomic local snapshotを実装する。
+3. **M1.2**: live source acquisition、manual/scheduled sync、activation orchestrationを
+   実装する。M1.1だけでM1全体を完了扱いしない。
+4. **M2**: private corpus schema、layout measurement、synthetic renderer、label/replay CLIを実装する。
+5. **M3**: PP-OCR fine-tune/exportとPython-to-Rust parity spikeを通す。
+6. **M4**: Portal reference adapterを実装し、Bazziteでpost-scale canonical contractを確定する。
+7. **M5**: Gamescope directと条件付きOBS candidateをvertical spikeし、correctness/performanceを比較する。
+8. **M6**: screen、savable、play mode、difficulty/level、digits、title decoder、cross-field validationの順で
    field recognizerを追加する。
-7. deterministic session、event schema、NDJSON daemonを実装する。
-8. catalog update replay、full private holdout、Bazzite live flowをrelease gateへ統合する。
+9. **M7**: deterministic session、event schema、NDJSON daemonを実装する。
+10. **M8**: catalog update replay、full private holdout、Bazzite live flowをrelease gateへ統合する。
 
 新規runtime、training、parser、capture dependencyは、version、license、代替案、bundle/host影響を
 一括提示して承認を得た後にだけ追加する。
