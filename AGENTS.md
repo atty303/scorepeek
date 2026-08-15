@@ -4,9 +4,11 @@
 
 - This repository is the source of truth for `scorepeek` design and future
   implementation.
-- Do not edit, vendor, merge, subtree, or cherry-pick the upstream
-  `kaktuswald/inf-notebook` repository. Upstream release tags are external
-  inputs consumed only through the planned adoption workflow.
+- Do not edit, vendor, merge, subtree, cherry-pick, or import runtime data from
+  the upstream `kaktuswald/inf-notebook` repository. It may be consulted once
+  as a research hint, but committed layout values must be independently
+  measured from scorepeek captures. Upstream code, coordinates, resources,
+  catalogs, and generated artifacts are not project inputs.
 - The accepted roadmap is `docs/plan.ja.md`. Long-lived decisions live under
   `docs/decisions/`; supersede an ADR with a new ADR instead of rewriting an
   accepted decision.
@@ -15,34 +17,41 @@
 
 ## Engineering rules
 
-- Prefer Rust for the runtime. Python is permitted only in the isolated
-  adoption-time resource importer and must not be a game-session dependency.
+- Prefer Rust for the runtime. Python is permitted only in reproducible offline
+  OCR training and export tooling and must not be a game-session dependency.
 - Make invalid states unrepresentable where practical. Recognition must fail
   closed: never guess a field, relax a threshold automatically, or silently
   switch capture profiles.
-- OBS WebSocket PNG and Gamescope PipeWire are distinct frame sources with
-  separate capture and recognition profile IDs, fixtures, and release gates.
+- Treat Wayland Portal as the post-scale correctness reference. Gamescope
+  direct PipeWire and a proven post-scale OBS source are target-machine
+  candidates with separate capture profile IDs and release gates. A native FHD
+  game source is pre-scale and cannot satisfy the canonical capture contract.
 - Keep canonical recognition input fixed at contiguous RGB8 1920x1080 unless a
   new versioned frame contract is approved.
-- Do not import upstream Python modules at runtime. Never unpickle an upstream
-  resource until its filename and SHA-256 match a human-approved manifest that
-  existed before the importer started. A digest calculated from the same
-  unapproved download is not a trust anchor.
-- Apply the same pre-approval rule to OCR models, dictionaries, and configs.
-  Runtime model auto-download and arbitrary unregistered local model paths are
-  prohibited.
+- Do not import upstream Python modules or read upstream resource formats.
+  External catalog adapters must preserve source revision, lineage, provenance,
+  and content hashes; they must parse data without executing downloaded code.
+- OCR models, dictionaries, and configs require immutable revisions, hashes,
+  licenses, and reproducible export records. Runtime model auto-download and
+  arbitrary unregistered local model paths are prohibited.
+- Catalog federation must not use fuzzy identity merging, weighted majority, or
+  source recency to resolve cross-source conflicts. Ambiguous records stay
+  quarantined and the last-known-good catalog remains active.
 
 ## Private data and credentials
 
-- Never commit captured frames, game assets, player/rival data, converted
-  upstream resources, OCR models, OBS passwords, tokens, or raw external API
-  responses containing secrets.
+- Never commit captured frames, game assets, player/rival data, raw external
+  catalog snapshots, generated catalogs, OCR models, OBS passwords, tokens, or
+  raw external API responses containing secrets.
 - Store real fixture frames and their complete labels outside the repository.
   Commit only schemas, opaque fixture IDs/hashes, non-personal class labels,
-  independently created synthetic contract fixtures, explicitly redacted
-  expected values, and replay tooling.
-- OBS WebSocket access is localhost-only and authenticated. Credentials must
-  not appear in normal config, command arguments, logs, events, or test output.
+  independently created and redistributable synthetic contract fixtures,
+  explicitly redacted expected values, and replay tooling.
+- External catalog strings are runtime decoder inputs, not training data.
+  Training text must be independently licensed or generated, and real game
+  crops and labels remain in the private corpus.
+- Respect source-specific access and reuse policy. RemyWiki is reference-only
+  unless its administrators grant explicit permission for automated reuse.
 
 ## Tooling and verification
 
@@ -50,8 +59,9 @@
 - `mise run check` is non-mutating, `mise run fix` applies supported fixes, and
   `mise run test` is the complete reproducible validation entry point.
 - Define fast checks once in `hk.pkl`; hooks and mise tasks must reuse them.
-- Keep live Bazzite/OBS/Gamescope/GPU tests as explicit tasks. Never represent
-  development-host or synthetic success as target-machine validation.
+- Keep live Bazzite/Portal/OBS/Gamescope/GPU tests as explicit tasks. Never
+  represent development-host or synthetic success as target-machine
+  validation.
 - Before declaring a capture backend supported, satisfy its target performance,
   lifecycle, and recognition gates from the plan.
 

@@ -1,112 +1,140 @@
 # Research evidence and open verification boundaries
 
-This file preserves the evidence that shaped the accepted plan. It is not a
-substitute for live target-machine validation.
+This file records the evidence behind the accepted design. It does not claim
+that capture or recognition works on the target Bazzite machine.
 
-## Upstream snapshot
+## Upstream boundary
 
-The local upstream checkout was inspected at commit
-`d5ee7a887dc2d7bf37d0f747268ffcb6e42ea0f3` on 2026-08-15.
+The Windows implementation was inspected once to understand the problem shape:
+it assumes a fixed FHD coordinate system and couples capture, screen-state
+handling, hard-coded layout, exact visual resources, and application state.
+Those observations explain why a Linux renderer cannot safely reuse its visual
+database.
 
-Relevant observations:
+scorepeek does not record or import the inspected coordinates, code, `.res`
+files, pickle structures, catalog, templates, or generated output. Layout
+coordinates are independently measured from the private scorepeek capture
+corpus. No upstream update workflow exists.
 
-- Windows capture selection and recognition orchestration are coupled through
-  `main.pyw`, `capture_winapi.py`, `capture_dxcam.py`, and `recog.py`.
-- The effective recognition coordinate space is RGB 1920x1080 with hard-coded
-  layout geometry and many exact color/template comparisons.
-- Upstream currently has no committed golden capture/recognition suite. Raw and
-  collection corpora are ignored, so shipped visual resources cannot be fully
-  regenerated or validated from the checkout alone.
-- `resources.py` imports Windows-only functionality and performs resource
-  loading/update work at import time; it is not a suitable Linux runtime API.
-- Resource versions declared by `define.py` include musictable 1.2,
-  screenrecognition 1.0, informations 4.1, details 3.2, resultothers 1.0,
-  musicselect 2.3, notesradar 1.2, unofficialdifficulty 1.0, and deeper 1.0.
-  The inspected checkout contains `resources/deeper0.3.res`, demonstrating why
-  adoption must validate actual files and schemas rather than trust declarations
-  alone.
-- Top-level crop coordinates and selected-difficulty coordinates are not fully
-  encoded in `.res`; scorepeek therefore owns a versioned FHD layout profile.
+## Catalog evidence
 
-These observations guide resource import and field parity only. They do not make
-the upstream repository a source-layout template for scorepeek.
+The accepted source matrix and rights boundaries are maintained in
+[`sources.md`](sources.md). The important design consequences are:
+
+- [Tachi](https://github.com/zkldi/Tachi/tree/main/db/seeds) offers broad IIDX
+  song/chart records and source-scoped IDs, but its [MDB import
+  process](https://github.com/zkldi/Tachi/blob/main/docs/src/contributing/cookbook/iidx-mdb.md)
+  makes lineage explicit.
+- [Textage](https://textage.cc/score/index.html) is independently maintained and
+  includes title, chart, BPM, and product information. Its data is Shift-JIS
+  JavaScript with comments, HTML fragments, and source-local identifiers, so it
+  needs a constrained parser and cannot be executed or treated as universal ID
+  data. [Textage use policy](https://textage.cc/score/readme.html)
+- [dqn/iidxapi](https://github.com/dqn/iidxapi) follows the official INFINITAS
+  page and is useful as a positive roster signal, but its [JSON
+  rows](https://dqn.github.io/iidxapi/infinitas/music.json) contain no stable
+  identity or full chart contract.
+- Multiple websites often derive from the same MDB, Textage, or official-page
+  lineage. Source count is therefore not evidence count.
+- Similar title normalization is unsafe for identity. Punctuation, width,
+  symbol, HTML, alternate-display, and source transcription differences must be
+  preserved as exact variants or quarantined instead of fuzzy-merged.
+- Adding a catalog candidate changes the runner-up for old OCR inputs even when
+  model weights are unchanged. Catalog activation therefore needs replay of
+  saved CTC logits, not only source-schema tests.
+
+RemyWiki's [robots policy](https://remywiki.com/robots.txt) distinguishes
+search/reference use from AI training, and no standard content reuse license
+was found. The project treats it as manual reference only. OCR inference is not
+model training, but fine-tuning a neural OCR model is; changing the model's
+purpose from LLM to OCR does not remove that boundary. [Cloudflare Content
+Signals](https://developers.cloudflare.com/bots/additional-configurations/managed-robots-txt/)
+
+## OCR evidence
+
+A song database contains labels and an inference lexicon, not the image/text
+pairs needed to train a recognizer. Real game title crops remain necessary to
+measure the renderer/font domain gap. Synthetic rendering supplies known labels
+and broad controlled variation but cannot, by itself, prove accuracy on the
+game's decorated titles.
+
+The intended model is recognition-only sequence OCR:
+
+- [PaddleOCR recognition training](https://www.paddleocr.ai/main/en/version2.x/ppocr/model_train/recognition.html)
+  consumes image paths paired with text labels.
+- [PP-OCRv6 recognition models](https://www.paddleocr.ai/main/en/version3.x/module_usage/text_recognition.html)
+  provide a pretrained starting point rather than a song-class model.
+- Paddle's [ONNX conversion
+  path](https://paddlepaddle.github.io/PaddleOCR/main/en/version3.x/deployment/obtaining_onnx_models.html)
+  makes a Python training/Rust inference split possible, but model-version
+  compatibility must be proven by a parity spike.
+- ONNX Runtime lists Rust as a [community
+  API](https://onnxruntime.ai/docs/get-started/community-projects.html), so the
+  exact Rust wrapper, runtime library, model, dictionary, and preprocessing
+  contract must be pinned together.
+
+The decoder scores CTC logits against exact catalog variants. A generic OCR
+confidence or edit-distance nearest title is not sufficient evidence. New songs
+can be recognized after a catalog-only update only when their tokens are already
+supported and their rendering remains within the trained domain; unknown glyphs
+or styles correctly remain unknown until the private corpus and model change.
 
 ## Capture evidence
 
 ### OBS vkcapture
 
-`obs-vkcapture` intercepts a Vulkan application's present path and copies the
-selected swapchain image into exportable memory. If the selected client is the
-game, it therefore observes the game swapchain before Gamescope output scaling.
+`obs-vkcapture` intercepts a Vulkan application's presentation and copies its
+selected swapchain image. Capturing the game process therefore observes its
+native FHD swapchain before Gamescope output scaling, which violates the
+post-scale frame contract.
 
-- [obs-vkcapture project](https://github.com/nowrep/obs-vkcapture)
 - [Vulkan swapchain copy path](https://github.com/nowrep/obs-vkcapture/blob/671886721d4f9f561d26fd4dceb006528b0c379a/src/vklayer.c#L1004-L1262)
 - [OBS DMA-BUF import](https://github.com/nowrep/obs-vkcapture/blob/671886721d4f9f561d26fd4dceb006528b0c379a/src/vkcapture.c#L481-L513)
 
-The accepted OBS profile deliberately treats this FHD OBS-rendered source as its
-own calibrated input rather than claiming it is post-Gamescope output.
+OBS remains a candidate only if the existing streaming setup can share a source
+whose native pixels are proven to be the 4K post-scale Gamescope output. Standard
+Wayland Gamescope does not expose that as an ordinary Vulkan swapchain; forcing
+an SDL backend changes the complete rendering/performance profile and must be
+tested as such. [Gamescope Wayland backend](https://github.com/ValveSoftware/gamescope/blob/df25cc1db980a1f545675763607faa0749bd6cac/src/Backends/WaylandBackend.cpp#L2292-L2299)
 
-### OBS WebSocket screenshots
+OBS WebSocket `GetSourceScreenshot` creates a render/readback/PNG/Base64 request
+path. It is useful for diagnostics but is neither a subscription nor the planned
+production capture transport. [Implementation](https://github.com/obsproject/obs-websocket/blob/1ef34bf48110c2a18184e50e41cd0b1a855e2147/src/requesthandler/RequestHandler_Sources.cpp#L28-L103)
 
-OBS Studio 28 and later bundles obs-websocket. The server recommends password
-authentication and exposes `GetSourceScreenshot` for a selected source.
+### Gamescope direct PipeWire
 
-- [obs-websocket project and authentication guidance](https://github.com/obsproject/obs-websocket)
-- [GetSourceScreenshot implementation](https://github.com/obsproject/obs-websocket/blob/1ef34bf48110c2a18184e50e41cd0b1a855e2147/src/requesthandler/RequestHandler_Sources.cpp#L28-L103)
-- [Screenshot encoding and Base64 response](https://github.com/obsproject/obs-websocket/blob/1ef34bf48110c2a18184e50e41cd0b1a855e2147/src/requesthandler/RequestHandler_Sources.cpp#L148-L234)
+Gamescope can publish an output-sized PipeWire stream, but the capture painting
+path and normal display composition are not identical. Direct capture must be
+compared with outer Portal capture rather than assumed to be final scanout.
 
-The implementation creates rendering/staging resources, maps pixels to CPU
-memory, encodes an image, and Base64-encodes each request. It is not a free frame
-subscription; the 4 Hz, single-flight limit and target performance gate are
-mandatory.
-
-### Standard Gamescope PipeWire
-
-The standard node can provide an output-sized capture, but its capture painting
-and normal display composition are not identical paths. It must be treated as a
-versioned Gamescope capture profile rather than a guaranteed copy of physical
-scanout.
-
-- [Gamescope PipeWire stream setup](https://github.com/ValveSoftware/gamescope/blob/df25cc1db980a1f545675763607faa0749bd6cac/src/pipewire.cpp#L72-L170)
+- [PipeWire stream setup](https://github.com/ValveSoftware/gamescope/blob/df25cc1db980a1f545675763607faa0749bd6cac/src/pipewire.cpp#L72-L170)
 - [PipeWire painting path](https://github.com/ValveSoftware/gamescope/blob/df25cc1db980a1f545675763607faa0749bd6cac/src/steamcompmgr.cpp#L2320-L2447)
 - [Normal composite path](https://github.com/ValveSoftware/gamescope/blob/df25cc1db980a1f545675763607faa0749bd6cac/src/rendervulkan.cpp#L4030-L4145)
-- [GStreamer device monitor](https://gstreamer.freedesktop.org/documentation/gstreamer/gstdevicemonitor.html)
 
 A 3840x2160 BGRx frame is 33,177,600 bytes. At 60 changing frames per second,
-the nominal payload approaches 2 GB/s before downstream normalization. A
-consumer-side framerate limiter does not prove lower producer cost.
+the nominal payload approaches 2 GB/s before normalization. Consumer-side frame
+dropping does not prove that Gamescope avoids producer work.
 
-## Recognition evidence
+### Portal reference
 
-- Upstream semantic resources, especially the music catalog, can carry new game
-  content independently of Linux rendering calibration.
-- Visual resources can often be decoded into field-specific templates, masks,
-  glyphs, colors, and closed-set lookup tables.
-- Exact matching remains the first decision. Approximate matching requires an
-  absolute bound and a runner-up margin calibrated per field; ties reject.
-- Song OCR is useful only as a second candidate generator for the closed catalog.
-  It must never publish arbitrary text or override disagreement with the
-  resource matcher.
-
-Candidate model/runtime references:
-
-- [OAR OCR models](https://github.com/GreatV/oar-ocr/blob/main/docs/models.md)
-- [OAR OCR recognition-only example](https://github.com/GreatV/oar-ocr/blob/main/examples/text_recognition.rs)
-- [PP-OCRv6 official model documentation](https://github.com/PaddlePaddle/PaddleOCR/blob/main/docs/version3.x/pipeline_usage/OCR.en.md)
-- [ONNX Runtime installation documentation](https://onnxruntime.ai/docs/get-started/with-python.html)
+Wayland ScreenCast Portal observes the compositor-managed window/monitor output
+and is the correctness reference for post-scale pixels. Portal implementations,
+negotiated formats, color management, picker persistence, and crop geometry vary,
+so the target profile must record and verify them instead of assuming desktop
+names imply capabilities.
 
 ## Not yet verified
 
-The following are target-machine gates, not established facts:
+- Target Bazzite image, GPU/driver, compositor, portal backend, Gamescope,
+  PipeWire/GStreamer, Flatpak OBS, and obs-vkcapture versions
+- Portal-selected surface geometry and negotiated pixel/color contract
+- Whether the target OBS setup has any reusable 4K post-scale source
+- Geometry and semantic equivalence among Portal, Gamescope direct, and OBS
+- CPU/GPU/power/frame-time impact while simultaneously playing and streaming
+- Layout coordinates, preprocessing, OCR export parity, field thresholds,
+  acceptance rates, and false-positive rates
+- Source adapter behavior against future live schema changes
 
-- Exact Bazzite image, GPU/driver, Gamescope, PipeWire/GStreamer, Flatpak OBS,
-  obs-vkcapture, and obs-websocket versions.
-- The target OBS source UUID/settings and its native screenshot geometry.
-- Exact Gamescope node caps and the FHD-to-4K pixel phase on the target.
-- CPU/GPU/power impact of 4 Hz PNG screenshots and 4K PipeWire transfer while
-  playing and streaming.
-- All recognition thresholds, field acceptance rates, and false-positive rates;
-  no private Linux fixture corpus exists yet.
-
-No backend or recognizer should be called stable until these boundaries pass the
-gates in the implementation plan.
+Development-host builds, synthetic fixtures, and source parsing cannot satisfy
+these target-machine or private-corpus gates. No backend or recognizer is stable
+until the plan's Bazzite and holdout criteria pass.
