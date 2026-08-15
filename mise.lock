@@ -84,6 +84,13 @@ url_api = "https://api.github.com/repos/jdx/hk/releases/assets/505018165"
 version = "1.97.1"
 backend = "core:rust"
 
+[[tools.rust]]
+version = "1.97.1"
+backend = "core:rust"
+
+[tools.rust.options]
+components = "clippy,rustfmt"
+
 [[tools.taplo]]
 version = "0.10.0"
 backend = "aqua:tamasfe/taplo"
