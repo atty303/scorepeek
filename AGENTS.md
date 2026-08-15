@@ -53,6 +53,12 @@
 - Catalog federation must not use fuzzy identity merging, weighted majority, or
   source recency to resolve cross-source conflicts. Ambiguous records stay
   quarantined and the last-known-good catalog remains active.
+- Bound every content-addressed runtime store by per-object size, generation
+  count, and aggregate bytes. At capacity, existing identical content remains
+  usable and new content must fail without changing the active state.
+- Treat crash recovery as part of durable activation: recover only
+  scorepeek-owned staging entries under the writer lock, and fsync every newly
+  created path component and its parent before reporting success.
 
 ## Private data and credentials
 
