@@ -1,1 +1,13 @@
-default_permissions = ":workspace"
+default_permissions = "scorepeek-development"
+
+[features]
+network_proxy = true
+
+[permissions.scorepeek-development]
+extends = ":workspace"
+
+[permissions.scorepeek-development.network]
+enabled = true
+
+[permissions.scorepeek-development.network.domains]
+"**.crates.io" = "allow"
