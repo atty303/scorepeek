@@ -11,6 +11,18 @@ local linters = new Mapping<String, Step> {
   ["merge-conflict"] = Builtins.check_merge_conflict
   ["mise"] = Builtins.mise
   ["private-key"] = Builtins.detect_private_key
+  ["rust:cargo_fmt"] {
+    workspace_indicator = "Cargo.toml"
+    glob = List("*.rs")
+    stage = glob
+    prefix = "mise exec --"
+    check = "rustfmt --edition 2024 --check {{files}}"
+    fix = "rustfmt --edition 2024 {{files}}"
+    check_first = false
+    env {
+      ["CARGO_TERM_PROGRESS_WHEN"] = "never"
+    }
+  }
   ["taplo"] = Builtins.taplo
 }
 

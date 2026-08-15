@@ -8,8 +8,8 @@ release/resource input, not a Git parent and not a runtime dependency.
 ## Status
 
 This repository currently contains the accepted implementation plan, decision
-records, research evidence, and the validation scaffold. It does **not** yet
-contain a runnable recognizer.
+records, research evidence, validation scaffold, and the first Rust inventory
+probe. It does **not** yet contain a runnable recognizer.
 
 The first implementation milestone is:
 
@@ -47,11 +47,19 @@ mise install
 mise run check
 mise run fix
 mise run test
+mise run doctor
 ```
 
 `check` is read-only, `fix` applies supported formatting fixes, and `test`
 contains every reproducible repository check. Live Bazzite, OBS, Gamescope, and
 GPU verification will remain separate explicit tasks.
+
+`mise run doctor` prints a versioned JSON inventory using only fixed local
+commands and allowlisted parsers. Missing target tools are reported as
+`unavailable`; command stderr is never included. The `obs_websocket` field is
+intentionally unavailable until a later authenticated OBS protocol probe can
+verify it without inspecting credentials. Running Gamescope flags are likewise
+reported as unavailable until the profile defines the exact safe flag allowlist.
 
 ## Licensing
 

@@ -3,6 +3,7 @@ min_version = "2026.8.3"
 [tools]
 actionlint = "1.7.12"
 hk = "1.54.1"
+rust = "1.97.1"
 taplo = "0.10.0"
 
 [env]
@@ -39,5 +40,11 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 mise run check README.md
-exec mise run check
+mise run check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+exec cargo test --locked --workspace
 '''
+
+[tasks.doctor]
+description = "Print the local target inventory as versioned JSON"
+run = "cargo run --locked --quiet -- doctor"

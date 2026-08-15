@@ -4,7 +4,9 @@
 
 - 決定日: 2026-08-15
 - repository bootstrap: 完了
-- runtime実装、upstream adoption、fixture収集、Bazzite実機検証: 未着手
+- target inventory probe: 初期実装済み、実行中Gamescope flagsとOBS protocolの
+  safe probeおよびBazzite実機実行は未着手
+- recognition runtime、upstream adoption、fixture収集、Bazzite実機検証: 未着手
 
 ## 目的と境界
 
