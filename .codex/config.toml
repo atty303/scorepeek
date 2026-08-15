@@ -10,4 +10,20 @@ extends = ":workspace"
 enabled = true
 
 [permissions.scorepeek-development.network.domains]
+# OpenAI's documented permission-profile example. The double wildcard also
+# includes github.com itself, which this repository uses directly.
+"**.github.com" = "allow"
+"api.openai.com" = "allow"
+"objects.githubusercontent.com" = "allow"
+
+# GitHub-hosted repository and tool inputs.
+"raw.githubusercontent.com" = "allow"
+"release-assets.githubusercontent.com" = "allow"
+
+# Rust package and toolchain inputs.
 "**.crates.io" = "allow"
+"static.rust-lang.org" = "allow"
+
+# Versioned catalog inputs declared by this repository.
+"dqn.github.io" = "allow"
+"textage.cc" = "allow"
