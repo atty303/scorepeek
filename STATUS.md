@@ -76,10 +76,18 @@ is outside this checkpoint.
 - A separate offline-only `scorepeek-corpus` workspace crate and binary. The
   game-session `scorepeek` crate has no corpus or training dependency, and the
   future Python training/export pipeline remains outside the runtime graph.
-- Versioned, strict private-corpus ingest/source/replay contracts that represent
-  Windows semantic-reference and Linux capture-calibration inputs as disjoint
-  typed profiles. Committed examples contain only opaque IDs, hashes, and
-  non-personal classes; complete labels and media remain external.
+- An accepted capture/recognition design that separates opaque-profile
+  `ObservedFrame` inputs, versioned domain normalizers, a conceptual RGB8
+  1920x1080 `CanonicalFrame`, and field-specific OCR preprocessing. Capture
+  routes are independently gated peers; none is a pixel correctness reference,
+  and the normalizer does not model pipeline layers separately.
+- Versioned, strict private-corpus ingest/source/replay contracts whose current
+  implementation still represents Windows semantic-reference and Linux
+  capture-calibration inputs as disjoint typed profiles. This profile and hard
+  profile-disjoint split contract is now marked as superseded and must be
+  replaced before real media ingest or later M2 corpus work continues.
+  Committed examples contain only opaque IDs, hashes, and non-personal classes;
+  complete labels and media remain external.
 - Bounded content-addressed private source ingest with an explicit absolute
   store root, single-writer locking, scorepeek-owned staging recovery,
   canonical manifests, immutable fixture-ID binding, idempotent content reuse,
@@ -167,6 +175,10 @@ is outside this checkpoint.
   synthetic rendering, replay execution, layout measurement, catalog-update recognition
   replay, OCR model, capture backend, field recognizer, event daemon, and the
   integrated live flow remain unvalidated.
+- The `ObservedFrame`/domain-normalizer/`CanonicalFrame` boundary, opaque
+  capture-profile corpus contract, OCR preprocessor, in-profile holdout,
+  separate profile-disjoint evaluation, model-bundle promotion, and
+  last-known-good model rollback remain unimplemented and unvalidated.
 - The persistent systemd installer's custom unit-path linking, timer enablement,
   and unified disable path were reviewed but not deployed to the user's actual
   configuration. Only the non-persistent transient user-manager path was run.
@@ -190,14 +202,18 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Continue **M2** with deterministic episode/index generation, a private label
-authoring workflow, and an independently redistributable synthetic contract
-renderer using the versioned complete-label contract. Keep private values
-external, and make replay consume the scorepeek core only through its public
-recognition boundary. Before adding media extraction,
-present the proposed tool with its pinned version, license, alternatives, and
-host impact for approval. Catalog-update recognition replay remains part of M8
-because it depends on the later recognition pipeline.
+Continue **M2** by replacing the superseded corpus profile and split contract
+before ingesting real media: remove the Windows semantic-reference/Linux
+capture-calibration role hierarchy, represent opaque capture profiles and their
+normalizer bindings, allow session/title-isolated in-profile holdout, and model
+profile-disjoint evaluation separately. Preserve the verified private-store,
+canonical metadata, complete-label, generation, replay-ordering, and grouped
+split safety properties. Then continue with deterministic episode/index
+generation, private label authoring, and the independently redistributable
+synthetic renderer. Before adding media extraction or a learned normalizer,
+present the proposed tool or dependency with its pinned version, license,
+alternatives, and host impact for approval. Catalog-update recognition replay
+remains part of M8 because it depends on the later recognition pipeline.
 
 ## Stable milestone map
 
@@ -207,10 +223,10 @@ because it depends on the later recognition pipeline.
 | M1 | Catalog federation and activation | complete |
 | M1.1 | Catalog contract and local federation core | complete |
 | M1.2 | Live acquisition and sync orchestration | complete |
-| M2 | Private corpus, layout measurement, synthetic renderer, and replay tooling | in progress |
-| M3 | OCR training/export and Python-to-Rust parity | pending |
-| M4 | Portal reference capture and canonical-frame validation | pending |
-| M5 | Gamescope/OBS candidate evaluation and backend selection | pending |
+| M2 | Opaque-profile private corpus, layout measurement, synthetic renderer, and replay tooling | in progress |
+| M3 | Domain normalization, OCR preprocessing/training/export, and Python-to-Rust parity | pending |
+| M4 | Portal/Gamescope observed-frame profiles and canonicalization gates | pending |
+| M5 | Supported capture-profile evaluation and default selection | pending |
 | M6 | Fail-closed field recognition and cross-field validation | pending |
 | M7 | Deterministic session, versioned events, and NDJSON daemon | pending |
 | M8 | Integrated catalog, holdout, and Bazzite release gates | pending |

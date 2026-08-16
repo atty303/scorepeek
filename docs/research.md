@@ -87,17 +87,18 @@ or styles correctly remain unknown until the private corpus and model change.
 
 `obs-vkcapture` intercepts a Vulkan application's presentation and copies its
 selected swapchain image. Capturing the game process therefore observes its
-native FHD swapchain before Gamescope output scaling, which violates the
-post-scale frame contract.
+native FHD swapchain before Gamescope output scaling. That is a distinct opaque
+capture domain rather than a pixel reference or an automatically interchangeable
+source.
 
 - [Vulkan swapchain copy path](https://github.com/nowrep/obs-vkcapture/blob/671886721d4f9f561d26fd4dceb006528b0c379a/src/vklayer.c#L1004-L1262)
 - [OBS DMA-BUF import](https://github.com/nowrep/obs-vkcapture/blob/671886721d4f9f561d26fd4dceb006528b0c379a/src/vkcapture.c#L481-L513)
 
-OBS remains a candidate only if the existing streaming setup can share a source
-whose native pixels are proven to be the 4K post-scale Gamescope output. Standard
-Wayland Gamescope does not expose that as an ordinary Vulkan swapchain; forcing
-an SDL backend changes the complete rendering/performance profile and must be
-tested as such. [Gamescope Wayland backend](https://github.com/ValveSoftware/gamescope/blob/df25cc1db980a1f545675763607faa0749bd6cac/src/Backends/WaylandBackend.cpp#L2292-L2299)
+OBS remains a candidate only when its observed frame contract can receive an
+explicit profile and independently pass normalization, semantic recognition,
+lifecycle, and performance gates. Standard Wayland Gamescope does not expose
+its output as an ordinary Vulkan swapchain; forcing an SDL backend changes the
+complete observed domain and must be tested as such. [Gamescope Wayland backend](https://github.com/ValveSoftware/gamescope/blob/df25cc1db980a1f545675763607faa0749bd6cac/src/Backends/WaylandBackend.cpp#L2292-L2299)
 
 OBS WebSocket `GetSourceScreenshot` creates a render/readback/PNG/Base64 request
 path. It is useful for diagnostics but is neither a subscription nor the planned
@@ -107,7 +108,8 @@ production capture transport. [Implementation](https://github.com/obsproject/obs
 
 Gamescope can publish an output-sized PipeWire stream, but the capture painting
 path and normal display composition are not identical. Direct capture must be
-compared with outer Portal capture rather than assumed to be final scanout.
+treated as its own opaque profile rather than assumed to be final scanout or
+decomposed into independently correctable layers.
 
 - [PipeWire stream setup](https://github.com/ValveSoftware/gamescope/blob/df25cc1db980a1f545675763607faa0749bd6cac/src/pipewire.cpp#L72-L170)
 - [PipeWire painting path](https://github.com/ValveSoftware/gamescope/blob/df25cc1db980a1f545675763607faa0749bd6cac/src/steamcompmgr.cpp#L2320-L2447)
@@ -117,13 +119,13 @@ A 3840x2160 BGRx frame is 33,177,600 bytes. At 60 changing frames per second,
 the nominal payload approaches 2 GB/s before normalization. Consumer-side frame
 dropping does not prove that Gamescope avoids producer work.
 
-### Portal reference
+### Portal capture
 
 Wayland ScreenCast Portal observes the compositor-managed window/monitor output
-and is the correctness reference for post-scale pixels. Portal implementations,
-negotiated formats, color management, picker persistence, and crop geometry vary,
-so the target profile must record and verify them instead of assuming desktop
-names imply capabilities.
+and is one candidate capture domain. Portal implementations, negotiated formats,
+color management, picker persistence, and crop geometry vary, so the target
+profile must record and verify its observed contract instead of assuming desktop
+names imply capabilities or treating Portal pixels as an oracle.
 
 ## Not yet verified
 
@@ -131,7 +133,8 @@ names imply capabilities.
   PipeWire/GStreamer, Flatpak OBS, and obs-vkcapture versions
 - Portal-selected surface geometry and negotiated pixel/color contract
 - Whether the target OBS setup has any reusable 4K post-scale source
-- Geometry and semantic equivalence among Portal, Gamescope direct, and OBS
+- Profile-specific normalization and semantic correctness for Portal,
+  Gamescope direct, and OBS
 - CPU/GPU/power/frame-time impact while simultaneously playing and streaming
 - Layout coordinates, preprocessing, OCR export parity, field thresholds,
   acceptance rates, and false-positive rates

@@ -2,7 +2,8 @@
 
 ## 状態
 
-- 決定日: 2026-08-15
+- 初回決定日: 2026-08-15
+- 最終更新日: 2026-08-16
 - repository bootstrapとtarget inventory probe: 完了
 - M1.1 catalog contractとlocal federation core: 完了
 - M1.2 live acquisitionとsync orchestration: manual/scheduled syncまで完了
@@ -35,13 +36,23 @@ stable milestoneの実装順序とrelease gateの原典である。長期的な�
 
 ### Canonical frameとlayout
 
-全capture adapterは、RGB8、top-left、C-contiguous、厳密に1920x1080の
-`CanonicalFrame`を生成する。frame ID、capture generation、sequence、observed
-monotonic interval、capture/normalizer profile IDを含める。
+capture adapterは取得したpixelを`ObservedFrame`として渡す。observed frameはframe ID、
+capture generation、sequence、observed monotonic intervalおよびopaqueなcapture profile IDを
+持ち、adapter内でresize、OCR前処理または別profileへのfallbackを行わない。
 
-初期profileは、Gamescope scale後の3840x2160 SDR frameを取得し、version固定の
-2:1 normalizerでcanonical FHDへ変換する。native FHD game swapchainはpre-scaleなので
-契約外とする。source removal、caps変更、reconnect、profile変更ではgenerationを更新し、
+version固定の`DomainNormalizer`が一つのcapture profile全体をopaqueなdomainとして扱い、
+RGB8、top-left、C-contiguous、厳密に1920x1080の`CanonicalFrame`へ変換する。canonical imageは
+外部pipelineの影響を受ける前のgame imageを概念上正規化した認識入力であり、対応するnative
+pixel fixtureや、Portal、Gamescope、OBS等とのpixel equalityを要求しない。Wine、Vulkan、
+Gamescope、compositor、PipeWire等のlayerをnormalizerの公開契約へ分解しない。
+
+normalizerは決定的なgeometry、colorおよびfilter補正を優先する。認識証拠により必要性が示された
+場合だけ、deterministicかつ出力変化をboundedにした小さなresidual adapterを許可し、文字や画像を
+生成するrestoration modelは使用しない。capture profileとnormalizer artifactはsemantic replayで
+検証し、observed contractとgateが維持される限り同じartifactを再利用できる。unknownまたはdriftした
+profileはfail closedとする。
+
+source removal、caps変更、reconnect、capture profileまたはnormalizer変更ではgenerationを更新し、
 未完了のrecognition、dwell、dedupを全消去する。
 
 `LayoutProfile`はcanonical上のROI、field type、presence/absence predicate、許容alignmentを
@@ -53,6 +64,8 @@ monotonic interval、capture/normalizer profile IDを含める。
 pureなframe処理とstateful sessionを分ける。
 
 ```text
+CaptureAdapter.capture() -> ObservedFrame
+DomainNormalizer.normalize(observed, profile, artifact) -> CanonicalFrame
 RecognitionEngine.inspect(frame, catalog, model) -> RecognitionSnapshot
 RecognitionSession.process(snapshot) -> DomainEvent[]
 ```
@@ -203,6 +216,11 @@ sequence modelへ入力し、CTC logitsをexact catalog title trieへ直接score
   difficulty/selected levelを使う。versionは独立image fieldとして認識できた場合だけ追加証拠にする
 - diagnostic open-text decode: private evaluationだけ。stable eventには出さない
 
+`CanonicalFrame`は全field recognizerが共有するRGB imageとする。titleやdigitsのROI抽出後に、
+field固有のversion固定preprocessorがgrayscale、contrast、resize、paddingおよびtensor normalizationを
+適用する。capture domainの補正は`DomainNormalizer`、OCR task固有の最適化はOCR preprocessorへ置き、
+trainingとRust runtimeで同一preprocessing contractを使用する。
+
 training corpusは次の二系統に分ける。
 
 - private real crop: 実game frameからtitle ROIだけを保存し、人間がcatalog IDと表示文字列を
@@ -212,8 +230,9 @@ training corpusは次の二系統に分ける。
   blur、noise、truncation、4K-to-FHD downscaleを変化させる。
 
 external catalog stringはinference lexiconだけに使い、training textへ自動投入しない。
-splitはtitle、session、capture profile単位とし、holdoutはtitle-disjointかつ可能な範囲で
-font/profile-disjointにする。
+通常のtrain、validation、holdoutはtitle、session、playをまたがせず、同じcapture profile内でも
+独立session/titleによるin-profile holdoutを持てるようにする。これと別に、学習からcapture profile
+全体を外したprofile-disjoint evaluation suiteを持ち、未知domainへの汎化を測る。
 
 最初のvertical spikeは同一cropについてPython/PaddleとRust/ORTのlogits、token order、
 catalog rankingが許容誤差内で一致することを証明する。PP-OCRv6 ONNX exportが安定しない場合は
@@ -223,25 +242,34 @@ PyTorch CRNN/SVTR-style CTC modelをONNX exportする。runtime Pythonへのfall
 次のtraining corpusへ追加する。未知glyph、domain shift、装飾fontはunknownのまま扱い、runtime
 thresholdを自動緩和しない。
 
+初回modelは利用可能な専用capture環境からofflineで作成できるが、その環境をpixel correctness
+referenceにはしない。普段のGamescope captureからunknown、low-margin、誤認識候補および代表的な
+正常例を追加し、人間がlabelした新しいimmutable corpus generationからnormalizerまたはrecognizerを
+tuningできる。新bundleは全supported profileの凍結holdoutを再実行し、既存profileを回帰させず、
+last-known-goodへrollback可能な場合だけ昇格する。model bundleはcanonical contract、capture profile、
+normalizer、layout、OCR preprocessor/model、profile別threshold、corpus generationおよびruntime digestを
+一体でbindingする。runtime self-label、online trainingおよび自動threshold緩和は禁止する。
+
 ## Capture selection
 
-### Correctness baseline
+### Support model
 
-Wayland ScreenCast Portal + PipeWireをpost-scale correctness referenceとする。portal pickerや
-compositor差を含むため、profileはBazzite image、desktop、portal backend、format、stride、
-colorimetry、Gamescope command/versionへbindingする。
+capture route間にpixel correctnessの序列を置かない。Portal、Gamescope directおよび条件を満たす
+OBS routeはpeer candidateであり、それぞれのopaque capture profile、normalizer artifact、layout、
+recognition thresholdおよびsemantic replay gateを独立に持つ。pipeline内部のlayerはruntime contractに
+含めないが、再現や診断に有用な環境情報はsecret-safeなprovenanceとして保持できる。
 
 ### Candidates
 
-- Gamescope direct PipeWire: 4K sourceを直接受けられる低copy候補。ただしcapture repaintは
-  normal outputと同一とは限らない。
-- OBS/vkcapture reuse: 配信と同じ4K post-scale sourceを共有できる場合だけ候補。game processの
-  native FHD sourceはpre-scaleなのでrejectする。標準Wayland Gamescopeにcapture可能なswapchainが
-  ない場合、forced SDL backendを含む別profile全体を比較する。
+- Wayland ScreenCast Portal + PipeWire: compositor-managed sourceを取得できるcandidate。
+- Gamescope direct PipeWire: output-sized streamを取得できる低copy candidate。ただしcapture repaintと
+  通常表示のpixel equalityは仮定しない。
+- OBS/vkcapture reuse: 実際のobserved contractを独立profileとして検証できる場合のcandidate。
 - OBS WebSocket PNG: source/geometry確認用diagnosticに限定し、production backendにしない。
 
-backendはBazzite gate後に一つをdefaultにする。session中の自動fallbackと異なるprofileのframe
-mixingは禁止する。候補がgateに失敗してもFHD、NV12、別color profileへ黙ってfallbackしない。
+backendは各profileのBazzite semantic/lifecycle/performance gate後にdefaultを選ぶ。session中の
+自動fallbackと異なるprofile/normalizerのframe mixingは禁止する。候補がgateに失敗してもFHD、
+NV12、別color profileへ黙ってfallbackしない。
 
 ## 実装順序
 
@@ -250,10 +278,13 @@ mixingは禁止する。候補がgateに失敗してもFHD、NV12、別color pro
    quarantine report、atomic local snapshotを実装する。
 3. **M1.2**: live source acquisition、manual/scheduled sync、activation orchestrationを
    実装する。M1.1だけでM1全体を完了扱いしない。
-4. **M2**: private corpus schema、layout measurement、synthetic renderer、label/replay CLIを実装する。
-5. **M3**: PP-OCR fine-tune/exportとPython-to-Rust parity spikeを通す。
-6. **M4**: Portal reference adapterを実装し、Bazziteでpost-scale canonical contractを確定する。
-7. **M5**: Gamescope directと条件付きOBS candidateをvertical spikeし、correctness/performanceを比較する。
+4. **M2**: opaque capture profileを持つprivate corpus schema、layout measurement、synthetic renderer、
+   label/replay CLIを実装する。
+5. **M3**: domain normalizerとOCR preprocessor contractを実装し、PP-OCR fine-tune/exportおよび
+   Python-to-Rust parity spikeを通す。
+6. **M4**: PortalとGamescope directのObservedFrame adapterを実装し、Bazziteで各profileの
+   canonicalizationとsemantic gateを確立する。
+7. **M5**: 条件付きOBS candidateを含むsupported profileのlifecycle/performanceを比較し、defaultを選ぶ。
 8. **M6**: screen、savable、play mode、difficulty/level、digits、title decoder、cross-field validationの順で
    field recognizerを追加する。
 9. **M7**: deterministic session、event schema、NDJSON daemonを実装する。
@@ -283,7 +314,9 @@ mixingは禁止する。候補がgateに失敗してもFHD、NV12、別color pro
 
 ### OCRとrecognition
 
-- title/session/profile-disjoint holdout
+- title/session/play-disjointのin-profile holdoutと、独立したprofile-disjoint evaluation
+- normalizerが同じobserved inputからbyte-identicalなcanonical outputを生成する
+- normalizer更新後も全supported profileでsemantic replay regressionがない
 - Python/PaddleとRust/ORTのlogits/ranking parity
 - trainingとcatalogからtitleを外してmodelを固定し、catalog recordだけ追加した後にheld-out real
   cropを認識するnew-song simulation
@@ -296,18 +329,18 @@ mixingは禁止する。候補がgateに失敗してもFHD、NV12、別color pro
 
 ### Bazzite capture
 
-Portal、Gamescope direct、条件を満たすOBS routeを各15分x3回と30分soakで比較する。
+Portal、Gamescope direct、条件を満たすOBS routeを各15分x3回と30分soakで独立に検証する。
 
-- canonical geometry/crop alignment: Portal比1 pixel以内
-- paired semantic recognition output: 一致
+- profile固有layoutに対するcanonical geometry/crop alignment: 許容範囲内
+- complete labelに対するsemantic recognition output: 一致
 - false accepted event: 0
 - p95 frame age: 150 ms以下
 - malformed frame、unbounded queue、FD/thread/RSS leak: 0
 - start/stop/reconnect: 100回
 
-Portal以外を採用するのは、CPU/GPU/powerの少なくとも一つが20%以上改善し、他指標が5%以上
-悪化せず、game p99 frametimeが+1 ms以内、OBS render/encode lagが悪化しない場合だけとする。
-該当候補がなければPortalをdefaultにする。
+全semantic/lifecycle gateを通ったprofileだけをsupportedとする。その中から、CPU/GPU/power、
+frame age、game p99 frametimeおよびOBS render/encode lagを比較してdefaultを選ぶ。pixel referenceとの
+近さを選択理由にせず、supported profileが一つもなければdefaultを設定しない。
 
 ## v1対象外
 

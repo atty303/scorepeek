@@ -7,16 +7,20 @@ sequence and release gates are authoritative in [the implementation plan](plan.j
 
 ```mermaid
 flowchart LR
-  P["Wayland Portal reference"] --> CA["Selected capture adapter"]
-  G["Gamescope direct candidate"] --> CA
-  O["Conditional post-scale OBS candidate"] --> CA
-  CA --> CF["CanonicalFrame\nRGB8 1920x1080"]
+  P["Wayland Portal profile"] --> CA["Selected capture adapter"]
+  G["Gamescope direct profile"] --> CA
+  O["Conditional OBS profile"] --> CA
+  CA --> OF["ObservedFrame\nopaque capture profile"]
+  OF --> DN["Versioned domain normalizer"]
+  DN --> CF["CanonicalFrame\nRGB8 1920x1080"]
   T["Tachi"] --> AD["Source adapters"]
   X["Textage"] --> AD
   D["INFINITAS roster signal"] --> AD
   AD --> FC["Federated catalog snapshot"]
   CF --> RE["Rust field recognizers"]
+  CF --> OP["Versioned OCR preprocessor"]
   OM["Pinned ONNX sequence model"] --> CTC["Catalog-constrained CTC decoder"]
+  OP --> OM
   RE --> CTC
   FC --> CTC
   CTC --> SS
@@ -31,16 +35,23 @@ flowchart LR
 
 ### Frame source
 
-Every backend produces an owned, contiguous `CanonicalFrame` containing RGB8
-pixels at exactly 1920x1080, a capture generation, sequence number, monotonic
-timing, and immutable capture/normalizer profile identifiers. The supported
-profile starts with a post-scale 3840x2160 SDR frame and applies one versioned
-2:1 normalization. Native FHD game capture does not satisfy this contract.
+Every backend produces an owned `ObservedFrame` containing its exact input
+contract, capture generation, sequence number, monotonic timing, and immutable
+opaque capture profile identifier. A versioned domain normalizer maps that
+profile to an owned, contiguous RGB8 `CanonicalFrame` at exactly 1920x1080.
+The canonical representation is a conceptual recognition boundary; it has no
+required native, Portal, Gamescope, or OBS pixel reference.
 
-Portal is the correctness reference. Gamescope direct PipeWire and a
-post-scale OBS path are candidates selected only by target-machine conformance
-and performance gates. Each candidate has a distinct profile and a running
-session never silently switches sources or mixes generations.
+The normalizer treats its capture pipeline as one domain and does not model
+Wine, Vulkan, Gamescope, compositor, PipeWire, or other layers separately.
+Deterministic geometry, color, and filtering are preferred. A learned residual
+adapter must be justified by measured recognition evidence, remain bounded and
+deterministic, and never act as a generative text restorer.
+
+Portal, Gamescope direct PipeWire, and an eligible OBS path are peer candidates
+selected by independent semantic, lifecycle, and target performance gates.
+Each candidate has a distinct capture profile and normalizer. A running session
+never silently switches profiles or mixes generations.
 
 ### Layout
 
@@ -89,6 +100,11 @@ TitleDecoder.score(logits, catalog, context) -> AcceptedTitle | Rejected
 RecognitionSession.process(snapshot) -> DomainEvent[]
 ```
 
+The canonical frame preserves RGB information shared by all field recognizers.
+After layout-bound ROI extraction, OCR-specific grayscale, contrast, resize,
+padding, and tensor normalization belong to a versioned OCR preprocessor bound
+to the model. Training and Rust inference use the same preprocessing contract.
+
 Fields are represented as `known`, `unknown(reason)`, or `not_applicable`.
 Title OCR emits CTC logits rather than an authoritative free-form string. The
 decoder scores exact catalog variants and requires an absolute bound, runner-up
@@ -102,6 +118,12 @@ Python is an offline training/export dependency only. The game-session runtime
 uses a pinned ONNX model in Rust and has no model or catalog network fallback.
 Real captures, training labels, source snapshots, generated catalogs, and model
 artifacts remain outside the repository.
+
+Human-labelled captures from any supported profile may extend an immutable
+corpus generation and produce a new normalizer or shared recognizer bundle.
+Promotion requires frozen in-profile and cross-profile replay without a
+regression; runtime self-labelling, online training, and automatic threshold
+relaxation are prohibited.
 
 The session output is deterministic for recorded inputs. UUIDv7 IDs and wall
 clock delivery timestamps belong to a daemon-owned transport envelope, not the
@@ -121,7 +143,7 @@ catalog-adapter, or capture internals.
 | --- | --- |
 | External source bytes | Each Bazzite host's private cache |
 | Catalog identity, federation, and activation | scorepeek catalog core |
-| Layout, capture normalization, and thresholds | Versioned scorepeek profiles |
+| Capture normalization, layout, OCR preprocessing, and thresholds | Versioned scorepeek model bundles |
 | OCR training corpus and model artifacts | External private store |
 | Recognition and temporal semantics | scorepeek Rust core |
 | Public event compatibility | scorepeek schema version |

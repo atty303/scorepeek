@@ -38,10 +38,10 @@
 - Make invalid states unrepresentable where practical. Recognition must fail
   closed: never guess a field, relax a threshold automatically, or silently
   switch capture profiles.
-- Treat Wayland Portal as the post-scale correctness reference. Gamescope
-  direct PipeWire and a proven post-scale OBS source are target-machine
-  candidates with separate capture profile IDs and release gates. A native FHD
-  game source is pre-scale and cannot satisfy the canonical capture contract.
+- Treat Portal, Gamescope direct PipeWire, and an eligible OBS route as opaque
+  peer capture profiles; no observable route is a pixel correctness reference.
+  Each profile requires its own versioned domain normalizer and independent
+  semantic, lifecycle, and performance gates before support.
 - Keep canonical recognition input fixed at contiguous RGB8 1920x1080 unless a
   new versioned frame contract is approved.
 - Do not import upstream Python modules or read upstream resource formats.

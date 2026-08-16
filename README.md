@@ -21,8 +21,9 @@ capture or recognition service.
 The first implementation milestone is:
 
 ```text
-post-scale PipeWire frame
-  -> canonical RGB8 1920x1080 frame
+opaque capture-profile frame
+  -> versioned domain normalizer
+  -> conceptual canonical RGB8 1920x1080 frame
   -> scorepeek-owned field recognizers
   -> CTC title logits scored against a federated IIDX catalog
   -> fail-closed Unix-socket NDJSON events
@@ -41,8 +42,9 @@ offline OCR training and ONNX export.
   training text.
 - Keep real captures and labels, raw source snapshots, generated catalogs,
   models, player data, and credentials outside the repository.
-- Compare Wayland Portal, Gamescope direct PipeWire, and a conditional
-  post-scale OBS path on the target Bazzite machine before selecting a backend.
+- Validate Wayland Portal, Gamescope direct PipeWire, and a conditional OBS
+  profile independently on the target Bazzite machine before selecting a
+  default; none is a pixel correctness reference.
 - Keep UI, score persistence, and external-service integration outside v1.
 
 See [the current committed checkpoint](STATUS.md),
@@ -108,6 +110,12 @@ split isolation. It emits only opaque IDs, hashes, roles, and aggregate counts.
 See [the private corpus contract](docs/private-corpus.md). Media extraction and
 training/export remain later offline stages and will not become game-session
 runtime dependencies.
+
+The implemented v1 corpus profile split predates the current opaque-profile
+normalization decision. Do not ingest real media under that profile schema;
+M2 will replace it before episode generation, label authoring, or training
+continues. Its current commands and synthetic tests remain the verified
+checkpoint for storage, canonical metadata, and replay-safety behavior.
 
 `scorepeek catalog sync` is the scheduling interface. A user may keep recurring
 execution disabled and run it manually, or select any scheduler that preserves

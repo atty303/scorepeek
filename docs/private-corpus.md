@@ -5,6 +5,15 @@ offline corpus tooling, the future training/export pipeline, and the scorepeek
 game-session core. Real media, extracted frames, complete labels, and replay
 indexes remain outside the repository.
 
+> **Implementation checkpoint:** the profile and split contract documented
+> below is implemented and synthetically verified, but its Windows
+> semantic-reference/Linux capture-calibration split is superseded by
+> [ADR 0008](decisions/0008-normalize-opaque-capture-domains.md). Do not ingest
+> real media under this schema. The next M2 change will replace it with opaque
+> capture profiles, versioned domain normalizers, in-profile holdout, and a
+> separate profile-disjoint evaluation suite while preserving the verified
+> private-store and replay-safety properties.
+
 ## Ownership boundary
 
 - `scorepeek` is the Rust game-session core. It does not depend on corpus or
