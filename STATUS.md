@@ -259,10 +259,12 @@ is outside this checkpoint.
 ## Next executable task
 
 Continue **M2** by running the pinned probe/extractor and scorepeek-owned layout
-measurement against the private Windows-VM reference-video dataset, then turn
-the reviewed measurement evidence into a versioned layout profile and replay
-plan. Do not commit real media, extracted frames, or measurements. After that,
-expand the procedural renderer only as far as independently authored or
+measurement against available private capture data bound to an explicit opaque
+capture-profile, normalizer-artifact, and layout-profile tuple, then turn the
+reviewed measurement evidence into a versioned layout profile and replay plan.
+Each source is evidence for its bound profile rather than a shared pixel
+target. Do not commit real media, extracted frames, or measurements. After
+that, expand the procedural renderer only as far as independently authored or
 explicitly redistributable glyph/style inputs permit. Preserve the verified
 private-store, canonical metadata, complete-label authoring, replay-ordering,
 episode contiguity, and grouped split safety properties.
