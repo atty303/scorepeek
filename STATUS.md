@@ -111,6 +111,11 @@ is outside this checkpoint.
   screen-class bindings, and fails closed at 64 KiB per label, 250,000 labels,
   and 4 GiB total. Existing managed-component symlinks are rejected before an
   ingest or generation operation mutates the store.
+- Private complete-label authoring that validates strict typed and cross-field
+  semantics before publishing canonical SHA-256-addressed documents under the
+  shared writer lock. Publication is idempotent, private, capacity-bounded,
+  recovers only owned staging entries, fsyncs its durability boundary, and
+  emits no labelled field values.
 
 ## Verified in this checkpoint
 
@@ -118,10 +123,11 @@ is outside this checkpoint.
   and binary tests and repository checks.
 - `mise run catalog:schedule:systemd:verify`: passed without installing the
   release binary or user units.
-- `cargo test --locked -p scorepeek-corpus`: passed all seventeen synthetic
+- `cargo test --locked -p scorepeek-corpus`: passed all eighteen synthetic
   corpus tests, including idempotent private ingest, fixture-ID conflict
   rejection, canonical source/complete-label binding, pre-mutation symlink
-  rejection, label cross-field and unreferenced-object rejection, decode
+  rejection, canonical/private/idempotent complete-label authoring with owned
+  staging recovery, label cross-field and unreferenced-object rejection, decode
   ordering, same-index/cross-index grouped split isolation, and distinct
   in-profile/profile-disjoint evaluation behavior.
 - The tests use synthetic, independently created fixture data only.
@@ -172,7 +178,7 @@ is outside this checkpoint.
 
 ## Unverified and target-only boundaries
 
-- Real media ingest/extraction, private label authoring, episode generation,
+- Real media ingest/extraction, episode generation,
   synthetic rendering, replay execution, layout measurement, catalog-update recognition
   replay, OCR model, capture backend, field recognizer, event daemon, and the
   integrated live flow remain unvalidated.
@@ -204,10 +210,10 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Continue **M2** with deterministic episode/index generation, private label
-authoring, and the independently redistributable synthetic renderer while
-preserving the verified private-store, canonical metadata, complete-label,
-replay-ordering, and grouped split safety properties. Before adding media
+Continue **M2** with deterministic episode/index generation and the
+independently redistributable synthetic renderer while preserving the verified
+private-store, canonical metadata, complete-label authoring, replay-ordering,
+and grouped split safety properties. Before adding media
 extraction or a learned normalizer, present the proposed tool or dependency with
 its pinned version, license, alternatives, and host impact for approval.
 Catalog-update recognition replay remains part of M8 because it depends on the

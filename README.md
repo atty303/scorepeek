@@ -14,7 +14,8 @@ quarantine results, durable content-addressed local snapshots, and bounded live
 Tachi, Textage, and dqn/iidxapi acquisition through `scorepeek catalog sync`.
 It also contains an opt-in daily systemd user schedule for that same command.
 The offline-only `scorepeek-corpus` tool now owns the first private-corpus
-contract, bounded content-addressed source ingest, and replay-index validation.
+contract, bounded content-addressed source ingest, canonical complete-label
+authoring, and replay-index validation.
 It does **not** yet contain media extraction, a training pipeline, or a runnable
 capture or recognition service.
 
@@ -66,6 +67,7 @@ mise run doctor
 mise run catalog:sync
 mise run corpus:ingest -- --store /absolute/private/store /absolute/source.media /absolute/request.json
 mise run corpus:generation:seal -- --store /absolute/private/store generation-001
+mise run corpus:label:author -- --store /absolute/private/store /absolute/complete-label.json
 mise run corpus:replay:validate -- --store /absolute/private/store /absolute/replay-suite.json
 mise run catalog:schedule:systemd:verify
 ```
@@ -102,16 +104,16 @@ explicit absolute private-store root and copies immutable source media into a
 bounded SHA-256-addressed store with private permissions. Before assigning
 splits, generation sealing records every current fixture binding in one
 immutable content-addressed generation. Replay-suite validation reads that
-generation plus the canonical source manifests and media from the store,
-requires complete generation coverage, and checks source PTS plus decode
-ordering, opaque fixture and episode IDs, capture-profile/normalizer/layout
+generation plus canonical complete-label documents, source manifests, and media
+from the store. It requires complete generation coverage and checks source PTS
+plus decode ordering, opaque fixture and episode IDs, capture-profile/normalizer/layout
 bindings, extractor/annotation/frame hashes, and corpus-wide session/play/title
 grouped split isolation. Each suite selects either in-profile evaluation or the
 stricter profile-disjoint evaluation. It emits only opaque IDs, hashes, the
 selected split contract, and aggregate counts. See
-[the private corpus contract](docs/private-corpus.md). Media extraction and
-training/export remain later offline stages and will not become game-session
-runtime dependencies.
+[the private corpus contract](docs/private-corpus.md). Media extraction,
+episode/index generation, synthetic rendering, and training/export remain later
+offline stages and will not become game-session runtime dependencies.
 
 `scorepeek catalog sync` is the scheduling interface. A user may keep recurring
 execution disabled and run it manually, or select any scheduler that preserves

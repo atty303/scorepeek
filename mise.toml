@@ -70,6 +70,14 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek-corpus -- generation seal "$@"
 '''
 
+[tasks."corpus:label:author"]
+description = "Validate and publish one canonical private complete-label document"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- label author "$@"
+'''
+
 [tasks."corpus:replay:validate"]
 description = "Validate private corpus replay metadata"
 run = '''

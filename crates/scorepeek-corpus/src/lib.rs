@@ -20,6 +20,7 @@ const REPLAY_INDEX_SCHEMA: &str = "scorepeek-private-corpus-replay-v1";
 const REPLAY_SUITE_SCHEMA: &str = "scorepeek-private-corpus-replay-suite-v1";
 const REPLAY_SUITE_SUMMARY_SCHEMA: &str = "scorepeek-private-corpus-replay-suite-summary-v1";
 const COMPLETE_LABEL_SCHEMA: &str = "scorepeek-private-complete-label-v1";
+const COMPLETE_LABEL_SUMMARY_SCHEMA: &str = "scorepeek-private-complete-label-summary-v1";
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 const MAX_SOURCE_OBJECTS: usize = 1_024;
@@ -38,6 +39,7 @@ const SOURCE_FILE: &str = "source.media";
 const SOURCE_STAGING_PREFIX: &str = ".corpus-source-staging-";
 const MANIFEST_STAGING_PREFIX: &str = ".corpus-manifest-staging-";
 const GENERATION_STAGING_PREFIX: &str = ".corpus-generation-staging-";
+const LABEL_STAGING_PREFIX: &str = ".corpus-label-staging-";
 
 #[derive(Debug)]
 pub enum CorpusError {
@@ -440,6 +442,74 @@ impl CorpusStore {
             generation_id: generation.generation_id,
             corpus_generation_sha256: digest,
             source_count: generation.sources.len() as u64,
+        })
+    }
+
+    /// Validates and durably publishes one canonical complete-label document in the private
+    /// content-addressed label store.
+    ///
+    /// The returned summary contains only opaque identifiers, a non-personal shape class, and
+    /// content evidence. Complete field values are never returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the label is malformed, the private store is unavailable or damaged,
+    /// the label capacity is exhausted, or durable publication fails.
+    pub fn author_complete_label(
+        &self,
+        label_path: impl AsRef<Path>,
+    ) -> Result<CompleteLabelSummary, CorpusError> {
+        self.validate_root()?;
+        let input =
+            read_bounded_regular(label_path.as_ref(), MAX_LABEL_BYTES, ErrorContext::Replay)?;
+        let label: CompleteLabel = serde_json::from_slice(&input)?;
+        label.validate_contents()?;
+        let bytes = canonical_json(&label)?;
+        if bytes.len() > MAX_LABEL_BYTES {
+            return Err(CorpusError::CapacityExceeded);
+        }
+        let (frame_id, annotation_revision, shape) = label.summary_fields();
+
+        preflight_managed_components(&self.root)?;
+        validate_private_directory_mode(&self.root, ErrorContext::Replay)?;
+        let label_dir = self.root.join("labels");
+        validate_private_directory_mode(&label_dir, ErrorContext::Replay)?;
+        let lock = open_store_lock(&self.root, false)?;
+        lock.lock()?;
+        preflight_managed_components(&self.root)?;
+        validate_private_directory_mode(&label_dir, ErrorContext::Replay)?;
+        recover_label_staging(&label_dir)?;
+        validate_label_store(&label_dir)?;
+
+        let digest = digest_bytes(&bytes);
+        let destination = label_dir.join(format!("{digest}.json"));
+        match destination.symlink_metadata() {
+            Ok(_) => {
+                if read_bounded_regular(&destination, MAX_LABEL_BYTES, ErrorContext::Replay)?
+                    != bytes
+                {
+                    return Err(CorpusError::InvalidReplay(
+                        "complete-label digest is bound to different bytes".to_owned(),
+                    ));
+                }
+                fs::set_permissions(&destination, fs::Permissions::from_mode(0o600))?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                ensure_label_capacity(&label_dir, bytes.len())?;
+                write_atomic_file(&label_dir, &destination, &bytes, LABEL_STAGING_PREFIX)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        sync_file_and_parent(&destination, &label_dir)?;
+        drop(lock);
+
+        Ok(CompleteLabelSummary {
+            schema: COMPLETE_LABEL_SUMMARY_SCHEMA.to_owned(),
+            frame_id: frame_id.to_owned(),
+            annotation_revision: annotation_revision.to_owned(),
+            shape,
+            labels_sha256: digest,
+            label_bytes: bytes.len() as u64,
         })
     }
 
@@ -936,6 +1006,24 @@ pub enum CompleteLabel {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LabelShape {
+    Result,
+    MusicSelect,
+    NonRecognition,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CompleteLabelSummary {
+    pub schema: String,
+    pub frame_id: String,
+    pub annotation_revision: String,
+    pub shape: LabelShape,
+    pub labels_sha256: String,
+    pub label_bytes: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NonRecognitionClass {
@@ -945,6 +1033,26 @@ pub enum NonRecognitionClass {
 }
 
 impl CompleteLabel {
+    fn summary_fields(&self) -> (&str, &str, LabelShape) {
+        match self {
+            Self::Result {
+                frame_id,
+                annotation_revision,
+                ..
+            } => (frame_id, annotation_revision, LabelShape::Result),
+            Self::MusicSelect {
+                frame_id,
+                annotation_revision,
+                ..
+            } => (frame_id, annotation_revision, LabelShape::MusicSelect),
+            Self::NonRecognition {
+                frame_id,
+                annotation_revision,
+                ..
+            } => (frame_id, annotation_revision, LabelShape::NonRecognition),
+        }
+    }
+
     fn validate_contents(&self) -> Result<(), CorpusError> {
         let (schema, frame_id, annotation_revision) = match self {
             Self::Result {
@@ -1372,6 +1480,26 @@ fn ensure_generation_capacity(
     Ok(())
 }
 
+fn ensure_label_capacity(label_dir: &Path, added_bytes: usize) -> Result<(), CorpusError> {
+    let mut count = 0_usize;
+    let mut total = 0_u64;
+    for entry in fs::read_dir(label_dir)? {
+        let entry = entry?;
+        count = count.checked_add(1).ok_or(CorpusError::CapacityExceeded)?;
+        total = total
+            .checked_add(entry.path().symlink_metadata()?.len())
+            .ok_or(CorpusError::CapacityExceeded)?;
+    }
+    if count >= MAX_LABEL_OBJECTS
+        || total
+            .checked_add(added_bytes as u64)
+            .is_none_or(|value| value > MAX_LABEL_STORAGE_BYTES)
+    {
+        return Err(CorpusError::CapacityExceeded);
+    }
+    Ok(())
+}
+
 fn validate_stored_source(directory: &Path, expected: &ContentRef) -> Result<(), CorpusError> {
     if !directory.symlink_metadata()?.is_dir() {
         return Err(CorpusError::InvalidRequest(
@@ -1514,6 +1642,31 @@ fn recover_generation_staging(generation_dir: &Path) -> Result<(), CorpusError> 
     }
     if changed {
         File::open(generation_dir)?.sync_all()?;
+    }
+    Ok(())
+}
+
+fn recover_label_staging(label_dir: &Path) -> Result<(), CorpusError> {
+    let mut changed = false;
+    for entry in fs::read_dir(label_dir)? {
+        let entry = entry?;
+        let is_staging = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(LABEL_STAGING_PREFIX));
+        if !is_staging {
+            continue;
+        }
+        if !entry.path().symlink_metadata()?.is_file() {
+            return Err(CorpusError::InvalidReplay(
+                "complete-label staging entry is not a file".to_owned(),
+            ));
+        }
+        fs::remove_file(entry.path())?;
+        changed = true;
+    }
+    if changed {
+        File::open(label_dir)?.sync_all()?;
     }
     Ok(())
 }
@@ -1955,7 +2108,10 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    use super::{CorpusError, CorpusSplit, CorpusStore, SourceManifest, digest_bytes};
+    use super::{
+        CorpusError, CorpusSplit, CorpusStore, LABEL_STAGING_PREFIX, LabelShape, SourceManifest,
+        digest_bytes,
+    };
 
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -2311,7 +2467,7 @@ mod tests {
         let frame_id = index["frames"][0]["frame_id"].as_str().unwrap();
         let wrong_shape = write_label(
             &root,
-            json!({
+            &json!({
                 "shape": "music_select",
                 "schema": "scorepeek-private-complete-label-v1",
                 "frame_id": frame_id,
@@ -2364,7 +2520,7 @@ mod tests {
             "notes": { "state": "known", "value": 1000 },
             "current_score": { "state": "known", "value": 3000 }
         });
-        let inconsistent = write_label(&root, label.clone());
+        let inconsistent = write_unchecked_label(&root, label.clone());
         index["frames"][0]["labels_sha256"] = json!(inconsistent);
         let suite_value =
             replay_suite_value(&generation.corpus_generation_sha256, &[index.clone()]);
@@ -2376,7 +2532,7 @@ mod tests {
 
         fs::remove_file(root.join("labels").join(format!("{inconsistent}.json"))).unwrap();
         label["play_type"]["value"] = json!("single");
-        let excessive_score = write_label(&root, label);
+        let excessive_score = write_unchecked_label(&root, label);
         index["frames"][0]["labels_sha256"] = json!(excessive_score);
         let suite_value = replay_suite_value(&generation.corpus_generation_sha256, &[index]);
         fs::write(&suite, serde_json::to_vec(&suite_value).unwrap()).unwrap();
@@ -2409,6 +2565,72 @@ mod tests {
 
         let error = store.validate_replay_suite(&suite).unwrap_err();
         assert!(error.to_string().contains("digest does not match"));
+    }
+
+    #[test]
+    fn complete_label_authoring_is_canonical_private_and_idempotent() {
+        let temporary = tempdir().unwrap();
+        let root = temporary.path().join("private-corpus");
+        let store = CorpusStore::new(&root);
+        ingest_fixture(
+            temporary.path(),
+            &store,
+            "fixture-001",
+            "session-001",
+            "capture-profile-a",
+            b"synthetic replay source",
+        );
+        let request = temporary.path().join("complete-label.json");
+        fs::write(
+            &request,
+            serde_json::to_vec_pretty(&json!({
+                "shape": "result",
+                "schema": "scorepeek-private-complete-label-v1",
+                "frame_id": "fixture-001-frame-001",
+                "annotation_revision": "labels-v1",
+                "screen_state": { "state": "known", "value": true },
+                "savable": { "state": "known", "value": true },
+                "playside": { "state": "known", "value": "one_player" },
+                "play_mode": { "state": "known", "value": "single_play" },
+                "play_type": { "state": "known", "value": "single" },
+                "song_id": { "state": "known", "value": "private-song-001" },
+                "difficulty": { "state": "known", "value": "another" },
+                "level": { "state": "known", "value": 12 },
+                "notes": { "state": "known", "value": 1000 },
+                "current_score": { "state": "known", "value": 1800 }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let first = store.author_complete_label(&request).unwrap();
+        let interrupted = root
+            .join("labels")
+            .join(format!("{LABEL_STAGING_PREFIX}interrupted"));
+        fs::write(&interrupted, b"partial").unwrap();
+        fs::set_permissions(&interrupted, fs::Permissions::from_mode(0o600)).unwrap();
+        let second = store.author_complete_label(&request).unwrap();
+
+        assert_eq!(first, second);
+        assert!(!interrupted.exists());
+        assert_eq!(first.schema, "scorepeek-private-complete-label-summary-v1");
+        assert_eq!(first.frame_id, "fixture-001-frame-001");
+        assert_eq!(first.annotation_revision, "labels-v1");
+        assert_eq!(first.shape, LabelShape::Result);
+        let stored = root
+            .join("labels")
+            .join(format!("{}.json", first.labels_sha256));
+        assert_eq!(
+            stored.metadata().unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let stored_bytes = fs::read(&stored).unwrap();
+        assert_eq!(stored_bytes.len() as u64, first.label_bytes);
+        assert!(stored_bytes.ends_with(b"\n"));
+        assert_eq!(digest_bytes(&stored_bytes), first.labels_sha256);
+        let summary_json = serde_json::to_string(&first).unwrap();
+        assert!(!summary_json.contains("private-song-001"));
+        assert_eq!(fs::read_dir(root.join("labels")).unwrap().count(), 1);
     }
 
     #[test]
@@ -2653,7 +2875,7 @@ mod tests {
             };
         let first_label = write_label(
             root,
-            json!({
+            &json!({
                 "shape": "result",
                 "schema": "scorepeek-private-complete-label-v1",
                 "frame_id": first_frame,
@@ -2672,7 +2894,7 @@ mod tests {
         );
         let second_label = write_label(
             root,
-            json!({
+            &json!({
                 "shape": "non_recognition",
                 "schema": "scorepeek-private-complete-label-v1",
                 "frame_id": second_frame,
@@ -2731,7 +2953,17 @@ mod tests {
         })
     }
 
-    fn write_label(root: &std::path::Path, value: serde_json::Value) -> String {
+    fn write_label(root: &std::path::Path, value: &serde_json::Value) -> String {
+        let temporary = tempdir().unwrap();
+        let path = temporary.path().join("complete-label.json");
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        CorpusStore::new(root)
+            .author_complete_label(path)
+            .unwrap()
+            .labels_sha256
+    }
+
+    fn write_unchecked_label(root: &std::path::Path, value: serde_json::Value) -> String {
         let label: super::CompleteLabel = serde_json::from_value(value).unwrap();
         let bytes = super::canonical_json(&label).unwrap();
         let digest = digest_bytes(&bytes);

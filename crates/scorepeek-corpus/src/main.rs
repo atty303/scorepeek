@@ -45,6 +45,19 @@ fn run(args: &[OsString]) -> Result<(), String> {
             );
             Ok(())
         }
+        [label, author, store, root, document]
+            if label == "label" && author == "author" && store == "--store" =>
+        {
+            let summary = CorpusStore::new(PathBuf::from(root))
+                .author_complete_label(PathBuf::from(document))
+                .map_err(|error| format!("scorepeek-corpus label author failed: {error}"))?;
+            println!(
+                "{}",
+                serde_json::to_string(&summary)
+                    .map_err(|error| format!("complete-label summary encoding failed: {error}"))?
+            );
+            Ok(())
+        }
         [generation, seal, store, root, generation_id]
             if generation == "generation" && seal == "seal" && store == "--store" =>
         {
@@ -67,7 +80,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "usage: scorepeek-corpus <ingest --store ROOT SOURCE REQUEST|generation seal --store ROOT GENERATION_ID|replay validate --store ROOT SUITE>"
+            "usage: scorepeek-corpus <ingest --store ROOT SOURCE REQUEST|generation seal --store ROOT GENERATION_ID|label author --store ROOT DOCUMENT|replay validate --store ROOT SUITE>"
                 .to_owned(),
         ),
     }
@@ -75,7 +88,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
 
 fn print_usage() {
     println!(
-        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus ingest --store ROOT SOURCE REQUEST\n  scorepeek-corpus generation seal --store ROOT GENERATION_ID\n  scorepeek-corpus replay validate --store ROOT SUITE",
+        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus ingest --store ROOT SOURCE REQUEST\n  scorepeek-corpus generation seal --store ROOT GENERATION_ID\n  scorepeek-corpus label author --store ROOT DOCUMENT\n  scorepeek-corpus replay validate --store ROOT SUITE",
         env!("CARGO_PKG_VERSION")
     );
 }

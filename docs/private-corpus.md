@@ -95,6 +95,27 @@ receive a corpus-wide validation summary. Existing identical generations remain
 usable at the generation-store limit of 128 files, 256 KiB each, and 32 MiB
 total; a new generation fails without changing older generations.
 
+## Complete-label authoring
+
+Author one complete-label document through the private store instead of writing
+directly into `labels/`:
+
+```text
+mise run corpus:label:author -- --store /absolute/private/store /absolute/complete-label.json
+```
+
+The command bounded-reads and strictly validates the selected result,
+music-select, or non-recognition shape, normalizes it to canonical JSON, and
+publishes it as `labels/<sha256>.json` under the existing corpus writer lock.
+Publication is idempotent, uses mode `0600`, recovers only scorepeek-owned label
+staging entries, enforces the existing 250,000-document/4 GiB label-store
+bounds, and fsyncs the object and parent directory before success. Its
+`scorepeek-private-complete-label-summary-v1` output contains only the opaque
+frame ID, annotation revision, non-personal shape class, canonical byte count,
+and label digest; it never returns labelled field values. Intrinsic validation
+happens at authoring time. Exact frame, annotation, and screen-class binding is
+checked again when a replay suite refers to the digest.
+
 ## Replay metadata
 
 `scorepeek-private-corpus-replay-suite-v1` is the corpus-wide validation unit.
@@ -162,7 +183,7 @@ paths, media, complete labels, recognized values, or personal data.
 ## Not yet implemented
 
 - media probing and PTS/decode-order frame extraction;
-- deterministic episode/index generation and label authoring workflow;
+- deterministic episode/index generation;
 - independently redistributable synthetic rendering;
 - replay execution against recognition code;
 - Python training, evaluation, ONNX export, and Rust parity gates.
