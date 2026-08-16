@@ -6,14 +6,11 @@ use std::{os::unix::ffi::OsStrExt as _, os::unix::ffi::OsStringExt as _};
 
 use super::*;
 
-const PROBE_SCHEMA: &str = "scorepeek-private-media-probe-v1";
-const PROBE_SUMMARY_SCHEMA: &str = "scorepeek-private-media-probe-summary-v1";
-const EXTRACT_REQUEST_SCHEMA: &str = "scorepeek-private-frame-extraction-v1";
-const EXTRACT_SCHEMA: &str = "scorepeek-private-frame-extraction-manifest-v1";
-const EXTRACT_SUMMARY_SCHEMA: &str = "scorepeek-private-frame-extraction-summary-v1";
-const LAYOUT_REQUEST_SCHEMA: &str = "scorepeek-private-layout-measurement-v1";
-const LAYOUT_SCHEMA: &str = "scorepeek-private-layout-measurement-manifest-v1";
-const LAYOUT_SUMMARY_SCHEMA: &str = "scorepeek-private-layout-measurement-summary-v1";
+const PROBE_SCHEMA: &str = "scorepeek-private-media-probe-v2";
+const PROBE_SUMMARY_SCHEMA: &str = "scorepeek-private-media-probe-summary-v2";
+const EXTRACT_REQUEST_SCHEMA: &str = "scorepeek-private-observed-frame-extraction-v2";
+const EXTRACT_SCHEMA: &str = "scorepeek-private-observed-frame-extraction-manifest-v2";
+const EXTRACT_SUMMARY_SCHEMA: &str = "scorepeek-private-observed-frame-extraction-summary-v2";
 const FFMPEG_VERSION: &str = "8.1.2";
 const MAX_MEDIA_JSON: usize = 64 * 1024 * 1024;
 const MAX_STDOUT: usize = 128 * 1024 * 1024;
@@ -26,12 +23,12 @@ const TOOL_TIMEOUT: Duration = Duration::from_mins(10);
 const EXTRACT_STAGING_PREFIX: &str = ".scorepeek-frame-staging-";
 const OUTPUT_STAGING_PREFIX: &str = ".scorepeek-private-output-";
 const FILE_CLAIM_PREFIX: &str = ".scorepeek-file-claim-";
-const FILE_CLAIM_MARKER_BYTES: &[u8] = b"scorepeek-private-file-claim-v1\n";
+const FILE_CLAIM_MARKER_BYTES: &[u8] = b"scorepeek-private-file-claim-v2\n";
 const OUTPUT_LOCK_FILE: &str = ".scorepeek-private-output.lock";
-const INCOMPLETE_MARKER: &str = ".scorepeek-incomplete-v1";
-const INCOMPLETE_MARKER_BYTES: &[u8] = b"scorepeek-private-frame-extraction-v1\n";
-const STAGING_MARKER: &str = ".scorepeek-staging-owner-v1";
-const STAGING_MARKER_BYTES: &[u8] = b"scorepeek-private-frame-staging-v1\n";
+const INCOMPLETE_MARKER: &str = ".scorepeek-incomplete-v2";
+const INCOMPLETE_MARKER_BYTES: &[u8] = b"scorepeek-private-observed-frame-extraction-v2\n";
+const STAGING_MARKER: &str = ".scorepeek-staging-owner-v2";
+const STAGING_MARKER_BYTES: &[u8] = b"scorepeek-private-observed-frame-staging-v2\n";
 const INPUT_FORMAT: &str = "matroska";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -49,7 +46,7 @@ struct MediaProbeManifest {
     fixture_id: String,
     source_manifest_sha256: String,
     source: ContentRef,
-    profile: CaptureProfileBinding,
+    capture_profile_id: String,
     toolchain: ToolchainIdentity,
     input_format: String,
     width: u32,
@@ -101,7 +98,7 @@ struct FrameExtractionManifest {
     fixture_id: String,
     source_manifest_sha256: String,
     media_probe_sha256: String,
-    profile: CaptureProfileBinding,
+    capture_profile_id: String,
     extractor: ExtractorIdentity,
     input_format: String,
     source_time_base: TimeBase,
@@ -130,74 +127,6 @@ pub struct FrameExtractionSummary {
     pub frame_extraction_sha256: String,
     pub frame_count: u64,
     pub extracted_bytes: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LayoutRequest {
-    schema: String,
-    extraction_manifest_sha256: String,
-    layout_profile_id: String,
-    fields: Vec<FieldMeasurements>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FieldMeasurements {
-    field_id: String,
-    field_type: String,
-    presence_predicate: String,
-    samples: Vec<MeasuredSample>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct MeasuredSample {
-    frame_id: String,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct LayoutManifest {
-    schema: String,
-    extraction_manifest_sha256: String,
-    fixture_id: String,
-    layout_profile_id: String,
-    canonical_width: u32,
-    canonical_height: u32,
-    fields: Vec<MeasuredField>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct MeasuredField {
-    field_id: String,
-    field_type: String,
-    presence_predicate: String,
-    roi: Rectangle,
-    maximum_alignment_deviation: Rectangle,
-    sample_count: u64,
-    samples: Vec<MeasuredSample>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-struct Rectangle {
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct LayoutMeasurementSummary {
-    pub schema: String,
-    pub fixture_id: String,
-    pub layout_profile_id: String,
-    pub layout_measurement_sha256: String,
-    pub field_count: u64,
-    pub sample_count: u64,
 }
 
 #[derive(Deserialize)]
@@ -310,7 +239,7 @@ impl CorpusStore {
             fixture_id: fixture_id.to_owned(),
             source_manifest_sha256,
             source: source_manifest.source,
-            profile: source_manifest.profile,
+            capture_profile_id: source_manifest.capture_profile_id,
             toolchain,
             input_format: INPUT_FORMAT.to_owned(),
             width,
@@ -365,7 +294,7 @@ impl CorpusStore {
             fixture_id: request.fixture_id,
             source_manifest_sha256: request.source_manifest_sha256,
             media_probe_sha256: probe_digest.clone(),
-            profile: probe.profile,
+            capture_profile_id: probe.capture_profile_id,
             extractor: ExtractorIdentity {
                 tool_id: "ffmpeg".to_owned(),
                 tool_version: FFMPEG_VERSION.to_owned(),
@@ -401,65 +330,6 @@ impl CorpusStore {
     }
 }
 
-/// Derives a deterministic layout artifact from human-authored private frame measurements.
-///
-/// # Errors
-/// Returns an error when the extraction evidence, canonical dimensions, samples, or output fails
-/// validation.
-pub fn measure_layout(
-    extraction_directory: impl AsRef<Path>,
-    request_path: impl AsRef<Path>,
-    output_path: impl AsRef<Path>,
-) -> Result<LayoutMeasurementSummary, CorpusError> {
-    let directory = extraction_directory.as_ref();
-    validate_private_directory_mode(directory, ErrorContext::Replay)?;
-    validate_layout_output_location(directory, output_path.as_ref())?;
-    let manifest_path = directory.join("manifest.json");
-    validate_private_file_mode(&manifest_path, ErrorContext::Replay)?;
-    let bytes = read_bounded_regular(&manifest_path, MAX_MEDIA_JSON, ErrorContext::Replay)?;
-    let extraction: FrameExtractionManifest = serde_json::from_slice(&bytes)?;
-    extraction.validate()?;
-    if canonical_json(&extraction)? != bytes {
-        return Err(invalid_media("extraction manifest is not canonical"));
-    }
-    validate_extracted_files(directory, &extraction)?;
-    if extraction.width != 1920 || extraction.height != 1080 {
-        return Err(invalid_media(
-            "layout measurement requires canonical RGB8 1920x1080 extraction",
-        ));
-    }
-    let extraction_digest = digest_bytes(&bytes);
-    let request_bytes =
-        read_bounded_regular(request_path.as_ref(), MAX_MEDIA_JSON, ErrorContext::Replay)?;
-    let request: LayoutRequest = serde_json::from_slice(&request_bytes)?;
-    request.validate(&extraction, &extraction_digest)?;
-    let fields = request
-        .fields
-        .into_iter()
-        .map(measure_field)
-        .collect::<Vec<_>>();
-    let manifest = LayoutManifest {
-        schema: LAYOUT_SCHEMA.to_owned(),
-        extraction_manifest_sha256: extraction_digest,
-        fixture_id: extraction.fixture_id.clone(),
-        layout_profile_id: request.layout_profile_id.clone(),
-        canonical_width: 1920,
-        canonical_height: 1080,
-        fields,
-    };
-    let bytes = canonical_json(&manifest)?;
-    let digest = digest_bytes(&bytes);
-    write_private_output(output_path.as_ref(), &bytes)?;
-    Ok(LayoutMeasurementSummary {
-        schema: LAYOUT_SUMMARY_SCHEMA.to_owned(),
-        fixture_id: extraction.fixture_id,
-        layout_profile_id: request.layout_profile_id,
-        layout_measurement_sha256: digest,
-        field_count: manifest.fields.len() as u64,
-        sample_count: manifest.fields.iter().map(|field| field.sample_count).sum(),
-    })
-}
-
 impl MediaProbeManifest {
     fn validate(&self) -> Result<(), CorpusError> {
         if self.schema != PROBE_SCHEMA {
@@ -472,7 +342,11 @@ impl MediaProbeManifest {
             ErrorContext::Replay,
         )?;
         self.source.validate(ErrorContext::Replay)?;
-        self.profile.validate(ErrorContext::Replay)?;
+        validate_token(
+            &self.capture_profile_id,
+            "capture_profile_id",
+            ErrorContext::Replay,
+        )?;
         self.toolchain.validate()?;
         if self.input_format != INPUT_FORMAT {
             return Err(invalid_media("unsupported stored media container"));
@@ -568,7 +442,11 @@ impl FrameExtractionManifest {
             "media_probe_sha256",
             ErrorContext::Replay,
         )?;
-        self.profile.validate(ErrorContext::Replay)?;
+        validate_token(
+            &self.capture_profile_id,
+            "capture_profile_id",
+            ErrorContext::Replay,
+        )?;
         self.extractor.validate()?;
         if self.input_format != INPUT_FORMAT {
             return Err(invalid_media("unsupported extraction input container"));
@@ -598,67 +476,6 @@ impl FrameExtractionManifest {
                 ));
             }
             previous = Some(frame.decode_index);
-        }
-        Ok(())
-    }
-}
-
-impl LayoutRequest {
-    fn validate(
-        &self,
-        extraction: &FrameExtractionManifest,
-        extraction_digest: &str,
-    ) -> Result<(), CorpusError> {
-        if self.schema != LAYOUT_REQUEST_SCHEMA
-            || self.extraction_manifest_sha256 != extraction_digest
-            || self.layout_profile_id != extraction.profile.layout_profile_id
-        {
-            return Err(invalid_media(
-                "layout request is not bound to its extraction",
-            ));
-        }
-        validate_token(
-            &self.layout_profile_id,
-            "layout_profile_id",
-            ErrorContext::Replay,
-        )?;
-        if self.fields.is_empty() || self.fields.len() > 128 {
-            return Err(invalid_media("layout field count is outside bounds"));
-        }
-        let available = extraction
-            .frames
-            .iter()
-            .map(|frame| frame.frame_id.as_str())
-            .collect::<BTreeSet<_>>();
-        let mut previous = None;
-        for field in &self.fields {
-            validate_token(&field.field_id, "field_id", ErrorContext::Replay)?;
-            validate_token(&field.field_type, "field_type", ErrorContext::Replay)?;
-            validate_token(
-                &field.presence_predicate,
-                "presence_predicate",
-                ErrorContext::Replay,
-            )?;
-            if previous.is_some_and(|value| value >= field.field_id.as_str()) {
-                return Err(invalid_media(
-                    "layout fields must be uniquely ordered by field_id",
-                ));
-            }
-            previous = Some(field.field_id.as_str());
-            if field.samples.is_empty() || field.samples.len() > MAX_EXTRACTED_FRAMES {
-                return Err(invalid_media("layout sample count is outside bounds"));
-            }
-            let mut sample_ids = BTreeSet::new();
-            for sample in &field.samples {
-                if !available.contains(sample.frame_id.as_str())
-                    || !sample_ids.insert(&sample.frame_id)
-                {
-                    return Err(invalid_media(
-                        "layout samples must bind unique extracted frames",
-                    ));
-                }
-                validate_rectangle(sample, extraction.width, extraction.height)?;
-            }
         }
         Ok(())
     }
@@ -796,7 +613,7 @@ fn validate_probe_source_binding(
     if source_digest != probe.source_manifest_sha256
         || source.fixture_id != probe.fixture_id
         || source.source != probe.source
-        || source.profile != probe.profile
+        || source.capture_profile_id != probe.capture_profile_id
     {
         return Err(invalid_media(
             "probe no longer matches its stored source manifest",
@@ -858,21 +675,6 @@ fn validate_input_format(path: &Path) -> Result<(), CorpusError> {
     if magic != [0x1a, 0x45, 0xdf, 0xa3] {
         return Err(invalid_media(
             "stored media is not an approved self-contained Matroska container",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_layout_output_location(
-    extraction_directory: &Path,
-    output_path: &Path,
-) -> Result<(), CorpusError> {
-    let output_parent = private_new_path_parent(output_path)?;
-    let extraction_directory = fs::canonicalize(extraction_directory)?;
-    let output_parent = fs::canonicalize(output_parent)?;
-    if output_parent.starts_with(&extraction_directory) {
-        return Err(invalid_media(
-            "layout output must be outside the extraction evidence directory",
         ));
     }
     Ok(())
@@ -1384,95 +1186,6 @@ fn ppm_header(bytes: &[u8]) -> Result<(Vec<String>, usize), CorpusError> {
     Ok((tokens, index + 1))
 }
 
-fn validate_extracted_files(
-    directory: &Path,
-    manifest: &FrameExtractionManifest,
-) -> Result<(), CorpusError> {
-    let pixel_bytes = u64::from(manifest.width)
-        .checked_mul(u64::from(manifest.height))
-        .and_then(|value| value.checked_mul(3))
-        .ok_or(CorpusError::CapacityExceeded)?;
-    for frame in &manifest.frames {
-        let path = directory.join(&frame.filename);
-        validate_private_file_mode(&path, ErrorContext::Replay)?;
-        let (pixels, bytes) = validate_ppm(&path, manifest.width, manifest.height, pixel_bytes)?;
-        if bytes != frame.bytes
-            || digest_bytes(&pixels) != frame.frame_sha256
-            || digest_regular_file(&path, pixel_bytes + 128)? != frame.file_sha256
-        {
-            return Err(invalid_media(
-                "extracted frame no longer matches its manifest",
-            ));
-        }
-    }
-    if fs::read_dir(directory)?.count() != manifest.frames.len() + 1 {
-        return Err(invalid_media(
-            "extraction directory contains an unexpected file set",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_rectangle(
-    sample: &MeasuredSample,
-    frame_width: u32,
-    frame_height: u32,
-) -> Result<(), CorpusError> {
-    if sample.width == 0
-        || sample.height == 0
-        || sample
-            .x
-            .checked_add(sample.width)
-            .is_none_or(|value| value > frame_width)
-        || sample
-            .y
-            .checked_add(sample.height)
-            .is_none_or(|value| value > frame_height)
-    {
-        return Err(invalid_media(
-            "layout sample rectangle is outside the canonical frame",
-        ));
-    }
-    Ok(())
-}
-
-fn measure_field(field: FieldMeasurements) -> MeasuredField {
-    let roi = Rectangle {
-        x: lower_median(field.samples.iter().map(|sample| sample.x)),
-        y: lower_median(field.samples.iter().map(|sample| sample.y)),
-        width: lower_median(field.samples.iter().map(|sample| sample.width)),
-        height: lower_median(field.samples.iter().map(|sample| sample.height)),
-    };
-    let deviation = Rectangle {
-        x: max_deviation(field.samples.iter().map(|sample| sample.x), roi.x),
-        y: max_deviation(field.samples.iter().map(|sample| sample.y), roi.y),
-        width: max_deviation(field.samples.iter().map(|sample| sample.width), roi.width),
-        height: max_deviation(field.samples.iter().map(|sample| sample.height), roi.height),
-    };
-    MeasuredField {
-        field_id: field.field_id,
-        field_type: field.field_type,
-        presence_predicate: field.presence_predicate,
-        roi,
-        maximum_alignment_deviation: deviation,
-        sample_count: field.samples.len() as u64,
-        samples: field.samples,
-    }
-}
-
-fn lower_median(values: impl Iterator<Item = u32>) -> u32 {
-    let mut values = values.collect::<Vec<_>>();
-    values.sort_unstable();
-    values[(values.len() - 1) / 2]
-}
-
-fn max_deviation(values: impl Iterator<Item = u32>, center: u32) -> u32 {
-    values
-        .map(|value| value.abs_diff(center))
-        .max()
-        .unwrap_or(0)
-}
-
 fn invalid_media(detail: impl Into<String>) -> CorpusError {
     CorpusError::InvalidMedia(detail.into())
 }
@@ -1503,7 +1216,7 @@ mod tests {
             schema: SOURCE_MANIFEST_SCHEMA.to_owned(),
             fixture_id: probe.fixture_id.clone(),
             session_id: "session-1".to_owned(),
-            profile: probe.profile.clone(),
+            capture_profile_id: probe.capture_profile_id.clone(),
             source: probe.source.clone(),
         };
         let digest = digest_bytes(&canonical_json(&source).unwrap());
@@ -1515,42 +1228,8 @@ mod tests {
         assert!(validate_probe_source_binding(&substituted, &source, &digest).is_err());
 
         let mut substituted = probe;
-        substituted.profile.layout_profile_id = "layout-other".to_owned();
+        substituted.capture_profile_id = "capture-other".to_owned();
         assert!(validate_probe_source_binding(&substituted, &source, &digest).is_err());
-    }
-
-    #[test]
-    fn layout_uses_lower_median_and_maximum_deviation() {
-        let field = FieldMeasurements {
-            field_id: "title".to_owned(),
-            field_type: "text".to_owned(),
-            presence_predicate: "result-screen".to_owned(),
-            samples: vec![
-                sample("frame-1", 100, 200, 300, 40),
-                sample("frame-2", 102, 199, 298, 42),
-                sample("frame-3", 101, 201, 301, 41),
-                sample("frame-4", 104, 198, 299, 39),
-            ],
-        };
-        let measured = measure_field(field);
-        assert_eq!(
-            measured.roi,
-            Rectangle {
-                x: 101,
-                y: 199,
-                width: 299,
-                height: 40
-            }
-        );
-        assert_eq!(
-            measured.maximum_alignment_deviation,
-            Rectangle {
-                x: 3,
-                y: 2,
-                width: 2,
-                height: 2
-            }
-        );
     }
 
     #[test]
@@ -1565,40 +1244,6 @@ mod tests {
         let playlist = temporary.path().join("source.media");
         fs::write(&playlist, b"#EXTM3U\nhttps://example.invalid/segment.ts\n").unwrap();
         assert!(validate_input_format(&playlist).is_err());
-    }
-
-    #[test]
-    fn layout_request_must_match_the_extraction_profile() {
-        let extraction = sample_extraction();
-        let mut request = LayoutRequest {
-            schema: LAYOUT_REQUEST_SCHEMA.to_owned(),
-            extraction_manifest_sha256: "f".repeat(64),
-            layout_profile_id: "layout-other".to_owned(),
-            fields: vec![FieldMeasurements {
-                field_id: "title".to_owned(),
-                field_type: "text".to_owned(),
-                presence_predicate: "result-screen".to_owned(),
-                samples: vec![sample("frame-1", 1, 2, 3, 4)],
-            }],
-        };
-        assert!(request.validate(&extraction, &"f".repeat(64)).is_err());
-        request.layout_profile_id = extraction.profile.layout_profile_id.clone();
-        assert!(request.validate(&extraction, &"f".repeat(64)).is_ok());
-    }
-
-    #[test]
-    fn layout_output_must_not_mutate_extraction_evidence() {
-        let temporary = tempdir().unwrap();
-        let private = temporary.path().join("private");
-        let extraction = private.join("extraction");
-        fs::create_dir_all(&extraction).unwrap();
-        for directory in [&private, &extraction] {
-            fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).unwrap();
-        }
-        assert!(
-            validate_layout_output_location(&extraction, &extraction.join("layout.json")).is_err()
-        );
-        assert!(validate_layout_output_location(&extraction, &private.join("layout.json")).is_ok());
     }
 
     #[test]
@@ -1721,7 +1366,7 @@ mod tests {
     }
 
     #[test]
-    fn pinned_tools_probe_extract_and_measure_synthetic_media() {
+    fn pinned_tools_probe_and_extract_synthetic_observed_media() {
         let temporary = tempdir().unwrap();
         let private = temporary.path().join("private");
         fs::create_dir(&private).unwrap();
@@ -1781,28 +1426,6 @@ mod tests {
                 .extract_frames(&probe_path, &extraction_request, &extraction_directory)
                 .is_err()
         );
-
-        let layout_request = private.join("layout-request.json");
-        fs::write(&layout_request, serde_json::to_vec(&json!({
-            "schema": LAYOUT_REQUEST_SCHEMA,
-            "extraction_manifest_sha256": extraction.frame_extraction_sha256,
-            "layout_profile_id": "layout-test",
-            "fields": [{
-                "field_id": "title", "field_type": "text", "presence_predicate": "result-screen",
-                "samples": [
-                    { "frame_id": "frame-media-1", "x": 100, "y": 200, "width": 300, "height": 40 },
-                    { "frame_id": "frame-media-3", "x": 102, "y": 202, "width": 302, "height": 42 }
-                ]
-            }]
-        })).unwrap()).unwrap();
-        let layout_path = private.join("layout.json");
-        let layout = measure_layout(&extraction_directory, &layout_request, &layout_path).unwrap();
-        assert_eq!(layout.field_count, 1);
-        assert_eq!(layout.sample_count, 2);
-        assert_eq!(
-            layout_path.metadata().unwrap().permissions().mode() & 0o777,
-            0o600
-        );
     }
 
     fn sample_probe() -> MediaProbeManifest {
@@ -1814,11 +1437,7 @@ mod tests {
                 sha256: "b".repeat(64),
                 bytes: 1,
             },
-            profile: CaptureProfileBinding {
-                capture_profile_id: "capture-test".to_owned(),
-                normalizer_artifact_sha256: "e".repeat(64),
-                layout_profile_id: "layout-test".to_owned(),
-            },
+            capture_profile_id: "capture-test".to_owned(),
             toolchain: ToolchainIdentity {
                 ffmpeg_version: FFMPEG_VERSION.to_owned(),
                 ffmpeg_sha256: "c".repeat(64),
@@ -1849,37 +1468,6 @@ mod tests {
         }
     }
 
-    fn sample_extraction() -> FrameExtractionManifest {
-        let probe = sample_probe();
-        FrameExtractionManifest {
-            schema: EXTRACT_SCHEMA.to_owned(),
-            fixture_id: probe.fixture_id,
-            source_manifest_sha256: probe.source_manifest_sha256,
-            media_probe_sha256: "a".repeat(64),
-            profile: probe.profile,
-            extractor: ExtractorIdentity {
-                tool_id: "ffmpeg".to_owned(),
-                tool_version: FFMPEG_VERSION.to_owned(),
-                extractor_manifest_sha256: "b".repeat(64),
-                parameters_sha256: "c".repeat(64),
-            },
-            input_format: INPUT_FORMAT.to_owned(),
-            source_time_base: probe.source_time_base,
-            width: 1920,
-            height: 1080,
-            video_stream_index: 0,
-            frames: vec![ExtractedFrame {
-                frame_id: "frame-1".to_owned(),
-                source_pts: 0,
-                decode_index: 0,
-                filename: "frame-000000.ppm".to_owned(),
-                frame_sha256: "d".repeat(64),
-                file_sha256: "e".repeat(64),
-                bytes: 1920 * 1080 * 3,
-            }],
-        }
-    }
-
     fn ingest_synthetic_media(private: &Path) -> (CorpusStore, SourceManifest) {
         let source = private.join("source.mkv");
         let status = Command::new(find_executable("ffmpeg").unwrap())
@@ -1903,14 +1491,10 @@ mod tests {
         fs::write(
             &ingest_request,
             serde_json::to_vec(&json!({
-                "schema": "scorepeek-private-corpus-ingest-v1",
+                "schema": "scorepeek-private-corpus-ingest-v2",
                 "fixture_id": "fixture-media-1",
                 "session_id": "session-media-1",
-                "profile": {
-                    "capture_profile_id": "synthetic-test",
-                    "normalizer_artifact_sha256": "a".repeat(64),
-                    "layout_profile_id": "layout-test"
-                }
+                "capture_profile_id": "synthetic-test"
             }))
             .unwrap(),
         )
@@ -1948,16 +1532,6 @@ mod tests {
             width: Some(1920),
             height: Some(1080),
             time_base: Some("1/1000".to_owned()),
-        }
-    }
-
-    fn sample(frame_id: &str, x: u32, y: u32, width: u32, height: u32) -> MeasuredSample {
-        MeasuredSample {
-            frame_id: frame_id.to_owned(),
-            x,
-            y,
-            width,
-            height,
         }
     }
 }

@@ -19,28 +19,24 @@ indexes remain outside the repository.
   committed. A content hash is a reference, not permission to publish its
   content.
 
-Every source binds one opaque capture profile, one immutable domain-normalizer
-artifact digest, and one layout profile. These identifiers describe the
-observed-to-canonical contract as a whole. Corpus tooling does not infer or
-model Wine, Vulkan, Gamescope, compositor, PipeWire, operating-system, or
-capture-layer classifications from them.
+Every source binds one opaque capture profile and no canonical artifact.
+Normalizer and layout bindings are selected later when a replay index maps the
+observed source to the shared canonical frame contract. Corpus tooling does not
+infer or model Wine, Vulkan, Gamescope, compositor, PipeWire, operating-system,
+or capture-layer classifications from a profile ID.
 
 ## Immutable ingest
 
-The input request uses schema `scorepeek-private-corpus-ingest-v1` and contains
-only an opaque fixture ID, an opaque session ID, and exactly one profile
-binding. For example:
+The input request uses schema `scorepeek-private-corpus-ingest-v2` and contains
+only an opaque fixture ID, an opaque session ID, and one opaque observed capture
+profile ID. For example:
 
 ```json
 {
-  "schema": "scorepeek-private-corpus-ingest-v1",
+  "schema": "scorepeek-private-corpus-ingest-v2",
   "fixture_id": "fixture-001",
   "session_id": "session-001",
-  "profile": {
-    "capture_profile_id": "gamescope-pipewire-fhd-a",
-    "normalizer_artifact_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    "layout_profile_id": "infinitas-fhd-layout-a"
-  }
+  "capture_profile_id": "capture-profile-a"
 }
 ```
 
@@ -51,13 +47,13 @@ mise run corpus:ingest -- --store /absolute/private/store /absolute/source.media
 ```
 
 Ingest streams the source into `content/<sha256>/source.media`, then writes the
-canonical `scorepeek-private-corpus-source-v1` manifest to
+canonical `scorepeek-private-corpus-source-v2` manifest to
 `manifests/<fixture_id>.json`. Store directories use mode `0700`; source,
 manifest, and lock files use mode `0600`. A per-store writer lock serializes
 recovery and publication. Newly created files and relevant directories are
 synced before success is reported. The aggregate-only command result includes
-canonical profile-binding, source, and source-manifest SHA-256 values for
-downstream binding.
+capture-profile, source, and source-manifest SHA-256 values for downstream
+binding.
 The root, managed directories, and writer lock must be real filesystem entries;
 symlinks are rejected before permissions or private content are changed.
 
@@ -94,7 +90,7 @@ Probe a stored fixture into a new private manifest:
 mise run corpus:media:probe -- --store /absolute/private/store --output /absolute/private/probe.json fixture-001
 ```
 
-`scorepeek-private-media-probe-v1` binds the canonical source manifest and
+`scorepeek-private-media-probe-v2` binds the canonical source manifest and
 source object to the exact FFmpeg/ffprobe binary digests, video dimensions,
 source time base, the sole video stream's explicit index, and every decoded
 video frame's contiguous decode index and integer PTS. Media with zero or
@@ -107,13 +103,14 @@ and stderr are drained with fixed bounds and every process has a ten-minute
 timeout; errors expose only status and a stderr digest, not private decoder
 text or paths.
 
-Extraction takes a strict `scorepeek-private-frame-extraction-v1` request. It
+Extraction takes a strict `scorepeek-private-observed-frame-extraction-v2`
+request. It
 repeats the fixture, source-manifest, and probe digests and supplies a non-empty
 strictly increasing selection of `{frame_id, decode_index, source_pts}`. The
 decode-index/PTS pair must match the probe exactly. Before decoding, the tool
 reloads the fixture's current canonical source manifest and requires the probe's
-source object and complete capture/normalizer/layout profile binding to match
-it exactly. Run extraction into a new path:
+source object and capture-profile binding to match it exactly. Run extraction
+into a new path:
 
 ```text
 mise run corpus:media:extract -- --store /absolute/private/store --output /absolute/private/new-extraction /absolute/private/probe.json /absolute/private/extraction-request.json
@@ -124,8 +121,10 @@ RGB8 P6 PPM without frame-rate resampling. As with probing, the source is sent
 through stdin with only the `pipe` protocol enabled and the Matroska demuxer
 forced. The tool re-parses every PPM header, checks dimensions and exact pixel
 byte count, records pixel-payload and whole-file SHA-256 values, and publishes
-a canonical extraction manifest that retains the capture/normalizer/layout
-profile binding and selected video-stream index. The new directory uses mode
+a canonical JSON extraction manifest that retains the observed capture-profile
+binding and selected video-stream index. The extracted pixels remain observed
+evidence at the source dimensions; this command does not normalize them or make
+them a `CanonicalFrame`. The new directory uses mode
 `0700`, files use `0600`, an existing destination is never accepted, and
 files/directories are synced before success. A mode-`0600` parent writer lock
 serializes recovery and publication. Recovery removes only staging and
@@ -133,26 +132,6 @@ incomplete destinations carrying exact scorepeek ownership markers. Atomic
 no-clobber file and directory publication prevents an existing destination
 from being replaced. The manifest's `ExtractorIdentity` uses FFmpeg 8.1.2, the
 media-probe digest, and the canonical request digest.
-
-## Scorepeek-owned layout measurement
-
-A `scorepeek-private-layout-measurement-v1` request binds an extraction-manifest
-digest and must repeat the extraction's layout-profile ID. Each uniquely
-ordered field supplies a field type, presence predicate, and human-measured
-rectangles bound to distinct extracted frame IDs. The command never derives a
-rectangle from pixels and has no upstream coordinate input:
-
-```text
-mise run corpus:layout:measure -- --output /absolute/private/layout-measurement.json /absolute/private/new-extraction /absolute/private/layout-request.json
-```
-
-Layout measurement accepts only the canonical 1920x1080 frame contract. For
-each field it emits the component-wise lower median rectangle, maximum observed
-absolute deviation for x/y/width/height, sample count, and opaque sample frame
-IDs with their measured rectangles. The output is measurement evidence for a
-future versioned `LayoutProfile`; it does not silently activate or replace a
-runtime profile. Its new output path must be outside the extraction directory,
-so publication and crash recovery cannot mutate the extracted evidence set.
 
 ## Immutable corpus generation
 
@@ -203,10 +182,13 @@ metadata:
 mise run corpus:index:generate -- --store /absolute/private/store /absolute/index-plan.json
 ```
 
-The `scorepeek-private-corpus-index-plan-v1` input names exactly one stored
+The `scorepeek-private-corpus-index-plan-v2` input names exactly one stored
 fixture and its canonical source-manifest SHA-256. It binds the extractor
-identity, time base, and ordered frame metadata already required by the replay
-contract. In place of a caller-selected episode ID, each frame carries an
+identity, one `canonical_frame` object, time base, and ordered frame metadata
+already required by the replay contract. The canonical binding contains the
+normalizer artifact SHA-256, canonical frame contract ID, and canonical layout
+SHA-256 without making any of them properties of the capture profile. In place
+of a caller-selected episode ID, each frame carries an
 opaque `episode_sha256`. The generator uses that digest as the canonical
 episode ID and rejects an episode group that reappears after a different group
 has begun. Decode indexes must still increase strictly.
@@ -222,13 +204,14 @@ The generated index is directly usable as one entry in a replay suite; suite
 assembly remains explicit because split-contract selection is a human dataset
 decision.
 
-`scorepeek-private-corpus-replay-suite-v1` is the corpus-wide validation unit.
+`scorepeek-private-corpus-replay-suite-v2` is the corpus-wide validation unit.
 It contains an explicit `in_profile` or `profile_disjoint` split contract and
-one or more `scorepeek-private-corpus-replay-v1` indexes. Each suite binds one
+one or more `scorepeek-private-corpus-replay-v2` indexes. Each suite binds one
 sealed corpus-generation SHA-256, and each index binds the exact canonical
 source-manifest SHA-256 to one extractor identity, its version, exact
-extractor-manifest and parameter hashes, source time base, and a sequence of
-selected frames. Every frame records:
+extractor-manifest and parameter hashes, its separate canonical-frame binding,
+source time base, and a sequence of selected observed frames. Every frame
+records:
 
 - opaque frame and episode IDs;
 - source PTS and a strictly increasing decode index;
@@ -237,6 +220,10 @@ selected frames. Every frame records:
 - `train`, `validation`, or `holdout` assignment;
 - private session, play, and title group hashes;
 - annotation revision and complete-label document SHA-256.
+
+All indexes in one replay suite must name the same canonical frame contract and
+canonical layout. Their normalizer artifacts may differ because each observed
+capture profile owns its own mapping to that shared target.
 
 Complete label values stay in the private store under
 `labels/<sha256>.json`; the replay index carries only their immutable digest.
@@ -266,8 +253,9 @@ hash, play hash, title hash, or identical-frame digest assigned across multiple
 splits anywhere in the suite. `in_profile` permits the same capture profile ID
 in multiple splits so frozen holdout data can measure recognition within an
 observed domain. `profile_disjoint` requires each capture profile ID to appear
-in only one split even when its normalizer or layout binding differs, measuring
-transfer to an unseen observed domain.
+in only one split even when its normalizer artifact differs, measuring transfer
+to an unseen observed domain. The canonical frame contract and canonical
+layout remain shared across the suite.
 Before these checks, the suite's fixture/source-manifest set must exactly equal
 its sealed generation. The title-group rule is the enforceable boundary for a
 title-disjoint OCR holdout; it does not infer a title from private content.
@@ -279,7 +267,7 @@ mise run corpus:replay:validate -- --store /absolute/private/store /absolute/rep
 ```
 
 The command outputs a dedicated
-`scorepeek-private-corpus-replay-suite-summary-v1` result containing the sealed
+`scorepeek-private-corpus-replay-suite-summary-v2` result containing the sealed
 generation digest, canonical replay-suite digest, opaque suite ID, index and
 frame counts, selected split contract, and per-split counts. It does not emit
 paths, media, complete labels, recognized values, or personal data.
@@ -313,8 +301,8 @@ to redistribute scorepeek or its generated files.
 
 ## Not yet implemented
 
-- real-capture layout-profile adoption and replay execution against recognition
-  code;
+- canonical-frame production from observed extractions, shared canonical-layout
+  authoring and measurement, and replay execution against recognition code;
 - production synthetic variation and glyph coverage backed by an approved
   redistributable font or independently authored equivalent;
 - Python training, evaluation, ONNX export, and Rust parity gates.

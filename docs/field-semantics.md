@@ -27,7 +27,8 @@ be established, the field is `unknown`.
 - A boolean needs calibrated positive and negative evidence. Failure to match
   the positive class is `unknown`, not `false`.
 - All evidence used by one event must have the same capture generation,
-  capture/layout/model/catalog profile binding, and temporal episode.
+  capture profile, normalizer, canonical layout, model/catalog binding, and
+  temporal episode.
 
 ## Result
 
@@ -74,8 +75,9 @@ the separately calibrated stricter title/context policy. The event preserves
 - Result emits once per result episode. Music select deduplicates a stable
   `(song, play mode, selected difficulty)` identity until it changes or the
   screen episode ends.
-- Screen exit, source reconnect, capture generation, or any active
-  capture/layout/catalog/model digest change resets pending candidates.
+- Screen exit, source reconnect, capture generation, or any active capture
+  profile/normalizer/canonical-layout/catalog/model digest change resets pending
+  candidates.
 - Replay compares deterministic domain fields and issues. Transport event IDs
   and delivery wall time are excluded.
 - Every field needs positive, legitimate-absence where applicable, ambiguous,

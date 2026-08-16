@@ -18,9 +18,9 @@ contract, bounded content-addressed source ingest, canonical complete-label
 authoring, deterministic episode/replay-index generation, a seed-only
 procedural synthetic title renderer, and replay-index validation.
 It also pins an offline static FFmpeg/ffprobe toolchain for bounded private
-media probing, explicit RGB8 frame extraction, and human-authored layout
-measurement. It does **not** yet contain a training pipeline or a runnable
-capture or recognition service.
+media probing and explicit observed RGB8 frame extraction. Shared canonical
+layout authoring and measurement, a training pipeline, and a runnable capture
+or recognition service are not yet implemented.
 
 The first implementation milestone is:
 
@@ -38,8 +38,9 @@ offline OCR training and ONNX export.
 
 ## Project boundaries
 
-- Build layout profiles from scorepeek captures; do not copy upstream code,
-  coordinates, visual resources, or music data.
+- Own one game layout in the canonical frame contract and calibrate each
+  capture profile to it; do not copy upstream code, coordinates, visual
+  resources, or music data.
 - Synchronize Tachi, Textage, and an official-INFINITAS-derived roster locally,
   preserving source lineage and quarantining ambiguous federation results.
 - Use catalog strings only as an inference-time OCR lexicon, not as model
@@ -74,7 +75,6 @@ mise run corpus:label:author -- --store /absolute/private/store /absolute/comple
 mise run corpus:index:generate -- --store /absolute/private/store /absolute/index-plan.json
 mise run corpus:media:probe -- --store /absolute/private/store --output /absolute/private/probe.json fixture-001
 mise run corpus:media:extract -- --store /absolute/private/store --output /absolute/private/new-extraction /absolute/private/probe.json /absolute/private/extraction-request.json
-mise run corpus:layout:measure -- --output /absolute/private/layout-measurement.json /absolute/private/new-extraction /absolute/private/layout-request.json
 mise run corpus:synthetic:render -- --output /absolute/new/output-directory /absolute/synthetic-request.json
 mise run corpus:replay:validate -- --store /absolute/private/store /absolute/replay-suite.json
 mise run catalog:schedule:systemd:verify
@@ -114,8 +114,9 @@ splits, generation sealing records every current fixture binding in one
 immutable content-addressed generation. Replay-suite validation reads that
 generation plus canonical complete-label documents, source manifests, and media
 from the store. It requires complete generation coverage and checks source PTS
-plus decode ordering, opaque fixture and episode IDs, capture-profile/normalizer/layout
-bindings, extractor/annotation/frame hashes, and corpus-wide session/play/title
+plus decode ordering, opaque fixture and episode IDs, observed capture-profile
+bindings, separate normalizer/canonical-frame/layout bindings,
+extractor/annotation/frame hashes, and corpus-wide session/play/title
 grouped split isolation. Each suite selects either in-profile evaluation or the
 stricter profile-disjoint evaluation. It emits only opaque IDs, hashes, the
 selected split contract, and aggregate counts. See
@@ -124,19 +125,17 @@ generated canonically from strict frame plans: an opaque episode digest becomes
 the episode ID, discontiguous reuse is rejected, and the stored source and every
 complete label are revalidated before private publication. The pinned offline
 media path accepts only self-contained Matroska, streams stored bytes through
-stdin with only FFmpeg's `pipe` protocol enabled, probes canonical PTS and
-decode-index evidence, extracts only an explicit strictly ordered selection as
-RGB8 P6 PPM, and hashes both pixel payloads and files. Layout measurement does
-not inspect image content or import coordinates: a human-authored request must
-match the extraction's layout profile, binds rectangles to extracted frame
-IDs, and derives a lower-median ROI plus maximum observed alignment deviations.
-Its output must be outside the extraction directory. All real outputs remain
+stdin with only FFmpeg's `pipe` protocol enabled, probes PTS and decode-index
+evidence, extracts only an explicit strictly ordered observed-frame selection
+as RGB8 P6 PPM, and hashes both pixel payloads and files. Extraction does not
+normalize pixels or create canonical layout evidence. All real outputs remain
 private and external to the repository. The separate seed-only synthetic renderer emits
 deterministic RGB8 PPM title crops and a canonical manifest without accepting
 catalog text, fonts, images, or private corpus data. Its procedural ASCII
 domain establishes the renderer contract but is not yet representative
-production OCR training data. Real-capture profile measurement, production
-glyph/font coverage, replay execution, and training/export remain later offline
+production OCR training data. Canonical-frame generation, shared-layout
+measurement, production glyph/font coverage, replay execution, and
+training/export remain later offline
 stages and will not become game-session runtime dependencies.
 
 `scorepeek catalog sync` is the scheduling interface. A user may keep recurring

@@ -116,14 +116,6 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek-corpus -- media extract "$@"
 '''
 
-[tasks."corpus:layout:measure"]
-description = "Derive scorepeek-owned layout evidence from private human measurements"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus -- layout measure "$@"
-'''
-
 [tasks."corpus:synthetic:render"]
 description = "Render a deterministic catalog-independent synthetic title set"
 run = '''

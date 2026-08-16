@@ -6,8 +6,8 @@ is outside this checkpoint.
 
 ## Current milestone
 
-- Milestone: **M2 — private corpus, layout measurement, synthetic renderer, and replay tooling**
-- State: **in progress**
+- Milestone: **M2 — observed-profile private corpus, synthetic renderer, and replay tooling**
+- State: **complete**
 
 ## Included deliverables
 
@@ -77,13 +77,14 @@ is outside this checkpoint.
   game-session `scorepeek` crate has no corpus or training dependency, and the
   future Python training/export pipeline remains outside the runtime graph.
 - An accepted capture/recognition design that separates opaque-profile
-  `ObservedFrame` inputs, versioned domain normalizers, a conceptual RGB8
-  1920x1080 `CanonicalFrame`, and field-specific OCR preprocessing. Capture
-  routes are independently gated peers; none is a pixel correctness reference,
-  and the normalizer does not model pipeline layers separately.
-- Versioned, strict private-corpus ingest/source/replay contracts. Every source
-  binds an opaque capture profile, immutable domain-normalizer artifact digest,
-  and layout profile without exposing capture-pipeline classifications.
+  `ObservedFrame` inputs, versioned domain normalizers, a specified RGB8
+  1920x1080 logical game canvas with one shared canonical layout, and
+  field-specific OCR preprocessing. Capture routes are independently gated
+  peers; none is a pixel correctness reference or owns the game layout.
+- Destructive v2 private-corpus ingest/source/replay contracts. Every observed
+  source binds only an opaque capture profile. Replay binds its normalizer,
+  canonical frame contract, and shared canonical layout separately without
+  accepting the removed v1 tuple or compatibility paths.
   Committed examples contain only opaque IDs, hashes, and non-personal classes;
   complete labels and media remain external.
 - Bounded content-addressed private source ingest with an explicit absolute
@@ -142,13 +143,8 @@ is outside this checkpoint.
   emits RGB8 P6 PPM with no frame-rate resampling, validates exact
   dimensions/bytes and pixel/file hashes, and publishes private evidence using
   parent locking, exact ownership markers, no-clobber publication, and fsync.
-- Scorepeek-owned layout measurement from human-authored rectangles bound to
-  verified extracted frame IDs. It accepts only canonical 1920x1080 evidence
-  and the extraction's exact layout-profile binding, rejects output within the
-  evidence directory, and deterministically records a component-wise
-  lower-median ROI, maximum observed alignment deviations, presence predicate,
-  and sample provenance; it neither inspects pixels for coordinates nor
-  activates a runtime profile.
+  Extracted RGB8 frames remain observed evidence at source dimensions and are
+  never presented as normalized `CanonicalFrame` or layout evidence.
 
 ## Verified in this checkpoint
 
@@ -163,13 +159,15 @@ is outside this checkpoint.
   staging recovery, label cross-field and unreferenced-object rejection, decode
   ordering, deterministic/idempotent replay-index publication, non-contiguous
   episode rejection, generated-index replay validation, byte-identical
-  seed-only synthetic rendering, same-index/cross-index grouped split
-  isolation, and distinct in-profile/profile-disjoint evaluation behavior. The
+  seed-only synthetic rendering, destructive rejection of the removed v1
+  profile tuple, separate canonical-frame replay binding, one-to-one
+  normalizer-artifact/capture-profile binding,
+  same-index/cross-index grouped split isolation, and distinct
+  in-profile/profile-disjoint evaluation behavior. The
   media tests used the mise-pinned FFmpeg/ffprobe binaries to generate a
-  synthetic 1920x1080 Matroska source, probe its sole video stream, extract two
-  exact decode-index/PTS selections as RGB8 PPM, and measure bound layout
-  evidence. Regressions cover multi-video rejection, non-Matroska secondary
-  resource rejection, profile mismatch, evidence-directory output rejection,
+  synthetic 1920x1080 Matroska source, probe its sole video stream, and extract
+  two exact decode-index/PTS selections as observed RGB8 PPM. Regressions cover
+  multi-video rejection, non-Matroska secondary resource rejection,
   cross-fixture source/profile substitution, private no-clobber publication,
   and marker-gated crash recovery.
 - An isolated synthetic CLI gate rendered three samples at manifest SHA-256
@@ -225,7 +223,8 @@ is outside this checkpoint.
 
 ## Unverified and target-only boundaries
 
-- Real media extraction, replay execution, layout measurement,
+- Real media extraction, canonical-frame production, shared-layout measurement,
+  replay execution,
   production synthetic glyph/style coverage, catalog-update recognition
   replay, OCR model, capture backend, field recognizer, event daemon, and the
   integrated live flow remain unvalidated.
@@ -258,18 +257,14 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Continue **M2** by running the pinned probe/extractor and scorepeek-owned layout
-measurement against available private capture data bound to an explicit opaque
-capture-profile, normalizer-artifact, and layout-profile tuple, then turn the
-reviewed measurement evidence into a versioned layout profile and replay plan.
-Each source is evidence for its bound profile rather than a shared pixel
-target. Do not commit real media, extracted frames, or measurements. After
-that, expand the procedural renderer only as far as independently authored or
-explicitly redistributable glyph/style inputs permit. Preserve the verified
-private-store, canonical metadata, complete-label authoring, replay-ordering,
-episode contiguity, and grouped split safety properties.
-Catalog-update recognition replay remains part of M8 because it depends on the
-later recognition pipeline.
+Start **M3** with narrow Portal and Gamescope direct `ObservedFrame` vertical
+spikes on the Bazzite target. Record each real observed contract and collect
+private calibration evidence without assigning a normalizer or layout at
+source ingest. Once both peer profiles are observable, continue M4 by defining
+the shared logical-game `CanonicalFrame`/layout artifact and calibrating one
+deterministic normalizer per profile to it. Do not select a captured route as a
+pixel reference, create route-local layouts, or measure canonical ROIs from raw
+extractions. Real media and frames remain external and private.
 
 ## Stable milestone map
 
@@ -279,9 +274,9 @@ later recognition pipeline.
 | M1 | Catalog federation and activation | complete |
 | M1.1 | Catalog contract and local federation core | complete |
 | M1.2 | Live acquisition and sync orchestration | complete |
-| M2 | Opaque-profile private corpus, layout measurement, synthetic renderer, and replay tooling | in progress |
-| M3 | Domain normalization, OCR preprocessing/training/export, and Python-to-Rust parity | pending |
-| M4 | Portal/Gamescope observed-frame profiles and canonicalization gates | pending |
+| M2 | Observed-profile private corpus, synthetic renderer, and replay tooling | complete |
+| M3 | Portal/Gamescope observed-frame profiles and calibration corpus | pending |
+| M4 | Shared canonical layout, domain normalization, OCR training/export, and parity | pending |
 | M5 | Supported capture-profile evaluation and default selection | pending |
 | M6 | Fail-closed field recognition and cross-field validation | pending |
 | M7 | Deterministic session, versioned events, and NDJSON daemon | pending |

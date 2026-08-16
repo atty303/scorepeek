@@ -12,25 +12,24 @@ use sha2::{Digest, Sha256};
 use tempfile::Builder;
 
 mod media;
-pub use media::{
-    FrameExtractionSummary, LayoutMeasurementSummary, MediaProbeSummary, measure_layout,
-};
+pub use media::{FrameExtractionSummary, MediaProbeSummary};
 
-const INGEST_REQUEST_SCHEMA: &str = "scorepeek-private-corpus-ingest-v1";
-const INGEST_SUMMARY_SCHEMA: &str = "scorepeek-private-corpus-ingest-summary-v1";
-const SOURCE_MANIFEST_SCHEMA: &str = "scorepeek-private-corpus-source-v1";
+const INGEST_REQUEST_SCHEMA: &str = "scorepeek-private-corpus-ingest-v2";
+const INGEST_SUMMARY_SCHEMA: &str = "scorepeek-private-corpus-ingest-summary-v2";
+const SOURCE_MANIFEST_SCHEMA: &str = "scorepeek-private-corpus-source-v2";
 const GENERATION_SCHEMA: &str = "scorepeek-private-corpus-generation-v1";
 const GENERATION_SUMMARY_SCHEMA: &str = "scorepeek-private-corpus-generation-summary-v1";
-const REPLAY_INDEX_SCHEMA: &str = "scorepeek-private-corpus-replay-v1";
-const REPLAY_SUITE_SCHEMA: &str = "scorepeek-private-corpus-replay-suite-v1";
-const REPLAY_SUITE_SUMMARY_SCHEMA: &str = "scorepeek-private-corpus-replay-suite-summary-v1";
+const REPLAY_INDEX_SCHEMA: &str = "scorepeek-private-corpus-replay-v2";
+const REPLAY_SUITE_SCHEMA: &str = "scorepeek-private-corpus-replay-suite-v2";
+const REPLAY_SUITE_SUMMARY_SCHEMA: &str = "scorepeek-private-corpus-replay-suite-summary-v2";
 const COMPLETE_LABEL_SCHEMA: &str = "scorepeek-private-complete-label-v1";
 const COMPLETE_LABEL_SUMMARY_SCHEMA: &str = "scorepeek-private-complete-label-summary-v1";
-const INDEX_PLAN_SCHEMA: &str = "scorepeek-private-corpus-index-plan-v1";
-const INDEX_SUMMARY_SCHEMA: &str = "scorepeek-private-corpus-index-summary-v1";
+const INDEX_PLAN_SCHEMA: &str = "scorepeek-private-corpus-index-plan-v2";
+const INDEX_SUMMARY_SCHEMA: &str = "scorepeek-private-corpus-index-summary-v2";
 const SYNTHETIC_TITLE_REQUEST_SCHEMA: &str = "scorepeek-synthetic-title-request-v1";
 const SYNTHETIC_TITLE_MANIFEST_SCHEMA: &str = "scorepeek-synthetic-title-set-v1";
 const SYNTHETIC_TITLE_SUMMARY_SCHEMA: &str = "scorepeek-synthetic-title-summary-v1";
+const CANONICAL_FRAME_CONTRACT_ID: &str = "scorepeek-canonical-rgb8-1920x1080-v1";
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 const MAX_SOURCE_OBJECTS: usize = 1_024;
@@ -109,23 +108,31 @@ impl From<serde_json::Error> for CorpusError {
     }
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CaptureProfileBinding {
-    pub capture_profile_id: String,
+pub struct CanonicalFrameBinding {
     pub normalizer_artifact_sha256: String,
-    pub layout_profile_id: String,
+    pub canonical_frame_contract_id: String,
+    pub canonical_layout_sha256: String,
 }
 
-impl CaptureProfileBinding {
+impl CanonicalFrameBinding {
     fn validate(&self, context: ErrorContext) -> Result<(), CorpusError> {
-        validate_token(&self.capture_profile_id, "capture_profile_id", context)?;
         validate_sha256(
             &self.normalizer_artifact_sha256,
             "normalizer_artifact_sha256",
             context,
         )?;
-        validate_token(&self.layout_profile_id, "layout_profile_id", context)
+        if self.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID {
+            return Err(context.error(format!(
+                "canonical frame contract must be {CANONICAL_FRAME_CONTRACT_ID}"
+            )));
+        }
+        validate_sha256(
+            &self.canonical_layout_sha256,
+            "canonical_layout_sha256",
+            context,
+        )
     }
 }
 
@@ -135,7 +142,7 @@ struct IngestRequest {
     schema: String,
     fixture_id: String,
     session_id: String,
-    profile: CaptureProfileBinding,
+    capture_profile_id: String,
 }
 
 impl IngestRequest {
@@ -147,7 +154,11 @@ impl IngestRequest {
         }
         validate_opaque_id(&self.fixture_id, "fixture_id", ErrorContext::Request)?;
         validate_opaque_id(&self.session_id, "session_id", ErrorContext::Request)?;
-        self.profile.validate(ErrorContext::Request)
+        validate_token(
+            &self.capture_profile_id,
+            "capture_profile_id",
+            ErrorContext::Request,
+        )
     }
 }
 
@@ -174,7 +185,7 @@ pub struct SourceManifest {
     pub schema: String,
     pub fixture_id: String,
     pub session_id: String,
-    pub profile: CaptureProfileBinding,
+    pub capture_profile_id: String,
     pub source: ContentRef,
 }
 
@@ -189,7 +200,7 @@ impl SourceManifest {
         Ok(IngestSummary {
             schema: INGEST_SUMMARY_SCHEMA.to_owned(),
             fixture_id: self.fixture_id.clone(),
-            profile_sha256: digest_bytes(&canonical_json(&self.profile)?),
+            capture_profile_sha256: digest_bytes(self.capture_profile_id.as_bytes()),
             source_sha256: self.source.sha256.clone(),
             source_bytes: self.source.bytes,
             source_manifest_sha256: digest_bytes(&canonical_json(self)?),
@@ -204,7 +215,11 @@ impl SourceManifest {
         }
         validate_opaque_id(&self.fixture_id, "fixture_id", ErrorContext::Request)?;
         validate_opaque_id(&self.session_id, "session_id", ErrorContext::Request)?;
-        self.profile.validate(ErrorContext::Request)?;
+        validate_token(
+            &self.capture_profile_id,
+            "capture_profile_id",
+            ErrorContext::Request,
+        )?;
         self.source.validate(ErrorContext::Request)
     }
 }
@@ -213,7 +228,7 @@ impl SourceManifest {
 pub struct IngestSummary {
     pub schema: String,
     pub fixture_id: String,
-    pub profile_sha256: String,
+    pub capture_profile_sha256: String,
     pub source_sha256: String,
     pub source_bytes: u64,
     pub source_manifest_sha256: String,
@@ -281,6 +296,7 @@ struct ReplayIndexPlan {
     fixture_id: String,
     source_manifest_sha256: String,
     extractor: ExtractorIdentity,
+    canonical_frame: CanonicalFrameBinding,
     source_time_base: TimeBase,
     frames: Vec<ReplayIndexPlanFrame>,
 }
@@ -365,7 +381,7 @@ impl CorpusStore {
             schema: SOURCE_MANIFEST_SCHEMA.to_owned(),
             fixture_id: request.fixture_id,
             session_id: request.session_id,
-            profile: request.profile,
+            capture_profile_id: request.capture_profile_id,
             source,
         };
         let manifest_bytes = canonical_json(&manifest)?;
@@ -698,6 +714,7 @@ impl ReplayIndexPlan {
             ErrorContext::Replay,
         )?;
         self.extractor.validate()?;
+        self.canonical_frame.validate(ErrorContext::Replay)?;
         self.source_time_base.validate()?;
         if self.frames.is_empty() || self.frames.len() > MAX_REPLAY_FRAMES {
             return Err(CorpusError::InvalidReplay(
@@ -729,10 +746,11 @@ impl ReplayIndexPlan {
             schema: REPLAY_INDEX_SCHEMA.to_owned(),
             fixture_id: manifest.fixture_id,
             session_id: manifest.session_id,
-            profile: manifest.profile,
+            capture_profile_id: manifest.capture_profile_id,
             source: manifest.source,
             source_manifest_sha256: self.source_manifest_sha256,
             extractor: self.extractor,
+            canonical_frame: self.canonical_frame,
             source_time_base: self.source_time_base,
             frames: self
                 .frames
@@ -771,10 +789,11 @@ pub struct ReplayIndex {
     pub schema: String,
     pub fixture_id: String,
     pub session_id: String,
-    pub profile: CaptureProfileBinding,
+    pub capture_profile_id: String,
     pub source: ContentRef,
     pub source_manifest_sha256: String,
     pub extractor: ExtractorIdentity,
+    pub canonical_frame: CanonicalFrameBinding,
     pub source_time_base: TimeBase,
     pub frames: Vec<ReplayFrame>,
 }
@@ -788,7 +807,11 @@ impl ReplayIndex {
         }
         validate_opaque_id(&self.fixture_id, "fixture_id", ErrorContext::Replay)?;
         validate_opaque_id(&self.session_id, "session_id", ErrorContext::Replay)?;
-        self.profile.validate(ErrorContext::Replay)?;
+        validate_token(
+            &self.capture_profile_id,
+            "capture_profile_id",
+            ErrorContext::Replay,
+        )?;
         self.source.validate(ErrorContext::Replay)?;
         validate_sha256(
             &self.source_manifest_sha256,
@@ -796,6 +819,7 @@ impl ReplayIndex {
             ErrorContext::Replay,
         )?;
         self.extractor.validate()?;
+        self.canonical_frame.validate(ErrorContext::Replay)?;
         self.source_time_base.validate()?;
         if self.frames.is_empty() || self.frames.len() > MAX_REPLAY_FRAMES {
             return Err(CorpusError::InvalidReplay(
@@ -866,6 +890,9 @@ impl ReplaySuite {
         }
         let mut total_frames = 0_usize;
         let mut previous_fixture = None;
+        let mut canonical_contract = None;
+        let mut canonical_layout = None;
+        let mut normalizer_profiles = BTreeMap::new();
         for index in &self.indexes {
             index.validate()?;
             if previous_fixture.is_some_and(|value| value >= index.fixture_id.as_str()) {
@@ -874,6 +901,32 @@ impl ReplaySuite {
                 ));
             }
             previous_fixture = Some(index.fixture_id.as_str());
+            if canonical_contract.is_some_and(|value| {
+                value != index.canonical_frame.canonical_frame_contract_id.as_str()
+            }) {
+                return Err(CorpusError::InvalidReplay(
+                    "canonical frame contract differs within the replay suite".to_owned(),
+                ));
+            }
+            if canonical_layout.is_some_and(|value| {
+                value != index.canonical_frame.canonical_layout_sha256.as_str()
+            }) {
+                return Err(CorpusError::InvalidReplay(
+                    "canonical layout differs within the replay suite".to_owned(),
+                ));
+            }
+            canonical_contract = Some(index.canonical_frame.canonical_frame_contract_id.as_str());
+            canonical_layout = Some(index.canonical_frame.canonical_layout_sha256.as_str());
+            let normalizer = index.canonical_frame.normalizer_artifact_sha256.as_str();
+            if normalizer_profiles
+                .get(normalizer)
+                .is_some_and(|profile| *profile != index.capture_profile_id.as_str())
+            {
+                return Err(CorpusError::InvalidReplay(
+                    "normalizer artifact is bound to multiple capture profiles".to_owned(),
+                ));
+            }
+            normalizer_profiles.insert(normalizer, index.capture_profile_id.as_str());
             total_frames = total_frames
                 .checked_add(index.frames.len())
                 .ok_or_else(|| CorpusError::InvalidReplay("frame count overflow".to_owned()))?;
@@ -987,7 +1040,7 @@ impl SplitAssignments {
         if let ProfileAssignments::Disjoint(assignments) = &mut self.profiles {
             require_one_split(
                 assignments,
-                index.profile.capture_profile_id.clone(),
+                index.capture_profile_id.clone(),
                 frame.split,
                 "capture profile",
             )?;
@@ -2590,7 +2643,7 @@ fn validate_source_binding(store: &CorpusStore, index: &ReplayIndex) -> Result<(
     }
     if manifest.fixture_id != index.fixture_id
         || manifest.session_id != index.session_id
-        || manifest.profile != index.profile
+        || manifest.capture_profile_id != index.capture_profile_id
         || manifest.source != index.source
     {
         return Err(CorpusError::InvalidReplay(
@@ -2776,14 +2829,10 @@ mod tests {
         fs::write(
             &request,
             serde_json::to_vec(&json!({
-                "schema": "scorepeek-private-corpus-ingest-v1",
+                "schema": "scorepeek-private-corpus-ingest-v2",
                 "fixture_id": "fixture-001",
                 "session_id": "session-001",
-                "profile": {
-                    "capture_profile_id": "capture-profile-a",
-                    "normalizer_artifact_sha256": A,
-                    "layout_profile_id": "layout-v1"
-                }
+                "capture_profile_id": "capture-profile-a"
             }))
             .unwrap(),
         )
@@ -2813,6 +2862,62 @@ mod tests {
                 .mode()
                 & 0o777,
             0o600
+        );
+    }
+
+    #[test]
+    fn ingest_binds_only_the_observed_capture_profile() {
+        let temporary = tempdir().unwrap();
+        let root = temporary.path().join("private-corpus");
+        let source = temporary.path().join("source.bin");
+        let request = temporary.path().join("request.json");
+        fs::write(&source, b"synthetic observed media").unwrap();
+        fs::write(
+            &request,
+            serde_json::to_vec(&json!({
+                "schema": "scorepeek-private-corpus-ingest-v2",
+                "fixture_id": "fixture-observed-001",
+                "session_id": "session-observed-001",
+                "capture_profile_id": "capture-profile-a"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let manifest = CorpusStore::new(root).ingest(source, request).unwrap();
+        let value = serde_json::to_value(manifest).unwrap();
+        assert_eq!(value["capture_profile_id"], "capture-profile-a");
+        assert!(value.get("profile").is_none());
+        assert!(value.get("normalizer_artifact_sha256").is_none());
+        assert!(value.get("layout_profile_id").is_none());
+    }
+
+    #[test]
+    fn ingest_rejects_the_removed_profile_tuple() {
+        let temporary = tempdir().unwrap();
+        let source = temporary.path().join("source.bin");
+        let request = temporary.path().join("request.json");
+        fs::write(&source, b"synthetic observed media").unwrap();
+        fs::write(
+            &request,
+            serde_json::to_vec(&json!({
+                "schema": "scorepeek-private-corpus-ingest-v1",
+                "fixture_id": "fixture-observed-001",
+                "session_id": "session-observed-001",
+                "profile": {
+                    "capture_profile_id": "capture-profile-a",
+                    "normalizer_artifact_sha256": A,
+                    "layout_profile_id": "layout-v1"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            CorpusStore::new(temporary.path().join("private-corpus"))
+                .ingest(source, request)
+                .is_err()
         );
     }
 
@@ -2859,7 +2964,7 @@ mod tests {
         assert_eq!(first_summary, second_summary);
         assert_eq!(
             first_summary.schema,
-            "scorepeek-private-corpus-replay-suite-summary-v1"
+            "scorepeek-private-corpus-replay-suite-summary-v2"
         );
         assert_eq!(
             first_summary.corpus_generation_sha256,
@@ -2917,13 +3022,12 @@ mod tests {
             "capture-profile-a",
             b"first replay source",
         );
-        let second = ingest_fixture_with_normalizer(
+        let second = ingest_fixture(
             temporary.path(),
             &store,
             "fixture-002",
             "session-002",
             "capture-profile-a",
-            B,
             b"second replay source",
         );
         let generation = store.seal_generation("generation-001").unwrap();
@@ -2940,10 +3044,60 @@ mod tests {
         let summary = store.validate_replay_suite(&suite).unwrap();
         assert_eq!(summary.split_contract, super::SplitContract::InProfile);
 
+        suite_value["indexes"][1]["canonical_frame"]["canonical_layout_sha256"] = json!(E);
+        fs::write(&suite, serde_json::to_vec(&suite_value).unwrap()).unwrap();
+        let error = store.validate_replay_suite(&suite).unwrap_err();
+        assert!(error.to_string().contains("canonical layout differs"));
+        suite_value["indexes"][1]["canonical_frame"]["canonical_layout_sha256"] = json!(C);
+
+        suite_value["indexes"][1]["canonical_frame"]["canonical_frame_contract_id"] =
+            json!("scorepeek-canonical-rgb10-3840x2160-v1");
+        fs::write(&suite, serde_json::to_vec(&suite_value).unwrap()).unwrap();
+        let error = store.validate_replay_suite(&suite).unwrap_err();
+        assert!(error.to_string().contains("canonical frame contract"));
+        suite_value["indexes"][1]["canonical_frame"]["canonical_frame_contract_id"] =
+            json!("scorepeek-canonical-rgb8-1920x1080-v1");
+
         suite_value["split_contract"] = json!("profile_disjoint");
         fs::write(&suite, serde_json::to_vec(&suite_value).unwrap()).unwrap();
         let error = store.validate_replay_suite(&suite).unwrap_err();
         assert!(error.to_string().contains("capture profile group crosses"));
+    }
+
+    #[test]
+    fn replay_suite_rejects_a_normalizer_shared_across_capture_profiles() {
+        let temporary = tempdir().unwrap();
+        let root = temporary.path().join("private-corpus");
+        let store = CorpusStore::new(&root);
+        let first = ingest_fixture(
+            temporary.path(),
+            &store,
+            "fixture-001",
+            "session-001",
+            "capture-profile-a",
+            b"first replay source",
+        );
+        let second = ingest_fixture(
+            temporary.path(),
+            &store,
+            "fixture-002",
+            "session-002",
+            "capture-profile-b",
+            b"second replay source",
+        );
+        let generation = store.seal_generation("generation-001").unwrap();
+        let first_index = replay_index_value(&first, "train", C, &root);
+        let mut second_index = replay_index_value(&second, "holdout", D, &root);
+        second_index["canonical_frame"]["normalizer_artifact_sha256"] = json!(A);
+        let suite_value = replay_suite_value(
+            &generation.corpus_generation_sha256,
+            &[first_index, second_index],
+        );
+        let suite = temporary.path().join("suite.json");
+        fs::write(&suite, serde_json::to_vec(&suite_value).unwrap()).unwrap();
+
+        let error = store.validate_replay_suite(&suite).unwrap_err();
+        assert!(error.to_string().contains("normalizer artifact"));
     }
 
     #[test]
@@ -3304,7 +3458,7 @@ mod tests {
         let second = store.generate_replay_index(&plan).unwrap();
 
         assert_eq!(first, second);
-        assert_eq!(first.schema, "scorepeek-private-corpus-index-summary-v1");
+        assert_eq!(first.schema, "scorepeek-private-corpus-index-summary-v2");
         assert_eq!(first.fixture_id, "fixture-001");
         assert_eq!(first.frame_count, 2);
         assert_eq!(first.episode_count, 1);
@@ -3319,8 +3473,23 @@ mod tests {
         assert!(bytes.ends_with(b"\n"));
         assert_eq!(digest_bytes(&bytes), first.replay_index_sha256);
         let index: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(index["capture_profile_id"], "capture-profile-a");
+        assert_eq!(
+            index["canonical_frame"]["canonical_frame_contract_id"],
+            "scorepeek-canonical-rgb8-1920x1080-v1"
+        );
+        assert_eq!(index["canonical_frame"]["canonical_layout_sha256"], C);
+        assert!(index.get("profile").is_none());
         assert_eq!(index["frames"][0]["episode_id"], json!(C));
         assert_eq!(index["frames"][1]["episode_id"], json!(C));
+
+        let mut unsupported_plan = replay_index_plan_value(&manifest, &root);
+        unsupported_plan["canonical_frame"]["canonical_frame_contract_id"] =
+            json!("scorepeek-canonical-rgb10-3840x2160-v1");
+        fs::write(&plan, serde_json::to_vec(&unsupported_plan).unwrap()).unwrap();
+        let error = store.generate_replay_index(&plan).unwrap_err();
+        assert!(error.to_string().contains("canonical frame contract"));
+
         let generation = store.seal_generation("generation-001").unwrap();
         let suite = temporary.path().join("suite.json");
         fs::write(
@@ -3581,14 +3750,10 @@ mod tests {
         fs::write(
             path,
             serde_json::to_vec(&json!({
-                "schema": "scorepeek-private-corpus-ingest-v1",
+                "schema": "scorepeek-private-corpus-ingest-v2",
                 "fixture_id": fixture_id,
                 "session_id": session_id,
-                "profile": {
-                    "capture_profile_id": profile,
-                    "normalizer_artifact_sha256": A,
-                    "layout_profile_id": "layout-v1"
-                }
+                "capture_profile_id": profile
             }))
             .unwrap(),
         )
@@ -3603,32 +3768,16 @@ mod tests {
         profile: &str,
         bytes: &[u8],
     ) -> SourceManifest {
-        ingest_fixture_with_normalizer(directory, store, fixture_id, session_id, profile, A, bytes)
-    }
-
-    fn ingest_fixture_with_normalizer(
-        directory: &std::path::Path,
-        store: &CorpusStore,
-        fixture_id: &str,
-        session_id: &str,
-        profile: &str,
-        normalizer_artifact_sha256: &str,
-        bytes: &[u8],
-    ) -> SourceManifest {
         let source = directory.join(format!("{fixture_id}.media"));
         let request = directory.join(format!("{fixture_id}.json"));
         fs::write(&source, bytes).unwrap();
         fs::write(
             &request,
             serde_json::to_vec(&json!({
-                "schema": "scorepeek-private-corpus-ingest-v1",
+                "schema": "scorepeek-private-corpus-ingest-v2",
                 "fixture_id": fixture_id,
                 "session_id": session_id,
-                "profile": {
-                    "capture_profile_id": profile,
-                    "normalizer_artifact_sha256": normalizer_artifact_sha256,
-                    "layout_profile_id": "layout-v1"
-                }
+                "capture_profile_id": profile
             }))
             .unwrap(),
         )
@@ -3641,7 +3790,7 @@ mod tests {
         indexes: &[serde_json::Value],
     ) -> serde_json::Value {
         json!({
-            "schema": "scorepeek-private-corpus-replay-suite-v1",
+            "schema": "scorepeek-private-corpus-replay-suite-v2",
             "suite_id": "suite-001",
             "corpus_generation_sha256": corpus_generation_sha256,
             "split_contract": "in_profile",
@@ -3695,10 +3844,10 @@ mod tests {
             }),
         );
         json!({
-            "schema": "scorepeek-private-corpus-replay-v1",
+            "schema": "scorepeek-private-corpus-replay-v2",
             "fixture_id": fixture_id,
             "session_id": manifest.session_id,
-            "profile": manifest.profile,
+            "capture_profile_id": manifest.capture_profile_id,
             "source": manifest.source,
             "source_manifest_sha256": manifest.summary().unwrap().source_manifest_sha256,
             "extractor": {
@@ -3706,6 +3855,11 @@ mod tests {
                 "tool_version": "8.0.0",
                 "extractor_manifest_sha256": A,
                 "parameters_sha256": B
+            },
+            "canonical_frame": {
+                "normalizer_artifact_sha256": if fixture_id == "fixture-001" { A } else { B },
+                "canonical_frame_contract_id": "scorepeek-canonical-rgb8-1920x1080-v1",
+                "canonical_layout_sha256": C
             },
             "source_time_base": { "numerator": 1, "denominator": 60000 },
             "frames": [
@@ -3762,10 +3916,11 @@ mod tests {
             })
             .collect::<Vec<_>>();
         json!({
-            "schema": "scorepeek-private-corpus-index-plan-v1",
+            "schema": "scorepeek-private-corpus-index-plan-v2",
             "fixture_id": manifest.fixture_id,
             "source_manifest_sha256": manifest.summary().unwrap().source_manifest_sha256,
             "extractor": index["extractor"],
+            "canonical_frame": index["canonical_frame"],
             "source_time_base": index["source_time_base"],
             "frames": frames
         })

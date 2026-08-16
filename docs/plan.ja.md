@@ -7,6 +7,7 @@
 - repository bootstrapとtarget inventory probe: 完了
 - M1.1 catalog contractとlocal federation core: 完了
 - M1.2 live acquisitionとsync orchestration: manual/scheduled syncまで完了
+- M2 observed-profile private corpus、synthetic renderer、label/replay tooling: 完了
 - capture、認識、OCR学習、event daemon: 未着手
 - Bazzite実機検証とprivate corpus収集: 未着手
 
@@ -41,23 +42,25 @@ capture generation、sequence、observed monotonic intervalおよびopaqueなcap
 持ち、adapter内でresize、OCR前処理または別profileへのfallbackを行わない。
 
 version固定の`DomainNormalizer`が一つのcapture profile全体をopaqueなdomainとして扱い、
-RGB8、top-left、C-contiguous、厳密に1920x1080の`CanonicalFrame`へ変換する。canonical imageは
-外部pipelineの影響を受ける前のgame imageを概念上正規化した認識入力であり、対応するnative
-pixel fixtureや、Portal、Gamescope、OBS等とのpixel equalityを要求しない。Wine、Vulkan、
+game共通の論理canvasを表すRGB8、top-left、C-contiguous、厳密に1920x1080の
+`CanonicalFrame`へ変換する。canonical targetはcapture routeではなくversion固定のgame座標契約であり、
+native pixel fixtureや、Portal、Gamescope、OBS等とのpixel equalityを要求しない。Wine、Vulkan、
 Gamescope、compositor、PipeWire等のlayerをnormalizerの公開契約へ分解しない。
 
-normalizerは決定的なgeometry、colorおよびfilter補正を優先する。認識証拠により必要性が示された
-場合だけ、deterministicかつ出力変化をboundedにした小さなresidual adapterを許可し、文字や画像を
-生成するrestoration modelは使用しない。capture profileとnormalizer artifactはsemantic replayで
+normalizerは決定的なgeometry、colorおよびfilter補正だけから開始する。learned residual adapterは
+初期contractへ含めず、明示変換だけではshared recognition gateを満たせない証拠が得られた場合に
+別decisionで検討する。文字や画像を生成するrestoration modelは使用しない。capture profileとnormalizer artifactはsemantic replayで
 検証し、observed contractとgateが維持される限り同じartifactを再利用できる。unknownまたはdriftした
 profileはfail closedとする。
 
 source removal、caps変更、reconnect、capture profileまたはnormalizer変更ではgenerationを更新し、
 未完了のrecognition、dwell、dedupを全消去する。
 
-`LayoutProfile`はcanonical上のROI、field type、presence/absence predicate、許容alignmentを
-持つ。座標はprivate capture上でscorepeekが計測する。値を変更した場合はprofile versionを
-上げ、全fixture replayを要求する。
+canonical frame contractはgame共通の`CanonicalLayout`を一つ所有する。layoutはcanonical上のROI、
+field type、presence/absence predicate、許容alignmentを持ち、frameはそのimmutable IDまたはdigestを
+参照する。capture profileはlayoutを所有しない。各normalizerはobserved geometryを同じlayoutへ写像する。
+game UI geometry、canonical frame contractまたはfield contractを変更した場合だけlayout versionを上げ、
+全fixture replayを要求する。
 
 ### Recognition API
 
@@ -246,8 +249,8 @@ thresholdを自動緩和しない。
 referenceにはしない。普段のGamescope captureからunknown、low-margin、誤認識候補および代表的な
 正常例を追加し、人間がlabelした新しいimmutable corpus generationからnormalizerまたはrecognizerを
 tuningできる。新bundleは全supported profileの凍結holdoutを再実行し、既存profileを回帰させず、
-last-known-goodへrollback可能な場合だけ昇格する。model bundleはcanonical contract、capture profile、
-normalizer、layout、OCR preprocessor/model、profile別threshold、corpus generationおよびruntime digestを
+last-known-goodへrollback可能な場合だけ昇格する。model bundleは一つのcanonical contractとlayout、
+各capture profileに対応するnormalizer、OCR preprocessor/model、profile別threshold、corpus generationおよびruntime digestを
 一体でbindingする。runtime self-label、online trainingおよび自動threshold緩和は禁止する。
 
 ## Capture selection
@@ -255,8 +258,9 @@ normalizer、layout、OCR preprocessor/model、profile別threshold、corpus gene
 ### Support model
 
 capture route間にpixel correctnessの序列を置かない。Portal、Gamescope directおよび条件を満たす
-OBS routeはpeer candidateであり、それぞれのopaque capture profile、normalizer artifact、layout、
-recognition thresholdおよびsemantic replay gateを独立に持つ。pipeline内部のlayerはruntime contractに
+OBS routeはpeer candidateであり、それぞれのopaque capture profile、normalizer artifact、
+recognition thresholdおよびsemantic replay gateを独立に持つが、game共通のcanonical layoutを共有する。
+pipeline内部のlayerはruntime contractに
 含めないが、再現や診断に有用な環境情報はsecret-safeなprovenanceとして保持できる。
 
 ### Candidates
@@ -278,12 +282,12 @@ NV12、別color profileへ黙ってfallbackしない。
    quarantine report、atomic local snapshotを実装する。
 3. **M1.2**: live source acquisition、manual/scheduled sync、activation orchestrationを
    実装する。M1.1だけでM1全体を完了扱いしない。
-4. **M2**: opaque capture profileを持つprivate corpus schema、layout measurement、synthetic renderer、
+4. **M2**: normalizer未確定のobserved sourceを保持するprivate corpus schema、synthetic renderer、
    label/replay CLIを実装する。
-5. **M3**: domain normalizerとOCR preprocessor contractを実装し、PP-OCR fine-tune/exportおよび
-   Python-to-Rust parity spikeを通す。
-6. **M4**: PortalとGamescope directのObservedFrame adapterを実装し、Bazziteで各profileの
-   canonicalizationとsemantic gateを確立する。
+5. **M3**: PortalとGamescope directのObservedFrame adapterをvertical spikeとして実装し、Bazziteで
+   両routeの実observed contractと校正corpusを確立する。
+6. **M4**: game共通のcanonical frame/layout contract、各profileのdomain normalizer、OCR preprocessorを
+   実装し、shared alignment、PP-OCR fine-tune/exportおよびPython-to-Rust parity spikeを通す。
 7. **M5**: 条件付きOBS candidateを含むsupported profileのlifecycle/performanceを比較し、defaultを選ぶ。
 8. **M6**: screen、savable、play mode、difficulty/level、digits、title decoder、cross-field validationの順で
    field recognizerを追加する。
@@ -331,7 +335,7 @@ NV12、別color profileへ黙ってfallbackしない。
 
 Portal、Gamescope direct、条件を満たすOBS routeを各15分x3回と30分soakで独立に検証する。
 
-- profile固有layoutに対するcanonical geometry/crop alignment: 許容範囲内
+- game共通layoutに対する各profileのcanonical geometry/crop alignment: 許容範囲内
 - complete labelに対するsemantic recognition output: 一致
 - false accepted event: 0
 - p95 frame age: 150 ms以下

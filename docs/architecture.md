@@ -13,6 +13,7 @@ flowchart LR
   CA --> OF["ObservedFrame\nopaque capture profile"]
   OF --> DN["Versioned domain normalizer"]
   DN --> CF["CanonicalFrame\nRGB8 1920x1080"]
+  CL["Canonical layout\nshared game coordinates"] --> CF
   T["Tachi"] --> AD["Source adapters"]
   X["Textage"] --> AD
   D["INFINITAS roster signal"] --> AD
@@ -39,8 +40,11 @@ Every backend produces an owned `ObservedFrame` containing its exact input
 contract, capture generation, sequence number, monotonic timing, and immutable
 opaque capture profile identifier. A versioned domain normalizer maps that
 profile to an owned, contiguous RGB8 `CanonicalFrame` at exactly 1920x1080.
-The canonical representation is a conceptual recognition boundary; it has no
-required native, Portal, Gamescope, or OBS pixel reference.
+The canonical representation is the specified logical game canvas; it has no
+required native, Portal, Gamescope, or OBS pixel reference. A capture profile
+owns only observed input. Its normalizer artifact maps that profile to one
+canonical frame contract. The canonical frame contract owns the shared game
+layout; replay evidence references its immutable layout digest separately.
 
 The normalizer treats its capture pipeline as one domain and does not model
 Wine, Vulkan, Gamescope, compositor, PipeWire, or other layers separately.
@@ -50,15 +54,18 @@ deterministic, and never act as a generative text restorer.
 
 Portal, Gamescope direct PipeWire, and an eligible OBS path are peer candidates
 selected by independent semantic, lifecycle, and target performance gates.
-Each candidate has a distinct capture profile and normalizer. A running session
-never silently switches profiles or mixes generations.
+Each candidate has a distinct capture profile and normalizer but does not own a
+layout. A running session never silently switches profiles or mixes generations.
 
 ### Layout
 
-`LayoutProfile` contains scorepeek-owned canonical ROIs and feature contracts.
-Values are measured from the private capture corpus. An upstream implementation
-may inform where to investigate, but its code, coordinates, resources, and
-derived data do not enter the profile or its generation process.
+One versioned canonical layout contains scorepeek-owned ROIs, presence
+predicates, and alignment tolerances in logical game coordinates. Every
+supported capture profile must normalize to that layout. The layout changes
+only with the game UI geometry, canonical frame contract, or field contract;
+capture-route changes create a new profile or normalizer instead. An upstream
+implementation may inform where to investigate, but its code, coordinates,
+resources, and derived data do not enter the layout or its generation process.
 
 ### Catalog federation
 
@@ -143,7 +150,9 @@ catalog-adapter, or capture internals.
 | --- | --- |
 | External source bytes | Each Bazzite host's private cache |
 | Catalog identity, federation, and activation | scorepeek catalog core |
-| Capture normalization, layout, OCR preprocessing, and thresholds | Versioned scorepeek model bundles |
+| Capture normalization and profile-to-contract mapping | Versioned normalizer artifacts |
+| Canonical game coordinates and shared layout | Versioned canonical frame contract |
+| OCR preprocessing, model artifacts, and thresholds | Versioned scorepeek model bundles |
 | OCR training corpus and model artifacts | External private store |
 | Recognition and temporal semantics | scorepeek Rust core |
 | Public event compatibility | scorepeek schema version |
