@@ -1,0 +1,12 @@
+[Unit]
+Description=Synchronize the scorepeek catalog
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment="XDG_DATA_HOME=%h/.local/share"
+Environment="XDG_CACHE_HOME=%h/.cache"
+ExecStart=%h/.local/bin/scorepeek catalog sync
+TimeoutStartSec=10min
+UMask=0077

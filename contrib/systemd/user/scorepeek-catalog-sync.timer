@@ -1,0 +1,11 @@
+[Unit]
+Description=Synchronize the scorepeek catalog daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=6h
+Persistent=true
+Unit=scorepeek-catalog-sync.service
+
+[Install]
+WantedBy=timers.target

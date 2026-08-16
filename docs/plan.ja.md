@@ -5,8 +5,8 @@
 - 決定日: 2026-08-15
 - repository bootstrapとtarget inventory probe: 完了
 - M1.1 catalog contractとlocal federation core: 完了
-- M1.2 live acquisitionとsync orchestration: 3-source manual syncまで完了、継続中
-- scheduled sync、capture、認識、OCR学習、event daemon: 未着手
+- M1.2 live acquisitionとsync orchestration: manual/scheduled syncまで完了
+- capture、認識、OCR学習、event daemon: 未着手
 - Bazzite実機検証とprivate corpus収集: 未着手
 
 現在commitに含まれるcheckpointは[`STATUS.md`](../STATUS.md)を参照する。この文書は
@@ -154,9 +154,19 @@ corroborationに限定し、単独で状態を確定しない。
 
 ### Syncとactivation
 
-各Bazzite hostがdaily jitter付きsyncと明示的な`scorepeek catalog sync`を実行する。
-gameplay中のdaemonはnetworkを使わない。syncはper-host exclusive writer lockをsource取得前に
-獲得し、federationとactivation完了まで保持する。
+各Bazzite hostでは利用者がmanual-only、任意scheduler、または標準推奨のdaily jitter付き
+systemd user timerを選択し、いずれも同じ`scorepeek catalog sync`を実行する。定期起動は
+自動で有効化せず、systemd user timerは永続installまたはuser managerの寿命だけのtransient
+起動を選べる。gameplay中のdaemonはnetworkを使わない。syncはper-host exclusive writer lockを
+source取得前に獲得し、federationとactivation完了まで保持する。
+
+定期起動層はacquisition modeを選択せず、常に同じ`scorepeek catalog sync`だけを呼ぶ。
+現在のmodeは各hostがsourceを取得してcatalogをbuildする経路だけとする。将来、sourceごとの
+配布許諾と新しいADRに基づいてGitHub管理catalogを採用する場合は、利用者が設定で
+`self-build`またはimmutableなprovided catalogの取得を選べるようにする。GitHub上のscheduled
+syncもself-buildと同じorchestrationを実行し、配布前にprovenance、content hash、size、schema、
+semantic validationおよびsource policyを満たす。provided catalogの取得失敗時も
+last-known-goodを維持し、gameplay daemonへnetwork fallbackを追加しない。
 
 1. sourceごとにrevision、content hash、size、schema、record countを検証する。
 2. strict parserでtyped observationへ変換する。

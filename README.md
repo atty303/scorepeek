@@ -12,8 +12,8 @@ validation scaffold, a Rust target-inventory probe, and the first catalog-core
 slice: strict synthetic fixture adapters, deterministic fail-closed federation,
 quarantine results, durable content-addressed local snapshots, and bounded live
 Tachi, Textage, and dqn/iidxapi acquisition through `scorepeek catalog sync`.
-Scheduled synchronization is not implemented. It does **not** yet contain a
-runnable capture or recognition service.
+It also contains an opt-in daily systemd user schedule for that same command.
+It does **not** yet contain a runnable capture or recognition service.
 
 The first implementation milestone is:
 
@@ -59,6 +59,7 @@ mise run fix
 mise run test
 mise run doctor
 mise run catalog:sync
+mise run catalog:schedule:systemd:verify
 ```
 
 `check` is non-mutating, `fix` applies supported formatting fixes, and `test`
@@ -86,6 +87,65 @@ store admits at most 32 snapshots, 128 MiB per snapshot and 512 MiB total. New
 content fails closed when a limit is reached. The command emits revision,
 digest, record count, active digest, and aggregate quarantine counts without raw
 source records.
+
+`scorepeek catalog sync` is the scheduling interface. A user may keep recurring
+execution disabled and run it manually, or select any scheduler that preserves
+the desired daily jitter; no schedule is enabled automatically. The standard
+recommended route is a systemd user timer, with a per-run delay of up to six
+hours. All routes invoke the same command and therefore share the catalog
+writer lock and fail-closed exit behavior.
+
+The scheduler deliberately does not select a catalog acquisition mode. The
+current command always builds from validated sources on the host. If a future
+source-policy and ADR decision permits GitHub-managed catalog distribution, the
+same command boundary will allow a user to choose local self-build or verified
+provided-catalog acquisition, and GitHub scheduling will run the self-build
+orchestration. No provided-catalog path is enabled today.
+
+The systemd installer builds a locked release binary at
+`%h/.local/bin/scorepeek`, installs the user units below
+`$XDG_CONFIG_HOME/systemd/user` (or `$HOME/.config/systemd/user`), and enables
+the timer only when explicitly invoked:
+
+```text
+mise run catalog:schedule:systemd:install
+```
+
+The installed service records the current absolute `$XDG_DATA_HOME` and
+`$XDG_CACHE_HOME` values, or their standard home-directory fallbacks, so later
+scheduled runs use the same catalog roots as the installing shell. Re-run the
+installer after intentionally changing those roots.
+
+The persistent host deployment is explicit and is not performed by
+`mise run test`; its non-mutating unit verification is included.
+All scorepeek systemd scheduling can be stopped, and the installed timer can be
+disabled without removing the binary or unit files, with
+`mise run catalog:schedule:systemd:disable`. This also stops a running transient
+timer, allowing an immediate return to manual-only synchronization.
+Persistent and transient timers are mutually exclusive: either activation task
+fails closed and points to this disable task when the other mode is active or
+enabled.
+
+To keep a daily timer only for the lifetime of the current systemd user manager
+without installing unit files or enabling it across restarts, use:
+
+```text
+mise run catalog:schedule:systemd:start:transient
+```
+
+This transient route runs the locked release binary from the current repository
+and deliberately sets `Persistent=false`; moving the repository invalidates
+that transient service. Keeping recurring execution disabled requires no setup
+and leaves `mise run catalog:sync` as the manual route.
+
+`mise run catalog:schedule:systemd:verify` can also perform that non-mutating
+unit validation independently. `mise run catalog:schedule:systemd:test:live` is an explicit
+networked live gate: it uses private temporary XDG roots and a transient
+one-second timer, starts a manual sync while the scheduled run holds the writer
+lock, verifies both aggregate-only invocations succeed, and removes the
+acquired bytes and generated catalog afterward. Output equality is reported but
+is not required because an upstream source may legitimately change between the
+serialized acquisitions. It does not install or enable the persistent timer.
 
 ## Licensing
 

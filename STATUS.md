@@ -6,9 +6,8 @@ is outside this checkpoint.
 
 ## Current milestone
 
-- Milestone: **M1.2 — live catalog acquisition and sync orchestration**
-- State: **in_progress**
-- Parent milestone: **M1 — catalog federation and activation** (`in_progress`)
+- Milestone: **M1 — catalog federation and activation**
+- State: **complete**
 
 ## Included deliverables
 
@@ -63,11 +62,24 @@ is outside this checkpoint.
   conditionally activates a durable snapshot under 32-generation,
   128 MiB-per-file, and 512 MiB-total caps, and emits only source evidence and
   aggregate quarantine counts.
+- Optional daily scheduling that always invokes the same `scorepeek catalog
+  sync` entry point. The standard recommended route is a systemd user oneshot
+  service with a persistent daily timer and up to six hours of jitter. Users
+  may instead keep synchronization manual, use another scheduler, or start a
+  non-persistent transient systemd timer. No recurring path is enabled
+  automatically.
+- Reproducible systemd unit verification, explicit install/disable tasks, and
+  an isolated live gate that starts a manual sync while a timer-triggered sync
+  owns the existing catalog writer lock. The scheduling layer is independent
+  of acquisition mode so a future approved GitHub-managed catalog can preserve
+  the same command while users select self-build or provided acquisition.
 
 ## Verified in this checkpoint
 
 - `mise run test`: passed on the development host, including all Rust library
   and binary tests and repository checks.
+- `mise run catalog:schedule:systemd:verify`: passed without installing the
+  release binary or user units.
 - The tests use synthetic, independently created fixture data only.
 - An isolated live `scorepeek catalog sync` resolved Tachi commit
   `4ef9ca588424e1a98dc73421a49dd8efe3b37ddd`, validated and privately cached its
@@ -105,12 +117,23 @@ is outside this checkpoint.
   title and binding evidence; semantic assertions now reuse their original
   evidence while the latest source revision remains recorded. Synthetic
   regressions cover both an unchanged revision and a sparse attribute change.
+- An isolated transient systemd user timer invoked the release
+  `scorepeek catalog sync` against temporary private XDG data and cache roots.
+  After the scheduled run acquired the catalog writer lock, a concurrent
+  manual invocation against the same roots was started. Both completed
+  successfully with byte-identical aggregate JSON output, demonstrating that
+  the schedule and manual paths serialize through the same lock. The transient
+  units, external source bytes, and generated catalog were removed after the
+  gate; no persistent timer was installed or enabled.
 
 ## Unverified and target-only boundaries
 
-- No scheduled synchronization exists. Catalog-update recognition replay,
-  private capture corpus, OCR model, capture backend, field recognizer, event
-  daemon, and the integrated live flow also remain unvalidated.
+- Catalog-update recognition replay, private capture corpus, OCR model, capture
+  backend, field recognizer, event daemon, and the integrated live flow remain
+  unvalidated.
+- The persistent systemd installer's custom unit-path linking, timer enablement,
+  and unified disable path were reviewed but not deployed to the user's actual
+  configuration. Only the non-persistent transient user-manager path was run.
 - Bazzite Portal, Gamescope, OBS, GPU, lifecycle, performance, and soak gates
   remain target-machine-only and unrun.
 
@@ -129,23 +152,24 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Continue **M1.2 — live catalog acquisition and sync orchestration** with daily
-jittered scheduled synchronization. The scheduled path must invoke the same
-manual `scorepeek catalog sync` entry point, share its single writer lock, keep
-network access outside the gameplay daemon, preserve fail-closed exit status
-and aggregate-only output, and expose reproducible install/verification tasks.
-Do not mark M1 complete until an isolated schedule-triggered sync and concurrent
-manual/scheduled serialization both pass. Catalog-update recognition replay
-remains part of M8 because it depends on the later recognition pipeline.
+Begin **M2 — private corpus, layout measurement, synthetic renderer, and replay
+tooling** with the versioned private-corpus contract and deterministic
+content-addressed ingest/replay metadata. Keep captured frames and complete
+labels outside the repository, admit only opaque fixture IDs and hashes into
+committed manifests, and separate Windows semantic-reference inputs from Linux
+capture-calibration inputs. Present any required media/runtime dependency with
+its pinned version, license, alternatives, and host impact for approval before
+adding it. Catalog-update recognition replay remains part of M8 because it
+depends on the later recognition pipeline.
 
 ## Stable milestone map
 
 | ID | Milestone | State |
 | --- | --- | --- |
 | M0 | Independent design, repository bootstrap, and target inventory | complete |
-| M1 | Catalog federation and activation | in progress |
+| M1 | Catalog federation and activation | complete |
 | M1.1 | Catalog contract and local federation core | complete |
-| M1.2 | Live acquisition and sync orchestration | in progress |
+| M1.2 | Live acquisition and sync orchestration | complete |
 | M2 | Private corpus, layout measurement, synthetic renderer, and replay tooling | pending |
 | M3 | OCR training/export and Python-to-Rust parity | pending |
 | M4 | Portal reference capture and canonical-frame validation | pending |

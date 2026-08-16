@@ -67,6 +67,14 @@ fsyncs the content-store destination parent. Only then does it fsync and
 atomically replace the active manifest and fsync the manifest parent before
 releasing the lock.
 
+Scheduling is an outer trigger for `scorepeek catalog sync`; it does not encode
+how a catalog is acquired. The current implementation builds from validated
+source observations on each host. If a later ADR and source permissions allow a
+GitHub-managed catalog, the same command can expose a user-selected self-build
+or immutable provided-catalog mode, while GitHub scheduling runs the self-build
+orchestration before publication. Both modes must retain provenance, bounded
+content-addressed storage, semantic validation, and last-known-good activation.
+
 The daemon does not synchronize during a game session. It opens one immutable
 catalog digest at startup.
 

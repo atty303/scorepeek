@@ -41,6 +41,7 @@ run = '''
 set -euo pipefail
 mise run check README.md
 mise run check
+mise run catalog:schedule:systemd:verify
 cargo clippy --locked --workspace --all-targets -- -D warnings
 exec cargo test --locked --workspace
 '''
@@ -52,3 +53,23 @@ run = "cargo run --locked --quiet -- doctor"
 [tasks."catalog:sync"]
 description = "Synchronize and conditionally activate the live catalog"
 run = "cargo run --locked --quiet -- catalog sync"
+
+[tasks."catalog:schedule:systemd:verify"]
+description = "Validate the daily user schedule units"
+run = "scripts/verify-user-schedule.bash"
+
+[tasks."catalog:schedule:systemd:test:live"]
+description = "Test a scheduled sync and concurrent manual sync in isolated storage"
+run = "scripts/test-user-schedule-live.bash"
+
+[tasks."catalog:schedule:systemd:install"]
+description = "Install and enable the daily user schedule"
+run = "scripts/install-user-schedule.bash"
+
+[tasks."catalog:schedule:systemd:start:transient"]
+description = "Start a daily user timer without persisting unit files"
+run = "scripts/start-transient-user-schedule.bash"
+
+[tasks."catalog:schedule:systemd:disable"]
+description = "Stop transient scheduling and disable the installed daily timer"
+run = "scripts/disable-user-schedule.bash"
