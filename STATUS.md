@@ -81,11 +81,9 @@ is outside this checkpoint.
   1920x1080 `CanonicalFrame`, and field-specific OCR preprocessing. Capture
   routes are independently gated peers; none is a pixel correctness reference,
   and the normalizer does not model pipeline layers separately.
-- Versioned, strict private-corpus ingest/source/replay contracts whose current
-  implementation still represents Windows semantic-reference and Linux
-  capture-calibration inputs as disjoint typed profiles. This profile and hard
-  profile-disjoint split contract is now marked as superseded and must be
-  replaced before real media ingest or later M2 corpus work continues.
+- Versioned, strict private-corpus ingest/source/replay contracts. Every source
+  binds an opaque capture profile, immutable domain-normalizer artifact digest,
+  and layout profile without exposing capture-pipeline classifications.
   Committed examples contain only opaque IDs, hashes, and non-personal classes;
   complete labels and media remain external.
 - Bounded content-addressed private source ingest with an explicit absolute
@@ -102,9 +100,11 @@ is outside this checkpoint.
 - Replay-suite validation that requires complete coverage of one sealed
   generation, reads canonical source manifests and media from the private
   store, binds exact source-manifest/extractor-manifest/parameter/frame/label
-  digests, preserves source PTS and strict decode order, and rejects duplicate
-  IDs or session/profile/episode/play/title/identical-frame groups crossing
-  train, validation, or holdout splits anywhere in the suite.
+  digests, preserves source PTS and strict decode order, and always rejects
+  duplicate IDs or session/episode/play/title/identical-frame groups crossing
+  train, validation, or holdout splits. Each suite explicitly selects an
+  in-profile contract or adds capture-profile disjointness for cross-profile
+  evaluation.
 - A strict `scorepeek-private-complete-label-v1` contract with distinct result,
   music-select, and non-recognition shapes. Replay bounded-reads canonical
   private label documents, validates typed field states, frame/revision and
@@ -118,11 +118,12 @@ is outside this checkpoint.
   and binary tests and repository checks.
 - `mise run catalog:schedule:systemd:verify`: passed without installing the
   release binary or user units.
-- `cargo test --locked -p scorepeek-corpus`: passed all sixteen synthetic corpus
-  tests, including idempotent private ingest, fixture-ID conflict rejection,
-  canonical source/complete-label binding, pre-mutation symlink rejection,
-  label cross-field and unreferenced-object rejection, decode ordering, and
-  same-index/cross-index grouped split isolation.
+- `cargo test --locked -p scorepeek-corpus`: passed all seventeen synthetic
+  corpus tests, including idempotent private ingest, fixture-ID conflict
+  rejection, canonical source/complete-label binding, pre-mutation symlink
+  rejection, label cross-field and unreferenced-object rejection, decode
+  ordering, same-index/cross-index grouped split isolation, and distinct
+  in-profile/profile-disjoint evaluation behavior.
 - The tests use synthetic, independently created fixture data only.
 - An isolated live `scorepeek catalog sync` resolved Tachi commit
   `4ef9ca588424e1a98dc73421a49dd8efe3b37ddd`, validated and privately cached its
@@ -175,10 +176,11 @@ is outside this checkpoint.
   synthetic rendering, replay execution, layout measurement, catalog-update recognition
   replay, OCR model, capture backend, field recognizer, event daemon, and the
   integrated live flow remain unvalidated.
-- The `ObservedFrame`/domain-normalizer/`CanonicalFrame` boundary, opaque
-  capture-profile corpus contract, OCR preprocessor, in-profile holdout,
-  separate profile-disjoint evaluation, model-bundle promotion, and
-  last-known-good model rollback remain unimplemented and unvalidated.
+- The `ObservedFrame`/domain-normalizer/`CanonicalFrame` runtime boundary, OCR
+  preprocessor, model-bundle promotion, and last-known-good model rollback
+  remain unimplemented and unvalidated. Corpus metadata and split-contract
+  behavior are synthetically verified but have not been exercised with real
+  capture data.
 - The persistent systemd installer's custom unit-path linking, timer enablement,
   and unified disable path were reviewed but not deployed to the user's actual
   configuration. Only the non-persistent transient user-manager path was run.
@@ -202,18 +204,14 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Continue **M2** by replacing the superseded corpus profile and split contract
-before ingesting real media: remove the Windows semantic-reference/Linux
-capture-calibration role hierarchy, represent opaque capture profiles and their
-normalizer bindings, allow session/title-isolated in-profile holdout, and model
-profile-disjoint evaluation separately. Preserve the verified private-store,
-canonical metadata, complete-label, generation, replay-ordering, and grouped
-split safety properties. Then continue with deterministic episode/index
-generation, private label authoring, and the independently redistributable
-synthetic renderer. Before adding media extraction or a learned normalizer,
-present the proposed tool or dependency with its pinned version, license,
-alternatives, and host impact for approval. Catalog-update recognition replay
-remains part of M8 because it depends on the later recognition pipeline.
+Continue **M2** with deterministic episode/index generation, private label
+authoring, and the independently redistributable synthetic renderer while
+preserving the verified private-store, canonical metadata, complete-label,
+replay-ordering, and grouped split safety properties. Before adding media
+extraction or a learned normalizer, present the proposed tool or dependency with
+its pinned version, license, alternatives, and host impact for approval.
+Catalog-update recognition replay remains part of M8 because it depends on the
+later recognition pipeline.
 
 ## Stable milestone map
 

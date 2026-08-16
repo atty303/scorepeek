@@ -1,18 +1,9 @@
 # Private corpus contract
 
-This document defines the first M2 boundary between immutable private media,
+This document defines the M2 boundary between immutable private media,
 offline corpus tooling, the future training/export pipeline, and the scorepeek
 game-session core. Real media, extracted frames, complete labels, and replay
 indexes remain outside the repository.
-
-> **Implementation checkpoint:** the profile and split contract documented
-> below is implemented and synthetically verified, but its Windows
-> semantic-reference/Linux capture-calibration split is superseded by
-> [ADR 0008](decisions/0008-normalize-opaque-capture-domains.md). Do not ingest
-> real media under this schema. The next M2 change will replace it with opaque
-> capture profiles, versioned domain normalizers, in-profile holdout, and a
-> separate profile-disjoint evaluation suite while preserving the verified
-> private-store and replay-safety properties.
 
 ## Ownership boundary
 
@@ -28,22 +19,17 @@ indexes remain outside the repository.
   committed. A content hash is a reference, not permission to publish its
   content.
 
-Windows VM recordings and Linux captures have disjoint typed profiles:
-
-- `windows_semantic_reference` covers screen semantics, transitions, closed
-  classes, and annotation workflow. It is not capture-calibration or Linux
-  release-gate evidence.
-- `linux_capture_calibration` binds capture, normalizer, and layout profile IDs
-  and is the only role that can support backend/layout calibration after the
-  target-machine gates pass.
-
-The two roles cannot silently substitute for each other.
+Every source binds one opaque capture profile, one immutable domain-normalizer
+artifact digest, and one layout profile. These identifiers describe the
+observed-to-canonical contract as a whole. Corpus tooling does not infer or
+model Wine, Vulkan, Gamescope, compositor, PipeWire, operating-system, or
+capture-layer classifications from them.
 
 ## Immutable ingest
 
 The input request uses schema `scorepeek-private-corpus-ingest-v1` and contains
-only an opaque fixture ID, an opaque session ID, and exactly one typed profile.
-For example:
+only an opaque fixture ID, an opaque session ID, and exactly one profile
+binding. For example:
 
 ```json
 {
@@ -51,8 +37,9 @@ For example:
   "fixture_id": "fixture-001",
   "session_id": "session-001",
   "profile": {
-    "kind": "windows_semantic_reference",
-    "recording_profile_id": "windows-vm-fhd-v1"
+    "capture_profile_id": "gamescope-pipewire-fhd-a",
+    "normalizer_artifact_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "layout_profile_id": "infinitas-fhd-layout-a"
   }
 }
 ```
@@ -69,7 +56,8 @@ canonical `scorepeek-private-corpus-source-v1` manifest to
 manifest, and lock files use mode `0600`. A per-store writer lock serializes
 recovery and publication. Newly created files and relevant directories are
 synced before success is reported. The aggregate-only command result includes
-both source and canonical source-manifest SHA-256 values for downstream binding.
+canonical profile-binding, source, and source-manifest SHA-256 values for
+downstream binding.
 The root, managed directories, and writer lock must be real filesystem entries;
 symlinks are rejected before permissions or private content are changed.
 
@@ -110,9 +98,10 @@ total; a new generation fails without changing older generations.
 ## Replay metadata
 
 `scorepeek-private-corpus-replay-suite-v1` is the corpus-wide validation unit.
-It contains one or more `scorepeek-private-corpus-replay-v1` indexes. Each
-suite binds one sealed corpus-generation SHA-256, and each index binds the exact
-canonical source-manifest SHA-256 to one extractor identity, its version, exact
+It contains an explicit `in_profile` or `profile_disjoint` split contract and
+one or more `scorepeek-private-corpus-replay-v1` indexes. Each suite binds one
+sealed corpus-generation SHA-256, and each index binds the exact canonical
+source-manifest SHA-256 to one extractor identity, its version, exact
 extractor-manifest and parameter hashes, source time base, and a sequence of
 selected frames. Every frame records:
 
@@ -147,14 +136,18 @@ store is fail-closed at 64 KiB per document, 250,000 documents, and 4 GiB total.
 Validation reads each named manifest and content-addressed media object from the
 explicit store, verifies their bytes and duplicated index metadata, and rejects
 duplicate fixture/frame IDs or non-canonical hashes. It also rejects
-non-increasing per-source decode order and any session ID, capture profile,
-episode, session hash, play hash, title hash, or identical-frame digest assigned
-across multiple splits anywhere in the suite. Before these checks, the suite's
-fixture/source-manifest set must exactly equal its sealed generation. The
-title-group rule is the enforceable boundary for a title-disjoint OCR holdout;
-it does not infer a title from private content. Replay indexes must use the
-generation's unique fixture-ID order so the canonical suite digest is invariant
-to caller traversal order.
+non-increasing per-source decode order and any session ID, episode, session
+hash, play hash, title hash, or identical-frame digest assigned across multiple
+splits anywhere in the suite. `in_profile` permits the same capture profile ID
+in multiple splits so frozen holdout data can measure recognition within an
+observed domain. `profile_disjoint` requires each capture profile ID to appear
+in only one split even when its normalizer or layout binding differs, measuring
+transfer to an unseen observed domain.
+Before these checks, the suite's fixture/source-manifest set must exactly equal
+its sealed generation. The title-group rule is the enforceable boundary for a
+title-disjoint OCR holdout; it does not infer a title from private content.
+Replay indexes must use the generation's unique fixture-ID order so the
+canonical suite digest is invariant to caller traversal order.
 
 ```text
 mise run corpus:replay:validate -- --store /absolute/private/store /absolute/replay-suite.json
@@ -163,8 +156,8 @@ mise run corpus:replay:validate -- --store /absolute/private/store /absolute/rep
 The command outputs a dedicated
 `scorepeek-private-corpus-replay-suite-summary-v1` result containing the sealed
 generation digest, canonical replay-suite digest, opaque suite ID, index and
-frame counts, and per-split counts. It does not emit paths, media, complete
-labels, recognized values, or personal data.
+frame counts, selected split contract, and per-split counts. It does not emit
+paths, media, complete labels, recognized values, or personal data.
 
 ## Not yet implemented
 

@@ -104,18 +104,14 @@ splits, generation sealing records every current fixture binding in one
 immutable content-addressed generation. Replay-suite validation reads that
 generation plus the canonical source manifests and media from the store,
 requires complete generation coverage, and checks source PTS plus decode
-ordering, opaque fixture and episode IDs, profile separation,
-extractor/annotation/frame hashes, and corpus-wide session/play/title grouped
-split isolation. It emits only opaque IDs, hashes, roles, and aggregate counts.
-See [the private corpus contract](docs/private-corpus.md). Media extraction and
+ordering, opaque fixture and episode IDs, capture-profile/normalizer/layout
+bindings, extractor/annotation/frame hashes, and corpus-wide session/play/title
+grouped split isolation. Each suite selects either in-profile evaluation or the
+stricter profile-disjoint evaluation. It emits only opaque IDs, hashes, the
+selected split contract, and aggregate counts. See
+[the private corpus contract](docs/private-corpus.md). Media extraction and
 training/export remain later offline stages and will not become game-session
 runtime dependencies.
-
-The implemented v1 corpus profile split predates the current opaque-profile
-normalization decision. Do not ingest real media under that profile schema;
-M2 will replace it before episode generation, label authoring, or training
-continues. Its current commands and synthetic tests remain the verified
-checkpoint for storage, canonical metadata, and replay-safety behavior.
 
 `scorepeek catalog sync` is the scheduling interface. A user may keep recurring
 execution disabled and run it manually, or select any scheduler that preserves

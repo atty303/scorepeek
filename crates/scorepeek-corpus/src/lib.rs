@@ -90,49 +90,23 @@ impl From<serde_json::Error> for CorpusError {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CorpusProfile {
-    WindowsSemanticReference {
-        recording_profile_id: String,
-    },
-    LinuxCaptureCalibration {
-        capture_profile_id: String,
-        normalizer_profile_id: String,
-        layout_profile_id: String,
-    },
+#[serde(deny_unknown_fields)]
+pub struct CaptureProfileBinding {
+    pub capture_profile_id: String,
+    pub normalizer_artifact_sha256: String,
+    pub layout_profile_id: String,
 }
 
-impl CorpusProfile {
+impl CaptureProfileBinding {
     fn validate(&self, context: ErrorContext) -> Result<(), CorpusError> {
-        match self {
-            Self::WindowsSemanticReference {
-                recording_profile_id,
-            } => validate_token(recording_profile_id, "recording_profile_id", context),
-            Self::LinuxCaptureCalibration {
-                capture_profile_id,
-                normalizer_profile_id,
-                layout_profile_id,
-            } => {
-                validate_token(capture_profile_id, "capture_profile_id", context)?;
-                validate_token(normalizer_profile_id, "normalizer_profile_id", context)?;
-                validate_token(layout_profile_id, "layout_profile_id", context)
-            }
-        }
+        validate_token(&self.capture_profile_id, "capture_profile_id", context)?;
+        validate_sha256(
+            &self.normalizer_artifact_sha256,
+            "normalizer_artifact_sha256",
+            context,
+        )?;
+        validate_token(&self.layout_profile_id, "layout_profile_id", context)
     }
-
-    const fn role(&self) -> CorpusRole {
-        match self {
-            Self::WindowsSemanticReference { .. } => CorpusRole::WindowsSemanticReference,
-            Self::LinuxCaptureCalibration { .. } => CorpusRole::LinuxCaptureCalibration,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CorpusRole {
-    WindowsSemanticReference,
-    LinuxCaptureCalibration,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -141,7 +115,7 @@ struct IngestRequest {
     schema: String,
     fixture_id: String,
     session_id: String,
-    profile: CorpusProfile,
+    profile: CaptureProfileBinding,
 }
 
 impl IngestRequest {
@@ -180,7 +154,7 @@ pub struct SourceManifest {
     pub schema: String,
     pub fixture_id: String,
     pub session_id: String,
-    pub profile: CorpusProfile,
+    pub profile: CaptureProfileBinding,
     pub source: ContentRef,
 }
 
@@ -195,7 +169,7 @@ impl SourceManifest {
         Ok(IngestSummary {
             schema: INGEST_SUMMARY_SCHEMA.to_owned(),
             fixture_id: self.fixture_id.clone(),
-            corpus_role: self.profile.role(),
+            profile_sha256: digest_bytes(&canonical_json(&self.profile)?),
             source_sha256: self.source.sha256.clone(),
             source_bytes: self.source.bytes,
             source_manifest_sha256: digest_bytes(&canonical_json(self)?),
@@ -219,7 +193,7 @@ impl SourceManifest {
 pub struct IngestSummary {
     pub schema: String,
     pub fixture_id: String,
-    pub corpus_role: CorpusRole,
+    pub profile_sha256: String,
     pub source_sha256: String,
     pub source_bytes: u64,
     pub source_manifest_sha256: String,
@@ -507,7 +481,7 @@ pub struct ReplayIndex {
     pub schema: String,
     pub fixture_id: String,
     pub session_id: String,
-    pub profile: CorpusProfile,
+    pub profile: CaptureProfileBinding,
     pub source: ContentRef,
     pub source_manifest_sha256: String,
     pub extractor: ExtractorIdentity,
@@ -565,6 +539,7 @@ pub struct ReplaySuite {
     pub schema: String,
     pub suite_id: String,
     pub corpus_generation_sha256: String,
+    pub split_contract: SplitContract,
     pub indexes: Vec<ReplayIndex>,
 }
 
@@ -640,7 +615,7 @@ impl ReplaySuite {
             ));
         }
         let mut fixture_ids = BTreeSet::new();
-        let mut assignments = SplitAssignments::default();
+        let mut assignments = SplitAssignments::new(self.split_contract);
 
         for index in &self.indexes {
             if !fixture_ids.insert(&index.fixture_id) {
@@ -667,6 +642,7 @@ impl ReplaySuite {
             suite_id: self.suite_id.clone(),
             corpus_generation_sha256: self.corpus_generation_sha256.clone(),
             replay_suite_sha256: digest_bytes(&canonical_json(self)?),
+            split_contract: self.split_contract,
             index_count: self.indexes.len() as u64,
             frame_count: assignments.frame_count,
             split_counts: assignments.split_counts,
@@ -674,11 +650,10 @@ impl ReplaySuite {
     }
 }
 
-#[derive(Default)]
 struct SplitAssignments {
     frame_ids: BTreeSet<String>,
     sessions: BTreeMap<String, CorpusSplit>,
-    profiles: BTreeMap<CorpusProfile, CorpusSplit>,
+    profiles: ProfileAssignments,
     episodes: BTreeMap<String, CorpusSplit>,
     session_hashes: BTreeMap<String, CorpusSplit>,
     plays: BTreeMap<String, CorpusSplit>,
@@ -689,6 +664,24 @@ struct SplitAssignments {
 }
 
 impl SplitAssignments {
+    fn new(contract: SplitContract) -> Self {
+        Self {
+            frame_ids: BTreeSet::new(),
+            sessions: BTreeMap::new(),
+            profiles: match contract {
+                SplitContract::InProfile => ProfileAssignments::Shared,
+                SplitContract::ProfileDisjoint => ProfileAssignments::Disjoint(BTreeMap::new()),
+            },
+            episodes: BTreeMap::new(),
+            session_hashes: BTreeMap::new(),
+            plays: BTreeMap::new(),
+            titles: BTreeMap::new(),
+            frame_digests: BTreeMap::new(),
+            split_counts: BTreeMap::new(),
+            frame_count: 0,
+        }
+    }
+
     fn record(&mut self, index: &ReplayIndex, frame: &ReplayFrame) -> Result<(), CorpusError> {
         if !self.frame_ids.insert(frame.frame_id.clone()) {
             return Err(CorpusError::InvalidReplay(
@@ -701,12 +694,14 @@ impl SplitAssignments {
             frame.split,
             "session ID",
         )?;
-        require_one_split(
-            &mut self.profiles,
-            index.profile.clone(),
-            frame.split,
-            "capture profile",
-        )?;
+        if let ProfileAssignments::Disjoint(assignments) = &mut self.profiles {
+            require_one_split(
+                assignments,
+                index.profile.capture_profile_id.clone(),
+                frame.split,
+                "capture profile",
+            )?;
+        }
         require_one_split(
             &mut self.episodes,
             frame.episode_id.clone(),
@@ -741,6 +736,11 @@ impl SplitAssignments {
         self.frame_count += 1;
         Ok(())
     }
+}
+
+enum ProfileAssignments {
+    Shared,
+    Disjoint(BTreeMap<String, CorpusSplit>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1125,6 +1125,13 @@ pub enum CorpusSplit {
     Holdout,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SplitContract {
+    InProfile,
+    ProfileDisjoint,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SplitGroups {
@@ -1155,6 +1162,7 @@ pub struct ReplaySuiteSummary {
     pub suite_id: String,
     pub corpus_generation_sha256: String,
     pub replay_suite_sha256: String,
+    pub split_contract: SplitContract,
     pub index_count: u64,
     pub frame_count: u64,
     pub split_counts: BTreeMap<CorpusSplit, u64>,
@@ -1969,8 +1977,9 @@ mod tests {
                 "fixture_id": "fixture-001",
                 "session_id": "session-001",
                 "profile": {
-                    "kind": "windows_semantic_reference",
-                    "recording_profile_id": "windows-vm-fhd-v1"
+                    "capture_profile_id": "capture-profile-a",
+                    "normalizer_artifact_sha256": A,
+                    "layout_profile_id": "layout-v1"
                 }
             }))
             .unwrap(),
@@ -2011,7 +2020,7 @@ mod tests {
         let source = temporary.path().join("source.bin");
         let request = temporary.path().join("request.json");
         fs::write(&source, b"first source").unwrap();
-        write_request(&request, "windows-vm-fhd-v1");
+        write_request(&request, "capture-profile-a");
         let store = CorpusStore::new(&root);
         store.ingest(&source, &request).unwrap();
 
@@ -2031,7 +2040,7 @@ mod tests {
             &store,
             "fixture-001",
             "session-001",
-            "windows-vm-fhd-v1",
+            "capture-profile-a",
             b"synthetic replay source",
         );
         let generation = store.seal_generation("generation-001").unwrap();
@@ -2065,7 +2074,7 @@ mod tests {
     }
 
     #[test]
-    fn replay_suite_rejects_session_episode_and_profile_split_leaks() {
+    fn replay_suite_rejects_session_and_episode_split_leaks() {
         let temporary = tempdir().unwrap();
         let root = temporary.path().join("private-corpus");
         let store = CorpusStore::new(&root);
@@ -2074,7 +2083,7 @@ mod tests {
             &store,
             "fixture-001",
             "session-001",
-            "windows-vm-fhd-v1",
+            "capture-profile-a",
             b"synthetic replay source",
         );
         let generation = store.seal_generation("generation-001").unwrap();
@@ -2093,6 +2102,48 @@ mod tests {
     }
 
     #[test]
+    fn split_contract_distinguishes_in_profile_and_profile_disjoint_evaluation() {
+        let temporary = tempdir().unwrap();
+        let root = temporary.path().join("private-corpus");
+        let store = CorpusStore::new(&root);
+        let first = ingest_fixture(
+            temporary.path(),
+            &store,
+            "fixture-001",
+            "session-001",
+            "capture-profile-a",
+            b"first replay source",
+        );
+        let second = ingest_fixture_with_normalizer(
+            temporary.path(),
+            &store,
+            "fixture-002",
+            "session-002",
+            "capture-profile-a",
+            B,
+            b"second replay source",
+        );
+        let generation = store.seal_generation("generation-001").unwrap();
+        let mut suite_value = replay_suite_value(
+            &generation.corpus_generation_sha256,
+            &[
+                replay_index_value(&first, "train", C, &root),
+                replay_index_value(&second, "holdout", D, &root),
+            ],
+        );
+        let suite = temporary.path().join("suite.json");
+        fs::write(&suite, serde_json::to_vec(&suite_value).unwrap()).unwrap();
+
+        let summary = store.validate_replay_suite(&suite).unwrap();
+        assert_eq!(summary.split_contract, super::SplitContract::InProfile);
+
+        suite_value["split_contract"] = json!("profile_disjoint");
+        fs::write(&suite, serde_json::to_vec(&suite_value).unwrap()).unwrap();
+        let error = store.validate_replay_suite(&suite).unwrap_err();
+        assert!(error.to_string().contains("capture profile group crosses"));
+    }
+
+    #[test]
     fn replay_suite_rejects_cross_index_title_leaks() {
         let temporary = tempdir().unwrap();
         let root = temporary.path().join("private-corpus");
@@ -2102,7 +2153,7 @@ mod tests {
             &store,
             "fixture-001",
             "session-001",
-            "windows-vm-fhd-v1",
+            "capture-profile-a",
             b"first replay source",
         );
         let second = ingest_fixture(
@@ -2110,7 +2161,7 @@ mod tests {
             &store,
             "fixture-002",
             "session-002",
-            "windows-vm-fhd-v2",
+            "capture-profile-b",
             b"second replay source",
         );
         let generation = store.seal_generation("generation-001").unwrap();
@@ -2145,7 +2196,7 @@ mod tests {
             &store,
             "fixture-001",
             "session-001",
-            "windows-vm-fhd-v1",
+            "capture-profile-a",
             b"first replay source",
         );
         let second = ingest_fixture(
@@ -2153,7 +2204,7 @@ mod tests {
             &store,
             "fixture-002",
             "session-002",
-            "windows-vm-fhd-v2",
+            "capture-profile-b",
             b"second replay source",
         );
         let generation = store.seal_generation("generation-001").unwrap();
@@ -2185,7 +2236,7 @@ mod tests {
             &store,
             "fixture-001",
             "session-001",
-            "windows-vm-fhd-v1",
+            "capture-profile-a",
             b"first replay source",
         );
         let second = ingest_fixture(
@@ -2193,7 +2244,7 @@ mod tests {
             &store,
             "fixture-002",
             "session-002",
-            "windows-vm-fhd-v2",
+            "capture-profile-b",
             b"second replay source",
         );
         let generation = store.seal_generation("generation-001").unwrap();
@@ -2220,7 +2271,7 @@ mod tests {
             &store,
             "fixture-001",
             "session-001",
-            "windows-vm-fhd-v1",
+            "capture-profile-a",
             b"synthetic replay source",
         );
         let generation = store.seal_generation("generation-001").unwrap();
@@ -2252,7 +2303,7 @@ mod tests {
             &store,
             "fixture-001",
             "session-001",
-            "windows-vm-fhd-v1",
+            "capture-profile-a",
             b"synthetic replay source",
         );
         let generation = store.seal_generation("generation-001").unwrap();
@@ -2291,7 +2342,7 @@ mod tests {
             &store,
             "fixture-001",
             "session-001",
-            "windows-vm-fhd-v1",
+            "capture-profile-a",
             b"synthetic replay source",
         );
         let generation = store.seal_generation("generation-001").unwrap();
@@ -2344,7 +2395,7 @@ mod tests {
             &store,
             "fixture-001",
             "session-001",
-            "windows-vm-fhd-v1",
+            "capture-profile-a",
             b"synthetic replay source",
         );
         let generation = store.seal_generation("generation-001").unwrap();
@@ -2402,7 +2453,7 @@ mod tests {
             &store,
             "fixture-0000",
             "session-0000",
-            "windows-vm-fhd-v1",
+            "capture-profile-a",
             b"first source",
         );
         let manifests = root.join("manifests");
@@ -2416,7 +2467,7 @@ mod tests {
             &request,
             "fixture-overflow",
             "session-overflow",
-            "windows-vm-fhd-v1",
+            "capture-profile-a",
         );
         let before = fs::read_dir(root.join("content")).unwrap().count();
         assert!(matches!(
@@ -2432,7 +2483,7 @@ mod tests {
         let source = temporary.path().join("source.media");
         let request = temporary.path().join("request.json");
         fs::write(&source, b"synthetic source").unwrap();
-        write_request_for(&request, "fixture-001", "session-001", "windows-vm-fhd-v1");
+        write_request_for(&request, "fixture-001", "session-001", "capture-profile-a");
 
         let target = temporary.path().join("target");
         let alias = temporary.path().join("alias");
@@ -2475,7 +2526,7 @@ mod tests {
             &store,
             "fixture-001",
             "session-001",
-            "windows-vm-fhd-v1",
+            "capture-profile-a",
             b"first source",
         );
         let outside = temporary.path().join("outside-generations");
@@ -2488,7 +2539,7 @@ mod tests {
         let source = temporary.path().join("fixture-002.media");
         let request = temporary.path().join("fixture-002.json");
         fs::write(&source, b"second source").unwrap();
-        write_request_for(&request, "fixture-002", "session-002", "windows-vm-fhd-v1");
+        write_request_for(&request, "fixture-002", "session-002", "capture-profile-a");
         assert!(store.ingest(&source, &request).is_err());
 
         assert_eq!(root.metadata().unwrap().permissions().mode() & 0o777, 0o755);
@@ -2520,8 +2571,9 @@ mod tests {
                 "fixture_id": fixture_id,
                 "session_id": session_id,
                 "profile": {
-                    "kind": "windows_semantic_reference",
-                    "recording_profile_id": profile
+                    "capture_profile_id": profile,
+                    "normalizer_artifact_sha256": A,
+                    "layout_profile_id": "layout-v1"
                 }
             }))
             .unwrap(),
@@ -2537,6 +2589,18 @@ mod tests {
         profile: &str,
         bytes: &[u8],
     ) -> SourceManifest {
+        ingest_fixture_with_normalizer(directory, store, fixture_id, session_id, profile, A, bytes)
+    }
+
+    fn ingest_fixture_with_normalizer(
+        directory: &std::path::Path,
+        store: &CorpusStore,
+        fixture_id: &str,
+        session_id: &str,
+        profile: &str,
+        normalizer_artifact_sha256: &str,
+        bytes: &[u8],
+    ) -> SourceManifest {
         let source = directory.join(format!("{fixture_id}.media"));
         let request = directory.join(format!("{fixture_id}.json"));
         fs::write(&source, bytes).unwrap();
@@ -2547,8 +2611,9 @@ mod tests {
                 "fixture_id": fixture_id,
                 "session_id": session_id,
                 "profile": {
-                    "kind": "windows_semantic_reference",
-                    "recording_profile_id": profile
+                    "capture_profile_id": profile,
+                    "normalizer_artifact_sha256": normalizer_artifact_sha256,
+                    "layout_profile_id": "layout-v1"
                 }
             }))
             .unwrap(),
@@ -2565,6 +2630,7 @@ mod tests {
             "schema": "scorepeek-private-corpus-replay-suite-v1",
             "suite_id": "suite-001",
             "corpus_generation_sha256": corpus_generation_sha256,
+            "split_contract": "in_profile",
             "indexes": indexes
         })
     }

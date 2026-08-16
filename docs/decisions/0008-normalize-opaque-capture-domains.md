@@ -2,7 +2,6 @@
 
 - Status: Accepted
 - Date: 2026-08-16
-- Supersedes: ADR 0007
 
 ## Context
 
@@ -63,6 +62,6 @@ performance gates before it is supported; none is a pixel correctness oracle.
   provenance, but they do not shape the runtime normalizer interface.
 - Capture-domain adaptation and shared recognition can evolve independently,
   while every promoted bundle is evaluated across the complete supported set.
-- The current Windows semantic-reference/Linux capture-calibration corpus
-  profile split and hard profile-disjoint replay rule are superseded and must
-  be replaced before real corpus preparation continues.
+- Corpus generations bind each source to its opaque capture profile,
+  normalizer artifact, and layout profile. Replay suites select in-profile or
+  profile-disjoint evaluation explicitly.
