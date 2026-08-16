@@ -6,6 +6,20 @@ hk = "1.54.1"
 rust = { version = "1.97.1", components = ["clippy", "rustfmt"] }
 taplo = "0.10.0"
 
+[tool_alias]
+ffmpeg = "github:shaka-project/static-ffmpeg-binaries"
+ffprobe = "github:shaka-project/static-ffmpeg-binaries"
+
+[tools.ffmpeg]
+version = "n8.1.2-1"
+matching_regex = "^ffmpeg-(linux|osx|win)-(x64|arm64)(\\.exe)?$"
+bin = "ffmpeg"
+
+[tools.ffprobe]
+version = "n8.1.2-1"
+matching_regex = "^ffprobe-(linux|osx|win)-(x64|arm64)(\\.exe)?$"
+bin = "ffprobe"
+
 [env]
 HK_MISE = 1
 
@@ -84,6 +98,30 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek-corpus -- index generate "$@"
+'''
+
+[tasks."corpus:media:probe"]
+description = "Probe one immutable private media source into bounded PTS/decode-order evidence"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- media probe "$@"
+'''
+
+[tasks."corpus:media:extract"]
+description = "Extract an explicit bounded private RGB8 frame selection"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- media extract "$@"
+'''
+
+[tasks."corpus:layout:measure"]
+description = "Derive scorepeek-owned layout evidence from private human measurements"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- layout measure "$@"
 '''
 
 [tasks."corpus:synthetic:render"]

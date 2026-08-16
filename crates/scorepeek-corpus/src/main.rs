@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use scorepeek_corpus::{CorpusStore, render_synthetic_title_set};
+use scorepeek_corpus::{CorpusStore, measure_layout, render_synthetic_title_set};
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args_os().skip(1).collect();
@@ -17,6 +17,9 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &[OsString]) -> Result<(), String> {
+    if let Some(result) = run_media(args) {
+        return result;
+    }
     match args {
         [command, store, root, source, request] if command == "ingest" && store == "--store" => {
             let manifest = CorpusStore::new(PathBuf::from(root))
@@ -108,15 +111,76 @@ fn run(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "usage: scorepeek-corpus <ingest --store ROOT SOURCE REQUEST|generation seal --store ROOT GENERATION_ID|label author --store ROOT DOCUMENT|index generate --store ROOT PLAN|synthetic render --output DIRECTORY REQUEST|replay validate --store ROOT SUITE>"
+            "usage: scorepeek-corpus <ingest --store ROOT SOURCE REQUEST|generation seal --store ROOT GENERATION_ID|label author --store ROOT DOCUMENT|index generate --store ROOT PLAN|media probe --store ROOT --output MANIFEST FIXTURE_ID|media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST|layout measure --output MANIFEST EXTRACTION_DIRECTORY REQUEST|synthetic render --output DIRECTORY REQUEST|replay validate --store ROOT SUITE>"
                 .to_owned(),
         ),
     }
 }
 
+fn run_media(args: &[OsString]) -> Option<Result<(), String>> {
+    let result = match args {
+        [media, probe, store, root, output, manifest, fixture_id]
+            if media == "media"
+                && probe == "probe"
+                && store == "--store"
+                && output == "--output" =>
+        {
+            CorpusStore::new(PathBuf::from(root))
+                .probe_media(&fixture_id.to_string_lossy(), PathBuf::from(manifest))
+                .map_err(|error| format!("scorepeek-corpus media probe failed: {error}"))
+                .and_then(|summary| print_json(&summary, "media probe summary"))
+        }
+        [
+            media,
+            extract,
+            store,
+            root,
+            output,
+            directory,
+            probe_manifest,
+            request,
+        ] if media == "media"
+            && extract == "extract"
+            && store == "--store"
+            && output == "--output" =>
+        {
+            CorpusStore::new(PathBuf::from(root))
+                .extract_frames(
+                    PathBuf::from(probe_manifest),
+                    PathBuf::from(request),
+                    PathBuf::from(directory),
+                )
+                .map_err(|error| format!("scorepeek-corpus media extract failed: {error}"))
+                .and_then(|summary| print_json(&summary, "frame extraction summary"))
+        }
+        [layout, measure, output, manifest, extraction, request]
+            if layout == "layout" && measure == "measure" && output == "--output" =>
+        {
+            measure_layout(
+                PathBuf::from(extraction),
+                PathBuf::from(request),
+                PathBuf::from(manifest),
+            )
+            .map_err(|error| format!("scorepeek-corpus layout measure failed: {error}"))
+            .and_then(|summary| print_json(&summary, "layout measurement summary"))
+        }
+        _ => return None,
+    };
+    Some(result)
+}
+
+fn print_json(value: &impl serde::Serialize, context: &str) -> Result<(), String> {
+    println!(
+        "{}",
+        serde_json::to_string(value)
+            .map_err(|error| format!("{context} encoding failed: {error}"))?
+    );
+    Ok(())
+}
+
 fn print_usage() {
     println!(
-        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus ingest --store ROOT SOURCE REQUEST\n  scorepeek-corpus generation seal --store ROOT GENERATION_ID\n  scorepeek-corpus label author --store ROOT DOCUMENT\n  scorepeek-corpus index generate --store ROOT PLAN\n  scorepeek-corpus synthetic render --output DIRECTORY REQUEST\n  scorepeek-corpus replay validate --store ROOT SUITE",
+        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus ingest --store ROOT SOURCE REQUEST\n  scorepeek-corpus generation seal --store ROOT GENERATION_ID\n  scorepeek-corpus label author --store ROOT DOCUMENT\n  scorepeek-corpus index generate --store ROOT PLAN\n  scorepeek-corpus media probe --store ROOT --output MANIFEST FIXTURE_ID\n  scorepeek-corpus media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST\n  scorepeek-corpus layout measure --output MANIFEST EXTRACTION_DIRECTORY REQUEST\n  scorepeek-corpus synthetic render --output DIRECTORY REQUEST\n  scorepeek-corpus replay validate --store ROOT SUITE",
         env!("CARGO_PKG_VERSION")
     );
 }

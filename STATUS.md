@@ -126,6 +126,29 @@ is outside this checkpoint.
   corpus input and produces byte-deterministic RGB8 512x96 P6 PPM crops plus a
   canonical manifest. This establishes the renderer boundary, not
   production-representative glyph coverage or a redistribution grant.
+- Shaka Project static FFmpeg/ffprobe release `n8.1.2-1` (FFmpeg 8.1.2), pinned
+  by platform URL and SHA-256 in `mise.lock`. The Linux x86-64 binaries are
+  fully statically linked, about 92 MiB combined, GPLv3, and isolated below the
+  mise prefix; they are offline corpus tools and do not enter the Rust or
+  game-session runtime dependency graph.
+- Bounded private media probing and explicit frame extraction. Probe binds
+  immutable source/source-manifest evidence to exact tool binary digests,
+  the sole video stream's explicit index, dimensions, time base, contiguous
+  decode indexes, and integer PTS; zero/multiple-video inputs fail closed.
+  Only self-contained Matroska is accepted and streamed through stdin with the
+  demuxer forced and only FFmpeg's `pipe` protocol enabled, preventing a media
+  input from opening network or secondary filesystem resources.
+  Extraction admits at most 512 strictly ordered probe-bound frames and 4 GiB,
+  emits RGB8 P6 PPM with no frame-rate resampling, validates exact
+  dimensions/bytes and pixel/file hashes, and publishes private evidence using
+  parent locking, exact ownership markers, no-clobber publication, and fsync.
+- Scorepeek-owned layout measurement from human-authored rectangles bound to
+  verified extracted frame IDs. It accepts only canonical 1920x1080 evidence
+  and the extraction's exact layout-profile binding, rejects output within the
+  evidence directory, and deterministically records a component-wise
+  lower-median ROI, maximum observed alignment deviations, presence predicate,
+  and sample provenance; it neither inspects pixels for coordinates nor
+  activates a runtime profile.
 
 ## Verified in this checkpoint
 
@@ -133,15 +156,22 @@ is outside this checkpoint.
   and binary tests and repository checks.
 - `mise run catalog:schedule:systemd:verify`: passed without installing the
   release binary or user units.
-- `cargo test --locked -p scorepeek-corpus`: passed all twenty-one synthetic
-  corpus tests, including idempotent private ingest, fixture-ID conflict
+- `cargo test --locked -p scorepeek-corpus`: passed all 33 offline corpus
+  tests, including idempotent private ingest, fixture-ID conflict
   rejection, canonical source/complete-label binding, pre-mutation symlink
   rejection, canonical/private/idempotent complete-label authoring with owned
   staging recovery, label cross-field and unreferenced-object rejection, decode
   ordering, deterministic/idempotent replay-index publication, non-contiguous
   episode rejection, generated-index replay validation, byte-identical
   seed-only synthetic rendering, same-index/cross-index grouped split
-  isolation, and distinct in-profile/profile-disjoint evaluation behavior.
+  isolation, and distinct in-profile/profile-disjoint evaluation behavior. The
+  media tests used the mise-pinned FFmpeg/ffprobe binaries to generate a
+  synthetic 1920x1080 Matroska source, probe its sole video stream, extract two
+  exact decode-index/PTS selections as RGB8 PPM, and measure bound layout
+  evidence. Regressions cover multi-video rejection, non-Matroska secondary
+  resource rejection, profile mismatch, evidence-directory output rejection,
+  cross-fixture source/profile substitution, private no-clobber publication,
+  and marker-gated crash recovery.
 - An isolated synthetic CLI gate rendered three samples at manifest SHA-256
   `6a9aece0138816c972476d366df62cb4512b4488a178aedea86911133f80a2d0`.
   The first generated label and RGB8 crop were inspected together after a
@@ -195,7 +225,7 @@ is outside this checkpoint.
 
 ## Unverified and target-only boundaries
 
-- Real media ingest/extraction, replay execution, layout measurement,
+- Real media extraction, replay execution, layout measurement,
   production synthetic glyph/style coverage, catalog-update recognition
   replay, OCR model, capture backend, field recognizer, event daemon, and the
   integrated live flow remain unvalidated.
@@ -216,8 +246,9 @@ is outside this checkpoint.
   no additional transport dependency is currently required.
 - `encoding_rs` 0.8.35 was approved for replacement-free Windows-31J decoding;
   no JavaScript parser dependency is used.
-- The initial M2 contract and ingest/replay validation use only existing
-  workspace dependencies. No media or training dependency has been added.
+- The approved `github:shaka-project/static-ffmpeg-binaries@n8.1.2-1` media
+  tool is pinned through mise. No image, font, Rust, runtime, or training
+  dependency was added.
 - Any new runtime, parser, capture, or training dependency requires user
   approval after version, license, alternatives, and host/bundle impact are
   presented.
@@ -227,11 +258,11 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Continue **M2** by presenting a pinned media probe/extractor and any required
-image or font dependency with its version, license, alternatives, and host
-impact for approval. After approval, implement bounded PTS/decode-order frame
-extraction and scorepeek-owned layout measurement against private captures,
-then expand the procedural renderer only as far as independently authored or
+Continue **M2** by running the pinned probe/extractor and scorepeek-owned layout
+measurement against the private Windows-VM reference-video dataset, then turn
+the reviewed measurement evidence into a versioned layout profile and replay
+plan. Do not commit real media, extracted frames, or measurements. After that,
+expand the procedural renderer only as far as independently authored or
 explicitly redistributable glyph/style inputs permit. Preserve the verified
 private-store, canonical metadata, complete-label authoring, replay-ordering,
 episode contiguity, and grouped split safety properties.

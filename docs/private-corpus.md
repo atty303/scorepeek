@@ -72,9 +72,87 @@ reuse path explicitly removes its complete staging copy and reports cleanup
 failure instead of returning a successful binding.
 
 Ingest deliberately does not inspect, decode, transcode, or extract the media.
-Those operations require a separately approved, version-pinned media tool. The
-stored bytes are the reproducibility boundary even when the original recording
-process was manual.
+Those operations use the separately approved and version-pinned tool described
+below. The stored bytes are the reproducibility boundary even when the original
+recording process was manual.
+
+## Pinned media probe and frame extraction
+
+The offline toolchain uses Shaka Project's static FFmpeg binaries at release
+`n8.1.2-1`, containing FFmpeg 8.1.2. `mise.lock` pins the platform asset URL and
+SHA-256 for FFmpeg and ffprobe; mise also verifies GitHub artifact attestations
+during installation. The Linux x86-64 pair is about 92 MiB and fully statically
+linked. The build reports GPL version 3, enables GPL/version3 components, and
+does not enable nonfree components. It is an offline development/corpus tool,
+not a Rust dependency or game-session bundle. This was selected over the roughly
+649 MiB conda prefix, a nonfree Aqua build, rolling BtbN snapshots, and source
+builds.
+
+Probe a stored fixture into a new private manifest:
+
+```text
+mise run corpus:media:probe -- --store /absolute/private/store --output /absolute/private/probe.json fixture-001
+```
+
+`scorepeek-private-media-probe-v1` binds the canonical source manifest and
+source object to the exact FFmpeg/ffprobe binary digests, video dimensions,
+source time base, the sole video stream's explicit index, and every decoded
+video frame's contiguous decode index and integer PTS. Media with zero or
+multiple video streams is rejected rather than selecting one implicitly. Probe
+accepts only a self-contained Matroska container, streams its bytes to ffprobe
+through stdin, forces the Matroska demuxer, and allowlists only the `pipe`
+protocol. It therefore cannot follow a media-supplied network URL or secondary
+filesystem path. Output is bounded to 64 MiB and 250,000 frames. Tool stdout
+and stderr are drained with fixed bounds and every process has a ten-minute
+timeout; errors expose only status and a stderr digest, not private decoder
+text or paths.
+
+Extraction takes a strict `scorepeek-private-frame-extraction-v1` request. It
+repeats the fixture, source-manifest, and probe digests and supplies a non-empty
+strictly increasing selection of `{frame_id, decode_index, source_pts}`. The
+decode-index/PTS pair must match the probe exactly. Before decoding, the tool
+reloads the fixture's current canonical source manifest and requires the probe's
+source object and complete capture/normalizer/layout profile binding to match
+it exactly. Run extraction into a new path:
+
+```text
+mise run corpus:media:extract -- --store /absolute/private/store --output /absolute/private/new-extraction /absolute/private/probe.json /absolute/private/extraction-request.json
+```
+
+At most 512 selected frames and 4 GiB of RGB payload are admitted. FFmpeg emits
+RGB8 P6 PPM without frame-rate resampling. As with probing, the source is sent
+through stdin with only the `pipe` protocol enabled and the Matroska demuxer
+forced. The tool re-parses every PPM header, checks dimensions and exact pixel
+byte count, records pixel-payload and whole-file SHA-256 values, and publishes
+a canonical extraction manifest that retains the capture/normalizer/layout
+profile binding and selected video-stream index. The new directory uses mode
+`0700`, files use `0600`, an existing destination is never accepted, and
+files/directories are synced before success. A mode-`0600` parent writer lock
+serializes recovery and publication. Recovery removes only staging and
+incomplete destinations carrying exact scorepeek ownership markers. Atomic
+no-clobber file and directory publication prevents an existing destination
+from being replaced. The manifest's `ExtractorIdentity` uses FFmpeg 8.1.2, the
+media-probe digest, and the canonical request digest.
+
+## Scorepeek-owned layout measurement
+
+A `scorepeek-private-layout-measurement-v1` request binds an extraction-manifest
+digest and must repeat the extraction's layout-profile ID. Each uniquely
+ordered field supplies a field type, presence predicate, and human-measured
+rectangles bound to distinct extracted frame IDs. The command never derives a
+rectangle from pixels and has no upstream coordinate input:
+
+```text
+mise run corpus:layout:measure -- --output /absolute/private/layout-measurement.json /absolute/private/new-extraction /absolute/private/layout-request.json
+```
+
+Layout measurement accepts only the canonical 1920x1080 frame contract. For
+each field it emits the component-wise lower median rectangle, maximum observed
+absolute deviation for x/y/width/height, sample count, and opaque sample frame
+IDs with their measured rectangles. The output is measurement evidence for a
+future versioned `LayoutProfile`; it does not silently activate or replace a
+runtime profile. Its new output path must be outside the extraction directory,
+so publication and crash recovery cannot mutate the extracted evidence set.
 
 ## Immutable corpus generation
 
@@ -235,8 +313,8 @@ to redistribute scorepeek or its generated files.
 
 ## Not yet implemented
 
-- media probing and PTS/decode-order frame extraction;
-- replay execution against recognition code;
+- real-capture layout-profile adoption and replay execution against recognition
+  code;
 - production synthetic variation and glyph coverage backed by an approved
   redistributable font or independently authored equivalent;
 - Python training, evaluation, ONNX export, and Rust parity gates.

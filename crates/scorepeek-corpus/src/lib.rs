@@ -11,6 +11,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tempfile::Builder;
 
+mod media;
+pub use media::{
+    FrameExtractionSummary, LayoutMeasurementSummary, MediaProbeSummary, measure_layout,
+};
+
 const INGEST_REQUEST_SCHEMA: &str = "scorepeek-private-corpus-ingest-v1";
 const INGEST_SUMMARY_SCHEMA: &str = "scorepeek-private-corpus-ingest-summary-v1";
 const SOURCE_MANIFEST_SCHEMA: &str = "scorepeek-private-corpus-source-v1";
@@ -57,6 +62,7 @@ pub enum CorpusError {
     Json(serde_json::Error),
     InvalidRequest(String),
     InvalidReplay(String),
+    InvalidMedia(String),
     FixtureConflict,
     CapacityExceeded,
 }
@@ -68,6 +74,7 @@ impl fmt::Display for CorpusError {
             Self::Json(error) => write!(formatter, "private corpus JSON failed: {error}"),
             Self::InvalidRequest(detail) => write!(formatter, "invalid ingest request: {detail}"),
             Self::InvalidReplay(detail) => write!(formatter, "invalid replay index: {detail}"),
+            Self::InvalidMedia(detail) => write!(formatter, "invalid private media: {detail}"),
             Self::FixtureConflict => {
                 formatter.write_str("fixture ID is already bound to different source metadata")
             }
@@ -83,6 +90,7 @@ impl Error for CorpusError {
             Self::Json(error) => Some(error),
             Self::InvalidRequest(_)
             | Self::InvalidReplay(_)
+            | Self::InvalidMedia(_)
             | Self::FixtureConflict
             | Self::CapacityExceeded => None,
         }
