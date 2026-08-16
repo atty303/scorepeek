@@ -11,8 +11,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tempfile::Builder;
 
+mod dataset;
 mod media;
+mod remote;
+pub use dataset::{DatasetSummary, RecordingImportSummary};
 pub use media::{FrameExtractionSummary, MediaProbeSummary};
+pub use remote::DatasetRemoteSummary;
 
 const INGEST_REQUEST_SCHEMA: &str = "scorepeek-private-corpus-ingest-v2";
 const INGEST_SUMMARY_SCHEMA: &str = "scorepeek-private-corpus-ingest-summary-v2";
@@ -351,9 +355,41 @@ impl CorpusStore {
         source_path: impl AsRef<Path>,
         request_path: impl AsRef<Path>,
     ) -> Result<SourceManifest, CorpusError> {
-        self.validate_root()?;
         let request = read_ingest_request(request_path.as_ref())?;
-        validate_source_file(source_path.as_ref())?;
+        self.ingest_bound(source_path.as_ref(), request, None)
+    }
+
+    fn ingest_verified_recording(
+        &self,
+        source_path: &Path,
+        fixture_id: String,
+        session_id: String,
+        capture_profile_id: String,
+        expected_source_sha256: &str,
+    ) -> Result<SourceManifest, CorpusError> {
+        let request = IngestRequest {
+            schema: INGEST_REQUEST_SCHEMA.to_owned(),
+            fixture_id,
+            session_id,
+            capture_profile_id,
+        };
+        request.validate()?;
+        validate_sha256(
+            expected_source_sha256,
+            "expected_source_sha256",
+            ErrorContext::Request,
+        )?;
+        self.ingest_bound(source_path, request, Some(expected_source_sha256))
+    }
+
+    fn ingest_bound(
+        &self,
+        source_path: &Path,
+        request: IngestRequest,
+        expected_source_sha256: Option<&str>,
+    ) -> Result<SourceManifest, CorpusError> {
+        self.validate_root()?;
+        validate_source_file(source_path)?;
 
         preflight_managed_components(&self.root)?;
         create_private_directory(&self.root)?;
@@ -373,7 +409,12 @@ impl CorpusStore {
             .permissions(fs::Permissions::from_mode(0o700))
             .tempdir_in(&content_dir)?;
         let staged_source = staging.path().join(SOURCE_FILE);
-        let source = copy_source(source_path.as_ref(), &staged_source)?;
+        let source = copy_source(source_path, &staged_source)?;
+        if expected_source_sha256.is_some_and(|expected| expected != source.sha256) {
+            return Err(CorpusError::InvalidRequest(
+                "source changed after recording inspection".to_owned(),
+            ));
+        }
         File::open(&staged_source)?.sync_all()?;
         File::open(staging.path())?.sync_all()?;
 
@@ -1955,6 +1996,14 @@ fn copy_source(path: &Path, destination: &Path) -> Result<ContentRef, CorpusErro
 }
 
 fn ensure_capacity(content_dir: &Path, added_bytes: u64) -> Result<(), CorpusError> {
+    ensure_content_capacity(content_dir, 1, added_bytes)
+}
+
+fn ensure_content_capacity(
+    content_dir: &Path,
+    added_count: usize,
+    added_bytes: u64,
+) -> Result<(), CorpusError> {
     let mut count = 0_usize;
     let mut bytes = 0_u64;
     for entry in fs::read_dir(content_dir)? {
@@ -1984,7 +2033,9 @@ fn ensure_capacity(content_dir: &Path, added_bytes: u64) -> Result<(), CorpusErr
             .checked_add(metadata.len())
             .ok_or(CorpusError::CapacityExceeded)?;
     }
-    let new_count = count.checked_add(1).ok_or(CorpusError::CapacityExceeded)?;
+    let new_count = count
+        .checked_add(added_count)
+        .ok_or(CorpusError::CapacityExceeded)?;
     let new_bytes = bytes
         .checked_add(added_bytes)
         .ok_or(CorpusError::CapacityExceeded)?;
@@ -1995,6 +2046,14 @@ fn ensure_capacity(content_dir: &Path, added_bytes: u64) -> Result<(), CorpusErr
 }
 
 fn ensure_manifest_capacity(manifest_dir: &Path, added_bytes: usize) -> Result<(), CorpusError> {
+    ensure_manifest_capacity_additions(manifest_dir, 1, added_bytes as u64)
+}
+
+fn ensure_manifest_capacity_additions(
+    manifest_dir: &Path,
+    added_count: usize,
+    added_bytes: u64,
+) -> Result<(), CorpusError> {
     let mut count = 0_usize;
     let mut bytes = 0_u64;
     for entry in fs::read_dir(manifest_dir)? {
@@ -2024,8 +2083,9 @@ fn ensure_manifest_capacity(manifest_dir: &Path, added_bytes: usize) -> Result<(
             .checked_add(metadata.len())
             .ok_or(CorpusError::CapacityExceeded)?;
     }
-    let new_count = count.checked_add(1).ok_or(CorpusError::CapacityExceeded)?;
-    let added_bytes = u64::try_from(added_bytes).map_err(|_| CorpusError::CapacityExceeded)?;
+    let new_count = count
+        .checked_add(added_count)
+        .ok_or(CorpusError::CapacityExceeded)?;
     let new_bytes = bytes
         .checked_add(added_bytes)
         .ok_or(CorpusError::CapacityExceeded)?;
@@ -2355,7 +2415,17 @@ fn preflight_managed_components(root: &Path) -> Result<(), CorpusError> {
         Err(error) => return Err(error.into()),
     }
 
-    for name in ["content", "manifests", "generations", "labels", "indexes"] {
+    for name in [
+        "content",
+        "manifests",
+        "generations",
+        "labels",
+        "indexes",
+        "profiles",
+        "probes",
+        "recordings",
+        "dataset-generations",
+    ] {
         match root.join(name).symlink_metadata() {
             Ok(metadata) if metadata.is_dir() => {}
             Ok(_) => {

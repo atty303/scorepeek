@@ -8,6 +8,7 @@
 - M1.1 catalog contractとlocal federation core: 完了
 - M1.2 live acquisitionとsync orchestration: manual/scheduled syncまで完了
 - M2 observed-profile private corpus、synthetic renderer、label/replay tooling: 完了
+- 元録画をdataset rootとして固定するimport/seal/S3-compatible再利用CLI: 完了
 - capture、認識、OCR学習、event daemon: 未着手
 - Bazzite実機検証とprivate corpus収集: 未着手
 
@@ -282,8 +283,9 @@ NV12、別color profileへ黙ってfallbackしない。
    quarantine report、atomic local snapshotを実装する。
 3. **M1.2**: live source acquisition、manual/scheduled sync、activation orchestrationを
    実装する。M1.1だけでM1全体を完了扱いしない。
-4. **M2**: normalizer未確定のobserved sourceを保持するprivate corpus schema、synthetic renderer、
-   label/replay CLIを実装する。
+4. **M2**: normalizer未確定のobserved sourceを保持するprivate corpus schema、元録画を再利用可能な
+   dataset rootとして固定するimport/seal/S3-compatible transport、synthetic renderer、label/replay
+   CLIを実装する。
 5. **M3**: PortalとGamescope directのObservedFrame adapterをvertical spikeとして実装し、Bazziteで
    両routeの実observed contractと校正corpusを確立する。
 6. **M4**: game共通のcanonical frame/layout contract、各profileのdomain normalizer、OCR preprocessorを

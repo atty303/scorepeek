@@ -17,9 +17,16 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &[OsString]) -> Result<(), String> {
+    if let Some(result) = run_dataset(args) {
+        return result;
+    }
     if let Some(result) = run_media(args) {
         return result;
     }
+    run_legacy(args)
+}
+
+fn run_legacy(args: &[OsString]) -> Result<(), String> {
     match args {
         [command, store, root, source, request] if command == "ingest" && store == "--store" => {
             let manifest = CorpusStore::new(PathBuf::from(root))
@@ -111,10 +118,87 @@ fn run(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "usage: scorepeek-corpus <ingest --store ROOT SOURCE REQUEST|generation seal --store ROOT GENERATION_ID|label author --store ROOT DOCUMENT|index generate --store ROOT PLAN|media probe --store ROOT --output MANIFEST FIXTURE_ID|media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST|synthetic render --output DIRECTORY REQUEST|replay validate --store ROOT SUITE>"
+            "usage: scorepeek-corpus <recording import --store ROOT --capture-context CONTEXT RECORDING|dataset seal|push|pull|verify|remote-verify ...|ingest --store ROOT SOURCE REQUEST|generation seal --store ROOT GENERATION_ID|label author --store ROOT DOCUMENT|index generate --store ROOT PLAN|media probe --store ROOT --output MANIFEST FIXTURE_ID|media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST|synthetic render --output DIRECTORY REQUEST|replay validate --store ROOT SUITE>"
                 .to_owned(),
         ),
     }
+}
+
+fn run_dataset(args: &[OsString]) -> Option<Result<(), String>> {
+    let result = match args {
+        [
+            recording,
+            import,
+            store,
+            root,
+            capture_context,
+            context,
+            source,
+        ] if recording == "recording"
+            && import == "import"
+            && store == "--store"
+            && capture_context == "--capture-context" =>
+        {
+            CorpusStore::new(PathBuf::from(root))
+                .import_recording(PathBuf::from(source), PathBuf::from(context))
+                .map_err(|error| format!("scorepeek-corpus recording import failed: {error}"))
+                .and_then(|summary| print_json(&summary, "recording import summary"))
+        }
+        [dataset, seal, store, root, dataset_id]
+            if dataset == "dataset" && seal == "seal" && store == "--store" =>
+        {
+            CorpusStore::new(PathBuf::from(root))
+                .seal_recording_dataset(&dataset_id.to_string_lossy())
+                .map_err(|error| format!("scorepeek-corpus dataset seal failed: {error}"))
+                .and_then(|summary| print_json(&summary, "dataset summary"))
+        }
+        [dataset, verify, store, root, generation]
+            if dataset == "dataset" && verify == "verify" && store == "--store" =>
+        {
+            CorpusStore::new(PathBuf::from(root))
+                .verify_recording_dataset(&generation.to_string_lossy())
+                .map_err(|error| format!("scorepeek-corpus dataset verify failed: {error}"))
+                .and_then(|summary| print_json(&summary, "dataset summary"))
+        }
+        [
+            dataset,
+            operation,
+            store,
+            root,
+            remote,
+            remote_config,
+            generation,
+        ] if dataset == "dataset"
+            && store == "--store"
+            && remote == "--remote"
+            && matches!(
+                operation.to_string_lossy().as_ref(),
+                "push" | "pull" | "remote-verify"
+            ) =>
+        {
+            let corpus = CorpusStore::new(PathBuf::from(root));
+            let result = match operation.to_string_lossy().as_ref() {
+                "push" => corpus.push_recording_dataset(
+                    PathBuf::from(remote_config),
+                    &generation.to_string_lossy(),
+                ),
+                "pull" => corpus.pull_recording_dataset(
+                    PathBuf::from(remote_config),
+                    &generation.to_string_lossy(),
+                ),
+                "remote-verify" => corpus.verify_remote_recording_dataset(
+                    PathBuf::from(remote_config),
+                    &generation.to_string_lossy(),
+                ),
+                _ => unreachable!(),
+            };
+            result
+                .map_err(|error| format!("scorepeek-corpus dataset operation failed: {error}"))
+                .and_then(|summary| print_json(&summary, "remote dataset summary"))
+        }
+        _ => return None,
+    };
+    Some(result)
 }
 
 fn run_media(args: &[OsString]) -> Option<Result<(), String>> {
@@ -169,7 +253,7 @@ fn print_json(value: &impl serde::Serialize, context: &str) -> Result<(), String
 
 fn print_usage() {
     println!(
-        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus ingest --store ROOT SOURCE REQUEST\n  scorepeek-corpus generation seal --store ROOT GENERATION_ID\n  scorepeek-corpus label author --store ROOT DOCUMENT\n  scorepeek-corpus index generate --store ROOT PLAN\n  scorepeek-corpus media probe --store ROOT --output MANIFEST FIXTURE_ID\n  scorepeek-corpus media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST\n  scorepeek-corpus synthetic render --output DIRECTORY REQUEST\n  scorepeek-corpus replay validate --store ROOT SUITE",
+        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus recording import --store ROOT --capture-context CONTEXT RECORDING\n  scorepeek-corpus dataset seal --store ROOT DATASET_ID\n  scorepeek-corpus dataset push --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus dataset pull --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus dataset verify --store ROOT GENERATION_SHA256\n  scorepeek-corpus dataset remote-verify --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus ingest --store ROOT SOURCE REQUEST\n  scorepeek-corpus generation seal --store ROOT GENERATION_ID\n  scorepeek-corpus label author --store ROOT DOCUMENT\n  scorepeek-corpus index generate --store ROOT PLAN\n  scorepeek-corpus media probe --store ROOT --output MANIFEST FIXTURE_ID\n  scorepeek-corpus media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST\n  scorepeek-corpus synthetic render --output DIRECTORY REQUEST\n  scorepeek-corpus replay validate --store ROOT SUITE",
         env!("CARGO_PKG_VERSION")
     );
 }

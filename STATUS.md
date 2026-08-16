@@ -134,8 +134,9 @@ is outside this checkpoint.
   game-session runtime dependency graph.
 - Bounded private media probing and explicit frame extraction. Probe binds
   immutable source/source-manifest evidence to exact tool binary digests,
-  the sole video stream's explicit index, dimensions, time base, contiguous
-  decode indexes, and integer PTS; zero/multiple-video inputs fail closed.
+  the sole video stream's explicit index, codec/pixel/color metadata,
+  dimensions, time base, contiguous decode indexes, and integer PTS;
+  zero/multiple-video inputs fail closed.
   Only self-contained Matroska is accepted and streamed through stdin with the
   demuxer forced and only FFmpeg's `pipe` protocol enabled, preventing a media
   input from opening network or secondary filesystem resources.
@@ -145,6 +146,38 @@ is outside this checkpoint.
   parent locking, exact ownership markers, no-clobber publication, and fsync.
   Extracted RGB8 frames remain observed evidence at source dimensions and are
   never presented as normalized `CanonicalFrame` or layout evidence.
+- A high-level complete-recording importer that derives recording, fixture,
+  and session identity from the immutable source SHA-256; derives a capture
+  profile from a versioned capture context plus the observed media contract;
+  and publishes exact source, profile, probe, and recording bindings without
+  selecting a baseline profile, normalizer, or layout. Reimporting identical
+  bytes and context is idempotent.
+- Immutable recording-dataset generations that bind every imported recording
+  to five typed byte roles and revalidate their canonical manifest
+  relationships as well as size and complete SHA-256. The generation digest is
+  the reusable identity; caller dataset IDs are descriptive only.
+- Explicit S3-compatible dataset push, pull, local verify, and remote verify
+  commands in the offline corpus crate. Remote objects and generations use
+  immutable content-addressed keys, objects precede generation publication,
+  existing bytes are fully downloaded and hashed before reuse, and no mutable
+  latest pointer or delete command exists. Remote configuration excludes
+  credentials and accepts production endpoints only as path-free HTTPS origins
+  without userinfo, query, or fragment.
+- Dataset verification parses all five roles as canonical typed schemas and
+  revalidates source, recording, profile, observed media, and probe references.
+  Local source/document/generation collections have count and aggregate-byte
+  limits; pull preflights all missing capacity under the writer lock and
+  rechecks it at publication. Dataset verify and push reject intermediate
+  symlinks rather than reading outside the private store.
+- Role-specific document size limits are enforced before remote GET. Downloads
+  use unlinked mode-0600 temporary files, while crash-left scorepeek-owned
+  source/document publication staging is recovered and fsynced under the
+  writer lock before capacity accounting.
+- `object_store` 0.14.1 with only its AWS feature, Tokio 1.53.1, and a direct
+  use of the already-transitive `futures-util` 0.3.34 streaming interface and
+  `url` 2.5.8 parser are approved offline-corpus dependencies. They do not enter the game-session
+  runtime. Mise-pinned `rclone` 1.74.2 is a test-only S3-compatible server and
+  does not enter a Rust binary.
 
 ## Verified in this checkpoint
 
@@ -152,7 +185,7 @@ is outside this checkpoint.
   and binary tests and repository checks.
 - `mise run catalog:schedule:systemd:verify`: passed without installing the
   release binary or user units.
-- `cargo test --locked -p scorepeek-corpus`: passed all 33 offline corpus
+- `cargo test --locked -p scorepeek-corpus`: passed all 37 offline corpus
   tests, including idempotent private ingest, fixture-ID conflict
   rejection, canonical source/complete-label binding, pre-mutation symlink
   rejection, canonical/private/idempotent complete-label authoring with owned
@@ -169,7 +202,23 @@ is outside this checkpoint.
   two exact decode-index/PTS selections as observed RGB8 PPM. Regressions cover
   multi-video rejection, non-Matroska secondary resource rejection,
   cross-fixture source/profile substitution, private no-clobber publication,
-  and marker-gated crash recovery.
+  and marker-gated crash recovery. A complete-recording test generated and
+  imported synthetic Matroska, repeated the import idempotently, sealed and
+  verified its five-role generation, and compared stored source bytes exactly.
+  An in-memory object-store test exercised streaming upload, full-byte remote
+  reuse verification, staging cleanup, bounded download, and same-size corrupt
+  object rejection.
+  Regressions also reject a self-consistent typed-role substitution, an
+  intermediate content-directory symlink, typed-document oversize,
+  dataset-generation capacity excess, stale owned staging, and endpoint
+  userinfo/path/query/fragment.
+- `mise run corpus:dataset:test:e2e`: passed against mise-pinned `rclone serve
+  s3` on an exact loopback HTTP endpoint. The CLI imported a synthetic
+  self-contained recording larger than the 8 MiB multipart threshold, sealed
+  and locally verified it, pushed all six objects, observed rclone's initiate,
+  part-upload, and complete-multipart operations, reused all six objects on a
+  second push, remotely verified every byte, pulled to an empty store, and
+  reproduced byte-identical source media.
 - An isolated synthetic CLI gate rendered three samples at manifest SHA-256
   `6a9aece0138816c972476d366df62cb4512b4488a178aedea86911133f80a2d0`.
   The first generated label and RGB8 crop were inspected together after a
@@ -238,6 +287,11 @@ is outside this checkpoint.
   configuration. Only the non-persistent transient user-manager path was run.
 - Bazzite Portal, Gamescope, OBS, GPU, lifecycle, performance, and soak gates
   remain target-machine-only and unrun.
+- No real game recording has been imported. S3-compatible push, multipart,
+  reuse, remote verification, and pull have been verified against the local
+  rclone server, not a real private bucket. Live credential, provider-specific
+  addressing, TLS, bucket lifecycle, and provider behavior remain an explicit
+  external gate.
 
 ## Blockers and required approvals
 
@@ -246,8 +300,15 @@ is outside this checkpoint.
 - `encoding_rs` 0.8.35 was approved for replacement-free Windows-31J decoding;
   no JavaScript parser dependency is used.
 - The approved `github:shaka-project/static-ffmpeg-binaries@n8.1.2-1` media
-  tool is pinned through mise. No image, font, Rust, runtime, or training
-  dependency was added.
+  tool is pinned through mise. It added no image, font, game-session runtime,
+  or training dependency.
+- `object_store` 0.14.1 (Apache-2.0) with its AWS feature and Tokio 1.53.1
+  (MIT) were approved for offline S3-compatible corpus transport. Direct
+  `futures-util` 0.3.34 (MIT OR Apache-2.0) use exposes its already-transitive
+  streaming interface and `url` 2.5.8 (MIT OR Apache-2.0) parses strict endpoint
+  origins; both add no dependency graph. Mise-pinned `rclone`
+  1.74.2 (MIT) replaces the rejected Java-based test-server candidate and is
+  used only by focused E2E.
 - Any new runtime, parser, capture, or training dependency requires user
   approval after version, license, alternatives, and host/bundle impact are
   presented.
@@ -258,10 +319,12 @@ is outside this checkpoint.
 ## Next executable task
 
 Start **M3** with narrow Portal and Gamescope direct `ObservedFrame` vertical
-spikes on the Bazzite target. Record each real observed contract and collect
-private calibration evidence without assigning a normalizer or layout at
-source ingest. Once both peer profiles are observable, continue M4 by defining
-the shared logical-game `CanonicalFrame`/layout artifact and calibrating one
+spikes on the Bazzite target. For each fixed capture context, record a complete
+game run, import it with `corpus:recording:import`, and seal/push the first real
+recording generation. Record each real observed contract and collect private
+calibration evidence without assigning a normalizer or layout at source
+ingest. Once both peer profiles are observable, continue M4 by defining the
+shared logical-game `CanonicalFrame`/layout artifact and calibrating one
 deterministic normalizer per profile to it. Do not select a captured route as a
 pixel reference, create route-local layouts, or measure canonical ROIs from raw
 extractions. Real media and frames remain external and private.

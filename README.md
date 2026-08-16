@@ -18,7 +18,9 @@ contract, bounded content-addressed source ingest, canonical complete-label
 authoring, deterministic episode/replay-index generation, a seed-only
 procedural synthetic title renderer, and replay-index validation.
 It also pins an offline static FFmpeg/ffprobe toolchain for bounded private
-media probing and explicit observed RGB8 frame extraction. Shared canonical
+media probing and explicit observed RGB8 frame extraction. Complete recording
+runs can be imported as reusable dataset roots, sealed by digest, and
+explicitly synchronized with private S3-compatible storage. Shared canonical
 layout authoring and measurement, a training pipeline, and a runnable capture
 or recognition service are not yet implemented.
 
@@ -69,6 +71,13 @@ mise run fix
 mise run test
 mise run doctor
 mise run catalog:sync
+mise run corpus:recording:import -- --store /absolute/private/store --capture-context /absolute/private/capture-context.json /absolute/recordings/complete-run.mkv
+mise run corpus:dataset:seal -- --store /absolute/private/store calibration-001
+mise run corpus:dataset:push -- --store /absolute/private/store --remote /absolute/private/remote.json GENERATION_SHA256
+mise run corpus:dataset:pull -- --store /absolute/private/restored-store --remote /absolute/private/remote.json GENERATION_SHA256
+mise run corpus:dataset:verify -- --store /absolute/private/store GENERATION_SHA256
+mise run corpus:dataset:remote-verify -- --store /absolute/private/store --remote /absolute/private/remote.json GENERATION_SHA256
+mise run corpus:dataset:test:e2e
 mise run corpus:ingest -- --store /absolute/private/store /absolute/source.media /absolute/request.json
 mise run corpus:generation:seal -- --store /absolute/private/store generation-001
 mise run corpus:label:author -- --store /absolute/private/store /absolute/complete-label.json
@@ -120,7 +129,8 @@ extractor/annotation/frame hashes, and corpus-wide session/play/title
 grouped split isolation. Each suite selects either in-profile evaluation or the
 stricter profile-disjoint evaluation. It emits only opaque IDs, hashes, the
 selected split contract, and aggregate counts. See
-[the private corpus contract](docs/private-corpus.md). Replay indexes can now be
+[the private corpus contract](docs/private-corpus.md) and
+[the recording workflow](docs/recording-dataset.ja.md). Replay indexes can now be
 generated canonically from strict frame plans: an opaque episode digest becomes
 the episode ID, discontiguous reuse is rejected, and the stored source and every
 complete label are revalidated before private publication. The pinned offline

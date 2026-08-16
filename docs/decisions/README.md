@@ -13,6 +13,7 @@ authoritative.
   supersedes ADR 0003.
 - [ADR 0009: Own game layout in the canonical frame contract](0009-own-layout-in-the-canonical-frame-contract.md)
   supersedes ADR 0008.
+- [ADR 0010: Preserve recordings as reusable dataset roots](0010-preserve-recordings-as-reusable-dataset-roots.md)
 
 ## Historical
 

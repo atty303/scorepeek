@@ -3,6 +3,7 @@ min_version = "2026.8.3"
 [tools]
 actionlint = "1.7.12"
 hk = "1.54.1"
+rclone = "1.74.2"
 rust = { version = "1.97.1", components = ["clippy", "rustfmt"] }
 taplo = "0.10.0"
 
@@ -57,7 +58,8 @@ mise run check README.md
 mise run check
 mise run catalog:schedule:systemd:verify
 cargo clippy --locked --workspace --all-targets -- -D warnings
-exec cargo test --locked --workspace
+cargo test --locked --workspace
+exec mise run corpus:dataset:test:e2e
 '''
 
 [tasks.doctor]
@@ -75,6 +77,58 @@ run = '''
 set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek-corpus -- ingest "$@"
 '''
+
+[tasks."corpus:recording:import"]
+description = "Import one complete recording as a reusable private dataset root"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- recording import "$@"
+'''
+
+[tasks."corpus:dataset:seal"]
+description = "Seal all imported recordings as an immutable dataset generation"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- dataset seal "$@"
+'''
+
+[tasks."corpus:dataset:push"]
+description = "Upload and verify one recording dataset generation"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- dataset push "$@"
+'''
+
+[tasks."corpus:dataset:pull"]
+description = "Download and verify one recording dataset generation"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- dataset pull "$@"
+'''
+
+[tasks."corpus:dataset:verify"]
+description = "Verify every local byte in one recording dataset generation"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- dataset verify "$@"
+'''
+
+[tasks."corpus:dataset:remote-verify"]
+description = "Download-hash every remote byte in one recording dataset generation"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- dataset remote-verify "$@"
+'''
+
+[tasks."corpus:dataset:test:e2e"]
+description = "Exercise recording dataset CLI round-trip against a local S3 mock"
+run = "scripts/test-corpus-dataset-e2e.bash"
 
 [tasks."corpus:generation:seal"]
 description = "Seal the current private source bindings as an immutable corpus generation"

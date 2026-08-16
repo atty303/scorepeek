@@ -25,6 +25,46 @@ observed source to the shared canonical frame contract. Corpus tooling does not
 infer or model Wine, Vulkan, Gamescope, compositor, PipeWire, operating-system,
 or capture-layer classifications from a profile ID.
 
+## Complete recording dataset roots
+
+The preferred collection path imports one finished, self-contained Matroska
+recording made from before game startup through final game shutdown. The raw
+recording bytes are the durable dataset root; frame selections, canonical
+frames, layout measurements, normalizers, labels, models, and replay artifacts
+are derived and may be rebuilt later. See
+[the Japanese operator workflow](recording-dataset.ja.md).
+
+`recording import` accepts a strict `scorepeek-capture-context-v1` document and
+derives the profile digest from that context plus the observed media contract.
+It does not choose a baseline profile, attach layout, normalize pixels, or use
+a Windows VM as a reference. The importer publishes immutable source, capture
+profile, media-probe, and recording manifests. Reimporting the same recording
+and context is idempotent.
+
+```text
+mise run corpus:recording:import -- --store /absolute/private/store --capture-context /absolute/private/capture-context.json /absolute/recordings/complete-run.mkv
+mise run corpus:dataset:seal -- --store /absolute/private/store calibration-001
+mise run corpus:dataset:verify -- --store /absolute/private/store GENERATION_SHA256
+```
+
+The seal command includes every currently imported recording and writes a
+canonical `scorepeek-recording-dataset-generation-v1`. Its SHA-256, rather than
+the caller's human-readable dataset ID, is the reusable identity. A generation
+binds every recording to its exact source media, source manifest, capture
+profile, media probe, and recording manifest.
+
+Explicit push/pull commands synchronize a generation with private
+S3-compatible storage. Objects use content-addressed keys, the generation
+manifest is uploaded last, and every reuse, pull, and remote verification hashes
+complete bytes rather than trusting an ETag. Import never uploads. There is no
+mutable latest pointer or delete command.
+
+```text
+mise run corpus:dataset:push -- --store /absolute/private/store --remote /absolute/private/remote.json GENERATION_SHA256
+mise run corpus:dataset:pull -- --store /absolute/private/restored-store --remote /absolute/private/remote.json GENERATION_SHA256
+mise run corpus:dataset:remote-verify -- --store /absolute/private/store --remote /absolute/private/remote.json GENERATION_SHA256
+```
+
 ## Immutable ingest
 
 The input request uses schema `scorepeek-private-corpus-ingest-v2` and contains
@@ -90,9 +130,10 @@ Probe a stored fixture into a new private manifest:
 mise run corpus:media:probe -- --store /absolute/private/store --output /absolute/private/probe.json fixture-001
 ```
 
-`scorepeek-private-media-probe-v2` binds the canonical source manifest and
+`scorepeek-private-media-probe-v3` binds the canonical source manifest and
 source object to the exact FFmpeg/ffprobe binary digests, video dimensions,
-source time base, the sole video stream's explicit index, and every decoded
+source time base, observed codec/pixel/color metadata, the sole video stream's
+explicit index, and every decoded
 video frame's contiguous decode index and integer PTS. Media with zero or
 multiple video streams is rejected rather than selecting one implicitly. Probe
 accepts only a self-contained Matroska container, streams its bytes to ffprobe
