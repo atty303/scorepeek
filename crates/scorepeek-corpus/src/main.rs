@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use scorepeek_corpus::CorpusStore;
+use scorepeek_corpus::{CorpusStore, render_synthetic_title_set};
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args_os().skip(1).collect();
@@ -71,6 +71,34 @@ fn run(args: &[OsString]) -> Result<(), String> {
             );
             Ok(())
         }
+        [index, generate, store, root, plan]
+            if index == "index" && generate == "generate" && store == "--store" =>
+        {
+            let summary = CorpusStore::new(PathBuf::from(root))
+                .generate_replay_index(PathBuf::from(plan))
+                .map_err(|error| format!("scorepeek-corpus index generate failed: {error}"))?;
+            println!(
+                "{}",
+                serde_json::to_string(&summary)
+                    .map_err(|error| format!("replay-index summary encoding failed: {error}"))?
+            );
+            Ok(())
+        }
+        [synthetic, render, output, directory, request]
+            if synthetic == "synthetic" && render == "render" && output == "--output" =>
+        {
+            let summary = render_synthetic_title_set(
+                PathBuf::from(request),
+                PathBuf::from(directory),
+            )
+            .map_err(|error| format!("scorepeek-corpus synthetic render failed: {error}"))?;
+            println!(
+                "{}",
+                serde_json::to_string(&summary)
+                    .map_err(|error| format!("synthetic summary encoding failed: {error}"))?
+            );
+            Ok(())
+        }
         [flag] if flag == "--help" || flag == "-h" => {
             print_usage();
             Ok(())
@@ -80,7 +108,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "usage: scorepeek-corpus <ingest --store ROOT SOURCE REQUEST|generation seal --store ROOT GENERATION_ID|label author --store ROOT DOCUMENT|replay validate --store ROOT SUITE>"
+            "usage: scorepeek-corpus <ingest --store ROOT SOURCE REQUEST|generation seal --store ROOT GENERATION_ID|label author --store ROOT DOCUMENT|index generate --store ROOT PLAN|synthetic render --output DIRECTORY REQUEST|replay validate --store ROOT SUITE>"
                 .to_owned(),
         ),
     }
@@ -88,7 +116,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
 
 fn print_usage() {
     println!(
-        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus ingest --store ROOT SOURCE REQUEST\n  scorepeek-corpus generation seal --store ROOT GENERATION_ID\n  scorepeek-corpus label author --store ROOT DOCUMENT\n  scorepeek-corpus replay validate --store ROOT SUITE",
+        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus ingest --store ROOT SOURCE REQUEST\n  scorepeek-corpus generation seal --store ROOT GENERATION_ID\n  scorepeek-corpus label author --store ROOT DOCUMENT\n  scorepeek-corpus index generate --store ROOT PLAN\n  scorepeek-corpus synthetic render --output DIRECTORY REQUEST\n  scorepeek-corpus replay validate --store ROOT SUITE",
         env!("CARGO_PKG_VERSION")
     );
 }

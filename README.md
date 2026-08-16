@@ -15,7 +15,8 @@ Tachi, Textage, and dqn/iidxapi acquisition through `scorepeek catalog sync`.
 It also contains an opt-in daily systemd user schedule for that same command.
 The offline-only `scorepeek-corpus` tool now owns the first private-corpus
 contract, bounded content-addressed source ingest, canonical complete-label
-authoring, and replay-index validation.
+authoring, deterministic episode/replay-index generation, a seed-only
+procedural synthetic title renderer, and replay-index validation.
 It does **not** yet contain media extraction, a training pipeline, or a runnable
 capture or recognition service.
 
@@ -68,6 +69,8 @@ mise run catalog:sync
 mise run corpus:ingest -- --store /absolute/private/store /absolute/source.media /absolute/request.json
 mise run corpus:generation:seal -- --store /absolute/private/store generation-001
 mise run corpus:label:author -- --store /absolute/private/store /absolute/complete-label.json
+mise run corpus:index:generate -- --store /absolute/private/store /absolute/index-plan.json
+mise run corpus:synthetic:render -- --output /absolute/new/output-directory /absolute/synthetic-request.json
 mise run corpus:replay:validate -- --store /absolute/private/store /absolute/replay-suite.json
 mise run catalog:schedule:systemd:verify
 ```
@@ -111,9 +114,16 @@ bindings, extractor/annotation/frame hashes, and corpus-wide session/play/title
 grouped split isolation. Each suite selects either in-profile evaluation or the
 stricter profile-disjoint evaluation. It emits only opaque IDs, hashes, the
 selected split contract, and aggregate counts. See
-[the private corpus contract](docs/private-corpus.md). Media extraction,
-episode/index generation, synthetic rendering, and training/export remain later
-offline stages and will not become game-session runtime dependencies.
+[the private corpus contract](docs/private-corpus.md). Replay indexes can now be
+generated canonically from strict frame plans: an opaque episode digest becomes
+the episode ID, discontiguous reuse is rejected, and the stored source and every
+complete label are revalidated before private publication. The separate
+seed-only synthetic renderer emits deterministic RGB8 PPM title crops and a
+canonical manifest without accepting catalog text, fonts, images, or private
+corpus data. Its procedural ASCII domain establishes the renderer contract but
+is not yet representative production OCR training data. Media extraction,
+production glyph/font coverage, replay execution, and training/export remain
+later offline stages and will not become game-session runtime dependencies.
 
 `scorepeek catalog sync` is the scheduling interface. A user may keep recurring
 execution disabled and run it manually, or select any scheduler that preserves

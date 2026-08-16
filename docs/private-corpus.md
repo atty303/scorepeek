@@ -118,6 +118,32 @@ checked again when a replay suite refers to the digest.
 
 ## Replay metadata
 
+Before assembling a replay suite, generate each replay index from strict frame
+metadata:
+
+```text
+mise run corpus:index:generate -- --store /absolute/private/store /absolute/index-plan.json
+```
+
+The `scorepeek-private-corpus-index-plan-v1` input names exactly one stored
+fixture and its canonical source-manifest SHA-256. It binds the extractor
+identity, time base, and ordered frame metadata already required by the replay
+contract. In place of a caller-selected episode ID, each frame carries an
+opaque `episode_sha256`. The generator uses that digest as the canonical
+episode ID and rejects an episode group that reappears after a different group
+has begun. Decode indexes must still increase strictly.
+
+Generation revalidates the stored source bytes and every referenced complete
+label before publishing canonical JSON to
+`indexes/<replay_index_sha256>.json`. Publication shares the corpus writer
+lock, uses private permissions and fsync boundaries, recovers only owned index
+staging files, and is idempotent for the same bytes. The index store admits at
+most 1,024 objects, 32 MiB per object, and 4 GiB total. Its aggregate-only
+summary contains the fixture ID, index digest, and frame and episode counts.
+The generated index is directly usable as one entry in a replay suite; suite
+assembly remains explicit because split-contract selection is a human dataset
+decision.
+
 `scorepeek-private-corpus-replay-suite-v1` is the corpus-wide validation unit.
 It contains an explicit `in_profile` or `profile_disjoint` split contract and
 one or more `scorepeek-private-corpus-replay-v1` indexes. Each suite binds one
@@ -180,12 +206,39 @@ generation digest, canonical replay-suite digest, opaque suite ID, index and
 frame counts, selected split contract, and per-split counts. It does not emit
 paths, media, complete labels, recognized values, or personal data.
 
+## Catalog-independent synthetic title set
+
+Render a deterministic synthetic title-crop set from a seed-only request:
+
+```text
+mise run corpus:synthetic:render -- --output /absolute/new/output-directory /absolute/synthetic-request.json
+```
+
+`scorepeek-synthetic-title-request-v1` contains only an opaque set ID, a
+lowercase SHA-256 seed, and a sample count from 1 through 256. It deliberately
+has no text, font, image, or catalog input. The versioned
+`scorepeek-procedural-5x7-v1` renderer derives ASCII n-gram labels, glyph style,
+gradient background, shadow, and bounded noise from the seed and sample index,
+then writes fixed RGB8 512x96 P6 PPM crops plus a canonical manifest. An
+existing output path is never overwritten. Files and the output directory are
+world-readable (`0644`/`0755`) because this path contains generated data only;
+the renderer does not read the private corpus store.
+
+This baseline provides byte-deterministic, independently created renderer and
+manifest contracts without adding a font, image, or media dependency. It is
+not a claim that the limited procedural glyph domain is representative enough
+to train the production OCR model. Expanding glyph coverage or adding an
+external font still requires immutable provenance, a redistribution grant,
+and the dependency approval described below. The repository's current lack of
+a public license remains unchanged; this command does not itself grant rights
+to redistribute scorepeek or its generated files.
+
 ## Not yet implemented
 
 - media probing and PTS/decode-order frame extraction;
-- deterministic episode/index generation;
-- independently redistributable synthetic rendering;
 - replay execution against recognition code;
+- production synthetic variation and glyph coverage backed by an approved
+  redistributable font or independently authored equivalent;
 - Python training, evaluation, ONNX export, and Rust parity gates.
 
 Any media, image, training, or runtime dependency must be proposed with its

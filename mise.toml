@@ -78,6 +78,22 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek-corpus -- label author "$@"
 '''
 
+[tasks."corpus:index:generate"]
+description = "Generate a canonical replay index from strict private frame metadata"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- index generate "$@"
+'''
+
+[tasks."corpus:synthetic:render"]
+description = "Render a deterministic catalog-independent synthetic title set"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- synthetic render "$@"
+'''
+
 [tasks."corpus:replay:validate"]
 description = "Validate private corpus replay metadata"
 run = '''

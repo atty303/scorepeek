@@ -21,6 +21,11 @@ const REPLAY_SUITE_SCHEMA: &str = "scorepeek-private-corpus-replay-suite-v1";
 const REPLAY_SUITE_SUMMARY_SCHEMA: &str = "scorepeek-private-corpus-replay-suite-summary-v1";
 const COMPLETE_LABEL_SCHEMA: &str = "scorepeek-private-complete-label-v1";
 const COMPLETE_LABEL_SUMMARY_SCHEMA: &str = "scorepeek-private-complete-label-summary-v1";
+const INDEX_PLAN_SCHEMA: &str = "scorepeek-private-corpus-index-plan-v1";
+const INDEX_SUMMARY_SCHEMA: &str = "scorepeek-private-corpus-index-summary-v1";
+const SYNTHETIC_TITLE_REQUEST_SCHEMA: &str = "scorepeek-synthetic-title-request-v1";
+const SYNTHETIC_TITLE_MANIFEST_SCHEMA: &str = "scorepeek-synthetic-title-set-v1";
+const SYNTHETIC_TITLE_SUMMARY_SCHEMA: &str = "scorepeek-synthetic-title-summary-v1";
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 const MAX_SOURCE_OBJECTS: usize = 1_024;
@@ -32,6 +37,7 @@ const MAX_GENERATION_STORAGE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_REPLAY_INDEX_BYTES: usize = 32 * 1024 * 1024;
 const MAX_REPLAY_INDEXES: usize = 1_024;
 const MAX_REPLAY_FRAMES: usize = 250_000;
+const MAX_REPLAY_INDEX_STORAGE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_LABEL_BYTES: usize = 64 * 1024;
 const MAX_LABEL_OBJECTS: usize = 250_000;
 const MAX_LABEL_STORAGE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -40,6 +46,10 @@ const SOURCE_STAGING_PREFIX: &str = ".corpus-source-staging-";
 const MANIFEST_STAGING_PREFIX: &str = ".corpus-manifest-staging-";
 const GENERATION_STAGING_PREFIX: &str = ".corpus-generation-staging-";
 const LABEL_STAGING_PREFIX: &str = ".corpus-label-staging-";
+const INDEX_STAGING_PREFIX: &str = ".corpus-index-staging-";
+const SYNTHETIC_WIDTH: usize = 512;
+const SYNTHETIC_HEIGHT: usize = 96;
+const MAX_SYNTHETIC_SAMPLES: usize = 256;
 
 #[derive(Debug)]
 pub enum CorpusError {
@@ -254,6 +264,41 @@ pub struct GenerationSummary {
     pub generation_id: String,
     pub corpus_generation_sha256: String,
     pub source_count: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReplayIndexPlan {
+    schema: String,
+    fixture_id: String,
+    source_manifest_sha256: String,
+    extractor: ExtractorIdentity,
+    source_time_base: TimeBase,
+    frames: Vec<ReplayIndexPlanFrame>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReplayIndexPlanFrame {
+    frame_id: String,
+    source_pts: i64,
+    decode_index: u64,
+    frame_sha256: String,
+    episode_sha256: String,
+    screen_class: ScreenClass,
+    split: CorpusSplit,
+    groups: SplitGroups,
+    annotation_revision: String,
+    labels_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ReplayIndexSummary {
+    pub schema: String,
+    pub fixture_id: String,
+    pub replay_index_sha256: String,
+    pub frame_count: u64,
+    pub episode_count: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -513,6 +558,84 @@ impl CorpusStore {
         })
     }
 
+    /// Generates and durably publishes one canonical replay index from strict frame metadata.
+    ///
+    /// Episode IDs are the plan's opaque episode-group SHA-256 values. Reusing an episode group
+    /// after another group has begun is rejected so an episode always denotes one contiguous
+    /// decode interval.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the plan, stored source, frame labels, decode order, or episode
+    /// grouping is invalid, or if bounded durable publication fails.
+    pub fn generate_replay_index(
+        &self,
+        plan_path: impl AsRef<Path>,
+    ) -> Result<ReplayIndexSummary, CorpusError> {
+        self.validate_root()?;
+        let plan = ReplayIndexPlan::read_from(plan_path)?;
+        preflight_managed_components(&self.root)?;
+        validate_private_directory_mode(&self.root, ErrorContext::Replay)?;
+        let lock = open_store_lock(&self.root, false)?;
+        lock.lock()?;
+        preflight_managed_components(&self.root)?;
+        for name in ["content", "manifests", "labels"] {
+            validate_private_directory_mode(&self.root.join(name), ErrorContext::Replay)?;
+        }
+        validate_label_store(&self.root.join("labels"))?;
+
+        let manifest = load_source_manifest(self, &plan.fixture_id, &plan.source_manifest_sha256)?;
+        let index = plan.into_replay_index(manifest);
+        index.validate()?;
+        validate_source_binding(self, &index)?;
+        for frame in &index.frames {
+            validate_complete_label(self, frame)?;
+        }
+
+        let bytes = canonical_json(&index)?;
+        if bytes.len() > MAX_REPLAY_INDEX_BYTES {
+            return Err(CorpusError::CapacityExceeded);
+        }
+        let digest = digest_bytes(&bytes);
+        let index_dir = self.root.join("indexes");
+        create_private_directory(&index_dir)?;
+        recover_index_staging(&index_dir)?;
+        let destination = index_dir.join(format!("{digest}.json"));
+        match destination.symlink_metadata() {
+            Ok(_) => {
+                if read_bounded_regular(&destination, MAX_REPLAY_INDEX_BYTES, ErrorContext::Replay)?
+                    != bytes
+                {
+                    return Err(CorpusError::InvalidReplay(
+                        "replay-index digest is bound to different bytes".to_owned(),
+                    ));
+                }
+                fs::set_permissions(&destination, fs::Permissions::from_mode(0o600))?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                ensure_index_capacity(&index_dir, bytes.len())?;
+                write_atomic_file(&index_dir, &destination, &bytes, INDEX_STAGING_PREFIX)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        sync_file_and_parent(&destination, &index_dir)?;
+        drop(lock);
+
+        let episodes = index
+            .frames
+            .iter()
+            .map(|frame| frame.episode_id.as_str())
+            .collect::<BTreeSet<_>>()
+            .len();
+        Ok(ReplayIndexSummary {
+            schema: INDEX_SUMMARY_SCHEMA.to_owned(),
+            fixture_id: index.fixture_id,
+            replay_index_sha256: digest,
+            frame_count: index.frames.len() as u64,
+            episode_count: episodes as u64,
+        })
+    }
+
     /// Validates a complete replay suite against the canonical source manifests and immutable
     /// media in this private store.
     ///
@@ -542,6 +665,95 @@ impl CorpusStore {
             ));
         }
         Ok(())
+    }
+}
+
+impl ReplayIndexPlan {
+    fn read_from(path: impl AsRef<Path>) -> Result<Self, CorpusError> {
+        let bytes =
+            read_bounded_regular(path.as_ref(), MAX_REPLAY_INDEX_BYTES, ErrorContext::Replay)?;
+        let plan: Self = serde_json::from_slice(&bytes)?;
+        plan.validate()?;
+        Ok(plan)
+    }
+
+    fn validate(&self) -> Result<(), CorpusError> {
+        if self.schema != INDEX_PLAN_SCHEMA {
+            return Err(CorpusError::InvalidReplay(format!(
+                "index-plan schema must be {INDEX_PLAN_SCHEMA:?}"
+            )));
+        }
+        validate_opaque_id(&self.fixture_id, "fixture_id", ErrorContext::Replay)?;
+        validate_sha256(
+            &self.source_manifest_sha256,
+            "source_manifest_sha256",
+            ErrorContext::Replay,
+        )?;
+        self.extractor.validate()?;
+        self.source_time_base.validate()?;
+        if self.frames.is_empty() || self.frames.len() > MAX_REPLAY_FRAMES {
+            return Err(CorpusError::InvalidReplay(
+                "index-plan frame count is outside the admitted range".to_owned(),
+            ));
+        }
+
+        let mut completed_episodes = BTreeSet::new();
+        let mut current_episode = None;
+        for frame in &self.frames {
+            frame.validate()?;
+            if current_episode != Some(frame.episode_sha256.as_str()) {
+                if let Some(previous) = current_episode {
+                    completed_episodes.insert(previous);
+                }
+                if completed_episodes.contains(frame.episode_sha256.as_str()) {
+                    return Err(CorpusError::InvalidReplay(
+                        "episode group is not contiguous in decode order".to_owned(),
+                    ));
+                }
+                current_episode = Some(frame.episode_sha256.as_str());
+            }
+        }
+        Ok(())
+    }
+
+    fn into_replay_index(self, manifest: SourceManifest) -> ReplayIndex {
+        ReplayIndex {
+            schema: REPLAY_INDEX_SCHEMA.to_owned(),
+            fixture_id: manifest.fixture_id,
+            session_id: manifest.session_id,
+            profile: manifest.profile,
+            source: manifest.source,
+            source_manifest_sha256: self.source_manifest_sha256,
+            extractor: self.extractor,
+            source_time_base: self.source_time_base,
+            frames: self
+                .frames
+                .into_iter()
+                .map(ReplayIndexPlanFrame::into_replay_frame)
+                .collect(),
+        }
+    }
+}
+
+impl ReplayIndexPlanFrame {
+    fn validate(&self) -> Result<(), CorpusError> {
+        validate_sha256(&self.episode_sha256, "episode_sha256", ErrorContext::Replay)?;
+        self.clone().into_replay_frame().validate()
+    }
+
+    fn into_replay_frame(self) -> ReplayFrame {
+        ReplayFrame {
+            frame_id: self.frame_id,
+            source_pts: self.source_pts,
+            decode_index: self.decode_index,
+            frame_sha256: self.frame_sha256,
+            episode_id: self.episode_sha256,
+            screen_class: self.screen_class,
+            split: self.split,
+            groups: self.groups,
+            annotation_revision: self.annotation_revision,
+            labels_sha256: self.labels_sha256,
+        }
     }
 }
 
@@ -1276,6 +1488,336 @@ pub struct ReplaySuiteSummary {
     pub split_counts: BTreeMap<CorpusSplit, u64>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SyntheticTitleRequest {
+    schema: String,
+    set_id: String,
+    seed_sha256: String,
+    sample_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SyntheticTitleManifest {
+    schema: String,
+    set_id: String,
+    renderer_id: String,
+    seed_sha256: String,
+    width: usize,
+    height: usize,
+    pixel_format: String,
+    samples: Vec<SyntheticTitleSample>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SyntheticTitleSample {
+    sample_id: String,
+    file_name: String,
+    generated_text: String,
+    content_sha256: String,
+    bytes: u64,
+    style: SyntheticTitleStyle,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SyntheticTitleStyle {
+    glyph_scale: u8,
+    letter_spacing: u8,
+    shadow_offset: u8,
+    noise_pixels: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SyntheticTitleSummary {
+    pub schema: String,
+    pub set_id: String,
+    pub manifest_sha256: String,
+    pub sample_count: u64,
+    pub total_sample_bytes: u64,
+}
+
+/// Renders a deterministic, catalog-independent RGB8 title-crop set using only scorepeek's
+/// procedural 5x7 glyphs and seed-derived ASCII n-grams.
+///
+/// The output directory must be an absent absolute path. The renderer never accepts caller text,
+/// fonts, images, or catalog data, so every pixel and label is derived from the versioned renderer
+/// and the request seed.
+///
+/// # Errors
+///
+/// Returns an error for an invalid request, an existing or relative output path, or a failed
+/// durable write. A newly created output directory can remain incomplete if an I/O failure occurs.
+pub fn render_synthetic_title_set(
+    request_path: impl AsRef<Path>,
+    output_path: impl AsRef<Path>,
+) -> Result<SyntheticTitleSummary, CorpusError> {
+    let request_bytes = read_bounded_regular(
+        request_path.as_ref(),
+        MAX_REQUEST_BYTES,
+        ErrorContext::Request,
+    )?;
+    let request: SyntheticTitleRequest = serde_json::from_slice(&request_bytes)?;
+    request.validate()?;
+    let output = output_path.as_ref();
+    if !output.is_absolute() || output.as_os_str().is_empty() {
+        return Err(CorpusError::InvalidRequest(
+            "synthetic output must be an absolute, non-empty path".to_owned(),
+        ));
+    }
+    let parent = output.parent().ok_or_else(|| {
+        CorpusError::InvalidRequest("synthetic output has no parent directory".to_owned())
+    })?;
+    if !parent.symlink_metadata()?.is_dir() {
+        return Err(CorpusError::InvalidRequest(
+            "synthetic output parent must be a directory".to_owned(),
+        ));
+    }
+    match output.symlink_metadata() {
+        Ok(_) => {
+            return Err(CorpusError::InvalidRequest(
+                "synthetic output path already exists".to_owned(),
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    fs::DirBuilder::new().mode(0o755).create(output)?;
+    fs::set_permissions(output, fs::Permissions::from_mode(0o755))?;
+
+    let mut samples = Vec::with_capacity(request.sample_count);
+    let mut total_sample_bytes = 0_u64;
+    for index in 0..request.sample_count {
+        let seed = synthetic_sample_seed(&request.seed_sha256, index);
+        let generated_text = synthetic_text(&seed);
+        let style = SyntheticTitleStyle {
+            glyph_scale: 3 + seed[17] % 3,
+            letter_spacing: 1 + seed[18] % 4,
+            shadow_offset: 1 + seed[19] % 3,
+            noise_pixels: 128 + u16::from(seed[20]),
+        };
+        let bytes = render_synthetic_sample(&generated_text, &seed, &style);
+        let file_name = format!("sample-{index:04}.ppm");
+        write_redistributable_file(&output.join(&file_name), &bytes)?;
+        total_sample_bytes = total_sample_bytes
+            .checked_add(bytes.len() as u64)
+            .ok_or(CorpusError::CapacityExceeded)?;
+        samples.push(SyntheticTitleSample {
+            sample_id: format!("sample-{index:04}"),
+            file_name,
+            generated_text,
+            content_sha256: digest_bytes(&bytes),
+            bytes: bytes.len() as u64,
+            style,
+        });
+    }
+    let manifest = SyntheticTitleManifest {
+        schema: SYNTHETIC_TITLE_MANIFEST_SCHEMA.to_owned(),
+        set_id: request.set_id.clone(),
+        renderer_id: "scorepeek-procedural-5x7-v1".to_owned(),
+        seed_sha256: request.seed_sha256,
+        width: SYNTHETIC_WIDTH,
+        height: SYNTHETIC_HEIGHT,
+        pixel_format: "rgb8-p6-ppm".to_owned(),
+        samples,
+    };
+    let manifest_bytes = canonical_json(&manifest)?;
+    let manifest_sha256 = digest_bytes(&manifest_bytes);
+    write_redistributable_file(&output.join("manifest.json"), &manifest_bytes)?;
+    File::open(output)?.sync_all()?;
+    File::open(parent)?.sync_all()?;
+
+    Ok(SyntheticTitleSummary {
+        schema: SYNTHETIC_TITLE_SUMMARY_SCHEMA.to_owned(),
+        set_id: request.set_id,
+        manifest_sha256,
+        sample_count: manifest.samples.len() as u64,
+        total_sample_bytes,
+    })
+}
+
+impl SyntheticTitleRequest {
+    fn validate(&self) -> Result<(), CorpusError> {
+        if self.schema != SYNTHETIC_TITLE_REQUEST_SCHEMA {
+            return Err(CorpusError::InvalidRequest(format!(
+                "synthetic-title schema must be {SYNTHETIC_TITLE_REQUEST_SCHEMA:?}"
+            )));
+        }
+        validate_opaque_id(&self.set_id, "set_id", ErrorContext::Request)?;
+        validate_sha256(&self.seed_sha256, "seed_sha256", ErrorContext::Request)?;
+        if self.sample_count == 0 || self.sample_count > MAX_SYNTHETIC_SAMPLES {
+            return Err(CorpusError::InvalidRequest(
+                "synthetic sample_count is outside the admitted range".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn synthetic_sample_seed(seed: &str, index: usize) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"scorepeek-procedural-5x7-v1\0");
+    hasher.update(seed.as_bytes());
+    hasher.update(
+        u64::try_from(index)
+            .expect("synthetic sample bound fits u64")
+            .to_be_bytes(),
+    );
+    hasher.finalize().into()
+}
+
+fn synthetic_text(seed: &[u8; 32]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let length = 6 + usize::from(seed[0] % 11);
+    (0..length)
+        .map(|index| ALPHABET[usize::from(seed[1 + index]) % ALPHABET.len()] as char)
+        .collect()
+}
+
+fn render_synthetic_sample(text: &str, seed: &[u8; 32], style: &SyntheticTitleStyle) -> Vec<u8> {
+    let mut pixels = vec![0_u8; SYNTHETIC_WIDTH * SYNTHETIC_HEIGHT * 3];
+    for y in 0..SYNTHETIC_HEIGHT {
+        for x in 0..SYNTHETIC_WIDTH {
+            let offset = (y * SYNTHETIC_WIDTH + x) * 3;
+            pixels[offset] = seed[21] / 8
+                + u8::try_from((x * usize::from(seed[22] % 24)) / SYNTHETIC_WIDTH)
+                    .expect("horizontal gradient is below 24");
+            pixels[offset + 1] = seed[23] / 8
+                + u8::try_from((y * usize::from(seed[24] % 24)) / SYNTHETIC_HEIGHT)
+                    .expect("vertical gradient is below 24");
+            pixels[offset + 2] = seed[25] / 8
+                + u8::try_from(
+                    ((x + y) * usize::from(seed[26] % 16)) / (SYNTHETIC_WIDTH + SYNTHETIC_HEIGHT),
+                )
+                .expect("diagonal gradient is below 16");
+        }
+    }
+
+    let scale = usize::from(style.glyph_scale);
+    let spacing = usize::from(style.letter_spacing);
+    let glyph_width = 5 * scale;
+    let text_width = text
+        .len()
+        .saturating_mul(glyph_width + spacing)
+        .saturating_sub(spacing);
+    let start_x = SYNTHETIC_WIDTH.saturating_sub(text_width) / 2;
+    let start_y = (SYNTHETIC_HEIGHT - 7 * scale) / 2;
+    let shadow = usize::from(style.shadow_offset);
+    for (index, character) in text.chars().enumerate() {
+        let x = start_x + index * (glyph_width + spacing);
+        let glyph = procedural_glyph(character);
+        draw_glyph(
+            &mut pixels,
+            x + shadow,
+            start_y + shadow,
+            scale,
+            glyph,
+            [8, 8, 12],
+        );
+        let tint = seed[(index + 3) % seed.len()] % 48;
+        draw_glyph(
+            &mut pixels,
+            x,
+            start_y,
+            scale,
+            glyph,
+            [207 + tint, 207 + tint / 2, 255 - tint / 2],
+        );
+    }
+
+    let mut state = u64::from_be_bytes(seed[..8].try_into().expect("fixed seed slice"));
+    for _ in 0..style.noise_pixels {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        let pixel_count = u64::try_from(SYNTHETIC_WIDTH * SYNTHETIC_HEIGHT)
+            .expect("synthetic dimensions fit u64");
+        let pixel = usize::try_from(state % pixel_count).expect("pixel index fits usize");
+        let channel = usize::try_from((state >> 32) % 3).expect("channel index is below 3");
+        let offset = pixel * 3 + channel;
+        let intensity = u8::try_from((state >> 40) % 24).expect("noise intensity is below 24");
+        pixels[offset] = pixels[offset].saturating_add(intensity);
+    }
+
+    let mut ppm = format!("P6\n{SYNTHETIC_WIDTH} {SYNTHETIC_HEIGHT}\n255\n").into_bytes();
+    ppm.extend_from_slice(&pixels);
+    ppm
+}
+
+fn draw_glyph(pixels: &mut [u8], x: usize, y: usize, scale: usize, rows: [u8; 7], color: [u8; 3]) {
+    for (row, bits) in rows.into_iter().enumerate() {
+        for column in 0..5 {
+            if bits & (1 << (4 - column)) == 0 {
+                continue;
+            }
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    let pixel_x = x + column * scale + dx;
+                    let pixel_y = y + row * scale + dy;
+                    if pixel_x >= SYNTHETIC_WIDTH || pixel_y >= SYNTHETIC_HEIGHT {
+                        continue;
+                    }
+                    let offset = (pixel_y * SYNTHETIC_WIDTH + pixel_x) * 3;
+                    pixels[offset..offset + 3].copy_from_slice(&color);
+                }
+            }
+        }
+    }
+}
+
+fn procedural_glyph(character: char) -> [u8; 7] {
+    match character {
+        'A' => [14, 17, 17, 31, 17, 17, 17],
+        'B' => [30, 17, 17, 30, 17, 17, 30],
+        'C' => [14, 17, 16, 16, 16, 17, 14],
+        'D' => [30, 17, 17, 17, 17, 17, 30],
+        'E' => [31, 16, 16, 30, 16, 16, 31],
+        'F' => [31, 16, 16, 30, 16, 16, 16],
+        'G' => [14, 17, 16, 23, 17, 17, 15],
+        'H' => [17, 17, 17, 31, 17, 17, 17],
+        'J' => [7, 2, 2, 2, 2, 18, 12],
+        'K' => [17, 18, 20, 24, 20, 18, 17],
+        'L' => [16, 16, 16, 16, 16, 16, 31],
+        'M' => [17, 27, 21, 21, 17, 17, 17],
+        'N' => [17, 25, 21, 19, 17, 17, 17],
+        'P' => [30, 17, 17, 30, 16, 16, 16],
+        'Q' => [14, 17, 17, 17, 21, 18, 13],
+        'R' => [30, 17, 17, 30, 20, 18, 17],
+        'S' => [15, 16, 16, 14, 1, 1, 30],
+        'T' => [31, 4, 4, 4, 4, 4, 4],
+        'U' => [17, 17, 17, 17, 17, 17, 14],
+        'V' => [17, 17, 17, 17, 17, 10, 4],
+        'W' => [17, 17, 17, 21, 21, 21, 10],
+        'X' => [17, 17, 10, 4, 10, 17, 17],
+        'Y' => [17, 17, 10, 4, 4, 4, 4],
+        'Z' => [31, 1, 2, 4, 8, 16, 31],
+        '2' => [14, 17, 1, 2, 4, 8, 31],
+        '3' => [30, 1, 1, 14, 1, 1, 30],
+        '4' => [2, 6, 10, 18, 31, 2, 2],
+        '5' => [31, 16, 16, 30, 1, 1, 30],
+        '6' => [14, 16, 16, 30, 17, 17, 14],
+        '7' => [31, 1, 2, 4, 8, 8, 8],
+        '8' => [14, 17, 17, 14, 17, 17, 14],
+        '9' => [14, 17, 17, 15, 1, 1, 14],
+        _ => [31, 17, 2, 4, 8, 0, 8],
+    }
+}
+
+fn write_redistributable_file(path: &Path, bytes: &[u8]) -> Result<(), CorpusError> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.flush()?;
+    file.set_permissions(fs::Permissions::from_mode(0o644))?;
+    file.sync_all()?;
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 enum ErrorContext {
     Request,
@@ -1500,6 +2042,50 @@ fn ensure_label_capacity(label_dir: &Path, added_bytes: usize) -> Result<(), Cor
     Ok(())
 }
 
+fn ensure_index_capacity(index_dir: &Path, added_bytes: usize) -> Result<(), CorpusError> {
+    let mut count = 0_usize;
+    let mut total = 0_u64;
+    for entry in fs::read_dir(index_dir)? {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            return Err(CorpusError::InvalidReplay(
+                "replay-index store contains a non-UTF-8 entry".to_owned(),
+            ));
+        };
+        if name.starts_with(INDEX_STAGING_PREFIX) {
+            continue;
+        }
+        let Some(digest) = name.strip_suffix(".json") else {
+            return Err(CorpusError::InvalidReplay(
+                "replay-index store contains an unrecognized entry".to_owned(),
+            ));
+        };
+        validate_sha256(digest, "replay-index filename", ErrorContext::Replay)?;
+        let metadata = entry.path().symlink_metadata()?;
+        if !metadata.is_file()
+            || metadata.len() == 0
+            || metadata.len() > MAX_REPLAY_INDEX_BYTES as u64
+        {
+            return Err(CorpusError::InvalidReplay(
+                "replay-index store contains an invalid object".to_owned(),
+            ));
+        }
+        count = count.checked_add(1).ok_or(CorpusError::CapacityExceeded)?;
+        total = total
+            .checked_add(metadata.len())
+            .ok_or(CorpusError::CapacityExceeded)?;
+    }
+    let added_bytes = u64::try_from(added_bytes).map_err(|_| CorpusError::CapacityExceeded)?;
+    if count >= MAX_REPLAY_INDEXES
+        || total
+            .checked_add(added_bytes)
+            .is_none_or(|value| value > MAX_REPLAY_INDEX_STORAGE_BYTES)
+    {
+        return Err(CorpusError::CapacityExceeded);
+    }
+    Ok(())
+}
+
 fn validate_stored_source(directory: &Path, expected: &ContentRef) -> Result<(), CorpusError> {
     if !directory.symlink_metadata()?.is_dir() {
         return Err(CorpusError::InvalidRequest(
@@ -1671,6 +2257,31 @@ fn recover_label_staging(label_dir: &Path) -> Result<(), CorpusError> {
     Ok(())
 }
 
+fn recover_index_staging(index_dir: &Path) -> Result<(), CorpusError> {
+    let mut changed = false;
+    for entry in fs::read_dir(index_dir)? {
+        let entry = entry?;
+        let is_staging = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(INDEX_STAGING_PREFIX));
+        if !is_staging {
+            continue;
+        }
+        if !entry.path().symlink_metadata()?.is_file() {
+            return Err(CorpusError::InvalidReplay(
+                "replay-index staging entry is not a file".to_owned(),
+            ));
+        }
+        fs::remove_file(entry.path())?;
+        changed = true;
+    }
+    if changed {
+        File::open(index_dir)?.sync_all()?;
+    }
+    Ok(())
+}
+
 fn preflight_managed_components(root: &Path) -> Result<(), CorpusError> {
     match root.symlink_metadata() {
         Ok(metadata) if metadata.is_dir() => {}
@@ -1683,7 +2294,7 @@ fn preflight_managed_components(root: &Path) -> Result<(), CorpusError> {
         Err(error) => return Err(error.into()),
     }
 
-    for name in ["content", "manifests", "generations", "labels"] {
+    for name in ["content", "manifests", "generations", "labels", "indexes"] {
         match root.join(name).symlink_metadata() {
             Ok(metadata) if metadata.is_dir() => {}
             Ok(_) => {
@@ -1919,6 +2530,34 @@ fn is_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
+fn load_source_manifest(
+    store: &CorpusStore,
+    fixture_id: &str,
+    expected_digest: &str,
+) -> Result<SourceManifest, CorpusError> {
+    let path = store
+        .root
+        .join("manifests")
+        .join(format!("{fixture_id}.json"));
+    validate_private_file_mode(&path, ErrorContext::Replay)?;
+    let bytes = read_bounded_regular(&path, MAX_REQUEST_BYTES, ErrorContext::Replay)?;
+    if digest_bytes(&bytes) != expected_digest {
+        return Err(CorpusError::InvalidReplay(
+            "source_manifest_sha256 does not match the stored manifest".to_owned(),
+        ));
+    }
+    let manifest: SourceManifest = serde_json::from_slice(&bytes)?;
+    manifest
+        .validate()
+        .map_err(|_| CorpusError::InvalidReplay("stored source manifest is invalid".to_owned()))?;
+    if manifest.fixture_id != fixture_id || canonical_json(&manifest)? != bytes {
+        return Err(CorpusError::InvalidReplay(
+            "stored source manifest is not canonical or filename-bound".to_owned(),
+        ));
+    }
+    Ok(manifest)
+}
+
 fn validate_source_binding(store: &CorpusStore, index: &ReplayIndex) -> Result<(), CorpusError> {
     let manifest_path = store
         .root
@@ -2110,7 +2749,7 @@ mod tests {
 
     use super::{
         CorpusError, CorpusSplit, CorpusStore, LABEL_STAGING_PREFIX, LabelShape, SourceManifest,
-        digest_bytes,
+        digest_bytes, render_synthetic_title_set,
     };
 
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -2634,6 +3273,151 @@ mod tests {
     }
 
     #[test]
+    fn replay_index_generation_is_canonical_and_idempotent() {
+        let temporary = tempdir().unwrap();
+        let root = temporary.path().join("private-corpus");
+        let store = CorpusStore::new(&root);
+        let manifest = ingest_fixture(
+            temporary.path(),
+            &store,
+            "fixture-001",
+            "session-001",
+            "capture-profile-a",
+            b"synthetic replay source",
+        );
+        let plan = temporary.path().join("index-plan.json");
+        fs::write(
+            &plan,
+            serde_json::to_vec_pretty(&replay_index_plan_value(&manifest, &root)).unwrap(),
+        )
+        .unwrap();
+
+        let first = store.generate_replay_index(&plan).unwrap();
+        let second = store.generate_replay_index(&plan).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(first.schema, "scorepeek-private-corpus-index-summary-v1");
+        assert_eq!(first.fixture_id, "fixture-001");
+        assert_eq!(first.frame_count, 2);
+        assert_eq!(first.episode_count, 1);
+        let stored = root
+            .join("indexes")
+            .join(format!("{}.json", first.replay_index_sha256));
+        assert_eq!(
+            stored.metadata().unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let bytes = fs::read(stored).unwrap();
+        assert!(bytes.ends_with(b"\n"));
+        assert_eq!(digest_bytes(&bytes), first.replay_index_sha256);
+        let index: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(index["frames"][0]["episode_id"], json!(C));
+        assert_eq!(index["frames"][1]["episode_id"], json!(C));
+        let generation = store.seal_generation("generation-001").unwrap();
+        let suite = temporary.path().join("suite.json");
+        fs::write(
+            &suite,
+            serde_json::to_vec(&replay_suite_value(
+                &generation.corpus_generation_sha256,
+                &[index],
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(store.validate_replay_suite(suite).unwrap().frame_count, 2);
+    }
+
+    #[test]
+    fn replay_index_generation_rejects_a_discontiguous_episode() {
+        let temporary = tempdir().unwrap();
+        let root = temporary.path().join("private-corpus");
+        let store = CorpusStore::new(&root);
+        let manifest = ingest_fixture(
+            temporary.path(),
+            &store,
+            "fixture-001",
+            "session-001",
+            "capture-profile-a",
+            b"synthetic replay source",
+        );
+        let mut value = replay_index_plan_value(&manifest, &root);
+        let mut middle = value["frames"][0].clone();
+        middle["frame_id"] = json!("fixture-001-frame-middle");
+        middle["decode_index"] = json!(1);
+        middle["source_pts"] = json!(1500);
+        middle["frame_sha256"] = json!(E);
+        middle["episode_sha256"] = json!(D);
+        let middle_label = write_label(
+            &root,
+            &json!({
+                "shape": "non_recognition",
+                "schema": "scorepeek-private-complete-label-v1",
+                "frame_id": "fixture-001-frame-middle",
+                "annotation_revision": "labels-v1",
+                "screen_class": "transition"
+            }),
+        );
+        middle["screen_class"] = json!("transition");
+        middle["labels_sha256"] = json!(middle_label);
+        value["frames"][1]["decode_index"] = json!(2);
+        value["frames"].as_array_mut().unwrap().insert(1, middle);
+        let plan = temporary.path().join("index-plan.json");
+        fs::write(&plan, serde_json::to_vec(&value).unwrap()).unwrap();
+
+        let error = store.generate_replay_index(&plan).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("episode group is not contiguous")
+        );
+        assert!(!root.join("indexes").exists());
+    }
+
+    #[test]
+    fn synthetic_title_rendering_is_seed_only_and_byte_deterministic() {
+        let temporary = tempdir().unwrap();
+        let request = temporary.path().join("synthetic-request.json");
+        fs::write(
+            &request,
+            serde_json::to_vec_pretty(&json!({
+                "schema": "scorepeek-synthetic-title-request-v1",
+                "set_id": "synthetic-set-001",
+                "seed_sha256": A,
+                "sample_count": 3
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let first_dir = temporary.path().join("render-a");
+        let second_dir = temporary.path().join("render-b");
+        let first = render_synthetic_title_set(&request, &first_dir).unwrap();
+        let second = render_synthetic_title_set(&request, &second_dir).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(first.schema, "scorepeek-synthetic-title-summary-v1");
+        assert_eq!(first.sample_count, 3);
+        assert_eq!(
+            fs::read(first_dir.join("manifest.json")).unwrap(),
+            fs::read(second_dir.join("manifest.json")).unwrap()
+        );
+        for sample in ["sample-0000.ppm", "sample-0001.ppm", "sample-0002.ppm"] {
+            assert_eq!(
+                fs::read(first_dir.join(sample)).unwrap(),
+                fs::read(second_dir.join(sample)).unwrap()
+            );
+        }
+
+        let mut forbidden =
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&request).unwrap()).unwrap();
+        forbidden["training_text"] = json!("external catalog title");
+        fs::write(&request, serde_json::to_vec(&forbidden).unwrap()).unwrap();
+        let error =
+            render_synthetic_title_set(&request, temporary.path().join("render-c")).unwrap_err();
+        assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
     fn digest_is_stable() {
         assert_eq!(
             digest_bytes(b"abc"),
@@ -2950,6 +3734,32 @@ mod tests {
                     "labels_sha256": second_label
                 }
             ]
+        })
+    }
+
+    fn replay_index_plan_value(
+        manifest: &SourceManifest,
+        root: &std::path::Path,
+    ) -> serde_json::Value {
+        let index = replay_index_value(manifest, "train", C, root);
+        let frames = index["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|frame| {
+                let mut frame = frame.clone();
+                frame.as_object_mut().unwrap().remove("episode_id");
+                frame["episode_sha256"] = json!(C);
+                frame
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "schema": "scorepeek-private-corpus-index-plan-v1",
+            "fixture_id": manifest.fixture_id,
+            "source_manifest_sha256": manifest.summary().unwrap().source_manifest_sha256,
+            "extractor": index["extractor"],
+            "source_time_base": index["source_time_base"],
+            "frames": frames
         })
     }
 

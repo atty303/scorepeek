@@ -116,6 +116,16 @@ is outside this checkpoint.
   shared writer lock. Publication is idempotent, private, capacity-bounded,
   recovers only owned staging entries, fsyncs its durability boundary, and
   emits no labelled field values.
+- Deterministic replay-index generation from strict frame plans. Each generated
+  index revalidates its canonical source manifest, stored media, and complete
+  labels; derives episode IDs from opaque episode-group SHA-256 values; rejects
+  non-contiguous episode reuse; and publishes canonical private indexes under
+  1,024-object, 32 MiB-per-file, and 4 GiB-total bounds.
+- A dependency-free `scorepeek-procedural-5x7-v1` synthetic title renderer. Its
+  seed-only contract accepts no caller text, font, image, catalog, or private
+  corpus input and produces byte-deterministic RGB8 512x96 P6 PPM crops plus a
+  canonical manifest. This establishes the renderer boundary, not
+  production-representative glyph coverage or a redistribution grant.
 
 ## Verified in this checkpoint
 
@@ -123,13 +133,20 @@ is outside this checkpoint.
   and binary tests and repository checks.
 - `mise run catalog:schedule:systemd:verify`: passed without installing the
   release binary or user units.
-- `cargo test --locked -p scorepeek-corpus`: passed all eighteen synthetic
+- `cargo test --locked -p scorepeek-corpus`: passed all twenty-one synthetic
   corpus tests, including idempotent private ingest, fixture-ID conflict
   rejection, canonical source/complete-label binding, pre-mutation symlink
   rejection, canonical/private/idempotent complete-label authoring with owned
   staging recovery, label cross-field and unreferenced-object rejection, decode
-  ordering, same-index/cross-index grouped split isolation, and distinct
-  in-profile/profile-disjoint evaluation behavior.
+  ordering, deterministic/idempotent replay-index publication, non-contiguous
+  episode rejection, generated-index replay validation, byte-identical
+  seed-only synthetic rendering, same-index/cross-index grouped split
+  isolation, and distinct in-profile/profile-disjoint evaluation behavior.
+- An isolated synthetic CLI gate rendered three samples at manifest SHA-256
+  `6a9aece0138816c972476d366df62cb4512b4488a178aedea86911133f80a2d0`.
+  The first generated label and RGB8 crop were inspected together after a
+  temporary PNG conversion; the generated output was not added to the
+  repository.
 - The tests use synthetic, independently created fixture data only.
 - An isolated live `scorepeek catalog sync` resolved Tachi commit
   `4ef9ca588424e1a98dc73421a49dd8efe3b37ddd`, validated and privately cached its
@@ -178,8 +195,8 @@ is outside this checkpoint.
 
 ## Unverified and target-only boundaries
 
-- Real media ingest/extraction, episode generation,
-  synthetic rendering, replay execution, layout measurement, catalog-update recognition
+- Real media ingest/extraction, replay execution, layout measurement,
+  production synthetic glyph/style coverage, catalog-update recognition
   replay, OCR model, capture backend, field recognizer, event daemon, and the
   integrated live flow remain unvalidated.
 - The `ObservedFrame`/domain-normalizer/`CanonicalFrame` runtime boundary, OCR
@@ -210,12 +227,14 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Continue **M2** with deterministic episode/index generation and the
-independently redistributable synthetic renderer while preserving the verified
+Continue **M2** by presenting a pinned media probe/extractor and any required
+image or font dependency with its version, license, alternatives, and host
+impact for approval. After approval, implement bounded PTS/decode-order frame
+extraction and scorepeek-owned layout measurement against private captures,
+then expand the procedural renderer only as far as independently authored or
+explicitly redistributable glyph/style inputs permit. Preserve the verified
 private-store, canonical metadata, complete-label authoring, replay-ordering,
-and grouped split safety properties. Before adding media
-extraction or a learned normalizer, present the proposed tool or dependency with
-its pinned version, license, alternatives, and host impact for approval.
+episode contiguity, and grouped split safety properties.
 Catalog-update recognition replay remains part of M8 because it depends on the
 later recognition pipeline.
 
