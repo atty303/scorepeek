@@ -6,8 +6,8 @@ is outside this checkpoint.
 
 ## Current milestone
 
-- Milestone: **M1 — catalog federation and activation**
-- State: **complete**
+- Milestone: **M2 — private corpus, layout measurement, synthetic renderer, and replay tooling**
+- State: **in progress**
 
 ## Included deliverables
 
@@ -73,6 +73,36 @@ is outside this checkpoint.
   owns the existing catalog writer lock. The scheduling layer is independent
   of acquisition mode so a future approved GitHub-managed catalog can preserve
   the same command while users select self-build or provided acquisition.
+- A separate offline-only `scorepeek-corpus` workspace crate and binary. The
+  game-session `scorepeek` crate has no corpus or training dependency, and the
+  future Python training/export pipeline remains outside the runtime graph.
+- Versioned, strict private-corpus ingest/source/replay contracts that represent
+  Windows semantic-reference and Linux capture-calibration inputs as disjoint
+  typed profiles. Committed examples contain only opaque IDs, hashes, and
+  non-personal classes; complete labels and media remain external.
+- Bounded content-addressed private source ingest with an explicit absolute
+  store root, single-writer locking, scorepeek-owned staging recovery,
+  canonical manifests, immutable fixture-ID binding, idempotent content reuse,
+  private permissions, fsync boundaries, a 64 GiB per-source limit, a
+  1,024-object limit, a 1 TiB aggregate limit, and separate 1,024-file/64 MiB
+  fixture-manifest bounds.
+- Immutable corpus-generation sealing that records every current fixture and
+  canonical source-manifest digest under the ingest writer lock, publishes the
+  generation by canonical SHA-256 with private/fsync boundaries, and never
+  rewrites an older generation when later sources are ingested. The generation
+  store is bounded to 128 files, 256 KiB each, and 32 MiB total.
+- Replay-suite validation that requires complete coverage of one sealed
+  generation, reads canonical source manifests and media from the private
+  store, binds exact source-manifest/extractor-manifest/parameter/frame/label
+  digests, preserves source PTS and strict decode order, and rejects duplicate
+  IDs or session/profile/episode/play/title/identical-frame groups crossing
+  train, validation, or holdout splits anywhere in the suite.
+- A strict `scorepeek-private-complete-label-v1` contract with distinct result,
+  music-select, and non-recognition shapes. Replay bounded-reads canonical
+  private label documents, validates typed field states, frame/revision and
+  screen-class bindings, and fails closed at 64 KiB per label, 250,000 labels,
+  and 4 GiB total. Existing managed-component symlinks are rejected before an
+  ingest or generation operation mutates the store.
 
 ## Verified in this checkpoint
 
@@ -80,6 +110,11 @@ is outside this checkpoint.
   and binary tests and repository checks.
 - `mise run catalog:schedule:systemd:verify`: passed without installing the
   release binary or user units.
+- `cargo test --locked -p scorepeek-corpus`: passed all sixteen synthetic corpus
+  tests, including idempotent private ingest, fixture-ID conflict rejection,
+  canonical source/complete-label binding, pre-mutation symlink rejection,
+  label cross-field and unreferenced-object rejection, decode ordering, and
+  same-index/cross-index grouped split isolation.
 - The tests use synthetic, independently created fixture data only.
 - An isolated live `scorepeek catalog sync` resolved Tachi commit
   `4ef9ca588424e1a98dc73421a49dd8efe3b37ddd`, validated and privately cached its
@@ -128,9 +163,10 @@ is outside this checkpoint.
 
 ## Unverified and target-only boundaries
 
-- Catalog-update recognition replay, private capture corpus, OCR model, capture
-  backend, field recognizer, event daemon, and the integrated live flow remain
-  unvalidated.
+- Real media ingest/extraction, private label authoring, episode generation,
+  synthetic rendering, replay execution, layout measurement, catalog-update recognition
+  replay, OCR model, capture backend, field recognizer, event daemon, and the
+  integrated live flow remain unvalidated.
 - The persistent systemd installer's custom unit-path linking, timer enablement,
   and unified disable path were reviewed but not deployed to the user's actual
   configuration. Only the non-persistent transient user-manager path was run.
@@ -143,6 +179,8 @@ is outside this checkpoint.
   no additional transport dependency is currently required.
 - `encoding_rs` 0.8.35 was approved for replacement-free Windows-31J decoding;
   no JavaScript parser dependency is used.
+- The initial M2 contract and ingest/replay validation use only existing
+  workspace dependencies. No media or training dependency has been added.
 - Any new runtime, parser, capture, or training dependency requires user
   approval after version, license, alternatives, and host/bundle impact are
   presented.
@@ -152,15 +190,14 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Begin **M2 — private corpus, layout measurement, synthetic renderer, and replay
-tooling** with the versioned private-corpus contract and deterministic
-content-addressed ingest/replay metadata. Keep captured frames and complete
-labels outside the repository, admit only opaque fixture IDs and hashes into
-committed manifests, and separate Windows semantic-reference inputs from Linux
-capture-calibration inputs. Present any required media/runtime dependency with
-its pinned version, license, alternatives, and host impact for approval before
-adding it. Catalog-update recognition replay remains part of M8 because it
-depends on the later recognition pipeline.
+Continue **M2** with deterministic episode/index generation, a private label
+authoring workflow, and an independently redistributable synthetic contract
+renderer using the versioned complete-label contract. Keep private values
+external, and make replay consume the scorepeek core only through its public
+recognition boundary. Before adding media extraction,
+present the proposed tool with its pinned version, license, alternatives, and
+host impact for approval. Catalog-update recognition replay remains part of M8
+because it depends on the later recognition pipeline.
 
 ## Stable milestone map
 
@@ -170,7 +207,7 @@ depends on the later recognition pipeline.
 | M1 | Catalog federation and activation | complete |
 | M1.1 | Catalog contract and local federation core | complete |
 | M1.2 | Live acquisition and sync orchestration | complete |
-| M2 | Private corpus, layout measurement, synthetic renderer, and replay tooling | pending |
+| M2 | Private corpus, layout measurement, synthetic renderer, and replay tooling | in progress |
 | M3 | OCR training/export and Python-to-Rust parity | pending |
 | M4 | Portal reference capture and canonical-frame validation | pending |
 | M5 | Gamescope/OBS candidate evaluation and backend selection | pending |

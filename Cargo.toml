@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/scorepeek"]
+members = ["crates/scorepeek", "crates/scorepeek-corpus"]
 resolver = "3"
 
 [workspace.package]

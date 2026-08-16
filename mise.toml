@@ -48,11 +48,35 @@ exec cargo test --locked --workspace
 
 [tasks.doctor]
 description = "Print the local target inventory as versioned JSON"
-run = "cargo run --locked --quiet -- doctor"
+run = "cargo run --locked --quiet -p scorepeek -- doctor"
 
 [tasks."catalog:sync"]
 description = "Synchronize and conditionally activate the live catalog"
-run = "cargo run --locked --quiet -- catalog sync"
+run = "cargo run --locked --quiet -p scorepeek -- catalog sync"
+
+[tasks."corpus:ingest"]
+description = "Ingest immutable media into an explicit private corpus store"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- ingest "$@"
+'''
+
+[tasks."corpus:generation:seal"]
+description = "Seal the current private source bindings as an immutable corpus generation"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- generation seal "$@"
+'''
+
+[tasks."corpus:replay:validate"]
+description = "Validate private corpus replay metadata"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- replay validate "$@"
+'''
 
 [tasks."catalog:schedule:systemd:verify"]
 description = "Validate the daily user schedule units"
