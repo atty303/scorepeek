@@ -77,6 +77,13 @@ pub enum AdapterError {
         maximum: usize,
     },
     InvalidJson(serde_json::Error),
+    InvalidEncoding {
+        resource: &'static str,
+    },
+    InvalidJavaScript {
+        resource: &'static str,
+        detail: String,
+    },
     InvalidSchema {
         expected: &'static str,
         actual: String,
@@ -115,6 +122,12 @@ impl fmt::Display for AdapterError {
                 )
             }
             Self::InvalidJson(error) => write!(formatter, "invalid source JSON: {error}"),
+            Self::InvalidEncoding { resource } => {
+                write!(formatter, "{resource} is not valid Windows-31J")
+            }
+            Self::InvalidJavaScript { resource, detail } => {
+                write!(formatter, "invalid {resource} assignment data: {detail}")
+            }
             Self::InvalidSchema { expected, actual } => {
                 write!(
                     formatter,
@@ -444,7 +457,7 @@ fn snapshot(
     )
 }
 
-fn snapshot_from_parts(
+pub(super) fn snapshot_from_parts(
     policy: SourcePolicy,
     revision: SourceRevision,
     content_sha256: String,
@@ -702,7 +715,7 @@ fn validate_record_count(actual: usize) -> Result<(), AdapterError> {
     Ok(())
 }
 
-fn validate_source_id(source_id: &str) -> Result<(), AdapterError> {
+pub(super) fn validate_source_id(source_id: &str) -> Result<(), AdapterError> {
     if source_id.is_empty()
         || source_id.len() > MAX_TEXT_BYTES
         || source_id.chars().any(char::is_control)
@@ -715,7 +728,7 @@ fn validate_source_id(source_id: &str) -> Result<(), AdapterError> {
     Ok(())
 }
 
-fn validate_text(field: &'static str, value: String) -> Result<String, AdapterError> {
+pub(super) fn validate_text(field: &'static str, value: String) -> Result<String, AdapterError> {
     if value.is_empty() || value.len() > MAX_TEXT_BYTES || value.chars().any(char::is_control) {
         return Err(AdapterError::InvalidField {
             field,

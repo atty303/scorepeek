@@ -4,6 +4,8 @@ mod federation;
 mod store;
 mod sync;
 mod tachi_acquisition;
+mod textage_acquisition;
+mod textage_adapter;
 
 pub use acquisition::DqnAcquisitionError;
 pub use adapter::{
@@ -21,6 +23,7 @@ pub use sync::{
     CatalogSync, CatalogSyncError, CatalogSyncResult, CatalogSyncSource, CatalogSyncSummary,
 };
 pub use tachi_acquisition::{TachiAcquisitionError, TachiResource};
+pub use textage_acquisition::{TextageAcquisitionError, TextageResource};
 
 #[cfg(test)]
 mod tests;

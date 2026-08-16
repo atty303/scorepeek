@@ -111,7 +111,7 @@ mod tests {
     use super::{catalog_paths, catalog_sync_error};
     use scorepeek::catalog::{
         AdapterError, CatalogStoreError, CatalogSyncError, DqnAcquisitionError,
-        TachiAcquisitionError, TachiResource,
+        TachiAcquisitionError, TachiResource, TextageAcquisitionError, TextageResource,
     };
     use std::ffi::OsStr;
     use std::path::PathBuf;
@@ -163,6 +163,15 @@ mod tests {
         ));
         assert!(!tachi.contains("PRIVATE TRANSPORT SENTINEL"));
         assert!(tachi.contains("Tachi songs seed transport failed"));
+
+        let textage = catalog_sync_error(&CatalogSyncError::TextageAcquisition(
+            TextageAcquisitionError::Transport(
+                TextageResource::Title,
+                "PRIVATE TEXTAGE SENTINEL".to_owned(),
+            ),
+        ));
+        assert!(!textage.contains("PRIVATE TEXTAGE SENTINEL"));
+        assert!(textage.contains("Textage title table transport failed"));
 
         let store = catalog_sync_error(&CatalogSyncError::Store(
             CatalogStoreError::InvalidSnapshot("PRIVATE SNAPSHOT SENTINEL".to_owned()),

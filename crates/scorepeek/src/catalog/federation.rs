@@ -80,7 +80,7 @@ impl SourcePolicy {
             source_id: SourceId::Textage,
             lineage_id: LineageId::Textage,
             revision_strategy: RevisionStrategy::ContentSha256,
-            parser_version: "scorepeek-textage-fixture-parser-v1",
+            parser_version: "scorepeek-textage-live-js-parser-v1",
             declared_scope: "metadata_display_and_chart_corroboration",
             completeness: Completeness::NonExhaustive,
             field_authority: &[
@@ -954,19 +954,33 @@ fn add_tachi_title_variants(
     evidence_id: &EvidenceId,
 ) {
     for variant in variants {
-        let already_asserted = song.title_variants.iter().any(|existing| {
-            existing.source_id == SourceId::Tachi
-                && existing.kind == variant.kind
-                && existing.value == variant.value
+        add_title_variant(
+            song,
+            SourceId::Tachi,
+            variant.value,
+            variant.kind,
+            evidence_id,
+        );
+    }
+}
+
+fn add_title_variant(
+    song: &mut CatalogSong,
+    source_id: SourceId,
+    value: String,
+    kind: DisplayVariantKind,
+    evidence_id: &EvidenceId,
+) {
+    let already_asserted = song.title_variants.iter().any(|existing| {
+        existing.source_id == source_id && existing.kind == kind && existing.value == value
+    });
+    if !already_asserted {
+        song.title_variants.insert(DisplayVariant {
+            value,
+            source_id,
+            kind,
+            evidence_id: evidence_id.clone(),
         });
-        if !already_asserted {
-            song.title_variants.insert(DisplayVariant {
-                value: variant.value,
-                source_id: SourceId::Tachi,
-                kind: variant.kind,
-                evidence_id: evidence_id.clone(),
-            });
-        }
     }
 }
 
@@ -1073,26 +1087,21 @@ fn apply_textage(
             ));
             continue;
         }
-        song.title_variants.insert(DisplayVariant {
-            value: record.title,
-            source_id: SourceId::Textage,
-            kind: record.title_kind,
-            evidence_id: evidence_id.clone(),
-        });
+        add_title_variant(
+            song,
+            SourceId::Textage,
+            record.title,
+            record.title_kind,
+            &evidence_id,
+        );
         song.source_bindings
             .entry(SourceId::Textage)
             .or_default()
             .insert(record.source_song_id.clone());
-        song.binding_evidence
-            .entry((SourceId::Textage, record.source_song_id.clone()))
-            .or_default()
-            .insert(evidence_id.clone());
-        song.binding_attributes.insert(
-            (
-                SourceId::Textage,
-                record.source_song_id.clone(),
-                evidence_id.clone(),
-            ),
+        add_binding_attributes(
+            song,
+            SourceId::Textage,
+            &record.source_song_id,
             BTreeMap::from([
                 (
                     "infinitas_flag".to_owned(),
@@ -1101,6 +1110,7 @@ fn apply_textage(
                 ("bpm_min".to_owned(), record.bpm_min.to_string()),
                 ("bpm_max".to_owned(), record.bpm_max.to_string()),
             ]),
+            &evidence_id,
         );
         add_charts(song, record.charts, &evidence_id);
     }

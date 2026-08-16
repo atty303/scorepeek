@@ -46,9 +46,20 @@ is outside this checkpoint.
   fetches raw files only at that commit without executing code, applies a
   30-second whole-request timeout and reject-all redirect policy, and keeps at
   most 8 private verified bundles or 512 MiB.
+- A strict Textage live adapter that decodes the three mutable inputs as
+  Windows-31J without replacement and parses only their bounded constant,
+  assignment, object, array, string, integer, comment, and static `fontcolor`
+  grammar without executing JavaScript. It admits `actbl` rows only when their
+  title and chart-data rows exist, imports complete standard SP/DP chart slots,
+  preserves exact display data after source-specific static formatting
+  extraction, and keeps partial chart slots unknown.
+- Bounded serial Textage acquisition using HTTPS-only `ureq`/rustls, a
+  30-second whole-request timeout, a reject-all redirect policy, 1 MiB per-file
+  limits, and a private three-file framed-digest cache capped at 64 revisions
+  and 64 MiB.
 - `scorepeek catalog sync`, which acquires the existing writer lock before all
-  Tachi and dqn network access, validates and caches exact bytes, federates both
-  sources against the active catalog, blocks snapshot-wide regressions,
+  Tachi, Textage, and dqn network access, validates and caches exact bytes,
+  federates all three sources against the active catalog, blocks snapshot-wide regressions,
   conditionally activates a durable snapshot under 32-generation,
   128 MiB-per-file, and 512 MiB-total caps, and emits only source evidence and
   aggregate quarantine counts.
@@ -79,14 +90,27 @@ is outside this checkpoint.
   source-level revision remained recorded. Synthetic regressions also cover a
   sparse Tachi change and excluded custom/non-primary orphan charts. The
   review-only external bytes and generated snapshots were removed afterward.
+- An isolated live three-source `scorepeek catalog sync` reused Tachi commit
+  `4ef9ca588424e1a98dc73421a49dd8efe3b37ddd` and the 1,879-row dqn response,
+  and decoded, validated, and privately cached the three Textage inputs as
+  19,055 accepted song/chart rows at framed bundle SHA-256
+  `3c1291f96946279512632ec69e5bf0f8d49ff0b7e301e43457bfe36bd5ad4f81`.
+  The candidate activated at catalog digest
+  `bc0395b58e6e1a7b6a395be7823d4ca8f15e20c1a1eb29468ecf6c4c9e89da16`;
+  711 Textage/dqn records remained provisional and 85 Textage records had
+  chart conflicts, with no fuzzy or ambiguous merge. A repeat sync reused one
+  Textage cache generation and one byte-identical 85,233,664-byte catalog
+  snapshot. All scorepeek cache, manifest, lock, and snapshot paths had private
+  permissions. Independent review reproduced cross-revision growth in Textage
+  title and binding evidence; semantic assertions now reuse their original
+  evidence while the latest source revision remains recorded. Synthetic
+  regressions cover both an unchanged revision and a sparse attribute change.
 
 ## Unverified and target-only boundaries
 
-- No Textage live adapter or scheduled synchronization exists. No live
-  three-source catalog has been federated or activated. Catalog-update
-  recognition replay, private capture corpus, OCR model, capture backend, field
-  recognizer, event daemon, and the integrated live flow also remain
-  unvalidated.
+- No scheduled synchronization exists. Catalog-update recognition replay,
+  private capture corpus, OCR model, capture backend, field recognizer, event
+  daemon, and the integrated live flow also remain unvalidated.
 - Bazzite Portal, Gamescope, OBS, GPU, lifecycle, performance, and soak gates
   remain target-machine-only and unrun.
 
@@ -94,6 +118,8 @@ is outside this checkpoint.
 
 - `ureq` 3.4.0 with rustls was approved for the bounded live HTTP transport;
   no additional transport dependency is currently required.
+- `encoding_rs` 0.8.35 was approved for replacement-free Windows-31J decoding;
+  no JavaScript parser dependency is used.
 - Any new runtime, parser, capture, or training dependency requires user
   approval after version, license, alternatives, and host/bundle impact are
   presented.
@@ -103,16 +129,13 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Continue **M1.2 — live catalog acquisition and sync orchestration** with the
-Textage live path as independent title/artist/BPM/chart/INFINITAS
-corroboration. Fetch the three declared JavaScript inputs locally, decode their
-declared encoding, and accept only the documented assignment/literal grammar
-without executing JavaScript. Request approval before adding any parser or
-encoding dependency. Reuse the single Tachi+dqn writer-lock, bounded
-acquisition, private cache, source-health, federation, activation, and
-aggregate-reporting orchestration. Add scheduled sync only after all three
-manual source paths satisfy their activation gates. Do not mark M1 complete
-until manual and scheduled sync both pass. Catalog-update recognition replay
+Continue **M1.2 — live catalog acquisition and sync orchestration** with daily
+jittered scheduled synchronization. The scheduled path must invoke the same
+manual `scorepeek catalog sync` entry point, share its single writer lock, keep
+network access outside the gameplay daemon, preserve fail-closed exit status
+and aggregate-only output, and expose reproducible install/verification tasks.
+Do not mark M1 complete until an isolated schedule-triggered sync and concurrent
+manual/scheduled serialization both pass. Catalog-update recognition replay
 remains part of M8 because it depends on the later recognition pipeline.
 
 ## Stable milestone map

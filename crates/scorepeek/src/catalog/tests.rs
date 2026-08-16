@@ -533,6 +533,92 @@ fn sparse_tachi_change_adds_only_changed_assertion_evidence() {
 }
 
 #[test]
+fn textage_revisions_reuse_unchanged_assertions_and_record_sparse_changes() {
+    let base = catalog_with_tachi(&[tachi_record("anchor-1", "ALPHA", "ARTIST A", "V1", false)]);
+    let record = textage_record("textage-1", "ALPHA", "ARTIST A", "V1");
+    let first = base
+        .federate(FederationInput {
+            textage: Some(textage_snapshot(std::slice::from_ref(&record))),
+            ..FederationInput::default()
+        })
+        .catalog;
+    let unchanged = first
+        .federate(FederationInput {
+            textage: Some(textage_snapshot_pretty(std::slice::from_ref(&record))),
+            ..FederationInput::default()
+        })
+        .catalog;
+
+    let song = unchanged.songs.values().next().unwrap();
+    assert_eq!(
+        song.title_variants
+            .iter()
+            .filter(|variant| variant.source_id == super::SourceId::Textage)
+            .count(),
+        1
+    );
+    assert_eq!(
+        song.binding_evidence[&(super::SourceId::Textage, "textage-1".to_owned())].len(),
+        1
+    );
+    assert_eq!(
+        song.binding_attributes
+            .keys()
+            .filter(|(source_id, source_key, _)| {
+                *source_id == super::SourceId::Textage && source_key == "textage-1"
+            })
+            .count(),
+        1
+    );
+    assert_eq!(
+        song.chart_assertions
+            .values()
+            .flatten()
+            .filter(|assertion| { assertion.evidence_id.source_id == super::SourceId::Textage })
+            .count(),
+        2
+    );
+
+    let mut changed_record = record;
+    changed_record["infinitas_flag"] = json!(false);
+    let changed = unchanged
+        .federate(FederationInput {
+            textage: Some(textage_snapshot(&[changed_record])),
+            ..FederationInput::default()
+        })
+        .catalog;
+    let song = changed.songs.values().next().unwrap();
+    assert_eq!(
+        song.title_variants
+            .iter()
+            .filter(|variant| variant.source_id == super::SourceId::Textage)
+            .count(),
+        1
+    );
+    assert_eq!(
+        song.binding_evidence[&(super::SourceId::Textage, "textage-1".to_owned())].len(),
+        2
+    );
+    assert_eq!(
+        song.binding_attributes
+            .keys()
+            .filter(|(source_id, source_key, _)| {
+                *source_id == super::SourceId::Textage && source_key == "textage-1"
+            })
+            .count(),
+        2
+    );
+    assert_eq!(
+        song.chart_assertions
+            .values()
+            .flatten()
+            .filter(|assertion| { assertion.evidence_id.source_id == super::SourceId::Textage })
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn tachi_artist_or_version_change_is_a_critical_conflict() {
     let base = catalog_with_tachi(&[tachi_record("anchor-1", "ALPHA", "ARTIST A", "V1", false)]);
     let output = base.federate(FederationInput {
@@ -718,6 +804,12 @@ fn tachi_snapshot(records: &[serde_json::Value]) -> super::SourceSnapshot {
 fn textage_snapshot(records: &[serde_json::Value]) -> super::SourceSnapshot {
     let fixture = fixture("scorepeek-textage-fixture-v1", records);
     let bytes = serde_json::to_vec(&fixture).unwrap();
+    TextageFixtureAdapter::parse(&bytes, content_revision(&bytes)).unwrap()
+}
+
+fn textage_snapshot_pretty(records: &[serde_json::Value]) -> super::SourceSnapshot {
+    let fixture = fixture("scorepeek-textage-fixture-v1", records);
+    let bytes = serde_json::to_vec_pretty(&fixture).unwrap();
     TextageFixtureAdapter::parse(&bytes, content_revision(&bytes)).unwrap()
 }
 

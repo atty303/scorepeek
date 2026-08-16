@@ -26,10 +26,12 @@ The accepted source matrix and rights boundaries are maintained in
   process](https://github.com/zkldi/Tachi/blob/main/docs/src/contributing/cookbook/iidx-mdb.md)
   makes lineage explicit.
 - [Textage](https://textage.cc/score/index.html) is independently maintained and
-  includes title, chart, BPM, and product information. Its data is Shift-JIS
-  JavaScript with comments, HTML fragments, and source-local identifiers, so it
-  needs a constrained parser and cannot be executed or treated as universal ID
-  data. [Textage use policy](https://textage.cc/score/readme.html)
+  includes title, chart, BPM, and product information. Its data uses the
+  Windows-31J/CP932 web encoding, including bytes outside strict JIS Shift-JIS,
+  and JavaScript assignments with comments, HTML fragments, and source-local
+  identifiers. It therefore needs replacement-free decoding and a constrained
+  parser, and cannot be executed or treated as universal ID data.
+  [Textage use policy](https://textage.cc/score/readme.html)
 - [dqn/iidxapi](https://github.com/dqn/iidxapi) follows the official INFINITAS
   page and is useful as a positive roster signal, but its [JSON
   rows](https://dqn.github.io/iidxapi/infinitas/music.json) contain no stable

@@ -11,6 +11,9 @@ use super::store::{CatalogStore, CatalogStoreError};
 use super::tachi_acquisition::{
     TachiAcquisitionError, TachiTransport, UreqTachiTransport, acquire_tachi,
 };
+use super::textage_acquisition::{
+    TextageAcquisitionError, TextageTransport, UreqTextageTransport, acquire_textage,
+};
 
 #[derive(Clone, Debug)]
 pub struct CatalogSync {
@@ -45,6 +48,7 @@ pub struct CatalogSyncSummary {
 pub enum CatalogSyncError {
     Store(CatalogStoreError),
     TachiAcquisition(TachiAcquisitionError),
+    TextageAcquisition(TextageAcquisitionError),
     DqnAcquisition(DqnAcquisitionError),
 }
 
@@ -53,6 +57,7 @@ impl fmt::Display for CatalogSyncError {
         match self {
             Self::Store(error) => error.fmt(formatter),
             Self::TachiAcquisition(error) => error.fmt(formatter),
+            Self::TextageAcquisition(error) => error.fmt(formatter),
             Self::DqnAcquisition(error) => error.fmt(formatter),
         }
     }
@@ -63,6 +68,7 @@ impl Error for CatalogSyncError {
         match self {
             Self::Store(error) => Some(error),
             Self::TachiAcquisition(error) => Some(error),
+            Self::TextageAcquisition(error) => Some(error),
             Self::DqnAcquisition(error) => Some(error),
         }
     }
@@ -99,6 +105,30 @@ impl CatalogSyncError {
                 | TachiAcquisitionError::CacheConflict(_)
                 | TachiAcquisitionError::CacheCapacityExceeded,
             ) => "Tachi cache persistence failed".to_owned(),
+            Self::TextageAcquisition(TextageAcquisitionError::UnexpectedStatus {
+                resource,
+                status,
+            }) => {
+                format!("Textage {resource} acquisition returned unexpected HTTP status {status}")
+            }
+            Self::TextageAcquisition(
+                TextageAcquisitionError::DeclaredBodyTooLarge { .. }
+                | TextageAcquisitionError::BodyTooLarge { .. },
+            ) => "Textage response exceeded the configured size limit".to_owned(),
+            Self::TextageAcquisition(TextageAcquisitionError::Timeout(resource)) => {
+                format!("Textage {resource} acquisition timed out")
+            }
+            Self::TextageAcquisition(TextageAcquisitionError::Transport(resource, _)) => {
+                format!("Textage {resource} transport failed")
+            }
+            Self::TextageAcquisition(TextageAcquisitionError::Adapter(_)) => {
+                "Textage response validation failed".to_owned()
+            }
+            Self::TextageAcquisition(
+                TextageAcquisitionError::CacheIo(_)
+                | TextageAcquisitionError::CacheConflict(_)
+                | TextageAcquisitionError::CacheCapacityExceeded,
+            ) => "Textage cache persistence failed".to_owned(),
             Self::DqnAcquisition(DqnAcquisitionError::UnexpectedStatus(status)) => {
                 format!("dqn acquisition returned unexpected HTTP status {status}")
             }
@@ -142,6 +172,12 @@ impl From<TachiAcquisitionError> for CatalogSyncError {
     }
 }
 
+impl From<TextageAcquisitionError> for CatalogSyncError {
+    fn from(error: TextageAcquisitionError) -> Self {
+        Self::TextageAcquisition(error)
+    }
+}
+
 impl CatalogSync {
     #[must_use]
     pub fn new(store_root: impl Into<PathBuf>, cache_root: impl Into<PathBuf>) -> Self {
@@ -161,16 +197,22 @@ impl CatalogSync {
     /// Returns an error when locking, acquisition, validation, private cache persistence, or
     /// catalog activation fails.
     pub fn sync(&self) -> Result<CatalogSyncResult, CatalogSyncError> {
-        self.sync_with(&UreqTachiTransport::new(), &UreqDqnTransport::new())
+        self.sync_with(
+            &UreqTachiTransport::new(),
+            &UreqTextageTransport::new(),
+            &UreqDqnTransport::new(),
+        )
     }
 
     fn sync_with(
         &self,
         tachi_transport: &impl TachiTransport,
+        textage_transport: &impl TextageTransport,
         dqn_transport: &impl DqnTransport,
     ) -> Result<CatalogSyncResult, CatalogSyncError> {
         let update = self.store.begin_update()?;
         let tachi = acquire_tachi(tachi_transport, &self.cache_root)?;
+        let textage = acquire_textage(textage_transport, &self.cache_root)?;
         let dqn = acquire_dqn(dqn_transport, &self.cache_root)?;
         let base = self
             .store
@@ -178,8 +220,8 @@ impl CatalogSync {
             .map_or_else(Catalog::default, |active| active.catalog);
         let output = base.federate(FederationInput {
             tachi: Some(tachi.snapshot),
+            textage: Some(textage.snapshot),
             dqn: Some(dqn.snapshot),
-            ..FederationInput::default()
         });
         let blocked = output.quarantine.iter().any(|entry| {
             matches!(
@@ -205,6 +247,14 @@ impl CatalogSync {
                         revision: tachi.revision,
                         content_sha256: tachi.content_sha256,
                         record_count: tachi.record_count,
+                    },
+                ),
+                (
+                    SourceId::Textage,
+                    CatalogSyncSource {
+                        revision: textage.content_sha256.clone(),
+                        content_sha256: textage.content_sha256,
+                        record_count: textage.record_count,
                     },
                 ),
                 (
@@ -251,6 +301,7 @@ mod tests {
     use crate::catalog::acquisition::DqnHttpResponse;
     use crate::catalog::adapter::MAX_SOURCE_BYTES;
     use crate::catalog::tachi_acquisition::{TachiHttpResponse, TachiResource};
+    use crate::catalog::textage_acquisition::{TextageHttpResponse, TextageResource};
 
     const GIT_REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -315,6 +366,23 @@ mod tests {
         response: DqnHttpResponse,
     }
 
+    struct FakeTextageTransport {
+        responses: BTreeMap<TextageResource, TextageHttpResponse>,
+        lock_path: Option<PathBuf>,
+    }
+
+    impl TextageTransport for FakeTextageTransport {
+        fn get(
+            &self,
+            resource: TextageResource,
+        ) -> Result<TextageHttpResponse, TextageAcquisitionError> {
+            if let Some(lock_path) = &self.lock_path {
+                assert_writer_lock(lock_path);
+            }
+            Ok(self.responses[&resource].clone())
+        }
+    }
+
     impl DqnTransport for LockCheckingTransport {
         fn get(&self) -> Result<DqnHttpResponse, DqnAcquisitionError> {
             assert_writer_lock(&self.lock_path);
@@ -337,6 +405,7 @@ mod tests {
                     lock_path: roots.store.join("catalog-sync.lock"),
                     inner: tachi_transport(),
                 },
+                &textage_transport(Some(roots.store.join("catalog-sync.lock"))),
                 &LockCheckingTransport {
                     lock_path: roots.store.join("catalog-sync.lock"),
                     response: DqnHttpResponse {
@@ -386,6 +455,12 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(Some(active.digest), result.active_catalog_digest);
+        let textage = &result.sources[&SourceId::Textage];
+        let textage_cache = roots.cache.join("textage").join(&textage.content_sha256);
+        assert_eq!(
+            fs::metadata(textage_cache).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
     }
 
     #[test]
@@ -569,7 +644,9 @@ mod tests {
         roots: &Roots,
         dqn: &impl DqnTransport,
     ) -> Result<CatalogSyncResult, CatalogSyncError> {
-        roots.sync().sync_with(&tachi_transport(), dqn)
+        roots
+            .sync()
+            .sync_with(&tachi_transport(), &textage_transport(None), dqn)
     }
 
     fn tachi_transport() -> FakeTachiTransport {
@@ -587,24 +664,37 @@ mod tests {
         let songs = serde_json::to_vec(&json!([{
                 "altTitles": [],
                 "artist": "ARTIST A",
-                "data": { "displayVersion": "V1", "genre": "SYNTHETIC" },
+                "data": { "displayVersion": "1", "genre": "SYNTHETIC" },
                 "id": "S0000000000000000001",
                 "legacySongID": 1,
                 "searchTerms": [],
                 "title": "ALPHA"
         }]))
         .unwrap();
-        let single_charts = serde_json::to_vec(&json!([{
-            "data": { "notecount": 400 },
-            "difficulty": "NORMAL",
-            "id": "C0000000000000000001",
-            "isPrimary": true,
-            "legacyChartID": "synthetic-spn",
-            "level": "4",
-            "levelNum": 4,
-            "songID": "S0000000000000000001",
-            "versions": ["synthetic-v1"]
-        }]))
+        let single_charts = serde_json::to_vec(&json!([
+            {
+                "data": { "notecount": 400 },
+                "difficulty": "NORMAL",
+                "id": "C0000000000000000001",
+                "isPrimary": true,
+                "legacyChartID": "synthetic-spn",
+                "level": "4",
+                "levelNum": 4,
+                "songID": "S0000000000000000001",
+                "versions": ["synthetic-v1"]
+            },
+            {
+                "data": { "notecount": 800 },
+                "difficulty": "HYPER",
+                "id": "C0000000000000000002",
+                "isPrimary": true,
+                "legacyChartID": "synthetic-sph",
+                "level": "8",
+                "levelNum": 8,
+                "songID": "S0000000000000000001",
+                "versions": ["synthetic-v1"]
+            }
+        ]))
         .unwrap();
         let double_charts = b"[]".to_vec();
         FakeTachiTransport {
@@ -628,6 +718,32 @@ mod tests {
             status: 200,
             content_length: Some(body.len() as u64),
             body,
+        }
+    }
+
+    fn textage_transport(lock_path: Option<PathBuf>) -> FakeTextageTransport {
+        let title = br#"VERINDEX=0;IDINDEX=1;OPTINDEX=2;GENREINDEX=3;ARTISTINDEX=4;TITLEINDEX=5;SUBTITLEINDEX=6;SS=0;titletbl={'alpha':[1,10,0,"GENRE","ARTIST A","ALPHA"]};"#.to_vec();
+        let availability = br#"pspver="version";A=10,B=11,C=12,D=13,E=14,F=15;actbl={'alpha':[1,0,0,1,7,4,7,8,7,A,7,0,0,0,0,4,7,8,7,A,7,0,0]};"#.to_vec();
+        let chart = br#"datatbl={'alpha':[0,100,400,800,1200,0,0,410,810,1210,0,"120"]};"#.to_vec();
+        FakeTextageTransport {
+            responses: [
+                (TextageResource::Title, title),
+                (TextageResource::Availability, availability),
+                (TextageResource::Chart, chart),
+            ]
+            .into_iter()
+            .map(|(resource, body)| {
+                (
+                    resource,
+                    TextageHttpResponse {
+                        status: 200,
+                        content_length: Some(body.len() as u64),
+                        body,
+                    },
+                )
+            })
+            .collect(),
+            lock_path,
         }
     }
 

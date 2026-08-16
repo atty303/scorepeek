@@ -1,9 +1,10 @@
 # External IIDX source policy
 
 This document is the source of truth for automated catalog inputs, lineage,
-field authority, and reuse boundaries. It records the research state on
-2026-08-15; adapters must pin an immutable revision or content digest rather
-than assuming that a live page still has the shape described here.
+field authority, and reuse boundaries. It records the initial research state on
+2026-08-15 and the first live contract observed on 2026-08-16; adapters must pin
+an immutable revision or content digest rather than assuming that a live page
+still has the shape described here.
 
 This is a conservative engineering policy, not a legal conclusion. scorepeek
 fetches third-party data on each user's machine and does not republish raw or
@@ -14,7 +15,7 @@ normalized source snapshots.
 | Source | Lineage | Automated role | Fields used | Access and reuse boundary |
 | --- | --- | --- | --- | --- |
 | [Tachi IIDX seeds](https://github.com/zkldi/Tachi/tree/main/db/seeds) | game MDB | General-IIDX identity and chart anchor | source-scoped song/chart IDs, exact titles, artist, version, play type, difficulty, level, notes, product availability | The README describes seeds as Unlicense/source-of-truth data, while the current path is `db/seeds`; keep local snapshots and provenance, and confirm scope before any redistribution. The [MDB cookbook](https://github.com/zkldi/Tachi/blob/main/docs/src/contributing/cookbook/iidx-mdb.md) is recorded as lineage evidence. |
-| [Textage](https://textage.cc/score/index.html) | Textage capture/manual data | Independent corroboration and display variants | title, artist, genre, BPM, version, SP/DP level and notes, INFINITAS flag | The [site readme](https://textage.cc/score/readme.html) permits common-sense use and recommends a link but is not a standard data license. Fetch [title](https://textage.cc/score/titletbl.js), [availability](https://textage.cc/score/actbl.js), and [chart](https://textage.cc/score/datatbl.js) bytes locally; do not republish them. |
+| [Textage](https://textage.cc/score/index.html) | Textage capture/manual data | Independent corroboration and display variants | title, artist, BPM, version, SP/DP level and notes, INFINITAS flag | The [site readme](https://textage.cc/score/readme.html) permits common-sense use and recommends a link but is not a standard data license. Fetch [title](https://textage.cc/score/titletbl.js), [availability](https://textage.cc/score/actbl.js), and [chart](https://textage.cc/score/datatbl.js) bytes locally; do not republish them. |
 | [dqn/iidxapi](https://github.com/dqn/iidxapi) | official INFINITAS HTML | Positive INFINITAS roster/pack signal | exact title, artist, pack name | The adapter output has no stable song identity or chart data. Treat it as corroboration of the official page, preserve its content hash, and do not redistribute the derived roster. [Current JSON endpoint](https://dqn.github.io/iidxapi/infinitas/music.json) |
 
 The dqn/iidxapi contract inspected at repository commit
@@ -49,6 +50,31 @@ snapshot, but an unchanged title, chart, or binding assertion reuses its
 existing evidence instead of adding a full revision-wide duplicate. Changed
 assertions retain their new evidence independently.
 
+The live Textage contract inspected at framed bundle SHA-256
+`3c1291f96946279512632ec69e5bf0f8d49ff0b7e301e43457bfe36bd5ad4f81`
+consists of `titletbl.js`, `actbl.js`, and `datatbl.js`. The three exact byte
+streams are decoded as the web `Shift_JIS` encoding, whose mapping is
+Windows-31J/CP932; any replacement would reject the bundle. The parser reads
+only the declared prefix constants and named object assignment. It accepts
+bounded comments, quoted strings and escapes, decimal integers, declared
+integer constants, object rows, fixed arrays, and the static
+`string.fontcolor(string)` display wrapper. It never invokes a JavaScript
+runtime and does not parse or execute code after the table assignment.
+
+`actbl` is the admitted song-row set. Every admitted slug must have matching
+title and chart-data rows; extra non-admitted metadata rows do not become
+observations. The exact Textage binding combines the admitted slug and its
+positive numeric title-table ID; both remain source-local. Source-specific
+title extraction removes only leading and trailing ASCII HTML whitespace and
+the static `fontcolor` wrapper while preserving case, width, punctuation,
+internal whitespace, and HTML fragments in the selected title value. The
+adapter imports only standard SP BEGINNER/NORMAL/
+HYPER/ANOTHER/LEGGENDARIA and DP NORMAL/HYPER/ANOTHER/LEGGENDARIA slots for
+which both a positive level and note count exist. Partial slots remain unknown.
+The availability bitfield contributes a corroborating INFINITAS flag but cannot
+establish catalog availability by itself. The three inputs are cached together
+under their framed content digest with at most 64 private bundles or 64 MiB.
+
 A dqn row has no stable key. Its raw NFC `(title, artist)` tuple can contribute
 positive availability only when it resolves to exactly one active
 Tachi-anchored record. This is secondary evidence, not an identity merge. Zero
@@ -80,11 +106,12 @@ and cannot corroborate Textage independently.
   bytes privately and identify them by SHA-256 plus available source timestamps.
 - Send an honest scorepeek user agent, obey rate limits and retry headers, and
   apply conservative serial polling. Daily synchronization is sufficient.
-- Never execute downloaded JavaScript. Textage adapters decode the declared
-  encoding and accept only the documented assignment/literal grammar with
-  explicit size, nesting, field, and record-count limits.
-- Parse into source observations before federation. Preserve raw UTF-8 display
-  values, source IDs, source revision, parser version, and field provenance.
+- Never execute downloaded JavaScript. Textage adapters decode Windows-31J
+  without replacement and accept only the documented assignment/literal
+  grammar with explicit size, nesting, field, and record-count limits.
+- Parse into source observations before federation. Preserve decoded display
+  values after only the documented source-specific static display extraction,
+  plus source IDs, source revision, parser version, and field provenance.
 - Treat mirrors, forks, and downstream databases as the same `lineage_id` as
   their input. Agreement within one lineage is one observation, not a quorum.
 - A missing record means `unknown` unless the source policy explicitly marks
