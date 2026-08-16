@@ -11,7 +11,7 @@ The repository currently contains the accepted design, research evidence,
 validation scaffold, a Rust target-inventory probe, and the first catalog-core
 slice: strict synthetic fixture adapters, deterministic fail-closed federation,
 quarantine results, durable content-addressed local snapshots, and bounded live
-dqn/iidxapi acquisition through `scorepeek catalog sync`. Tachi and Textage live
+Tachi and dqn/iidxapi acquisition through `scorepeek catalog sync`. Textage live
 acquisition and scheduled synchronization are not implemented. It does **not**
 yet contain a runnable capture or recognition service.
 
@@ -70,16 +70,20 @@ and allowlisted parsers. Missing target tools are reported as `unavailable`;
 command stderr is never included. Running Gamescope flags and authenticated OBS
 state remain unavailable until an exact, secret-safe probe contract exists.
 
-`scorepeek catalog sync` serially fetches the dqn/iidxapi INFINITAS roster after
-acquiring the catalog writer lock. It applies strict status, timeout, size,
-schema, digest, source-health, and federation gates before activation. Verified
-source bytes are kept privately below `$XDG_CACHE_HOME/scorepeek`, while the
-content-addressed catalog is stored below `$XDG_DATA_HOME/scorepeek`; the usual
-`$HOME/.cache` and `$HOME/.local/share` fallbacks apply when those variables are
-unset. The dqn cache admits at most 64 verified revisions (64 MiB total), and
-the store admits at most 32 snapshots, 64 MiB per snapshot and 512 MiB total;
-a new revision fails closed when a limit is reached. The command emits a JSON
-summary without raw source records.
+`scorepeek catalog sync` acquires the catalog writer lock, resolves Tachi's
+`main` branch to an exact Git commit, serially fetches the three IIDX seed JSON
+collections at that commit, then fetches the dqn/iidxapi INFINITAS roster. It
+parses downloaded data without executing repository code and applies strict
+status, redirect, timeout, size, schema, digest, source-health, and federation
+gates before activation. Verified source bytes are kept privately below
+`$XDG_CACHE_HOME/scorepeek`, while the content-addressed catalog is stored below
+`$XDG_DATA_HOME/scorepeek`; the usual `$HOME/.cache` and
+`$HOME/.local/share` fallbacks apply when those variables are unset. The Tachi
+cache admits at most 8 verified revisions and 512 MiB total, the dqn cache at
+most 64 revisions and 64 MiB total, and the catalog store at most 32 snapshots,
+128 MiB per snapshot and 512 MiB total. New content fails closed when a limit is
+reached. The command emits revision, digest, record count, active digest, and
+aggregate quarantine counts without raw source records.
 
 ## Licensing
 

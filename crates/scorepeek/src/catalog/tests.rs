@@ -3,8 +3,9 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 
 use super::{
-    AdapterError, Catalog, CatalogStore, DqnLiveAdapter, FederationInput, InfinitasStatus,
-    QuarantineReason, SourceRevision, TachiFixtureAdapter, TextageFixtureAdapter,
+    AdapterError, Catalog, CatalogStore, DisplayVariantKind, DqnLiveAdapter, FederationInput,
+    InfinitasStatus, QuarantineReason, SourceRevision, TachiFixtureAdapter, TachiLiveAdapter,
+    TextageFixtureAdapter,
 };
 
 const GIT_REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -26,6 +27,149 @@ fn fixture_adapter_rejects_unknown_fields_and_duplicate_ids() {
         TachiFixtureAdapter::parse(&serde_json::to_vec(&duplicate).unwrap(), git_revision())
             .unwrap_err();
     assert!(error.to_string().contains("duplicate source ID"));
+}
+
+#[test]
+fn tachi_live_adapter_imports_only_primary_standard_charts_and_typed_titles() {
+    let songs = serde_json::to_vec(&json!([{
+        "altTitles": ["ALPHA ALT"],
+        "artist": "ARTIST A",
+        "data": {
+            "displayVersion": "V1",
+            "eamusementCsvTitle": "ALPHA CSV",
+            "genre": "SYNTHETIC"
+        },
+        "id": "S0000000000000000001",
+        "legacySongID": 1,
+        "searchTerms": ["MUST NOT ENTER CATALOG"],
+        "title": "ALPHA"
+    }]))
+    .unwrap();
+    let single = serde_json::to_vec(&json!([
+        {
+            "data": { "notecount": 400 },
+            "difficulty": "NORMAL",
+            "id": "C0000000000000000001",
+            "isPrimary": true,
+            "legacyChartID": "spn",
+            "level": "4",
+            "levelNum": 4,
+            "songID": "S0000000000000000001",
+            "versions": ["inf"]
+        },
+        {
+            "data": { "notecount": 500 },
+            "difficulty": "All Scratch NORMAL",
+            "id": "C0000000000000000002",
+            "isPrimary": true,
+            "legacyChartID": "special",
+            "level": "5",
+            "levelNum": 5,
+            "songID": "S0000000000000000001",
+            "versions": ["inf"]
+        }
+    ]))
+    .unwrap();
+    let snapshot = TachiLiveAdapter::parse(&songs, &single, b"[]", git_revision()).unwrap();
+    assert_eq!(snapshot.evidence().record_count(), 2);
+    assert_eq!(
+        snapshot.policy().parser_version,
+        "scorepeek-tachi-live-json-parser-v1"
+    );
+
+    let catalog = Catalog::default()
+        .federate(FederationInput {
+            tachi: Some(snapshot),
+            ..FederationInput::default()
+        })
+        .catalog;
+    let song = catalog.songs.values().next().unwrap();
+    assert_eq!(song.charts.len(), 1);
+    assert_eq!(song.infinitas_status(), InfinitasStatus::ConfirmedPresent);
+    for (value, kind) in [
+        ("ALPHA", DisplayVariantKind::InGameDisplay),
+        ("ALPHA ALT", DisplayVariantKind::AlternateDisplay),
+        ("ALPHA CSV", DisplayVariantKind::EamusementCsv),
+    ] {
+        assert!(
+            song.title_variants()
+                .iter()
+                .any(|variant| variant.value == value && variant.kind == kind)
+        );
+    }
+    assert!(
+        song.title_variants()
+            .iter()
+            .all(|variant| variant.value != "MUST NOT ENTER CATALOG")
+    );
+}
+
+#[test]
+fn tachi_live_adapter_rejects_schema_drift_and_duplicate_primary_keys() {
+    let songs = serde_json::to_vec(&json!([{
+        "altTitles": [],
+        "artist": "ARTIST A",
+        "data": { "displayVersion": "V1", "genre": "SYNTHETIC" },
+        "id": "S0000000000000000001",
+        "legacySongID": 1,
+        "searchTerms": [],
+        "title": "ALPHA",
+        "unexpected": true
+    }]))
+    .unwrap();
+    let error = TachiLiveAdapter::parse(&songs, b"[]", b"[]", git_revision()).unwrap_err();
+    assert!(error.to_string().contains("unknown field"));
+
+    let songs: Vec<serde_json::Value> = serde_json::from_slice(&songs).unwrap();
+    let mut clean_song = songs[0].clone();
+    clean_song.as_object_mut().unwrap().remove("unexpected");
+    let clean_songs = serde_json::to_vec(&vec![clean_song]).unwrap();
+    let chart = json!({
+        "data": { "notecount": 400 },
+        "difficulty": "NORMAL",
+        "id": "C0000000000000000001",
+        "isPrimary": true,
+        "legacyChartID": "spn",
+        "level": "4",
+        "levelNum": 4,
+        "songID": "S0000000000000000001",
+        "versions": ["V1"]
+    });
+    let mut duplicate = chart.clone();
+    duplicate["id"] = json!("C0000000000000000002");
+    let charts = serde_json::to_vec(&vec![chart, duplicate]).unwrap();
+    let error = TachiLiveAdapter::parse(&clean_songs, &charts, b"[]", git_revision()).unwrap_err();
+    assert!(matches!(error, AdapterError::DuplicateChart { .. }));
+}
+
+#[test]
+fn tachi_live_adapter_rejects_orphans_even_when_charts_are_excluded() {
+    let songs = serde_json::to_vec(&json!([{
+        "altTitles": [],
+        "artist": "ARTIST A",
+        "data": { "displayVersion": "V1", "genre": "SYNTHETIC" },
+        "id": "S0000000000000000001",
+        "legacySongID": 1,
+        "searchTerms": [],
+        "title": "ALPHA"
+    }]))
+    .unwrap();
+    for (difficulty, is_primary) in [("All Scratch NORMAL", true), ("NORMAL", false)] {
+        let charts = serde_json::to_vec(&json!([{
+            "data": { "notecount": 400 },
+            "difficulty": difficulty,
+            "id": "C0000000000000000001",
+            "isPrimary": is_primary,
+            "legacyChartID": "excluded",
+            "level": "4",
+            "levelNum": 4,
+            "songID": "S0000000000000000002",
+            "versions": ["inf"]
+        }]))
+        .unwrap();
+        let error = TachiLiveAdapter::parse(&songs, &charts, b"[]", git_revision()).unwrap_err();
+        assert!(error.to_string().contains("references an absent song"));
+    }
 }
 
 #[test]
@@ -283,18 +427,17 @@ fn search_term_does_not_create_identity_or_availability_edges() {
 }
 
 #[test]
-fn identical_tachi_bytes_at_distinct_revisions_preserve_both_evidence_records() {
+fn identical_tachi_bytes_at_distinct_revisions_reuse_assertion_evidence() {
     let fixture = fixture(
         "scorepeek-tachi-fixture-v1",
         &[tachi_record("anchor-1", "ALPHA", "ARTIST A", "V1", false)],
     );
     let bytes = serde_json::to_vec(&fixture).unwrap();
     let first = TachiFixtureAdapter::parse(&bytes, git_revision()).unwrap();
-    let second = TachiFixtureAdapter::parse(
-        &bytes,
-        SourceRevision::git_commit("1123456789abcdef0123456789abcdef01234567").unwrap(),
-    )
-    .unwrap();
+    let second_revision = "1123456789abcdef0123456789abcdef01234567";
+    let second =
+        TachiFixtureAdapter::parse(&bytes, SourceRevision::git_commit(second_revision).unwrap())
+            .unwrap();
     let catalog = Catalog::default()
         .federate(FederationInput {
             tachi: Some(first),
@@ -315,6 +458,77 @@ fn identical_tachi_bytes_at_distinct_revisions_preserve_both_evidence_records() 
             .collect::<BTreeSet<_>>()
             .len(),
         2
+    );
+    let song = catalog.songs.values().next().unwrap();
+    assert_eq!(song.title_variants.len(), 1);
+    assert_eq!(song.chart_assertions.values().flatten().count(), 2);
+    assert_eq!(song.binding_evidence.values().flatten().count(), 1);
+    assert_eq!(song.binding_attributes.len(), 1);
+    assert_eq!(
+        catalog.latest_evidence[&super::SourceId::Tachi].revision,
+        second_revision
+    );
+    assert!(
+        song.title_variants
+            .iter()
+            .all(|variant| variant.evidence_id.revision == GIT_REVISION)
+    );
+}
+
+#[test]
+fn sparse_tachi_change_adds_only_changed_assertion_evidence() {
+    let first_records = [
+        tachi_record("anchor-1", "ALPHA", "ARTIST A", "V1", false),
+        tachi_record("anchor-2", "BETA", "ARTIST B", "V2", true),
+    ];
+    let first = tachi_snapshot(&first_records);
+    let second_fixture = fixture(
+        "scorepeek-tachi-fixture-v1",
+        &[
+            tachi_record("anchor-1", "ALPHA", "ARTIST A", "V1", false),
+            tachi_record("anchor-2", "BETA REVISED", "ARTIST B", "V2", true),
+        ],
+    );
+    let second_bytes = serde_json::to_vec(&second_fixture).unwrap();
+    let second_revision = "1123456789abcdef0123456789abcdef01234567";
+    let second = TachiFixtureAdapter::parse(
+        &second_bytes,
+        SourceRevision::git_commit(second_revision).unwrap(),
+    )
+    .unwrap();
+    let catalog = Catalog::default()
+        .federate(FederationInput {
+            tachi: Some(first),
+            ..FederationInput::default()
+        })
+        .catalog
+        .federate(FederationInput {
+            tachi: Some(second),
+            ..FederationInput::default()
+        })
+        .catalog;
+
+    let unchanged = catalog
+        .songs
+        .values()
+        .find(|song| song.tachi_source_id == "anchor-1")
+        .unwrap();
+    assert_eq!(unchanged.title_variants.len(), 1);
+    assert_eq!(unchanged.chart_assertions.values().flatten().count(), 2);
+    assert_eq!(unchanged.binding_evidence.values().flatten().count(), 1);
+
+    let changed = catalog
+        .songs
+        .values()
+        .find(|song| song.tachi_source_id == "anchor-2")
+        .unwrap();
+    assert_eq!(changed.title_variants.len(), 2);
+    assert_eq!(changed.chart_assertions.values().flatten().count(), 2);
+    assert_eq!(changed.binding_evidence.values().flatten().count(), 1);
+    assert_eq!(catalog.source_evidence.len(), 2);
+    assert_eq!(
+        catalog.latest_evidence[&super::SourceId::Tachi].revision,
+        second_revision
     );
 }
 

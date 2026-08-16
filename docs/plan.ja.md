@@ -5,8 +5,8 @@
 - 決定日: 2026-08-15
 - repository bootstrapとtarget inventory probe: 完了
 - M1.1 catalog contractとlocal federation core: 完了
-- M1.2 live acquisitionとsync orchestration: dqn manual syncまで完了、継続中
-- Tachi/Textage live adapter、scheduled sync、capture、認識、OCR学習、event daemon: 未着手
+- M1.2 live acquisitionとsync orchestration: Tachi/dqn manual syncまで完了、継続中
+- Textage live adapter、scheduled sync、capture、認識、OCR学習、event daemon: 未着手
 - Bazzite実機検証とprivate corpus収集: 未着手
 
 現在commitに含まれるcheckpointは[`STATUS.md`](../STATUS.md)を参照する。この文書は
@@ -162,6 +162,8 @@ gameplay中のdaemonはnetworkを使わない。syncはper-host exclusive writer
 2. strict parserでtyped observationへ変換する。
 3. 前active ledgerを入力としてdeterministic federation candidateを作る。
 4. safe addition、same-ID variant、non-conflicting chartだけを適用する。
+   revisionだけが変わった同一assertionは既存evidenceへ正規化し、latest source
+   revisionはsource-level provenanceとして別に保持する。
 5. unsupported token、ambiguous identity、existing-ID bridge、critical conflict、source health
    regression、recognition replay regressionはrecord単位でquarantineする。
 6. model hashへbindingした保存済みCTC logitsをexpanded lexiconで再scoreし、既存accepted

@@ -6,8 +6,11 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use super::acquisition::{DqnAcquisitionError, DqnTransport, UreqDqnTransport, acquire_dqn};
-use super::federation::{Catalog, FederationInput, QuarantineEntry, QuarantineReason};
+use super::federation::{Catalog, FederationInput, QuarantineEntry, QuarantineReason, SourceId};
 use super::store::{CatalogStore, CatalogStoreError};
+use super::tachi_acquisition::{
+    TachiAcquisitionError, TachiTransport, UreqTachiTransport, acquire_tachi,
+};
 
 #[derive(Clone, Debug)]
 pub struct CatalogSync {
@@ -19,31 +22,38 @@ pub struct CatalogSync {
 pub struct CatalogSyncResult {
     pub activated: bool,
     pub active_catalog_digest: Option<String>,
-    pub source_content_sha256: String,
-    pub source_record_count: usize,
+    pub sources: BTreeMap<SourceId, CatalogSyncSource>,
     pub quarantine: Vec<QuarantineEntry>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CatalogSyncSource {
+    pub revision: String,
+    pub content_sha256: String,
+    pub record_count: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct CatalogSyncSummary {
     pub activated: bool,
     pub active_catalog_digest: Option<String>,
-    pub source_content_sha256: String,
-    pub source_record_count: usize,
+    pub sources: BTreeMap<SourceId, CatalogSyncSource>,
     pub quarantine_counts: BTreeMap<QuarantineReason, usize>,
 }
 
 #[derive(Debug)]
 pub enum CatalogSyncError {
     Store(CatalogStoreError),
-    Acquisition(DqnAcquisitionError),
+    TachiAcquisition(TachiAcquisitionError),
+    DqnAcquisition(DqnAcquisitionError),
 }
 
 impl fmt::Display for CatalogSyncError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Store(error) => error.fmt(formatter),
-            Self::Acquisition(error) => error.fmt(formatter),
+            Self::TachiAcquisition(error) => error.fmt(formatter),
+            Self::DqnAcquisition(error) => error.fmt(formatter),
         }
     }
 }
@@ -52,7 +62,8 @@ impl Error for CatalogSyncError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Store(error) => Some(error),
-            Self::Acquisition(error) => Some(error),
+            Self::TachiAcquisition(error) => Some(error),
+            Self::DqnAcquisition(error) => Some(error),
         }
     }
 }
@@ -62,23 +73,49 @@ impl CatalogSyncError {
     pub fn redacted_message(&self) -> String {
         match self {
             Self::Store(_) => "catalog store operation failed".to_owned(),
-            Self::Acquisition(DqnAcquisitionError::UnexpectedStatus(status)) => {
+            Self::TachiAcquisition(TachiAcquisitionError::UnexpectedStatus {
+                resource,
+                status,
+            }) => format!("Tachi {resource} acquisition returned unexpected HTTP status {status}"),
+            Self::TachiAcquisition(
+                TachiAcquisitionError::DeclaredBodyTooLarge { .. }
+                | TachiAcquisitionError::BodyTooLarge { .. },
+            ) => "Tachi response exceeded the configured size limit".to_owned(),
+            Self::TachiAcquisition(TachiAcquisitionError::Timeout(resource)) => {
+                format!("Tachi {resource} acquisition timed out")
+            }
+            Self::TachiAcquisition(TachiAcquisitionError::Transport(resource, _)) => {
+                format!("Tachi {resource} transport failed")
+            }
+            Self::TachiAcquisition(
+                TachiAcquisitionError::InvalidRevisionResponse(_)
+                | TachiAcquisitionError::InvalidRevision(_),
+            ) => "Tachi revision validation failed".to_owned(),
+            Self::TachiAcquisition(TachiAcquisitionError::Adapter(_)) => {
+                "Tachi seed validation failed".to_owned()
+            }
+            Self::TachiAcquisition(
+                TachiAcquisitionError::CacheIo(_)
+                | TachiAcquisitionError::CacheConflict(_)
+                | TachiAcquisitionError::CacheCapacityExceeded,
+            ) => "Tachi cache persistence failed".to_owned(),
+            Self::DqnAcquisition(DqnAcquisitionError::UnexpectedStatus(status)) => {
                 format!("dqn acquisition returned unexpected HTTP status {status}")
             }
-            Self::Acquisition(
+            Self::DqnAcquisition(
                 DqnAcquisitionError::DeclaredBodyTooLarge { .. }
                 | DqnAcquisitionError::BodyTooLarge { .. },
             ) => "dqn response exceeded the configured size limit".to_owned(),
-            Self::Acquisition(DqnAcquisitionError::Timeout) => {
+            Self::DqnAcquisition(DqnAcquisitionError::Timeout) => {
                 "dqn acquisition timed out".to_owned()
             }
-            Self::Acquisition(DqnAcquisitionError::Transport(_)) => {
+            Self::DqnAcquisition(DqnAcquisitionError::Transport(_)) => {
                 "dqn transport failed".to_owned()
             }
-            Self::Acquisition(DqnAcquisitionError::Adapter(_)) => {
+            Self::DqnAcquisition(DqnAcquisitionError::Adapter(_)) => {
                 "dqn response validation failed".to_owned()
             }
-            Self::Acquisition(
+            Self::DqnAcquisition(
                 DqnAcquisitionError::CacheIo(_)
                 | DqnAcquisitionError::CacheConflict(_)
                 | DqnAcquisitionError::CacheCapacityExceeded,
@@ -95,7 +132,13 @@ impl From<CatalogStoreError> for CatalogSyncError {
 
 impl From<DqnAcquisitionError> for CatalogSyncError {
     fn from(error: DqnAcquisitionError) -> Self {
-        Self::Acquisition(error)
+        Self::DqnAcquisition(error)
+    }
+}
+
+impl From<TachiAcquisitionError> for CatalogSyncError {
+    fn from(error: TachiAcquisitionError) -> Self {
+        Self::TachiAcquisition(error)
     }
 }
 
@@ -108,7 +151,7 @@ impl CatalogSync {
         }
     }
 
-    /// Acquires, validates, caches, federates, and conditionally activates the dqn catalog input.
+    /// Acquires, validates, caches, federates, and conditionally activates all live catalog inputs.
     ///
     /// The per-host writer lock is acquired before network access and remains held through
     /// activation. Snapshot-wide health regressions leave the active catalog unchanged.
@@ -117,22 +160,25 @@ impl CatalogSync {
     ///
     /// Returns an error when locking, acquisition, validation, private cache persistence, or
     /// catalog activation fails.
-    pub fn sync_dqn(&self) -> Result<CatalogSyncResult, CatalogSyncError> {
-        self.sync_dqn_with(&UreqDqnTransport::new())
+    pub fn sync(&self) -> Result<CatalogSyncResult, CatalogSyncError> {
+        self.sync_with(&UreqTachiTransport::new(), &UreqDqnTransport::new())
     }
 
-    fn sync_dqn_with(
+    fn sync_with(
         &self,
-        transport: &impl DqnTransport,
+        tachi_transport: &impl TachiTransport,
+        dqn_transport: &impl DqnTransport,
     ) -> Result<CatalogSyncResult, CatalogSyncError> {
         let update = self.store.begin_update()?;
-        let acquired = acquire_dqn(transport, &self.cache_root)?;
+        let tachi = acquire_tachi(tachi_transport, &self.cache_root)?;
+        let dqn = acquire_dqn(dqn_transport, &self.cache_root)?;
         let base = self
             .store
             .load_active()?
             .map_or_else(Catalog::default, |active| active.catalog);
         let output = base.federate(FederationInput {
-            dqn: Some(acquired.snapshot),
+            tachi: Some(tachi.snapshot),
+            dqn: Some(dqn.snapshot),
             ..FederationInput::default()
         });
         let blocked = output.quarantine.iter().any(|entry| {
@@ -152,8 +198,24 @@ impl CatalogSync {
         Ok(CatalogSyncResult {
             activated: !blocked,
             active_catalog_digest,
-            source_content_sha256: acquired.content_sha256,
-            source_record_count: acquired.record_count,
+            sources: BTreeMap::from([
+                (
+                    SourceId::Tachi,
+                    CatalogSyncSource {
+                        revision: tachi.revision,
+                        content_sha256: tachi.content_sha256,
+                        record_count: tachi.record_count,
+                    },
+                ),
+                (
+                    SourceId::DqnIidxapi,
+                    CatalogSyncSource {
+                        revision: dqn.content_sha256.clone(),
+                        content_sha256: dqn.content_sha256,
+                        record_count: dqn.record_count,
+                    },
+                ),
+            ]),
             quarantine: output.quarantine,
         })
     }
@@ -169,8 +231,7 @@ impl CatalogSyncResult {
         CatalogSyncSummary {
             activated: self.activated,
             active_catalog_digest: self.active_catalog_digest,
-            source_content_sha256: self.source_content_sha256,
-            source_record_count: self.source_record_count,
+            sources: self.sources,
             quarantine_counts,
         }
     }
@@ -181,6 +242,7 @@ mod tests {
     use std::fs;
     use std::fs::OpenOptions;
     use std::os::unix::fs::PermissionsExt as _;
+    use std::path::Path;
 
     use serde_json::json;
     use tempfile::TempDir;
@@ -188,7 +250,7 @@ mod tests {
     use super::*;
     use crate::catalog::acquisition::DqnHttpResponse;
     use crate::catalog::adapter::MAX_SOURCE_BYTES;
-    use crate::catalog::{SourceRevision, TachiFixtureAdapter};
+    use crate::catalog::tachi_acquisition::{TachiHttpResponse, TachiResource};
 
     const GIT_REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -208,6 +270,46 @@ mod tests {
         }
     }
 
+    struct FakeTachiTransport {
+        reference: TachiHttpResponse,
+        seeds: BTreeMap<TachiResource, TachiHttpResponse>,
+    }
+
+    impl TachiTransport for FakeTachiTransport {
+        fn get_ref(&self) -> Result<TachiHttpResponse, TachiAcquisitionError> {
+            Ok(self.reference.clone())
+        }
+
+        fn get_seed(
+            &self,
+            revision: &str,
+            resource: TachiResource,
+        ) -> Result<TachiHttpResponse, TachiAcquisitionError> {
+            assert_eq!(revision, GIT_REVISION);
+            Ok(self.seeds.get(&resource).unwrap().clone())
+        }
+    }
+
+    struct LockCheckingTachiTransport {
+        lock_path: PathBuf,
+        inner: FakeTachiTransport,
+    }
+
+    impl TachiTransport for LockCheckingTachiTransport {
+        fn get_ref(&self) -> Result<TachiHttpResponse, TachiAcquisitionError> {
+            assert_writer_lock(&self.lock_path);
+            self.inner.get_ref()
+        }
+
+        fn get_seed(
+            &self,
+            revision: &str,
+            resource: TachiResource,
+        ) -> Result<TachiHttpResponse, TachiAcquisitionError> {
+            self.inner.get_seed(revision, resource)
+        }
+    }
+
     struct LockCheckingTransport {
         lock_path: PathBuf,
         response: DqnHttpResponse,
@@ -215,15 +317,7 @@ mod tests {
 
     impl DqnTransport for LockCheckingTransport {
         fn get(&self) -> Result<DqnHttpResponse, DqnAcquisitionError> {
-            let lock = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&self.lock_path)
-                .unwrap();
-            assert!(matches!(
-                lock.try_lock(),
-                Err(std::fs::TryLockError::WouldBlock)
-            ));
+            assert_writer_lock(&self.lock_path);
             Ok(DqnHttpResponse {
                 status: self.response.status,
                 content_length: self.response.content_length,
@@ -235,32 +329,58 @@ mod tests {
     #[test]
     fn healthy_dqn_response_is_cached_federated_and_activated() {
         let roots = Roots::new();
-        seed_tachi(&roots.store);
         let bytes = dqn_bytes("ALPHA", "ARTIST A");
         let result = roots
             .sync()
-            .sync_dqn_with(&LockCheckingTransport {
-                lock_path: roots.store.join("catalog-sync.lock"),
-                response: DqnHttpResponse {
-                    status: 200,
-                    content_length: Some(bytes.len() as u64),
-                    body: bytes.clone(),
+            .sync_with(
+                &LockCheckingTachiTransport {
+                    lock_path: roots.store.join("catalog-sync.lock"),
+                    inner: tachi_transport(),
                 },
-            })
+                &LockCheckingTransport {
+                    lock_path: roots.store.join("catalog-sync.lock"),
+                    response: DqnHttpResponse {
+                        status: 200,
+                        content_length: Some(bytes.len() as u64),
+                        body: bytes.clone(),
+                    },
+                },
+            )
             .unwrap();
 
         assert!(result.activated);
-        assert_eq!(result.source_record_count, 1);
+        assert_eq!(result.sources[&SourceId::DqnIidxapi].record_count, 1);
         assert!(result.quarantine.is_empty());
-        let cache_file = roots
-            .cache
-            .join("dqn")
-            .join(format!("{}.json", result.source_content_sha256));
+        let dqn_digest = &result.sources[&SourceId::DqnIidxapi].content_sha256;
+        let cache_file = roots.cache.join("dqn").join(format!("{dqn_digest}.json"));
         assert!(cache_file.is_file());
         assert_eq!(
             fs::metadata(&cache_file).unwrap().permissions().mode() & 0o777,
             0o600
         );
+        let tachi = &result.sources[&SourceId::Tachi];
+        let tachi_cache = roots
+            .cache
+            .join("tachi")
+            .join(format!("{}-{}", tachi.revision, tachi.content_sha256));
+        assert_eq!(
+            fs::metadata(&tachi_cache).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        for filename in [
+            "songs-iidx.json",
+            "charts-iidx-sp.json",
+            "charts-iidx-dp.json",
+        ] {
+            assert_eq!(
+                fs::metadata(tachi_cache.join(filename))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
         let active = CatalogStore::new(&roots.store)
             .load_active()
             .unwrap()
@@ -272,9 +392,7 @@ mod tests {
     fn public_summary_aggregates_quarantine_without_source_keys() {
         let roots = Roots::new();
         let bytes = dqn_bytes("PRIVATE SOURCE TITLE", "PRIVATE SOURCE ARTIST");
-        let summary = roots
-            .sync()
-            .sync_dqn_with(&response(200, Some(bytes.len() as u64), bytes))
+        let summary = sync_with_dqn(&roots, &response(200, Some(bytes.len() as u64), bytes))
             .unwrap()
             .into_summary();
         let json = serde_json::to_string(&summary).unwrap();
@@ -294,32 +412,32 @@ mod tests {
     fn transport_status_and_declared_or_actual_size_fail_before_activation() {
         let roots = Roots::new();
         let bytes = dqn_bytes("ALPHA", "ARTIST A");
-        let status = roots
-            .sync()
-            .sync_dqn_with(&response(503, Some(bytes.len() as u64), bytes.clone()))
-            .unwrap_err();
+        let status = sync_with_dqn(
+            &roots,
+            &response(503, Some(bytes.len() as u64), bytes.clone()),
+        )
+        .unwrap_err();
         assert!(status.to_string().contains("HTTP status 503"));
 
-        let redirect = roots
-            .sync()
-            .sync_dqn_with(&response(
-                302,
-                Some((MAX_SOURCE_BYTES + 1) as u64),
-                Vec::new(),
-            ))
-            .unwrap_err();
+        let redirect = sync_with_dqn(
+            &roots,
+            &response(302, Some((MAX_SOURCE_BYTES + 1) as u64), Vec::new()),
+        )
+        .unwrap_err();
         assert!(redirect.to_string().contains("HTTP status 302"));
 
-        let declared = roots
-            .sync()
-            .sync_dqn_with(&response(200, Some((MAX_SOURCE_BYTES + 1) as u64), bytes))
-            .unwrap_err();
+        let declared = sync_with_dqn(
+            &roots,
+            &response(200, Some((MAX_SOURCE_BYTES + 1) as u64), bytes),
+        )
+        .unwrap_err();
         assert!(declared.to_string().contains("declares"));
 
-        let actual = roots
-            .sync()
-            .sync_dqn_with(&response(200, None, vec![b' '; MAX_SOURCE_BYTES + 1]))
-            .unwrap_err();
+        let actual = sync_with_dqn(
+            &roots,
+            &response(200, None, vec![b' '; MAX_SOURCE_BYTES + 1]),
+        )
+        .unwrap_err();
         assert!(actual.to_string().contains("maximum"));
         assert!(
             CatalogStore::new(&roots.store)
@@ -332,24 +450,21 @@ mod tests {
     #[test]
     fn timeout_and_cache_write_failure_leave_active_catalog_unchanged() {
         let roots = Roots::new();
-        seed_tachi(&roots.store);
-        let before = CatalogStore::new(&roots.store)
-            .load_active()
+        let initial = dqn_bytes("ALPHA", "ARTIST A");
+        let before = sync_with_dqn(&roots, &response(200, Some(initial.len() as u64), initial))
             .unwrap()
-            .unwrap()
-            .digest;
-        let timeout = roots
-            .sync()
-            .sync_dqn_with(&FakeTransport(Err(DqnAcquisitionError::Timeout)))
-            .unwrap_err();
+            .active_catalog_digest
+            .unwrap();
+        let timeout =
+            sync_with_dqn(&roots, &FakeTransport(Err(DqnAcquisitionError::Timeout))).unwrap_err();
         assert!(timeout.to_string().contains("timed out"));
 
-        fs::write(&roots.cache, b"not a directory").unwrap();
+        let dqn_cache = roots.cache.join("dqn");
+        fs::remove_dir_all(&dqn_cache).unwrap();
+        fs::write(&dqn_cache, b"not a directory").unwrap();
         let bytes = dqn_bytes("ALPHA", "ARTIST A");
-        let cache_error = roots
-            .sync()
-            .sync_dqn_with(&response(200, Some(bytes.len() as u64), bytes))
-            .unwrap_err();
+        let cache_error =
+            sync_with_dqn(&roots, &response(200, Some(bytes.len() as u64), bytes)).unwrap_err();
         assert!(cache_error.to_string().contains("cache write failed"));
         let after = CatalogStore::new(&roots.store)
             .load_active()
@@ -362,19 +477,14 @@ mod tests {
     #[test]
     fn snapshot_wide_regressions_do_not_activate_a_candidate() {
         let roots = Roots::new();
-        seed_tachi(&roots.store);
         let alpha = dqn_bytes("ALPHA", "ARTIST A");
-        let accepted = roots
-            .sync()
-            .sync_dqn_with(&response(200, Some(alpha.len() as u64), alpha))
-            .unwrap();
+        let accepted =
+            sync_with_dqn(&roots, &response(200, Some(alpha.len() as u64), alpha)).unwrap();
         let accepted_digest = accepted.active_catalog_digest.unwrap();
 
         let beta = dqn_bytes("BETA", "ARTIST B");
-        let binding_regression = roots
-            .sync()
-            .sync_dqn_with(&response(200, Some(beta.len() as u64), beta))
-            .unwrap();
+        let binding_regression =
+            sync_with_dqn(&roots, &response(200, Some(beta.len() as u64), beta)).unwrap();
         assert!(!binding_regression.activated);
         assert_eq!(
             binding_regression.active_catalog_digest.as_deref(),
@@ -392,18 +502,17 @@ mod tests {
             { "title": "MISSING", "artist": "ARTIST M", "packName": null }
         ]))
         .unwrap();
-        let larger = roots
-            .sync()
-            .sync_dqn_with(&response(200, Some(two_records.len() as u64), two_records))
-            .unwrap();
+        let larger = sync_with_dqn(
+            &roots,
+            &response(200, Some(two_records.len() as u64), two_records),
+        )
+        .unwrap();
         assert!(larger.activated);
         let larger_digest = larger.active_catalog_digest.unwrap();
 
         let alpha = dqn_bytes("ALPHA", "ARTIST A");
-        let health_regression = roots
-            .sync()
-            .sync_dqn_with(&response(200, Some(alpha.len() as u64), alpha))
-            .unwrap();
+        let health_regression =
+            sync_with_dqn(&roots, &response(200, Some(alpha.len() as u64), alpha)).unwrap();
         assert!(!health_regression.activated);
         assert_eq!(
             health_regression.active_catalog_digest.as_deref(),
@@ -444,41 +553,82 @@ mod tests {
         }))
     }
 
-    fn seed_tachi(store: &PathBuf) {
-        let fixture = json!({
-            "schema": "scorepeek-tachi-fixture-v1",
-            "records": [{
-                "source_song_id": "anchor-1",
-                "title": "ALPHA",
-                "title_kind": "in_game_display",
-                "artist": "ARTIST A",
-                "version": "V1",
-                "charts": [
-                    { "play_type": "single", "difficulty": "normal", "level": 4,
-                      "notes": 400, "source_chart_id": "spn",
-                      "product_versions": ["synthetic-v1"], "primary": true },
-                    { "play_type": "single", "difficulty": "hyper", "level": 8,
-                      "notes": 800, "source_chart_id": "sph",
-                      "product_versions": ["synthetic-v1"], "primary": true }
-                ],
-                "primary_infinitas": false
-            }]
-        });
-        let bytes = serde_json::to_vec(&fixture).unwrap();
-        let snapshot =
-            TachiFixtureAdapter::parse(&bytes, SourceRevision::git_commit(GIT_REVISION).unwrap())
-                .unwrap();
-        let catalog = Catalog::default()
-            .federate(FederationInput {
-                tachi: Some(snapshot),
-                ..FederationInput::default()
-            })
-            .catalog;
-        CatalogStore::new(store)
-            .begin_update()
-            .unwrap()
-            .publish(&catalog)
+    fn assert_writer_lock(lock_path: &Path) {
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(lock_path)
             .unwrap();
+        assert!(matches!(
+            lock.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+    }
+
+    fn sync_with_dqn(
+        roots: &Roots,
+        dqn: &impl DqnTransport,
+    ) -> Result<CatalogSyncResult, CatalogSyncError> {
+        roots.sync().sync_with(&tachi_transport(), dqn)
+    }
+
+    fn tachi_transport() -> FakeTachiTransport {
+        let reference = serde_json::to_vec(&json!({
+            "ref": "refs/heads/main",
+            "node_id": "synthetic-node",
+            "url": "https://example.invalid/ref",
+            "object": {
+                "sha": GIT_REVISION,
+                "type": "commit",
+                "url": "https://example.invalid/commit"
+            }
+        }))
+        .unwrap();
+        let songs = serde_json::to_vec(&json!([{
+                "altTitles": [],
+                "artist": "ARTIST A",
+                "data": { "displayVersion": "V1", "genre": "SYNTHETIC" },
+                "id": "S0000000000000000001",
+                "legacySongID": 1,
+                "searchTerms": [],
+                "title": "ALPHA"
+        }]))
+        .unwrap();
+        let single_charts = serde_json::to_vec(&json!([{
+            "data": { "notecount": 400 },
+            "difficulty": "NORMAL",
+            "id": "C0000000000000000001",
+            "isPrimary": true,
+            "legacyChartID": "synthetic-spn",
+            "level": "4",
+            "levelNum": 4,
+            "songID": "S0000000000000000001",
+            "versions": ["synthetic-v1"]
+        }]))
+        .unwrap();
+        let double_charts = b"[]".to_vec();
+        FakeTachiTransport {
+            reference: ok_tachi_response(reference),
+            seeds: BTreeMap::from([
+                (TachiResource::Songs, ok_tachi_response(songs)),
+                (
+                    TachiResource::SingleCharts,
+                    ok_tachi_response(single_charts),
+                ),
+                (
+                    TachiResource::DoubleCharts,
+                    ok_tachi_response(double_charts),
+                ),
+            ]),
+        }
+    }
+
+    fn ok_tachi_response(body: Vec<u8>) -> TachiHttpResponse {
+        TachiHttpResponse {
+            status: 200,
+            content_length: Some(body.len() as u64),
+            body,
+        }
     }
 
     fn dqn_bytes(title: &str, artist: &str) -> Vec<u8> {

@@ -365,7 +365,7 @@ fn verify_existing_cache(
         .map_err(DqnAcquisitionError::CacheIo)
 }
 
-fn create_private_directory(path: &Path) -> io::Result<()> {
+pub(super) fn create_private_directory(path: &Path) -> io::Result<()> {
     let mut missing = Vec::new();
     let mut candidate = path;
     while !candidate.exists() {

@@ -47,7 +47,7 @@ fn sync_catalog() -> Result<(), String> {
         home.as_deref(),
     )?;
     let result = CatalogSync::new(store_root, cache_root)
-        .sync_dqn()
+        .sync()
         .map_err(|error| catalog_sync_error(&error))?;
     println!(
         "{}",
@@ -111,6 +111,7 @@ mod tests {
     use super::{catalog_paths, catalog_sync_error};
     use scorepeek::catalog::{
         AdapterError, CatalogStoreError, CatalogSyncError, DqnAcquisitionError,
+        TachiAcquisitionError, TachiResource,
     };
     use std::ffi::OsStr;
     use std::path::PathBuf;
@@ -146,13 +147,22 @@ mod tests {
 
     #[test]
     fn catalog_sync_errors_do_not_expose_source_values() {
-        let adapter = catalog_sync_error(&CatalogSyncError::Acquisition(
+        let adapter = catalog_sync_error(&CatalogSyncError::DqnAcquisition(
             DqnAcquisitionError::Adapter(AdapterError::DuplicateRecord(
                 "PRIVATE SOURCE SENTINEL".to_owned(),
             )),
         ));
         assert!(!adapter.contains("PRIVATE SOURCE SENTINEL"));
         assert!(adapter.contains("response validation failed"));
+
+        let tachi = catalog_sync_error(&CatalogSyncError::TachiAcquisition(
+            TachiAcquisitionError::Transport(
+                TachiResource::Songs,
+                "PRIVATE TRANSPORT SENTINEL".to_owned(),
+            ),
+        ));
+        assert!(!tachi.contains("PRIVATE TRANSPORT SENTINEL"));
+        assert!(tachi.contains("Tachi songs seed transport failed"));
 
         let store = catalog_sync_error(&CatalogSyncError::Store(
             CatalogStoreError::InvalidSnapshot("PRIVATE SNAPSHOT SENTINEL".to_owned()),

@@ -30,6 +30,25 @@ identity by themselves. v1 derives the public UUIDv5 song ID from the exact
 Tachi binding; records without that anchor remain provisional until Tachi
 catches up.
 
+The live Tachi contract inspected at repository commit
+`4ef9ca588424e1a98dc73421a49dd8efe3b37ddd` consists of
+`db/seeds/songs-iidx.json`, `db/seeds/charts-iidx-sp.json`, and
+`db/seeds/charts-iidx-dp.json`. Synchronization first resolves `main` through the
+GitHub Git-ref API and then requests all three raw files at that exact commit.
+The strict parser accepts Tachi's prefixed 20-character song/chart IDs, typed
+song metadata, and the documented chart row shape. It imports only primary
+NORMAL, HYPER, ANOTHER, and LEGGENDARIA SP/DP charts; known Tachi custom-mode
+charts are schema-validated but excluded from the scorepeek catalog. The main
+title is `in_game_display`, `altTitles` are `alternate_display`, and
+`eamusementCsvTitle` is `eamusement_csv`; `searchTerms` remain excluded from
+identity and OCR lexicons. A primary imported chart whose `versions` contains
+`inf` is positive Tachi INFINITAS evidence. The three exact files are cached as
+one framed content-digested bundle; repository scripts and downloaded code are
+never executed. A later Git commit remains recorded as the latest source
+snapshot, but an unchanged title, chart, or binding assertion reuses its
+existing evidence instead of adding a full revision-wide duplicate. Changed
+assertions retain their new evidence independently.
+
 A dqn row has no stable key. Its raw NFC `(title, artist)` tuple can contribute
 positive availability only when it resolves to exactly one active
 Tachi-anchored record. This is secondary evidence, not an identity merge. Zero
@@ -83,7 +102,10 @@ fixtures. `searchTerms` and site navigation aliases are excluded from the OCR
 lexicon. Exact display variants enter the lexicon only after their source
 binding is resolved without fuzzy identity matching.
 
-Each accepted catalog record records all contributing source revisions and
-lineages. A UI may show provenance and quarantine diagnostics, but stable
-recognition events expose only the internal song ID, accepted exact display
-title, catalog digest, and INFINITAS status.
+Each accepted catalog assertion records its contributing source revision and
+lineage, and the catalog separately records the latest accepted source
+revision. Identical assertions are normalized across revisions so a source
+commit that leaves them unchanged cannot cause unbounded snapshot growth. A UI
+may show provenance and quarantine diagnostics, but stable recognition events
+expose only the internal song ID, accepted exact display title, catalog digest,
+and INFINITAS status.

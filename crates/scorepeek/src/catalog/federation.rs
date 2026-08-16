@@ -55,7 +55,7 @@ impl SourcePolicy {
             source_id: SourceId::Tachi,
             lineage_id: LineageId::GameMdb,
             revision_strategy: RevisionStrategy::GitCommit,
-            parser_version: "scorepeek-tachi-fixture-parser-v1",
+            parser_version: "scorepeek-tachi-live-json-parser-v1",
             declared_scope: "general_iidx_identity_and_charts",
             completeness: Completeness::NonExhaustive,
             field_authority: &[
@@ -212,12 +212,17 @@ pub(crate) enum SourceObservation {
 #[derive(Clone, Debug)]
 pub(crate) struct TachiObservation {
     pub source_song_id: String,
-    pub title: String,
+    pub title_variants: BTreeSet<SourceTitleObservation>,
     pub artist: String,
     pub version: String,
-    pub title_kind: DisplayVariantKind,
     pub charts: Vec<SourceChartObservation>,
     pub primary_infinitas: bool,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct SourceTitleObservation {
+    pub value: String,
+    pub kind: DisplayVariantKind,
 }
 
 #[derive(Clone, Debug)]
@@ -442,6 +447,7 @@ impl Catalog {
         apply_textage(&mut catalog, input.textage, &mut quarantine);
         apply_dqn(self, &mut catalog, input.dqn, &mut quarantine);
         refresh_infinitas_status(&mut catalog);
+        prune_unreferenced_evidence(&mut catalog);
         quarantine.sort();
 
         FederationOutput {
@@ -864,24 +870,17 @@ fn apply_tachi_record(
             ));
             return;
         }
-        existing.title_variants.insert(DisplayVariant {
-            value: record.title,
-            source_id: SourceId::Tachi,
-            kind: record.title_kind,
-            evidence_id: evidence_id.clone(),
-        });
+        add_tachi_title_variants(existing, record.title_variants, evidence_id);
         let binding_key = record.source_song_id.clone();
-        existing
-            .binding_evidence
-            .entry((SourceId::Tachi, binding_key.clone()))
-            .or_default()
-            .insert(evidence_id.clone());
-        existing.binding_attributes.insert(
-            (SourceId::Tachi, binding_key, evidence_id.clone()),
+        add_binding_attributes(
+            existing,
+            SourceId::Tachi,
+            &binding_key,
             BTreeMap::from([(
                 "primary_infinitas".to_owned(),
                 record.primary_infinitas.to_string(),
             )]),
+            evidence_id,
         );
         add_charts(existing, record.charts, evidence_id);
         existing.tachi_primary_infinitas |= record.primary_infinitas;
@@ -914,12 +913,16 @@ fn apply_tachi_record(
         CatalogSong {
             song_id,
             tachi_source_id: binding_key.clone(),
-            title_variants: BTreeSet::from([DisplayVariant {
-                value: record.title,
-                source_id: SourceId::Tachi,
-                kind: record.title_kind,
-                evidence_id: evidence_id.clone(),
-            }]),
+            title_variants: record
+                .title_variants
+                .into_iter()
+                .map(|variant| DisplayVariant {
+                    value: variant.value,
+                    source_id: SourceId::Tachi,
+                    kind: variant.kind,
+                    evidence_id: evidence_id.clone(),
+                })
+                .collect(),
             artist: record.artist,
             version: record.version,
             charts,
@@ -942,6 +945,61 @@ fn apply_tachi_record(
             )]),
             tachi_primary_infinitas: record.primary_infinitas,
         },
+    );
+}
+
+fn add_tachi_title_variants(
+    song: &mut CatalogSong,
+    variants: BTreeSet<SourceTitleObservation>,
+    evidence_id: &EvidenceId,
+) {
+    for variant in variants {
+        let already_asserted = song.title_variants.iter().any(|existing| {
+            existing.source_id == SourceId::Tachi
+                && existing.kind == variant.kind
+                && existing.value == variant.value
+        });
+        if !already_asserted {
+            song.title_variants.insert(DisplayVariant {
+                value: variant.value,
+                source_id: SourceId::Tachi,
+                kind: variant.kind,
+                evidence_id: evidence_id.clone(),
+            });
+        }
+    }
+}
+
+fn add_binding_attributes(
+    song: &mut CatalogSong,
+    source_id: SourceId,
+    source_key: &str,
+    attributes: BTreeMap<String, String>,
+    evidence_id: &EvidenceId,
+) {
+    let binding_key = (source_id, source_key.to_owned());
+    let already_asserted = song
+        .binding_evidence
+        .get(&binding_key)
+        .is_some_and(|evidence_ids| {
+            evidence_ids.iter().any(|existing_evidence| {
+                song.binding_attributes.get(&(
+                    source_id,
+                    source_key.to_owned(),
+                    existing_evidence.clone(),
+                )) == Some(&attributes)
+            })
+        });
+    if already_asserted {
+        return;
+    }
+    song.binding_evidence
+        .entry(binding_key)
+        .or_default()
+        .insert(evidence_id.clone());
+    song.binding_attributes.insert(
+        (source_id, source_key.to_owned(), evidence_id.clone()),
+        attributes,
     );
 }
 
@@ -1236,16 +1294,46 @@ fn add_charts(
     for observation in charts {
         let key = observation.chart.key;
         song.charts.entry(key).or_insert(observation.chart);
-        song.chart_assertions
-            .entry(key)
-            .or_default()
-            .insert(ChartAssertion {
+        let assertions = song.chart_assertions.entry(key).or_default();
+        let already_asserted = assertions.iter().any(|existing| {
+            existing.evidence_id.source_id == evidence_id.source_id
+                && existing.source_chart_id == observation.source_chart_id
+                && existing.product_versions == observation.product_versions
+                && existing.primary == observation.primary
+        });
+        if !already_asserted {
+            assertions.insert(ChartAssertion {
                 source_chart_id: observation.source_chart_id,
                 product_versions: observation.product_versions,
                 primary: observation.primary,
                 evidence_id: evidence_id.clone(),
             });
+        }
     }
+}
+
+fn prune_unreferenced_evidence(catalog: &mut Catalog) {
+    let mut referenced: BTreeSet<_> = catalog.latest_evidence.values().cloned().collect();
+    for song in catalog.songs.values() {
+        referenced.extend(
+            song.title_variants
+                .iter()
+                .map(|variant| variant.evidence_id.clone()),
+        );
+        referenced.extend(
+            song.chart_assertions
+                .values()
+                .flatten()
+                .map(|assertion| assertion.evidence_id.clone()),
+        );
+        referenced.extend(song.binding_evidence.values().flatten().cloned());
+    }
+    for binding in catalog.dqn_bindings.values() {
+        referenced.extend(binding.evidence_packs.keys().cloned());
+    }
+    catalog
+        .source_evidence
+        .retain(|evidence_id, _| referenced.contains(evidence_id));
 }
 
 fn exact_title_artist(title: &str, artist: &str) -> ExactTitleArtist {
