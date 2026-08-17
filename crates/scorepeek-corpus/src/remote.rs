@@ -3,9 +3,11 @@ use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt as _;
-use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey};
+use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey, S3CopyIfNotExists};
 use object_store::buffered::BufWriter;
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStore, ObjectStoreExt};
@@ -19,6 +21,7 @@ use super::*;
 const REMOTE_SCHEMA: &str = "scorepeek-corpus-s3-remote-v1";
 const REMOTE_SUMMARY_SCHEMA: &str = "scorepeek-corpus-remote-summary-v1";
 const TRANSFER_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+static REMOTE_STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -50,6 +53,12 @@ struct DownloadedObject {
     file: File,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RemotePublishDisposition {
+    Transferred,
+    Reused,
+}
+
 impl CorpusStore {
     /// Uploads and read-back verifies one local recording dataset generation.
     ///
@@ -68,7 +77,6 @@ impl CorpusStore {
         let mut transferred = 0_u64;
         let mut reused = 0_u64;
         for object in &generation.objects {
-            let local_path = self.dataset_object_path(object);
             let remote_path = target.object_path(&object.sha256)?;
             if runtime.block_on(remote_matches(
                 Arc::clone(&target.store),
@@ -79,20 +87,32 @@ impl CorpusStore {
                 reused += 1;
                 continue;
             }
-            runtime.block_on(upload_file(
+            let local_file = if object.kind == dataset::DatasetObjectKind::SourceMedia {
+                self.open_verified_source(&ContentRef {
+                    sha256: object.sha256.clone(),
+                    bytes: object.bytes,
+                })?
+            } else {
+                File::open(self.dataset_object_path(object))?
+            };
+            let mut post_upload_source = if object.kind == dataset::DatasetObjectKind::SourceMedia {
+                Some(local_file.try_clone()?)
+            } else {
+                None
+            };
+            let disposition = runtime.block_on(stage_and_publish_file(
                 Arc::clone(&target.store),
+                &target.staging_path(&object.sha256)?,
                 &remote_path,
-                &local_path,
-            ))?;
-            if !runtime.block_on(remote_matches(
-                Arc::clone(&target.store),
-                &remote_path,
+                local_file,
+                post_upload_source.take(),
                 &object.sha256,
                 object.bytes,
-            ))? {
-                return Err(remote_error("uploaded object was not readable"));
+            ))?;
+            match disposition {
+                RemotePublishDisposition::Transferred => transferred += 1,
+                RemotePublishDisposition::Reused => reused += 1,
             }
-            transferred += 1;
         }
 
         let generation_path = self
@@ -113,22 +133,22 @@ impl CorpusStore {
         ))? {
             reused += 1;
         } else {
-            runtime
-                .block_on(
-                    target
-                        .store
-                        .put(&remote_generation_path, generation_bytes.into()),
-                )
-                .map_err(|_| remote_error("generation upload failed"))?;
-            if !runtime.block_on(remote_matches(
-                Arc::clone(&target.store),
-                &remote_generation_path,
-                generation_sha256,
-                fs::metadata(&generation_path)?.len(),
-            ))? {
-                return Err(remote_error("uploaded generation was not readable"));
+            if digest_bytes(&generation_bytes) != generation_sha256 {
+                return Err(remote_error("local generation digest changed"));
             }
-            transferred += 1;
+            let generation_bytes_len = generation_bytes.len() as u64;
+            let disposition = runtime.block_on(stage_and_publish_bytes(
+                Arc::clone(&target.store),
+                &target.staging_path(generation_sha256)?,
+                &remote_generation_path,
+                generation_bytes,
+                generation_sha256,
+                generation_bytes_len,
+            ))?;
+            match disposition {
+                RemotePublishDisposition::Transferred => transferred += 1,
+                RemotePublishDisposition::Reused => reused += 1,
+            }
         }
         Ok(remote_summary(
             generation_sha256,
@@ -180,26 +200,20 @@ impl CorpusStore {
         let mut transferred = 0_u64;
         let mut reused = 0_u64;
         for object in &generation.objects {
-            let destination = self.dataset_object_path(object);
-            match destination.symlink_metadata() {
-                Ok(_) => {
-                    self.validate_dataset_object(object)?;
-                    reused += 1;
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    let temporary = download_verified(
-                        &runtime,
-                        Arc::clone(&target.store),
-                        &target.object_path(&object.sha256)?,
-                        &object.sha256,
-                        object.bytes,
-                        &self.root,
-                    )?;
-                    self.publish_downloaded_object(object, &temporary)?;
-                    transferred += 1;
-                }
-                Err(error) => return Err(error.into()),
+            if self.dataset_object_is_present(object)? {
+                reused += 1;
+                continue;
             }
+            let temporary = download_verified(
+                &runtime,
+                Arc::clone(&target.store),
+                &target.object_path(&object.sha256)?,
+                &object.sha256,
+                object.bytes,
+                &self.root,
+            )?;
+            self.publish_downloaded_object(object, &temporary)?;
+            transferred += 1;
         }
         self.publish_dataset_document("dataset-generations", generation_sha256, &generation_bytes)?;
         self.verify_recording_dataset(generation_sha256)?;
@@ -349,36 +363,35 @@ impl CorpusStore {
             if !seen.insert(destination.clone()) {
                 continue;
             }
-            match destination.symlink_metadata() {
-                Ok(_) => self.validate_dataset_object(object)?,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => match object.kind {
-                    dataset::DatasetObjectKind::SourceMedia => {
-                        content_count = content_count
-                            .checked_add(1)
-                            .ok_or(CorpusError::CapacityExceeded)?;
-                        content_bytes = content_bytes
-                            .checked_add(object.bytes)
-                            .ok_or(CorpusError::CapacityExceeded)?;
-                    }
-                    dataset::DatasetObjectKind::SourceManifest => {
-                        manifest_count = manifest_count
-                            .checked_add(1)
-                            .ok_or(CorpusError::CapacityExceeded)?;
-                        manifest_bytes = manifest_bytes
-                            .checked_add(object.bytes)
-                            .ok_or(CorpusError::CapacityExceeded)?;
-                    }
-                    dataset::DatasetObjectKind::CaptureProfile => {
-                        add_document_capacity(&mut documents, "profiles", object.bytes)?;
-                    }
-                    dataset::DatasetObjectKind::MediaProbe => {
-                        add_document_capacity(&mut documents, "probes", object.bytes)?;
-                    }
-                    dataset::DatasetObjectKind::RecordingManifest => {
-                        add_document_capacity(&mut documents, "recordings", object.bytes)?;
-                    }
-                },
-                Err(error) => return Err(error.into()),
+            if self.dataset_object_is_present(object)? {
+                continue;
+            }
+            match object.kind {
+                dataset::DatasetObjectKind::SourceMedia => {
+                    content_count = content_count
+                        .checked_add(1)
+                        .ok_or(CorpusError::CapacityExceeded)?;
+                    content_bytes = content_bytes
+                        .checked_add(object.bytes)
+                        .ok_or(CorpusError::CapacityExceeded)?;
+                }
+                dataset::DatasetObjectKind::SourceManifest => {
+                    manifest_count = manifest_count
+                        .checked_add(1)
+                        .ok_or(CorpusError::CapacityExceeded)?;
+                    manifest_bytes = manifest_bytes
+                        .checked_add(object.bytes)
+                        .ok_or(CorpusError::CapacityExceeded)?;
+                }
+                dataset::DatasetObjectKind::CaptureProfile => {
+                    add_document_capacity(&mut documents, "profiles", object.bytes)?;
+                }
+                dataset::DatasetObjectKind::MediaProbe => {
+                    add_document_capacity(&mut documents, "probes", object.bytes)?;
+                }
+                dataset::DatasetObjectKind::RecordingManifest => {
+                    add_document_capacity(&mut documents, "recordings", object.bytes)?;
+                }
             }
         }
         let generation_sha256 = digest_bytes(&canonical_json(generation)?);
@@ -462,7 +475,7 @@ impl CorpusStore {
         create_private_directory(&content_dir)?;
         create_private_directory(&manifest_dir)?;
         recover_staging(&content_dir, &manifest_dir)?;
-        if destination.exists() {
+        if self.dataset_object_is_present(object)? {
             self.validate_dataset_object(object)?;
             return Ok(());
         }
@@ -560,6 +573,20 @@ impl RemoteTarget {
         self.path(&format!("v1/generations/{sha256}.json"))
     }
 
+    fn staging_path(&self, sha256: &str) -> Result<ObjectPath, CorpusError> {
+        validate_sha256(sha256, "remote object sha256", ErrorContext::Request)?;
+        let sequence = REMOTE_STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        self.path(&format!(
+            "v1/staging/scorepeek-{}-{nanos}-{}-{sha256}",
+            std::process::id(),
+            sequence,
+        ))
+    }
+
     fn path(&self, suffix: &str) -> Result<ObjectPath, CorpusError> {
         let value = if self.prefix.is_empty() {
             suffix.to_owned()
@@ -582,6 +609,7 @@ fn load_remote(path: &Path) -> Result<RemoteTarget, CorpusError> {
     if let Some(endpoint) = config.endpoint {
         builder = builder.with_endpoint(endpoint);
     }
+    builder = builder.with_copy_if_not_exists(S3CopyIfNotExists::Multipart);
     let store = builder
         .build()
         .map_err(|_| remote_error("remote client configuration failed"))?;
@@ -661,20 +689,128 @@ fn remote_runtime() -> Result<tokio::runtime::Runtime, CorpusError> {
 async fn upload_file(
     store: Arc<dyn ObjectStore>,
     remote_path: &ObjectPath,
-    local_path: &Path,
+    source: File,
 ) -> Result<(), CorpusError> {
-    let mut source = tokio::fs::File::open(local_path)
-        .await
-        .map_err(|_| remote_error("local upload source could not be opened"))?;
+    let mut source = tokio::fs::File::from_std(source);
     let mut writer = BufWriter::with_capacity(store, remote_path.clone(), TRANSFER_BUFFER_BYTES);
     if copy(&mut source, &mut writer).await.is_err() {
-        let _ = writer.abort().await;
+        writer
+            .abort()
+            .await
+            .map_err(|_| remote_error("remote multipart cleanup failed"))?;
         return Err(remote_error("remote object upload failed"));
     }
     writer
         .shutdown()
         .await
         .map_err(|_| remote_error("remote object upload did not complete"))
+}
+
+async fn stage_and_publish_file(
+    store: Arc<dyn ObjectStore>,
+    staging_path: &ObjectPath,
+    final_path: &ObjectPath,
+    source: File,
+    mut post_upload_source: Option<File>,
+    expected_sha256: &str,
+    expected_bytes: u64,
+) -> Result<RemotePublishDisposition, CorpusError> {
+    let operation = async {
+        upload_file(Arc::clone(&store), staging_path, source).await?;
+        if let Some(source) = &mut post_upload_source {
+            verify_open_source(
+                source,
+                &ContentRef {
+                    sha256: expected_sha256.to_owned(),
+                    bytes: expected_bytes,
+                },
+            )?;
+        }
+        if !remote_matches(
+            Arc::clone(&store),
+            staging_path,
+            expected_sha256,
+            expected_bytes,
+        )
+        .await?
+        {
+            return Err(remote_error("staged remote object was not readable"));
+        }
+        let disposition = match store.copy_if_not_exists(staging_path, final_path).await {
+            Ok(()) => RemotePublishDisposition::Transferred,
+            Err(object_store::Error::AlreadyExists { .. }) => RemotePublishDisposition::Reused,
+            Err(_) => return Err(remote_error("remote object publication failed")),
+        };
+        if !remote_matches(
+            Arc::clone(&store),
+            final_path,
+            expected_sha256,
+            expected_bytes,
+        )
+        .await?
+        {
+            return Err(remote_error("published remote object was not readable"));
+        }
+        Ok(disposition)
+    }
+    .await;
+
+    let cleanup = match store.delete(staging_path).await {
+        Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+        Err(_) => Err(remote_error("remote staging cleanup failed")),
+    };
+    cleanup?;
+    operation
+}
+
+async fn stage_and_publish_bytes(
+    store: Arc<dyn ObjectStore>,
+    staging_path: &ObjectPath,
+    final_path: &ObjectPath,
+    bytes: Vec<u8>,
+    expected_sha256: &str,
+    expected_bytes: u64,
+) -> Result<RemotePublishDisposition, CorpusError> {
+    let operation = async {
+        store
+            .put(staging_path, bytes.into())
+            .await
+            .map_err(|_| remote_error("remote staging upload failed"))?;
+        if !remote_matches(
+            Arc::clone(&store),
+            staging_path,
+            expected_sha256,
+            expected_bytes,
+        )
+        .await?
+        {
+            return Err(remote_error("staged remote object was not readable"));
+        }
+        let disposition = match store.copy_if_not_exists(staging_path, final_path).await {
+            Ok(()) => RemotePublishDisposition::Transferred,
+            Err(object_store::Error::AlreadyExists { .. }) => RemotePublishDisposition::Reused,
+            Err(_) => return Err(remote_error("remote object publication failed")),
+        };
+        if !remote_matches(
+            Arc::clone(&store),
+            final_path,
+            expected_sha256,
+            expected_bytes,
+        )
+        .await?
+        {
+            return Err(remote_error("published remote object was not readable"));
+        }
+        Ok(disposition)
+    }
+    .await;
+
+    let cleanup = match store.delete(staging_path).await {
+        Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+        Err(_) => Err(remote_error("remote staging cleanup failed")),
+    };
+    cleanup?;
+    operation
 }
 
 async fn remote_matches(
@@ -1031,12 +1167,65 @@ mod tests {
         fs::write(&source, b"hello").unwrap();
         let expected_sha256 = digest_bytes(b"hello");
         let remote_path = ObjectPath::from("v1/object");
+        let staging_path = ObjectPath::from("v1/staging/first");
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let runtime = remote_runtime().unwrap();
 
-        runtime
-            .block_on(upload_file(Arc::clone(&store), &remote_path, &source))
-            .unwrap();
+        assert_eq!(
+            runtime
+                .block_on(stage_and_publish_file(
+                    Arc::clone(&store),
+                    &staging_path,
+                    &remote_path,
+                    File::open(&source).unwrap(),
+                    None,
+                    &expected_sha256,
+                    5,
+                ))
+                .unwrap(),
+            RemotePublishDisposition::Transferred
+        );
+        assert!(matches!(
+            runtime.block_on(store.head(&staging_path)),
+            Err(object_store::Error::NotFound { .. })
+        ));
+        assert_eq!(
+            runtime
+                .block_on(stage_and_publish_file(
+                    Arc::clone(&store),
+                    &ObjectPath::from("v1/staging/second"),
+                    &remote_path,
+                    File::open(&source).unwrap(),
+                    None,
+                    &expected_sha256,
+                    5,
+                ))
+                .unwrap(),
+            RemotePublishDisposition::Reused
+        );
+        let failed_staging = ObjectPath::from("v1/staging/failed");
+        let failed_final = ObjectPath::from("v1/failed-object");
+        assert!(
+            runtime
+                .block_on(stage_and_publish_file(
+                    Arc::clone(&store),
+                    &failed_staging,
+                    &failed_final,
+                    File::open(&source).unwrap(),
+                    None,
+                    &"0".repeat(64),
+                    5,
+                ))
+                .is_err()
+        );
+        assert!(matches!(
+            runtime.block_on(store.head(&failed_staging)),
+            Err(object_store::Error::NotFound { .. })
+        ));
+        assert!(matches!(
+            runtime.block_on(store.head(&failed_final)),
+            Err(object_store::Error::NotFound { .. })
+        ));
         assert!(
             runtime
                 .block_on(remote_matches(
@@ -1070,5 +1259,30 @@ mod tests {
                 .block_on(remote_matches(store, &remote_path, &expected_sha256, 5,))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn generation_bytes_use_conditional_publication_and_clean_staging() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let runtime = remote_runtime().unwrap();
+        let generation_path = ObjectPath::from("v1/generations/test.json");
+        let generation_staging = ObjectPath::from("v1/staging/generation");
+        assert_eq!(
+            runtime
+                .block_on(stage_and_publish_bytes(
+                    Arc::clone(&store),
+                    &generation_staging,
+                    &generation_path,
+                    b"generation".to_vec(),
+                    &digest_bytes(b"generation"),
+                    10,
+                ))
+                .unwrap(),
+            RemotePublishDisposition::Transferred
+        );
+        assert!(matches!(
+            runtime.block_on(store.head(&generation_staging)),
+            Err(object_store::Error::NotFound { .. })
+        ));
     }
 }

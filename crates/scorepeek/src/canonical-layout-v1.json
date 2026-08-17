@@ -1,0 +1,13 @@
+{
+  "schema": "scorepeek-canonical-layout-v1",
+  "canonical_frame_contract_id": "scorepeek-canonical-rgb8-1920x1080-v1",
+  "width": 1920,
+  "height": 1080,
+  "result": {
+    "presence": { "warm_pixels_min": 3000, "red_pixels_min": 12000 },
+    "header": { "x": 600, "y": 0, "width": 720, "height": 80 },
+    "title": { "x": 660, "y": 900, "width": 600, "height": 100 },
+    "metadata": { "x": 630, "y": 990, "width": 660, "height": 90 },
+    "current_score": { "x": 430, "y": 525, "width": 120, "height": 70 }
+  }
+}

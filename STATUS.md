@@ -6,8 +6,8 @@ is outside this checkpoint.
 
 ## Current milestone
 
-- Milestone: **M2 — observed-profile private corpus, synthetic renderer, and replay tooling**
-- State: **complete**
+- Milestone: **M4 bootstrap — offline canonical-frame and recognition spike**
+- State: **in progress**
 
 ## Included deliverables
 
@@ -154,12 +154,28 @@ is outside this checkpoint.
   profile from a versioned capture context plus the observed media contract;
   and publishes exact source, profile, probe, and recording bindings without
   selecting a baseline profile, normalizer, or layout. Reimporting identical
-  bytes and context is idempotent. Initial import copies and hash-verifies one
-  private staging snapshot, enumerates FFV1 packet PTS from that exact snapshot,
-  and publishes the observation only after its stream contract matches the
-  capture profile. A completed recording bundle is reused after
-  full-byte and typed-binding verification, without another media decode,
-  probe, or source copy.
+  bytes and context is idempotent. Copy import hash-verifies a private staging
+  snapshot; `--external` instead stores a private path locator outside dataset
+  identity and rehashes the referenced bytes on every use. Moving a file can be
+  repaired by reimporting identical bytes without changing source, recording,
+  or generation identity. A completed recording bundle is reused after
+  full-byte and typed-binding verification without another decode or packet
+  probe.
+- The first versioned domain normalizer for the exact FFV1/yuv420p/limited-range
+  BT.709 1920x1080 observed contract. Its registry entry admits only capture
+  profile `d5809dc9b2acc19837260053f4df59a454c9178ae2ac6a0602982effc9da4704`,
+  pinned FFmpeg digest
+  `9eac5b2b5076db5ff853a6fa0dcd6b8de7d0cac8481eadda6c47cd935825f1ee`,
+  time base 1/1000, and explicit BT.709 range/space/transfer/primaries. Unknown
+  or merely similar contracts fail closed.
+  Canonical extraction publishes the normalizer, manifest, and selected PPM
+  frames as one digest-bound private artifact.
+- A scorepeek-owned canonical result layout measured only after normalization,
+  with result header, title, metadata, and current-score ROIs. The initial pure
+  Rust screen spike classifies a result only when both fixed warm- and red-pixel
+  predicates pass; otherwise it returns `unknown`. The recognition constructor
+  requires valid normalizer/extraction evidence and matching file/pixel hashes,
+  so bare PPM and observed extraction cannot enter recognition directly.
 - Immutable recording-dataset generations that bind every imported recording
   to five typed byte roles and revalidate their canonical manifest
   relationships as well as size and complete SHA-256. The generation digest is
@@ -167,8 +183,11 @@ is outside this checkpoint.
 - Explicit S3-compatible dataset push, pull, local verify, and remote verify
   commands in the offline corpus crate. Remote objects and generations use
   immutable content-addressed keys, objects precede generation publication,
-  existing bytes are fully downloaded and hashed before reuse, and no mutable
-  latest pointer or delete command exists. Remote configuration excludes
+  existing bytes are fully downloaded and hashed before reuse, and uploads go
+  to unique scorepeek-owned staging keys before full remote verification and
+  conditional server-side publication. Staging is deleted on success and every
+  failure; a changed external source cannot leave bytes at the final key. No
+  mutable latest pointer or delete command exists. Remote configuration excludes
   credentials and accepts production endpoints only as path-free HTTPS origins
   without userinfo, query, or fragment.
 - Dataset verification parses all five roles as canonical typed schemas and
@@ -189,11 +208,13 @@ is outside this checkpoint.
 
 ## Verified in this checkpoint
 
-- `mise run test`: passed on the development host, including all Rust library
-  and binary tests and repository checks.
+- `mise run check`, `cargo clippy --locked --workspace --all-targets -- -D
+  warnings`, and `cargo test --locked --workspace`: passed on the development
+  host. The current workspace run covered 60 `scorepeek` library tests, 12
+  binary tests, and 44 offline corpus tests.
 - `mise run catalog:schedule:systemd:verify`: passed without installing the
   release binary or user units.
-- `cargo test --locked -p scorepeek-corpus`: passed all 39 offline corpus
+- `cargo test --locked -p scorepeek-corpus`: passed all 42 offline corpus
   tests, including idempotent private ingest, fixture-ID conflict
   rejection, canonical source/complete-label binding, pre-mutation symlink
   rejection, canonical/private/idempotent complete-label authoring with owned
@@ -214,6 +235,11 @@ is outside this checkpoint.
   and marker-gated crash recovery. A complete-recording test generated and
   imported synthetic Matroska, repeated the import idempotently, sealed and
   verified its five-role generation, and compared stored source bytes exactly.
+  A separate external-source regression sealed without `source.media`, failed
+  after its recording moved, rebound the locator by reimporting identical
+  bytes, and then verified the unchanged generation. Invalid media leaves no
+  locator, and a verified open source handle is not redirected by a path rename
+  while in-place mutation is detected by its post-consumption hash.
   An in-memory object-store test exercised streaming upload, full-byte remote
   reuse verification, staging cleanup, bounded download, and same-size corrupt
   object rejection.
@@ -230,22 +256,33 @@ is outside this checkpoint.
   part-upload, and complete-multipart operations, reused all six objects on a
   second push, remotely verified every byte, pulled to an empty store, and
   reproduced byte-identical source media.
-- An isolated real OBS/vkcapture recording gate imported the private
+  This established mock-S3 evidence was not rerun for the current offline
+  recognition change, as requested.
+- An isolated real OBS/vkcapture gate registered the private
   14,785,693,017-byte Matroska/FFV1 recording at source SHA-256
-  `53d4745e22e078db9b343896d17c0a63781afada1a664323fc0b12bab563c697`.
-  The destructive v4 importer indexed 27,499 FFV1 packet PTS from the
-  hash-verified staging source and completed in 23.49 seconds;
-  an identical reimport reused the bound probe and source without FFprobe or
-  another copy, returned the same summary, and completed in 12.81
-  seconds using only full-byte and typed-bundle verification. Dataset seal and
-  local verify completed in 6.39 and 6.40 seconds and produced the v4
-  one-recording, five-object generation at
-  `2b70e816fcdfb8bdda73e8a3ebcfb714220d22811516cd35331614745d575c5e`.
-  Two real frames at decode indexes 0 and 2 were extracted only after actual
-  decoded PTS matched the packet probe. SHA-256 source and capture-profile
-  identities remained unchanged; the v4 probe and transitive generation
-  identities changed intentionally.
-  The isolated store was not pushed to S3 and is not a persistent corpus.
+  `53d4745e22e078db9b343896d17c0a63781afada1a664323fc0b12bab563c697`
+  through `--external`. The importer indexed 27,499 FFV1 packet PTS and bound
+  capture profile `d5809dc9b2acc19837260053f4df59a454c9178ae2ac6a0602982effc9da4704`
+  without creating `source.media`; the store occupied 1.2 MiB while logical
+  capacity and generation size retained all 14.8 GB. Seal and local full-hash
+  verification produced one-recording generation
+  `a85711a1fc183a916c3b8ab505744c6cd969ae270efb53b31c774aff72d9c11e`.
+- The same gate normalized selected frames with artifact
+  `0441099011fdd09d372d6c9b5e18d6c4f2da2809a653e01f8ccb55756d8658cf`.
+  A separately invoked explicit FFmpeg transform produced the same file SHA-256
+  for the representative result frame. Visual inspection covered mode select,
+  music select, gameplay, result, failure overlay, transition, title,
+  metadata, and score ROIs. Four stable result samples passed both committed
+  result predicates; mode select, music select, gameplay, and two transitions
+  returned `unknown`. After the independent review fix, the representative
+  result was extracted again by hashing one source handle before and after
+  FFmpeg consumption and reproduced extraction SHA-256
+  `d318ca61bc36c1674484003008981df94d70f3fc02c0be9be6a21032e58b66fa`
+  and pixel SHA-256
+  `8e924f525ca2e52c8f9bf602d945a4e067d01629b2499b0ee487733214afb8aa`.
+  Recognition required that expected extraction digest and revalidated the
+  complete typed normalizer, extraction, and frame digest chain. These temporary private
+  artifacts were not added to the repository or pushed to S3.
 - An isolated synthetic CLI gate rendered three samples at manifest SHA-256
   `6a9aece0138816c972476d366df62cb4512b4488a178aedea86911133f80a2d0`.
   The first generated label and RGB8 crop were inspected together after a
@@ -299,24 +336,26 @@ is outside this checkpoint.
 
 ## Unverified and target-only boundaries
 
-- Real media extraction, canonical-frame production, shared-layout measurement,
-  replay execution,
-  production synthetic glyph/style coverage, catalog-update recognition
-  replay, OCR model, capture backend, field recognizer, event daemon, and the
-  integrated live flow remain unvalidated.
-- The `ObservedFrame`/domain-normalizer/`CanonicalFrame` runtime boundary, OCR
-  preprocessor, model-bundle promotion, and last-known-good model rollback
-  remain unimplemented and unvalidated. Corpus metadata and split-contract
-  behavior are synthetically verified but have not been exercised with real
-  capture data.
+- The first real normalizer, canonical-frame production, shared result ROIs,
+  and result-screen predicate are only an offline single-recording spike. The
+  current thresholds have no labelled holdout, profile-disjoint evidence, or
+  support claim. Music-select layout, OCR preprocessing/model/export, field
+  recognizers, replay execution, catalog-update recognition replay, event
+  daemon, and the integrated live flow remain unvalidated.
+- The live `ObservedFrame`/domain-normalizer/`CanonicalFrame` runtime boundary,
+  model-bundle promotion, and last-known-good model rollback remain
+  unimplemented. Recognition accepts only digest-bound offline canonical
+  extraction artifacts; it has no direct observed-frame input.
 - The persistent systemd installer's custom unit-path linking, timer enablement,
   and unified disable path were reviewed but not deployed to the user's actual
   configuration. Only the non-persistent transient user-manager path was run.
 - Bazzite Portal, Gamescope, OBS, GPU, lifecycle, performance, and soak gates
   remain target-machine-only and unrun.
 - One real OBS/vkcapture game recording has passed isolated import, reimport,
-  seal, and local verification. It has not been retained in an operator-owned
-  durable corpus or pushed to S3. S3-compatible push, multipart, reuse, remote
+  seal, local verification, canonical extraction, visual ROI inspection, and
+  result-screen classification. The original file is the external dataset root;
+  the temporary locator store and derived artifacts are not a durable
+  operator-owned corpus and were not pushed to S3. S3-compatible push, multipart, reuse, remote
   verification, and pull have been verified against the local rclone server,
   not a real private bucket. Live credential, provider-specific addressing,
   TLS, bucket lifecycle, and provider behavior remain an explicit external
@@ -341,23 +380,27 @@ is outside this checkpoint.
 - Any new runtime, parser, capture, or training dependency requires user
   approval after version, license, alternatives, and host/bundle impact are
   presented.
+- The next field-recognition spike proposes offline Python 3.13,
+  PaddleOCR 3.7.0, PaddlePaddle CPU 3.3.1, and a pinned PP-OCRv6 small Japanese
+  recognition model. These remain unadded pending explicit approval; they do
+  not enter the Rust game-session dependency graph.
 - External-source access and reuse must remain within `docs/sources.md`; a
   source requiring new permission cannot be enabled until that permission is
   obtained.
 
 ## Next executable task
 
-Choose an operator-owned durable private corpus root and private S3 remote,
-import the verified OBS/vkcapture recording there, then seal, push, and remotely
-verify its first persistent generation. After that, start **M3** with narrow
-Portal and Gamescope direct `ObservedFrame` vertical spikes on the Bazzite
-target. Record each real observed contract and collect private calibration
-evidence without assigning a normalizer or layout at source ingest. Once the
-peer profiles are observable, continue M4 by defining the shared logical-game
-`CanonicalFrame`/layout artifact and calibrating one deterministic normalizer
-per profile to it. Do not select a captured route as a pixel reference, create
-route-local layouts, or measure canonical ROIs from raw extractions. Real media
-and frames remain external and private.
+After approval of the proposed offline OCR dependencies, run PP-OCRv6 small on
+the normalized result title and metadata crops, record exact preprocessing and
+model evidence, and use the current recording only as a vertical spike rather
+than a holdout. Then add the smallest Rust/ONNX parity path justified by that
+measurement. Do not recognize bare PPM or `ObservedFrame`, auto-download a
+runtime model, or treat the OBS profile and current thresholds as supported.
+
+S3 replication and another profile are intentionally deferred. When capture
+work resumes, start **M3** with narrow Portal and Gamescope direct observed
+profiles and calibrate each normalizer to the existing canonical layout without
+moving route-independent ROIs.
 
 ## Stable milestone map
 
@@ -369,7 +412,7 @@ and frames remain external and private.
 | M1.2 | Live acquisition and sync orchestration | complete |
 | M2 | Observed-profile private corpus, synthetic renderer, and replay tooling | complete |
 | M3 | Portal/Gamescope observed-frame profiles and calibration corpus | pending |
-| M4 | Shared canonical layout, domain normalization, OCR training/export, and parity | pending |
+| M4 | Shared canonical layout, domain normalization, OCR training/export, and parity | in progress |
 | M5 | Supported capture-profile evaluation and default selection | pending |
 | M6 | Fail-closed field recognition and cross-field validation | pending |
 | M7 | Deterministic session, versioned events, and NDJSON daemon | pending |

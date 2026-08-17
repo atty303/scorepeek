@@ -128,6 +128,26 @@ impl CorpusStore {
         )
     }
 
+    /// Imports one complete recording without copying its media bytes into the corpus store.
+    ///
+    /// The store publishes a private local locator while dataset identity remains the source
+    /// SHA-256. Every later use revalidates the external file's complete bytes.
+    ///
+    /// # Errors
+    /// Returns an error if the external path is not canonicalizable, the source is mutable by
+    /// other users, its bytes change, or any bound private artifact cannot be published.
+    pub fn import_external_recording(
+        &self,
+        recording_path: impl AsRef<Path>,
+        capture_context_path: impl AsRef<Path>,
+    ) -> Result<RecordingImportSummary, CorpusError> {
+        self.import_external_recording_with(
+            recording_path.as_ref(),
+            capture_context_path.as_ref(),
+            media::inspect_recording_file,
+        )
+    }
+
     fn import_recording_with(
         &self,
         recording_path: &Path,
@@ -177,7 +197,104 @@ impl CorpusStore {
                 Ok(observation)
             },
         )?;
+        self.complete_recording_import(
+            expected_sha256,
+            profile_sha256,
+            &source_manifest,
+            observation,
+        )
+    }
+
+    fn import_external_recording_with(
+        &self,
+        recording_path: &Path,
+        capture_context_path: &Path,
+        inspect_recording: impl FnOnce(&mut File) -> Result<media::RawMediaObservation, CorpusError>,
+    ) -> Result<RecordingImportSummary, CorpusError> {
+        validate_source_file(recording_path)?;
+        let context_bytes = read_bounded_regular(
+            capture_context_path,
+            MAX_REQUEST_BYTES,
+            ErrorContext::Request,
+        )?;
+        let context: CaptureContext = serde_json::from_slice(&context_bytes)?;
+        context.validate()?;
+
+        let canonical_path = fs::canonicalize(recording_path)?;
+        let mut source_file = File::open(&canonical_path)?;
+        let (expected_sha256, source_bytes) = digest_open_file(&mut source_file, MAX_SOURCE_BYTES)?;
+        let source = ContentRef {
+            sha256: expected_sha256.clone(),
+            bytes: source_bytes,
+        };
+        validate_external_source_file(&canonical_path, &source, false)?;
+        if self.recording_manifest_exists(&expected_sha256)? {
+            self.register_external_source(&canonical_path, &source)?;
+            return self
+                .reuse_recording_import(&expected_sha256, &context)?
+                .ok_or_else(|| {
+                    CorpusError::InvalidRequest(
+                        "recording manifest disappeared during external import".to_owned(),
+                    )
+                });
+        }
+
+        let observation = inspect_recording(&mut source_file)?;
+        verify_open_source(&mut source_file, &source)?;
+        let profile = CaptureProfile {
+            schema: CAPTURE_PROFILE_SCHEMA.to_owned(),
+            context,
+            observed: observation.observed.clone(),
+        };
+        profile.validate()?;
+        let profile_bytes = canonical_json(&profile)?;
+        let profile_sha256 = digest_bytes(&profile_bytes);
+        self.publish_dataset_document("profiles", &profile_sha256, &profile_bytes)?;
+
+        self.register_external_source(&canonical_path, &source)?;
+        let source_manifest = SourceManifest {
+            schema: SOURCE_MANIFEST_SCHEMA.to_owned(),
+            fixture_id: expected_sha256.clone(),
+            session_id: expected_sha256.clone(),
+            capture_profile_id: profile_sha256.clone(),
+            source,
+        };
+        source_manifest.validate()?;
+        let source_manifest_bytes = canonical_json(&source_manifest)?;
+        self.publish_named_dataset_document("manifests", &expected_sha256, &source_manifest_bytes)?;
+
+        self.complete_recording_import(
+            expected_sha256,
+            profile_sha256,
+            &source_manifest,
+            observation,
+        )
+    }
+
+    fn recording_manifest_exists(&self, recording_sha256: &str) -> Result<bool, CorpusError> {
+        let path = self
+            .root
+            .join("recordings")
+            .join(format!("{recording_sha256}.json"));
+        match path.symlink_metadata() {
+            Ok(metadata) if metadata.is_file() => Ok(true),
+            Ok(_) => Err(CorpusError::InvalidRequest(
+                "recording manifest is not a regular file".to_owned(),
+            )),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn complete_recording_import(
+        &self,
+        expected_sha256: String,
+        profile_sha256: String,
+        source_manifest: &SourceManifest,
+        observation: media::RawMediaObservation,
+    ) -> Result<RecordingImportSummary, CorpusError> {
         let source_summary = source_manifest.summary()?;
+        let observed = observation.observed.clone();
 
         let probe_staging = Builder::new()
             .prefix(".scorepeek-recording-probe-")
@@ -199,7 +316,7 @@ impl CorpusStore {
             &source_summary.source_manifest_sha256,
             &source_manifest.source,
             &profile_sha256,
-            &profile.observed,
+            &observed,
         )?;
         self.publish_dataset_document("probes", &probe_summary.media_probe_sha256, &probe_bytes)?;
 
@@ -425,6 +542,38 @@ impl CorpusStore {
         }
     }
 
+    pub(crate) fn readable_dataset_object_path(
+        &self,
+        object: &DatasetObject,
+    ) -> Result<PathBuf, CorpusError> {
+        if object.kind == DatasetObjectKind::SourceMedia {
+            return self.resolve_source_path(&ContentRef {
+                sha256: object.sha256.clone(),
+                bytes: object.bytes,
+            });
+        }
+        Ok(self.dataset_object_path(object))
+    }
+
+    pub(crate) fn dataset_object_is_present(
+        &self,
+        object: &DatasetObject,
+    ) -> Result<bool, CorpusError> {
+        let path = if object.kind == DatasetObjectKind::SourceMedia {
+            self.root.join("content").join(&object.sha256)
+        } else {
+            self.dataset_object_path(object)
+        };
+        match path.symlink_metadata() {
+            Ok(_) => {
+                self.validate_dataset_object(object)?;
+                Ok(true)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     fn recording_objects(
         &self,
         recording: &RecordingManifest,
@@ -466,7 +615,7 @@ impl CorpusStore {
                     bytes: declared_bytes,
                     recording_sha256: recording.recording_sha256.clone(),
                 };
-                let path = self.dataset_object_path(&object);
+                let path = self.readable_dataset_object_path(&object)?;
                 let metadata = path.symlink_metadata()?;
                 if !metadata.is_file() {
                     return Err(CorpusError::InvalidRequest(
@@ -544,7 +693,10 @@ impl CorpusStore {
         &self,
         object: &DatasetObject,
     ) -> Result<(), CorpusError> {
-        let path = self.dataset_object_path(object);
+        let path = self.readable_dataset_object_path(object)?;
+        if object.kind == DatasetObjectKind::SourceMedia {
+            return validate_object(&path, object);
+        }
         let parent = path.parent().ok_or_else(|| {
             CorpusError::InvalidRequest("dataset object has no parent directory".to_owned())
         })?;
@@ -1263,6 +1415,75 @@ mod tests {
         assert_reusable_source_bytes(&fixture);
         assert_typed_role_substitution_is_rejected(&fixture);
         assert_intermediate_symlink_is_rejected(&fixture);
+    }
+
+    #[test]
+    fn external_recording_import_seals_without_copying_source_bytes() {
+        let temporary = tempdir().unwrap();
+        let private = temporary.path().join("private");
+        fs::create_dir(&private).unwrap();
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+        let recording = private.join("complete-run.mkv");
+        create_test_recording(&recording, "320x180");
+        let context = private.join("capture-context.json");
+        write_test_context(&context, "external-obs-v1");
+        let store = CorpusStore::new(private.join("store"));
+
+        let imported = store
+            .import_external_recording_with(&recording, &context, media::inspect_recording_file)
+            .unwrap();
+        let content_directory = store.root.join("content").join(&imported.recording_sha256);
+        assert!(!content_directory.join(SOURCE_FILE).exists());
+        assert!(content_directory.join(EXTERNAL_SOURCE_FILE).is_file());
+        let generation = store.seal_recording_dataset("external-001").unwrap();
+        let source_object = store
+            .load_recording_generation(&generation.generation_sha256)
+            .unwrap()
+            .objects
+            .into_iter()
+            .find(|object| object.kind == DatasetObjectKind::SourceMedia)
+            .unwrap();
+        assert!(store.dataset_object_is_present(&source_object).unwrap());
+        assert_eq!(
+            store
+                .verify_recording_dataset(&generation.generation_sha256)
+                .unwrap(),
+            generation
+        );
+
+        let moved = private.join("moved.mkv");
+        fs::rename(&recording, &moved).unwrap();
+        assert!(
+            store
+                .verify_recording_dataset(&generation.generation_sha256)
+                .is_err()
+        );
+        let rebound = store.import_external_recording(&moved, &context).unwrap();
+        assert_eq!(rebound, imported);
+        store
+            .verify_recording_dataset(&generation.generation_sha256)
+            .unwrap();
+    }
+
+    #[test]
+    fn invalid_external_recording_does_not_publish_a_locator() {
+        let temporary = tempdir().unwrap();
+        let private = temporary.path().join("private");
+        fs::create_dir(&private).unwrap();
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+        let recording = private.join("not-media.mkv");
+        fs::write(&recording, b"not a Matroska recording").unwrap();
+        let context = private.join("capture-context.json");
+        write_test_context(&context, "external-invalid-v1");
+        let store = CorpusStore::new(private.join("store"));
+
+        assert!(
+            store
+                .import_external_recording(&recording, &context)
+                .is_err()
+        );
+        assert!(!store.root.join("content").exists());
+        assert!(!store.root.join("recordings").exists());
     }
 
     #[test]

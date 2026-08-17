@@ -66,6 +66,10 @@ only with the game UI geometry, canonical frame contract, or field contract;
 capture-route changes create a new profile or normalizer instead. An upstream
 implementation may inform where to investigate, but its code, coordinates,
 resources, and derived data do not enter the layout or its generation process.
+The initial layout may be measured from one exact profile only after its
+versioned normalizer has produced canonical frames. That profile is calibration
+evidence, not a pixel reference. Later peer profiles calibrate their own
+normalizers to the same layout rather than creating route-local coordinates.
 
 ### Catalog federation
 
@@ -108,6 +112,10 @@ RecognitionSession.process(snapshot) -> DomainEvent[]
 ```
 
 The canonical frame preserves RGB information shared by all field recognizers.
+Recognition constructors require the expected canonical-extraction digest and
+validate the complete typed normalizer artifact, canonical extraction manifest,
+frame bytes, and their digest bindings; a bare observed RGB frame is not
+accepted even when its dimensions happen to be 1920x1080.
 After layout-bound ROI extraction, OCR-specific grayscale, contrast, resize,
 padding, and tensor normalization belong to a versioned OCR preprocessor bound
 to the model. Training and Rust inference use the same preprocessing contract.

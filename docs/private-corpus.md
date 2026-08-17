@@ -41,11 +41,40 @@ a Windows VM as a reference. The importer publishes immutable source, capture
 profile, media-probe, and recording manifests. Reimporting the same recording
 and context is idempotent.
 
+`recording import` copies source bytes by default. Passing `--external` instead
+publishes a private local locator and leaves the recording at its canonical
+absolute path. The generation still binds only source SHA-256 and byte length;
+the path is never part of a manifest or remote object. Every consumer hashes
+the complete external file, and reimporting identical moved bytes updates only
+the locator.
+
 ```text
 mise run corpus:recording:import -- --store /absolute/private/store --capture-context /absolute/private/capture-context.json /absolute/recordings/complete-run.mkv
 mise run corpus:dataset:seal -- --store /absolute/private/store calibration-001
 mise run corpus:dataset:verify -- --store /absolute/private/store GENERATION_SHA256
 ```
+
+```text
+mise run corpus:recording:import -- --store /absolute/private/store --capture-context /absolute/private/capture-context.json --external /absolute/recordings/complete-run.mkv
+```
+
+An exact calibrated recording profile can be normalized into the fixed RGB8
+canvas without exposing observed pixels to a recognizer. Canonical extraction
+emits the normalizer artifact, canonical extraction manifest, and bound PPM
+frames together. The registry entry matches the capture-profile and FFmpeg
+digests, container, codec, pixel format, geometry, time base, and explicit color
+range/space/transfer/primaries. Unknown or merely similar profile contracts fail
+instead of selecting a nearby transform.
+
+```text
+mise run corpus:canonical:extract -- --store /absolute/private/store --output /absolute/private/canonical PROBE_MANIFEST REQUEST
+mise run recognition:inspect -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID
+```
+
+Recognition requires the extraction SHA returned by canonical extraction and
+validates `normalizer.json`, `manifest.json`, their typed canonical schemas and digest binding,
+and the selected PPM's file and pixel hashes before constructing a
+`CanonicalFrame`. A bare PPM or observed-frame extraction is rejected.
 
 The seal command includes every currently imported recording and writes a
 canonical `scorepeek-recording-dataset-generation-v1`. Its SHA-256, rather than

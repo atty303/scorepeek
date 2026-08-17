@@ -72,18 +72,31 @@ identityを優先する。固定credentialを使う必要がある場合も、�
 mise run corpus:recording:import -- --store /absolute/private/store --capture-context /absolute/private/capture-context.json /absolute/recordings/complete-run.mkv
 ```
 
+すでにdurableなlocal fileとして保持しており、storeへ大容量copyを作りたくない場合は
+`--external`を指定する。
+
+```text
+mise run corpus:recording:import -- --store /absolute/private/store --capture-context /absolute/private/capture-context.json --external /absolute/recordings/complete-run.mkv
+```
+
+このmodeはsource SHA-256とbytesをgeneration identityとして維持し、絶対pathだけをmode 0600の
+local locatorへ保存する。pathはgeneration、manifest、remote objectへ入らない。seal、verify、extract、
+replay、pushは利用時に外部fileの全byte hashを再検証する。fileが移動した場合は、同じbytesを新pathから
+再importするとlocatorだけを更新し、dataset identityは変わらない。外部fileはregularかつ
+group/world-writableであってはならず、read権限とdurabilityはoperatorが管理する。
+
 成功時の`recording_sha256`が録画byte identityである。同じ録画とcontextの再importは
-idempotentなので、成功したか不明な場合は同じコマンドを再実行できる。初回importは外側のsource
-SHA-256を確定し、private stagingへcopyしながら同じSHA-256を再確認したうえで、そのstaging snapshot
-だけをFFV1 video packet-orderのPTS probeへ渡す。stream contractもcapture profileと一致した場合だけsource
-bindingを公開する。したがって公開されるPTSは必ずhash-verified staging sourceのものであり、外側の
-pathname変更によってcopyのSHA-256または観測contractが食い違えばfail closedになる。完全なrecording
-bundleが同じsource SHA-256とcontextですでに存在する場合、
+idempotentなので、成功したか不明な場合は同じコマンドを再実行できる。copy modeの初回importは外側の
+source SHA-256を確定し、private stagingへcopyしながら同じSHA-256を再確認したうえで、そのstaging
+snapshotだけをFFV1 video packet-orderのPTS probeへ渡す。`--external`の初回importは一つのopen file
+handleをfull hashしてからcontractとpacket-orderを観測し、同じhandleの全byte SHA-256を再確認する。
+成功後にだけcanonical pathとsource SHA-256をprivate locatorへbindingするため、invalid mediaは
+孤立locatorを残さない。どちらもstream contractがcapture profileと一致した場合だけsource bindingを
+公開する。完全なrecording bundleが同じsource SHA-256とcontextですでに存在する場合、
 再importは入力と保存済みobjectの全byte hashおよびtyped bindingを検証し、保存済みprobeを再利用する。
 同じ録画を再びFFprobeへ通したり、storeへ再copyしたりしない。importはlocalだけで完結し、network
-uploadは行わない。元ファイルはstore内へbyte-identicalにコピーされるため、import成功後は外側の
-作業コピーを別途残す必要はない。ただしS3へのpushとremote verificationが終わるまでは削除しない
-運用を推奨する。
+uploadは行わない。copy modeではstore内の`source.media`、`--external`ではhash-bound locatorがsourceを
+解決する。後者では外側の録画fileそのものがdataset rootなので削除しない。
 
 高速probeはself-contained Matroska内の単一FFV1 video streamだけを受理し、他codecへ自動fallback
 しない。frame抽出時には選択した各decode indexの実decoded PTSをFFmpegから取得し、packet-order
@@ -93,12 +106,13 @@ probeと一致したframeだけを公開する。完全な全byte監査が必要
 transition、style、difficulty、失敗・中断経路が必要になったとき、またはcapture条件を変えた
 ときである。normalizerやOCR実装を更新しただけなら再録画しない。
 
-最初のcalibration setでは、PortalとGamescope directの各profileで、できるだけ同じgame設定と
-比較可能なplay sequenceを1本ずつ収録する。これは片方をpixel baselineにするためではなく、
-複数domainに共通するcanonical geometryを後から定義するための対応する観測を確保するためである。
-各録画には少なくとも起動・終了、安定したmusic-select、選曲やdifficulty/style変更、play、
-result、各画面間のtransition、recognition対象外のloadingまたはnegative stateを含める。
-clear/failやSP/DPなど、一度のplayで両立しない状態は別録画として追記してよい。
+最初のcalibration setは、利用可能なlossless profileをversioned normalizerで固定済み
+`CanonicalFrame`へ変換し、その出力から共通layoutとrecognition spikeを開始できる。このprofileは
+pixel correctness referenceやdefaultにはならない。Portal、Gamescopeまたは別OBS profileを後から
+追加するときは、それぞれを同じcanonical contract/layoutへ写すnormalizerを校正する。recognizerが
+raw `ObservedFrame`を直接受け取る経路は作らない。各録画には少なくとも起動・終了、安定した
+music-select、選曲やdifficulty/style変更、play、result、transition、loadingまたはnegative stateを
+含める。clear/failやSP/DPなど、一度のplayで両立しない状態は必要になった時点で追記してよい。
 
 capture routeのsupport gateで必要な反復やsoak recordingは、同じimport経路で追加generationへ
 含める。ただし最初から全gate分を撮り切る必要はない。まず各peer profileのobserved contractを
@@ -135,6 +149,11 @@ mise run corpus:dataset:remote-verify -- --store /absolute/private/store --remot
 remoteにはmutableな`latest`やdelete CLIを作らない。開発記録、model export record、replay suiteは
 使用した`generation_sha256`を明記する。
 
+pushするobjectはuniqueなscorepeek-owned remote staging keyへ先にuploadし、stagingの全byte hashと
+同じopen source handleのupload後hashを検証してから、content-addressed final keyへ条件付きで
+server-side publishする。final keyが競合した場合は既存全byteを再検証する。成功・失敗のどちらでも
+owned stagingを削除し、cleanupに失敗した操作は成功として扱わない。
+
 local storeとremote generationは、元録画だけでなくsource manifest、capture profile、media probe、
 recording manifestをそれぞれcanonical schemaとして再parseし、録画identity、source size、profile、
 probeの相互参照まで検証する。local storeはsource、各document class、dataset generationごとに
@@ -159,3 +178,18 @@ layout measurement、normalizer calibration、label、training/export、replay a
 再録画が必要なのは、保存済み録画に必要な観測が存在しない場合か、新しいcapture条件そのものを
 評価する場合だけである。ゲーム共通layoutの変更やnormalizer/OCRの更新は、まず既存generationを
 replayして評価する。
+
+現在のexact FFV1/yuv420p/limited-range BT.709 profileは、capture-profile digest、pinned FFmpeg
+binary digest、1920x1080、time base 1/1000、range/space/transfer/primariesを一つのregistry entryとして
+固定したversioned normalizerでcanonical RGB8へ変換できる。codecや解像度だけが似た別profileは
+このentryを再利用できない。
+
+```text
+mise run corpus:canonical:extract -- --store /absolute/private/store --output /absolute/private/canonical-frames /absolute/private/probe.json /absolute/private/extract-request.json
+mise run recognition:inspect -- --extraction /absolute/private/canonical-frames --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID
+```
+
+出力の`normalizer.json`、`manifest.json`、RGB8 PPMは同じartifact digestへbindingされる。未校正の
+pixel format、geometryまたはcolor contractは自動fallbackせず拒否する。recognition CLIはこれらの
+binding、canonical extraction時に返された期待SHA、選択frameのfile/pixel hashを検証してからだけ
+`CanonicalFrame`を構築し、bare PPMやobserved frame抽出を直接受理しない。

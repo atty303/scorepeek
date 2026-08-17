@@ -3,14 +3,17 @@
 ## 状態
 
 - 初回決定日: 2026-08-15
-- 最終更新日: 2026-08-17
+- 最終更新日: 2026-08-18
 - repository bootstrapとtarget inventory probe: 完了
 - M1.1 catalog contractとlocal federation core: 完了
 - M1.2 live acquisitionとsync orchestration: manual/scheduled syncまで完了
 - M2 observed-profile private corpus、synthetic renderer、label/replay tooling: 完了
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
-- capture、認識、OCR学習、event daemon: 未着手
-- Bazzite実機検証とprivate corpus収集: 着手（OBS/vkcapture実録画1本のisolated import、seal、verifyまで）
+- M4 offline canonical/recognition spike: 着手（OBS/vkcapture実録画からnormalizer、共通result layout、
+  fail-closed screen判定まで）
+- OCR学習/export、field認識、live capture、event daemon: 未着手
+- Bazzite実機検証とprivate corpus収集: 着手（OBS/vkcapture実録画1本のcopyless isolated
+  import、canonical変換、目視確認まで）
 
 現在commitに含まれるcheckpointは[`STATUS.md`](../STATUS.md)を参照する。この文書は
 stable milestoneの実装順序とrelease gateの原典である。長期的な判断理由は
@@ -62,6 +65,10 @@ field type、presence/absence predicate、許容alignmentを持ち、frameはそ
 参照する。capture profileはlayoutを所有しない。各normalizerはobserved geometryを同じlayoutへ写像する。
 game UI geometry、canonical frame contractまたはfield contractを変更した場合だけlayout versionを上げ、
 全fixture replayを要求する。
+
+初期layoutは、exact observed contractをversion固定normalizerでcanonicalへ変換できる一つのprofileから
+計測してよい。そのprofileはpixel referenceやdefault routeにはならない。後から追加するpeer profileは
+同じcanonical geometry/layoutへ写すnormalizerだけを校正し、route固有layoutを作らない。
 
 ### Recognition API
 
@@ -286,15 +293,17 @@ NV12、別color profileへ黙ってfallbackしない。
 4. **M2**: normalizer未確定のobserved sourceを保持するprivate corpus schema、元録画を再利用可能な
    dataset rootとして固定するimport/seal/S3-compatible transport、synthetic renderer、label/replay
    CLIを実装する。
-5. **M3**: PortalとGamescope directのObservedFrame adapterをvertical spikeとして実装し、Bazziteで
-   両routeの実observed contractと校正corpusを確立する。
-6. **M4**: game共通のcanonical frame/layout contract、各profileのdomain normalizer、OCR preprocessorを
-   実装し、shared alignment、PP-OCR fine-tune/exportおよびPython-to-Rust parity spikeを通す。
-7. **M5**: 条件付きOBS candidateを含むsupported profileのlifecycle/performanceを比較し、defaultを選ぶ。
-8. **M6**: screen、savable、play mode、difficulty/level、digits、title decoder、cross-field validationの順で
+5. **M4 bootstrap**: 利用可能なlossless recordingへ最初のversion固定normalizerを与え、その出力だけから
+   game共通canonical frame/layout、screen判定、OCR preprocessor/parityのoffline spikeを進める。
+6. **M3**: PortalとGamescope directのObservedFrame adapterをvertical spikeとして実装し、Bazziteで
+   両routeの実observed contractと校正corpusを確立する。M4 bootstrapのlayoutは移動しない。
+7. **M4 completion**: peer profileごとのnormalizerとshared alignmentを検証し、PP-OCR
+   fine-tune/exportおよびPython-to-Rust parity gateを完了する。
+8. **M5**: 条件付きOBS candidateを含むsupported profileのlifecycle/performanceを比較し、defaultを選ぶ。
+9. **M6**: screen、savable、play mode、difficulty/level、digits、title decoder、cross-field validationの順で
    field recognizerを追加する。
-9. **M7**: deterministic session、event schema、NDJSON daemonを実装する。
-10. **M8**: catalog update replay、full private holdout、Bazzite live flowをrelease gateへ統合する。
+10. **M7**: deterministic session、event schema、NDJSON daemonを実装する。
+11. **M8**: catalog update replay、full private holdout、Bazzite live flowをrelease gateへ統合する。
 
 新規runtime、training、parser、capture dependencyは、version、license、代替案、bundle/host影響を
 一括提示して承認を得た後にだけ追加する。

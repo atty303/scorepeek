@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use scorepeek::catalog::{CatalogSync, CatalogSyncError};
+use scorepeek::recognition::{self, CanonicalFrame};
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args_os().skip(1).collect();
@@ -25,6 +26,23 @@ fn run(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         [catalog, sync] if catalog == "catalog" && sync == "sync" => sync_catalog(),
+        [
+            recognition,
+            inspect,
+            extraction_flag,
+            extraction,
+            digest_flag,
+            digest,
+            frame_flag,
+            frame_id,
+        ] if recognition == "recognition"
+            && inspect == "inspect"
+            && extraction_flag == "--extraction"
+            && digest_flag == "--extraction-sha256"
+            && frame_flag == "--frame-id" =>
+        {
+            inspect_canonical_frame(extraction, digest, frame_id)
+        }
         [flag] if flag == "--help" || flag == "-h" => {
             print_usage();
             Ok(())
@@ -33,8 +51,30 @@ fn run(args: &[OsString]) -> Result<(), String> {
             println!("scorepeek {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        _ => Err("usage: scorepeek <doctor|catalog sync>".to_owned()),
+        _ => Err("usage: scorepeek <doctor|catalog sync|recognition inspect>".to_owned()),
     }
+}
+
+fn inspect_canonical_frame(
+    extraction: &OsStr,
+    extraction_sha256: &OsStr,
+    frame_id: &OsStr,
+) -> Result<(), String> {
+    let extraction_sha256 = extraction_sha256
+        .to_str()
+        .ok_or_else(|| "canonical extraction SHA-256 must be UTF-8".to_owned())?;
+    let frame_id = frame_id
+        .to_str()
+        .ok_or_else(|| "canonical frame ID must be UTF-8".to_owned())?;
+    let frame = CanonicalFrame::read_extraction(extraction, frame_id, extraction_sha256)
+        .map_err(|error| error.to_string())?;
+    let snapshot = recognition::inspect(&frame).map_err(|error| error.to_string())?;
+    println!(
+        "{}",
+        serde_json::to_string(&snapshot)
+            .map_err(|error| format!("recognition result encoding failed: {error}"))?
+    );
+    Ok(())
 }
 
 fn sync_catalog() -> Result<(), String> {
@@ -101,7 +141,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync",
+        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID",
         env!("CARGO_PKG_VERSION")
     );
 }

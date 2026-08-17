@@ -16,6 +16,10 @@ authoritative.
 - [ADR 0010: Preserve recordings as reusable dataset roots](0010-preserve-recordings-as-reusable-dataset-roots.md)
 - [ADR 0011: Index FFV1 recordings by packet order](0011-index-ffv1-recordings-by-packet-order.md)
   supersedes ADR 0010's decoded-frame probing method.
+- [ADR 0012: Allow path-backed private source objects](0012-allow-path-backed-private-source-objects.md)
+  supersedes ADR 0010's mandatory local source copy.
+- [ADR 0013: Bootstrap the shared layout from a normalized profile](0013-bootstrap-layout-from-a-normalized-profile.md)
+  supersedes ADR 0009's multi-profile-first sequencing requirement.
 
 ## Historical
 

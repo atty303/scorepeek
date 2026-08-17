@@ -3,7 +3,7 @@ use std::error::Error;
 use std::fmt;
 use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
@@ -15,7 +15,7 @@ mod dataset;
 mod media;
 mod remote;
 pub use dataset::{DatasetSummary, RecordingImportSummary};
-pub use media::{FrameExtractionSummary, MediaProbeSummary};
+pub use media::{CanonicalFrameExtractionSummary, FrameExtractionSummary, MediaProbeSummary};
 pub use remote::DatasetRemoteSummary;
 
 const INGEST_REQUEST_SCHEMA: &str = "scorepeek-private-corpus-ingest-v2";
@@ -50,6 +50,8 @@ const MAX_LABEL_BYTES: usize = 64 * 1024;
 const MAX_LABEL_OBJECTS: usize = 250_000;
 const MAX_LABEL_STORAGE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const SOURCE_FILE: &str = "source.media";
+const EXTERNAL_SOURCE_FILE: &str = "source.external.json";
+const EXTERNAL_SOURCE_SCHEMA: &str = "scorepeek-private-external-source-v1";
 const SOURCE_STAGING_PREFIX: &str = ".corpus-source-staging-";
 const MANIFEST_STAGING_PREFIX: &str = ".corpus-manifest-staging-";
 const GENERATION_STAGING_PREFIX: &str = ".corpus-generation-staging-";
@@ -171,6 +173,32 @@ impl IngestRequest {
 pub struct ContentRef {
     pub sha256: String,
     pub bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalSourceLocator {
+    schema: String,
+    source: ContentRef,
+    path: String,
+}
+
+impl ExternalSourceLocator {
+    fn validate(&self) -> Result<PathBuf, CorpusError> {
+        if self.schema != EXTERNAL_SOURCE_SCHEMA {
+            return Err(CorpusError::InvalidRequest(
+                "unsupported external source locator schema".to_owned(),
+            ));
+        }
+        self.source.validate(ErrorContext::Request)?;
+        let path = PathBuf::from(&self.path);
+        if !path.is_absolute() || self.path.is_empty() {
+            return Err(CorpusError::InvalidRequest(
+                "external source path must be absolute".to_owned(),
+            ));
+        }
+        Ok(path)
+    }
 }
 
 impl ContentRef {
@@ -338,6 +366,113 @@ impl CorpusStore {
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
+    }
+
+    fn register_external_source(
+        &self,
+        source_path: &Path,
+        source: &ContentRef,
+    ) -> Result<PathBuf, CorpusError> {
+        self.validate_root()?;
+        source.validate(ErrorContext::Request)?;
+        let canonical_path = fs::canonicalize(source_path)?;
+        validate_external_source_file(&canonical_path, source, true)?;
+        let path = canonical_path.to_str().ok_or_else(|| {
+            CorpusError::InvalidRequest("external source path must be UTF-8".to_owned())
+        })?;
+        let locator = ExternalSourceLocator {
+            schema: EXTERNAL_SOURCE_SCHEMA.to_owned(),
+            source: source.clone(),
+            path: path.to_owned(),
+        };
+        let locator_bytes = canonical_json(&locator)?;
+
+        preflight_managed_components(&self.root)?;
+        create_private_directory(&self.root)?;
+        let lock = open_store_lock(&self.root, true)?;
+        lock.lock()?;
+        preflight_managed_components(&self.root)?;
+        let content_dir = self.root.join("content");
+        let manifest_dir = self.root.join("manifests");
+        let label_dir = self.root.join("labels");
+        create_private_directory(&content_dir)?;
+        create_private_directory(&manifest_dir)?;
+        create_private_directory(&label_dir)?;
+        recover_staging(&content_dir, &manifest_dir)?;
+
+        let destination = content_dir.join(&source.sha256);
+        match destination.symlink_metadata() {
+            Ok(metadata) if metadata.is_dir() => {
+                let stored_media = destination.join(SOURCE_FILE);
+                if stored_media.exists() {
+                    let resolved = resolve_stored_source_path(&destination, source)?;
+                    drop(lock);
+                    return Ok(resolved);
+                }
+                let (existing, existing_path) = read_external_source_locator(&destination, source)?;
+                if validate_external_source_file(&existing_path, source, true).is_ok() {
+                    drop(lock);
+                    return Ok(existing_path);
+                }
+                validate_external_source_file(&canonical_path, source, true)?;
+                replace_atomic_file(
+                    &destination,
+                    &destination.join(EXTERNAL_SOURCE_FILE),
+                    &locator_bytes,
+                    SOURCE_STAGING_PREFIX,
+                )?;
+                sync_stored_source_and_parent(&destination, &content_dir)?;
+                let resolved = if existing == locator {
+                    canonical_path.clone()
+                } else {
+                    resolve_stored_source_path(&destination, source)?
+                };
+                drop(lock);
+                return Ok(resolved);
+            }
+            Ok(_) => {
+                return Err(CorpusError::InvalidRequest(
+                    "content-addressed destination is not a directory".to_owned(),
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+
+        ensure_capacity(&content_dir, source.bytes)?;
+        let staging = Builder::new()
+            .prefix(SOURCE_STAGING_PREFIX)
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir_in(&content_dir)?;
+        let locator_path = staging.path().join(EXTERNAL_SOURCE_FILE);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&locator_path)?;
+        file.write_all(&locator_bytes)?;
+        file.flush()?;
+        file.sync_all()?;
+        File::open(staging.path())?.sync_all()?;
+        let staging_path = staging.keep();
+        fs::rename(staging_path, &destination)?;
+        sync_stored_source_and_parent(&destination, &content_dir)?;
+        drop(lock);
+        Ok(canonical_path)
+    }
+
+    fn resolve_source_path(&self, source: &ContentRef) -> Result<PathBuf, CorpusError> {
+        resolve_stored_source_path(&self.root.join("content").join(&source.sha256), source)
+    }
+
+    fn open_verified_source(&self, source: &ContentRef) -> Result<File, CorpusError> {
+        let path = resolve_stored_source_path_unverified(
+            &self.root.join("content").join(&source.sha256),
+            source,
+        )?;
+        let mut file = File::open(path)?;
+        verify_open_source(&mut file, source)?;
+        Ok(file)
     }
 
     /// Copies immutable source media into the bounded private content store and binds an opaque
@@ -2030,16 +2165,10 @@ fn ensure_content_capacity(
                 "content store contains an unrecognized entry".to_owned(),
             ));
         }
-        let source = entry.path().join(SOURCE_FILE);
-        let metadata = source.symlink_metadata()?;
-        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_SOURCE_BYTES {
-            return Err(CorpusError::InvalidRequest(
-                "content store contains an invalid source object".to_owned(),
-            ));
-        }
+        let source_bytes = stored_source_logical_bytes(&entry.path(), &name)?;
         count = count.checked_add(1).ok_or(CorpusError::CapacityExceeded)?;
         bytes = bytes
-            .checked_add(metadata.len())
+            .checked_add(source_bytes)
             .ok_or(CorpusError::CapacityExceeded)?;
     }
     let new_count = count
@@ -2052,6 +2181,39 @@ fn ensure_content_capacity(
         return Err(CorpusError::CapacityExceeded);
     }
     Ok(())
+}
+
+fn stored_source_logical_bytes(
+    directory: &Path,
+    expected_sha256: &str,
+) -> Result<u64, CorpusError> {
+    validate_private_directory_mode(directory, ErrorContext::Request)?;
+    let source = directory.join(SOURCE_FILE);
+    match source.symlink_metadata() {
+        Ok(metadata)
+            if metadata.is_file() && metadata.len() > 0 && metadata.len() <= MAX_SOURCE_BYTES =>
+        {
+            return Ok(metadata.len());
+        }
+        Ok(_) => {
+            return Err(CorpusError::InvalidRequest(
+                "content store contains an invalid source object".to_owned(),
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let locator_path = directory.join(EXTERNAL_SOURCE_FILE);
+    validate_private_file_mode(&locator_path, ErrorContext::Request)?;
+    let bytes = read_bounded_regular(&locator_path, MAX_REQUEST_BYTES, ErrorContext::Request)?;
+    let locator: ExternalSourceLocator = serde_json::from_slice(&bytes)?;
+    locator.validate()?;
+    if locator.source.sha256 != expected_sha256 || canonical_json(&locator)? != bytes {
+        return Err(CorpusError::InvalidRequest(
+            "content store contains an invalid external source locator".to_owned(),
+        ));
+    }
+    Ok(locator.source.bytes)
 }
 
 fn ensure_manifest_capacity(manifest_dir: &Path, added_bytes: usize) -> Result<(), CorpusError> {
@@ -2217,6 +2379,23 @@ fn ensure_index_capacity(index_dir: &Path, added_bytes: usize) -> Result<(), Cor
 }
 
 fn validate_stored_source(directory: &Path, expected: &ContentRef) -> Result<(), CorpusError> {
+    resolve_stored_source_path(directory, expected).map(|_| ())
+}
+
+fn resolve_stored_source_path(
+    directory: &Path,
+    expected: &ContentRef,
+) -> Result<PathBuf, CorpusError> {
+    let path = resolve_stored_source_path_unverified(directory, expected)?;
+    let mut file = File::open(&path)?;
+    verify_open_source(&mut file, expected)?;
+    Ok(path)
+}
+
+fn resolve_stored_source_path_unverified(
+    directory: &Path,
+    expected: &ContentRef,
+) -> Result<PathBuf, CorpusError> {
     if !directory.symlink_metadata()?.is_dir() {
         return Err(CorpusError::InvalidRequest(
             "content-addressed destination is not a directory".to_owned(),
@@ -2224,18 +2403,83 @@ fn validate_stored_source(directory: &Path, expected: &ContentRef) -> Result<(),
     }
     validate_private_directory_mode(directory, ErrorContext::Request)?;
     let source = directory.join(SOURCE_FILE);
-    let metadata = source.symlink_metadata()?;
+    match source.symlink_metadata() {
+        Ok(metadata) => {
+            if !metadata.is_file() || metadata.len() != expected.bytes {
+                return Err(CorpusError::InvalidRequest(
+                    "stored source does not match its manifest".to_owned(),
+                ));
+            }
+            validate_private_file_mode(&source, ErrorContext::Request)?;
+            return Ok(source);
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let (_, path) = read_external_source_locator(directory, expected)?;
+    validate_external_source_file(&path, expected, false)?;
+    Ok(path)
+}
+
+fn verify_open_source(file: &mut File, expected: &ContentRef) -> Result<(), CorpusError> {
+    let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() != expected.bytes {
         return Err(CorpusError::InvalidRequest(
-            "stored source does not match its manifest".to_owned(),
+            "opened source does not match its content binding".to_owned(),
         ));
     }
-    if digest_regular_file(&source, MAX_SOURCE_BYTES)? != expected.sha256 {
+    if digest_open_file(file, MAX_SOURCE_BYTES)?.0 != expected.sha256 {
         return Err(CorpusError::InvalidRequest(
-            "stored source digest does not match its content-addressed path".to_owned(),
+            "opened source digest does not match its content binding".to_owned(),
         ));
     }
-    validate_private_file_mode(&source, ErrorContext::Request)?;
+    Ok(())
+}
+
+fn read_external_source_locator(
+    directory: &Path,
+    expected: &ContentRef,
+) -> Result<(ExternalSourceLocator, PathBuf), CorpusError> {
+    let locator_path = directory.join(EXTERNAL_SOURCE_FILE);
+    validate_private_file_mode(&locator_path, ErrorContext::Request)?;
+    let bytes = read_bounded_regular(&locator_path, MAX_REQUEST_BYTES, ErrorContext::Request)?;
+    let locator: ExternalSourceLocator = serde_json::from_slice(&bytes)?;
+    let path = locator.validate()?;
+    if locator.source != *expected || canonical_json(&locator)? != bytes {
+        return Err(CorpusError::InvalidRequest(
+            "external source locator is not canonical or content-bound".to_owned(),
+        ));
+    }
+    Ok((locator, path))
+}
+
+fn validate_external_source_file(
+    path: &Path,
+    expected: &ContentRef,
+    verify_digest: bool,
+) -> Result<(), CorpusError> {
+    if !path.is_absolute() || fs::canonicalize(path)? != path {
+        return Err(CorpusError::InvalidRequest(
+            "external source path must remain canonical".to_owned(),
+        ));
+    }
+    let metadata = path.symlink_metadata()?;
+    if !metadata.is_file() || metadata.len() != expected.bytes {
+        return Err(CorpusError::InvalidRequest(
+            "external source does not match its locator".to_owned(),
+        ));
+    }
+    if metadata.permissions().mode() & 0o022 != 0 {
+        return Err(CorpusError::InvalidRequest(
+            "external source must not be group- or world-writable".to_owned(),
+        ));
+    }
+    if verify_digest && digest_regular_file(path, MAX_SOURCE_BYTES)? != expected.sha256 {
+        return Err(CorpusError::InvalidRequest(
+            "external source digest does not match its locator".to_owned(),
+        ));
+    }
     Ok(())
 }
 
@@ -2246,15 +2490,28 @@ fn set_stored_source_permissions(directory: &Path) -> io::Result<()> {
             "stored source directory is not a directory",
         ));
     }
+    fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
     let source = directory.join(SOURCE_FILE);
-    if !source.symlink_metadata()?.is_file() {
-        return Err(io::Error::new(
+    match source.symlink_metadata() {
+        Ok(metadata) if metadata.is_file() => {
+            fs::set_permissions(source, fs::Permissions::from_mode(0o600))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let locator = directory.join(EXTERNAL_SOURCE_FILE);
+            if !locator.symlink_metadata()?.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stored source entry is not a regular file",
+                ));
+            }
+            fs::set_permissions(locator, fs::Permissions::from_mode(0o600))
+        }
+        Ok(_) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "stored source entry is not a regular file",
-        ));
+        )),
+        Err(error) => Err(error),
     }
-    fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
-    fs::set_permissions(source, fs::Permissions::from_mode(0o600))
 }
 
 fn write_atomic_file(
@@ -2279,8 +2536,39 @@ fn write_atomic_file(
     Ok(())
 }
 
+fn replace_atomic_file(
+    directory: &Path,
+    path: &Path,
+    bytes: &[u8],
+    staging_prefix: &str,
+) -> Result<(), CorpusError> {
+    let mut temporary = Builder::new()
+        .prefix(staging_prefix)
+        .permissions(fs::Permissions::from_mode(0o600))
+        .tempfile_in(directory)?;
+    temporary.write_all(bytes)?;
+    temporary.flush()?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    File::open(directory)?.sync_all()?;
+    Ok(())
+}
+
 fn sync_stored_source_and_parent(directory: &Path, content_dir: &Path) -> io::Result<()> {
-    File::open(directory.join(SOURCE_FILE))?.sync_all()?;
+    let source = directory.join(SOURCE_FILE);
+    match source.symlink_metadata() {
+        Ok(metadata) if metadata.is_file() => File::open(source)?.sync_all()?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            File::open(directory.join(EXTERNAL_SOURCE_FILE))?.sync_all()?;
+        }
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "stored source entry is not a regular file",
+            ));
+        }
+        Err(error) => return Err(error),
+    }
     File::open(directory)?.sync_all()?;
     File::open(content_dir)?.sync_all()
 }
@@ -2576,6 +2864,17 @@ fn digest_regular_file(path: &Path, maximum: u64) -> Result<String, CorpusError>
         ));
     }
     let mut file = File::open(path)?;
+    Ok(digest_open_file(&mut file, maximum)?.0)
+}
+
+fn digest_open_file(file: &mut File, maximum: u64) -> Result<(String, u64), CorpusError> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > maximum {
+        return Err(CorpusError::InvalidRequest(
+            "opened object is not a bounded regular file".to_owned(),
+        ));
+    }
+    file.seek(SeekFrom::Start(0))?;
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 16 * 1024];
     let mut bytes = 0_u64;
@@ -2594,7 +2893,13 @@ fn digest_regular_file(path: &Path, maximum: u64) -> Result<String, CorpusError>
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(encode_digest(hasher.finalize()))
+    if bytes != metadata.len() {
+        return Err(CorpusError::InvalidRequest(
+            "opened object size changed while hashing".to_owned(),
+        ));
+    }
+    file.seek(SeekFrom::Start(0))?;
+    Ok((encode_digest(hasher.finalize()), bytes))
 }
 
 fn canonical_json(value: &impl Serialize) -> Result<Vec<u8>, CorpusError> {
@@ -2729,8 +3034,9 @@ fn validate_source_binding(store: &CorpusStore, index: &ReplayIndex) -> Result<(
             "replay index does not match its stored source manifest".to_owned(),
         ));
     }
-    let destination = store.root.join("content").join(&manifest.source.sha256);
-    validate_stored_source(&destination, &manifest.source)
+    store
+        .resolve_source_path(&manifest.source)
+        .map(|_| ())
         .map_err(|_| CorpusError::InvalidReplay("stored source object is invalid".to_owned()))
 }
 
@@ -2881,15 +3187,15 @@ fn require_one_split<K: Ord>(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::fs::{self, File};
     use std::os::unix::fs::{PermissionsExt as _, symlink};
 
     use serde_json::json;
     use tempfile::tempdir;
 
     use super::{
-        CorpusError, CorpusSplit, CorpusStore, LABEL_STAGING_PREFIX, LabelShape, SourceManifest,
-        digest_bytes, render_synthetic_title_set,
+        ContentRef, CorpusError, CorpusSplit, CorpusStore, LABEL_STAGING_PREFIX, LabelShape,
+        SourceManifest, digest_bytes, render_synthetic_title_set, verify_open_source,
     };
 
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -2897,6 +3203,27 @@ mod tests {
     const C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
     const D: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
     const E: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+    #[test]
+    fn verified_open_source_is_not_reopened_by_path() {
+        let temporary = tempdir().unwrap();
+        let source_path = temporary.path().join("source.media");
+        let old_path = temporary.path().join("opened.media");
+        fs::write(&source_path, b"aaaa").unwrap();
+        let expected = ContentRef {
+            sha256: digest_bytes(b"aaaa"),
+            bytes: 4,
+        };
+        let mut source = File::open(&source_path).unwrap();
+        verify_open_source(&mut source, &expected).unwrap();
+
+        fs::rename(&source_path, &old_path).unwrap();
+        fs::write(&source_path, b"bbbb").unwrap();
+        verify_open_source(&mut source, &expected).unwrap();
+
+        fs::write(&old_path, b"cccc").unwrap();
+        assert!(verify_open_source(&mut source, &expected).is_err());
+    }
 
     #[test]
     fn ingest_is_private_content_addressed_and_idempotent() {

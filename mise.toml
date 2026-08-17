@@ -170,6 +170,22 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek-corpus -- media extract "$@"
 '''
 
+[tasks."corpus:canonical:extract"]
+description = "Normalize an explicit private frame selection into canonical RGB8"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- canonical extract "$@"
+'''
+
+[tasks."recognition:inspect"]
+description = "Inspect one normalized canonical frame with the shared layout"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- recognition inspect "$@"
+'''
+
 [tasks."corpus:synthetic:render"]
 description = "Render a deterministic catalog-independent synthetic title set"
 run = '''

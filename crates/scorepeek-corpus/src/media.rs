@@ -11,6 +11,16 @@ const PROBE_SUMMARY_SCHEMA: &str = "scorepeek-private-media-probe-summary-v4";
 const EXTRACT_REQUEST_SCHEMA: &str = "scorepeek-private-observed-frame-extraction-v2";
 const EXTRACT_SCHEMA: &str = "scorepeek-private-observed-frame-extraction-manifest-v2";
 const EXTRACT_SUMMARY_SCHEMA: &str = "scorepeek-private-observed-frame-extraction-summary-v2";
+const NORMALIZER_SCHEMA: &str = "scorepeek-domain-normalizer-artifact-v1";
+const CANONICAL_EXTRACT_SCHEMA: &str = "scorepeek-private-canonical-frame-extraction-v1";
+const CANONICAL_EXTRACT_SUMMARY_SCHEMA: &str =
+    "scorepeek-private-canonical-frame-extraction-summary-v1";
+const CANONICAL_NORMALIZER_IMPLEMENTATION: &str = "ffmpeg-swscale-bt709-limited-to-rgb24-v1";
+const CANONICAL_NORMALIZER_FILTER: &str = "scale=1920:1080:flags=bitexact:in_color_matrix=bt709:out_color_matrix=bt709:in_range=tv:out_range=pc,format=rgb24";
+const CALIBRATED_CAPTURE_PROFILE_SHA256: &str =
+    "d5809dc9b2acc19837260053f4df59a454c9178ae2ac6a0602982effc9da4704";
+const CALIBRATED_FFMPEG_SHA256: &str =
+    "9eac5b2b5076db5ff853a6fa0dcd6b8de7d0cac8481eadda6c47cd935825f1ee";
 const FFMPEG_VERSION: &str = "8.1.2";
 const MAX_MEDIA_JSON: usize = 64 * 1024 * 1024;
 const MAX_STDOUT: usize = 128 * 1024 * 1024;
@@ -156,6 +166,44 @@ pub struct FrameExtractionSummary {
     pub extracted_bytes: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CanonicalFrameExtractionSummary {
+    pub schema: String,
+    pub fixture_id: String,
+    pub normalizer_artifact_sha256: String,
+    pub frame_extraction_sha256: String,
+    pub frame_count: u64,
+    pub extracted_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DomainNormalizerArtifact {
+    schema: String,
+    capture_profile_id: String,
+    observed: ObservedMediaContract,
+    canonical_frame_contract_id: String,
+    implementation: String,
+    ffmpeg_sha256: String,
+    filter: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalFrameExtractionManifest {
+    schema: String,
+    fixture_id: String,
+    source_manifest_sha256: String,
+    media_probe_sha256: String,
+    capture_profile_id: String,
+    normalizer_artifact_sha256: String,
+    canonical_frame_contract_id: String,
+    extractor: ExtractorIdentity,
+    source_time_base: TimeBase,
+    video_stream_index: u32,
+    frames: Vec<ExtractedFrame>,
+}
+
 #[derive(Deserialize)]
 struct FfprobeOutput {
     #[serde(default)]
@@ -186,8 +234,15 @@ struct FfprobePacket {
 }
 
 pub(crate) fn inspect_recording(path: &Path) -> Result<RawMediaObservation, CorpusError> {
+    let mut source = File::open(path)?;
+    inspect_recording_file(&mut source)
+}
+
+pub(crate) fn inspect_recording_file(
+    source: &mut File,
+) -> Result<RawMediaObservation, CorpusError> {
     let toolchain = identify_toolchain()?;
-    let probed = probe_recording_packets(path)?;
+    let probed = probe_recording_packets(source)?;
     let stream = unique_video_stream(&probed.streams)?;
     let (observed, video_stream_index) = observed_stream_contract(stream)?;
     validate_packet_index_contract(&observed)?;
@@ -222,8 +277,15 @@ pub(crate) fn inspect_recording(path: &Path) -> Result<RawMediaObservation, Corp
 pub(crate) fn inspect_recording_contract(
     path: &Path,
 ) -> Result<ObservedMediaContract, CorpusError> {
+    let mut source = File::open(path)?;
+    inspect_recording_contract_file(&mut source)
+}
+
+fn inspect_recording_contract_file(
+    source: &mut File,
+) -> Result<ObservedMediaContract, CorpusError> {
     let probed = probe_recording(
-        path,
+        source,
         "stream=index,codec_type,codec_name,pix_fmt,width,height,time_base,color_range,color_space,color_transfer,color_primaries",
     )?;
     let stream = unique_video_stream(&probed.streams)?;
@@ -232,8 +294,9 @@ pub(crate) fn inspect_recording_contract(
     Ok(observed)
 }
 
-fn probe_recording_packets(path: &Path) -> Result<FfprobeOutput, CorpusError> {
-    validate_input_format(path)?;
+fn probe_recording_packets(source: &mut File) -> Result<FfprobeOutput, CorpusError> {
+    validate_input_file(source)?;
+    source.seek(SeekFrom::Start(0))?;
     let output = run_command(
         &find_executable("ffprobe")?,
         &os_args(
@@ -256,7 +319,7 @@ fn probe_recording_packets(path: &Path) -> Result<FfprobeOutput, CorpusError> {
             ],
             None,
         ),
-        Some(File::open(path)?),
+        Some(source.try_clone()?),
         MAX_STDOUT,
         TOOL_TIMEOUT,
     )?;
@@ -264,8 +327,9 @@ fn probe_recording_packets(path: &Path) -> Result<FfprobeOutput, CorpusError> {
         .map_err(|_| invalid_media("ffprobe returned invalid bounded packet JSON"))
 }
 
-fn probe_recording(path: &Path, show_entries: &str) -> Result<FfprobeOutput, CorpusError> {
-    validate_input_format(path)?;
+fn probe_recording(source: &mut File, show_entries: &str) -> Result<FfprobeOutput, CorpusError> {
+    validate_input_file(source)?;
+    source.seek(SeekFrom::Start(0))?;
     let output = run_command(
         &find_executable("ffprobe")?,
         &os_args(
@@ -285,7 +349,7 @@ fn probe_recording(path: &Path, show_entries: &str) -> Result<FfprobeOutput, Cor
             ],
             None,
         ),
-        Some(File::open(path)?),
+        Some(source.try_clone()?),
         MAX_STDOUT,
         TOOL_TIMEOUT,
     )?;
@@ -360,12 +424,9 @@ impl CorpusStore {
         validate_opaque_id(fixture_id, "fixture_id", ErrorContext::Request)?;
         validate_private_directory_mode(&self.root, ErrorContext::Request)?;
         let (source_manifest, source_manifest_sha256) = load_bound_source(self, fixture_id)?;
-        let source_path = self
-            .root
-            .join("content")
-            .join(&source_manifest.source.sha256)
-            .join(SOURCE_FILE);
-        let observation = inspect_recording(&source_path)?;
+        let mut source = self.open_verified_source(&source_manifest.source)?;
+        let observation = inspect_recording_file(&mut source)?;
+        verify_open_source(&mut source, &source_manifest.source)?;
         write_media_probe(
             fixture_id,
             source_manifest,
@@ -418,8 +479,15 @@ impl CorpusStore {
             ));
         }
 
-        let (staging, extracted, extracted_bytes) =
-            run_extraction(self, &probe, &request, &parent)?;
+        let (staging, extracted, extracted_bytes) = run_extraction(
+            self,
+            &probe,
+            &request,
+            &parent,
+            None,
+            probe.observed.width,
+            probe.observed.height,
+        )?;
         let parameters_sha256 = digest_bytes(&canonical_json(&request)?);
         let manifest = FrameExtractionManifest {
             schema: EXTRACT_SCHEMA.to_owned(),
@@ -455,6 +523,89 @@ impl CorpusStore {
         Ok(FrameExtractionSummary {
             schema: EXTRACT_SUMMARY_SCHEMA.to_owned(),
             fixture_id: manifest.fixture_id,
+            frame_extraction_sha256: manifest_digest,
+            frame_count: manifest.frames.len() as u64,
+            extracted_bytes,
+        })
+    }
+
+    /// Normalizes explicitly selected recording frames into the fixed canonical RGB8 contract.
+    ///
+    /// # Errors
+    /// Returns an error when the probe has no exact versioned normalizer, any source binding has
+    /// changed, or canonical frame publication cannot complete privately and durably.
+    pub fn extract_canonical_frames(
+        &self,
+        probe_path: impl AsRef<Path>,
+        request_path: impl AsRef<Path>,
+        output_directory: impl AsRef<Path>,
+    ) -> Result<CanonicalFrameExtractionSummary, CorpusError> {
+        self.validate_root()?;
+        let (probe, probe_digest) = read_probe(probe_path.as_ref())?;
+        let request = read_extraction_request(request_path.as_ref())?;
+        request.validate_against(&probe, &probe_digest)?;
+        let (current_source, current_source_digest) = load_bound_source(self, &probe.fixture_id)?;
+        validate_probe_source_binding(&probe, &current_source, &current_source_digest)?;
+        if identify_toolchain()? != probe.toolchain {
+            return Err(invalid_media(
+                "pinned media tool identity changed after probing",
+            ));
+        }
+        let normalizer = DomainNormalizerArtifact::for_probe(&probe)?;
+        let normalizer_bytes = canonical_json(&normalizer)?;
+        let normalizer_artifact_sha256 = digest_bytes(&normalizer_bytes);
+        let output = output_directory.as_ref();
+        let (parent, output_lock) = lock_output_parent(output)?;
+        let (staging, extracted, extracted_bytes) = run_extraction(
+            self,
+            &probe,
+            &request,
+            &parent,
+            Some(&normalizer.filter),
+            1_920,
+            1_080,
+        )?;
+        let parameters_sha256 = digest_bytes(&canonical_json(&request)?);
+        let manifest = CanonicalFrameExtractionManifest {
+            schema: CANONICAL_EXTRACT_SCHEMA.to_owned(),
+            fixture_id: request.fixture_id,
+            source_manifest_sha256: request.source_manifest_sha256,
+            media_probe_sha256: probe_digest.clone(),
+            capture_profile_id: probe.capture_profile_id,
+            normalizer_artifact_sha256: normalizer_artifact_sha256.clone(),
+            canonical_frame_contract_id: CANONICAL_FRAME_CONTRACT_ID.to_owned(),
+            extractor: ExtractorIdentity {
+                tool_id: "ffmpeg".to_owned(),
+                tool_version: FFMPEG_VERSION.to_owned(),
+                extractor_manifest_sha256: probe_digest,
+                parameters_sha256,
+            },
+            source_time_base: probe.observed.source_time_base,
+            video_stream_index: probe.video_stream_index,
+            frames: extracted,
+        };
+        manifest.validate()?;
+        let manifest_bytes = canonical_json(&manifest)?;
+        let manifest_digest = digest_bytes(&manifest_bytes);
+        write_atomic_file(
+            staging.path(),
+            &staging.path().join("normalizer.json"),
+            &normalizer_bytes,
+            OUTPUT_STAGING_PREFIX,
+        )?;
+        write_atomic_file(
+            staging.path(),
+            &staging.path().join("manifest.json"),
+            &manifest_bytes,
+            OUTPUT_STAGING_PREFIX,
+        )?;
+        File::open(staging.path())?.sync_all()?;
+        publish_extraction(staging.path(), output, &parent)?;
+        drop(output_lock);
+        Ok(CanonicalFrameExtractionSummary {
+            schema: CANONICAL_EXTRACT_SUMMARY_SCHEMA.to_owned(),
+            fixture_id: manifest.fixture_id,
+            normalizer_artifact_sha256,
             frame_extraction_sha256: manifest_digest,
             frame_count: manifest.frames.len() as u64,
             extracted_bytes,
@@ -698,14 +849,124 @@ impl FrameExtractionManifest {
     }
 }
 
+impl DomainNormalizerArtifact {
+    fn for_probe(probe: &MediaProbeManifest) -> Result<Self, CorpusError> {
+        let artifact = Self {
+            schema: NORMALIZER_SCHEMA.to_owned(),
+            capture_profile_id: probe.capture_profile_id.clone(),
+            observed: probe.observed.clone(),
+            canonical_frame_contract_id: CANONICAL_FRAME_CONTRACT_ID.to_owned(),
+            implementation: CANONICAL_NORMALIZER_IMPLEMENTATION.to_owned(),
+            ffmpeg_sha256: probe.toolchain.ffmpeg_sha256.clone(),
+            filter: CANONICAL_NORMALIZER_FILTER.to_owned(),
+        };
+        artifact.validate()?;
+        Ok(artifact)
+    }
+
+    fn validate(&self) -> Result<(), CorpusError> {
+        if self.schema != NORMALIZER_SCHEMA
+            || self.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID
+            || self.implementation != CANONICAL_NORMALIZER_IMPLEMENTATION
+            || self.filter != CANONICAL_NORMALIZER_FILTER
+        {
+            return Err(invalid_media("unsupported canonical normalizer artifact"));
+        }
+        validate_sha256(
+            &self.capture_profile_id,
+            "capture_profile_id",
+            ErrorContext::Replay,
+        )?;
+        validate_sha256(&self.ffmpeg_sha256, "ffmpeg_sha256", ErrorContext::Replay)?;
+        self.observed.validate()?;
+        if self.capture_profile_id != CALIBRATED_CAPTURE_PROFILE_SHA256
+            || self.ffmpeg_sha256 != CALIBRATED_FFMPEG_SHA256
+            || self.observed.input_format != INPUT_FORMAT
+            || self.observed.codec_name != "ffv1"
+            || self.observed.pixel_format != "yuv420p"
+            || self.observed.width != 1_920
+            || self.observed.height != 1_080
+            || self.observed.source_time_base.numerator != 1
+            || self.observed.source_time_base.denominator != 1_000
+            || self.observed.color_range.as_deref() != Some("tv")
+            || self.observed.color_space.as_deref() != Some("bt709")
+            || self.observed.color_transfer.as_deref() != Some("bt709")
+            || self.observed.color_primaries.as_deref() != Some("bt709")
+        {
+            return Err(invalid_media(
+                "observed profile has no calibrated canonical normalizer",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl CanonicalFrameExtractionManifest {
+    fn validate(&self) -> Result<(), CorpusError> {
+        if self.schema != CANONICAL_EXTRACT_SCHEMA
+            || self.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID
+        {
+            return Err(invalid_media(
+                "unsupported canonical frame extraction manifest",
+            ));
+        }
+        validate_opaque_id(&self.fixture_id, "fixture_id", ErrorContext::Replay)?;
+        for (name, value) in [
+            ("source_manifest_sha256", &self.source_manifest_sha256),
+            ("media_probe_sha256", &self.media_probe_sha256),
+            (
+                "normalizer_artifact_sha256",
+                &self.normalizer_artifact_sha256,
+            ),
+        ] {
+            validate_sha256(value, name, ErrorContext::Replay)?;
+        }
+        validate_token(
+            &self.capture_profile_id,
+            "capture_profile_id",
+            ErrorContext::Replay,
+        )?;
+        self.extractor.validate()?;
+        self.source_time_base.validate()?;
+        if self.video_stream_index > 255
+            || self.frames.is_empty()
+            || self.frames.len() > MAX_EXTRACTED_FRAMES
+        {
+            return Err(invalid_media(
+                "canonical extraction stream or frame count is invalid",
+            ));
+        }
+        let mut previous = None;
+        let mut ids = BTreeSet::new();
+        for (index, frame) in self.frames.iter().enumerate() {
+            validate_opaque_id(&frame.frame_id, "frame_id", ErrorContext::Replay)?;
+            validate_sha256(&frame.frame_sha256, "frame_sha256", ErrorContext::Replay)?;
+            validate_sha256(&frame.file_sha256, "file_sha256", ErrorContext::Replay)?;
+            if frame.filename != format!("frame-{index:06}.ppm")
+                || !ids.insert(&frame.frame_id)
+                || previous.is_some_and(|value| value >= frame.decode_index)
+            {
+                return Err(invalid_media(
+                    "canonical extracted frame identity or order is invalid",
+                ));
+            }
+            previous = Some(frame.decode_index);
+        }
+        Ok(())
+    }
+}
+
 fn run_extraction(
     store: &CorpusStore,
     probe: &MediaProbeManifest,
     request: &FrameExtractionRequest,
     parent: &Path,
+    normalization_filter: Option<&str>,
+    output_width: u32,
+    output_height: u32,
 ) -> Result<(tempfile::TempDir, Vec<ExtractedFrame>, u64), CorpusError> {
-    let pixel_bytes = u64::from(probe.observed.width)
-        .checked_mul(u64::from(probe.observed.height))
+    let pixel_bytes = u64::from(output_width)
+        .checked_mul(u64::from(output_height))
         .and_then(|value| value.checked_mul(3))
         .ok_or(CorpusError::CapacityExceeded)?;
     let extracted_bytes = pixel_bytes
@@ -725,12 +986,12 @@ fn run_extraction(
         .map(|frame| format!("eq(n\\,{})", frame.decode_index))
         .collect::<Vec<_>>()
         .join("+");
-    let source_path = store
-        .root
-        .join("content")
-        .join(&probe.source.sha256)
-        .join(SOURCE_FILE);
-    validate_input_format(&source_path)?;
+    let filter = normalization_filter.map_or_else(
+        || format!("select={select},showinfo"),
+        |normalizer| format!("select={select},{normalizer},showinfo"),
+    );
+    let mut source = store.open_verified_source(&probe.source)?;
+    validate_input_file(&mut source)?;
     let mut args = os_args(
         &[
             "-v",
@@ -750,7 +1011,7 @@ fn run_extraction(
             "-map",
             &format!("0:{}", probe.video_stream_index),
             "-vf",
-            &format!("select={select},showinfo"),
+            &filter,
             "-fps_mode",
             "passthrough",
             "-pix_fmt",
@@ -765,10 +1026,11 @@ fn run_extraction(
     let execution = run_command_capture(
         &find_executable("ffmpeg")?,
         &args,
-        Some(File::open(source_path)?),
+        Some(source.try_clone()?),
         1024,
         TOOL_TIMEOUT,
     )?;
+    verify_open_source(&mut source, &probe.source)?;
     validate_selected_frame_pts(&execution.stderr, &request.frames)?;
 
     let mut extracted = Vec::with_capacity(request.frames.len());
@@ -781,12 +1043,7 @@ fn run_extraction(
             ));
         }
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-        let (pixels, bytes) = validate_ppm(
-            &path,
-            probe.observed.width,
-            probe.observed.height,
-            pixel_bytes,
-        )?;
+        let (pixels, bytes) = validate_ppm(&path, output_width, output_height, pixel_bytes)?;
         extracted.push(ExtractedFrame {
             frame_id: selected.frame_id.clone(),
             source_pts: selected.source_pts,
@@ -856,10 +1113,7 @@ fn load_bound_source(
             "stored source manifest is not canonical or fixture-bound",
         ));
     }
-    validate_stored_source(
-        &store.root.join("content").join(&manifest.source.sha256),
-        &manifest.source,
-    )?;
+    store.resolve_source_path(&manifest.source)?;
     Ok((manifest, digest_bytes(&bytes)))
 }
 
@@ -924,8 +1178,14 @@ fn parse_time_base(value: &str) -> Result<TimeBase, CorpusError> {
     Ok(time_base)
 }
 
+#[cfg(test)]
 fn validate_input_format(path: &Path) -> Result<(), CorpusError> {
     let mut source = File::open(path)?;
+    validate_input_file(&mut source)
+}
+
+fn validate_input_file(source: &mut File) -> Result<(), CorpusError> {
+    source.seek(SeekFrom::Start(0))?;
     let mut magic = [0_u8; 4];
     source
         .read_exact(&mut magic)
@@ -935,6 +1195,7 @@ fn validate_input_format(path: &Path) -> Result<(), CorpusError> {
             "stored media is not an approved self-contained Matroska container",
         ));
     }
+    source.seek(SeekFrom::Start(0))?;
     Ok(())
 }
 
@@ -1709,6 +1970,17 @@ mod tests {
                 .is_err()
         );
 
+        probe.observed.color_transfer = Some("bt709".to_owned());
+        probe.observed.color_primaries = Some("bt709".to_owned());
+        let (calibrated_probe_path, calibrated_request_path) =
+            write_calibrated_probe_and_request(&private, &probe);
+        assert_canonical_extraction(
+            &store,
+            &calibrated_probe_path,
+            &calibrated_request_path,
+            &private,
+        );
+
         probe.frames[2].source_pts += 1;
         let tampered_probe_path = private.join("tampered-probe.json");
         let tampered_probe_bytes = canonical_json(&probe).unwrap();
@@ -1737,6 +2009,63 @@ mod tests {
                 .is_err()
         );
         assert!(!tampered_output.exists());
+    }
+
+    fn write_calibrated_probe_and_request(
+        private: &Path,
+        probe: &MediaProbeManifest,
+    ) -> (PathBuf, PathBuf) {
+        let probe_path = private.join("calibrated-probe.json");
+        let probe_bytes = canonical_json(probe).unwrap();
+        fs::write(&probe_path, &probe_bytes).unwrap();
+        fs::set_permissions(&probe_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let request_path = private.join("canonical-extract.json");
+        fs::write(
+            &request_path,
+            canonical_json(&sample_request(probe, &digest_bytes(&probe_bytes))).unwrap(),
+        )
+        .unwrap();
+        fs::set_permissions(&request_path, fs::Permissions::from_mode(0o600)).unwrap();
+        (probe_path, request_path)
+    }
+
+    fn assert_canonical_extraction(
+        store: &CorpusStore,
+        probe_path: &Path,
+        extraction_request: &Path,
+        private: &Path,
+    ) {
+        let canonical_directory = private.join("canonical");
+        let canonical = store
+            .extract_canonical_frames(probe_path, extraction_request, &canonical_directory)
+            .unwrap();
+        assert_eq!(canonical.frame_count, 2);
+        assert_eq!(canonical.extracted_bytes, 1920 * 1080 * 3 * 2);
+        for name in [
+            "frame-000000.ppm",
+            "frame-000001.ppm",
+            "manifest.json",
+            "normalizer.json",
+        ] {
+            assert_eq!(
+                canonical_directory
+                    .join(name)
+                    .metadata()
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        let normalizer_bytes = fs::read(canonical_directory.join("normalizer.json")).unwrap();
+        assert_eq!(
+            digest_bytes(&normalizer_bytes),
+            canonical.normalizer_artifact_sha256
+        );
+        let normalizer: DomainNormalizerArtifact =
+            serde_json::from_slice(&normalizer_bytes).unwrap();
+        normalizer.validate().unwrap();
     }
 
     fn sample_probe() -> MediaProbeManifest {
@@ -1801,7 +2130,15 @@ mod tests {
                 "-c:v",
                 "ffv1",
                 "-pix_fmt",
-                "rgb24",
+                "yuv420p",
+                "-color_range",
+                "tv",
+                "-colorspace",
+                "bt709",
+                "-color_trc",
+                "bt709",
+                "-color_primaries",
+                "bt709",
                 source.to_str().unwrap(),
             ])
             .status()
@@ -1814,7 +2151,7 @@ mod tests {
                 "schema": "scorepeek-private-corpus-ingest-v2",
                 "fixture_id": "fixture-media-1",
                 "session_id": "session-media-1",
-                "capture_profile_id": "synthetic-test"
+                "capture_profile_id": CALIBRATED_CAPTURE_PROFILE_SHA256
             }))
             .unwrap(),
         )
@@ -1843,6 +2180,30 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn canonical_normalizer_requires_the_exact_calibrated_profile_and_toolchain() {
+        let mut probe = sample_probe();
+        probe.capture_profile_id = CALIBRATED_CAPTURE_PROFILE_SHA256.to_owned();
+        probe.toolchain.ffmpeg_sha256 = CALIBRATED_FFMPEG_SHA256.to_owned();
+        probe.observed.pixel_format = "yuv420p".to_owned();
+        probe.observed.width = 1_920;
+        probe.observed.height = 1_080;
+        probe.observed.color_range = Some("tv".to_owned());
+        probe.observed.color_space = Some("bt709".to_owned());
+        probe.observed.color_transfer = Some("bt709".to_owned());
+        probe.observed.color_primaries = Some("bt709".to_owned());
+        assert!(DomainNormalizerArtifact::for_probe(&probe).is_ok());
+
+        probe.capture_profile_id = "e".repeat(64);
+        assert!(DomainNormalizerArtifact::for_probe(&probe).is_err());
+        probe.capture_profile_id = CALIBRATED_CAPTURE_PROFILE_SHA256.to_owned();
+        probe.toolchain.ffmpeg_sha256 = "f".repeat(64);
+        assert!(DomainNormalizerArtifact::for_probe(&probe).is_err());
+        probe.toolchain.ffmpeg_sha256 = CALIBRATED_FFMPEG_SHA256.to_owned();
+        probe.observed.color_transfer = None;
+        assert!(DomainNormalizerArtifact::for_probe(&probe).is_err());
     }
 
     fn video_stream(index: u32) -> FfprobeStream {
