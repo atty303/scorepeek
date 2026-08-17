@@ -10,7 +10,7 @@
 - M2 observed-profile private corpus、synthetic renderer、label/replay tooling: 完了
 - 元録画をdataset rootとして固定するimport/seal/S3-compatible再利用CLI: 完了
 - capture、認識、OCR学習、event daemon: 未着手
-- Bazzite実機検証とprivate corpus収集: 未着手
+- Bazzite実機検証とprivate corpus収集: 着手（OBS/vkcapture実録画1本のisolated import、seal、verifyまで）
 
 現在commitに含まれるcheckpointは[`STATUS.md`](../STATUS.md)を参照する。この文書は
 stable milestoneの実装順序とrelease gateの原典である。長期的な判断理由は

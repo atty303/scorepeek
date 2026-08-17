@@ -73,10 +73,17 @@ mise run corpus:recording:import -- --store /absolute/private/store --capture-co
 ```
 
 成功時の`recording_sha256`が録画byte identityである。同じ録画とcontextの再importは
-idempotentなので、成功したか不明な場合は同じコマンドを再実行できる。importはlocalだけで
-完結し、network uploadは行わない。元ファイルはstore内へbyte-identicalにコピーされるため、
-import成功後は外側の作業コピーを別途残す必要はない。ただしS3へのpushとremote verificationが
-終わるまでは削除しない運用を推奨する。
+idempotentなので、成功したか不明な場合は同じコマンドを再実行できる。初回importは外側のsource
+SHA-256を確定し、private stagingへcopyしながら同じSHA-256を再確認したうえで、そのstaging snapshot
+だけを全decoded frameのPTS probeへ渡す。stream contractもcapture profileと一致した場合だけsource
+bindingを公開する。したがって公開されるPTSは必ずhash-verified staging sourceのものであり、外側の
+pathname変更によってcopyのSHA-256または観測contractが食い違えばfail closedになる。完全なrecording
+bundleが同じsource SHA-256とcontextですでに存在する場合、
+再importは入力と保存済みobjectの全byte hashおよびtyped bindingを検証し、保存済みprobeを再利用する。
+同じ録画を再びFFprobeへ通したり、storeへ再copyしたりしない。importはlocalだけで完結し、network
+uploadは行わない。元ファイルはstore内へbyte-identicalにコピーされるため、import成功後は外側の
+作業コピーを別途残す必要はない。ただしS3へのpushとremote verificationが終わるまでは削除しない
+運用を推奨する。
 
 1本の録画にすべての曲や状態を詰め込む必要はない。録画を追加する条件は、未収録のscreen、
 transition、style、difficulty、失敗・中断経路が必要になったとき、またはcapture条件を変えた

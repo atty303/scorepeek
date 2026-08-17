@@ -356,17 +356,19 @@ impl CorpusStore {
         request_path: impl AsRef<Path>,
     ) -> Result<SourceManifest, CorpusError> {
         let request = read_ingest_request(request_path.as_ref())?;
-        self.ingest_bound(source_path.as_ref(), request, None)
+        self.ingest_bound(source_path.as_ref(), request, None, |_| Ok(()))
+            .map(|(manifest, ())| manifest)
     }
 
-    fn ingest_verified_recording(
+    fn ingest_verified_recording_with<T>(
         &self,
         source_path: &Path,
         fixture_id: String,
         session_id: String,
         capture_profile_id: String,
         expected_source_sha256: &str,
-    ) -> Result<SourceManifest, CorpusError> {
+        inspect_staged_source: impl FnOnce(&Path) -> Result<T, CorpusError>,
+    ) -> Result<(SourceManifest, T), CorpusError> {
         let request = IngestRequest {
             schema: INGEST_REQUEST_SCHEMA.to_owned(),
             fixture_id,
@@ -379,15 +381,21 @@ impl CorpusStore {
             "expected_source_sha256",
             ErrorContext::Request,
         )?;
-        self.ingest_bound(source_path, request, Some(expected_source_sha256))
+        self.ingest_bound(
+            source_path,
+            request,
+            Some(expected_source_sha256),
+            inspect_staged_source,
+        )
     }
 
-    fn ingest_bound(
+    fn ingest_bound<T>(
         &self,
         source_path: &Path,
         request: IngestRequest,
         expected_source_sha256: Option<&str>,
-    ) -> Result<SourceManifest, CorpusError> {
+        inspect_staged_source: impl FnOnce(&Path) -> Result<T, CorpusError>,
+    ) -> Result<(SourceManifest, T), CorpusError> {
         self.validate_root()?;
         validate_source_file(source_path)?;
 
@@ -415,6 +423,7 @@ impl CorpusStore {
                 "source changed after recording inspection".to_owned(),
             ));
         }
+        let staged_inspection = inspect_staged_source(&staged_source)?;
         File::open(&staged_source)?.sync_all()?;
         File::open(staging.path())?.sync_all()?;
 
@@ -481,7 +490,7 @@ impl CorpusStore {
         }
         sync_file_and_parent(&manifest_path, &manifest_dir)?;
         drop(lock);
-        Ok(manifest)
+        Ok((manifest, staged_inspection))
     }
 
     /// Seals every source binding currently present in this private store into one immutable

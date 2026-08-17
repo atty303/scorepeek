@@ -179,8 +179,52 @@ struct FfprobeFrame {
 }
 
 pub(crate) fn inspect_recording(path: &Path) -> Result<RawMediaObservation, CorpusError> {
-    validate_input_format(path)?;
     let toolchain = identify_toolchain()?;
+    let probed = probe_recording(
+        path,
+        "stream=index,codec_type,codec_name,pix_fmt,width,height,time_base,color_range,color_space,color_transfer,color_primaries:frame=stream_index,media_type,pts",
+    )?;
+    let stream = unique_video_stream(&probed.streams)?;
+    let (observed, video_stream_index) = observed_stream_contract(stream)?;
+    let mut frames = Vec::new();
+    for frame in probed.frames.into_iter().filter(|frame| {
+        frame.media_type.as_deref() == Some("video")
+            && frame.stream_index == Some(video_stream_index)
+    }) {
+        if frames.len() >= MAX_REPLAY_FRAMES {
+            return Err(CorpusError::CapacityExceeded);
+        }
+        frames.push(ProbedFrame {
+            decode_index: frames.len() as u64,
+            source_pts: frame
+                .pts
+                .ok_or_else(|| invalid_media("decoded video frame has no integer PTS"))?,
+        });
+    }
+    if frames.is_empty() {
+        return Err(invalid_media("video stream contains no decoded frames"));
+    }
+    Ok(RawMediaObservation {
+        toolchain,
+        observed,
+        video_stream_index,
+        frames,
+    })
+}
+
+pub(crate) fn inspect_recording_contract(
+    path: &Path,
+) -> Result<ObservedMediaContract, CorpusError> {
+    let probed = probe_recording(
+        path,
+        "stream=index,codec_type,codec_name,pix_fmt,width,height,time_base,color_range,color_space,color_transfer,color_primaries",
+    )?;
+    let stream = unique_video_stream(&probed.streams)?;
+    observed_stream_contract(stream).map(|(observed, _)| observed)
+}
+
+fn probe_recording(path: &Path, show_entries: &str) -> Result<FfprobeOutput, CorpusError> {
+    validate_input_format(path)?;
     let output = run_command(
         &find_executable("ffprobe")?,
         &os_args(
@@ -194,7 +238,7 @@ pub(crate) fn inspect_recording(path: &Path) -> Result<RawMediaObservation, Corp
                 "-i",
                 "pipe:0",
                 "-show_entries",
-                "stream=index,codec_type,codec_name,pix_fmt,width,height,time_base,color_range,color_space,color_transfer,color_primaries:frame=stream_index,media_type,pts",
+                show_entries,
                 "-of",
                 "json",
             ],
@@ -204,9 +248,13 @@ pub(crate) fn inspect_recording(path: &Path) -> Result<RawMediaObservation, Corp
         MAX_STDOUT,
         TOOL_TIMEOUT,
     )?;
-    let probed: FfprobeOutput = serde_json::from_slice(&output)
-        .map_err(|_| invalid_media("ffprobe returned invalid bounded JSON"))?;
-    let stream = unique_video_stream(&probed.streams)?;
+    serde_json::from_slice(&output)
+        .map_err(|_| invalid_media("ffprobe returned invalid bounded JSON"))
+}
+
+fn observed_stream_contract(
+    stream: &FfprobeStream,
+) -> Result<(ObservedMediaContract, u32), CorpusError> {
     let width = stream
         .width
         .ok_or_else(|| invalid_media("video stream has no width"))?;
@@ -231,27 +279,8 @@ pub(crate) fn inspect_recording(path: &Path) -> Result<RawMediaObservation, Corp
         .pix_fmt
         .clone()
         .ok_or_else(|| invalid_media("video stream has no pixel format"))?;
-    let mut frames = Vec::new();
-    for frame in probed.frames.into_iter().filter(|frame| {
-        frame.media_type.as_deref() == Some("video")
-            && frame.stream_index == Some(video_stream_index)
-    }) {
-        if frames.len() >= MAX_REPLAY_FRAMES {
-            return Err(CorpusError::CapacityExceeded);
-        }
-        frames.push(ProbedFrame {
-            decode_index: frames.len() as u64,
-            source_pts: frame
-                .pts
-                .ok_or_else(|| invalid_media("decoded video frame has no integer PTS"))?,
-        });
-    }
-    if frames.is_empty() {
-        return Err(invalid_media("video stream contains no decoded frames"));
-    }
-    Ok(RawMediaObservation {
-        toolchain,
-        observed: ObservedMediaContract {
+    Ok((
+        ObservedMediaContract {
             input_format: INPUT_FORMAT.to_owned(),
             codec_name,
             pixel_format,
@@ -264,8 +293,7 @@ pub(crate) fn inspect_recording(path: &Path) -> Result<RawMediaObservation, Corp
             color_primaries: stream.color_primaries.clone(),
         },
         video_stream_index,
-        frames,
-    })
+    ))
 }
 
 impl CorpusStore {
@@ -288,31 +316,32 @@ impl CorpusStore {
             .join(&source_manifest.source.sha256)
             .join(SOURCE_FILE);
         let observation = inspect_recording(&source_path)?;
-        let width = observation.observed.width;
-        let height = observation.observed.height;
-        let manifest = MediaProbeManifest {
-            schema: PROBE_SCHEMA.to_owned(),
-            fixture_id: fixture_id.to_owned(),
+        write_media_probe(
+            fixture_id,
+            source_manifest,
             source_manifest_sha256,
-            source: source_manifest.source,
-            capture_profile_id: source_manifest.capture_profile_id,
-            toolchain: observation.toolchain,
-            observed: observation.observed,
-            video_stream_index: observation.video_stream_index,
-            frames: observation.frames,
-        };
-        manifest.validate()?;
-        let bytes = canonical_json(&manifest)?;
-        let digest = digest_bytes(&bytes);
-        write_private_output(output_path.as_ref(), &bytes)?;
-        Ok(MediaProbeSummary {
-            schema: PROBE_SUMMARY_SCHEMA.to_owned(),
-            fixture_id: manifest.fixture_id,
-            media_probe_sha256: digest,
-            frame_count: manifest.frames.len() as u64,
-            width,
-            height,
-        })
+            observation,
+            output_path.as_ref(),
+        )
+    }
+
+    pub(crate) fn probe_media_from_observation(
+        &self,
+        fixture_id: &str,
+        observation: RawMediaObservation,
+        output_path: impl AsRef<Path>,
+    ) -> Result<MediaProbeSummary, CorpusError> {
+        self.validate_root()?;
+        validate_opaque_id(fixture_id, "fixture_id", ErrorContext::Request)?;
+        validate_private_directory_mode(&self.root, ErrorContext::Request)?;
+        let (source_manifest, source_manifest_sha256) = load_bound_source(self, fixture_id)?;
+        write_media_probe(
+            fixture_id,
+            source_manifest,
+            source_manifest_sha256,
+            observation,
+            output_path.as_ref(),
+        )
     }
 
     /// Extracts explicitly selected frames as private RGB8 P6 PPM files.
@@ -381,6 +410,40 @@ impl CorpusStore {
             extracted_bytes,
         })
     }
+}
+
+fn write_media_probe(
+    fixture_id: &str,
+    source_manifest: SourceManifest,
+    source_manifest_sha256: String,
+    observation: RawMediaObservation,
+    output_path: &Path,
+) -> Result<MediaProbeSummary, CorpusError> {
+    let width = observation.observed.width;
+    let height = observation.observed.height;
+    let manifest = MediaProbeManifest {
+        schema: PROBE_SCHEMA.to_owned(),
+        fixture_id: fixture_id.to_owned(),
+        source_manifest_sha256,
+        source: source_manifest.source,
+        capture_profile_id: source_manifest.capture_profile_id,
+        toolchain: observation.toolchain,
+        observed: observation.observed,
+        video_stream_index: observation.video_stream_index,
+        frames: observation.frames,
+    };
+    manifest.validate()?;
+    let bytes = canonical_json(&manifest)?;
+    let digest = digest_bytes(&bytes);
+    write_private_output(output_path, &bytes)?;
+    Ok(MediaProbeSummary {
+        schema: PROBE_SUMMARY_SCHEMA.to_owned(),
+        fixture_id: manifest.fixture_id,
+        media_probe_sha256: digest,
+        frame_count: manifest.frames.len() as u64,
+        width,
+        height,
+    })
 }
 
 impl MediaProbeManifest {

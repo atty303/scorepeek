@@ -121,10 +121,25 @@ impl CorpusStore {
         recording_path: impl AsRef<Path>,
         capture_context_path: impl AsRef<Path>,
     ) -> Result<RecordingImportSummary, CorpusError> {
-        let recording_path = recording_path.as_ref();
+        self.import_recording_with(
+            recording_path.as_ref(),
+            capture_context_path.as_ref(),
+            media::inspect_recording_contract,
+        )
+    }
+
+    fn import_recording_with(
+        &self,
+        recording_path: &Path,
+        capture_context_path: &Path,
+        inspect_recording_contract: impl FnOnce(
+            &Path,
+        )
+            -> Result<media::ObservedMediaContract, CorpusError>,
+    ) -> Result<RecordingImportSummary, CorpusError> {
         validate_source_file(recording_path)?;
         let context_bytes = read_bounded_regular(
-            capture_context_path.as_ref(),
+            capture_context_path,
             MAX_REQUEST_BYTES,
             ErrorContext::Request,
         )?;
@@ -132,23 +147,35 @@ impl CorpusStore {
         context.validate()?;
 
         let expected_sha256 = digest_regular_file(recording_path, MAX_SOURCE_BYTES)?;
-        let observation = media::inspect_recording(recording_path)?;
+        if let Some(summary) = self.reuse_recording_import(&expected_sha256, &context)? {
+            return Ok(summary);
+        }
+        let observed = inspect_recording_contract(recording_path)?;
         let profile = CaptureProfile {
             schema: CAPTURE_PROFILE_SCHEMA.to_owned(),
             context,
-            observed: observation.observed,
+            observed,
         };
         profile.validate()?;
         let profile_bytes = canonical_json(&profile)?;
         let profile_sha256 = digest_bytes(&profile_bytes);
         self.publish_dataset_document("profiles", &profile_sha256, &profile_bytes)?;
 
-        let source_manifest = self.ingest_verified_recording(
+        let (source_manifest, observation) = self.ingest_verified_recording_with(
             recording_path,
             expected_sha256.clone(),
             expected_sha256.clone(),
             profile_sha256.clone(),
             &expected_sha256,
+            |staged_source| {
+                let observation = media::inspect_recording(staged_source)?;
+                if observation.observed != profile.observed {
+                    return Err(CorpusError::InvalidMedia(
+                        "recording changed after capture profile inspection".to_owned(),
+                    ));
+                }
+                Ok(observation)
+            },
         )?;
         let source_summary = source_manifest.summary()?;
 
@@ -157,7 +184,8 @@ impl CorpusStore {
             .permissions(fs::Permissions::from_mode(0o700))
             .tempdir_in(&self.root)?;
         let probe_path = probe_staging.path().join("probe.json");
-        let probe_summary = self.probe_media(&expected_sha256, &probe_path)?;
+        let probe_summary =
+            self.probe_media_from_observation(&expected_sha256, observation, &probe_path)?;
         let probe_bytes =
             read_bounded_regular(&probe_path, 64 * 1024 * 1024, ErrorContext::Replay)?;
         if digest_bytes(&probe_bytes) != probe_summary.media_probe_sha256 {
@@ -165,6 +193,14 @@ impl CorpusStore {
                 "recording probe digest changed before publication".to_owned(),
             ));
         }
+        media::validate_recording_probe_bytes(
+            &probe_bytes,
+            &expected_sha256,
+            &source_summary.source_manifest_sha256,
+            &source_manifest.source,
+            &profile_sha256,
+            &profile.observed,
+        )?;
         self.publish_dataset_document("probes", &probe_summary.media_probe_sha256, &probe_bytes)?;
 
         let recording = RecordingManifest {
@@ -192,6 +228,72 @@ impl CorpusStore {
             media_probe_sha256: probe_summary.media_probe_sha256,
             recording_manifest_sha256,
         })
+    }
+
+    fn reuse_recording_import(
+        &self,
+        recording_sha256: &str,
+        context: &CaptureContext,
+    ) -> Result<Option<RecordingImportSummary>, CorpusError> {
+        let recording_path = self
+            .root
+            .join("recordings")
+            .join(format!("{recording_sha256}.json"));
+        match recording_path.symlink_metadata() {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return Err(CorpusError::InvalidRequest(
+                    "recording manifest is not a regular file".to_owned(),
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        }
+
+        self.validate_dataset_store(false)?;
+        let recording_bytes =
+            read_bounded_regular(&recording_path, MAX_REQUEST_BYTES, ErrorContext::Request)?;
+        let recording: RecordingManifest = serde_json::from_slice(&recording_bytes)?;
+        recording.validate()?;
+        if recording.recording_sha256 != recording_sha256
+            || canonical_json(&recording)? != recording_bytes
+        {
+            return Err(CorpusError::InvalidRequest(
+                "recording manifest is not canonical or bound to its name".to_owned(),
+            ));
+        }
+
+        let mut objects = self.recording_objects(&recording, &recording_bytes)?;
+        objects.sort();
+        let generation = RecordingDatasetGeneration {
+            schema: DATASET_GENERATION_SCHEMA.to_owned(),
+            dataset_id: "recording-import-reuse".to_owned(),
+            objects,
+        };
+        generation.validate()?;
+        self.validate_recording_bindings(&generation)?;
+
+        let profile_object = required_object(
+            &generation,
+            recording_sha256,
+            DatasetObjectKind::CaptureProfile,
+        )?;
+        let profile_bytes = self.read_dataset_document(profile_object, MAX_REQUEST_BYTES)?;
+        let profile: CaptureProfile = serde_json::from_slice(&profile_bytes)?;
+        if profile.context != *context {
+            return Err(CorpusError::FixtureConflict);
+        }
+
+        Ok(Some(RecordingImportSummary {
+            schema: RECORDING_IMPORT_SUMMARY_SCHEMA.to_owned(),
+            recording_sha256: recording.recording_sha256,
+            recording_bytes: recording.recording_bytes,
+            session_id: recording.session_id,
+            capture_profile_sha256: recording.capture_profile_sha256,
+            source_manifest_sha256: recording.source_manifest_sha256,
+            media_probe_sha256: recording.media_probe_sha256,
+            recording_manifest_sha256: digest_bytes(&recording_bytes),
+        }))
     }
 
     /// Seals every imported recording into one reusable dataset generation.
@@ -375,7 +477,7 @@ impl CorpusStore {
                     ));
                 }
                 object.bytes = metadata.len();
-                validate_object(&path, &object)?;
+                self.validate_dataset_object(&object)?;
                 Ok(object)
             })
             .collect()
@@ -899,6 +1001,7 @@ pub(crate) fn required_object<'a>(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::os::unix::fs::PermissionsExt as _;
     use std::os::unix::fs::symlink;
     use std::process::Command;
@@ -917,12 +1020,8 @@ mod tests {
         generation: DatasetSummary,
     }
 
-    fn prepare_imported_dataset() -> ImportedDataset {
-        let temporary = tempdir().unwrap();
-        let private = temporary.path().join("private");
-        fs::create_dir(&private).unwrap();
-        fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
-        let recording = private.join("complete-run.mkv");
+    fn create_test_recording(path: &Path, size: &str) {
+        let source = format!("color=c=black:s={size}:r=3:d=1");
         let status = Command::new(media::find_executable("ffmpeg").unwrap())
             .args([
                 "-v",
@@ -930,35 +1029,80 @@ mod tests {
                 "-f",
                 "lavfi",
                 "-i",
-                "color=c=black:s=320x180:r=3:d=1",
+                &source,
                 "-c:v",
                 "ffv1",
                 "-pix_fmt",
                 "rgb24",
-                recording.to_str().unwrap(),
+                path.to_str().unwrap(),
             ])
             .status()
             .unwrap();
         assert!(status.success());
-        let context = private.join("capture-context.json");
+    }
+
+    fn write_test_context(path: &Path, settings_revision: &str) {
         fs::write(
-            &context,
+            path,
             serde_json::to_vec(&json!({
                 "schema": CAPTURE_CONTEXT_SCHEMA,
                 "route": "portal_pipewire",
                 "environment_id": "bazzite-handheld-2026-08",
                 "capture_adapter_id": "portal-pipewire",
                 "capture_adapter_version": "v1",
-                "settings_revision": "obs-free-1080p-v1"
+                "settings_revision": settings_revision
             }))
             .unwrap(),
         )
         .unwrap();
+    }
+
+    fn prepare_imported_dataset() -> ImportedDataset {
+        let temporary = tempdir().unwrap();
+        let private = temporary.path().join("private");
+        fs::create_dir(&private).unwrap();
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+        let recording = private.join("complete-run.mkv");
+        create_test_recording(&recording, "320x180");
+        let context = private.join("capture-context.json");
+        write_test_context(&context, "obs-free-1080p-v1");
 
         let store = CorpusStore::new(private.join("store"));
-        let first = store.import_recording(&recording, &context).unwrap();
-        let second = store.import_recording(&recording, &context).unwrap();
+        let inspection_count = Cell::new(0_u8);
+        let first = store
+            .import_recording_with(&recording, &context, |path| {
+                inspection_count.set(inspection_count.get() + 1);
+                media::inspect_recording_contract(path)
+            })
+            .unwrap();
+        assert_eq!(inspection_count.get(), 1);
+        let second = store
+            .import_recording_with(&recording, &context, |_| {
+                panic!("an imported source must reuse its bound media probe")
+            })
+            .unwrap();
         assert_eq!(first, second);
+        let source_path = private
+            .join("store/content")
+            .join(&first.recording_sha256)
+            .join(SOURCE_FILE);
+        fs::set_permissions(&source_path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            store
+                .import_recording_with(&recording, &context, |_| {
+                    panic!("an insecure reusable source must fail before media inspection")
+                })
+                .is_err()
+        );
+        fs::set_permissions(&source_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let conflicting_context = private.join("conflicting-capture-context.json");
+        write_test_context(&conflicting_context, "different-settings-v1");
+        assert!(matches!(
+            store.import_recording_with(&recording, &conflicting_context, |_| {
+                panic!("a conflicting context must fail before media inspection")
+            }),
+            Err(CorpusError::FixtureConflict)
+        ));
 
         let generation = store.seal_recording_dataset("calibration-001").unwrap();
         ImportedDataset {
@@ -1122,6 +1266,49 @@ mod tests {
         assert_reusable_source_bytes(&fixture);
         assert_typed_role_substitution_is_rejected(&fixture);
         assert_intermediate_symlink_is_rejected(&fixture);
+    }
+
+    #[test]
+    fn recording_import_probes_only_the_hash_verified_stored_source() {
+        let temporary = tempdir().unwrap();
+        let private = temporary.path().join("private");
+        fs::create_dir(&private).unwrap();
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+        let recording = private.join("complete-run.mkv");
+        let replacement = private.join("replacement.mkv");
+        let original = private.join("original.mkv");
+        create_test_recording(&recording, "320x180");
+        create_test_recording(&replacement, "640x360");
+        let context = private.join("capture-context.json");
+        write_test_context(&context, "obs-free-1080p-v1");
+        let store = CorpusStore::new(private.join("store"));
+
+        let error = store
+            .import_recording_with(&recording, &context, |path| {
+                fs::rename(path, &original)?;
+                fs::rename(&replacement, path)?;
+                let observed = media::inspect_recording_contract(path)?;
+                fs::rename(path, &replacement)?;
+                fs::rename(&original, path)?;
+                Ok(observed)
+            })
+            .unwrap_err();
+        assert!(matches!(error, CorpusError::InvalidMedia(_)));
+        assert!(!store.root.join("recordings").exists());
+
+        let imported = store.import_recording(&recording, &context).unwrap();
+        let profile_bytes = fs::read(
+            store
+                .root
+                .join("profiles")
+                .join(format!("{}.json", imported.capture_profile_sha256)),
+        )
+        .unwrap();
+        let profile: CaptureProfile = serde_json::from_slice(&profile_bytes).unwrap();
+        assert_eq!(
+            (profile.observed.width, profile.observed.height),
+            (320, 180)
+        );
     }
 
     #[test]

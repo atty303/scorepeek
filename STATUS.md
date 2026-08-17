@@ -151,7 +151,12 @@ is outside this checkpoint.
   profile from a versioned capture context plus the observed media contract;
   and publishes exact source, profile, probe, and recording bindings without
   selecting a baseline profile, normalizer, or layout. Reimporting identical
-  bytes and context is idempotent.
+  bytes and context is idempotent. Initial import copies and hash-verifies one
+  private staging snapshot, enumerates decoded-frame PTS from that exact
+  snapshot once, and publishes the observation only after its stream contract
+  matches the capture profile. A completed recording bundle is reused after
+  full-byte and typed-binding verification, without another media decode,
+  probe, or source copy.
 - Immutable recording-dataset generations that bind every imported recording
   to five typed byte roles and revalidate their canonical manifest
   relationships as well as size and complete SHA-256. The generation digest is
@@ -185,7 +190,7 @@ is outside this checkpoint.
   and binary tests and repository checks.
 - `mise run catalog:schedule:systemd:verify`: passed without installing the
   release binary or user units.
-- `cargo test --locked -p scorepeek-corpus`: passed all 37 offline corpus
+- `cargo test --locked -p scorepeek-corpus`: passed all 38 offline corpus
   tests, including idempotent private ingest, fixture-ID conflict
   rejection, canonical source/complete-label binding, pre-mutation symlink
   rejection, canonical/private/idempotent complete-label authoring with owned
@@ -208,9 +213,11 @@ is outside this checkpoint.
   An in-memory object-store test exercised streaming upload, full-byte remote
   reuse verification, staging cleanup, bounded download, and same-size corrupt
   object rejection.
-  Regressions also reject a self-consistent typed-role substitution, an
-  intermediate content-directory symlink, typed-document oversize,
-  dataset-generation capacity excess, stale owned staging, and endpoint
+  Regressions also reject a source-path replacement between hash and stream
+  inspection before publishing a recording binding, an insecure stored-source
+  mode on reuse, a self-consistent typed-role substitution, an intermediate
+  content-directory symlink, typed-document oversize, dataset-generation
+  capacity excess, stale owned staging, and endpoint
   userinfo/path/query/fragment.
 - `mise run corpus:dataset:test:e2e`: passed against mise-pinned `rclone serve
   s3` on an exact loopback HTTP endpoint. The CLI imported a synthetic
@@ -219,6 +226,18 @@ is outside this checkpoint.
   part-upload, and complete-multipart operations, reused all six objects on a
   second push, remotely verified every byte, pulled to an empty store, and
   reproduced byte-identical source media.
+- An isolated real OBS/vkcapture recording gate imported the private
+  14,785,693,017-byte Matroska/FFV1 recording at source SHA-256
+  `53d4745e22e078db9b343896d17c0a63781afada1a664323fc0b12bab563c697`.
+  Initial import decoded 27,499 frame PTS once from the hash-verified staging
+  source and completed in 1,048 seconds;
+  an identical reimport reused the bound probe and source without FFprobe or
+  another copy, returned the same summary, and completed in 351
+  seconds using only full-byte and typed-bundle verification. Dataset seal and
+  local verify completed in 351 and 176 seconds and produced the same
+  one-recording, five-object generation at
+  `730168d2de6ebfdd93e449b19fcf5c0b53b761205b95cf2617527816efc3d423`.
+  The isolated store was not pushed to S3 and is not a persistent corpus.
 - An isolated synthetic CLI gate rendered three samples at manifest SHA-256
   `6a9aece0138816c972476d366df62cb4512b4488a178aedea86911133f80a2d0`.
   The first generated label and RGB8 crop were inspected together after a
@@ -287,11 +306,13 @@ is outside this checkpoint.
   configuration. Only the non-persistent transient user-manager path was run.
 - Bazzite Portal, Gamescope, OBS, GPU, lifecycle, performance, and soak gates
   remain target-machine-only and unrun.
-- No real game recording has been imported. S3-compatible push, multipart,
-  reuse, remote verification, and pull have been verified against the local
-  rclone server, not a real private bucket. Live credential, provider-specific
-  addressing, TLS, bucket lifecycle, and provider behavior remain an explicit
-  external gate.
+- One real OBS/vkcapture game recording has passed isolated import, reimport,
+  seal, and local verification. It has not been retained in an operator-owned
+  durable corpus or pushed to S3. S3-compatible push, multipart, reuse, remote
+  verification, and pull have been verified against the local rclone server,
+  not a real private bucket. Live credential, provider-specific addressing,
+  TLS, bucket lifecycle, and provider behavior remain an explicit external
+  gate.
 
 ## Blockers and required approvals
 
@@ -318,16 +339,17 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Start **M3** with narrow Portal and Gamescope direct `ObservedFrame` vertical
-spikes on the Bazzite target. For each fixed capture context, record a complete
-game run, import it with `corpus:recording:import`, and seal/push the first real
-recording generation. Record each real observed contract and collect private
-calibration evidence without assigning a normalizer or layout at source
-ingest. Once both peer profiles are observable, continue M4 by defining the
-shared logical-game `CanonicalFrame`/layout artifact and calibrating one
-deterministic normalizer per profile to it. Do not select a captured route as a
-pixel reference, create route-local layouts, or measure canonical ROIs from raw
-extractions. Real media and frames remain external and private.
+Choose an operator-owned durable private corpus root and private S3 remote,
+import the verified OBS/vkcapture recording there, then seal, push, and remotely
+verify its first persistent generation. After that, start **M3** with narrow
+Portal and Gamescope direct `ObservedFrame` vertical spikes on the Bazzite
+target. Record each real observed contract and collect private calibration
+evidence without assigning a normalizer or layout at source ingest. Once the
+peer profiles are observable, continue M4 by defining the shared logical-game
+`CanonicalFrame`/layout artifact and calibrating one deterministic normalizer
+per profile to it. Do not select a captured route as a pixel reference, create
+route-local layouts, or measure canonical ROIs from raw extractions. Real media
+and frames remain external and private.
 
 ## Stable milestone map
 
