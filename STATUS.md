@@ -135,15 +135,18 @@ is outside this checkpoint.
 - Bounded private media probing and explicit frame extraction. Probe binds
   immutable source/source-manifest evidence to exact tool binary digests,
   the sole video stream's explicit index, codec/pixel/color metadata,
-  dimensions, time base, contiguous decode indexes, and integer PTS;
-  zero/multiple-video inputs fail closed.
+  dimensions, time base, and contiguous FFV1 packet-order indexes with integer
+  PTS under the destructive v4 schema; zero/multiple-video inputs, non-FFV1
+  codecs, and missing packet PTS fail closed without a decoded-probe fallback.
   Only self-contained Matroska is accepted and streamed through stdin with the
   demuxer forced and only FFmpeg's `pipe` protocol enabled, preventing a media
   input from opening network or secondary filesystem resources.
   Extraction admits at most 512 strictly ordered probe-bound frames and 4 GiB,
   emits RGB8 P6 PPM with no frame-rate resampling, validates exact
-  dimensions/bytes and pixel/file hashes, and publishes private evidence using
-  parent locking, exact ownership markers, no-clobber publication, and fsync.
+  dimensions/bytes and pixel/file hashes, and requires FFmpeg's actual selected
+  decoded-frame count, order, and PTS to match the packet probe before publishing
+  private evidence using parent locking, exact ownership markers, no-clobber
+  publication, and fsync.
   Extracted RGB8 frames remain observed evidence at source dimensions and are
   never presented as normalized `CanonicalFrame` or layout evidence.
 - A high-level complete-recording importer that derives recording, fixture,
@@ -152,9 +155,9 @@ is outside this checkpoint.
   and publishes exact source, profile, probe, and recording bindings without
   selecting a baseline profile, normalizer, or layout. Reimporting identical
   bytes and context is idempotent. Initial import copies and hash-verifies one
-  private staging snapshot, enumerates decoded-frame PTS from that exact
-  snapshot once, and publishes the observation only after its stream contract
-  matches the capture profile. A completed recording bundle is reused after
+  private staging snapshot, enumerates FFV1 packet PTS from that exact snapshot,
+  and publishes the observation only after its stream contract matches the
+  capture profile. A completed recording bundle is reused after
   full-byte and typed-binding verification, without another media decode,
   probe, or source copy.
 - Immutable recording-dataset generations that bind every imported recording
@@ -190,7 +193,7 @@ is outside this checkpoint.
   and binary tests and repository checks.
 - `mise run catalog:schedule:systemd:verify`: passed without installing the
   release binary or user units.
-- `cargo test --locked -p scorepeek-corpus`: passed all 38 offline corpus
+- `cargo test --locked -p scorepeek-corpus`: passed all 39 offline corpus
   tests, including idempotent private ingest, fixture-ID conflict
   rejection, canonical source/complete-label binding, pre-mutation symlink
   rejection, canonical/private/idempotent complete-label authoring with owned
@@ -203,9 +206,10 @@ is outside this checkpoint.
   same-index/cross-index grouped split isolation, and distinct
   in-profile/profile-disjoint evaluation behavior. The
   media tests used the mise-pinned FFmpeg/ffprobe binaries to generate a
-  synthetic 1920x1080 Matroska source, probe its sole video stream, and extract
-  two exact decode-index/PTS selections as observed RGB8 PPM. Regressions cover
-  multi-video rejection, non-Matroska secondary resource rejection,
+  synthetic 1920x1080 Matroska/FFV1 source, index its sole video stream by
+  packet order, and extract two exact decode-index/PTS selections as observed
+  RGB8 PPM while checking actual decoded PTS. Regressions cover non-FFV1 and
+  multi-video rejection, selected decoded-PTS mismatch, non-Matroska secondary resource rejection,
   cross-fixture source/profile substitution, private no-clobber publication,
   and marker-gated crash recovery. A complete-recording test generated and
   imported synthetic Matroska, repeated the import idempotently, sealed and
@@ -229,14 +233,18 @@ is outside this checkpoint.
 - An isolated real OBS/vkcapture recording gate imported the private
   14,785,693,017-byte Matroska/FFV1 recording at source SHA-256
   `53d4745e22e078db9b343896d17c0a63781afada1a664323fc0b12bab563c697`.
-  Initial import decoded 27,499 frame PTS once from the hash-verified staging
-  source and completed in 1,048 seconds;
+  The destructive v4 importer indexed 27,499 FFV1 packet PTS from the
+  hash-verified staging source and completed in 23.49 seconds;
   an identical reimport reused the bound probe and source without FFprobe or
-  another copy, returned the same summary, and completed in 351
+  another copy, returned the same summary, and completed in 12.81
   seconds using only full-byte and typed-bundle verification. Dataset seal and
-  local verify completed in 351 and 176 seconds and produced the same
+  local verify completed in 6.39 and 6.40 seconds and produced the v4
   one-recording, five-object generation at
-  `730168d2de6ebfdd93e449b19fcf5c0b53b761205b95cf2617527816efc3d423`.
+  `2b70e816fcdfb8bdda73e8a3ebcfb714220d22811516cd35331614745d575c5e`.
+  Two real frames at decode indexes 0 and 2 were extracted only after actual
+  decoded PTS matched the packet probe. SHA-256 source and capture-profile
+  identities remained unchanged; the v4 probe and transitive generation
+  identities changed intentionally.
   The isolated store was not pushed to S3 and is not a persistent corpus.
 - An isolated synthetic CLI gate rendered three samples at manifest SHA-256
   `6a9aece0138816c972476d366df62cb4512b4488a178aedea86911133f80a2d0`.

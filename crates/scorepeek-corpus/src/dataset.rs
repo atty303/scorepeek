@@ -346,9 +346,6 @@ impl CorpusStore {
             objects,
         };
         generation.validate()?;
-        for object in &generation.objects {
-            self.validate_dataset_object(object)?;
-        }
         self.validate_recording_bindings(&generation)?;
         let bytes = canonical_json(&generation)?;
         let generation_sha256 = digest_bytes(&bytes);

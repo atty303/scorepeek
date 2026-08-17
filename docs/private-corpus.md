@@ -130,12 +130,13 @@ Probe a stored fixture into a new private manifest:
 mise run corpus:media:probe -- --store /absolute/private/store --output /absolute/private/probe.json fixture-001
 ```
 
-`scorepeek-private-media-probe-v3` binds the canonical source manifest and
+`scorepeek-private-media-probe-v4` binds the canonical source manifest and
 source object to the exact FFmpeg/ffprobe binary digests, video dimensions,
 source time base, observed codec/pixel/color metadata, the sole video stream's
-explicit index, and every decoded
-video frame's contiguous decode index and integer PTS. Media with zero or
-multiple video streams is rejected rather than selecting one implicitly. Probe
+explicit index, and every FFV1 video packet's contiguous decode index and
+integer PTS under `index_basis: ffv1_packet_order`. Media with zero or multiple
+video streams, a non-FFV1 codec, or a packet without an integer PTS is rejected
+rather than selecting a fallback implicitly. Probe
 accepts only a self-contained Matroska container, streams its bytes to ffprobe
 through stdin, forces the Matroska demuxer, and allowlists only the `pipe`
 protocol. It therefore cannot follow a media-supplied network URL or secondary
@@ -148,7 +149,9 @@ Extraction takes a strict `scorepeek-private-observed-frame-extraction-v2`
 request. It
 repeats the fixture, source-manifest, and probe digests and supplies a non-empty
 strictly increasing selection of `{frame_id, decode_index, source_pts}`. The
-decode-index/PTS pair must match the probe exactly. Before decoding, the tool
+decode-index/PTS pair must match the probe exactly. FFmpeg also reports the PTS
+of each actually decoded selected frame; count, order, and PTS must match the
+packet-order probe before output publication. Before decoding, the tool
 reloads the fixture's current canonical source manifest and requires the probe's
 source object and capture-profile binding to match it exactly. Run extraction
 into a new path:

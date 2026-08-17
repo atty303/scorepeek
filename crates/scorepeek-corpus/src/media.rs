@@ -6,8 +6,8 @@ use std::{os::unix::ffi::OsStrExt as _, os::unix::ffi::OsStringExt as _};
 
 use super::*;
 
-const PROBE_SCHEMA: &str = "scorepeek-private-media-probe-v3";
-const PROBE_SUMMARY_SCHEMA: &str = "scorepeek-private-media-probe-summary-v3";
+const PROBE_SCHEMA: &str = "scorepeek-private-media-probe-v4";
+const PROBE_SUMMARY_SCHEMA: &str = "scorepeek-private-media-probe-summary-v4";
 const EXTRACT_REQUEST_SCHEMA: &str = "scorepeek-private-observed-frame-extraction-v2";
 const EXTRACT_SCHEMA: &str = "scorepeek-private-observed-frame-extraction-manifest-v2";
 const EXTRACT_SUMMARY_SCHEMA: &str = "scorepeek-private-observed-frame-extraction-summary-v2";
@@ -50,7 +50,14 @@ struct MediaProbeManifest {
     toolchain: ToolchainIdentity,
     observed: ObservedMediaContract,
     video_stream_index: u32,
+    index_basis: FrameIndexBasis,
     frames: Vec<ProbedFrame>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FrameIndexBasis {
+    Ffv1PacketOrder,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -72,6 +79,7 @@ pub(crate) struct RawMediaObservation {
     toolchain: ToolchainIdentity,
     pub observed: ObservedMediaContract,
     video_stream_index: u32,
+    index_basis: FrameIndexBasis,
     frames: Vec<ProbedFrame>,
 }
 
@@ -153,7 +161,7 @@ struct FfprobeOutput {
     #[serde(default)]
     streams: Vec<FfprobeStream>,
     #[serde(default)]
-    frames: Vec<FfprobeFrame>,
+    packets: Vec<FfprobePacket>,
 }
 
 #[derive(Deserialize)]
@@ -172,42 +180,41 @@ struct FfprobeStream {
 }
 
 #[derive(Deserialize)]
-struct FfprobeFrame {
+struct FfprobePacket {
     stream_index: Option<u32>,
-    media_type: Option<String>,
     pts: Option<i64>,
 }
 
 pub(crate) fn inspect_recording(path: &Path) -> Result<RawMediaObservation, CorpusError> {
     let toolchain = identify_toolchain()?;
-    let probed = probe_recording(
-        path,
-        "stream=index,codec_type,codec_name,pix_fmt,width,height,time_base,color_range,color_space,color_transfer,color_primaries:frame=stream_index,media_type,pts",
-    )?;
+    let probed = probe_recording_packets(path)?;
     let stream = unique_video_stream(&probed.streams)?;
     let (observed, video_stream_index) = observed_stream_contract(stream)?;
+    validate_packet_index_contract(&observed)?;
     let mut frames = Vec::new();
-    for frame in probed.frames.into_iter().filter(|frame| {
-        frame.media_type.as_deref() == Some("video")
-            && frame.stream_index == Some(video_stream_index)
-    }) {
+    for packet in probed
+        .packets
+        .into_iter()
+        .filter(|packet| packet.stream_index == Some(video_stream_index))
+    {
         if frames.len() >= MAX_REPLAY_FRAMES {
             return Err(CorpusError::CapacityExceeded);
         }
         frames.push(ProbedFrame {
             decode_index: frames.len() as u64,
-            source_pts: frame
+            source_pts: packet
                 .pts
-                .ok_or_else(|| invalid_media("decoded video frame has no integer PTS"))?,
+                .ok_or_else(|| invalid_media("FFV1 video packet has no integer PTS"))?,
         });
     }
     if frames.is_empty() {
-        return Err(invalid_media("video stream contains no decoded frames"));
+        return Err(invalid_media("FFV1 video stream contains no packets"));
     }
     Ok(RawMediaObservation {
         toolchain,
         observed,
         video_stream_index,
+        index_basis: FrameIndexBasis::Ffv1PacketOrder,
         frames,
     })
 }
@@ -220,7 +227,41 @@ pub(crate) fn inspect_recording_contract(
         "stream=index,codec_type,codec_name,pix_fmt,width,height,time_base,color_range,color_space,color_transfer,color_primaries",
     )?;
     let stream = unique_video_stream(&probed.streams)?;
-    observed_stream_contract(stream).map(|(observed, _)| observed)
+    let (observed, _) = observed_stream_contract(stream)?;
+    validate_packet_index_contract(&observed)?;
+    Ok(observed)
+}
+
+fn probe_recording_packets(path: &Path) -> Result<FfprobeOutput, CorpusError> {
+    validate_input_format(path)?;
+    let output = run_command(
+        &find_executable("ffprobe")?,
+        &os_args(
+            &[
+                "-v",
+                "error",
+                "-protocol_whitelist",
+                "pipe",
+                "-f",
+                INPUT_FORMAT,
+                "-i",
+                "pipe:0",
+                "-select_streams",
+                "v",
+                "-show_packets",
+                "-show_entries",
+                "stream=index,codec_type,codec_name,pix_fmt,width,height,time_base,color_range,color_space,color_transfer,color_primaries:packet=stream_index,pts",
+                "-of",
+                "json",
+            ],
+            None,
+        ),
+        Some(File::open(path)?),
+        MAX_STDOUT,
+        TOOL_TIMEOUT,
+    )?;
+    serde_json::from_slice(&output)
+        .map_err(|_| invalid_media("ffprobe returned invalid bounded packet JSON"))
 }
 
 fn probe_recording(path: &Path, show_entries: &str) -> Result<FfprobeOutput, CorpusError> {
@@ -294,6 +335,15 @@ fn observed_stream_contract(
         },
         video_stream_index,
     ))
+}
+
+fn validate_packet_index_contract(observed: &ObservedMediaContract) -> Result<(), CorpusError> {
+    if observed.codec_name != "ffv1" {
+        return Err(invalid_media(
+            "fast media probing requires an FFV1 video stream",
+        ));
+    }
+    Ok(())
 }
 
 impl CorpusStore {
@@ -430,6 +480,7 @@ fn write_media_probe(
         toolchain: observation.toolchain,
         observed: observation.observed,
         video_stream_index: observation.video_stream_index,
+        index_basis: observation.index_basis,
         frames: observation.frames,
     };
     manifest.validate()?;
@@ -467,6 +518,13 @@ impl MediaProbeManifest {
         self.observed.validate()?;
         if self.video_stream_index > 255 {
             return Err(invalid_media("video stream index is outside bounds"));
+        }
+        if self.index_basis != FrameIndexBasis::Ffv1PacketOrder
+            || self.observed.codec_name != "ffv1"
+        {
+            return Err(invalid_media(
+                "media probe index basis is incompatible with its codec",
+            ));
         }
         if self.frames.is_empty() || self.frames.len() > MAX_REPLAY_FRAMES {
             return Err(invalid_media("probe frame count is outside bounds"));
@@ -676,7 +734,7 @@ fn run_extraction(
     let mut args = os_args(
         &[
             "-v",
-            "error",
+            "info",
             "-nostdin",
             "-protocol_whitelist",
             "pipe",
@@ -692,7 +750,7 @@ fn run_extraction(
             "-map",
             &format!("0:{}", probe.video_stream_index),
             "-vf",
-            &format!("select={select}"),
+            &format!("select={select},showinfo"),
             "-fps_mode",
             "passthrough",
             "-pix_fmt",
@@ -704,13 +762,14 @@ fn run_extraction(
         ],
         Some(staging.path().join("frame-%06d.ppm").into_os_string()),
     ));
-    run_command(
+    let execution = run_command_capture(
         &find_executable("ffmpeg")?,
         &args,
         Some(File::open(source_path)?),
         1024,
         TOOL_TIMEOUT,
     )?;
+    validate_selected_frame_pts(&execution.stderr, &request.frames)?;
 
     let mut extracted = Vec::with_capacity(request.frames.len());
     for (index, selected) in request.frames.iter().enumerate() {
@@ -743,6 +802,41 @@ fn run_extraction(
         return Err(invalid_media("extractor produced an unexpected file set"));
     }
     Ok((staging, extracted, extracted_bytes))
+}
+
+fn validate_selected_frame_pts(
+    stderr: &[u8],
+    requested: &[RequestedFrame],
+) -> Result<(), CorpusError> {
+    let log = std::str::from_utf8(stderr)
+        .map_err(|_| invalid_media("FFmpeg extraction log is not UTF-8"))?;
+    let mut observed = Vec::new();
+    for line in log.lines().filter(|line| line.contains("Parsed_showinfo_")) {
+        let tokens = line.split_ascii_whitespace().collect::<Vec<_>>();
+        let output_index = tokens
+            .windows(2)
+            .find(|pair| pair[0] == "n:")
+            .and_then(|pair| pair[1].parse::<u64>().ok());
+        let source_pts = tokens
+            .windows(2)
+            .find(|pair| pair[0] == "pts:")
+            .and_then(|pair| pair[1].parse::<i64>().ok());
+        if let (Some(output_index), Some(source_pts)) = (output_index, source_pts) {
+            observed.push((output_index, source_pts));
+        }
+    }
+    if observed.len() != requested.len()
+        || observed.iter().zip(requested).enumerate().any(
+            |(index, ((output_index, source_pts), requested))| {
+                *output_index != index as u64 || *source_pts != requested.source_pts
+            },
+        )
+    {
+        return Err(invalid_media(
+            "decoded selection PTS does not match the packet-order probe",
+        ));
+    }
+    Ok(())
 }
 
 fn load_bound_source(
@@ -919,6 +1013,11 @@ fn os_args(prefix: &[&str], last: Option<OsString>) -> Vec<OsString> {
     arguments
 }
 
+struct ToolOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
 fn run_command(
     program: &Path,
     arguments: &[OsString],
@@ -926,6 +1025,16 @@ fn run_command(
     stdout_limit: usize,
     timeout: Duration,
 ) -> Result<Vec<u8>, CorpusError> {
+    Ok(run_command_capture(program, arguments, stdin, stdout_limit, timeout)?.stdout)
+}
+
+fn run_command_capture(
+    program: &Path,
+    arguments: &[OsString],
+    stdin: Option<File>,
+    stdout_limit: usize,
+    timeout: Duration,
+) -> Result<ToolOutput, CorpusError> {
     let stdin = stdin.map_or_else(Stdio::null, Stdio::from);
     let mut child = Command::new(program)
         .args(arguments)
@@ -969,7 +1078,7 @@ fn run_command(
             digest_bytes(&stderr)
         )));
     }
-    Ok(stdout)
+    Ok(ToolOutput { stdout, stderr })
 }
 
 fn read_stream(mut stream: impl Read, limit: usize) -> Result<Vec<u8>, CorpusError> {
@@ -1403,6 +1512,14 @@ mod tests {
     }
 
     #[test]
+    fn packet_probe_rejects_non_ffv1_video() {
+        let mut stream = video_stream(0);
+        stream.codec_name = Some("h264".to_owned());
+        let (observed, _) = observed_stream_contract(&stream).unwrap();
+        assert!(validate_packet_index_contract(&observed).is_err());
+    }
+
+    #[test]
     fn input_format_rejects_secondary_resource_manifests() {
         let temporary = tempdir().unwrap();
         let playlist = temporary.path().join("source.media");
@@ -1545,8 +1662,9 @@ mod tests {
             0o600
         );
         assert!(store.probe_media("fixture-media-1", &probe_path).is_err());
-        let probe: MediaProbeManifest =
+        let mut probe: MediaProbeManifest =
             serde_json::from_slice(&fs::read(&probe_path).unwrap()).unwrap();
+        assert_eq!(probe.index_basis, FrameIndexBasis::Ffv1PacketOrder);
         let extraction_request = private.join("extract.json");
         fs::write(&extraction_request, serde_json::to_vec(&json!({
             "schema": EXTRACT_REQUEST_SCHEMA,
@@ -1590,6 +1708,35 @@ mod tests {
                 .extract_frames(&probe_path, &extraction_request, &extraction_directory)
                 .is_err()
         );
+
+        probe.frames[2].source_pts += 1;
+        let tampered_probe_path = private.join("tampered-probe.json");
+        let tampered_probe_bytes = canonical_json(&probe).unwrap();
+        fs::write(&tampered_probe_path, &tampered_probe_bytes).unwrap();
+        fs::set_permissions(&tampered_probe_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let tampered_probe_sha256 = digest_bytes(&tampered_probe_bytes);
+        let tampered_request = private.join("tampered-extract.json");
+        fs::write(
+            &tampered_request,
+            serde_json::to_vec(&json!({
+                "schema": EXTRACT_REQUEST_SCHEMA,
+                "fixture_id": "fixture-media-1",
+                "source_manifest_sha256": source_manifest.summary().unwrap().source_manifest_sha256,
+                "media_probe_sha256": tampered_probe_sha256,
+                "frames": [
+                    { "frame_id": "frame-media-3", "decode_index": 2, "source_pts": probe.frames[2].source_pts }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let tampered_output = private.join("tampered-extracted");
+        assert!(
+            store
+                .extract_frames(&tampered_probe_path, &tampered_request, &tampered_output)
+                .is_err()
+        );
+        assert!(!tampered_output.exists());
     }
 
     fn sample_probe() -> MediaProbeManifest {
@@ -1623,6 +1770,7 @@ mod tests {
                 color_primaries: None,
             },
             video_stream_index: 0,
+            index_basis: FrameIndexBasis::Ffv1PacketOrder,
             frames: vec![
                 ProbedFrame {
                     decode_index: 0,

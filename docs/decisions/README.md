@@ -14,6 +14,8 @@ authoritative.
 - [ADR 0009: Own game layout in the canonical frame contract](0009-own-layout-in-the-canonical-frame-contract.md)
   supersedes ADR 0008.
 - [ADR 0010: Preserve recordings as reusable dataset roots](0010-preserve-recordings-as-reusable-dataset-roots.md)
+- [ADR 0011: Index FFV1 recordings by packet order](0011-index-ffv1-recordings-by-packet-order.md)
+  supersedes ADR 0010's decoded-frame probing method.
 
 ## Historical
 

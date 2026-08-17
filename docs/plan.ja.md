@@ -3,12 +3,12 @@
 ## 状態
 
 - 初回決定日: 2026-08-15
-- 最終更新日: 2026-08-16
+- 最終更新日: 2026-08-17
 - repository bootstrapとtarget inventory probe: 完了
 - M1.1 catalog contractとlocal federation core: 完了
 - M1.2 live acquisitionとsync orchestration: manual/scheduled syncまで完了
 - M2 observed-profile private corpus、synthetic renderer、label/replay tooling: 完了
-- 元録画をdataset rootとして固定するimport/seal/S3-compatible再利用CLI: 完了
+- 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
 - capture、認識、OCR学習、event daemon: 未着手
 - Bazzite実機検証とprivate corpus収集: 着手（OBS/vkcapture実録画1本のisolated import、seal、verifyまで）
 
