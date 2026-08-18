@@ -201,6 +201,12 @@ is outside this checkpoint.
   verifier rehashes the canonical extraction manifest, full canonical PPM, crop manifest, and crop
   PPM, confirms the fixed ROI against canonical pixels, and recomputes reported RGB L1 before
   returning verified evidence.
+- A versioned complete-pair motion request and artifact contract. Every pair binds adjacent decode
+  indexes from one extraction, requires explicit motion plus exactly twenty semantic row
+  annotations for each frame, rehashes both canonical frames and all 21 crops per frame, and records
+  twenty row RGB L1 values plus their checked aggregate. Measurement never infers a motion label
+  from pixels, creates but does not replace its canonical output, and a separate verifier recomputes
+  the complete artifact.
 - A mise-pinned Python 3.13.7 and uv 0.11.7 offline environment with a committed
   `uv.lock` for PaddleOCR 3.7.0 and PaddlePaddle CPU 3.3.1. Python and its
   approximately 1.2 GiB development environment do not enter the Rust
@@ -284,7 +290,7 @@ is outside this checkpoint.
 
 - `mise run check`, `cargo clippy --locked --workspace --all-targets -- -D
   warnings`, and `cargo test --locked --workspace`: passed on the development
-  host. The current workspace run covered 79 `scorepeek` library tests, 12 binary tests, 54 offline
+  host. The current workspace run covered 79 `scorepeek` library tests, 12 binary tests, 55 offline
   corpus tests, 10 offline Python OCR tests, and the recording-dataset E2E gate.
 - The new title-model requirements regressions preserve baseline scalar coverage, append missing
   catalog characters, increase exact repeated-token CTC alignment length, and reject invalid or
@@ -376,6 +382,13 @@ is outside this checkpoint.
   scrolling minimum 107,403), so no row-only stability threshold is accepted from this clustering.
   A versioned complete-pair verifier and semantic annotations are still required before fixing a
   threshold.
+- The new complete-pair gate generated and independently reverified a private
+  `scorepeek-private-music-list-motion-artifact-v1` for 240 adjacent pairs (the final filter-menu
+  pair remains excluded). It rehashed 480 canonical frames and their complete crop artifacts and
+  retained all 240 motion labels and both sets of row semantics as `unknown: pending-review` rather
+  than deriving ground truth from the measured distribution. Verified aggregate RGB L1 spans 0
+  through 40,782,712. The private request and artifact remain temporary derivatives outside the
+  repository.
 - The same gate normalized selected frames with artifact
   `0441099011fdd09d372d6c9b5e18d6c4f2da2809a653e01f8ccb55756d8658cf`.
   A separately invoked explicit FFmpeg transform produced the same file SHA-256
@@ -520,8 +533,8 @@ is outside this checkpoint.
   flow remain unvalidated. The observed 649 ms CPU process and inference time
   is a single warmed development-host measurement, not a performance gate.
 - The title-model export requirements still have only synthetic contract coverage. The music-list
-  contract has one artifact-bound real-row verification and a continuous-scroll exploratory
-  distribution, but not a complete presentation-annotated pair artifact. No scorepeek-owned
+  contract has one artifact-bound real-row verification and a complete measured pair artifact, but
+  its 240 pair motion states and row presentation annotations still await human review. No scorepeek-owned
   dictionary/model has been trained or exported, and no accepted stability threshold or provisional
   music-list label exists.
 - The live `ObservedFrame`/domain-normalizer/`CanonicalFrame` runtime boundary,
@@ -583,11 +596,11 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Preserve result certainty as the primary gate. Replace the exploratory pair clustering with a
-versioned complete-pair motion artifact that requires all twenty slots, rehashes every referenced
-crop, enforces one motion state per adjacent frame pair, and records aggregate as well as per-row RGB
-L1. Annotate locked/dimmed rows, INFINITAS-blue rows, selected rows, clipped rows, separators, and
-unlock-condition bars before accepting the observed pair-level gap as a profile- and
+Preserve result certainty as the primary gate. Review the 240-pair private motion request against
+the canonical frames and replace each `unknown` motion and row semantic with human-observed
+stationary/scrolling, locked/dimmed, INFINITAS-blue, LEGGENDARIA-purple, selected, clipped,
+separator, unlock-condition, or still-unobservable annotations. Regenerate and verify the immutable
+complete-pair artifact before accepting the observed pair-level gap as a profile- and
 presentation-bound stability threshold. Then deduplicate settled complete non-selected standard
 rows and generate catalog-digest-bound provisional labels; keep locked and non-standard color
 domains quarantined until a measured correction exists. Use the title-model export requirements to implement the

@@ -75,6 +75,8 @@ mise run recognition:title:dictionary:audit -- --catalog-store /absolute/private
 mise run recognition:title:model-export:requirements -- --catalog-store /absolute/private/catalog --baseline-dictionary /absolute/private/models/inference.yml --output /absolute/private/title-model-requirements
 mise run corpus:music-list:observation-draft:inspect -- /absolute/private/music-list-observation-draft.json
 mise run corpus:music-list:observation-draft:verify -- /absolute/private/music-list-observation-draft.json
+mise run corpus:music-list:motion:measure -- --output /absolute/private/music-list-motion-artifact.json /absolute/private/music-list-motion-request.json
+mise run corpus:music-list:motion:verify -- /absolute/private/music-list-motion-artifact.json
 mise run ocr:model:fetch
 mise run ocr:onnx:model:fetch
 mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --output /absolute/private/ocr-result.json
@@ -130,6 +132,17 @@ rehashes both manifests, full canonical frames, and crop bytes, confirms the fix
 canonical frame, and recomputes L1 before returning `evidence_verified: true`. No state in this
 draft schema carries a catalog title or complete-title label. Locked/dimmed and non-standard color
 domains stay quarantined from standard-title training until a versioned correction is measured.
+
+The `scorepeek-private-music-list-motion-request-v1` contract binds each human-annotated adjacent
+frame pair to both complete 21-crop artifacts. It requires exactly twenty semantic row annotations
+for each frame and one explicit `stationary`, `scrolling`, or reason-bearing `unknown` motion state.
+`motion:measure` never derives that state from pixels: it rehashes both canonical frames and every
+crop, records all twenty row RGB L1 sums and their checked aggregate, and creates a canonical
+`scorepeek-private-music-list-motion-artifact-v1` without replacing an existing file. The verify
+entry point recomputes all measurements. Unknown pairs remain measurement evidence but cannot set a
+stability threshold; locked/dimmed, INFINITAS-blue, LEGGENDARIA-purple, selected, clipped,
+separator, and unlock-condition annotations remain explicit rather than being folded into title
+motion.
 
 Python 3.13.7 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
 PaddlePaddle CPU 3.3.1, and their complete dependency graph. The

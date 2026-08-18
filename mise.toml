@@ -245,6 +245,22 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek-corpus -- music-list observation-draft verify "$@"
 '''
 
+[tasks."corpus:music-list:motion:measure"]
+description = "Measure all twenty rows in annotated adjacent music-list frame pairs"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- music-list motion measure "$@"
+'''
+
+[tasks."corpus:music-list:motion:verify"]
+description = "Rehash and verify complete-pair music-list motion artifacts"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- music-list motion verify "$@"
+'''
+
 [tasks."ocr:sync"]
 description = "Synchronize the locked offline OCR development environment"
 run = "uv sync --locked --no-dev"

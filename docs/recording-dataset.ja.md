@@ -155,6 +155,20 @@ mise run corpus:music-list:observation-draft:verify -- /absolute/private/music-l
 `evidence_verified: true`の結果だけを使ってthresholdを固定する。1 frame/slotへの相反annotationは拒否し、`selected`、
 `clipped`、`non_title`、`unknown`は完全titleを持てない。
 
+全20 rowを一つの隣接frame pairとして測る場合は、各frameに20件ちょうどのsemantic annotationと、
+pair全体に`stationary`、`scrolling`または理由付き`unknown`を付けた
+`scorepeek-private-music-list-motion-request-v1`を用意する。測定値からmotion正解を自動推定せず、次の
+入口で両frameの全artifactを再hashして各rowと合計のRGB L1を生成する。
+
+```text
+mise run corpus:music-list:motion:measure -- --output /absolute/private/music-list-motion-artifact.json /absolute/private/music-list-motion-request.json
+mise run corpus:music-list:motion:verify -- /absolute/private/music-list-motion-artifact.json
+```
+
+出力は`scorepeek-private-music-list-motion-artifact-v1`であり、既存fileを置換しない。`unknown` pairは
+分布観測には残せるがthresholdの正解集合へ使わない。両frameのlocked/dimmed、INFINITAS-blue、
+LEGGENDARIA-purple、selected、clipped、separator、unlock-conditionも個別に保持し、標準titleへ暗黙変換しない。
+
 ## generationを固定して保存する
 
 必要な録画をimportしたら、その時点でstoreにある全録画をsealする。

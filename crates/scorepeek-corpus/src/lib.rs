@@ -18,7 +18,8 @@ mod remote;
 pub use dataset::{DatasetSummary, RecordingImportSummary};
 pub use media::{CanonicalFrameExtractionSummary, FrameExtractionSummary, MediaProbeSummary};
 pub use music_list::{
-    MusicListRowObservationSummary, inspect_music_list_row_observation_draft,
+    MusicListMotionSummary, MusicListRowObservationSummary,
+    inspect_music_list_row_observation_draft, measure_music_list_motion, verify_music_list_motion,
     verify_music_list_row_observation_draft,
 };
 pub use remote::DatasetRemoteSummary;

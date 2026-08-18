@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::fs::File;
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
@@ -11,6 +11,8 @@ use crate::{
 };
 
 const OBSERVATION_SCHEMA: &str = "scorepeek-private-music-list-row-observation-draft-v2";
+const MOTION_REQUEST_SCHEMA: &str = "scorepeek-private-music-list-motion-request-v1";
+const MOTION_ARTIFACT_SCHEMA: &str = "scorepeek-private-music-list-motion-artifact-v1";
 const MAX_DOCUMENT_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_OBSERVATIONS: usize = 250_000;
 const MUSIC_LIST_SLOTS: u8 = 20;
@@ -147,6 +149,96 @@ pub struct MusicListRowObservationSummary {
     pub stationary_rgb_l1_max: Option<u64>,
     pub scrolling_rgb_l1_min: Option<u64>,
     pub scrolling_rgb_l1_max: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MusicListMotionRequest {
+    schema: String,
+    catalog_sha256: String,
+    source_manifest_sha256: String,
+    capture_profile_id: String,
+    normalizer_artifact_sha256: String,
+    canonical_layout_sha256: String,
+    pairs: Vec<MusicListMotionPairRequest>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MusicListMotionPairRequest {
+    pair_id: String,
+    first_frame: MusicListPairFrame,
+    second_frame: MusicListPairFrame,
+    motion: PairMotion,
+    first_rows: [PairRowAnnotation; 20],
+    second_rows: [PairRowAnnotation; 20],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MusicListPairFrame {
+    frame_extraction_directory: PathBuf,
+    frame_extraction_sha256: String,
+    crop_directory: PathBuf,
+    crop_manifest_sha256: String,
+    frame_id: String,
+    source_pts: i64,
+    decode_index: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+enum PairMotion {
+    Stationary,
+    Scrolling,
+    Unknown { reason: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(tag = "content", rename_all = "snake_case", deny_unknown_fields)]
+enum PairRowAnnotation {
+    Title { presentation: TitlePresentation },
+    Selected,
+    Clipped { edge: ClippedEdge },
+    NonTitle { kind: NonTitleKind },
+    Unknown { reason: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MusicListMotionArtifact {
+    schema: String,
+    catalog_sha256: String,
+    source_manifest_sha256: String,
+    capture_profile_id: String,
+    normalizer_artifact_sha256: String,
+    canonical_layout_sha256: String,
+    pairs: Vec<MusicListMotionPair>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MusicListMotionPair {
+    pair_id: String,
+    first_frame: MusicListPairFrame,
+    second_frame: MusicListPairFrame,
+    motion: PairMotion,
+    first_rows: [PairRowAnnotation; 20],
+    second_rows: [PairRowAnnotation; 20],
+    row_rgb_l1_sums: [u64; 20],
+    aggregate_rgb_l1_sum: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct MusicListMotionSummary {
+    pub schema: &'static str,
+    pub evidence_verified: bool,
+    pub pair_count: usize,
+    pub stationary_count: usize,
+    pub scrolling_count: usize,
+    pub unknown_count: usize,
+    pub aggregate_rgb_l1_min: Option<u64>,
+    pub aggregate_rgb_l1_max: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -343,6 +435,322 @@ pub fn verify_music_list_row_observation_draft(
     Ok(summary)
 }
 
+/// Measures every row of each annotated adjacent-frame pair and writes a canonical artifact.
+///
+/// The request supplies only human semantic annotations and artifact identities. Motion labels are
+/// never inferred from the measured values. The output is created without replacing an existing
+/// file.
+///
+/// # Errors
+/// Returns an error for a non-canonical request, an invalid or incomplete artifact binding, a
+/// non-adjacent pair, or an existing/unsafe output path.
+pub fn measure_music_list_motion(
+    request_path: impl AsRef<Path>,
+    output_path: impl AsRef<Path>,
+) -> Result<MusicListMotionSummary, CorpusError> {
+    let request_path = request_path.as_ref();
+    let output_path = output_path.as_ref();
+    if !request_path.is_absolute() || !output_path.is_absolute() {
+        return Err(invalid("motion request and output paths must be absolute"));
+    }
+    let request_bytes = read_bounded_regular(request_path)?;
+    let request: MusicListMotionRequest = serde_json::from_slice(&request_bytes)?;
+    if canonical_json(&request)? != request_bytes {
+        return Err(invalid("motion request must be canonical JSON"));
+    }
+    validate_motion_request(&request)?;
+    let domain = motion_domain(
+        &request.catalog_sha256,
+        &request.source_manifest_sha256,
+        &request.capture_profile_id,
+        &request.normalizer_artifact_sha256,
+        &request.canonical_layout_sha256,
+    );
+    let pairs = request
+        .pairs
+        .into_iter()
+        .map(|pair| measure_pair(&domain, pair))
+        .collect::<Result<Vec<_>, _>>()?;
+    let artifact = MusicListMotionArtifact {
+        schema: MOTION_ARTIFACT_SCHEMA.to_owned(),
+        catalog_sha256: request.catalog_sha256,
+        source_manifest_sha256: request.source_manifest_sha256,
+        capture_profile_id: request.capture_profile_id,
+        normalizer_artifact_sha256: request.normalizer_artifact_sha256,
+        canonical_layout_sha256: request.canonical_layout_sha256,
+        pairs,
+    };
+    let summary = summarize_motion(&artifact, true);
+    write_new_canonical(output_path, &artifact)?;
+    Ok(summary)
+}
+
+/// Rehashes every canonical frame and all 21 crops behind a complete-pair motion artifact.
+///
+/// # Errors
+/// Returns an error when the document is non-canonical, an identity or semantic annotation is
+/// invalid, any pair is non-adjacent, or any reported row/aggregate measurement differs.
+pub fn verify_music_list_motion(
+    path: impl AsRef<Path>,
+) -> Result<MusicListMotionSummary, CorpusError> {
+    let path = path.as_ref();
+    if !path.is_absolute() {
+        return Err(invalid("motion artifact path must be absolute"));
+    }
+    let bytes = read_bounded_regular(path)?;
+    let artifact: MusicListMotionArtifact = serde_json::from_slice(&bytes)?;
+    if canonical_json(&artifact)? != bytes || artifact.schema != MOTION_ARTIFACT_SCHEMA {
+        return Err(invalid("motion artifact must be canonical and versioned"));
+    }
+    validate_motion_metadata(
+        &artifact.catalog_sha256,
+        &artifact.source_manifest_sha256,
+        &artifact.capture_profile_id,
+        &artifact.normalizer_artifact_sha256,
+        &artifact.canonical_layout_sha256,
+        artifact.pairs.len(),
+    )?;
+    let domain = motion_domain(
+        &artifact.catalog_sha256,
+        &artifact.source_manifest_sha256,
+        &artifact.capture_profile_id,
+        &artifact.normalizer_artifact_sha256,
+        &artifact.canonical_layout_sha256,
+    );
+    let mut ids = BTreeSet::new();
+    let mut frame_pairs = BTreeSet::new();
+    for pair in &artifact.pairs {
+        validate_pair_identity(pair, &mut ids, &mut frame_pairs)?;
+        validate_row_annotations(&pair.first_rows)?;
+        validate_row_annotations(&pair.second_rows)?;
+        let first = verify_complete_frame_artifacts(&domain, &pair.first_frame)?.1;
+        let second = verify_complete_frame_artifacts(&domain, &pair.second_frame)?.1;
+        let (rows, aggregate) = measure_rows(&first, &second)?;
+        if rows != pair.row_rgb_l1_sums || aggregate != pair.aggregate_rgb_l1_sum {
+            return Err(invalid("motion artifact RGB L1 measurements changed"));
+        }
+    }
+    Ok(summarize_motion(&artifact, true))
+}
+
+fn validate_motion_request(request: &MusicListMotionRequest) -> Result<(), CorpusError> {
+    if request.schema != MOTION_REQUEST_SCHEMA {
+        return Err(invalid("unsupported motion request schema"));
+    }
+    validate_motion_metadata(
+        &request.catalog_sha256,
+        &request.source_manifest_sha256,
+        &request.capture_profile_id,
+        &request.normalizer_artifact_sha256,
+        &request.canonical_layout_sha256,
+        request.pairs.len(),
+    )?;
+    let mut ids = BTreeSet::new();
+    let mut frame_pairs = BTreeSet::new();
+    for pair in &request.pairs {
+        validate_pair_identity(pair, &mut ids, &mut frame_pairs)?;
+        validate_row_annotations(&pair.first_rows)?;
+        validate_row_annotations(&pair.second_rows)?;
+    }
+    Ok(())
+}
+
+fn validate_motion_metadata(
+    catalog_sha256: &str,
+    source_manifest_sha256: &str,
+    capture_profile_id: &str,
+    normalizer_artifact_sha256: &str,
+    canonical_layout_sha256: &str,
+    pair_count: usize,
+) -> Result<(), CorpusError> {
+    for (value, field) in [
+        (catalog_sha256, "catalog_sha256"),
+        (source_manifest_sha256, "source_manifest_sha256"),
+        (normalizer_artifact_sha256, "normalizer_artifact_sha256"),
+        (canonical_layout_sha256, "canonical_layout_sha256"),
+    ] {
+        validate_sha256(value, field, crate::ErrorContext::Replay)?;
+    }
+    validate_token(
+        capture_profile_id,
+        "capture_profile_id",
+        crate::ErrorContext::Replay,
+    )?;
+    if capture_profile_id != CALIBRATED_CAPTURE_PROFILE_SHA256
+        || canonical_layout_sha256 != digest_bytes(CANONICAL_LAYOUT_BYTES)
+        || pair_count == 0
+        || pair_count > MAX_OBSERVATIONS
+    {
+        return Err(invalid("motion artifact domain or pair count is invalid"));
+    }
+    Ok(())
+}
+
+fn validate_pair_identity(
+    pair: &impl MotionPairIdentity,
+    ids: &mut BTreeSet<String>,
+    frame_pairs: &mut BTreeSet<(String, u64, u64)>,
+) -> Result<(), CorpusError> {
+    validate_opaque_id(pair.pair_id(), "pair_id", crate::ErrorContext::Replay)?;
+    pair.first_frame().validate()?;
+    pair.second_frame().validate()?;
+    validate_pair_motion(pair.motion())?;
+    if !ids.insert(pair.pair_id().to_owned())
+        || !frame_pairs.insert((
+            pair.first_frame().frame_extraction_sha256.clone(),
+            pair.first_frame().decode_index,
+            pair.second_frame().decode_index,
+        ))
+        || pair.first_frame().frame_extraction_sha256 != pair.second_frame().frame_extraction_sha256
+        || pair.second_frame().decode_index != pair.first_frame().decode_index.saturating_add(1)
+    {
+        return Err(invalid("motion pairs must be unique adjacent frames"));
+    }
+    Ok(())
+}
+
+trait MotionPairIdentity {
+    fn pair_id(&self) -> &str;
+    fn first_frame(&self) -> &MusicListPairFrame;
+    fn second_frame(&self) -> &MusicListPairFrame;
+    fn motion(&self) -> &PairMotion;
+}
+
+macro_rules! impl_motion_pair_identity {
+    ($type:ty) => {
+        impl MotionPairIdentity for $type {
+            fn pair_id(&self) -> &str {
+                &self.pair_id
+            }
+            fn first_frame(&self) -> &MusicListPairFrame {
+                &self.first_frame
+            }
+            fn second_frame(&self) -> &MusicListPairFrame {
+                &self.second_frame
+            }
+            fn motion(&self) -> &PairMotion {
+                &self.motion
+            }
+        }
+    };
+}
+
+impl_motion_pair_identity!(MusicListMotionPairRequest);
+impl_motion_pair_identity!(MusicListMotionPair);
+
+fn validate_pair_motion(motion: &PairMotion) -> Result<(), CorpusError> {
+    if let PairMotion::Unknown { reason } = motion {
+        validate_token(reason, "unknown motion reason", crate::ErrorContext::Replay)?;
+    }
+    Ok(())
+}
+
+fn validate_row_annotations(rows: &[PairRowAnnotation; 20]) -> Result<(), CorpusError> {
+    for row in rows {
+        if let PairRowAnnotation::Unknown { reason } = row {
+            validate_token(reason, "unknown row reason", crate::ErrorContext::Replay)?;
+        }
+    }
+    Ok(())
+}
+
+fn motion_domain(
+    catalog_sha256: &str,
+    source_manifest_sha256: &str,
+    capture_profile_id: &str,
+    normalizer_artifact_sha256: &str,
+    canonical_layout_sha256: &str,
+) -> MusicListRowObservationDocument {
+    MusicListRowObservationDocument {
+        schema: OBSERVATION_SCHEMA.to_owned(),
+        catalog_sha256: catalog_sha256.to_owned(),
+        source_manifest_sha256: source_manifest_sha256.to_owned(),
+        capture_profile_id: capture_profile_id.to_owned(),
+        normalizer_artifact_sha256: normalizer_artifact_sha256.to_owned(),
+        canonical_layout_sha256: canonical_layout_sha256.to_owned(),
+        observations: Vec::new(),
+    }
+}
+
+fn measure_pair(
+    domain: &MusicListRowObservationDocument,
+    pair: MusicListMotionPairRequest,
+) -> Result<MusicListMotionPair, CorpusError> {
+    let first = verify_complete_frame_artifacts(domain, &pair.first_frame)?.1;
+    let second = verify_complete_frame_artifacts(domain, &pair.second_frame)?.1;
+    let (row_rgb_l1_sums, aggregate_rgb_l1_sum) = measure_rows(&first, &second)?;
+    Ok(MusicListMotionPair {
+        pair_id: pair.pair_id,
+        first_frame: pair.first_frame,
+        second_frame: pair.second_frame,
+        motion: pair.motion,
+        first_rows: pair.first_rows,
+        second_rows: pair.second_rows,
+        row_rgb_l1_sums,
+        aggregate_rgb_l1_sum,
+    })
+}
+
+fn measure_rows(first: &[Vec<u8>], second: &[Vec<u8>]) -> Result<([u64; 20], u64), CorpusError> {
+    if first.len() != 21 || second.len() != 21 {
+        return Err(invalid(
+            "complete-pair measurement requires all twenty rows",
+        ));
+    }
+    let mut rows = [0_u64; 20];
+    for (index, value) in rows.iter_mut().enumerate() {
+        *value = rgb_l1_sum(&first[index + 1], &second[index + 1])?;
+    }
+    let aggregate = rows
+        .iter()
+        .try_fold(0_u64, |sum, value| sum.checked_add(*value))
+        .ok_or(CorpusError::CapacityExceeded)?;
+    Ok((rows, aggregate))
+}
+
+fn summarize_motion(
+    artifact: &MusicListMotionArtifact,
+    evidence_verified: bool,
+) -> MusicListMotionSummary {
+    let mut counts = [0_usize; 3];
+    let mut aggregates = Vec::with_capacity(artifact.pairs.len());
+    for pair in &artifact.pairs {
+        match pair.motion {
+            PairMotion::Stationary => counts[0] += 1,
+            PairMotion::Scrolling => counts[1] += 1,
+            PairMotion::Unknown { .. } => counts[2] += 1,
+        }
+        aggregates.push(pair.aggregate_rgb_l1_sum);
+    }
+    let (aggregate_rgb_l1_min, aggregate_rgb_l1_max) = min_max(&aggregates);
+    MusicListMotionSummary {
+        schema: "scorepeek-music-list-motion-summary-v1",
+        evidence_verified,
+        pair_count: artifact.pairs.len(),
+        stationary_count: counts[0],
+        scrolling_count: counts[1],
+        unknown_count: counts[2],
+        aggregate_rgb_l1_min,
+        aggregate_rgb_l1_max,
+    }
+}
+
+fn write_new_canonical(path: &Path, value: &impl Serialize) -> Result<(), CorpusError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| invalid("motion artifact output has no parent"))?;
+    verify_directory(parent)?;
+    let bytes = canonical_json(value)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
 fn read_bounded_regular(path: &Path) -> Result<Vec<u8>, CorpusError> {
     read_bounded_regular_after_metadata(path, || Ok(()))
 }
@@ -371,7 +779,7 @@ fn read_bounded_regular_after_metadata(
     let capacity = usize::try_from(opened_metadata.len())
         .map_err(|_| invalid("observation document length is not addressable"))?;
     let mut bytes = Vec::with_capacity(capacity);
-    file.by_ref()
+    std::io::Read::by_ref(&mut file)
         .take(MAX_DOCUMENT_BYTES + 1)
         .read_to_end(&mut bytes)?;
     let final_metadata = file.metadata()?;
@@ -533,6 +941,35 @@ fn verify_frame_artifacts(
     slot: u8,
     frame: &MusicListRowFrame,
 ) -> Result<Vec<u8>, CorpusError> {
+    let pair_frame = MusicListPairFrame {
+        frame_extraction_directory: frame.frame_extraction_directory.clone(),
+        frame_extraction_sha256: frame.frame_extraction_sha256.clone(),
+        crop_directory: frame.crop_directory.clone(),
+        crop_manifest_sha256: frame.crop_manifest_sha256.clone(),
+        frame_id: frame.frame_id.clone(),
+        source_pts: frame.source_pts,
+        decode_index: frame.decode_index,
+    };
+    let (crop_manifest, crop_pixels) = verify_complete_frame_artifacts(document, &pair_frame)?;
+    let crop_index = usize::from(slot) + 1;
+    let crop = crop_manifest
+        .crops
+        .get(crop_index)
+        .ok_or_else(|| invalid("music-list slot crop is absent"))?;
+    if crop.file_sha256 != frame.crop_file_sha256 || crop.pixel_sha256 != frame.crop_pixel_sha256 {
+        return Err(invalid("music-list slot crop identity is invalid"));
+    }
+    crop_pixels
+        .into_iter()
+        .nth(crop_index)
+        .ok_or_else(|| invalid("music-list slot crop is absent"))
+}
+
+fn verify_complete_frame_artifacts(
+    document: &MusicListRowObservationDocument,
+    frame: &MusicListPairFrame,
+) -> Result<(MusicSelectCropManifest, Vec<Vec<u8>>), CorpusError> {
+    frame.validate()?;
     verify_directory(&frame.frame_extraction_directory)?;
     let extraction_bytes =
         read_bounded_regular(&frame.frame_extraction_directory.join("manifest.json"))?;
@@ -587,28 +1024,9 @@ fn verify_frame_artifacts(
     {
         return Err(invalid("music-list crop manifest binding is invalid"));
     }
-    validate_complete_crop_artifact(&frame.crop_directory, &crop_manifest, canonical_pixels)?;
-    let expected_field = format!("list_title_{slot:02}");
-    let crop = crop_manifest
-        .crops
-        .iter()
-        .find(|candidate| candidate.field == expected_field)
-        .ok_or_else(|| invalid("music-list slot crop is absent"))?;
-    let expected_roi = CropRoi {
-        x: 1_335,
-        y: 20 + u32::from(slot) * 50,
-        width: 475,
-        height: 45,
-    };
-    if crop.roi != expected_roi
-        || crop.filename.contains('/')
-        || crop.filename.contains('\\')
-        || crop.file_sha256 != frame.crop_file_sha256
-        || crop.pixel_sha256 != frame.crop_pixel_sha256
-    {
-        return Err(invalid("music-list slot crop identity is invalid"));
-    }
-    read_validated_crop_pixels(&frame.crop_directory, crop)
+    let crop_pixels =
+        validate_complete_crop_artifact(&frame.crop_directory, &crop_manifest, canonical_pixels)?;
+    Ok((crop_manifest, crop_pixels))
 }
 
 fn validate_extraction_manifest(
@@ -728,10 +1146,11 @@ fn validate_complete_crop_artifact(
     directory: &Path,
     manifest: &MusicSelectCropManifest,
     canonical_pixels: &[u8],
-) -> Result<(), CorpusError> {
+) -> Result<Vec<Vec<u8>>, CorpusError> {
     if manifest.crops.len() != usize::from(MUSIC_LIST_SLOTS) + 1 {
         return Err(invalid("music-list crop set is incomplete"));
     }
+    let mut verified_pixels = Vec::with_capacity(manifest.crops.len());
     for (index, crop) in manifest.crops.iter().enumerate() {
         let (field, filename, roi) = expected_crop(index)?;
         let expected_bytes = ppm_file_bytes(roi)?;
@@ -758,8 +1177,9 @@ fn validate_complete_crop_artifact(
                 "music-list crop pixels do not match canonical frame",
             ));
         }
+        verified_pixels.push(pixels);
     }
-    Ok(())
+    Ok(verified_pixels)
 }
 
 fn expected_crop(index: usize) -> Result<(String, String, CropRoi), CorpusError> {
@@ -892,6 +1312,21 @@ impl MusicListRowFrame {
     }
 }
 
+impl MusicListPairFrame {
+    fn validate(&self) -> Result<(), CorpusError> {
+        if !self.frame_extraction_directory.is_absolute() || !self.crop_directory.is_absolute() {
+            return Err(invalid("music-list artifact directories must be absolute"));
+        }
+        for (value, field) in [
+            (&self.frame_extraction_sha256, "frame_extraction_sha256"),
+            (&self.crop_manifest_sha256, "crop_manifest_sha256"),
+        ] {
+            validate_sha256(value, field, crate::ErrorContext::Replay)?;
+        }
+        validate_opaque_id(&self.frame_id, "frame_id", crate::ErrorContext::Replay)
+    }
+}
+
 fn validate_motion(
     frame: &MusicListRowFrame,
     adjacent: &MusicListRowFrame,
@@ -974,6 +1409,45 @@ mod tests {
         let mut bytes = format!("P6\n{width} {height}\n255\n").into_bytes();
         bytes.extend_from_slice(pixels);
         bytes
+    }
+
+    fn pair_frame(value: &serde_json::Value) -> serde_json::Value {
+        let mut value = value.clone();
+        let object = value.as_object_mut().unwrap();
+        object.remove("crop_file_sha256");
+        object.remove("crop_pixel_sha256");
+        value
+    }
+
+    fn motion_pair(
+        pair_id: &str,
+        extraction_sha256: &str,
+        first_pts: i64,
+        second_pts: i64,
+    ) -> MusicListMotionPairRequest {
+        let frame = |decode_index, source_pts| MusicListPairFrame {
+            frame_extraction_directory: PathBuf::from("/private/extraction"),
+            frame_extraction_sha256: extraction_sha256.to_owned(),
+            crop_directory: PathBuf::from(format!("/private/crops/{decode_index}")),
+            crop_manifest_sha256: format!("{decode_index:064x}"),
+            frame_id: format!("frame-{decode_index}"),
+            source_pts,
+            decode_index,
+        };
+        MusicListMotionPairRequest {
+            pair_id: pair_id.to_owned(),
+            first_frame: frame(10, first_pts),
+            second_frame: frame(11, second_pts),
+            motion: PairMotion::Unknown {
+                reason: "pending-review".to_owned(),
+            },
+            first_rows: std::array::from_fn(|_| PairRowAnnotation::Unknown {
+                reason: "pending-review".to_owned(),
+            }),
+            second_rows: std::array::from_fn(|_| PairRowAnnotation::Unknown {
+                reason: "pending-review".to_owned(),
+            }),
+        }
     }
 
     #[test]
@@ -1224,6 +1698,59 @@ mod tests {
         value["observations"][0]["annotation"]["adjacent_frame"]["crop_manifest_sha256"] =
             json!(digest_bytes(&complete_manifest_bytes));
         fs::write(&path, canonical(&value)).unwrap();
+
+        let unknown_rows = vec![json!({"content": "unknown", "reason": "pending-review"}); 20];
+        let motion_request: MusicListMotionRequest = serde_json::from_value(json!({
+            "schema": MOTION_REQUEST_SCHEMA,
+            "catalog_sha256": "c".repeat(64),
+            "source_manifest_sha256": source,
+            "capture_profile_id": CALIBRATED_CAPTURE_PROFILE_SHA256,
+            "normalizer_artifact_sha256": normalizer,
+            "canonical_layout_sha256": layout,
+            "pairs": [{
+                "pair_id": "pair-1",
+                "first_frame": pair_frame(&references[0]),
+                "second_frame": pair_frame(&references[1]),
+                "motion": {"state": "unknown", "reason": "pending-review"},
+                "first_rows": unknown_rows,
+                "second_rows": unknown_rows
+            }]
+        }))
+        .unwrap();
+        let motion_request_path = directory.path().join("motion-request.json");
+        let motion_artifact_path = directory.path().join("motion-artifact.json");
+        fs::write(
+            &motion_request_path,
+            canonical_json(&motion_request).unwrap(),
+        )
+        .unwrap();
+        let motion_summary =
+            measure_music_list_motion(&motion_request_path, &motion_artifact_path).unwrap();
+        assert_eq!(motion_summary.pair_count, 1);
+        assert_eq!(motion_summary.unknown_count, 1);
+        assert_eq!(
+            motion_summary.aggregate_rgb_l1_min,
+            Some(MUSIC_LIST_ROW_RGB_VALUES * u64::from(MUSIC_LIST_SLOTS))
+        );
+        assert!(
+            verify_music_list_motion(&motion_artifact_path)
+                .unwrap()
+                .evidence_verified
+        );
+        assert!(
+            measure_music_list_motion(&motion_request_path, &motion_artifact_path).is_err(),
+            "measurement must not replace an existing artifact"
+        );
+        let mut changed_artifact: MusicListMotionArtifact =
+            serde_json::from_slice(&fs::read(&motion_artifact_path).unwrap()).unwrap();
+        changed_artifact.pairs[0].aggregate_rgb_l1_sum += 1;
+        fs::write(
+            &motion_artifact_path,
+            canonical_json(&changed_artifact).unwrap(),
+        )
+        .unwrap();
+        assert!(verify_music_list_motion(&motion_artifact_path).is_err());
+
         let mut tampered = fs::read(second_crop_directory.join("list-title-03.ppm")).unwrap();
         *tampered.last_mut().unwrap() = 2;
         fs::write(second_crop_directory.join("list-title-03.ppm"), tampered).unwrap();
@@ -1246,6 +1773,18 @@ mod tests {
 
         fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
         assert!(inspect_music_list_row_observation_draft(&path).is_err());
+    }
+
+    #[test]
+    fn motion_pair_identity_is_scoped_to_extraction_and_decode_order() {
+        let first = motion_pair("pair-1", &"1".repeat(64), 100, 100);
+        let second = motion_pair("pair-2", &"2".repeat(64), 100, 99);
+        let duplicate = motion_pair("pair-3", &"1".repeat(64), 200, 201);
+        let mut ids = BTreeSet::new();
+        let mut frame_pairs = BTreeSet::new();
+        validate_pair_identity(&first, &mut ids, &mut frame_pairs).unwrap();
+        validate_pair_identity(&second, &mut ids, &mut frame_pairs).unwrap();
+        assert!(validate_pair_identity(&duplicate, &mut ids, &mut frame_pairs).is_err());
     }
 
     #[test]
