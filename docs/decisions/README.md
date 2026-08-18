@@ -25,6 +25,7 @@ authoritative.
 - [ADR 0015: Use provisional private title data during development](0015-use-provisional-private-title-data-during-development.md)
   supersedes ADR 0006 only for private-development training-data source policy.
 - [ADR 0016: Use stationary music-list rows as result-title evidence](0016-use-stationary-list-rows-as-result-title-evidence.md)
+- [ADR 0017: Separate music-list title presentation domains](0017-separate-music-list-title-presentation-domains.md)
 
 ## Historical
 

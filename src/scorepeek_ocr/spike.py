@@ -142,7 +142,7 @@ def load_layout_contract(
     )
     _exact_object(
         music_select["presence"],
-        {"cyan_header_pixels_min", "green_level_pixels_min"},
+        {"cyan_header_pixels_min", "colored_level_pixels_min"},
         "music-select presence predicate",
     )
     for field in ("header", "level_column", "selected_title"):

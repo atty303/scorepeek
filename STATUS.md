@@ -193,10 +193,14 @@ is outside this checkpoint.
   twenty fixed visible-list row slots as a digest-bound private artifact.
   Geometric list slots deliberately preserve separators, clipped rows, and other
   non-title content for downstream rejection instead of silently filtering them.
-- A canonical private music-list row observation-draft contract with mutually exclusive stationary,
-  scrolling, selected, clipped, non-title, and unknown annotations and one annotation per geometric
-  frame/slot. Temporal drafts name adjacent decode indexes and reported full-row RGB L1 values, but
-  inspection explicitly returns unverified evidence and never reads artifacts or admits a title.
+- A canonical private music-list row observation-draft v2 contract with mutually exclusive
+  stationary, scrolling, selected, clipped, non-title, and unknown annotations and one annotation
+  per geometric frame/slot. Temporal drafts record locked/dimmed availability and standard,
+  INFINITAS-blue, or LEGGENDARIA-purple color independently from motion; an inserted unlock-condition
+  bar is explicit non-title content. Inspection remains shape-only and unverified. The separate
+  verifier rehashes the canonical extraction manifest, full canonical PPM, crop manifest, and crop
+  PPM, confirms the fixed ROI against canonical pixels, and recomputes reported RGB L1 before
+  returning verified evidence.
 - A mise-pinned Python 3.13.7 and uv 0.11.7 offline environment with a committed
   `uv.lock` for PaddleOCR 3.7.0 and PaddlePaddle CPU 3.3.1. Python and its
   approximately 1.2 GiB development environment do not enter the Rust
@@ -280,14 +284,17 @@ is outside this checkpoint.
 
 - `mise run check`, `cargo clippy --locked --workspace --all-targets -- -D
   warnings`, and `cargo test --locked --workspace`: passed on the development
-  host. The current workspace run covered 79 `scorepeek` library tests, 12
-  binary tests, 50 offline corpus tests, and 10 offline Python OCR tests.
+  host. The current workspace run covered 79 `scorepeek` library tests, 12 binary tests, 54 offline
+  corpus tests, 10 offline Python OCR tests, and the recording-dataset E2E gate.
 - The new title-model requirements regressions preserve baseline scalar coverage, append missing
   catalog characters, increase exact repeated-token CTC alignment length, and reject invalid or
   empty variant sets. The music-list row regressions cover all six explicit states, require
-  adjacent decode indexes and exact full-row RGB comparison counts for temporal states, reject
+  adjacent decode indexes and exact full-row RGB comparison counts for temporal states, keep
+  locked/dimmed and the two non-standard color domains orthogonal to motion, preserve unlock bars
+  as non-title content, reject
   duplicate annotations of one frame/slot, reject non-canonical documents, and bound reads across
-  path replacement or file growth.
+  path replacement or file growth. Synthetic artifact regressions prove that verification detects
+  crop tampering and recomputes L1 from canonical-frame-bound bytes.
 - Targeted recognition tests passed with the added music-select predicate and
   21-crop artifact contract. The offline OCR contract suite passed 10 tests,
   including exact validation of the selected-title and twenty list-slot files.
@@ -346,6 +353,29 @@ is outside this checkpoint.
   capacity and generation size retained all 14.8 GB. Seal and local full-hash
   verification produced one-recording generation
   `a85711a1fc183a916c3b8ab505744c6cd969ae270efb53b31c774aff72d9c11e`.
+- The deliberately paced HYPER full-list OBS/vkcapture recording was imported copylessly at
+  38,235,570,222 bytes and source SHA-256
+  `f1b5cb9687ee96052be9517056eef58fdc3cd89d96c191b098030ddfc04f2294`.
+  Its 42,325 FFV1 packets retain the same capture profile. Dataset generation
+  `33f568d728caa927dc36be3519448e31e5b8a0d7deb9fd65910d8c22ede117af`
+  binds both recordings, 10 objects, and 53,024,235,103 logical bytes and passed local full-hash
+  verification. No recording copy or visual derivative was committed or pushed.
+- A reproducible exploratory extraction selected 241 adjacent frame pairs from source PTS 120000
+  through 660017 at a 135-decode-index stride. The extractor now compacts regular adjacent runs
+  into one equivalent FFmpeg select expression; the previous one-term-per-index expression failed
+  at this size while a four-frame same-path probe succeeded. All 482 frames normalized to the
+  canonical contract at extraction SHA-256
+  `334cf026266f7eab306ef3ad90c0db2a4ce4388538f040370ed0cafad05f7710`.
+  The difficulty-independent saturated-level predicate classified all 482 as music-select-family
+  frames; observed colored-level counts were 13,357 through 52,095 against the retained 1,000-pixel
+  floor. One visually confirmed complete standard row passed the artifact-bound verifier at
+  recomputed RGB L1 21,673. The temporary extraction and crops remain private derivatives.
+- Exploratory full-list aggregation exposed a clean candidate pair-level motion gap: 183 pairs
+  were at or below 2,279,433 RGB L1 across all twenty slots and 57 were at or above 10,737,346,
+  after excluding the final filter-menu pair. Individual rows overlap (stationary maximum 287,170;
+  scrolling minimum 107,403), so no row-only stability threshold is accepted from this clustering.
+  A versioned complete-pair verifier and semantic annotations are still required before fixing a
+  threshold.
 - The same gate normalized selected frames with artifact
   `0441099011fdd09d372d6c9b5e18d6c4f2da2809a653e01f8ccb55756d8658cf`.
   A separately invoked explicit FFmpeg transform produced the same file SHA-256
@@ -489,10 +519,11 @@ is outside this checkpoint.
   catalog-update recognition replay, event daemon, and the integrated live
   flow remain unvalidated. The observed 649 ms CPU process and inference time
   is a single warmed development-host measurement, not a performance gate.
-- The complete title-model export requirements and music-list row observation-draft contracts have only
-  synthetic contract coverage. They have not been emitted from the retained active catalog or a
-  continuous-scroll recording. No scorepeek-owned dictionary/model has been trained or exported,
-  and no artifact-bound row measurement, stability threshold, or provisional music-list label exists.
+- The title-model export requirements still have only synthetic contract coverage. The music-list
+  contract has one artifact-bound real-row verification and a continuous-scroll exploratory
+  distribution, but not a complete presentation-annotated pair artifact. No scorepeek-owned
+  dictionary/model has been trained or exported, and no accepted stability threshold or provisional
+  music-list label exists.
 - The live `ObservedFrame`/domain-normalizer/`CanonicalFrame` runtime boundary,
   model-bundle promotion, and last-known-good model rollback remain
   unimplemented. Recognition accepts only digest-bound offline canonical
@@ -502,7 +533,8 @@ is outside this checkpoint.
   configuration. Only the non-persistent transient user-manager path was run.
 - Bazzite Portal, Gamescope, OBS, GPU, lifecycle, performance, and soak gates
   remain target-machine-only and unrun.
-- One real OBS/vkcapture game recording has passed isolated import, reimport,
+- Two real OBS/vkcapture game recordings have passed copyless import, generation sealing, and local
+  full-hash verification. The first has also passed reimport,
   seal, local verification, canonical extraction, visual ROI inspection, and
   result-screen classification plus six-field PP-OCRv6 inference. The original
   file is the external dataset root; its copyless manifests and locator are in
@@ -551,17 +583,18 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Preserve result certainty as the primary gate: record and import the planned deliberately paced,
-overlapping full-list music-select sequence. Extract adjacent frames without resampling, then
-implement an artifact-bound row-measurement generator/verifier that rehashes canonical extraction
-and crop artifacts and computes RGB L1 from their bytes. Use the draft annotations only after that
-verification, and calibrate a versioned stability threshold from the recording's adjacent-frame RGB
-L1 distribution. Then deduplicate settled non-selected rows and generate
-catalog-digest-bound provisional labels. Use the title-model export requirements to implement the
+Preserve result certainty as the primary gate. Replace the exploratory pair clustering with a
+versioned complete-pair motion artifact that requires all twenty slots, rehashes every referenced
+crop, enforces one motion state per adjacent frame pair, and records aggregate as well as per-row RGB
+L1. Annotate locked/dimmed rows, INFINITAS-blue rows, selected rows, clipped rows, separators, and
+unlock-condition bars before accepting the observed pair-level gap as a profile- and
+presentation-bound stability threshold. Then deduplicate settled complete non-selected standard
+rows and generate catalog-digest-bound provisional labels; keep locked and non-standard color
+domains quarantined until a measured correction exists. Use the title-model export requirements to implement the
 offline scorepeek-owned dictionary/training/export record without silently dropping a catalog
 variant. After complete dictionary coverage is available, execute replay over the two result
 observations and the larger music-select set before fixing absolute or runner-up thresholds. Do not
-tune thresholds from the current single recording, promote diagnostic commands into accepted
+tune recognition thresholds from the current two recordings, promote diagnostic commands into accepted
 recognition, recognize bare PPM or `ObservedFrame`, auto-download a runtime model, or treat the OBS
 profile, current ROIs, confidence, timing, or diagnostic thresholds as supported.
 

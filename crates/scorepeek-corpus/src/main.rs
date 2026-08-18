@@ -5,6 +5,7 @@ use std::process::ExitCode;
 
 use scorepeek_corpus::{
     CorpusStore, inspect_music_list_row_observation_draft, render_synthetic_title_set,
+    verify_music_list_row_observation_draft,
 };
 
 fn main() -> ExitCode {
@@ -29,6 +30,17 @@ fn run(args: &[OsString]) -> Result<(), String> {
                 format!("music-list row observation draft inspection failed: {error}")
             })?;
         return print_json(&summary, "music-list row observation draft inspection");
+    }
+    if let [music_list, observation, verify, document] = args
+        && music_list == "music-list"
+        && observation == "observation-draft"
+        && verify == "verify"
+    {
+        let summary =
+            verify_music_list_row_observation_draft(PathBuf::from(document)).map_err(|error| {
+                format!("music-list row observation draft verification failed: {error}")
+            })?;
+        return print_json(&summary, "music-list row observation draft verification");
     }
     if let Some(result) = run_dataset(args) {
         return result;
@@ -131,7 +143,7 @@ fn run_legacy(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "usage: scorepeek-corpus <recording import --store ROOT --capture-context CONTEXT [--external] RECORDING|dataset seal|push|pull|verify|remote-verify ...|ingest --store ROOT SOURCE REQUEST|generation seal --store ROOT GENERATION_ID|label author --store ROOT DOCUMENT|index generate --store ROOT PLAN|media probe --store ROOT --output MANIFEST FIXTURE_ID|media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST|canonical extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect DOCUMENT|replay validate --store ROOT SUITE>"
+            "usage: scorepeek-corpus <recording import --store ROOT --capture-context CONTEXT [--external] RECORDING|dataset seal|push|pull|verify|remote-verify ...|ingest --store ROOT SOURCE REQUEST|generation seal --store ROOT GENERATION_ID|label author --store ROOT DOCUMENT|index generate --store ROOT PLAN|media probe --store ROOT --output MANIFEST FIXTURE_ID|media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST|canonical extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|replay validate --store ROOT SUITE>"
                 .to_owned(),
         ),
     }
@@ -309,7 +321,7 @@ fn print_json(value: &impl serde::Serialize, context: &str) -> Result<(), String
 
 fn print_usage() {
     println!(
-        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus recording import --store ROOT --capture-context CONTEXT [--external] RECORDING\n  scorepeek-corpus dataset seal --store ROOT DATASET_ID\n  scorepeek-corpus dataset push --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus dataset pull --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus dataset verify --store ROOT GENERATION_SHA256\n  scorepeek-corpus dataset remote-verify --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus ingest --store ROOT SOURCE REQUEST\n  scorepeek-corpus generation seal --store ROOT GENERATION_ID\n  scorepeek-corpus label author --store ROOT DOCUMENT\n  scorepeek-corpus index generate --store ROOT PLAN\n  scorepeek-corpus media probe --store ROOT --output MANIFEST FIXTURE_ID\n  scorepeek-corpus media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST\n  scorepeek-corpus canonical extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST\n  scorepeek-corpus synthetic render --output DIRECTORY REQUEST\n  scorepeek-corpus replay validate --store ROOT SUITE",
+        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus recording import --store ROOT --capture-context CONTEXT [--external] RECORDING\n  scorepeek-corpus dataset seal --store ROOT DATASET_ID\n  scorepeek-corpus dataset push --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus dataset pull --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus dataset verify --store ROOT GENERATION_SHA256\n  scorepeek-corpus dataset remote-verify --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus ingest --store ROOT SOURCE REQUEST\n  scorepeek-corpus generation seal --store ROOT GENERATION_ID\n  scorepeek-corpus label author --store ROOT DOCUMENT\n  scorepeek-corpus index generate --store ROOT PLAN\n  scorepeek-corpus media probe --store ROOT --output MANIFEST FIXTURE_ID\n  scorepeek-corpus media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST\n  scorepeek-corpus canonical extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST\n  scorepeek-corpus synthetic render --output DIRECTORY REQUEST\n  scorepeek-corpus music-list observation-draft inspect DOCUMENT\n  scorepeek-corpus music-list observation-draft verify DOCUMENT\n  scorepeek-corpus replay validate --store ROOT SUITE",
         env!("CARGO_PKG_VERSION")
     );
 }

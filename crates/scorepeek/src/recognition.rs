@@ -428,7 +428,7 @@ pub struct MusicSelectLayout {
 #[serde(deny_unknown_fields)]
 struct MusicSelectPresencePredicate {
     cyan_header_pixels_min: u32,
-    green_level_pixels_min: u32,
+    colored_level_pixels_min: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
@@ -564,8 +564,8 @@ pub struct ResultPresenceEvidence {
 pub struct MusicSelectPresenceEvidence {
     pub cyan_header_pixels: u32,
     pub cyan_header_pixels_min: u32,
-    pub green_level_pixels: u32,
-    pub green_level_pixels_min: u32,
+    pub colored_level_pixels: u32,
+    pub colored_level_pixels_min: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -638,9 +638,9 @@ impl CanonicalLayout {
         if layout.music_select.list_titles.slots == 0
             || layout.music_select.list_titles.stride_y == 0
             || layout.music_select.presence.cyan_header_pixels_min == 0
-            || layout.music_select.presence.green_level_pixels_min == 0
+            || layout.music_select.presence.colored_level_pixels_min == 0
             || layout.music_select.presence.cyan_header_pixels_min > header_pixels
-            || layout.music_select.presence.green_level_pixels_min > level_pixels
+            || layout.music_select.presence.colored_level_pixels_min > level_pixels
         {
             return Err(RecognitionError::InvalidCanonicalLayout);
         }
@@ -680,11 +680,13 @@ pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, Recognitio
         })
         .fold(0_u32, |count, _| count + 1);
     let level_column = frame.crop(layout.music_select.level_column)?;
-    let green_level_pixels = level_column
+    let colored_level_pixels = level_column
         .chunks_exact(3)
         .filter(|pixel| {
             let [r, g, b] = [pixel[0], pixel[1], pixel[2]];
-            g > 130 && u16::from(g) * 2 > u16::from(r) * 3 && u16::from(g) * 5 > u16::from(b) * 6
+            let maximum = r.max(g).max(b);
+            let minimum = r.min(g).min(b);
+            maximum > 130 && maximum - minimum > 60
         })
         .fold(0_u32, |count, _| count + 1);
     let screen = if warm >= layout.result.presence.warm_pixels_min
@@ -692,14 +694,14 @@ pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, Recognitio
     {
         ScreenClass::Result
     } else if cyan_header_pixels >= layout.music_select.presence.cyan_header_pixels_min
-        && green_level_pixels >= layout.music_select.presence.green_level_pixels_min
+        && colored_level_pixels >= layout.music_select.presence.colored_level_pixels_min
     {
         ScreenClass::MusicSelect
     } else {
         ScreenClass::Unknown
     };
     Ok(RecognitionSnapshot {
-        schema: "scorepeek-recognition-spike-v2".to_owned(),
+        schema: "scorepeek-recognition-spike-v3".to_owned(),
         canonical_frame_sha256: encode_sha256(frame.pixels()),
         normalizer_artifact_sha256: frame.normalizer_artifact_sha256.clone(),
         frame_extraction_sha256: frame.frame_extraction_sha256.clone(),
@@ -714,8 +716,8 @@ pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, Recognitio
         music_select_presence: MusicSelectPresenceEvidence {
             cyan_header_pixels,
             cyan_header_pixels_min: layout.music_select.presence.cyan_header_pixels_min,
-            green_level_pixels,
-            green_level_pixels_min: layout.music_select.presence.green_level_pixels_min,
+            colored_level_pixels,
+            colored_level_pixels_min: layout.music_select.presence.colored_level_pixels_min,
         },
     })
 }
@@ -1057,7 +1059,7 @@ mod tests {
                 + index / layout.music_select.header.width as usize;
             pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&[20, 160, 220]);
         }
-        for index in 0..layout.music_select.presence.green_level_pixels_min as usize {
+        for index in 0..layout.music_select.presence.colored_level_pixels_min as usize {
             let x = layout.music_select.level_column.x as usize
                 + index % layout.music_select.level_column.width as usize;
             let y = layout.music_select.level_column.y as usize
@@ -1068,7 +1070,7 @@ mod tests {
         let snapshot = inspect(&frame).unwrap();
         assert_eq!(snapshot.screen, ScreenClass::MusicSelect);
         assert_eq!(snapshot.music_select_presence.cyan_header_pixels, 7_000);
-        assert_eq!(snapshot.music_select_presence.green_level_pixels, 1_000);
+        assert_eq!(snapshot.music_select_presence.colored_level_pixels, 1_000);
 
         let directory = tempdir().unwrap();
         let output = directory.path().join("music-select-crops");

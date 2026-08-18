@@ -74,6 +74,7 @@ mise run recognition:music-select:crop -- --extraction /absolute/private/canonic
 mise run recognition:title:dictionary:audit -- --catalog-store /absolute/private/catalog --dictionary /absolute/private/models/inference.yml
 mise run recognition:title:model-export:requirements -- --catalog-store /absolute/private/catalog --baseline-dictionary /absolute/private/models/inference.yml --output /absolute/private/title-model-requirements
 mise run corpus:music-list:observation-draft:inspect -- /absolute/private/music-list-observation-draft.json
+mise run corpus:music-list:observation-draft:verify -- /absolute/private/music-list-observation-draft.json
 mise run ocr:model:fetch
 mise run ocr:onnx:model:fetch
 mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --output /absolute/private/ocr-result.json
@@ -117,15 +118,18 @@ whose title is hidden at either edge do not receive a complete-title target. Tem
 thresholds require a representative continuous-scroll recording; the current two frames are not a
 calibration set.
 
-The `scorepeek-private-music-list-row-observation-draft-v1` document makes each geometric slot
+The `scorepeek-private-music-list-row-observation-draft-v2` document makes each geometric slot
 exactly one of `stationary`, `scrolling`, `selected`, `clipped`, `non_title`, or `unknown`, and
 rejects a second annotation for the same frame and slot. Stationary and scrolling drafts must name
-an adjacent decode index and report an integer full-row RGB L1 measurement. The inspection command
+an adjacent decode index, report an integer full-row RGB L1 measurement, and independently identify
+available versus locked/dimmed pixels and standard, INFINITAS-blue, or LEGGENDARIA-purple text.
+An unlock-condition bar is explicit non-title content, never a hidden title. The inspection command
 validates only canonical shape and ranges: it does not read extraction/crop artifacts, recompute
-L1, or return verified evidence (`evidence_verified` is always false). A later artifact-bound
-generator/verifier must rehash both manifests and crop bytes and compute L1 before any draft may
-participate in threshold calibration or provisional-label generation. No state in this draft
-schema carries a catalog title or complete-title label.
+L1, or return verified evidence (`evidence_verified` is always false). The verification command
+rehashes both manifests, full canonical frames, and crop bytes, confirms the fixed crop against the
+canonical frame, and recomputes L1 before returning `evidence_verified: true`. No state in this
+draft schema carries a catalog title or complete-title label. Locked/dimmed and non-standard color
+domains stay quarantined from standard-title training until a versioned correction is measured.
 
 Python 3.13.7 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
 PaddlePaddle CPU 3.3.1, and their complete dependency graph. The

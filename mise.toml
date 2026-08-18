@@ -237,6 +237,14 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek-corpus -- music-list observation-draft inspect "$@"
 '''
 
+[tasks."corpus:music-list:observation-draft:verify"]
+description = "Rehash music-list row artifacts and verify reported RGB L1 measurements"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- music-list observation-draft verify "$@"
+'''
+
 [tasks."ocr:sync"]
 description = "Synchronize the locked offline OCR development environment"
 run = "uv sync --locked --no-dev"

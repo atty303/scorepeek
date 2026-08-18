@@ -132,18 +132,27 @@ frameから垂直移動が止まったことを確認できる非選択rowにだ
 現在は実scroll sequenceから安定度分布をまだ測っていないため、録画後にthresholdを固定するまで
 自動採用しない。この収録はresult-only holdoutを代替せず、result画面は得られる範囲で別途保持する。
 
-row annotationのdraftは`scorepeek-private-music-list-row-observation-draft-v1`として保存し、次の
+row annotationのdraftは`scorepeek-private-music-list-row-observation-draft-v2`として保存し、次の
 入口でshapeを検査する。
 
 ```text
 mise run corpus:music-list:observation-draft:inspect -- /absolute/private/music-list-observation-draft.json
 ```
 
-`stationary`と`scrolling`のdraftは同じcanonical extraction内の隣接decode index、両cropの
+`stationary`と`scrolling`のdraftは、可用性を`available`または`locked_dimmed`、文字色domainを
+`standard`、`infinitas_blue`または`leggendaria_purple`として移動状態とは独立に記録する。選択した
+未解禁rowの直下に挿入される解禁条件barは`non_title: unlock_condition`であり、前後の曲名を
+割り当てない。同じcanonical extraction内の隣接decode index、両cropの
 file/pixel SHA-256、申告RGB L1差分合計、および比較したRGB値数を必須とする。ただしこの入口は
 artifactを読まず、L1を再計算せず、常に`evidence_verified: false`を返す。draftを校正入力として
-使ってはならない。次にartifact-bound generator/verifierを実装し、両manifestとcrop bytesを再hash
-してL1を算出してからthresholdを固定する。1 frame/slotへの相反annotationは拒否し、`selected`、
+使ってはならない。artifact-bound検証は次の入口で両manifest、canonical frame、crop bytesを
+再hashし、cropがcanonical frameの固定ROIと一致することとRGB L1を再計算する。
+
+```text
+mise run corpus:music-list:observation-draft:verify -- /absolute/private/music-list-observation-draft.json
+```
+
+`evidence_verified: true`の結果だけを使ってthresholdを固定する。1 frame/slotへの相反annotationは拒否し、`selected`、
 `clipped`、`non_title`、`unknown`は完全titleを持てない。
 
 ## generationを固定して保存する

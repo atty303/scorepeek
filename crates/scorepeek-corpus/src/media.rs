@@ -980,12 +980,7 @@ fn run_extraction(
         .permissions(fs::Permissions::from_mode(0o700))
         .tempdir_in(parent)?;
     write_owned_marker(staging.path(), STAGING_MARKER, STAGING_MARKER_BYTES)?;
-    let select = request
-        .frames
-        .iter()
-        .map(|frame| format!("eq(n\\,{})", frame.decode_index))
-        .collect::<Vec<_>>()
-        .join("+");
+    let select = frame_select_expression(&request.frames);
     let filter = normalization_filter.map_or_else(
         || format!("select={select},showinfo"),
         |normalizer| format!("select={select},{normalizer},showinfo"),
@@ -1058,6 +1053,58 @@ fn run_extraction(
         return Err(invalid_media("extractor produced an unexpected file set"));
     }
     Ok((staging, extracted, extracted_bytes))
+}
+
+fn frame_select_expression(frames: &[RequestedFrame]) -> String {
+    let mut runs = Vec::new();
+    let mut start = frames[0].decode_index;
+    let mut end = start;
+    for frame in &frames[1..] {
+        if frame.decode_index == end + 1 {
+            end = frame.decode_index;
+            continue;
+        }
+        runs.push((start, end));
+        start = frame.decode_index;
+        end = start;
+    }
+    runs.push((start, end));
+    if let Some(expression) = regular_run_select_expression(&runs) {
+        return expression;
+    }
+    runs.into_iter()
+        .map(|(start, end)| select_run(start, end))
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+fn regular_run_select_expression(runs: &[(u64, u64)]) -> Option<String> {
+    let [(first_start, first_end), (second_start, second_end), ..] = runs else {
+        return None;
+    };
+    let width = first_end.checked_sub(*first_start)?;
+    let stride = second_start.checked_sub(*first_start)?;
+    if stride == 0
+        || second_end.checked_sub(*second_start)? != width
+        || !runs.windows(2).all(|pair| {
+            pair[1].0.checked_sub(pair[0].0) == Some(stride)
+                && pair[1].1.checked_sub(pair[1].0) == Some(width)
+        })
+    {
+        return None;
+    }
+    let last_end = runs.last()?.1;
+    Some(format!(
+        "between(n\\,{first_start}\\,{last_end})*lte(mod(n-{first_start}\\,{stride})\\,{width})"
+    ))
+}
+
+fn select_run(start: u64, end: u64) -> String {
+    if start == end {
+        format!("eq(n\\,{start})")
+    } else {
+        format!("between(n\\,{start}\\,{end})")
+    }
 }
 
 fn validate_selected_frame_pts(
@@ -1735,6 +1782,38 @@ mod tests {
         request.frames[1].source_pts = 667;
         request.frames.swap(0, 1);
         assert!(request.validate_against(&probe, &digest).is_err());
+    }
+
+    #[test]
+    fn adjacent_requested_frames_compact_into_select_ranges() {
+        let frames = [10_u64, 11, 20, 21, 22, 30]
+            .into_iter()
+            .map(|decode_index| RequestedFrame {
+                frame_id: format!("frame-{decode_index}"),
+                decode_index,
+                source_pts: i64::try_from(decode_index).unwrap(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            frame_select_expression(&frames),
+            "between(n\\,10\\,11)+between(n\\,20\\,22)+eq(n\\,30)"
+        );
+    }
+
+    #[test]
+    fn regular_adjacent_pairs_compact_into_one_select_expression() {
+        let frames = [100_u64, 101, 235, 236, 370, 371]
+            .into_iter()
+            .map(|decode_index| RequestedFrame {
+                frame_id: format!("frame-{decode_index}"),
+                decode_index,
+                source_pts: i64::try_from(decode_index).unwrap(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            frame_select_expression(&frames),
+            "between(n\\,100\\,371)*lte(mod(n-100\\,135)\\,1)"
+        );
     }
 
     #[test]
