@@ -10,7 +10,7 @@ use futures_util::StreamExt as _;
 use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey, S3CopyIfNotExists};
 use object_store::buffered::BufWriter;
 use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStore, ObjectStoreExt};
+use object_store::{ObjectStore, ObjectStoreExt, PutMode};
 use serde::{Deserialize, Serialize};
 use tempfile::Builder;
 use tokio::io::{AsyncWriteExt as _, copy};
@@ -21,6 +21,7 @@ use super::*;
 const REMOTE_SCHEMA: &str = "scorepeek-corpus-s3-remote-v1";
 const REMOTE_SUMMARY_SCHEMA: &str = "scorepeek-corpus-remote-summary-v1";
 const TRANSFER_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+const CONDITIONAL_PUT_FALLBACK_BYTES: u64 = 64 * 1024 * 1024;
 static REMOTE_STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -736,11 +737,14 @@ async fn stage_and_publish_file(
         {
             return Err(remote_error("staged remote object was not readable"));
         }
-        let disposition = match store.copy_if_not_exists(staging_path, final_path).await {
-            Ok(()) => RemotePublishDisposition::Transferred,
-            Err(object_store::Error::AlreadyExists { .. }) => RemotePublishDisposition::Reused,
-            Err(_) => return Err(remote_error("remote object publication failed")),
-        };
+        let disposition = publish_staged_object(
+            Arc::clone(&store),
+            staging_path,
+            final_path,
+            expected_sha256,
+            expected_bytes,
+        )
+        .await?;
         if !remote_matches(
             Arc::clone(&store),
             final_path,
@@ -786,11 +790,14 @@ async fn stage_and_publish_bytes(
         {
             return Err(remote_error("staged remote object was not readable"));
         }
-        let disposition = match store.copy_if_not_exists(staging_path, final_path).await {
-            Ok(()) => RemotePublishDisposition::Transferred,
-            Err(object_store::Error::AlreadyExists { .. }) => RemotePublishDisposition::Reused,
-            Err(_) => return Err(remote_error("remote object publication failed")),
-        };
+        let disposition = publish_staged_object(
+            Arc::clone(&store),
+            staging_path,
+            final_path,
+            expected_sha256,
+            expected_bytes,
+        )
+        .await?;
         if !remote_matches(
             Arc::clone(&store),
             final_path,
@@ -811,6 +818,78 @@ async fn stage_and_publish_bytes(
     };
     cleanup?;
     operation
+}
+
+async fn publish_staged_object(
+    store: Arc<dyn ObjectStore>,
+    staging_path: &ObjectPath,
+    final_path: &ObjectPath,
+    expected_sha256: &str,
+    expected_bytes: u64,
+) -> Result<RemotePublishDisposition, CorpusError> {
+    match store.copy_if_not_exists(staging_path, final_path).await {
+        Ok(()) => Ok(RemotePublishDisposition::Transferred),
+        Err(object_store::Error::AlreadyExists { .. }) => Ok(RemotePublishDisposition::Reused),
+        Err(_) => {
+            let bytes = read_remote_bytes_bounded(
+                Arc::clone(&store),
+                staging_path,
+                expected_sha256,
+                expected_bytes,
+                CONDITIONAL_PUT_FALLBACK_BYTES,
+            )
+            .await?;
+            match store
+                .put_opts(final_path, bytes.into(), PutMode::Create.into())
+                .await
+            {
+                Ok(_) => Ok(RemotePublishDisposition::Transferred),
+                Err(object_store::Error::AlreadyExists { .. }) => {
+                    Ok(RemotePublishDisposition::Reused)
+                }
+                Err(_) => Err(remote_error("remote object publication failed")),
+            }
+        }
+    }
+}
+
+async fn read_remote_bytes_bounded(
+    store: Arc<dyn ObjectStore>,
+    remote_path: &ObjectPath,
+    expected_sha256: &str,
+    expected_bytes: u64,
+    maximum_bytes: u64,
+) -> Result<Vec<u8>, CorpusError> {
+    if expected_bytes > maximum_bytes {
+        return Err(remote_error(
+            "remote conditional publication fallback exceeded its size limit",
+        ));
+    }
+    let result = store
+        .get(remote_path)
+        .await
+        .map_err(|_| remote_error("staged remote object download failed"))?;
+    if result.meta.size != expected_bytes || result.range != (0..expected_bytes) {
+        return Err(remote_error("staged remote object changed before download"));
+    }
+    let capacity = usize::try_from(expected_bytes).map_err(|_| CorpusError::CapacityExceeded)?;
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut stream = result.into_stream();
+    let mut hasher = Sha256::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| remote_error("staged remote object download failed"))?;
+        if bytes.len().saturating_add(chunk.len()) > capacity {
+            return Err(remote_error(
+                "staged remote object exceeded its declared size",
+            ));
+        }
+        hasher.update(&chunk);
+        bytes.extend_from_slice(&chunk);
+    }
+    if bytes.len() != capacity || encode_digest(hasher.finalize()) != expected_sha256 {
+        return Err(remote_error("staged remote object digest differs"));
+    }
+    Ok(bytes)
 }
 
 async fn remote_matches(

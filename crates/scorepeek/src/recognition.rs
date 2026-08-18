@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
-use std::fs::File;
-use std::io::Read as _;
-use std::path::Path;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read as _, Write as _};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -33,6 +33,7 @@ pub enum RecognitionError {
     Json(serde_json::Error),
     InvalidCanonicalFrame,
     InvalidCanonicalLayout,
+    NotResultScreen,
 }
 
 impl std::fmt::Display for RecognitionError {
@@ -42,6 +43,7 @@ impl std::fmt::Display for RecognitionError {
             Self::Json(error) => write!(formatter, "canonical layout JSON failed: {error}"),
             Self::InvalidCanonicalFrame => formatter.write_str("canonical frame is invalid"),
             Self::InvalidCanonicalLayout => formatter.write_str("canonical layout is invalid"),
+            Self::NotResultScreen => formatter.write_str("canonical frame is not a result screen"),
         }
     }
 }
@@ -346,7 +348,7 @@ fn canonical_evidence_json(value: &impl Serialize) -> Result<Vec<u8>, serde_json
     Ok(bytes)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Roi {
     pub x: u32,
@@ -380,7 +382,10 @@ pub struct ResultLayout {
     presence: ResultPresencePredicate,
     pub header: Roi,
     pub title: Roi,
-    pub metadata: Roi,
+    pub artist: Roi,
+    pub difficulty: Roi,
+    pub level: Roi,
+    pub notes: Roi,
     pub current_score: Roi,
 }
 
@@ -407,6 +412,45 @@ pub struct RecognitionSnapshot {
     pub canonical_layout_sha256: String,
     pub screen: ScreenClass,
     pub result_presence: ResultPresenceEvidence,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ResultCropArtifact {
+    pub schema: String,
+    pub frame_id: String,
+    pub frame_extraction_sha256: String,
+    pub canonical_frame_sha256: String,
+    pub normalizer_artifact_sha256: String,
+    pub canonical_layout_sha256: String,
+    pub crops: Vec<ResultCropEvidence>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ResultCropEvidence {
+    pub field: ResultCropField,
+    pub filename: String,
+    pub roi: Roi,
+    pub pixel_sha256: String,
+    pub file_sha256: String,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultCropField {
+    Title,
+    Artist,
+    Difficulty,
+    Level,
+    Notes,
+    CurrentScore,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ResultCropExportSummary {
+    pub schema: String,
+    pub output: PathBuf,
+    pub manifest_sha256: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -444,7 +488,10 @@ impl CanonicalLayout {
         for roi in [
             layout.result.header,
             layout.result.title,
-            layout.result.metadata,
+            layout.result.artist,
+            layout.result.difficulty,
+            layout.result.level,
+            layout.result.notes,
             layout.result.current_score,
         ] {
             roi.validate(layout.width, layout.height)?;
@@ -510,6 +557,104 @@ pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, Recognitio
             red_pixels_min: layout.result.presence.red_pixels_min,
         },
     })
+}
+
+/// Exports the fixed result-layout crops from a validated canonical frame.
+///
+/// The output directory must not exist. `manifest.json` is written last, so a partial export is
+/// never accepted as a complete crop artifact.
+///
+/// # Errors
+/// Returns an error for a non-result screen, an invalid layout, or any output I/O failure.
+pub fn export_result_crops(
+    frame: &CanonicalFrame,
+    frame_id: &str,
+    output: impl AsRef<Path>,
+) -> Result<ResultCropExportSummary, RecognitionError> {
+    if frame_id.is_empty() || frame_id.len() > 256 || frame_id.chars().any(char::is_control) {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
+    let snapshot = inspect(frame)?;
+    if snapshot.screen != ScreenClass::Result {
+        return Err(RecognitionError::NotResultScreen);
+    }
+    let output = output.as_ref();
+    fs::create_dir(output)?;
+    set_private_directory(output)?;
+
+    let layout = CanonicalLayout::load()?;
+    let selections = [
+        (ResultCropField::Title, "title.ppm", layout.result.title),
+        (ResultCropField::Artist, "artist.ppm", layout.result.artist),
+        (
+            ResultCropField::Difficulty,
+            "difficulty.ppm",
+            layout.result.difficulty,
+        ),
+        (ResultCropField::Level, "level.ppm", layout.result.level),
+        (ResultCropField::Notes, "notes.ppm", layout.result.notes),
+        (
+            ResultCropField::CurrentScore,
+            "current-score.ppm",
+            layout.result.current_score,
+        ),
+    ];
+    let mut crops = Vec::with_capacity(selections.len());
+    for (field, filename, roi) in selections {
+        let pixels = frame.crop(roi)?;
+        let header = format!("P6\n{} {}\n255\n", roi.width, roi.height);
+        let mut bytes = Vec::with_capacity(header.len() + pixels.len());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(&pixels);
+        write_private_file(&output.join(filename), &bytes)?;
+        crops.push(ResultCropEvidence {
+            field,
+            filename: filename.to_owned(),
+            roi,
+            pixel_sha256: encode_sha256(&pixels),
+            file_sha256: encode_sha256(&bytes),
+            bytes: bytes.len() as u64,
+        });
+    }
+    let artifact = ResultCropArtifact {
+        schema: "scorepeek-private-canonical-result-crops-v1".to_owned(),
+        frame_id: frame_id.to_owned(),
+        frame_extraction_sha256: snapshot.frame_extraction_sha256,
+        canonical_frame_sha256: snapshot.canonical_frame_sha256,
+        normalizer_artifact_sha256: snapshot.normalizer_artifact_sha256,
+        canonical_layout_sha256: snapshot.canonical_layout_sha256,
+        crops,
+    };
+    let manifest = canonical_evidence_json(&artifact)?;
+    write_private_file(&output.join("manifest.json"), &manifest)?;
+    Ok(ResultCropExportSummary {
+        schema: "scorepeek-result-crop-export-summary-v1".to_owned(),
+        output: output.to_path_buf(),
+        manifest_sha256: encode_sha256(&manifest),
+    })
+}
+
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), RecognitionError> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn set_private_directory(path: &Path) -> Result<(), RecognitionError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -586,6 +731,65 @@ mod tests {
 
         let empty = test_frame(vec![0_u8; CANONICAL_BYTES]);
         assert_eq!(inspect(&empty).unwrap().screen, ScreenClass::Unknown);
+    }
+
+    #[test]
+    fn result_crops_are_layout_bound_and_digest_bound() {
+        let layout = CanonicalLayout::load().unwrap();
+        let mut pixels = vec![0_u8; CANONICAL_BYTES];
+        let warm = [140, 100, 60];
+        let red = [90, 20, 20];
+        for index in 0..layout.result.presence.warm_pixels_min as usize {
+            let x = layout.result.header.x as usize + index % layout.result.header.width as usize;
+            let y = layout.result.header.y as usize + index / layout.result.header.width as usize;
+            pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&warm);
+        }
+        for index in 0..layout.result.presence.red_pixels_min as usize {
+            let x = layout.result.header.x as usize + index % layout.result.header.width as usize;
+            let y = layout.result.header.y as usize + layout.result.header.height as usize
+                - 1
+                - index / layout.result.header.width as usize;
+            pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&red);
+        }
+        let directory = tempdir().unwrap();
+        let output = directory.path().join("crops");
+        let summary = export_result_crops(&test_frame(pixels), "result-001", &output).unwrap();
+        let manifest = fs::read(output.join("manifest.json")).unwrap();
+        assert_eq!(summary.manifest_sha256, encode_sha256(&manifest));
+        let artifact: ResultCropArtifactForTest = serde_json::from_slice(&manifest).unwrap();
+        assert_eq!(
+            artifact.schema,
+            "scorepeek-private-canonical-result-crops-v1"
+        );
+        assert_eq!(artifact.crops.len(), 6);
+        assert_eq!(artifact.crops[0].field, "title");
+        assert_eq!(artifact.crops[0].roi, layout.result.title);
+        assert_eq!(artifact.crops[0].bytes, 600 * 100 * 3 + 15);
+        assert_eq!(artifact.crops[0].file_sha256.len(), 64);
+        assert_eq!(artifact.crops[0].pixel_sha256.len(), 64);
+        assert!(
+            export_result_crops(
+                &test_frame(vec![0; CANONICAL_BYTES]),
+                "empty",
+                directory.path().join("unknown")
+            )
+            .is_err()
+        );
+    }
+
+    #[derive(Deserialize)]
+    struct ResultCropArtifactForTest {
+        schema: String,
+        crops: Vec<ResultCropEvidenceForTest>,
+    }
+
+    #[derive(Deserialize)]
+    struct ResultCropEvidenceForTest {
+        field: String,
+        roi: Roi,
+        pixel_sha256: String,
+        file_sha256: String,
+        bytes: u64,
     }
 
     #[test]
