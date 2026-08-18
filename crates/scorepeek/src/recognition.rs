@@ -8,14 +8,23 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 mod title;
+mod title_decoder;
 mod title_onnx;
+mod title_preprocessor;
 
 pub use title::{
     DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
     DiagnosticTitleCandidate, DiagnosticTitleError, DiagnosticTitleUnknownReason,
     diagnostic_title_candidate,
 };
-pub use title_onnx::{OnnxParityError, OnnxParitySummary, compare_paddle_onnx};
+pub use title_decoder::{
+    CatalogTitleDecision, CatalogTitleDecoderError, CatalogTitleUnknownReason,
+    DiagnosticTitleThresholds, TITLE_DICTIONARY_SHA256, score_catalog_titles,
+};
+pub use title_onnx::{
+    OnnxParityError, OnnxParitySummary, OnnxTitleDiagnosticRequest, compare_paddle_onnx,
+};
+pub use title_preprocessor::{TITLE_PREPROCESSOR_ID, preprocess_title_crop};
 
 const CANONICAL_WIDTH: u32 = 1_920;
 const CANONICAL_HEIGHT: u32 = 1_080;
@@ -424,7 +433,8 @@ pub struct RecognitionSnapshot {
     pub result_presence: ResultPresenceEvidence,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResultCropArtifact {
     pub schema: String,
     pub frame_id: String,
@@ -435,7 +445,8 @@ pub struct ResultCropArtifact {
     pub crops: Vec<ResultCropEvidence>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResultCropEvidence {
     pub field: ResultCropField,
     pub filename: String,
@@ -445,7 +456,7 @@ pub struct ResultCropEvidence {
     pub bytes: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResultCropField {
     Title,
@@ -641,6 +652,89 @@ pub fn export_result_crops(
         output: output.to_path_buf(),
         manifest_sha256: encode_sha256(&manifest),
     })
+}
+
+pub(super) fn read_title_crop_artifact(
+    directory: &Path,
+    expected_manifest_sha256: &str,
+) -> Result<(Roi, Vec<u8>), RecognitionError> {
+    if !directory.is_absolute()
+        || !directory.symlink_metadata()?.is_dir()
+        || !valid_sha256(expected_manifest_sha256)
+    {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
+    let manifest_bytes = read_bounded_regular(
+        &directory.join("manifest.json"),
+        MAX_EXTRACTION_MANIFEST_BYTES,
+        None,
+    )?;
+    if encode_sha256(&manifest_bytes) != expected_manifest_sha256 {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
+    let artifact: ResultCropArtifact = serde_json::from_slice(&manifest_bytes)?;
+    if canonical_evidence_json(&artifact)? != manifest_bytes
+        || artifact.schema != "scorepeek-private-canonical-result-crops-v1"
+        || artifact.frame_id.is_empty()
+        || !valid_sha256(&artifact.frame_extraction_sha256)
+        || !valid_sha256(&artifact.canonical_frame_sha256)
+        || !valid_sha256(&artifact.normalizer_artifact_sha256)
+        || artifact.canonical_layout_sha256 != CanonicalLayout::sha256()
+    {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
+    let layout = CanonicalLayout::load()?;
+    let expected = [
+        (ResultCropField::Title, "title.ppm", layout.result.title),
+        (ResultCropField::Artist, "artist.ppm", layout.result.artist),
+        (
+            ResultCropField::Difficulty,
+            "difficulty.ppm",
+            layout.result.difficulty,
+        ),
+        (ResultCropField::Level, "level.ppm", layout.result.level),
+        (ResultCropField::Notes, "notes.ppm", layout.result.notes),
+        (
+            ResultCropField::CurrentScore,
+            "current-score.ppm",
+            layout.result.current_score,
+        ),
+    ];
+    if artifact.crops.len() != expected.len() {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
+    let mut title = None;
+    for (crop, (field, filename, roi)) in artifact.crops.iter().zip(expected) {
+        let header = format!("P6\n{} {}\n255\n", roi.width, roi.height);
+        let expected_bytes = header.len() as u64 + u64::from(roi.width) * u64::from(roi.height) * 3;
+        if crop.field != field
+            || crop.filename != filename
+            || crop.roi != roi
+            || crop.bytes != expected_bytes
+            || !valid_sha256(&crop.pixel_sha256)
+            || !valid_sha256(&crop.file_sha256)
+        {
+            return Err(RecognitionError::InvalidCanonicalFrame);
+        }
+        let bytes = read_bounded_regular(
+            &directory.join(filename),
+            expected_bytes,
+            Some(expected_bytes),
+        )?;
+        if encode_sha256(&bytes) != crop.file_sha256 {
+            return Err(RecognitionError::InvalidCanonicalFrame);
+        }
+        let pixels = bytes
+            .strip_prefix(header.as_bytes())
+            .ok_or(RecognitionError::InvalidCanonicalFrame)?;
+        if encode_sha256(pixels) != crop.pixel_sha256 {
+            return Err(RecognitionError::InvalidCanonicalFrame);
+        }
+        if field == ResultCropField::Title {
+            title = Some((roi, pixels.to_vec()));
+        }
+    }
+    title.ok_or(RecognitionError::InvalidCanonicalFrame)
 }
 
 fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), RecognitionError> {

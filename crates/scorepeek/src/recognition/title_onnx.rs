@@ -10,26 +10,37 @@ use ort::value::Tensor;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use super::title_decoder::{
+    CatalogTitleDecision, CatalogTitleDecoderError, DiagnosticTitleThresholds,
+    TITLE_DICTIONARY_SHA256, score_catalog_titles,
+};
+use super::title_preprocessor::{
+    TITLE_INPUT_SHAPE, TITLE_INPUT_VALUES, TITLE_PREPROCESSOR_ID, preprocess_title_crop,
+};
+use super::{RecognitionError, read_title_crop_artifact};
+use crate::catalog::Catalog;
+
 const MODEL_MANIFEST_BYTES: &[u8] =
     include_bytes!("../../../../models/manifests/pp-ocrv6-small-rec-onnx-v1.json");
 const MODEL_MANIFEST_SHA256: &str =
     "48cc68b16e785c4b2a0fa2a7764bb1ac6e87e9199065f5bea090a94fca97ee6c";
 const MODEL_BYTES: u64 = 21_159_378;
-const INPUT_SHAPE: [usize; 4] = [1, 3, 48, 320];
 const OUTPUT_SHAPE: [usize; 3] = [1, 40, 18_710];
 const OUTPUT_CLASSES: u32 = 18_710;
-const INPUT_BYTES: u64 = 3 * 48 * 320 * 4;
+const INPUT_BYTES: u64 = TITLE_INPUT_VALUES as u64 * 4;
 const OUTPUT_BYTES: u64 = 40 * 18_710 * 4;
 const MAX_REFERENCE_MANIFEST_BYTES: u64 = 256 * 1024;
 const MAX_TENSOR_ABSOLUTE_ERROR: f32 = 2e-5;
+const MAX_INPUT_ABSOLUTE_ERROR: f32 = 1e-6;
 const MAX_CANDIDATE_LOG_PROBABILITY_ERROR: f64 = 1e-3;
-const PREPROCESSOR_ID: &str = "paddlex-3.7.0-bgr-rec-resize-3x48x320-v1";
 
 #[derive(Debug)]
 pub enum OnnxParityError {
     Io(std::io::Error),
     Json(serde_json::Error),
     Ort(ort::Error),
+    Recognition(RecognitionError),
+    CatalogDecoder(CatalogTitleDecoderError),
     InvalidArtifact,
     TensorMismatch,
     TokenOrderMismatch,
@@ -42,6 +53,10 @@ impl std::fmt::Display for OnnxParityError {
             Self::Io(error) => write!(formatter, "ONNX parity I/O failed: {error}"),
             Self::Json(error) => write!(formatter, "ONNX parity JSON failed: {error}"),
             Self::Ort(error) => write!(formatter, "ONNX Runtime failed: {error}"),
+            Self::Recognition(error) => write!(formatter, "title crop validation failed: {error}"),
+            Self::CatalogDecoder(error) => {
+                write!(formatter, "catalog title scoring failed: {error}")
+            }
             Self::InvalidArtifact => formatter.write_str("ONNX parity artifact is invalid"),
             Self::TensorMismatch => formatter.write_str("Paddle and ONNX tensors differ"),
             Self::TokenOrderMismatch => formatter.write_str("Paddle and ONNX token order differs"),
@@ -69,6 +84,18 @@ impl From<serde_json::Error> for OnnxParityError {
 impl From<ort::Error> for OnnxParityError {
     fn from(error: ort::Error) -> Self {
         Self::Ort(error)
+    }
+}
+
+impl From<RecognitionError> for OnnxParityError {
+    fn from(error: RecognitionError) -> Self {
+        Self::Recognition(error)
+    }
+}
+
+impl From<CatalogTitleDecoderError> for OnnxParityError {
+    fn from(error: CatalogTitleDecoderError) -> Self {
+        Self::CatalogDecoder(error)
     }
 }
 
@@ -170,63 +197,65 @@ pub struct OnnxParitySummary {
     pub schema: &'static str,
     pub reference_manifest_sha256: String,
     pub onnx_model_sha256: String,
+    pub catalog_sha256: String,
+    pub dictionary_sha256: &'static str,
+    pub preprocessor_id: &'static str,
+    pub thresholds: DiagnosticTitleThresholds,
+    pub maximum_input_absolute_error: f32,
     pub maximum_tensor_absolute_error: f32,
     pub maximum_candidate_log_probability_error: f64,
     pub argmax_token_order_matches: bool,
     pub collapsed_token_order_matches: bool,
     pub candidate_ranking_matches: bool,
     pub top_candidate_song_id: String,
+    pub catalog_title_decision: CatalogTitleDecision,
 }
 
-/// Compares one digest-bound Paddle reference against the registered ONNX graph.
+#[derive(Clone, Copy, Debug)]
+pub struct OnnxTitleDiagnosticRequest<'a> {
+    pub model_path: &'a Path,
+    pub reference_directory: &'a Path,
+    pub reference_sha256: &'a str,
+    pub crop_directory: &'a Path,
+    pub catalog_sha256: &'a str,
+    pub inference_yml: &'a Path,
+}
+
+struct VerifiedTitleInputs {
+    model_manifest: OnnxModelManifest,
+    model_bytes: Vec<u8>,
+    reference: ParityReference,
+    rust_input: Vec<f32>,
+    paddle_output: Vec<f32>,
+    maximum_input_absolute_error: f32,
+}
+
+/// Runs the registered Rust preprocessor and ONNX graph against one verified title crop.
 ///
-/// This diagnostic consumes the preprocessed tensor from the reference artifact. It does not
-/// accept a bare image and does not create an accepted recognition result.
+/// The Paddle reference remains an independent parity oracle for the complete input and output
+/// tensors. Exact registered-dictionary titles from the identified active catalog are then scored
+/// through a shared CTC trie. This diagnostic does not create an accepted recognition result.
 ///
 /// # Errors
 /// Returns an error for unregistered model bytes, invalid reference evidence, tensor drift,
 /// token-order drift, or candidate-ranking drift.
 pub fn compare_paddle_onnx(
-    model_path: impl AsRef<Path>,
-    reference_directory: impl AsRef<Path>,
-    expected_reference_sha256: &str,
+    request: OnnxTitleDiagnosticRequest<'_>,
+    catalog: &Catalog,
+    thresholds: DiagnosticTitleThresholds,
 ) -> Result<OnnxParitySummary, OnnxParityError> {
-    if !valid_sha256(expected_reference_sha256) {
-        return Err(OnnxParityError::InvalidArtifact);
-    }
-    let model_manifest = OnnxModelManifest::load_registered()?;
-    let model_bytes = read_exact_regular(model_path.as_ref(), MODEL_BYTES)?;
-    if encode_sha256(&model_bytes) != model_manifest.sha256 {
-        return Err(OnnxParityError::InvalidArtifact);
-    }
+    let verified = load_verified_title_inputs(&request)?;
 
-    let reference_directory = reference_directory.as_ref();
-    if !reference_directory.is_absolute() || !reference_directory.symlink_metadata()?.is_dir() {
-        return Err(OnnxParityError::InvalidArtifact);
-    }
-    let manifest_bytes = read_bounded_regular(
-        &reference_directory.join("manifest.json"),
-        MAX_REFERENCE_MANIFEST_BYTES,
-    )?;
-    if encode_sha256(&manifest_bytes) != expected_reference_sha256 {
-        return Err(OnnxParityError::InvalidArtifact);
-    }
-    let reference: ParityReference = serde_json::from_slice(&manifest_bytes)?;
-    reference.validate(&model_manifest)?;
-
-    let input_bytes = reference.input.read(reference_directory)?;
-    let paddle_bytes = reference.paddle_output.read(reference_directory)?;
-    let input = decode_f32(&input_bytes)?;
-    let paddle_output = decode_f32(&paddle_bytes)?;
-
-    let mut session = Session::builder()?.commit_from_memory(&model_bytes)?;
+    let mut session = Session::builder()?.commit_from_memory(&verified.model_bytes)?;
     if session.inputs().len() != 1 || session.outputs().len() != 1 {
         return Err(OnnxParityError::InvalidArtifact);
     }
-    let input_tensor = Tensor::from_array((INPUT_SHAPE, input))?;
+    let input_tensor = Tensor::from_array((TITLE_INPUT_SHAPE, verified.rust_input))?;
     let outputs = session.run(ort::inputs![input_tensor])?;
     let (output_shape, onnx_output) = outputs[0].try_extract_tensor::<f32>()?;
-    if output_shape.as_ref() != [1_i64, 40, 18_710] || onnx_output.len() != paddle_output.len() {
+    if output_shape.as_ref() != [1_i64, 40, 18_710]
+        || onnx_output.len() != verified.paddle_output.len()
+    {
         return Err(OnnxParityError::InvalidArtifact);
     }
     if onnx_output
@@ -238,7 +267,7 @@ pub fn compare_paddle_onnx(
 
     let maximum_tensor_absolute_error = onnx_output
         .iter()
-        .zip(&paddle_output)
+        .zip(&verified.paddle_output)
         .map(|(onnx, paddle)| (onnx - paddle).abs())
         .fold(0.0_f32, f32::max);
     if maximum_tensor_absolute_error > MAX_TENSOR_ABSOLUTE_ERROR {
@@ -246,16 +275,16 @@ pub fn compare_paddle_onnx(
     }
 
     let (argmax, collapsed) = argmax_tokens(onnx_output, OUTPUT_SHAPE[1], OUTPUT_SHAPE[2])?;
-    if argmax != reference.argmax_token_order {
+    if argmax != verified.reference.argmax_token_order {
         return Err(OnnxParityError::TokenOrderMismatch);
     }
-    if collapsed != reference.collapsed_token_order {
+    if collapsed != verified.reference.collapsed_token_order {
         return Err(OnnxParityError::TokenOrderMismatch);
     }
 
-    let mut ranked = Vec::with_capacity(reference.candidate_ranking.len());
+    let mut ranked = Vec::with_capacity(verified.reference.candidate_ranking.len());
     let mut maximum_candidate_error = 0.0_f64;
-    for candidate in &reference.candidate_ranking {
+    for candidate in &verified.reference.candidate_ranking {
         let score = ctc_log_probability(
             onnx_output,
             OUTPUT_SHAPE[1],
@@ -270,7 +299,8 @@ pub fn compare_paddle_onnx(
         return Err(OnnxParityError::CandidateRankingMismatch);
     }
     ranked.sort_by(|left, right| right.1.total_cmp(&left.1).then_with(|| left.0.cmp(right.0)));
-    let expected: Vec<_> = reference
+    let expected: Vec<_> = verified
+        .reference
         .candidate_ranking
         .iter()
         .map(|candidate| candidate.song_id.as_str())
@@ -279,17 +309,73 @@ pub fn compare_paddle_onnx(
     if actual != expected {
         return Err(OnnxParityError::CandidateRankingMismatch);
     }
+    let catalog_title_decision =
+        score_catalog_titles(onnx_output, catalog, request.inference_yml, thresholds)?;
 
     Ok(OnnxParitySummary {
-        schema: "scorepeek-ocr-onnx-parity-summary-v1",
-        reference_manifest_sha256: expected_reference_sha256.to_owned(),
-        onnx_model_sha256: model_manifest.sha256,
+        schema: "scorepeek-ocr-onnx-title-diagnostic-v1",
+        reference_manifest_sha256: request.reference_sha256.to_owned(),
+        onnx_model_sha256: verified.model_manifest.sha256,
+        catalog_sha256: request.catalog_sha256.to_owned(),
+        dictionary_sha256: TITLE_DICTIONARY_SHA256,
+        preprocessor_id: TITLE_PREPROCESSOR_ID,
+        thresholds,
+        maximum_input_absolute_error: verified.maximum_input_absolute_error,
         maximum_tensor_absolute_error,
         maximum_candidate_log_probability_error: maximum_candidate_error,
         argmax_token_order_matches: true,
         collapsed_token_order_matches: true,
         candidate_ranking_matches: true,
         top_candidate_song_id: actual[0].to_owned(),
+        catalog_title_decision,
+    })
+}
+
+fn load_verified_title_inputs(
+    request: &OnnxTitleDiagnosticRequest<'_>,
+) -> Result<VerifiedTitleInputs, OnnxParityError> {
+    if !valid_sha256(request.reference_sha256) || !valid_sha256(request.catalog_sha256) {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    let model_manifest = OnnxModelManifest::load_registered()?;
+    let model_bytes = read_exact_regular(request.model_path, MODEL_BYTES)?;
+    if encode_sha256(&model_bytes) != model_manifest.sha256 {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    if !request.reference_directory.is_absolute()
+        || !request.reference_directory.symlink_metadata()?.is_dir()
+    {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    let manifest_bytes = read_bounded_regular(
+        &request.reference_directory.join("manifest.json"),
+        MAX_REFERENCE_MANIFEST_BYTES,
+    )?;
+    if encode_sha256(&manifest_bytes) != request.reference_sha256 {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    let reference: ParityReference = serde_json::from_slice(&manifest_bytes)?;
+    reference.validate(&model_manifest)?;
+    let input = decode_f32(&reference.input.read(request.reference_directory)?)?;
+    let paddle_output = decode_f32(&reference.paddle_output.read(request.reference_directory)?)?;
+    let (title_roi, title_pixels) =
+        read_title_crop_artifact(request.crop_directory, &reference.crop_manifest_sha256)?;
+    let rust_input = preprocess_title_crop(&title_pixels, title_roi)?;
+    let maximum_input_absolute_error = rust_input
+        .iter()
+        .zip(&input)
+        .map(|(rust, paddle)| (rust - paddle).abs())
+        .fold(0.0_f32, f32::max);
+    if maximum_input_absolute_error > MAX_INPUT_ABSOLUTE_ERROR {
+        return Err(OnnxParityError::TensorMismatch);
+    }
+    Ok(VerifiedTitleInputs {
+        model_manifest,
+        model_bytes,
+        reference,
+        rust_input,
+        paddle_output,
+        maximum_input_absolute_error,
     })
 }
 
@@ -307,10 +393,10 @@ impl ParityReference {
             || self.onnx_model_sha256 != model.sha256
             || self.paddle_inference_json_sha256 != model.paddle_inference_json_sha256
             || self.paddle_inference_yml_sha256 != model.paddle_inference_yml_sha256
-            || self.preprocessor_id != PREPROCESSOR_ID
+            || self.preprocessor_id != TITLE_PREPROCESSOR_ID
             || self.input.filename != "input.f32le"
             || self.input.bytes != INPUT_BYTES
-            || self.input.shape != INPUT_SHAPE
+            || self.input.shape != TITLE_INPUT_SHAPE
             || self.paddle_output.filename != "paddle-output.f32le"
             || self.paddle_output.bytes != OUTPUT_BYTES
             || self.paddle_output.shape != OUTPUT_SHAPE

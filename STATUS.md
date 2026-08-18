@@ -203,17 +203,21 @@ is outside this checkpoint.
   JSON/YAML hashes as the registered Paddle model. Explicit offline acquisition
   verifies and publishes that file below the same content-addressed model store;
   the Rust command never downloads a model.
-- A diagnostic Paddle/Rust parity path. The uv-locked Python producer accepts
+- A diagnostic Paddle/Rust title path. The uv-locked Python producer accepts
   only a digest-bound canonical crop artifact, the registered Paddle model, and
   a canonical private candidate list. It retains the verified crop bytes and
   runs Paddle from a temporary snapshot of the verified registered model bytes,
   then writes the exact preprocessed float32 tensor, Paddle graph output, token
   orders, and CTC-constrained candidate scores to a digest-bound private
-  reference. Rust uses ONNX Runtime 1.28 through
-  `ort` 2.0.0-rc.13, verifies the registered graph and reference bytes, and
-  fails if the complete output tensor exceeds the fixed absolute-error bound or
-  token order/candidate scores/ranking differ. It consumes the reference tensor
-  and produces only aggregate evidence, not free OCR text or an accepted title.
+  reference. Rust uses ONNX Runtime 1.28 through `ort` 2.0.0-rc.13, verifies the
+  registered graph, dictionary, reference, and bound crop bytes, independently
+  reproduces the complete 3x48x320 BGR/resize/normalize input, and fails if the
+  input/output tensors, token order, or parity candidate scores/ranking exceed
+  their bounds. It then tokenizes every exactly encodable non-search title in
+  the identified active catalog without normalization, scores their shared CTC
+  trie, and returns a song only when explicit diagnostic absolute and runner-up
+  bounds pass. Ties, unencodable catalogs, and insufficient evidence remain
+  `unknown`; the command produces no free OCR text or accepted title.
 - A Rust diagnostic title-candidate bridge with versioned comparison key
   `scorepeek-title-nfc-without-ascii-space-v1`. It applies NFC and removes only
   U+0020, preserves case, punctuation, other whitespace, and all other
@@ -256,7 +260,7 @@ is outside this checkpoint.
 
 - `mise run check`, `cargo clippy --locked --workspace --all-targets -- -D
   warnings`, and `cargo test --locked --workspace`: passed on the development
-  host. The current workspace run covered 68 `scorepeek` library tests, 12
+  host. The current workspace run covered 75 `scorepeek` library tests, 12
   binary tests, 44 offline corpus tests, and 8 offline Python OCR tests.
 - `mise run catalog:schedule:systemd:verify`: passed without installing the
   release binary or user units.
@@ -355,6 +359,16 @@ is outside this checkpoint.
   artifacts remained outside the repository. A locked release build linked the
   CPU ONNX Runtime statically and changed the development-host `scorepeek`
   binary from 7,217,016 to 35,456,552 bytes.
+- The Rust preprocessor reproduced all 46,080 Paddle input values for the same
+  real title crop with maximum absolute error `0.0`. Against a freshly synced
+  active three-source catalog at digest
+  `65a8e164f3cb28e20c09114eecc3eb7200d32ed7c7383c7c04432053b78411eb`,
+  the final diagnostic returned `catalog_coverage_incomplete` even with log
+  probability `-1000` and runner-up margin `0` thresholds because some
+  non-search titles cannot be exactly encoded by the registered dictionary.
+  No song was promoted from the coverage-incomplete catalog. Synthetic
+  regressions independently exercise exact CTC scoring, ties, insufficient
+  absolute/runner-up evidence, and the coverage-incomplete fail-closed branch.
 - The tests use synthetic, independently created fixture data only.
 - An isolated live `scorepeek catalog sync` resolved Tachi commit
   `4ef9ca588424e1a98dc73421a49dd8efe3b37ddd`, validated and privately cached its
@@ -409,10 +423,10 @@ is outside this checkpoint.
   artist, difficulty, level, notes, and current-score text; the title omitted
   one internal whitespace despite high confidence. The diagnostic exact-key
   bridge restores that whitespace through one unique catalog candidate. The
-  diagnostic parity gate now covers the official graph's post-softmax CTC
-  tensor, token order, and a three-candidate ranking, but its preprocessed input
-  is still produced by PaddleOCR. A Rust image preprocessor, full-catalog trie
-  scoring, calibrated absolute/runner-up bounds, temporal agreement, independent
+  diagnostic parity gate now covers the Rust-produced input, official graph's
+  post-softmax CTC tensor, token order, the reference's three-candidate ranking,
+  and exact active-catalog trie scoring. Calibrated absolute/runner-up bounds,
+  complete active-catalog dictionary coverage, temporal agreement, independent
   screen context, and accepted title semantics remain unimplemented.
   Music-select layout, scorepeek-owned model export, replay execution,
   catalog-update recognition replay, event daemon, and the integrated live
@@ -472,15 +486,16 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Implement the smallest versioned Rust title preprocessor for the registered
-3x48x320 BGR resize/normalize contract, and compare its complete input tensor
-against the Paddle-produced reference for the current crop. Then replace the
-three-candidate diagnostic input with exact active-catalog tokenization and trie
-scoring while preserving unknown on unencodable titles or insufficient
-absolute/runner-up evidence. Do not promote the current open-text or parity
-commands into accepted recognition, recognize bare PPM or `ObservedFrame`,
-auto-download a runtime model, or treat the OBS profile, current ROIs,
-confidence, timing, or candidate thresholds as supported.
+Implement the smallest value-free, catalog-digest-bound registered-dictionary
+coverage audit, split by non-search variant kind, and use it to define the next
+scorepeek-owned dictionary/model export boundary without silently dropping an
+unencodable variant. After complete coverage is available, add digest-bound
+replay execution over human-labelled independent sessions/titles before fixing
+absolute or runner-up thresholds. Do not tune thresholds from the current
+single recording, promote diagnostic commands into accepted recognition,
+recognize bare PPM or `ObservedFrame`, auto-download a runtime model, or treat
+the OBS profile, current ROIs, confidence, timing, or diagnostic thresholds as
+supported.
 
 S3 replication and another profile are intentionally deferred. When capture
 work resumes, start **M3** with narrow Portal and Gamescope direct observed

@@ -10,8 +10,8 @@
 - M2 observed-profile private corpus、synthetic renderer、label/replay tooling: 完了
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
 - M4 offline canonical/recognition spike: 着手（OBS/vkcapture実録画からnormalizer、共通result layout、
-  fail-closed screen判定、title cropのPaddle/公式ONNX/Rust CTC parityまで）
-- scorepeek-owned OCR学習/export、field認識、live capture、event daemon: 未着手
+  fail-closed screen判定、title cropのRust前処理/Paddle/公式ONNX CTC parity、active catalog trie診断まで）
+- scorepeek-owned OCR学習/export、accepted field認識、live capture、event daemon: 未着手
 - Bazzite実機検証とprivate corpus収集: 着手（OBS/vkcapture実録画1本のcopyless isolated
   import、canonical変換、目視確認まで）
 

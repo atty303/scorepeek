@@ -242,7 +242,7 @@ exec uv run --locked --no-dev python -m scorepeek_ocr.parity "$@"
 '''
 
 [tasks."ocr:parity:run"]
-description = "Compare registered ONNX inference with a digest-bound Paddle reference"
+description = "Run Rust/Paddle/ONNX parity and diagnostic active-catalog title scoring"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail

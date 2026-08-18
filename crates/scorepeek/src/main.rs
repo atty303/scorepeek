@@ -24,6 +24,9 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &[OsString]) -> Result<(), String> {
+    if let Some(result) = try_title_onnx_parity(args) {
+        return result;
+    }
     match args {
         [command] if command == "doctor" => {
             println!("{}", inventory::collect().to_json());
@@ -84,23 +87,6 @@ fn run(args: &[OsString]) -> Result<(), String> {
         {
             diagnostic_title_spike(store, text, confidence)
         }
-        [
-            recognition,
-            parity,
-            model_flag,
-            model,
-            reference_flag,
-            reference,
-            digest_flag,
-            digest,
-        ] if recognition == "recognition"
-            && parity == "title-onnx-parity"
-            && model_flag == "--model"
-            && reference_flag == "--reference"
-            && digest_flag == "--reference-sha256" =>
-        {
-            title_onnx_parity(model, reference, digest)
-        }
         [flag] if flag == "--help" || flag == "-h" => {
             print_usage();
             Ok(())
@@ -111,6 +97,54 @@ fn run(args: &[OsString]) -> Result<(), String> {
         }
         _ => Err("usage: scorepeek --help".to_owned()),
     }
+}
+
+fn try_title_onnx_parity(args: &[OsString]) -> Option<Result<(), String>> {
+    let [
+        recognition,
+        parity,
+        model_flag,
+        model,
+        reference_flag,
+        reference,
+        digest_flag,
+        digest,
+        crop_flag,
+        crop,
+        store_flag,
+        store,
+        dictionary_flag,
+        dictionary,
+        minimum_score_flag,
+        minimum_score,
+        minimum_margin_flag,
+        minimum_margin,
+    ] = args
+    else {
+        return None;
+    };
+    (recognition == "recognition"
+        && parity == "title-onnx-parity"
+        && model_flag == "--model"
+        && reference_flag == "--reference"
+        && digest_flag == "--reference-sha256"
+        && crop_flag == "--crop-artifact"
+        && store_flag == "--catalog-store"
+        && dictionary_flag == "--dictionary"
+        && minimum_score_flag == "--minimum-log-probability"
+        && minimum_margin_flag == "--minimum-runner-up-margin")
+        .then(|| {
+            title_onnx_parity([
+                model,
+                reference,
+                digest,
+                crop,
+                store,
+                dictionary,
+                minimum_score,
+                minimum_margin,
+            ])
+        })
 }
 
 fn inspect_canonical_frame(
@@ -204,15 +238,42 @@ fn diagnostic_title_spike(
     Ok(())
 }
 
-fn title_onnx_parity(
-    model: &OsStr,
-    reference: &OsStr,
-    reference_sha256: &OsStr,
-) -> Result<(), String> {
+fn title_onnx_parity(arguments: [&OsStr; 8]) -> Result<(), String> {
+    let [
+        model,
+        reference,
+        reference_sha256,
+        crop,
+        catalog_store,
+        dictionary,
+        minimum_log_probability,
+        minimum_runner_up_margin,
+    ] = arguments;
     let reference_sha256 = reference_sha256
         .to_str()
         .ok_or_else(|| "parity reference SHA-256 must be UTF-8".to_owned())?;
-    let summary = recognition::compare_paddle_onnx(model, reference, reference_sha256)
+    let catalog_store = absolute_directory(PathBuf::from(catalog_store), "catalog store")?;
+    let active = CatalogStore::new(catalog_store)
+        .load_active()
+        .map_err(|error| format!("active catalog load failed: {error}"))?
+        .ok_or_else(|| "catalog store has no active catalog".to_owned())?;
+    let minimum_log_probability =
+        parse_f64(minimum_log_probability, "minimum title log probability")?;
+    let minimum_runner_up_margin =
+        parse_f64(minimum_runner_up_margin, "minimum title runner-up margin")?;
+    let thresholds = recognition::DiagnosticTitleThresholds {
+        minimum_log_probability,
+        minimum_runner_up_margin,
+    };
+    let request = recognition::OnnxTitleDiagnosticRequest {
+        model_path: Path::new(model),
+        reference_directory: Path::new(reference),
+        reference_sha256,
+        crop_directory: Path::new(crop),
+        catalog_sha256: &active.digest,
+        inference_yml: Path::new(dictionary),
+    };
+    let summary = recognition::compare_paddle_onnx(request, &active.catalog, thresholds)
         .map_err(|error| error.to_string())?;
     println!(
         "{}",
@@ -220,6 +281,14 @@ fn title_onnx_parity(
             .map_err(|error| format!("ONNX parity summary encoding failed: {error}"))?
     );
     Ok(())
+}
+
+fn parse_f64(value: &OsStr, label: &str) -> Result<f64, String> {
+    value
+        .to_str()
+        .ok_or_else(|| format!("{label} must be UTF-8"))?
+        .parse::<f64>()
+        .map_err(|_| format!("{label} must be a decimal number"))
 }
 
 fn sync_catalog() -> Result<(), String> {
@@ -286,7 +355,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256",
+        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE",
         env!("CARGO_PKG_VERSION")
     );
 }

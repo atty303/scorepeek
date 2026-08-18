@@ -75,7 +75,7 @@ mise run ocr:onnx:model:fetch
 mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256
 mise run recognition:title:spike -- --catalog-store /absolute/private/catalog --ocr-text OCR_TEXT --ocr-confidence OCR_CONFIDENCE
 mise run ocr:parity:reference -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --candidates /absolute/private/parity-candidates.json --output /absolute/private/paddle-reference
-mise run ocr:parity:run -- --model /absolute/private/models/inference.onnx --reference /absolute/private/paddle-reference --reference-sha256 REFERENCE_MANIFEST_SHA256
+mise run ocr:parity:run -- --model /absolute/private/models/inference.onnx --reference /absolute/private/paddle-reference --reference-sha256 REFERENCE_MANIFEST_SHA256 --crop-artifact /absolute/private/crops --catalog-store /absolute/private/catalog --dictionary /absolute/private/models/inference.yml --minimum-log-probability SCORE --minimum-runner-up-margin SCORE
 ```
 
 Recognition requires the extraction SHA returned by canonical extraction and
@@ -124,13 +124,26 @@ last. The official graph exposes
 post-softmax CTC probabilities rather than pre-softmax logits; this exact raw
 graph output is the parity boundary.
 
-`ocr:parity:run` requires the reference-manifest SHA-256 and exact registered
-ONNX bytes. Rust/ONNX Runtime must stay within the fixed absolute tensor-error
-bound and reproduce both token orders and candidate ranking. The command reads
-the Paddle-produced preprocessed tensor, so this gate isolates model export and
-runtime parity. It does not yet establish a Rust image preprocessor, full
-catalog recognition, thresholds, runner-up acceptance, temporal agreement, or
-a supported profile, and it never emits free OCR text or an accepted title.
+`ocr:parity:run` requires the reference-manifest SHA-256, its bound canonical
+crop artifact, the exact registered ONNX bytes and dictionary, one active
+catalog, and explicit diagnostic thresholds. Rust reproduces the registered
+3x48x320 BGR resize/normalize tensor from the verified RGB8 title crop; every
+input value must match the Paddle reference within the fixed bound. ONNX
+Runtime must also stay within the output bound and reproduce both token orders
+and the parity reference's small candidate ranking.
+
+After parity succeeds, the same ONNX probabilities are scored against every
+exactly encodable non-search title variant in the identified active catalog.
+The scorer shares prefixes in one CTC trie, performs no text normalization or
+fuzzy matching, and returns `unknown` when any non-search catalog variant is
+unencodable, the top song is tied, or the absolute log probability or runner-up
+margin is insufficient. Unencodable variants are never silently removed from
+the decision domain.
+The emitted catalog digest, dictionary digest, preprocessor ID, and threshold
+values bind the diagnostic result. These caller-supplied thresholds are not yet
+calibrated acceptance policy; temporal agreement, independent screen context,
+holdout evidence, and a supported profile remain unimplemented. The command
+never emits free OCR text or an accepted title.
 
 `recognition:title:spike` is a private-evaluation bridge for the open-text OCR
 diagnostic. Its versioned comparison key applies NFC and removes only U+0020;

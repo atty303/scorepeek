@@ -24,10 +24,12 @@ explicitly synchronized with private S3-compatible storage. Shared canonical
 normalization, a measured result layout, and a locked offline PP-OCRv6 field
 spike are implemented for one exact OBS/vkcapture profile and recording. The
 same title crop now passes a diagnostic Paddle/official-ONNX/Rust parity gate
-for the exported CTC probability tensor, token order, and constrained candidate
-ranking. A
-supported capture route, training/export pipeline, and runnable recognition
-service are not yet implemented.
+for the complete preprocessed input, exported CTC probability tensor, and token
+order. Rust also scores every exactly encodable non-search title in one active
+catalog through a shared CTC trie and fails closed against explicit absolute and
+runner-up thresholds or incomplete registered-dictionary coverage. A supported
+capture route, training/export pipeline, and runnable recognition service are
+not yet implemented.
 
 The first implementation milestone is:
 
@@ -99,7 +101,7 @@ mise run ocr:onnx:model:fetch
 mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256
 mise run recognition:title:spike -- --catalog-store /absolute/private/catalog --ocr-text OCR_TEXT --ocr-confidence OCR_CONFIDENCE
 mise run ocr:parity:reference -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --candidates /absolute/private/parity-candidates.json --output /absolute/private/paddle-reference
-mise run ocr:parity:run -- --model /absolute/private/models/inference.onnx --reference /absolute/private/paddle-reference --reference-sha256 REFERENCE_MANIFEST_SHA256
+mise run ocr:parity:run -- --model /absolute/private/models/inference.onnx --reference /absolute/private/paddle-reference --reference-sha256 REFERENCE_MANIFEST_SHA256 --crop-artifact /absolute/private/crops --catalog-store /absolute/private/catalog --dictionary /absolute/private/models/inference.yml --minimum-log-probability SCORE --minimum-runner-up-margin SCORE
 mise run corpus:synthetic:render -- --output /absolute/new/output-directory /absolute/synthetic-request.json
 mise run corpus:replay:validate -- --store /absolute/private/store /absolute/replay-suite.json
 mise run catalog:schedule:systemd:verify
@@ -170,13 +172,13 @@ PaddlePaddle are uv-locked for offline experiments only. The registered
 PP-OCRv6 model is explicitly fetched into a local content-addressed model
 store and is never auto-downloaded by recognition. A separately registered
 official ONNX graph is also fetched only by the explicit offline task. The
-diagnostic parity path verifies exact graph bytes, a Paddle-produced
-preprocessed tensor and output, Rust/ONNX Runtime output, CTC token order, and
-candidate ranking; it neither accepts a bare image nor emits an accepted title.
-Production glyph/font coverage, scorepeek-owned export, a Rust image
-preprocessor, replay execution, full-catalog recognition, and supported-profile
-evaluation remain later stages and will not become Python game-session runtime
-dependencies.
+diagnostic parity path verifies exact graph bytes, reproduces Paddle's complete
+BGR/resize/normalize input from the bound RGB8 crop in Rust, compares Rust/ONNX
+Runtime output and CTC token order, and scores the active catalog with the
+registered dictionary. It neither accepts a bare image nor emits an accepted
+title. Production glyph/font coverage, scorepeek-owned export, replay
+execution, threshold calibration, and supported-profile evaluation remain
+later stages and will not become Python game-session runtime dependencies.
 
 `scorepeek catalog sync` is the scheduling interface. A user may keep recurring
 execution disabled and run it manually, or select any scheduler that preserves
