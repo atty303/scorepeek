@@ -197,6 +197,14 @@ is outside this checkpoint.
   the 21 MiB model below a local content-addressed store, verifies every
   reuse, rejects unexpected archive entries, and inference receives only that
   verified local directory instead of auto-downloading.
+- A Rust diagnostic title-candidate bridge with versioned comparison key
+  `scorepeek-title-nfc-without-ascii-space-v1`. It applies NFC and removes only
+  U+0020, preserves case, punctuation, other whitespace, and all other
+  characters, excludes search-term aliases, and returns a song ID only when
+  the fixed 0.95 diagnostic confidence bound passes and exactly one catalog
+  song owns the matching key. Low confidence, no match, and cross-song
+  collisions remain explicitly unknown. This open-text bridge is private
+  evaluation only and does not produce an accepted title value.
 - Immutable recording-dataset generations that bind every imported recording
   to five typed byte roles and revalidate their canonical manifest
   relationships as well as size and complete SHA-256. The generation digest is
@@ -231,11 +239,11 @@ is outside this checkpoint.
 
 - `mise run check`, `cargo clippy --locked --workspace --all-targets -- -D
   warnings`, and `cargo test --locked --workspace`: passed on the development
-  host. The current workspace run covered 60 `scorepeek` library tests, 12
-  binary tests, and 44 offline corpus tests.
+  host. The current workspace run covered 65 `scorepeek` library tests, 12
+  binary tests, 44 offline corpus tests, and 2 offline Python OCR tests.
 - `mise run catalog:schedule:systemd:verify`: passed without installing the
   release binary or user units.
-- `cargo test --locked -p scorepeek-corpus`: passed all 42 offline corpus
+- `cargo test --locked -p scorepeek-corpus`: passed all 44 offline corpus
   tests, including idempotent private ingest, fixture-ID conflict
   rejection, canonical source/complete-label binding, pre-mutation symlink
   rejection, canonical/private/idempotent complete-label authoring with owned
@@ -309,6 +317,15 @@ is outside this checkpoint.
   The first generated label and RGB8 crop were inspected together after a
   temporary PNG conversion; the generated output was not added to the
   repository.
+- The current real title crop reproduced diagnostic text `ABSOLUTEEVIL` at
+  confidence `0.9798454642295837`. Against an isolated three-source catalog at
+  digest `65a8e164f3cb28e20c09114eecc3eb7200d32ed7c7383c7c04432053b78411eb`,
+  the versioned exact comparison key resolved one candidate song ID,
+  `6ef33da9-090a-500c-844a-8bffd14de63f`, corresponding to the visually
+  inspected `ABSOLUTE EVIL` title. This is a single-recording diagnostic, not
+  holdout, confidence calibration, CTC-ranking parity, or accepted recognition
+  evidence. Its temporary catalog and OCR artifacts were not added to the
+  repository or pushed to S3.
 - The tests use synthetic, independently created fixture data only.
 - An isolated live `scorepeek catalog sync` resolved Tachi commit
   `4ef9ca588424e1a98dc73421a49dd8efe3b37ddd`, validated and privately cached its
@@ -361,12 +378,14 @@ is outside this checkpoint.
   current thresholds have no labelled holdout, profile-disjoint evidence, or
   support claim. The refined six-field crop run produced visually correct
   artist, difficulty, level, notes, and current-score text; the title omitted
-  one internal whitespace despite high confidence. Music-select layout,
-  catalog-constrained title decoding, OCR preprocessing/model export, replay
-  execution, catalog-update recognition replay, event daemon, and the
-  integrated live flow remain unvalidated. The observed 649 ms CPU process and
-  inference time is a single warmed development-host measurement, not a
-  performance gate.
+  one internal whitespace despite high confidence. The diagnostic exact-key
+  bridge restores that whitespace through one unique catalog candidate, but
+  raw CTC-logit ranking, runner-up margin, temporal agreement, independent
+  screen context, and accepted title semantics remain unimplemented.
+  Music-select layout, OCR preprocessing/model export, replay execution,
+  catalog-update recognition replay, event daemon, and the integrated live
+  flow remain unvalidated. The observed 649 ms CPU process and inference time
+  is a single warmed development-host measurement, not a performance gate.
 - The live `ObservedFrame`/domain-normalizer/`CanonicalFrame` runtime boundary,
   model-bundle promotion, and last-known-good model rollback remain
   unimplemented. Recognition accepts only digest-bound offline canonical
@@ -416,14 +435,12 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Define the smallest exact catalog-constrained title-decoding contract that can
-restore meaningful whitespace without fuzzy acceptance: normalize OCR and
-catalog candidates to a versioned comparison key, return a song only for one
-unique candidate, and keep collisions or low confidence unknown. Use the
-current recording only as a vertical spike rather than a holdout. Then add the
-smallest ONNX export and Rust parity path justified by that measurement. Do not
-recognize bare PPM or `ObservedFrame`, auto-download a runtime model, or treat
-the OBS profile, current ROIs, confidence, or timing as supported.
+Add the smallest ONNX export and Rust parity path justified by the current
+single-crop measurement. Compare Python/Paddle and Rust inference at the logits,
+token-order, and catalog-ranking boundaries without promoting the diagnostic
+open-text bridge into an accepted title recognizer. Do not recognize bare PPM
+or `ObservedFrame`, auto-download a runtime model, or treat the OBS profile,
+current ROIs, confidence, or timing as supported.
 
 S3 replication and another profile are intentionally deferred. When capture
 work resumes, start **M3** with narrow Portal and Gamescope direct observed

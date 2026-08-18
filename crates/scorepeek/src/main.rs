@@ -5,8 +5,12 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use scorepeek::catalog::CatalogStore;
 use scorepeek::catalog::{CatalogSync, CatalogSyncError};
-use scorepeek::recognition::{self, CanonicalFrame};
+use scorepeek::recognition::{
+    self, CanonicalFrame, DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
+};
+use serde::Serialize;
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args_os().skip(1).collect();
@@ -63,6 +67,23 @@ fn run(args: &[OsString]) -> Result<(), String> {
         {
             crop_canonical_result(extraction, digest, frame_id, output)
         }
+        [
+            recognition,
+            title_spike,
+            store_flag,
+            store,
+            text_flag,
+            text,
+            confidence_flag,
+            confidence,
+        ] if recognition == "recognition"
+            && title_spike == "title-spike"
+            && store_flag == "--catalog-store"
+            && text_flag == "--ocr-text"
+            && confidence_flag == "--ocr-confidence" =>
+        {
+            diagnostic_title_spike(store, text, confidence)
+        }
         [flag] if flag == "--help" || flag == "-h" => {
             print_usage();
             Ok(())
@@ -71,7 +92,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
             println!("scorepeek {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        _ => Err("usage: scorepeek <doctor|catalog sync|recognition inspect>".to_owned()),
+        _ => Err("usage: scorepeek --help".to_owned()),
     }
 }
 
@@ -117,6 +138,51 @@ fn crop_canonical_result(
         "{}",
         serde_json::to_string(&summary)
             .map_err(|error| format!("crop export summary encoding failed: {error}"))?
+    );
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct DiagnosticTitleSpikeSummary {
+    schema: &'static str,
+    catalog_sha256: String,
+    comparison_key_id: &'static str,
+    minimum_confidence: f64,
+    candidate: recognition::DiagnosticTitleCandidate,
+}
+
+fn diagnostic_title_spike(
+    catalog_store: &OsStr,
+    ocr_text: &OsStr,
+    ocr_confidence: &OsStr,
+) -> Result<(), String> {
+    let catalog_store = absolute_directory(PathBuf::from(catalog_store), "catalog store")?;
+    let ocr_text = ocr_text
+        .to_str()
+        .ok_or_else(|| "diagnostic OCR text must be UTF-8".to_owned())?;
+    let ocr_confidence = ocr_confidence
+        .to_str()
+        .ok_or_else(|| "diagnostic OCR confidence must be UTF-8".to_owned())?
+        .parse::<f64>()
+        .map_err(|_| "diagnostic OCR confidence must be a decimal number".to_owned())?;
+    let active = CatalogStore::new(catalog_store)
+        .load_active()
+        .map_err(|error| format!("active catalog load failed: {error}"))?
+        .ok_or_else(|| "catalog store has no active catalog".to_owned())?;
+    let candidate =
+        recognition::diagnostic_title_candidate(&active.catalog, ocr_text, ocr_confidence)
+            .map_err(|error| error.to_string())?;
+    let summary = DiagnosticTitleSpikeSummary {
+        schema: "scorepeek-diagnostic-title-spike-v1",
+        catalog_sha256: active.digest,
+        comparison_key_id: DIAGNOSTIC_TITLE_COMPARISON_KEY_ID,
+        minimum_confidence: DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
+        candidate,
+    };
+    println!(
+        "{}",
+        serde_json::to_string(&summary)
+            .map_err(|error| format!("title spike result encoding failed: {error}"))?
     );
     Ok(())
 }
@@ -185,7 +251,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY",
+        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE",
         env!("CARGO_PKG_VERSION")
     );
 }

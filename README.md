@@ -93,6 +93,7 @@ mise run recognition:crop -- --extraction /absolute/private/canonical --extracti
 mise run ocr:sync
 mise run ocr:model:fetch
 mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256
+mise run recognition:title:spike -- --catalog-store /absolute/private/catalog --ocr-text OCR_TEXT --ocr-confidence OCR_CONFIDENCE
 mise run corpus:synthetic:render -- --output /absolute/new/output-directory /absolute/synthetic-request.json
 mise run corpus:replay:validate -- --store /absolute/private/store /absolute/replay-suite.json
 mise run catalog:schedule:systemd:verify

@@ -197,6 +197,14 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- recognition crop "$@"
 '''
 
+[tasks."recognition:title:spike"]
+description = "Resolve diagnostic open-text OCR to one exact catalog candidate"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- recognition title-spike "$@"
+'''
+
 [tasks."ocr:sync"]
 description = "Synchronize the locked offline OCR development environment"
 run = "uv sync --locked --no-dev"

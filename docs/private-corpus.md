@@ -72,6 +72,7 @@ mise run recognition:inspect -- --extraction /absolute/private/canonical --extra
 mise run recognition:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/crops
 mise run ocr:model:fetch
 mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256
+mise run recognition:title:spike -- --catalog-store /absolute/private/catalog --ocr-text OCR_TEXT --ocr-confidence OCR_CONFIDENCE
 ```
 
 Recognition requires the extraction SHA returned by canonical extraction and
@@ -94,6 +95,15 @@ unexpected tar entries, and publishes the verified three-file model below the
 private content-addressed `$XDG_DATA_HOME/scorepeek/models` store. The spike
 always passes that verified local directory to PaddleOCR, so inference never
 auto-downloads a model.
+
+`recognition:title:spike` is a private-evaluation bridge for the open-text OCR
+diagnostic. Its versioned comparison key applies NFC and removes only U+0020;
+case, punctuation, other whitespace, and every other character remain exact.
+Search-term aliases are excluded. Confidence below the fixed diagnostic bound,
+no exact candidate, or a comparison-key collision across songs returns unknown.
+Even a unique candidate is not an accepted title because this spike has no raw
+CTC-logit score, runner-up margin, temporal agreement, or independent screen
+context.
 
 The seal command includes every currently imported recording and writes a
 canonical `scorepeek-recording-dataset-generation-v1`. Its SHA-256, rather than

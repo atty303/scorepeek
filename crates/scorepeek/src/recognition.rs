@@ -7,6 +7,14 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+mod title;
+
+pub use title::{
+    DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
+    DiagnosticTitleCandidate, DiagnosticTitleError, DiagnosticTitleUnknownReason,
+    diagnostic_title_candidate,
+};
+
 const CANONICAL_WIDTH: u32 = 1_920;
 const CANONICAL_HEIGHT: u32 = 1_080;
 const CANONICAL_BYTES: usize = CANONICAL_WIDTH as usize * CANONICAL_HEIGHT as usize * 3;
