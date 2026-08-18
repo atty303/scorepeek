@@ -40,6 +40,7 @@ class Crop:
     field: str
     path: Path
     file_sha256: str
+    data: bytes
 
 
 def _valid_sha256(value: Any) -> bool:
@@ -210,7 +211,14 @@ def load_crops(directory: Path, expected_sha256: str) -> tuple[str, list[Crop]]:
             != item["pixel_sha256"]
         ):
             raise SpikeError(f"crop bytes mismatch: {field}")
-        crops.append(Crop(field=field, path=path, file_sha256=item["file_sha256"]))
+        crops.append(
+            Crop(
+                field=field,
+                path=path,
+                file_sha256=item["file_sha256"],
+                data=data,
+            )
+        )
     if {crop.field for crop in crops} != set(expected_crops):
         raise SpikeError("crop set is incomplete or duplicated")
     return raw["frame_extraction_sha256"], crops

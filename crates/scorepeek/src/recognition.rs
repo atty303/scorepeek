@@ -8,12 +8,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 mod title;
+mod title_onnx;
 
 pub use title::{
     DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
     DiagnosticTitleCandidate, DiagnosticTitleError, DiagnosticTitleUnknownReason,
     diagnostic_title_candidate,
 };
+pub use title_onnx::{OnnxParityError, OnnxParitySummary, compare_paddle_onnx};
 
 const CANONICAL_WIDTH: u32 = 1_920;
 const CANONICAL_HEIGHT: u32 = 1_080;

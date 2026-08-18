@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
 import subprocess
 import sys
 import tempfile
@@ -10,7 +12,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 import scorepeek_ocr.model_store as model_store
-from scorepeek_ocr.model_store import load_registered_source
+import numpy as np
+from scorepeek_ocr.model_store import (
+    ModelFile,
+    ModelSource,
+    OnnxModelSource,
+    load_registered_onnx_source,
+    load_registered_source,
+)
+from scorepeek_ocr.parity import ParityError, _canonical_json, ctc_log_probability
 from scorepeek_ocr.spike import (
     CALIBRATED_NORMALIZER_SHA256,
     SpikeError,
@@ -56,6 +66,129 @@ class ContractTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(rejected.returncode, 2)
+
+    def test_registered_onnx_model_manifest_is_exact(self) -> None:
+        source = load_registered_onnx_source()
+        self.assertEqual(source.model_id, "pp-ocrv6-small-rec-onnx-v1")
+        self.assertEqual(source.bytes, 21_159_378)
+        self.assertEqual(
+            source.sha256,
+            "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634",
+        )
+
+    def test_onnx_fetch_rejects_symlinked_managed_directories(self) -> None:
+        data = b"x"
+        source = OnnxModelSource(
+            model_id="test",
+            model_name="test",
+            source_url="https://example.invalid/model.onnx",
+            sha256=hashlib.sha256(data).hexdigest(),
+            bytes=len(data),
+            paddle_model_id="test",
+            paddle_inference_json_sha256="1" * 64,
+            paddle_inference_yml_sha256="2" * 64,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = root / "store"
+            store.mkdir()
+            external = root / "external"
+            target = external / source.sha256
+            target.mkdir(parents=True)
+            (target / "inference.onnx").write_bytes(data)
+            (store / "objects").symlink_to(external, target_is_directory=True)
+            with (
+                patch.object(
+                    model_store, "load_registered_onnx_source", return_value=source
+                ),
+                self.assertRaises(model_store.ModelStoreError),
+            ):
+                model_store.fetch_onnx(store)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = root / "store"
+            objects = store / "objects"
+            objects.mkdir(parents=True)
+            external = root / "external" / source.sha256
+            external.mkdir(parents=True)
+            (external / "inference.onnx").write_bytes(data)
+            (objects / source.sha256).symlink_to(external, target_is_directory=True)
+            with (
+                patch.object(
+                    model_store, "load_registered_onnx_source", return_value=source
+                ),
+                self.assertRaises(model_store.ModelStoreError),
+            ):
+                model_store.fetch_onnx(store)
+
+    def test_model_fetch_rejects_relative_store_without_creating_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            previous = Path.cwd()
+            os.chdir(temporary)
+            try:
+                for fetch in (model_store.fetch, model_store.fetch_onnx):
+                    with self.subTest(fetch=fetch.__name__):
+                        relative = Path(f"relative-{fetch.__name__}")
+                        with self.assertRaises(model_store.ModelStoreError):
+                            fetch(relative)
+                        self.assertFalse(relative.exists())
+            finally:
+                os.chdir(previous)
+
+    def test_verified_model_bytes_are_detached_from_source_paths(self) -> None:
+        data = b"registered model bytes"
+        source = ModelSource(
+            model_id="test",
+            model_name="test",
+            source_url="https://example.invalid/model.tar",
+            archive_sha256="1" * 64,
+            archive_bytes=1,
+            paddleocr_version="test",
+            paddlepaddle_version="test",
+            files=(
+                ModelFile(
+                    archive_path="test/inference.json",
+                    filename="inference.json",
+                    sha256=hashlib.sha256(data).hexdigest(),
+                    bytes=len(data),
+                ),
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            path = directory / "inference.json"
+            path.write_bytes(data)
+            files = model_store.read_verified_model_files(directory, source)
+            path.write_bytes(b"changed")
+            self.assertEqual(files, {"inference.json": data})
+
+    def test_ctc_score_sums_blank_repeat_and_direct_alignments(self) -> None:
+        probabilities = np.array(
+            [
+                [0.6, 0.4, 0.0],
+                [0.2, 0.7, 0.1],
+                [0.5, 0.4, 0.1],
+            ],
+            dtype=np.float32,
+        )
+        score = ctc_log_probability(probabilities, [1])
+        expected = (
+            0.6 * 0.7 * 0.5
+            + 0.4 * 0.7 * 0.5
+            + 0.6 * 0.7 * 0.4
+            + 0.4 * 0.7 * 0.4
+            + 0.4 * 0.2 * 0.5
+            + 0.6 * 0.2 * 0.4
+        )
+        self.assertAlmostEqual(math.exp(score), expected, places=6)
+
+    def test_ctc_reference_rejects_impossible_and_nonfinite_values(self) -> None:
+        probabilities = np.full((40, 2), 0.5, dtype=np.float32)
+        with self.assertRaises(ParityError):
+            ctc_log_probability(probabilities, [1] * 21)
+        with self.assertRaises(ParityError):
+            _canonical_json({"score": math.inf})
 
     def test_crop_contract_accepts_exact_bytes_and_rejects_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

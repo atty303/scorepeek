@@ -197,6 +197,23 @@ is outside this checkpoint.
   the 21 MiB model below a local content-addressed store, verifies every
   reuse, rejects unexpected archive entries, and inference receives only that
   verified local directory instead of auto-downloading.
+- An independent official `PP-OCRv6_small_rec` ONNX registration pinned to
+  PaddlePaddle revision `3d2d345e6a299891174f1397a72cdd81331359c7`, exact
+  21,159,378-byte graph SHA-256, Apache-2.0 reference, and the same inference
+  JSON/YAML hashes as the registered Paddle model. Explicit offline acquisition
+  verifies and publishes that file below the same content-addressed model store;
+  the Rust command never downloads a model.
+- A diagnostic Paddle/Rust parity path. The uv-locked Python producer accepts
+  only a digest-bound canonical crop artifact, the registered Paddle model, and
+  a canonical private candidate list. It retains the verified crop bytes and
+  runs Paddle from a temporary snapshot of the verified registered model bytes,
+  then writes the exact preprocessed float32 tensor, Paddle graph output, token
+  orders, and CTC-constrained candidate scores to a digest-bound private
+  reference. Rust uses ONNX Runtime 1.28 through
+  `ort` 2.0.0-rc.13, verifies the registered graph and reference bytes, and
+  fails if the complete output tensor exceeds the fixed absolute-error bound or
+  token order/candidate scores/ranking differ. It consumes the reference tensor
+  and produces only aggregate evidence, not free OCR text or an accepted title.
 - A Rust diagnostic title-candidate bridge with versioned comparison key
   `scorepeek-title-nfc-without-ascii-space-v1`. It applies NFC and removes only
   U+0020, preserves case, punctuation, other whitespace, and all other
@@ -239,8 +256,8 @@ is outside this checkpoint.
 
 - `mise run check`, `cargo clippy --locked --workspace --all-targets -- -D
   warnings`, and `cargo test --locked --workspace`: passed on the development
-  host. The current workspace run covered 65 `scorepeek` library tests, 12
-  binary tests, 44 offline corpus tests, and 2 offline Python OCR tests.
+  host. The current workspace run covered 68 `scorepeek` library tests, 12
+  binary tests, 44 offline corpus tests, and 8 offline Python OCR tests.
 - `mise run catalog:schedule:systemd:verify`: passed without installing the
   release binary or user units.
 - `cargo test --locked -p scorepeek-corpus`: passed all 44 offline corpus
@@ -322,10 +339,22 @@ is outside this checkpoint.
   digest `65a8e164f3cb28e20c09114eecc3eb7200d32ed7c7383c7c04432053b78411eb`,
   the versioned exact comparison key resolved one candidate song ID,
   `6ef33da9-090a-500c-844a-8bffd14de63f`, corresponding to the visually
-  inspected `ABSOLUTE EVIL` title. This is a single-recording diagnostic, not
-  holdout, confidence calibration, CTC-ranking parity, or accepted recognition
-  evidence. Its temporary catalog and OCR artifacts were not added to the
-  repository or pushed to S3.
+  inspected `ABSOLUTE EVIL` title. This remains a single-recording diagnostic,
+  not holdout, confidence calibration, or accepted recognition evidence.
+- The same title crop produced Paddle parity reference manifest
+  `799addeaa8f9ce877169003f03fe837cf2b1e4fede759fdddf46f182edfca699`.
+  Regeneration from retained crop bytes and a verified temporary Paddle-model
+  snapshot produced the same manifest digest.
+  The official ONNX graph at SHA-256
+  `5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634`
+  reproduced all 748,400 post-softmax CTC probabilities with maximum absolute
+  error `0.0000056624413`, all 40 argmax tokens, the collapsed 12-token order,
+  and a three-candidate constrained ranking. The maximum candidate log-score
+  difference was `0.000026598829943935698`; both runtimes ranked the real
+  `ABSOLUTE EVIL` song ID first. The model and private reference/candidate/crop
+  artifacts remained outside the repository. A locked release build linked the
+  CPU ONNX Runtime statically and changed the development-host `scorepeek`
+  binary from 7,217,016 to 35,456,552 bytes.
 - The tests use synthetic, independently created fixture data only.
 - An isolated live `scorepeek catalog sync` resolved Tachi commit
   `4ef9ca588424e1a98dc73421a49dd8efe3b37ddd`, validated and privately cached its
@@ -379,10 +408,13 @@ is outside this checkpoint.
   support claim. The refined six-field crop run produced visually correct
   artist, difficulty, level, notes, and current-score text; the title omitted
   one internal whitespace despite high confidence. The diagnostic exact-key
-  bridge restores that whitespace through one unique catalog candidate, but
-  raw CTC-logit ranking, runner-up margin, temporal agreement, independent
+  bridge restores that whitespace through one unique catalog candidate. The
+  diagnostic parity gate now covers the official graph's post-softmax CTC
+  tensor, token order, and a three-candidate ranking, but its preprocessed input
+  is still produced by PaddleOCR. A Rust image preprocessor, full-catalog trie
+  scoring, calibrated absolute/runner-up bounds, temporal agreement, independent
   screen context, and accepted title semantics remain unimplemented.
-  Music-select layout, OCR preprocessing/model export, replay execution,
+  Music-select layout, scorepeek-owned model export, replay execution,
   catalog-update recognition replay, event daemon, and the integrated live
   flow remain unvalidated. The observed 649 ms CPU process and inference time
   is a single warmed development-host measurement, not a performance gate.
@@ -429,18 +461,26 @@ is outside this checkpoint.
   and the pinned PP-OCRv6 small multilingual recognition model were approved
   and added only to offline development; they do not enter the Rust
   game-session dependency graph.
+- `ort` 2.0.0-rc.13 (MIT OR Apache-2.0) with a CPU ONNX Runtime 1.28 static
+  binary was approved for the Rust parity spike. Default features, native TLS,
+  tracing, copy-dylibs, and execution-provider features remain disabled; the
+  selected `std`, `download-binaries`, `tls-rustls`, and `api-27` path added 16
+  locked packages. The measured release-binary increase is recorded above.
 - External-source access and reuse must remain within `docs/sources.md`; a
   source requiring new permission cannot be enabled until that permission is
   obtained.
 
 ## Next executable task
 
-Add the smallest ONNX export and Rust parity path justified by the current
-single-crop measurement. Compare Python/Paddle and Rust inference at the logits,
-token-order, and catalog-ranking boundaries without promoting the diagnostic
-open-text bridge into an accepted title recognizer. Do not recognize bare PPM
-or `ObservedFrame`, auto-download a runtime model, or treat the OBS profile,
-current ROIs, confidence, or timing as supported.
+Implement the smallest versioned Rust title preprocessor for the registered
+3x48x320 BGR resize/normalize contract, and compare its complete input tensor
+against the Paddle-produced reference for the current crop. Then replace the
+three-candidate diagnostic input with exact active-catalog tokenization and trie
+scoring while preserving unknown on unencodable titles or insufficient
+absolute/runner-up evidence. Do not promote the current open-text or parity
+commands into accepted recognition, recognize bare PPM or `ObservedFrame`,
+auto-download a runtime model, or treat the OBS profile, current ROIs,
+confidence, timing, or candidate thresholds as supported.
 
 S3 replication and another profile are intentionally deferred. When capture
 work resumes, start **M3** with narrow Portal and Gamescope direct observed

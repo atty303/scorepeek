@@ -217,12 +217,36 @@ set -euo pipefail
 exec uv run --locked --no-dev python -m scorepeek_ocr.model_store fetch "$@"
 '''
 
+[tasks."ocr:onnx:model:fetch"]
+description = "Fetch and verify the registered PP-OCRv6 ONNX model outside the repository"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.model_store fetch-onnx "$@"
+'''
+
 [tasks."ocr:spike"]
 description = "Run PP-OCRv6 against a verified canonical crop artifact"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 exec uv run --locked --no-dev python -m scorepeek_ocr.spike "$@"
+'''
+
+[tasks."ocr:parity:reference"]
+description = "Generate a digest-bound Paddle parity reference from a verified title crop"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.parity "$@"
+'''
+
+[tasks."ocr:parity:run"]
+description = "Compare registered ONNX inference with a digest-bound Paddle reference"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- recognition title-onnx-parity "$@"
 '''
 
 [tasks."ocr:test"]

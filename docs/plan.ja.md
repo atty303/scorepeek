@@ -10,8 +10,8 @@
 - M2 observed-profile private corpus、synthetic renderer、label/replay tooling: 完了
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
 - M4 offline canonical/recognition spike: 着手（OBS/vkcapture実録画からnormalizer、共通result layout、
-  fail-closed screen判定まで）
-- OCR学習/export、field認識、live capture、event daemon: 未着手
+  fail-closed screen判定、title cropのPaddle/公式ONNX/Rust CTC parityまで）
+- scorepeek-owned OCR学習/export、field認識、live capture、event daemon: 未着手
 - Bazzite実機検証とprivate corpus収集: 着手（OBS/vkcapture実録画1本のcopyless isolated
   import、canonical変換、目視確認まで）
 
@@ -246,8 +246,10 @@ external catalog stringはinference lexiconだけに使い、training textへ自
 独立session/titleによるin-profile holdoutを持てるようにする。これと別に、学習からcapture profile
 全体を外したprofile-disjoint evaluation suiteを持ち、未知domainへの汎化を測る。
 
-最初のvertical spikeは同一cropについてPython/PaddleとRust/ORTのlogits、token order、
-catalog rankingが許容誤差内で一致することを証明する。PP-OCRv6 ONNX exportが安定しない場合は
+最初のvertical spikeは同一cropについてPython/PaddleとRust/ORTのraw CTC output、token order、
+catalog rankingが許容誤差内で一致することを証明する。公式baseline graphがpost-softmax
+probabilityを出力する場合はそのtensorを比較し、scorepeek-owned exportではlogitsまたは
+log-probabilityのどちらをbundle contractにするか明示する。PP-OCRv6 ONNX exportが安定しない場合は
 PyTorch CRNN/SVTR-style CTC modelをONNX exportする。runtime Pythonへのfallbackは作らない。
 
 認識失敗時はtitle cropとdiagnosticをprivate queueへ保存し、人間が正しいcatalog IDを付け、

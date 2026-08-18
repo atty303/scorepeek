@@ -71,8 +71,11 @@ mise run corpus:canonical:extract -- --store /absolute/private/store --output /a
 mise run recognition:inspect -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID
 mise run recognition:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/crops
 mise run ocr:model:fetch
+mise run ocr:onnx:model:fetch
 mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256
 mise run recognition:title:spike -- --catalog-store /absolute/private/catalog --ocr-text OCR_TEXT --ocr-confidence OCR_CONFIDENCE
+mise run ocr:parity:reference -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --candidates /absolute/private/parity-candidates.json --output /absolute/private/paddle-reference
+mise run ocr:parity:run -- --model /absolute/private/models/inference.onnx --reference /absolute/private/paddle-reference --reference-sha256 REFERENCE_MANIFEST_SHA256
 ```
 
 Recognition requires the extraction SHA returned by canonical extraction and
@@ -95,6 +98,39 @@ unexpected tar entries, and publishes the verified three-file model below the
 private content-addressed `$XDG_DATA_HOME/scorepeek/models` store. The spike
 always passes that verified local directory to PaddleOCR, so inference never
 auto-downloads a model.
+
+The separately registered `PP-OCRv6_small_rec` ONNX graph is pinned to an exact
+official repository revision, byte length, SHA-256, Apache-2.0 reference, and
+the same Paddle inference JSON/YAML digests. `ocr:onnx:model:fetch` publishes
+only those verified bytes to the private content-addressed model store. It is
+an explicit offline acquisition step; the Rust command never downloads a
+model.
+
+The parity candidate file is private canonical JSON. It contains at least two
+exact catalog candidates and is shaped as follows:
+
+```json
+{"schema":"scorepeek-ocr-parity-candidates-v1","candidates":[{"song_id":"00000000-0000-0000-0000-000000000001","title":"TITLE A"},{"song_id":"00000000-0000-0000-0000-000000000002","title":"TITLE B"}]}
+```
+
+`ocr:parity:reference` first revalidates the canonical crop manifest and the
+registered Paddle model. It retains the verified crop bytes and copies the
+verified registered model bytes into a private temporary snapshot, so Paddle
+does not reopen mutable source paths after verification. The pinned PaddleOCR
+path then writes the exact preprocessed float32 tensor, the exported graph's
+float32 output, argmax and collapsed CTC token orders, and constrained
+candidate scores to a new private directory, with `manifest.json` written
+last. The official graph exposes
+post-softmax CTC probabilities rather than pre-softmax logits; this exact raw
+graph output is the parity boundary.
+
+`ocr:parity:run` requires the reference-manifest SHA-256 and exact registered
+ONNX bytes. Rust/ONNX Runtime must stay within the fixed absolute tensor-error
+bound and reproduce both token orders and candidate ranking. The command reads
+the Paddle-produced preprocessed tensor, so this gate isolates model export and
+runtime parity. It does not yet establish a Rust image preprocessor, full
+catalog recognition, thresholds, runner-up acceptance, temporal agreement, or
+a supported profile, and it never emits free OCR text or an accepted title.
 
 `recognition:title:spike` is a private-evaluation bridge for the open-text OCR
 diagnostic. Its versioned comparison key applies NFC and removes only U+0020;

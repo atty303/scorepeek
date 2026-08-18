@@ -25,6 +25,12 @@ REGISTERED_MODEL_MANIFEST = (
 REGISTERED_MODEL_MANIFEST_SHA256 = (
     "ccb361d69880cf98cb61a50bfbf9f6c5e46d76d6b0c93eed53ee9b99ec4d8ab8"
 )
+REGISTERED_ONNX_MODEL_MANIFEST = (
+    PROJECT_ROOT / "models" / "manifests" / "pp-ocrv6-small-rec-onnx-v1.json"
+)
+REGISTERED_ONNX_MODEL_MANIFEST_SHA256 = (
+    "48cc68b16e785c4b2a0fa2a7764bb1ac6e87e9199065f5bea090a94fca97ee6c"
+)
 
 
 class ModelStoreError(Exception):
@@ -49,6 +55,18 @@ class ModelSource:
     paddleocr_version: str
     paddlepaddle_version: str
     files: tuple[ModelFile, ...]
+
+
+@dataclass(frozen=True)
+class OnnxModelSource:
+    model_id: str
+    model_name: str
+    source_url: str
+    sha256: str
+    bytes: int
+    paddle_model_id: str
+    paddle_inference_json_sha256: str
+    paddle_inference_yml_sha256: str
 
 
 def _sha256_file(path: Path, maximum: int) -> tuple[str, int]:
@@ -192,6 +210,70 @@ def load_registered_source() -> ModelSource:
     return _load_source_bytes(data)
 
 
+def load_registered_onnx_source() -> OnnxModelSource:
+    data = _read_regular_bytes(REGISTERED_ONNX_MODEL_MANIFEST, MAX_MANIFEST_BYTES)
+    if hashlib.sha256(data).hexdigest() != REGISTERED_ONNX_MODEL_MANIFEST_SHA256:
+        raise ModelStoreError("registered ONNX model manifest digest mismatch")
+    try:
+        raw = json.loads(data)
+    except json.JSONDecodeError as error:
+        raise ModelStoreError("ONNX model source manifest is invalid") from error
+    raw = _exact_object(
+        raw,
+        {
+            "schema",
+            "model_id",
+            "model_name",
+            "source_repository",
+            "source_revision",
+            "source_url",
+            "sha256",
+            "bytes",
+            "license_id",
+            "license_url",
+            "paddle_model_id",
+            "paddle_inference_json_sha256",
+            "paddle_inference_yml_sha256",
+        },
+        "ONNX model source manifest",
+    )
+    revision = "3d2d345e6a299891174f1397a72cdd81331359c7"
+    expected_url = (
+        "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/"
+        f"{revision}/inference.onnx"
+    )
+    if (
+        raw["schema"] != "scorepeek-ocr-onnx-model-source-v1"
+        or raw["model_id"] != "pp-ocrv6-small-rec-onnx-v1"
+        or raw["model_name"] != "PP-OCRv6_small_rec"
+        or raw["source_repository"]
+        != "PaddlePaddle/PP-OCRv6_small_rec_onnx"
+        or raw["source_revision"] != revision
+        or raw["source_url"] != expected_url
+        or raw["sha256"]
+        != "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634"
+        or raw["bytes"] != 21_159_378
+        or raw["license_id"] != "Apache-2.0"
+        or not isinstance(raw["license_url"], str)
+        or raw["paddle_model_id"] != "pp-ocrv6-small-rec-v1"
+        or raw["paddle_inference_json_sha256"]
+        != "f0bf53c853937a917affdd74467472167727f8ab0f0f7bded01c4a16c27e46e6"
+        or raw["paddle_inference_yml_sha256"]
+        != "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1"
+    ):
+        raise ModelStoreError("ONNX model source manifest values are invalid")
+    return OnnxModelSource(
+        model_id=raw["model_id"],
+        model_name=raw["model_name"],
+        source_url=raw["source_url"],
+        sha256=raw["sha256"],
+        bytes=raw["bytes"],
+        paddle_model_id=raw["paddle_model_id"],
+        paddle_inference_json_sha256=raw["paddle_inference_json_sha256"],
+        paddle_inference_yml_sha256=raw["paddle_inference_yml_sha256"],
+    )
+
+
 def _valid_sha256(value: Any) -> bool:
     return (
         isinstance(value, str)
@@ -220,17 +302,44 @@ def model_path(store: Path, source: ModelSource) -> Path:
     return store / "objects" / source.archive_sha256
 
 
-def verify_model(directory: Path, source: ModelSource) -> None:
+def onnx_model_path(store: Path, source: OnnxModelSource) -> Path:
+    if not store.is_absolute():
+        raise ModelStoreError("model store must be absolute")
+    return store / "objects" / source.sha256 / "inference.onnx"
+
+
+def read_verified_model_files(
+    directory: Path, source: ModelSource
+) -> dict[str, bytes]:
     if directory.is_symlink() or not directory.is_dir():
         raise ModelStoreError("registered model object is not a directory")
     if {entry.name for entry in directory.iterdir()} != {
         item.filename for item in source.files
     }:
         raise ModelStoreError("registered model object has an unexpected file set")
+    files = {}
     for item in source.files:
-        digest, size = _sha256_file(directory / item.filename, item.bytes)
-        if digest != item.sha256 or size != item.bytes:
+        data = _read_regular_bytes(directory / item.filename, item.bytes)
+        if len(data) != item.bytes or hashlib.sha256(data).hexdigest() != item.sha256:
             raise ModelStoreError(f"registered model file mismatch: {item.filename}")
+        files[item.filename] = data
+    return files
+
+
+def verify_model(directory: Path, source: ModelSource) -> None:
+    read_verified_model_files(directory, source)
+
+
+def verify_onnx_model(path: Path, source: OnnxModelSource) -> None:
+    if path.parent.is_symlink() or not path.parent.is_dir():
+        raise ModelStoreError("registered ONNX model object directory is invalid")
+    if path.is_symlink() or not path.is_file():
+        raise ModelStoreError("registered ONNX model object is not a regular file")
+    if {entry.name for entry in path.parent.iterdir()} != {"inference.onnx"}:
+        raise ModelStoreError("registered ONNX model object has an unexpected file set")
+    digest, size = _sha256_file(path, source.bytes)
+    if digest != source.sha256 or size != source.bytes:
+        raise ModelStoreError("registered ONNX model file mismatch")
 
 
 def _download(source: ModelSource, path: Path) -> None:
@@ -246,6 +355,21 @@ def _download(source: ModelSource, path: Path) -> None:
             output.write(chunk)
     if total != source.archive_bytes or digest.hexdigest() != source.archive_sha256:
         raise ModelStoreError("model archive digest or size mismatch")
+
+
+def _download_onnx(source: OnnxModelSource, path: Path) -> None:
+    request = urllib.request.Request(source.source_url, headers={"User-Agent": "scorepeek/0"})
+    digest = hashlib.sha256()
+    total = 0
+    with urllib.request.urlopen(request, timeout=30) as response, path.open("xb") as output:
+        while chunk := response.read(1024 * 1024):
+            total += len(chunk)
+            if total > source.bytes:
+                raise ModelStoreError("ONNX model exceeds the registered size")
+            digest.update(chunk)
+            output.write(chunk)
+    if total != source.bytes or digest.hexdigest() != source.sha256:
+        raise ModelStoreError("ONNX model digest or size mismatch")
 
 
 def _extract(archive: Path, destination: Path, source: ModelSource) -> None:
@@ -269,10 +393,10 @@ def _extract(archive: Path, destination: Path, source: ModelSource) -> None:
 
 def fetch(store: Path) -> dict[str, Any]:
     source = load_registered_source()
+    target = model_path(store, source)
     store.mkdir(mode=0o700, parents=True, exist_ok=True)
     if store.is_symlink() or not store.is_dir():
         raise ModelStoreError("model store must be a directory")
-    target = model_path(store, source)
     if target.exists():
         verify_model(target, source)
         return _summary(source, target, reused=True)
@@ -300,6 +424,37 @@ def fetch(store: Path) -> dict[str, Any]:
         shutil.rmtree(temporary, ignore_errors=True)
 
 
+def fetch_onnx(store: Path) -> dict[str, Any]:
+    source = load_registered_onnx_source()
+    target = onnx_model_path(store, source)
+    store.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if store.is_symlink() or not store.is_dir():
+        raise ModelStoreError("model store must be a directory")
+    objects = store / "objects"
+    objects.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if objects.is_symlink() or not objects.is_dir():
+        raise ModelStoreError("model objects store must be a directory")
+    if target.exists():
+        verify_onnx_model(target, source)
+        return _onnx_summary(source, target, reused=True)
+    temporary = Path(tempfile.mkdtemp(prefix=".staging-", dir=objects))
+    staged = temporary / "inference.onnx"
+    try:
+        _download_onnx(source, staged)
+        verify_onnx_model(staged, source)
+        try:
+            temporary.rename(target.parent)
+        except OSError:
+            if not target.exists():
+                raise
+            verify_onnx_model(target, source)
+        verify_onnx_model(target, source)
+        return _onnx_summary(source, target, reused=False)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary, ignore_errors=True)
+
+
 def _summary(source: ModelSource, target: Path, *, reused: bool) -> dict[str, Any]:
     return {
         "schema": "scorepeek-ocr-model-fetch-summary-v1",
@@ -311,15 +466,30 @@ def _summary(source: ModelSource, target: Path, *, reused: bool) -> dict[str, An
     }
 
 
+def _onnx_summary(
+    source: OnnxModelSource, target: Path, *, reused: bool
+) -> dict[str, Any]:
+    return {
+        "schema": "scorepeek-ocr-onnx-model-fetch-summary-v1",
+        "model_id": source.model_id,
+        "model_name": source.model_name,
+        "sha256": source.sha256,
+        "model_file": str(target),
+        "reused": reused,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subcommands = parser.add_subparsers(dest="command", required=True)
     fetch_parser = subcommands.add_parser("fetch")
     fetch_parser.add_argument("--store", type=Path, default=None)
+    fetch_onnx_parser = subcommands.add_parser("fetch-onnx")
+    fetch_onnx_parser.add_argument("--store", type=Path, default=None)
     arguments = parser.parse_args()
     try:
         store = arguments.store or default_store()
-        result = fetch(store)
+        result = fetch(store) if arguments.command == "fetch" else fetch_onnx(store)
     except (ModelStoreError, OSError, tarfile.TarError) as error:
         print(f"scorepeek OCR model fetch failed: {error}", file=sys.stderr)
         raise SystemExit(2) from error

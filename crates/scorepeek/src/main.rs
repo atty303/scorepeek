@@ -84,6 +84,23 @@ fn run(args: &[OsString]) -> Result<(), String> {
         {
             diagnostic_title_spike(store, text, confidence)
         }
+        [
+            recognition,
+            parity,
+            model_flag,
+            model,
+            reference_flag,
+            reference,
+            digest_flag,
+            digest,
+        ] if recognition == "recognition"
+            && parity == "title-onnx-parity"
+            && model_flag == "--model"
+            && reference_flag == "--reference"
+            && digest_flag == "--reference-sha256" =>
+        {
+            title_onnx_parity(model, reference, digest)
+        }
         [flag] if flag == "--help" || flag == "-h" => {
             print_usage();
             Ok(())
@@ -187,6 +204,24 @@ fn diagnostic_title_spike(
     Ok(())
 }
 
+fn title_onnx_parity(
+    model: &OsStr,
+    reference: &OsStr,
+    reference_sha256: &OsStr,
+) -> Result<(), String> {
+    let reference_sha256 = reference_sha256
+        .to_str()
+        .ok_or_else(|| "parity reference SHA-256 must be UTF-8".to_owned())?;
+    let summary = recognition::compare_paddle_onnx(model, reference, reference_sha256)
+        .map_err(|error| error.to_string())?;
+    println!(
+        "{}",
+        serde_json::to_string(&summary)
+            .map_err(|error| format!("ONNX parity summary encoding failed: {error}"))?
+    );
+    Ok(())
+}
+
 fn sync_catalog() -> Result<(), String> {
     let xdg_data_home = env::var_os("XDG_DATA_HOME");
     let xdg_cache_home = env::var_os("XDG_CACHE_HOME");
@@ -251,7 +286,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE",
+        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256",
         env!("CARGO_PKG_VERSION")
     );
 }

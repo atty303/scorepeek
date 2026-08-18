@@ -1,0 +1,15 @@
+{
+  "schema": "scorepeek-ocr-onnx-model-source-v1",
+  "model_id": "pp-ocrv6-small-rec-onnx-v1",
+  "model_name": "PP-OCRv6_small_rec",
+  "source_repository": "PaddlePaddle/PP-OCRv6_small_rec_onnx",
+  "source_revision": "3d2d345e6a299891174f1397a72cdd81331359c7",
+  "source_url": "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/3d2d345e6a299891174f1397a72cdd81331359c7/inference.onnx",
+  "sha256": "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634",
+  "bytes": 21159378,
+  "license_id": "Apache-2.0",
+  "license_url": "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/blob/3d2d345e6a299891174f1397a72cdd81331359c7/README.md",
+  "paddle_model_id": "pp-ocrv6-small-rec-v1",
+  "paddle_inference_json_sha256": "f0bf53c853937a917affdd74467472167727f8ab0f0f7bded01c4a16c27e46e6",
+  "paddle_inference_yml_sha256": "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1"
+}
