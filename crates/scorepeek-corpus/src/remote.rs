@@ -402,7 +402,7 @@ impl CorpusStore {
             .join(format!("{generation_sha256}.json"));
         match generation_path.symlink_metadata() {
             Ok(_) => {
-                validate_private_file_mode(&generation_path, ErrorContext::Request)?;
+                validate_regular_file(&generation_path, ErrorContext::Request)?;
                 let existing = read_bounded_regular(
                     &generation_path,
                     dataset::MAX_DATASET_DOCUMENT_BYTES,
@@ -1036,8 +1036,6 @@ async fn download_to_temporary(
 ) -> Result<DownloadedObject, CorpusError> {
     let file = tempfile::tempfile_in(staging_root)
         .map_err(|_| remote_error("anonymous download staging could not be created"))?;
-    file.set_permissions(fs::Permissions::from_mode(0o600))
-        .map_err(|_| remote_error("download staging permissions failed"))?;
     let mut destination = tokio::fs::File::from_std(file);
     let result = store
         .get(&metadata.location)

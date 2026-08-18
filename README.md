@@ -21,8 +21,10 @@ It also pins an offline static FFmpeg/ffprobe toolchain for bounded private
 media probing and explicit observed RGB8 frame extraction. Complete recording
 runs can be imported as reusable dataset roots, sealed by digest, and
 explicitly synchronized with private S3-compatible storage. Shared canonical
-layout authoring and measurement, a training pipeline, and a runnable capture
-or recognition service are not yet implemented.
+normalization, a measured result layout, and a locked offline PP-OCRv6 field
+spike are implemented for one exact OBS/vkcapture profile and recording. A
+supported capture route, training/export pipeline, and runnable recognition
+service are not yet implemented.
 
 The first implementation milestone is:
 
@@ -36,7 +38,8 @@ opaque capture-profile frame
 ```
 
 The game-session runtime will be Rust. Python is limited to reproducible,
-offline OCR training and ONNX export.
+offline OCR tooling: the current Paddle inference spike, later training, and
+ONNX export.
 
 ## Project boundaries
 
@@ -84,6 +87,12 @@ mise run corpus:label:author -- --store /absolute/private/store /absolute/comple
 mise run corpus:index:generate -- --store /absolute/private/store /absolute/index-plan.json
 mise run corpus:media:probe -- --store /absolute/private/store --output /absolute/private/probe.json fixture-001
 mise run corpus:media:extract -- --store /absolute/private/store --output /absolute/private/new-extraction /absolute/private/probe.json /absolute/private/extraction-request.json
+mise run corpus:canonical:extract -- --store /absolute/private/store --output /absolute/private/canonical /absolute/private/probe.json /absolute/private/extraction-request.json
+mise run recognition:inspect -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID
+mise run recognition:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/crops
+mise run ocr:sync
+mise run ocr:model:fetch
+mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256
 mise run corpus:synthetic:render -- --output /absolute/new/output-directory /absolute/synthetic-request.json
 mise run corpus:replay:validate -- --store /absolute/private/store /absolute/replay-suite.json
 mise run catalog:schedule:systemd:verify
@@ -118,7 +127,10 @@ source records.
 `scorepeek-corpus` is a separate workspace crate and offline binary; the
 game-session `scorepeek` crate does not depend on it. Ingest requires an
 explicit absolute private-store root and copies immutable source media into a
-bounded SHA-256-addressed store with private permissions. Before assigning
+bounded SHA-256-addressed store. Filesystem permissions, ownership, ACLs, and
+retention are the operator's responsibility; scorepeek validates path types,
+symlink boundaries, sizes, hashes, and no-clobber publication, not Unix modes.
+Before assigning
 splits, generation sealing records every current fixture binding in one
 immutable content-addressed generation. Replay-suite validation reads that
 generation plus canonical complete-label documents, source manifests, and media
@@ -137,16 +149,22 @@ complete label are revalidated before private publication. The pinned offline
 media path accepts only self-contained Matroska, streams stored bytes through
 stdin with only FFmpeg's `pipe` protocol enabled, probes PTS and decode-index
 evidence, extracts only an explicit strictly ordered observed-frame selection
-as RGB8 P6 PPM, and hashes both pixel payloads and files. Extraction does not
-normalize pixels or create canonical layout evidence. All real outputs remain
-private and external to the repository. The separate seed-only synthetic renderer emits
+as RGB8 P6 PPM, and hashes both pixel payloads and files. Observed extraction
+does not normalize pixels or create canonical layout evidence. The separate
+canonical command admits only an exact registered profile, and
+`recognition:crop` validates its extraction digest and normalizer before
+exporting shared-layout field crops. All real outputs remain private and
+external to the repository. The separate seed-only synthetic renderer emits
 deterministic RGB8 PPM title crops and a canonical manifest without accepting
 catalog text, fonts, images, or private corpus data. Its procedural ASCII
 domain establishes the renderer contract but is not yet representative
-production OCR training data. Canonical-frame generation, shared-layout
-measurement, production glyph/font coverage, replay execution, and
-training/export remain later offline
-stages and will not become game-session runtime dependencies.
+production OCR training data. Python 3.13 and uv are mise-pinned; PaddleOCR and
+PaddlePaddle are uv-locked for offline experiments only. The registered
+PP-OCRv6 model is explicitly fetched into a local content-addressed model
+store and is never auto-downloaded by recognition. Production glyph/font
+coverage, replay execution, ONNX export, Rust parity, and supported-profile
+evaluation remain later offline stages and will not become Python game-session
+runtime dependencies.
 
 `scorepeek catalog sync` is the scheduling interface. A user may keep recurring
 execution disabled and run it manually, or select any scheduler that preserves

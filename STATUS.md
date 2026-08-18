@@ -23,7 +23,7 @@ is outside this checkpoint.
   status.
 - Private, content-addressed SQLite snapshots with semantic validation,
   single-writer locking, base-digest conflict detection, atomic manifest
-  activation, fsync boundaries, and restrictive permissions.
+  activation, and fsync boundaries.
 - Synthetic regression coverage for adapters, federation, provenance,
   last-known-good behavior, deterministic snapshot round-trips, semantic
   tampering, and activation crash points.
@@ -90,14 +90,19 @@ is outside this checkpoint.
 - Bounded content-addressed private source ingest with an explicit absolute
   store root, single-writer locking, scorepeek-owned staging recovery,
   canonical manifests, immutable fixture-ID binding, idempotent content reuse,
-  private permissions, fsync boundaries, a 64 GiB per-source limit, a
+  fsync boundaries, a 64 GiB per-source limit, a
   1,024-object limit, a 1 TiB aggregate limit, and separate 1,024-file/64 MiB
   fixture-manifest bounds.
 - Immutable corpus-generation sealing that records every current fixture and
   canonical source-manifest digest under the ingest writer lock, publishes the
-  generation by canonical SHA-256 with private/fsync boundaries, and never
+  generation by canonical SHA-256 with fsync boundaries, and never
   rewrites an older generation when later sources are ingested. The generation
   store is bounded to 128 files, 256 KiB each, and 32 MiB total.
+- Local filesystem permissions, ownership, ACLs, and retention are operator
+  responsibilities. Existing Unix modes and group/world writability are not
+  acceptance criteria; scorepeek retains symlink, path-type, complete-byte,
+  no-clobber, ownership-marker, and fsync integrity checks. Restrictive creation
+  modes are best-effort defaults, not output guarantees.
 - Replay-suite validation that requires complete coverage of one sealed
   generation, reads canonical source manifests and media from the private
   store, binds exact source-manifest/extractor-manifest/parameter/frame/label
@@ -171,11 +176,27 @@ is outside this checkpoint.
   Canonical extraction publishes the normalizer, manifest, and selected PPM
   frames as one digest-bound private artifact.
 - A scorepeek-owned canonical result layout measured only after normalization,
-  with result header, title, metadata, and current-score ROIs. The initial pure
+  with result header, title, artist, difficulty, level, notes, and current-score
+  ROIs. The initial pure
   Rust screen spike classifies a result only when both fixed warm- and red-pixel
   predicates pass; otherwise it returns `unknown`. The recognition constructor
   requires valid normalizer/extraction evidence and matching file/pixel hashes,
   so bare PPM and observed extraction cannot enter recognition directly.
+- A result-crop export boundary that first validates the canonical extraction
+  and result predicate, then publishes six shared-layout PPM crops and a
+  digest-bound private manifest. The offline OCR consumer requires the expected
+  crop-manifest digest and registered normalizer digest, and cannot accept a
+  bare observed or canonical PPM directly.
+- A mise-pinned Python 3.13.7 and uv 0.11.7 offline environment with a committed
+  `uv.lock` for PaddleOCR 3.7.0 and PaddlePaddle CPU 3.3.1. Python and its
+  approximately 1.2 GiB development environment do not enter the Rust
+  game-session dependency graph.
+- An immutable `PP-OCRv6_small_rec` registration containing its official source
+  URL, Apache-2.0 license reference, package compatibility, and exact archive
+  and extracted-file sizes and SHA-256 values. Explicit acquisition publishes
+  the 21 MiB model below a local content-addressed store, verifies every
+  reuse, rejects unexpected archive entries, and inference receives only that
+  verified local directory instead of auto-downloading.
 - Immutable recording-dataset generations that bind every imported recording
   to five typed byte roles and revalidate their canonical manifest
   relationships as well as size and complete SHA-256. The generation digest is
@@ -197,7 +218,7 @@ is outside this checkpoint.
   rechecks it at publication. Dataset verify and push reject intermediate
   symlinks rather than reading outside the private store.
 - Role-specific document size limits are enforced before remote GET. Downloads
-  use unlinked mode-0600 temporary files, while crash-left scorepeek-owned
+  use unlinked temporary files, while crash-left scorepeek-owned
   source/document publication staging is recovered and fsynced under the
   writer lock before capacity accounting.
 - `object_store` 0.14.1 with only its AWS feature, Tokio 1.53.1, and a direct
@@ -244,8 +265,8 @@ is outside this checkpoint.
   reuse verification, staging cleanup, bounded download, and same-size corrupt
   object rejection.
   Regressions also reject a source-path replacement between hash and stream
-  inspection before publishing a recording binding, an insecure stored-source
-  mode on reuse, a self-consistent typed-role substitution, an intermediate
+  inspection before publishing a recording binding, a self-consistent
+  typed-role substitution, an intermediate
   content-directory symlink, typed-document oversize, dataset-generation
   capacity excess, stale owned staging, and endpoint
   userinfo/path/query/fragment.
@@ -255,9 +276,9 @@ is outside this checkpoint.
   and locally verified it, pushed all six objects, observed rclone's initiate,
   part-upload, and complete-multipart operations, reused all six objects on a
   second push, remotely verified every byte, pulled to an empty store, and
-  reproduced byte-identical source media.
-  This established mock-S3 evidence was not rerun for the current offline
-  recognition change, as requested.
+  reproduced byte-identical source media. It was rerun after adding the bounded
+  create-only PUT fallback used when the mock rejects server-side multipart
+  conditional copy.
 - An isolated real OBS/vkcapture gate registered the private
   14,785,693,017-byte Matroska/FFV1 recording at source SHA-256
   `53d4745e22e078db9b343896d17c0a63781afada1a664323fc0b12bab563c697`
@@ -298,8 +319,7 @@ is outside this checkpoint.
   The combined sync activated 2,548 Tachi-anchored songs at catalog digest
   `7b31c9e7fa72b39a905554ace30b8c46d37e24639b7a31861cf65c748f3da0fa`;
   51 dqn rows remained provisional and the rest resolved without another
-  quarantine category. The 74,330,112-byte SQLite snapshot and all raw files
-  had private permissions. The temporary private XDG roots, external bytes,
+  quarantine category. The temporary XDG roots, external bytes,
   and generated snapshot were removed after verification and were not added to
   the repository.
 - An independent review reproduced a second-revision capacity failure in the
@@ -320,8 +340,7 @@ is outside this checkpoint.
   711 Textage/dqn records remained provisional and 85 Textage records had
   chart conflicts, with no fuzzy or ambiguous merge. A repeat sync reused one
   Textage cache generation and one byte-identical 85,233,664-byte catalog
-  snapshot. All scorepeek cache, manifest, lock, and snapshot paths had private
-  permissions. Independent review reproduced cross-revision growth in Textage
+  snapshot. Independent review reproduced cross-revision growth in Textage
   title and binding evidence; semantic assertions now reuse their original
   evidence while the latest source revision remains recorded. Synthetic
   regressions cover both an unchanged revision and a sparse attribute change.
@@ -337,11 +356,17 @@ is outside this checkpoint.
 ## Unverified and target-only boundaries
 
 - The first real normalizer, canonical-frame production, shared result ROIs,
-  and result-screen predicate are only an offline single-recording spike. The
+  result-screen predicate, and PP-OCRv6 field recognition are only an offline
+  single-recording spike. The
   current thresholds have no labelled holdout, profile-disjoint evidence, or
-  support claim. Music-select layout, OCR preprocessing/model/export, field
-  recognizers, replay execution, catalog-update recognition replay, event
-  daemon, and the integrated live flow remain unvalidated.
+  support claim. The refined six-field crop run produced visually correct
+  artist, difficulty, level, notes, and current-score text; the title omitted
+  one internal whitespace despite high confidence. Music-select layout,
+  catalog-constrained title decoding, OCR preprocessing/model export, replay
+  execution, catalog-update recognition replay, event daemon, and the
+  integrated live flow remain unvalidated. The observed 649 ms CPU process and
+  inference time is a single warmed development-host measurement, not a
+  performance gate.
 - The live `ObservedFrame`/domain-normalizer/`CanonicalFrame` runtime boundary,
   model-bundle promotion, and last-known-good model rollback remain
   unimplemented. Recognition accepts only digest-bound offline canonical
@@ -353,9 +378,10 @@ is outside this checkpoint.
   remain target-machine-only and unrun.
 - One real OBS/vkcapture game recording has passed isolated import, reimport,
   seal, local verification, canonical extraction, visual ROI inspection, and
-  result-screen classification. The original file is the external dataset root;
-  the temporary locator store and derived artifacts are not a durable
-  operator-owned corpus and were not pushed to S3. S3-compatible push, multipart, reuse, remote
+  result-screen classification plus six-field PP-OCRv6 inference. The original
+  file is the external dataset root; its copyless manifests and locator are in
+  the durable operator-owned private corpus, while canonical/crop/OCR outputs
+  remain reproducible derivatives and were not pushed to S3. S3-compatible push, multipart, reuse, remote
   verification, and pull have been verified against the local rclone server,
   not a real private bucket. Live credential, provider-specific addressing,
   TLS, bucket lifecycle, and provider behavior remain an explicit external
@@ -380,22 +406,24 @@ is outside this checkpoint.
 - Any new runtime, parser, capture, or training dependency requires user
   approval after version, license, alternatives, and host/bundle impact are
   presented.
-- The next field-recognition spike proposes offline Python 3.13,
-  PaddleOCR 3.7.0, PaddlePaddle CPU 3.3.1, and a pinned PP-OCRv6 small Japanese
-  recognition model. These remain unadded pending explicit approval; they do
-  not enter the Rust game-session dependency graph.
+- Offline Python 3.13.7, uv 0.11.7, PaddleOCR 3.7.0, PaddlePaddle CPU 3.3.1,
+  and the pinned PP-OCRv6 small multilingual recognition model were approved
+  and added only to offline development; they do not enter the Rust
+  game-session dependency graph.
 - External-source access and reuse must remain within `docs/sources.md`; a
   source requiring new permission cannot be enabled until that permission is
   obtained.
 
 ## Next executable task
 
-After approval of the proposed offline OCR dependencies, run PP-OCRv6 small on
-the normalized result title and metadata crops, record exact preprocessing and
-model evidence, and use the current recording only as a vertical spike rather
-than a holdout. Then add the smallest Rust/ONNX parity path justified by that
-measurement. Do not recognize bare PPM or `ObservedFrame`, auto-download a
-runtime model, or treat the OBS profile and current thresholds as supported.
+Define the smallest exact catalog-constrained title-decoding contract that can
+restore meaningful whitespace without fuzzy acceptance: normalize OCR and
+catalog candidates to a versioned comparison key, return a song only for one
+unique candidate, and keep collisions or low confidence unknown. Use the
+current recording only as a vertical spike rather than a holdout. Then add the
+smallest ONNX export and Rust parity path justified by that measurement. Do not
+recognize bare PPM or `ObservedFrame`, auto-download a runtime model, or treat
+the OBS profile, current ROIs, confidence, or timing as supported.
 
 S3 replication and another profile are intentionally deferred. When capture
 work resumes, start **M3** with narrow Portal and Gamescope direct observed

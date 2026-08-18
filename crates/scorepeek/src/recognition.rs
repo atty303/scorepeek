@@ -580,7 +580,6 @@ pub fn export_result_crops(
     }
     let output = output.as_ref();
     fs::create_dir(output)?;
-    set_private_directory(output)?;
 
     let layout = CanonicalLayout::load()?;
     let selections = [
@@ -645,15 +644,6 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), RecognitionError>
     let mut file = options.open(path)?;
     file.write_all(bytes)?;
     file.sync_all()?;
-    Ok(())
-}
-
-fn set_private_directory(path: &Path) -> Result<(), RecognitionError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    }
     Ok(())
 }
 

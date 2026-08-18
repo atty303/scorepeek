@@ -578,7 +578,6 @@ impl CorpusStore {
                 {
                     return Err(CorpusError::FixtureConflict);
                 }
-                fs::set_permissions(&manifest_path, fs::Permissions::from_mode(0o600))?;
                 true
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => false,
@@ -604,7 +603,6 @@ impl CorpusStore {
         }
 
         if destination_exists {
-            set_stored_source_permissions(&destination)?;
             validate_stored_source(&destination, &manifest.source)?;
             sync_stored_source_and_parent(&destination, &content_dir)?;
             staging.close()?;
@@ -639,11 +637,11 @@ impl CorpusStore {
         self.validate_root()?;
         validate_opaque_id(generation_id, "generation_id", ErrorContext::Request)?;
         preflight_managed_components(&self.root)?;
-        validate_private_directory_mode(&self.root, ErrorContext::Request)?;
+        validate_directory(&self.root, ErrorContext::Request)?;
         let content_dir = self.root.join("content");
         let manifest_dir = self.root.join("manifests");
-        validate_private_directory_mode(&content_dir, ErrorContext::Request)?;
-        validate_private_directory_mode(&manifest_dir, ErrorContext::Request)?;
+        validate_directory(&content_dir, ErrorContext::Request)?;
+        validate_directory(&manifest_dir, ErrorContext::Request)?;
         let lock = open_store_lock(&self.root, false)?;
         lock.lock()?;
         preflight_managed_components(&self.root)?;
@@ -676,7 +674,6 @@ impl CorpusStore {
                         "generation digest is bound to different bytes".to_owned(),
                     ));
                 }
-                fs::set_permissions(&destination, fs::Permissions::from_mode(0o600))?;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 ensure_generation_capacity(&generation_dir, bytes.len())?;
@@ -725,13 +722,13 @@ impl CorpusStore {
         let (frame_id, annotation_revision, shape) = label.summary_fields();
 
         preflight_managed_components(&self.root)?;
-        validate_private_directory_mode(&self.root, ErrorContext::Replay)?;
+        validate_directory(&self.root, ErrorContext::Replay)?;
         let label_dir = self.root.join("labels");
-        validate_private_directory_mode(&label_dir, ErrorContext::Replay)?;
+        validate_directory(&label_dir, ErrorContext::Replay)?;
         let lock = open_store_lock(&self.root, false)?;
         lock.lock()?;
         preflight_managed_components(&self.root)?;
-        validate_private_directory_mode(&label_dir, ErrorContext::Replay)?;
+        validate_directory(&label_dir, ErrorContext::Replay)?;
         recover_label_staging(&label_dir)?;
         validate_label_store(&label_dir)?;
 
@@ -746,7 +743,6 @@ impl CorpusStore {
                         "complete-label digest is bound to different bytes".to_owned(),
                     ));
                 }
-                fs::set_permissions(&destination, fs::Permissions::from_mode(0o600))?;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 ensure_label_capacity(&label_dir, bytes.len())?;
@@ -784,12 +780,12 @@ impl CorpusStore {
         self.validate_root()?;
         let plan = ReplayIndexPlan::read_from(plan_path)?;
         preflight_managed_components(&self.root)?;
-        validate_private_directory_mode(&self.root, ErrorContext::Replay)?;
+        validate_directory(&self.root, ErrorContext::Replay)?;
         let lock = open_store_lock(&self.root, false)?;
         lock.lock()?;
         preflight_managed_components(&self.root)?;
         for name in ["content", "manifests", "labels"] {
-            validate_private_directory_mode(&self.root.join(name), ErrorContext::Replay)?;
+            validate_directory(&self.root.join(name), ErrorContext::Replay)?;
         }
         validate_label_store(&self.root.join("labels"))?;
 
@@ -819,7 +815,6 @@ impl CorpusStore {
                         "replay-index digest is bound to different bytes".to_owned(),
                     ));
                 }
-                fs::set_permissions(&destination, fs::Permissions::from_mode(0o600))?;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 ensure_index_capacity(&index_dir, bytes.len())?;
@@ -857,11 +852,11 @@ impl CorpusStore {
         suite_path: impl AsRef<Path>,
     ) -> Result<ReplaySuiteSummary, CorpusError> {
         self.validate_root()?;
-        validate_private_directory_mode(&self.root, ErrorContext::Replay)?;
-        validate_private_directory_mode(&self.root.join("content"), ErrorContext::Replay)?;
-        validate_private_directory_mode(&self.root.join("manifests"), ErrorContext::Replay)?;
-        validate_private_directory_mode(&self.root.join("generations"), ErrorContext::Replay)?;
-        validate_private_directory_mode(&self.root.join("labels"), ErrorContext::Replay)?;
+        validate_directory(&self.root, ErrorContext::Replay)?;
+        validate_directory(&self.root.join("content"), ErrorContext::Replay)?;
+        validate_directory(&self.root.join("manifests"), ErrorContext::Replay)?;
+        validate_directory(&self.root.join("generations"), ErrorContext::Replay)?;
+        validate_directory(&self.root.join("labels"), ErrorContext::Replay)?;
         validate_label_store(&self.root.join("labels"))?;
         let suite = ReplaySuite::read_from(suite_path)?;
         suite.validate_against(self)
@@ -1831,7 +1826,6 @@ pub fn render_synthetic_title_set(
         Err(error) => return Err(error.into()),
     }
     fs::DirBuilder::new().mode(0o755).create(output)?;
-    fs::set_permissions(output, fs::Permissions::from_mode(0o755))?;
 
     let mut samples = Vec::with_capacity(request.sample_count);
     let mut total_sample_bytes = 0_u64;
@@ -2059,7 +2053,6 @@ fn write_redistributable_file(path: &Path, bytes: &[u8]) -> Result<(), CorpusErr
         .open(path)?;
     file.write_all(bytes)?;
     file.flush()?;
-    file.set_permissions(fs::Permissions::from_mode(0o644))?;
     file.sync_all()?;
     Ok(())
 }
@@ -2187,7 +2180,7 @@ fn stored_source_logical_bytes(
     directory: &Path,
     expected_sha256: &str,
 ) -> Result<u64, CorpusError> {
-    validate_private_directory_mode(directory, ErrorContext::Request)?;
+    validate_directory(directory, ErrorContext::Request)?;
     let source = directory.join(SOURCE_FILE);
     match source.symlink_metadata() {
         Ok(metadata)
@@ -2204,7 +2197,7 @@ fn stored_source_logical_bytes(
         Err(error) => return Err(error.into()),
     }
     let locator_path = directory.join(EXTERNAL_SOURCE_FILE);
-    validate_private_file_mode(&locator_path, ErrorContext::Request)?;
+    validate_regular_file(&locator_path, ErrorContext::Request)?;
     let bytes = read_bounded_regular(&locator_path, MAX_REQUEST_BYTES, ErrorContext::Request)?;
     let locator: ExternalSourceLocator = serde_json::from_slice(&bytes)?;
     locator.validate()?;
@@ -2401,7 +2394,7 @@ fn resolve_stored_source_path_unverified(
             "content-addressed destination is not a directory".to_owned(),
         ));
     }
-    validate_private_directory_mode(directory, ErrorContext::Request)?;
+    validate_directory(directory, ErrorContext::Request)?;
     let source = directory.join(SOURCE_FILE);
     match source.symlink_metadata() {
         Ok(metadata) => {
@@ -2410,7 +2403,7 @@ fn resolve_stored_source_path_unverified(
                     "stored source does not match its manifest".to_owned(),
                 ));
             }
-            validate_private_file_mode(&source, ErrorContext::Request)?;
+            validate_regular_file(&source, ErrorContext::Request)?;
             return Ok(source);
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -2442,7 +2435,7 @@ fn read_external_source_locator(
     expected: &ContentRef,
 ) -> Result<(ExternalSourceLocator, PathBuf), CorpusError> {
     let locator_path = directory.join(EXTERNAL_SOURCE_FILE);
-    validate_private_file_mode(&locator_path, ErrorContext::Request)?;
+    validate_regular_file(&locator_path, ErrorContext::Request)?;
     let bytes = read_bounded_regular(&locator_path, MAX_REQUEST_BYTES, ErrorContext::Request)?;
     let locator: ExternalSourceLocator = serde_json::from_slice(&bytes)?;
     let path = locator.validate()?;
@@ -2470,48 +2463,12 @@ fn validate_external_source_file(
             "external source does not match its locator".to_owned(),
         ));
     }
-    if metadata.permissions().mode() & 0o022 != 0 {
-        return Err(CorpusError::InvalidRequest(
-            "external source must not be group- or world-writable".to_owned(),
-        ));
-    }
     if verify_digest && digest_regular_file(path, MAX_SOURCE_BYTES)? != expected.sha256 {
         return Err(CorpusError::InvalidRequest(
             "external source digest does not match its locator".to_owned(),
         ));
     }
     Ok(())
-}
-
-fn set_stored_source_permissions(directory: &Path) -> io::Result<()> {
-    if !directory.symlink_metadata()?.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "stored source directory is not a directory",
-        ));
-    }
-    fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
-    let source = directory.join(SOURCE_FILE);
-    match source.symlink_metadata() {
-        Ok(metadata) if metadata.is_file() => {
-            fs::set_permissions(source, fs::Permissions::from_mode(0o600))
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let locator = directory.join(EXTERNAL_SOURCE_FILE);
-            if !locator.symlink_metadata()?.is_file() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "stored source entry is not a regular file",
-                ));
-            }
-            fs::set_permissions(locator, fs::Permissions::from_mode(0o600))
-        }
-        Ok(_) => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "stored source entry is not a regular file",
-        )),
-        Err(error) => Err(error),
-    }
 }
 
 fn write_atomic_file(
@@ -2523,9 +2480,6 @@ fn write_atomic_file(
     let mut temporary = Builder::new()
         .prefix(staging_prefix)
         .tempfile_in(directory)?;
-    temporary
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
     temporary.write_all(bytes)?;
     temporary.flush()?;
     temporary.as_file().sync_all()?;
@@ -2771,10 +2725,8 @@ fn create_private_directory(path: &Path) -> io::Result<()> {
     }
     for directory in missing.into_iter().rev() {
         fs::DirBuilder::new().mode(0o700).create(&directory)?;
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
         sync_directory_and_parent(&directory)?;
     }
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     sync_directory_and_parent(path)
 }
 
@@ -2805,7 +2757,6 @@ fn open_store_lock(root: &Path, create: bool) -> Result<File, CorpusError> {
             "corpus writer lock changed while opening".to_owned(),
         ));
     }
-    lock.set_permissions(fs::Permissions::from_mode(0o600))?;
     lock.sync_all()?;
     File::open(root)?.sync_all()?;
     Ok(lock)
@@ -2819,18 +2770,18 @@ fn sync_directory_and_parent(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn validate_private_directory_mode(path: &Path, context: ErrorContext) -> Result<(), CorpusError> {
+fn validate_directory(path: &Path, context: ErrorContext) -> Result<(), CorpusError> {
     let metadata = path.symlink_metadata()?;
-    if !metadata.is_dir() || metadata.permissions().mode() & 0o777 != 0o700 {
-        return Err(context.error("private store directory must be a mode 0700 directory"));
+    if !metadata.is_dir() {
+        return Err(context.error("private store path must be a directory"));
     }
     Ok(())
 }
 
-fn validate_private_file_mode(path: &Path, context: ErrorContext) -> Result<(), CorpusError> {
+fn validate_regular_file(path: &Path, context: ErrorContext) -> Result<(), CorpusError> {
     let metadata = path.symlink_metadata()?;
-    if !metadata.is_file() || metadata.permissions().mode() & 0o777 != 0o600 {
-        return Err(context.error("private store file must be a mode 0600 regular file"));
+    if !metadata.is_file() {
+        return Err(context.error("private store path must be a regular file"));
     }
     Ok(())
 }
@@ -2984,7 +2935,7 @@ fn load_source_manifest(
         .root
         .join("manifests")
         .join(format!("{fixture_id}.json"));
-    validate_private_file_mode(&path, ErrorContext::Replay)?;
+    validate_regular_file(&path, ErrorContext::Replay)?;
     let bytes = read_bounded_regular(&path, MAX_REQUEST_BYTES, ErrorContext::Replay)?;
     if digest_bytes(&bytes) != expected_digest {
         return Err(CorpusError::InvalidReplay(
@@ -3009,7 +2960,7 @@ fn validate_source_binding(store: &CorpusStore, index: &ReplayIndex) -> Result<(
         .join("manifests")
         .join(format!("{}.json", index.fixture_id));
     let bytes = read_bounded_regular(&manifest_path, MAX_REQUEST_BYTES, ErrorContext::Replay)?;
-    validate_private_file_mode(&manifest_path, ErrorContext::Replay)?;
+    validate_regular_file(&manifest_path, ErrorContext::Replay)?;
     let manifest: SourceManifest = serde_json::from_slice(&bytes)?;
     manifest
         .validate()
@@ -3085,7 +3036,7 @@ fn read_complete_label_object(
     path: &Path,
     expected_digest: &str,
 ) -> Result<CompleteLabel, CorpusError> {
-    validate_private_file_mode(path, ErrorContext::Replay)?;
+    validate_regular_file(path, ErrorContext::Replay)?;
     let bytes = read_bounded_regular(path, MAX_LABEL_BYTES, ErrorContext::Replay)?;
     if digest_bytes(&bytes) != expected_digest {
         return Err(CorpusError::InvalidReplay(
@@ -3123,7 +3074,7 @@ fn read_generation_sources(
             CorpusError::InvalidRequest("manifest store contains an unrecognized entry".to_owned())
         })?;
         validate_opaque_id(fixture_id, "stored fixture ID", ErrorContext::Request)?;
-        validate_private_file_mode(&entry.path(), ErrorContext::Request)?;
+        validate_regular_file(&entry.path(), ErrorContext::Request)?;
         let bytes = read_bounded_regular(&entry.path(), MAX_REQUEST_BYTES, ErrorContext::Request)?;
         let manifest: SourceManifest = serde_json::from_slice(&bytes)?;
         manifest.validate()?;
@@ -3154,7 +3105,7 @@ fn load_generation(
         .root
         .join("generations")
         .join(format!("{expected_digest}.json"));
-    validate_private_file_mode(&path, ErrorContext::Replay)?;
+    validate_regular_file(&path, ErrorContext::Replay)?;
     let bytes = read_bounded_regular(&path, MAX_GENERATION_BYTES, ErrorContext::Replay)?;
     if digest_bytes(&bytes) != expected_digest {
         return Err(CorpusError::InvalidReplay(
@@ -3226,7 +3177,7 @@ mod tests {
     }
 
     #[test]
-    fn ingest_is_private_content_addressed_and_idempotent() {
+    fn ingest_is_content_addressed_and_does_not_enforce_permissions() {
         let temporary = tempdir().unwrap();
         let root = temporary.path().join("private-corpus");
         let source = temporary.path().join("source.bin");
@@ -3246,28 +3197,27 @@ mod tests {
 
         let store = CorpusStore::new(&root);
         let first = store.ingest(&source, &request).unwrap();
-        let second = store.ingest(&source, &request).unwrap();
-
-        assert_eq!(first, second);
-        assert_eq!(first.source.bytes, 21);
         let stored = root
             .join("content")
             .join(&first.source.sha256)
             .join("source.media");
+        let manifest = root.join("manifests/fixture-001.json");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&stored, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(&manifest, fs::Permissions::from_mode(0o644)).unwrap();
+        let second = store.ingest(&source, &request).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(first.source.bytes, 21);
         assert_eq!(fs::read(&stored).unwrap(), b"synthetic media bytes");
-        assert_eq!(root.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(root.metadata().unwrap().permissions().mode() & 0o777, 0o755);
         assert_eq!(
             stored.metadata().unwrap().permissions().mode() & 0o777,
-            0o600
+            0o644
         );
         assert_eq!(
-            root.join("manifests/fixture-001.json")
-                .metadata()
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
+            manifest.metadata().unwrap().permissions().mode() & 0o777,
+            0o644
         );
     }
 
@@ -3827,10 +3777,6 @@ mod tests {
         let stored = root
             .join("labels")
             .join(format!("{}.json", first.labels_sha256));
-        assert_eq!(
-            stored.metadata().unwrap().permissions().mode() & 0o777,
-            0o600
-        );
         let stored_bytes = fs::read(&stored).unwrap();
         assert_eq!(stored_bytes.len() as u64, first.label_bytes);
         assert!(stored_bytes.ends_with(b"\n"));
@@ -3871,10 +3817,6 @@ mod tests {
         let stored = root
             .join("indexes")
             .join(format!("{}.json", first.replay_index_sha256));
-        assert_eq!(
-            stored.metadata().unwrap().permissions().mode() & 0o777,
-            0o600
-        );
         let bytes = fs::read(stored).unwrap();
         assert!(bytes.ends_with(b"\n"));
         assert_eq!(digest_bytes(&bytes), first.replay_index_sha256);

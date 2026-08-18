@@ -422,7 +422,7 @@ impl CorpusStore {
     ) -> Result<MediaProbeSummary, CorpusError> {
         self.validate_root()?;
         validate_opaque_id(fixture_id, "fixture_id", ErrorContext::Request)?;
-        validate_private_directory_mode(&self.root, ErrorContext::Request)?;
+        validate_directory(&self.root, ErrorContext::Request)?;
         let (source_manifest, source_manifest_sha256) = load_bound_source(self, fixture_id)?;
         let mut source = self.open_verified_source(&source_manifest.source)?;
         let observation = inspect_recording_file(&mut source)?;
@@ -444,7 +444,7 @@ impl CorpusStore {
     ) -> Result<MediaProbeSummary, CorpusError> {
         self.validate_root()?;
         validate_opaque_id(fixture_id, "fixture_id", ErrorContext::Request)?;
-        validate_private_directory_mode(&self.root, ErrorContext::Request)?;
+        validate_directory(&self.root, ErrorContext::Request)?;
         let (source_manifest, source_manifest_sha256) = load_bound_source(self, fixture_id)?;
         write_media_probe(
             fixture_id,
@@ -1042,7 +1042,6 @@ fn run_extraction(
                 "extractor output is not a regular frame file",
             ));
         }
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
         let (pixels, bytes) = validate_ppm(&path, output_width, output_height, pixel_bytes)?;
         extracted.push(ExtractedFrame {
             frame_id: selected.frame_id.clone(),
@@ -1104,7 +1103,7 @@ fn load_bound_source(
         .root
         .join("manifests")
         .join(format!("{fixture_id}.json"));
-    validate_private_file_mode(&path, ErrorContext::Request)?;
+    validate_regular_file(&path, ErrorContext::Request)?;
     let bytes = read_bounded_regular(&path, MAX_REQUEST_BYTES, ErrorContext::Request)?;
     let manifest: SourceManifest = serde_json::from_slice(&bytes)?;
     manifest.validate()?;
@@ -1386,7 +1385,7 @@ fn private_new_path_parent(path: &Path) -> Result<&Path, CorpusError> {
     let parent = path
         .parent()
         .ok_or_else(|| invalid_media("private output path has no parent"))?;
-    validate_private_directory_mode(parent, ErrorContext::Replay)?;
+    validate_directory(parent, ErrorContext::Replay)?;
     Ok(parent)
 }
 
@@ -1436,9 +1435,6 @@ fn publish_private_file(parent: &Path, output: &Path, bytes: &[u8]) -> Result<()
     let mut claim = Builder::new()
         .prefix(FILE_CLAIM_PREFIX)
         .tempfile_in(parent)?;
-    claim
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
     claim.write_all(FILE_CLAIM_MARKER_BYTES)?;
     claim.write_all(basename)?;
     claim.flush()?;
@@ -1506,7 +1502,6 @@ fn open_output_lock(parent: &Path) -> Result<File, CorpusError> {
     if !path.symlink_metadata()?.is_file() || !lock.metadata()?.is_file() {
         return Err(invalid_media("private output lock changed while opening"));
     }
-    lock.set_permissions(fs::Permissions::from_mode(0o600))?;
     lock.sync_all()?;
     File::open(parent)?.sync_all()?;
     Ok(lock)
@@ -1543,7 +1538,7 @@ fn recover_output_staging(parent: &Path) -> Result<(), CorpusError> {
 
 fn validate_owned_marker(directory: &Path, name: &str, expected: &[u8]) -> Result<(), CorpusError> {
     let marker = directory.join(name);
-    validate_private_file_mode(&marker, ErrorContext::Replay)?;
+    validate_regular_file(&marker, ErrorContext::Replay)?;
     if read_bounded_regular(&marker, 128, ErrorContext::Replay)? != expected {
         return Err(invalid_media("owned output marker is invalid"));
     }
@@ -1559,7 +1554,7 @@ fn recover_file_claim(
     if !metadata.is_file() {
         return Err(invalid_media("private file claim is not a regular file"));
     }
-    validate_private_file_mode(claim, ErrorContext::Replay)?;
+    validate_regular_file(claim, ErrorContext::Replay)?;
     let claim_bytes = read_bounded_regular(claim, 512, ErrorContext::Replay)?;
     let Some(basename) = claim_bytes.strip_prefix(FILE_CLAIM_MARKER_BYTES) else {
         return Err(invalid_media("private file claim marker is invalid"));
@@ -1568,7 +1563,7 @@ fn recover_file_claim(
     let staging = parent.join(format!("{claim_name}.staging"));
     match staging.symlink_metadata() {
         Ok(staged) if staged.is_file() => {
-            validate_private_file_mode(&staging, ErrorContext::Replay)?;
+            validate_regular_file(&staging, ErrorContext::Replay)?;
             fs::remove_file(staging)?;
         }
         Ok(_) => return Err(invalid_media("private file staging is not a regular file")),
@@ -1588,7 +1583,7 @@ fn recover_output_claim(
     if !metadata.is_file() || !is_sha256(expected_digest) {
         return Err(invalid_media("output claim is invalid"));
     }
-    validate_private_file_mode(claim, ErrorContext::Replay)?;
+    validate_regular_file(claim, ErrorContext::Replay)?;
     let basename = read_bounded_regular(claim, 255, ErrorContext::Replay)?;
     if basename.is_empty() || digest_bytes(&basename) != expected_digest {
         fs::remove_file(claim)?;
@@ -1645,7 +1640,6 @@ fn publish_extraction(staging: &Path, output: &Path, parent: &Path) -> Result<()
 }
 
 fn publish_claimed_extraction(staging: &Path, output: &Path) -> Result<(), CorpusError> {
-    fs::set_permissions(output, fs::Permissions::from_mode(0o700))?;
     write_owned_marker(output, INCOMPLETE_MARKER, INCOMPLETE_MARKER_BYTES)?;
     validate_owned_marker(staging, STAGING_MARKER, STAGING_MARKER_BYTES)?;
     for entry in fs::read_dir(staging)? {
@@ -1791,7 +1785,11 @@ mod tests {
     #[test]
     fn reserved_private_output_names_are_rejected() {
         let temporary = tempdir().unwrap();
-        fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            private_new_path_parent(&temporary.path().join("ordinary-output")).unwrap(),
+            temporary.path()
+        );
         for name in [
             ".scorepeek-frame-staging-user",
             ".scorepeek-file-claim-user",
@@ -1918,10 +1916,7 @@ mod tests {
         let probe_path = private.join("probe.json");
         let probe_summary = store.probe_media("fixture-media-1", &probe_path).unwrap();
         assert_eq!(probe_summary.frame_count, 3);
-        assert_eq!(
-            probe_path.metadata().unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        assert!(probe_path.is_file());
         assert!(store.probe_media("fixture-media-1", &probe_path).is_err());
         let mut probe: MediaProbeManifest =
             serde_json::from_slice(&fs::read(&probe_path).unwrap()).unwrap();
@@ -1943,26 +1938,9 @@ mod tests {
             .unwrap();
         assert_eq!(extraction.frame_count, 2);
         assert_eq!(extraction.extracted_bytes, 1920 * 1080 * 3 * 2);
-        assert_eq!(
-            extraction_directory
-                .metadata()
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
+        assert!(extraction_directory.is_dir());
         for name in ["frame-000000.ppm", "frame-000001.ppm", "manifest.json"] {
-            assert_eq!(
-                extraction_directory
-                    .join(name)
-                    .metadata()
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
+            assert!(extraction_directory.join(name).is_file());
         }
         assert!(
             store
@@ -2047,16 +2025,7 @@ mod tests {
             "manifest.json",
             "normalizer.json",
         ] {
-            assert_eq!(
-                canonical_directory
-                    .join(name)
-                    .metadata()
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
+            assert!(canonical_directory.join(name).is_file());
         }
         let normalizer_bytes = fs::read(canonical_directory.join("normalizer.json")).unwrap();
         assert_eq!(

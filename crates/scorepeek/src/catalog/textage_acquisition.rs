@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read as _, Write as _};
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -379,8 +379,6 @@ fn cache_verified_bundle<'a>(
         .prefix(CACHE_STAGING_PREFIX)
         .tempdir_in(&directory)
         .map_err(TextageAcquisitionError::CacheIo)?;
-    fs::set_permissions(staging.path(), fs::Permissions::from_mode(0o700))
-        .map_err(TextageAcquisitionError::CacheIo)?;
     for (resource, bytes) in &files {
         let mut file = OpenOptions::new()
             .write(true)
@@ -553,7 +551,6 @@ fn resource_for_filename(name: &str) -> Option<TextageResource> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt as _;
 
     use tempfile::TempDir;
 
@@ -580,23 +577,13 @@ mod tests {
         let second = acquire_textage(&transport, root.path()).unwrap();
         assert_eq!(first.content_sha256, second.content_sha256);
         let directory = root.path().join("textage").join(first.content_sha256);
-        assert_eq!(
-            fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
+        assert!(directory.is_dir());
         for resource in [
             TextageResource::Title,
             TextageResource::Availability,
             TextageResource::Chart,
         ] {
-            assert_eq!(
-                fs::metadata(directory.join(resource.filename()))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
+            assert!(directory.join(resource.filename()).is_file());
         }
     }
 

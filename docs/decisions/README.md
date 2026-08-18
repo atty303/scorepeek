@@ -20,6 +20,8 @@ authoritative.
   supersedes ADR 0010's mandatory local source copy.
 - [ADR 0013: Bootstrap the shared layout from a normalized profile](0013-bootstrap-layout-from-a-normalized-profile.md)
   supersedes ADR 0009's multi-profile-first sequencing requirement.
+- [ADR 0014: Delegate local filesystem permissions to the operator](0014-delegate-local-filesystem-permissions.md)
+  supersedes ADR 0010 and ADR 0012 only for local filesystem mode policy.
 
 ## Historical
 

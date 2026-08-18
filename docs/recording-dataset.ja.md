@@ -79,11 +79,12 @@ mise run corpus:recording:import -- --store /absolute/private/store --capture-co
 mise run corpus:recording:import -- --store /absolute/private/store --capture-context /absolute/private/capture-context.json --external /absolute/recordings/complete-run.mkv
 ```
 
-このmodeはsource SHA-256とbytesをgeneration identityとして維持し、絶対pathだけをmode 0600の
+このmodeはsource SHA-256とbytesをgeneration identityとして維持し、絶対pathだけを
 local locatorへ保存する。pathはgeneration、manifest、remote objectへ入らない。seal、verify、extract、
 replay、pushは利用時に外部fileの全byte hashを再検証する。fileが移動した場合は、同じbytesを新pathから
-再importするとlocatorだけを更新し、dataset identityは変わらない。外部fileはregularかつ
-group/world-writableであってはならず、read権限とdurabilityはoperatorが管理する。
+再importするとlocatorだけを更新し、dataset identityは変わらない。外部fileはregular fileでなければ
+ならない。permission、ownership、ACL、read access、durabilityはoperatorが管理し、scorepeekはmodeを
+受理条件または出力保証にしない。
 
 成功時の`recording_sha256`が録画byte identityである。同じ録画とcontextの再importは
 idempotentなので、成功したか不明な場合は同じコマンドを再実行できる。copy modeの初回importは外側の

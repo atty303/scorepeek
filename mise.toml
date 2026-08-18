@@ -3,9 +3,11 @@ min_version = "2026.8.3"
 [tools]
 actionlint = "1.7.12"
 hk = "1.54.1"
+python = "3.13.7"
 rclone = "1.74.2"
 rust = { version = "1.97.1", components = ["clippy", "rustfmt"] }
 taplo = "0.10.0"
+uv = "0.11.7"
 
 [tool_alias]
 ffmpeg = "github:shaka-project/static-ffmpeg-binaries"
@@ -56,6 +58,7 @@ run = '''
 set -euo pipefail
 mise run check README.md
 mise run check
+mise run ocr:test
 mise run catalog:schedule:systemd:verify
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
@@ -185,6 +188,38 @@ run = '''
 set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- recognition inspect "$@"
 '''
+
+[tasks."recognition:crop"]
+description = "Export shared-layout crops from one validated canonical result frame"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- recognition crop "$@"
+'''
+
+[tasks."ocr:sync"]
+description = "Synchronize the locked offline OCR development environment"
+run = "uv sync --locked --no-dev"
+
+[tasks."ocr:model:fetch"]
+description = "Fetch and verify the registered PP-OCRv6 model outside the repository"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.model_store fetch "$@"
+'''
+
+[tasks."ocr:spike"]
+description = "Run PP-OCRv6 against a verified canonical crop artifact"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.spike "$@"
+'''
+
+[tasks."ocr:test"]
+description = "Validate offline OCR manifests without acquiring a model"
+run = "uv run --locked --no-dev python -m unittest discover -s tests/ocr -p 'test_*.py'"
 
 [tasks."corpus:synthetic:render"]
 description = "Render a deterministic catalog-independent synthetic title set"

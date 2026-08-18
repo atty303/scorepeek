@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read as _, Write as _};
-use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -368,27 +368,31 @@ fn verify_existing_cache(
 pub(super) fn create_private_directory(path: &Path) -> io::Result<()> {
     let mut missing = Vec::new();
     let mut candidate = path;
-    while !candidate.exists() {
-        missing.push(candidate.to_owned());
-        candidate = candidate.parent().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "directory has no existing ancestor",
-            )
-        })?;
-    }
-    if !candidate.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotADirectory,
-            "cache ancestor is not a directory",
-        ));
+    loop {
+        match candidate.symlink_metadata() {
+            Ok(metadata) if metadata.is_dir() => break,
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotADirectory,
+                    "cache ancestor is not a directory",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                missing.push(candidate.to_owned());
+                candidate = candidate.parent().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "directory has no existing ancestor",
+                    )
+                })?;
+            }
+            Err(error) => return Err(error),
+        }
     }
     for directory in missing.into_iter().rev() {
         fs::DirBuilder::new().mode(0o700).create(&directory)?;
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
         sync_directory_and_parent(&directory)?;
     }
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     sync_directory_and_parent(path)
 }
 
@@ -403,8 +407,19 @@ fn sync_directory_and_parent(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use std::io;
+    use std::os::unix::fs::symlink;
 
     use tempfile::TempDir;
+
+    #[test]
+    fn managed_cache_directory_rejects_symlinks() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target");
+        let alias = root.path().join("alias");
+        fs::create_dir(&target).unwrap();
+        symlink(&target, &alias).unwrap();
+        assert!(create_private_directory(&alias).is_err());
+    }
 
     use super::*;
 

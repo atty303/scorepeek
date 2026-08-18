@@ -291,7 +291,6 @@ impl CatalogSyncResult {
 mod tests {
     use std::fs;
     use std::fs::OpenOptions;
-    use std::os::unix::fs::PermissionsExt as _;
     use std::path::Path;
 
     use serde_json::json;
@@ -423,32 +422,18 @@ mod tests {
         let dqn_digest = &result.sources[&SourceId::DqnIidxapi].content_sha256;
         let cache_file = roots.cache.join("dqn").join(format!("{dqn_digest}.json"));
         assert!(cache_file.is_file());
-        assert_eq!(
-            fs::metadata(&cache_file).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
         let tachi = &result.sources[&SourceId::Tachi];
         let tachi_cache = roots
             .cache
             .join("tachi")
             .join(format!("{}-{}", tachi.revision, tachi.content_sha256));
-        assert_eq!(
-            fs::metadata(&tachi_cache).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
+        assert!(tachi_cache.is_dir());
         for filename in [
             "songs-iidx.json",
             "charts-iidx-sp.json",
             "charts-iidx-dp.json",
         ] {
-            assert_eq!(
-                fs::metadata(tachi_cache.join(filename))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
+            assert!(tachi_cache.join(filename).is_file());
         }
         let active = CatalogStore::new(&roots.store)
             .load_active()
@@ -457,10 +442,7 @@ mod tests {
         assert_eq!(Some(active.digest), result.active_catalog_digest);
         let textage = &result.sources[&SourceId::Textage];
         let textage_cache = roots.cache.join("textage").join(&textage.content_sha256);
-        assert_eq!(
-            fs::metadata(textage_cache).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
+        assert!(textage_cache.is_dir());
     }
 
     #[test]

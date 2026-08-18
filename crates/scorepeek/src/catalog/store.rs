@@ -430,27 +430,31 @@ enum PublishPoint {
 fn create_private_directory(path: &Path) -> io::Result<()> {
     let mut missing = Vec::new();
     let mut candidate = path;
-    while !candidate.exists() {
-        missing.push(candidate.to_owned());
-        candidate = candidate.parent().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "directory has no existing ancestor",
-            )
-        })?;
-    }
-    if !candidate.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotADirectory,
-            "catalog ancestor is not a directory",
-        ));
+    loop {
+        match candidate.symlink_metadata() {
+            Ok(metadata) if metadata.is_dir() => break,
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotADirectory,
+                    "catalog ancestor is not a directory",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                missing.push(candidate.to_owned());
+                candidate = candidate.parent().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "directory has no existing ancestor",
+                    )
+                })?;
+            }
+            Err(error) => return Err(error),
+        }
     }
     for directory in missing.into_iter().rev() {
         fs::DirBuilder::new().mode(0o700).create(&directory)?;
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
         sync_directory_and_parent(&directory)?;
     }
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
     sync_directory_and_parent(path)
 }
 
@@ -605,7 +609,6 @@ fn write_snapshot(path: &Path, catalog: &Catalog) -> Result<(), CatalogStoreErro
     write_catalog_rows(&transaction, catalog)?;
     transaction.commit()?;
     connection.close().map_err(|(_, error)| error)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
 
@@ -1512,7 +1515,6 @@ fn invalid_enum(field: &str, value: &str) -> CatalogStoreError {
 mod tests {
     use std::fs;
     use std::io;
-    use std::os::unix::fs::PermissionsExt as _;
     use std::os::unix::fs::symlink;
 
     use rusqlite::Connection;
@@ -1524,6 +1526,16 @@ mod tests {
         MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_GENERATIONS, MAX_SNAPSHOT_STORAGE_BYTES, PublishPoint,
         SNAPSHOT_FILE, SNAPSHOT_STAGING_PREFIX, digest_file, ensure_snapshot_capacity,
     };
+
+    #[test]
+    fn managed_catalog_directory_rejects_symlinks() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target");
+        let alias = root.path().join("alias");
+        fs::create_dir(&target).unwrap();
+        symlink(&target, &alias).unwrap();
+        assert!(super::create_private_directory(&alias).is_err());
+    }
     use crate::catalog::{Catalog, FederationInput, SourceRevision, TachiFixtureAdapter};
 
     const REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -1781,57 +1793,6 @@ mod tests {
             error,
             super::CatalogStoreError::BaseDigestChanged { .. }
         ));
-    }
-
-    #[test]
-    fn store_permissions_do_not_depend_on_umask() {
-        let root = TempDir::new().unwrap();
-        let store = CatalogStore::new(root.path());
-        let active = store
-            .begin_update()
-            .unwrap()
-            .publish(&synthetic_catalog("ALPHA"))
-            .unwrap();
-        for directory in [
-            root.path().to_path_buf(),
-            root.path().join("content"),
-            root.path().join("manifests"),
-            root.path().join("content").join(&active.digest),
-        ] {
-            assert_eq!(
-                fs::metadata(directory).unwrap().permissions().mode() & 0o777,
-                0o700
-            );
-        }
-        for file in [
-            root.path().join("catalog-sync.lock"),
-            root.path().join("manifests/active.json"),
-            root.path()
-                .join("content")
-                .join(&active.digest)
-                .join("catalog.sqlite3"),
-        ] {
-            assert_eq!(
-                fs::metadata(file).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-        }
-    }
-
-    #[test]
-    fn nested_store_creation_makes_every_missing_component_private() {
-        let root = TempDir::new().unwrap();
-        let scorepeek = root.path().join("scorepeek");
-        let catalog = scorepeek.join("catalog");
-
-        drop(CatalogStore::new(&catalog).begin_update().unwrap());
-
-        for directory in [scorepeek, catalog] {
-            assert_eq!(
-                fs::metadata(directory).unwrap().permissions().mode() & 0o777,
-                0o700
-            );
-        }
     }
 
     #[test]

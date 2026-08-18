@@ -96,8 +96,9 @@ clear、DJ level、miss、best/current/new、option、graph等は各fieldの独�
 
 ### Event API
 
-daemonは`$XDG_RUNTIME_DIR/scorepeek/v1.sock`をparent 0700、socket 0600で公開し、
-same-UID clientへUTF-8 NDJSONを送る。
+daemonは`$XDG_RUNTIME_DIR/scorepeek/v1.sock`からsame-UID clientへUTF-8 NDJSONを送る。
+filesystem permission、ownership、ACLはoperatorが管理し、scorepeekのevent protocolは
+Unix modeを受理条件またはconfidentiality保証にしない。
 
 - request: `hello`、`get_status`、`subscribe`
 - accepted event: `result_detected`、`music_select_detected`

@@ -1,0 +1,16 @@
+[project]
+name = "scorepeek-ocr"
+version = "0.0.0"
+description = "Reproducible offline OCR experiments for scorepeek canonical crops"
+requires-python = "==3.13.*"
+dependencies = [
+  "paddleocr==3.7.0",
+  "paddlepaddle==3.3.1",
+]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["uv-build==0.11.7"]
+build-backend = "uv_build"

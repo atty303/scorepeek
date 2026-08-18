@@ -134,8 +134,8 @@ impl CorpusStore {
     /// SHA-256. Every later use revalidates the external file's complete bytes.
     ///
     /// # Errors
-    /// Returns an error if the external path is not canonicalizable, the source is mutable by
-    /// other users, its bytes change, or any bound private artifact cannot be published.
+    /// Returns an error if the external path is not canonicalizable, its bytes change, or any
+    /// bound artifact cannot be published.
     pub fn import_external_recording(
         &self,
         recording_path: impl AsRef<Path>,
@@ -421,7 +421,7 @@ impl CorpusStore {
         self.validate_dataset_store(false)?;
         validate_opaque_id(dataset_id, "dataset_id", ErrorContext::Request)?;
         let recordings_dir = self.root.join("recordings");
-        validate_private_directory_mode(&recordings_dir, ErrorContext::Request)?;
+        validate_directory(&recordings_dir, ErrorContext::Request)?;
         let mut objects = Vec::new();
         let mut recording_count = 0_u64;
         let mut entries = fs::read_dir(&recordings_dir)?.collect::<Result<Vec<_>, _>>()?;
@@ -676,12 +676,12 @@ impl CorpusStore {
     ) -> Result<(), CorpusError> {
         self.validate_root()?;
         preflight_managed_components(&self.root)?;
-        validate_private_directory_mode(&self.root, ErrorContext::Request)?;
+        validate_directory(&self.root, ErrorContext::Request)?;
         for directory in ["content", "manifests", "profiles", "probes", "recordings"] {
-            validate_private_directory_mode(&self.root.join(directory), ErrorContext::Request)?;
+            validate_directory(&self.root.join(directory), ErrorContext::Request)?;
         }
         if require_generation_directory {
-            validate_private_directory_mode(
+            validate_directory(
                 &self.root.join("dataset-generations"),
                 ErrorContext::Request,
             )?;
@@ -700,8 +700,8 @@ impl CorpusStore {
         let parent = path.parent().ok_or_else(|| {
             CorpusError::InvalidRequest("dataset object has no parent directory".to_owned())
         })?;
-        validate_private_directory_mode(parent, ErrorContext::Request)?;
-        validate_private_file_mode(&path, ErrorContext::Request)?;
+        validate_directory(parent, ErrorContext::Request)?;
+        validate_regular_file(&path, ErrorContext::Request)?;
         validate_object(&path, object)
     }
 
@@ -757,7 +757,6 @@ impl CorpusStore {
                         "dataset document name is bound to different bytes".to_owned(),
                     ));
                 }
-                fs::set_permissions(&destination, fs::Permissions::from_mode(0o600))?;
             }
             Ok(_) => {
                 return Err(CorpusError::InvalidRequest(
@@ -1213,6 +1212,7 @@ mod tests {
         fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
         let recording = private.join("complete-run.mkv");
         create_test_recording(&recording, "320x180");
+        fs::set_permissions(&recording, fs::Permissions::from_mode(0o666)).unwrap();
         let context = private.join("capture-context.json");
         write_test_context(&context, "obs-free-1080p-v1");
 
@@ -1236,14 +1236,14 @@ mod tests {
             .join(&first.recording_sha256)
             .join(SOURCE_FILE);
         fs::set_permissions(&source_path, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(
+        assert_eq!(
             store
                 .import_recording_with(&recording, &context, |_| {
-                    panic!("an insecure reusable source must fail before media inspection")
+                    panic!("a reusable source must not repeat media inspection")
                 })
-                .is_err()
+                .unwrap(),
+            first
         );
-        fs::set_permissions(&source_path, fs::Permissions::from_mode(0o600)).unwrap();
         let conflicting_context = private.join("conflicting-capture-context.json");
         write_test_context(&conflicting_context, "different-settings-v1");
         assert!(matches!(
@@ -1425,6 +1425,7 @@ mod tests {
         fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
         let recording = private.join("complete-run.mkv");
         create_test_recording(&recording, "320x180");
+        fs::set_permissions(&recording, fs::Permissions::from_mode(0o666)).unwrap();
         let context = private.join("capture-context.json");
         write_test_context(&context, "external-obs-v1");
         let store = CorpusStore::new(private.join("store"));

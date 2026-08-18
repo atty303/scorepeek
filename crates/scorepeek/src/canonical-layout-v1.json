@@ -7,7 +7,10 @@
     "presence": { "warm_pixels_min": 3000, "red_pixels_min": 12000 },
     "header": { "x": 600, "y": 0, "width": 720, "height": 80 },
     "title": { "x": 660, "y": 900, "width": 600, "height": 100 },
-    "metadata": { "x": 630, "y": 990, "width": 660, "height": 90 },
-    "current_score": { "x": 430, "y": 525, "width": 120, "height": 70 }
+    "artist": { "x": 850, "y": 990, "width": 220, "height": 35 },
+    "difficulty": { "x": 740, "y": 1030, "width": 135, "height": 35 },
+    "level": { "x": 875, "y": 1030, "width": 30, "height": 35 },
+    "notes": { "x": 1000, "y": 1030, "width": 105, "height": 35 },
+    "current_score": { "x": 470, "y": 525, "width": 50, "height": 60 }
   }
 }

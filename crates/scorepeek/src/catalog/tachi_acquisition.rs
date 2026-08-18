@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read as _, Write as _};
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -437,8 +437,6 @@ fn cache_verified_bundle<'a>(
     let staging = tempfile::Builder::new()
         .prefix(CACHE_STAGING_PREFIX)
         .tempdir_in(&directory)
-        .map_err(TachiAcquisitionError::CacheIo)?;
-    fs::set_permissions(staging.path(), fs::Permissions::from_mode(0o700))
         .map_err(TachiAcquisitionError::CacheIo)?;
     for (resource, bytes) in &files {
         let path = staging.path().join(cache_filename(*resource));

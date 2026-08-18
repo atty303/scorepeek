@@ -1,0 +1,32 @@
+{
+  "schema": "scorepeek-ocr-model-source-v1",
+  "model_id": "pp-ocrv6-small-rec-v1",
+  "model_name": "PP-OCRv6_small_rec",
+  "source_url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv6_small_rec_infer.tar",
+  "archive_sha256": "da460f968ce9f88325ac3a34fa302077d6e9b0dcefb16ba3137cd7796f879d06",
+  "archive_bytes": 21442560,
+  "license_id": "Apache-2.0",
+  "license_url": "https://github.com/PaddlePaddle/PaddleOCR/blob/v3.7.0/LICENSE",
+  "paddleocr_version": "3.7.0",
+  "paddlepaddle_version": "3.3.1",
+  "files": [
+    {
+      "archive_path": "PP-OCRv6_small_rec_infer/inference.json",
+      "filename": "inference.json",
+      "sha256": "f0bf53c853937a917affdd74467472167727f8ab0f0f7bded01c4a16c27e46e6",
+      "bytes": 208004
+    },
+    {
+      "archive_path": "PP-OCRv6_small_rec_infer/inference.pdiparams",
+      "filename": "inference.pdiparams",
+      "sha256": "406e1e689c9a7fbb04178007a3fe10cf852afe7bf8bb3bc6dbb9d532b13bd907",
+      "bytes": 21074618
+    },
+    {
+      "archive_path": "PP-OCRv6_small_rec_infer/inference.yml",
+      "filename": "inference.yml",
+      "sha256": "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1",
+      "bytes": 150579
+    }
+  ]
+}

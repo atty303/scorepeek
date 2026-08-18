@@ -1,7 +1,10 @@
 # Build and tool state
 /target/
 /.direnv/
+/.venv/
 /.mise.local.toml
+__pycache__/
+*.py[cod]
 
 # Generated or externally acquired artifacts
 /artifacts/

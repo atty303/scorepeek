@@ -11,9 +11,9 @@ indexes remain outside the repository.
   training tooling.
 - `scorepeek-corpus` is an offline Rust binary for private ingest and replay
   metadata. It does not run during a game session.
-- The future Python training/export environment consumes explicitly exported
-  private corpus artifacts and produces pinned ONNX artifacts. Python is not a
-  runtime fallback.
+- The mise/uv-locked Python environment consumes explicitly exported canonical
+  crop artifacts for offline OCR experiments and future training/export. Python
+  is not a game-session runtime fallback.
 - Only opaque fixture IDs, opaque group IDs or hashes, non-personal class
   labels, content hashes, schemas, and synthetic contract fixtures may be
   committed. A content hash is a reference, not permission to publish its
@@ -69,12 +69,31 @@ instead of selecting a nearby transform.
 ```text
 mise run corpus:canonical:extract -- --store /absolute/private/store --output /absolute/private/canonical PROBE_MANIFEST REQUEST
 mise run recognition:inspect -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID
+mise run recognition:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/crops
+mise run ocr:model:fetch
+mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256
 ```
 
 Recognition requires the extraction SHA returned by canonical extraction and
 validates `normalizer.json`, `manifest.json`, their typed canonical schemas and digest binding,
 and the selected PPM's file and pixel hashes before constructing a
 `CanonicalFrame`. A bare PPM or observed-frame extraction is rejected.
+`recognition:crop` additionally requires the result predicate to pass, then
+writes the layout-bound title, artist, difficulty, level, notes, and current
+score PPM files plus a digest-bound manifest. The offline OCR command accepts
+only that manifest with its expected SHA-256 and the registered normalizer
+digest; it does not accept a bare crop.
+
+Python 3.13.7 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
+PaddlePaddle CPU 3.3.1, and their complete dependency graph. The
+`PP-OCRv6_small_rec` source manifest records the official archive URL, exact
+archive and extracted-file sizes and SHA-256 values, Apache-2.0 license
+reference, and compatible package versions. `ocr:model:fetch` downloads only
+that registered archive, bounds and hashes it before extraction, rejects
+unexpected tar entries, and publishes the verified three-file model below the
+private content-addressed `$XDG_DATA_HOME/scorepeek/models` store. The spike
+always passes that verified local directory to PaddleOCR, so inference never
+auto-downloads a model.
 
 The seal command includes every currently imported recording and writes a
 canonical `scorepeek-recording-dataset-generation-v1`. Its SHA-256, rather than
@@ -117,14 +136,15 @@ mise run corpus:ingest -- --store /absolute/private/store /absolute/source.media
 
 Ingest streams the source into `content/<sha256>/source.media`, then writes the
 canonical `scorepeek-private-corpus-source-v2` manifest to
-`manifests/<fixture_id>.json`. Store directories use mode `0700`; source,
-manifest, and lock files use mode `0600`. A per-store writer lock serializes
+`manifests/<fixture_id>.json`. A per-store writer lock serializes
 recovery and publication. Newly created files and relevant directories are
 synced before success is reported. The aggregate-only command result includes
 capture-profile, source, and source-manifest SHA-256 values for downstream
 binding.
 The root, managed directories, and writer lock must be real filesystem entries;
-symlinks are rejected before permissions or private content are changed.
+symlinks are rejected before managed content is changed. Filesystem permissions,
+ownership, ACLs, and retention are operator responsibilities. Creation may use
+restrictive defaults, but scorepeek neither validates nor guarantees Unix modes.
 
 The same bytes and request are idempotent. An existing fixture ID cannot be
 rebound to different bytes or metadata. Existing identical content remains
@@ -197,9 +217,8 @@ byte count, records pixel-payload and whole-file SHA-256 values, and publishes
 a canonical JSON extraction manifest that retains the observed capture-profile
 binding and selected video-stream index. The extracted pixels remain observed
 evidence at the source dimensions; this command does not normalize them or make
-them a `CanonicalFrame`. The new directory uses mode
-`0700`, files use `0600`, an existing destination is never accepted, and
-files/directories are synced before success. A mode-`0600` parent writer lock
+them a `CanonicalFrame`. An existing destination is never accepted, and
+files/directories are synced before success. A parent writer lock
 serializes recovery and publication. Recovery removes only staging and
 incomplete destinations carrying exact scorepeek ownership markers. Atomic
 no-clobber file and directory publication prevents an existing destination
@@ -218,7 +237,7 @@ mise run corpus:generation:seal -- --store /absolute/private/store generation-00
 `scorepeek-private-corpus-generation-v1` contains an opaque generation ID and
 the uniquely ordered set of every fixture ID plus canonical source-manifest
 SHA-256 present at sealing time. The generation is stored by its own canonical
-SHA-256 with private permissions and fsync publication. Later ingests do not
+SHA-256 with fsync publication. Later ingests do not
 rewrite it. A replay suite names this digest and must contain exactly one index
 for every binding in that immutable generation; an arbitrary subset cannot
 receive a corpus-wide validation summary. Existing identical generations remain
@@ -237,7 +256,7 @@ mise run corpus:label:author -- --store /absolute/private/store /absolute/comple
 The command bounded-reads and strictly validates the selected result,
 music-select, or non-recognition shape, normalizes it to canonical JSON, and
 publishes it as `labels/<sha256>.json` under the existing corpus writer lock.
-Publication is idempotent, uses mode `0600`, recovers only scorepeek-owned label
+Publication is idempotent, recovers only scorepeek-owned label
 staging entries, enforces the existing 250,000-document/4 GiB label-store
 bounds, and fsyncs the object and parent directory before success. Its
 `scorepeek-private-complete-label-summary-v1` output contains only the opaque
@@ -269,7 +288,7 @@ has begun. Decode indexes must still increase strictly.
 Generation revalidates the stored source bytes and every referenced complete
 label before publishing canonical JSON to
 `indexes/<replay_index_sha256>.json`. Publication shares the corpus writer
-lock, uses private permissions and fsync boundaries, recovers only owned index
+lock, uses fsync boundaries, recovers only owned index
 staging files, and is idempotent for the same bytes. The index store admits at
 most 1,024 objects, 32 MiB per object, and 4 GiB total. Its aggregate-only
 summary contains the fixture ID, index digest, and frame and episode counts.
@@ -300,7 +319,7 @@ capture profile owns its own mapping to that shared target.
 
 Complete label values stay in the private store under
 `labels/<sha256>.json`; the replay index carries only their immutable digest.
-Each mode-`0600` document uses the strict
+Each document uses the strict
 `scorepeek-private-complete-label-v1` schema and is tagged as `result`,
 `music_select`, or `non_recognition`. Result and music-select documents contain
 their shape-specific mandatory fields as explicit
@@ -314,7 +333,7 @@ SHA-256, schema, frame identity, annotation revision, screen-class/shape match,
 shape-specific required fields, typed known values, result play-mode/type
 compatibility, and `current_score <= 2 * notes`. Unknown counterpart values do
 not cause a relationship to be guessed. The corpus-wide check also verifies
-mode, filename digest, canonical schema, and intrinsic constraints for every
+file type, size, filename digest, canonical schema, and intrinsic constraints for every
 unreferenced label object. It never emits private field values. The labels
 store is fail-closed at 64 KiB per document, 250,000 documents, and 4 GiB total.
 
@@ -374,11 +393,11 @@ to redistribute scorepeek or its generated files.
 
 ## Not yet implemented
 
-- canonical-frame production from observed extractions, shared canonical-layout
-  authoring and measurement, and replay execution against recognition code;
+- replay execution against recognition code and labelled multi-recording or
+  profile-disjoint evaluation of the current canonical layout;
 - production synthetic variation and glyph coverage backed by an approved
   redistributable font or independently authored equivalent;
-- Python training, evaluation, ONNX export, and Rust parity gates.
+- Python training, holdout evaluation, ONNX export, and Rust parity gates.
 
 Any media, image, training, or runtime dependency must be proposed with its
 pinned version, license, alternatives, and host/bundle impact before addition.
