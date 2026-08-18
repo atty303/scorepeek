@@ -18,6 +18,7 @@ const MAX_TITLE_TOKENS: usize = OUTPUT_TIMESTEPS;
 pub enum CatalogTitleDecoderError {
     Io(std::io::Error),
     InvalidDictionary,
+    InvalidCatalogTitle,
     InvalidProbabilities,
     InvalidThresholds,
 }
@@ -46,6 +47,23 @@ pub struct TitleDictionaryVariantKindAudit {
     pub ctc_timestep_excess_variant_count: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct TitleModelExportRequirements {
+    pub schema: &'static str,
+    pub baseline_dictionary_sha256: &'static str,
+    pub dictionary_contract_id: &'static str,
+    pub output_tensor_contract_id: &'static str,
+    pub ctc_blank_token: u32,
+    pub output_timesteps: usize,
+    pub output_classes: usize,
+    pub baseline_character_count: usize,
+    pub appended_catalog_character_count: usize,
+    pub non_search_variant_count: usize,
+    pub covered_variant_count: usize,
+    pub coverage_complete: bool,
+    pub non_blank_tokens: Vec<String>,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct VariantCoverageCounts {
     variants: usize,
@@ -66,6 +84,9 @@ impl std::fmt::Display for CatalogTitleDecoderError {
             Self::Io(error) => write!(formatter, "catalog title decoder I/O failed: {error}"),
             Self::InvalidDictionary => {
                 formatter.write_str("catalog title decoder dictionary is invalid")
+            }
+            Self::InvalidCatalogTitle => {
+                formatter.write_str("catalog contains a title outside the model export contract")
             }
             Self::InvalidProbabilities => {
                 formatter.write_str("catalog title probability tensor is invalid")
@@ -223,6 +244,94 @@ pub fn audit_catalog_title_dictionary(
     Ok(audit_catalog_title_dictionary_with_indexes(
         catalog, &indexes,
     ))
+}
+
+/// Defines the complete dictionary and tensor shape required by a scorepeek-owned title model.
+///
+/// The new scalar dictionary retains the character coverage of the registered baseline and appends
+/// every character used by every non-search catalog variant. The timestep count is raised to the
+/// largest exact CTC alignment required by that same complete variant set. Nothing is omitted for
+/// being unsupported by the baseline model.
+///
+/// # Errors
+/// Returns an error for an unregistered baseline dictionary, an empty variant set, or a catalog
+/// title that is empty, contains control characters, or exceeds the bounded export shape.
+pub fn title_model_export_requirements(
+    catalog: &Catalog,
+    inference_yml: impl AsRef<Path>,
+) -> Result<TitleModelExportRequirements, CatalogTitleDecoderError> {
+    let dictionary = load_dictionary(inference_yml.as_ref())?;
+    let variants = catalog.songs().values().flat_map(|song| {
+        song.title_variants()
+            .iter()
+            .filter(|variant| variant.kind != DisplayVariantKind::SearchTerm)
+            .map(|variant| variant.value.as_str())
+    });
+    build_title_model_export_requirements(&dictionary, variants)
+}
+
+fn build_title_model_export_requirements<'a>(
+    baseline_dictionary: &[String],
+    variants: impl Iterator<Item = &'a str>,
+) -> Result<TitleModelExportRequirements, CatalogTitleDecoderError> {
+    let mut characters = Vec::new();
+    let mut retained = BTreeSet::new();
+    for entry in baseline_dictionary.iter().skip(1) {
+        for character in entry.chars().filter(|character| !character.is_control()) {
+            if retained.insert(character) {
+                characters.push(character);
+            }
+        }
+    }
+    let baseline_character_count = characters.len();
+    let mut catalog_characters = BTreeSet::new();
+    let mut non_search_variant_count = 0_usize;
+    let mut required_timesteps = 0_usize;
+    for title in variants {
+        if title.is_empty() || title.chars().any(char::is_control) {
+            return Err(CatalogTitleDecoderError::InvalidCatalogTitle);
+        }
+        non_search_variant_count += 1;
+        let title_characters: Vec<_> = title.chars().collect();
+        let timesteps = title_characters.len()
+            + title_characters
+                .windows(2)
+                .filter(|pair| pair[0] == pair[1])
+                .count();
+        required_timesteps = required_timesteps.max(timesteps);
+        catalog_characters.extend(title_characters);
+    }
+    if non_search_variant_count == 0 || required_timesteps > 512 {
+        return Err(CatalogTitleDecoderError::InvalidCatalogTitle);
+    }
+    let appended: Vec<_> = catalog_characters
+        .into_iter()
+        .filter(|character| retained.insert(*character))
+        .collect();
+    let appended_catalog_character_count = appended.len();
+    characters.extend(appended);
+    let output_classes = characters
+        .len()
+        .checked_add(1)
+        .ok_or(CatalogTitleDecoderError::InvalidCatalogTitle)?;
+    Ok(TitleModelExportRequirements {
+        schema: "scorepeek-title-model-export-requirements-v1",
+        baseline_dictionary_sha256: TITLE_DICTIONARY_SHA256,
+        dictionary_contract_id: "scorepeek-title-unicode-scalar-dictionary-v1",
+        output_tensor_contract_id: "scorepeek-title-ctc-f32-logits-btc-v1",
+        ctc_blank_token: 0,
+        output_timesteps: OUTPUT_TIMESTEPS.max(required_timesteps),
+        output_classes,
+        baseline_character_count,
+        appended_catalog_character_count,
+        non_search_variant_count,
+        covered_variant_count: non_search_variant_count,
+        coverage_complete: true,
+        non_blank_tokens: characters
+            .into_iter()
+            .map(|character| character.to_string())
+            .collect(),
+    })
 }
 
 fn audit_catalog_title_dictionary_with_indexes(
@@ -616,6 +725,48 @@ mod tests {
         ];
         let indexes = dictionary_indexes(&dictionary).unwrap();
         assert_eq!(indexes, BTreeMap::from([('B', 2), (' ', 5)]));
+    }
+
+    #[test]
+    fn model_export_requirements_retain_baseline_and_cover_every_variant() {
+        let baseline = vec![
+            "blank".to_owned(),
+            "A".to_owned(),
+            "XY".to_owned(),
+            "A".to_owned(),
+            " ".to_owned(),
+        ];
+        let requirements = build_title_model_export_requirements(
+            &baseline,
+            ["A A", "Ω", &"ZZ".repeat(30)].into_iter(),
+        )
+        .unwrap();
+        assert_eq!(
+            requirements.non_blank_tokens,
+            ["A", "X", "Y", " ", "Z", "Ω"]
+        );
+        assert_eq!(requirements.baseline_character_count, 4);
+        assert_eq!(requirements.appended_catalog_character_count, 2);
+        assert_eq!(requirements.non_search_variant_count, 3);
+        assert_eq!(requirements.output_timesteps, 119);
+        assert_eq!(requirements.output_classes, 7);
+        assert_eq!(
+            requirements.output_tensor_contract_id,
+            "scorepeek-title-ctc-f32-logits-btc-v1"
+        );
+    }
+
+    #[test]
+    fn model_export_requirements_reject_invalid_or_missing_catalog_variants() {
+        let baseline = vec!["blank".to_owned(), "A".to_owned()];
+        assert!(matches!(
+            build_title_model_export_requirements(&baseline, std::iter::empty()),
+            Err(CatalogTitleDecoderError::InvalidCatalogTitle)
+        ));
+        assert!(matches!(
+            build_title_model_export_requirements(&baseline, ["A\nB"].into_iter()),
+            Err(CatalogTitleDecoderError::InvalidCatalogTitle)
+        ));
     }
 
     #[test]

@@ -3,7 +3,9 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use scorepeek_corpus::{CorpusStore, render_synthetic_title_set};
+use scorepeek_corpus::{
+    CorpusStore, inspect_music_list_row_observation_draft, render_synthetic_title_set,
+};
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args_os().skip(1).collect();
@@ -17,6 +19,17 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &[OsString]) -> Result<(), String> {
+    if let [music_list, observation, inspect, document] = args
+        && music_list == "music-list"
+        && observation == "observation-draft"
+        && inspect == "inspect"
+    {
+        let summary =
+            inspect_music_list_row_observation_draft(PathBuf::from(document)).map_err(|error| {
+                format!("music-list row observation draft inspection failed: {error}")
+            })?;
+        return print_json(&summary, "music-list row observation draft inspection");
+    }
     if let Some(result) = run_dataset(args) {
         return result;
     }
@@ -118,7 +131,7 @@ fn run_legacy(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "usage: scorepeek-corpus <recording import --store ROOT --capture-context CONTEXT [--external] RECORDING|dataset seal|push|pull|verify|remote-verify ...|ingest --store ROOT SOURCE REQUEST|generation seal --store ROOT GENERATION_ID|label author --store ROOT DOCUMENT|index generate --store ROOT PLAN|media probe --store ROOT --output MANIFEST FIXTURE_ID|media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST|canonical extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST|synthetic render --output DIRECTORY REQUEST|replay validate --store ROOT SUITE>"
+            "usage: scorepeek-corpus <recording import --store ROOT --capture-context CONTEXT [--external] RECORDING|dataset seal|push|pull|verify|remote-verify ...|ingest --store ROOT SOURCE REQUEST|generation seal --store ROOT GENERATION_ID|label author --store ROOT DOCUMENT|index generate --store ROOT PLAN|media probe --store ROOT --output MANIFEST FIXTURE_ID|media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST|canonical extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect DOCUMENT|replay validate --store ROOT SUITE>"
                 .to_owned(),
         ),
     }

@@ -72,6 +72,8 @@ mise run recognition:inspect -- --extraction /absolute/private/canonical --extra
 mise run recognition:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/crops
 mise run recognition:music-select:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/music-select-crops
 mise run recognition:title:dictionary:audit -- --catalog-store /absolute/private/catalog --dictionary /absolute/private/models/inference.yml
+mise run recognition:title:model-export:requirements -- --catalog-store /absolute/private/catalog --baseline-dictionary /absolute/private/models/inference.yml --output /absolute/private/title-model-requirements
+mise run corpus:music-list:observation-draft:inspect -- /absolute/private/music-list-observation-draft.json
 mise run ocr:model:fetch
 mise run ocr:onnx:model:fetch
 mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --output /absolute/private/ocr-result.json
@@ -101,11 +103,29 @@ catalog, then emits catalog- and dictionary-digest-bound aggregate coverage. It 
 variants by display kind and reports unsupported-character and CTC-timestep rejection counts
 without exposing title strings. A rejected variant is never silently removed from inference scope.
 
+`recognition:title:model-export:requirements` writes a create-only private manifest rather than
+printing its character inventory. Starting from the registered baseline dictionary, it retains
+every Unicode scalar that baseline entries can express, appends every missing scalar from every
+active non-search catalog variant, and chooses at least the largest exact CTC alignment required by
+that complete set. The catalog digest, baseline dictionary digest, scalar dictionary ordering,
+class count, timestep count, and `scorepeek-title-ctc-f32-logits-btc-v1` tensor contract are bound
+together. This is an export requirement boundary, not a trained model or a distributable bundle.
+
 Stationary non-selected right-list rows may contribute provisional thin-title training evidence,
 but retain their music-list origin. Selected rows, scrolling transitions, separators, and crops
 whose title is hidden at either edge do not receive a complete-title target. Temporal stability
 thresholds require a representative continuous-scroll recording; the current two frames are not a
 calibration set.
+
+The `scorepeek-private-music-list-row-observation-draft-v1` document makes each geometric slot
+exactly one of `stationary`, `scrolling`, `selected`, `clipped`, `non_title`, or `unknown`, and
+rejects a second annotation for the same frame and slot. Stationary and scrolling drafts must name
+an adjacent decode index and report an integer full-row RGB L1 measurement. The inspection command
+validates only canonical shape and ranges: it does not read extraction/crop artifacts, recompute
+L1, or return verified evidence (`evidence_verified` is always false). A later artifact-bound
+generator/verifier must rehash both manifests and crop bytes and compute L1 before any draft may
+participate in threshold calibration or provisional-label generation. No state in this draft
+schema carries a catalog title or complete-title label.
 
 Python 3.13.7 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
 PaddlePaddle CPU 3.3.1, and their complete dependency graph. The

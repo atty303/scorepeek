@@ -132,6 +132,20 @@ frameから垂直移動が止まったことを確認できる非選択rowにだ
 現在は実scroll sequenceから安定度分布をまだ測っていないため、録画後にthresholdを固定するまで
 自動採用しない。この収録はresult-only holdoutを代替せず、result画面は得られる範囲で別途保持する。
 
+row annotationのdraftは`scorepeek-private-music-list-row-observation-draft-v1`として保存し、次の
+入口でshapeを検査する。
+
+```text
+mise run corpus:music-list:observation-draft:inspect -- /absolute/private/music-list-observation-draft.json
+```
+
+`stationary`と`scrolling`のdraftは同じcanonical extraction内の隣接decode index、両cropの
+file/pixel SHA-256、申告RGB L1差分合計、および比較したRGB値数を必須とする。ただしこの入口は
+artifactを読まず、L1を再計算せず、常に`evidence_verified: false`を返す。draftを校正入力として
+使ってはならない。次にartifact-bound generator/verifierを実装し、両manifestとcrop bytesを再hash
+してL1を算出してからthresholdを固定する。1 frame/slotへの相反annotationは拒否し、`selected`、
+`clipped`、`non_title`、`unknown`は完全titleを持てない。
+
 ## generationを固定して保存する
 
 必要な録画をimportしたら、その時点でstoreにある全録画をsealする。

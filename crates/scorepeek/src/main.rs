@@ -2,6 +2,10 @@ mod inventory;
 
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::fmt::Write as _;
+use std::fs::{self, DirBuilder, OpenOptions};
+use std::io::Write as _;
+use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -11,6 +15,7 @@ use scorepeek::recognition::{
     self, CanonicalFrame, DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
 };
 use serde::Serialize;
+use sha2::{Digest as _, Sha256};
 
 fn main() -> ExitCode {
     let args: Vec<_> = env::args_os().skip(1).collect();
@@ -28,6 +33,9 @@ fn run(args: &[OsString]) -> Result<(), String> {
         return result;
     }
     if let Some(result) = try_title_dictionary_audit(args) {
+        return result;
+    }
+    if let Some(result) = try_title_model_export_requirements(args) {
         return result;
     }
     match args {
@@ -120,6 +128,28 @@ fn run(args: &[OsString]) -> Result<(), String> {
         }
         _ => Err("usage: scorepeek --help".to_owned()),
     }
+}
+
+fn try_title_model_export_requirements(args: &[OsString]) -> Option<Result<(), String>> {
+    let [
+        recognition,
+        export,
+        store_flag,
+        store,
+        dictionary_flag,
+        dictionary,
+        output_flag,
+        output,
+    ] = args
+    else {
+        return None;
+    };
+    (recognition == "recognition"
+        && export == "title-model-export-requirements"
+        && store_flag == "--catalog-store"
+        && dictionary_flag == "--baseline-dictionary"
+        && output_flag == "--output")
+        .then(|| title_model_export_requirements(store, dictionary, output))
 }
 
 fn try_title_dictionary_audit(args: &[OsString]) -> Option<Result<(), String>> {
@@ -332,6 +362,107 @@ fn title_dictionary_audit(catalog_store: &OsStr, dictionary: &OsStr) -> Result<(
     Ok(())
 }
 
+#[derive(Serialize)]
+struct TitleModelExportRequirementsArtifact {
+    schema: &'static str,
+    catalog_sha256: String,
+    requirements: recognition::TitleModelExportRequirements,
+}
+
+#[derive(Serialize)]
+struct TitleModelExportRequirementsSummary {
+    schema: &'static str,
+    output: PathBuf,
+    manifest_sha256: String,
+    catalog_sha256: String,
+    output_timesteps: usize,
+    output_classes: usize,
+    non_search_variant_count: usize,
+}
+
+fn title_model_export_requirements(
+    catalog_store: &OsStr,
+    dictionary: &OsStr,
+    output: &OsStr,
+) -> Result<(), String> {
+    let catalog_store = absolute_directory(PathBuf::from(catalog_store), "catalog store")?;
+    let output = absolute_directory(PathBuf::from(output), "model export requirements output")?;
+    let parent = output
+        .parent()
+        .ok_or_else(|| "model export requirements output must have a parent".to_owned())?;
+    let parent_metadata = parent
+        .symlink_metadata()
+        .map_err(|error| format!("model export requirements parent inspection failed: {error}"))?;
+    if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
+        return Err("model export requirements parent must be a regular directory".to_owned());
+    }
+    let active = CatalogStore::new(catalog_store)
+        .load_active()
+        .map_err(|error| format!("active catalog load failed: {error}"))?
+        .ok_or_else(|| "catalog store has no active catalog".to_owned())?;
+    let requirements =
+        recognition::title_model_export_requirements(&active.catalog, Path::new(dictionary))
+            .map_err(|error| error.to_string())?;
+    let summary = TitleModelExportRequirementsSummary {
+        schema: "scorepeek-title-model-export-requirements-summary-v1",
+        output: output.clone(),
+        manifest_sha256: String::new(),
+        catalog_sha256: active.digest.clone(),
+        output_timesteps: requirements.output_timesteps,
+        output_classes: requirements.output_classes,
+        non_search_variant_count: requirements.non_search_variant_count,
+    };
+    let artifact = TitleModelExportRequirementsArtifact {
+        schema: "scorepeek-private-title-model-export-requirements-v1",
+        catalog_sha256: active.digest,
+        requirements,
+    };
+    let mut bytes = serde_json::to_vec(&artifact)
+        .map_err(|error| format!("model export requirements encoding failed: {error}"))?;
+    bytes.push(b'\n');
+    DirBuilder::new()
+        .mode(0o700)
+        .create(&output)
+        .map_err(|error| format!("model export requirements output creation failed: {error}"))?;
+    let publication = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(output.join("manifest.json"))
+            .map_err(|error| format!("model export requirements publication failed: {error}"))?;
+        file.write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|error| format!("model export requirements publication failed: {error}"))?;
+        fs::File::open(&output)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("model export requirements sync failed: {error}"))
+    })();
+    if let Err(error) = publication {
+        fs::remove_dir_all(&output)
+            .map_err(|cleanup| format!("{error}; failed to remove incomplete output: {cleanup}"))?;
+        return Err(error);
+    }
+    let summary = TitleModelExportRequirementsSummary {
+        manifest_sha256: encode_sha256(&bytes),
+        ..summary
+    };
+    println!(
+        "{}",
+        serde_json::to_string(&summary)
+            .map_err(|error| format!("model export requirements summary failed: {error}"))?
+    );
+    Ok(())
+}
+
+fn encode_sha256(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(64);
+    for byte in Sha256::digest(bytes) {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
+
 fn title_onnx_parity(arguments: [&OsStr; 8]) -> Result<(), String> {
     let [
         model,
@@ -449,7 +580,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE",
+        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE",
         env!("CARGO_PKG_VERSION")
     );
 }

@@ -221,6 +221,22 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- recognition title-dictionary-audit "$@"
 '''
 
+[tasks."recognition:title:model-export:requirements"]
+description = "Write complete active-catalog requirements for a scorepeek-owned title model"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- recognition title-model-export-requirements "$@"
+'''
+
+[tasks."corpus:music-list:observation-draft:inspect"]
+description = "Inspect the canonical shape of private music-list row observation drafts"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- music-list observation-draft inspect "$@"
+'''
+
 [tasks."ocr:sync"]
 description = "Synchronize the locked offline OCR development environment"
 run = "uv sync --locked --no-dev"

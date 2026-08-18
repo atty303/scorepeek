@@ -20,7 +20,8 @@ pub use title::{
 pub use title_decoder::{
     CatalogTitleDecision, CatalogTitleDecoderError, CatalogTitleDictionaryAudit,
     CatalogTitleUnknownReason, DiagnosticTitleThresholds, TITLE_DICTIONARY_SHA256,
-    TitleDictionaryVariantKindAudit, audit_catalog_title_dictionary, score_catalog_titles,
+    TitleDictionaryVariantKindAudit, TitleModelExportRequirements, audit_catalog_title_dictionary,
+    score_catalog_titles, title_model_export_requirements,
 };
 pub use title_onnx::{
     OnnxParityError, OnnxParitySummary, OnnxTitleDiagnosticRequest, compare_paddle_onnx,

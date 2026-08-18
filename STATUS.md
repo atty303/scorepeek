@@ -193,6 +193,10 @@ is outside this checkpoint.
   twenty fixed visible-list row slots as a digest-bound private artifact.
   Geometric list slots deliberately preserve separators, clipped rows, and other
   non-title content for downstream rejection instead of silently filtering them.
+- A canonical private music-list row observation-draft contract with mutually exclusive stationary,
+  scrolling, selected, clipped, non-title, and unknown annotations and one annotation per geometric
+  frame/slot. Temporal drafts name adjacent decode indexes and reported full-row RGB L1 values, but
+  inspection explicitly returns unverified evidence and never reads artifacts or admits a title.
 - A mise-pinned Python 3.13.7 and uv 0.11.7 offline environment with a committed
   `uv.lock` for PaddleOCR 3.7.0 and PaddlePaddle CPU 3.3.1. Python and its
   approximately 1.2 GiB development environment do not enter the Rust
@@ -228,6 +232,12 @@ is outside this checkpoint.
   binds aggregate output to the active catalog digest, splits every non-search variant by display
   kind, and reports unsupported-character and CTC-timestep rejections without exposing or silently
   dropping catalog strings.
+- A create-only private scorepeek-owned title-model export-requirements artifact. It retains every
+  Unicode scalar represented by the registered baseline dictionary, appends every scalar required
+  by every active non-search catalog variant, raises the CTC timestep count to the complete set's
+  longest exact alignment, and binds catalog and baseline digests, ordered scalar dictionary,
+  class/timestep shape, and an explicit batch-timestep-class float32 logits contract. This defines
+  the export boundary but does not train or export a model.
 - A Rust diagnostic title-candidate bridge with versioned comparison key
   `scorepeek-title-nfc-without-ascii-space-v1`. It applies NFC and removes only
   U+0020, preserves case, punctuation, other whitespace, and all other
@@ -270,14 +280,20 @@ is outside this checkpoint.
 
 - `mise run check`, `cargo clippy --locked --workspace --all-targets -- -D
   warnings`, and `cargo test --locked --workspace`: passed on the development
-  host. The current workspace run covered 77 `scorepeek` library tests, 12
-  binary tests, 44 offline corpus tests, and 10 offline Python OCR tests.
+  host. The current workspace run covered 79 `scorepeek` library tests, 12
+  binary tests, 50 offline corpus tests, and 10 offline Python OCR tests.
+- The new title-model requirements regressions preserve baseline scalar coverage, append missing
+  catalog characters, increase exact repeated-token CTC alignment length, and reject invalid or
+  empty variant sets. The music-list row regressions cover all six explicit states, require
+  adjacent decode indexes and exact full-row RGB comparison counts for temporal states, reject
+  duplicate annotations of one frame/slot, reject non-canonical documents, and bound reads across
+  path replacement or file growth.
 - Targeted recognition tests passed with the added music-select predicate and
   21-crop artifact contract. The offline OCR contract suite passed 10 tests,
   including exact validation of the selected-title and twenty list-slot files.
 - `mise run catalog:schedule:systemd:verify`: passed without installing the
   release binary or user units.
-- `cargo test --locked -p scorepeek-corpus`: passed all 44 offline corpus
+- `cargo test --locked -p scorepeek-corpus`: passed all 50 offline corpus
   tests, including idempotent private ingest, fixture-ID conflict
   rejection, canonical source/complete-label binding, pre-mutation symlink
   rejection, canonical/private/idempotent complete-label authoring with owned
@@ -473,6 +489,10 @@ is outside this checkpoint.
   catalog-update recognition replay, event daemon, and the integrated live
   flow remain unvalidated. The observed 649 ms CPU process and inference time
   is a single warmed development-host measurement, not a performance gate.
+- The complete title-model export requirements and music-list row observation-draft contracts have only
+  synthetic contract coverage. They have not been emitted from the retained active catalog or a
+  continuous-scroll recording. No scorepeek-owned dictionary/model has been trained or exported,
+  and no artifact-bound row measurement, stability threshold, or provisional music-list label exists.
 - The live `ObservedFrame`/domain-normalizer/`CanonicalFrame` runtime boundary,
   model-bundle promotion, and last-known-good model rollback remain
   unimplemented. Recognition accepts only digest-bound offline canonical
@@ -531,20 +551,19 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Preserve result certainty as the primary gate: use the measured 54 rejected
-variants to define the smallest scorepeek-owned dictionary/model export
-boundary without silently dropping a catalog variant. Define a versioned
-music-list row observation contract with explicit stationary, scrolling,
-selected, clipped, non-title, and unknown states before processing the planned
-overlapping full-list recording. Calibrate stability only from adjacent frames
-in that recording, then deduplicate settled non-selected rows and generate
-catalog-digest-bound provisional labels. After complete dictionary coverage is
-available, execute replay over the two result observations and the larger
-music-select set before fixing absolute or runner-up thresholds. Do not tune
-thresholds from the current single recording, promote diagnostic commands into
-accepted recognition, recognize bare PPM or `ObservedFrame`, auto-download a
-runtime model, or treat the OBS profile, current ROIs, confidence, timing, or
-diagnostic thresholds as supported.
+Preserve result certainty as the primary gate: record and import the planned deliberately paced,
+overlapping full-list music-select sequence. Extract adjacent frames without resampling, then
+implement an artifact-bound row-measurement generator/verifier that rehashes canonical extraction
+and crop artifacts and computes RGB L1 from their bytes. Use the draft annotations only after that
+verification, and calibrate a versioned stability threshold from the recording's adjacent-frame RGB
+L1 distribution. Then deduplicate settled non-selected rows and generate
+catalog-digest-bound provisional labels. Use the title-model export requirements to implement the
+offline scorepeek-owned dictionary/training/export record without silently dropping a catalog
+variant. After complete dictionary coverage is available, execute replay over the two result
+observations and the larger music-select set before fixing absolute or runner-up thresholds. Do not
+tune thresholds from the current single recording, promote diagnostic commands into accepted
+recognition, recognize bare PPM or `ObservedFrame`, auto-download a runtime model, or treat the OBS
+profile, current ROIs, confidence, timing, or diagnostic thresholds as supported.
 
 S3 replication and another profile are intentionally deferred. When capture
 work resumes, start **M3** with narrow Portal and Gamescope direct observed
