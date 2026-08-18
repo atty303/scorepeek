@@ -399,9 +399,9 @@ is outside this checkpoint.
   be stationary and every pair at or above 10,737,346 to be scrolling, with no pair in the gap.
   The regenerated private request and independently reverified artifact therefore contain 183
   stationary, 57 scrolling, and zero unknown motion labels. Verified aggregate RGB L1 spans 0
-  through 40,782,712. All 9,600 row presentation annotations remain
-  `unknown: pending-review`; the private requests, artifacts, and comparison pages remain temporary
-  derivatives outside the repository.
+  through 40,782,712. At that motion-only checkpoint, before the row-review applications described
+  below, all 9,600 row presentation annotations were `unknown: pending-review`; the private
+  requests, artifacts, and comparison pages remain temporary derivatives outside the repository.
 - The complete-pair review planner independently rehashed that private artifact and retained all
   9,600 row occurrences in 7,977 exact-pixel groups. There are 1,621 duplicate groups, saving 1,623
   repeated visual decisions without treating similar but non-identical pixels as equivalent. The
@@ -412,11 +412,17 @@ is outside this checkpoint.
 - The first low-luma stationary review batch contains 394 exact-pixel groups across seven private
   contact sheets. Visual inspection confirmed that the batch mixes complete dimmed titles with
   left/right-clipped titles, nearly empty rows, and selection-boundary UI. None of the 394 groups
-  has been bulk-labelled. The first bounded decision document marks only one visually empty group
-  and three unambiguous left-clipped groups; exact-duplicate propagation changed six occurrences
-  and left 9,594 unknown. The resulting private motion artifact was regenerated and independently
-  verified with the existing 183 stationary and 57 scrolling pair labels. All uncertain groups
-  remain unknown by construction.
+  has been bulk-labelled. Full-frame review corrected the initial crop-only interpretation: all 34
+  dark groups from geometric slot 10 carry the selection boundary and are `selected`, including the
+  four groups initially misclassified as empty or left-clipped. They cover 44 occurrences. Review
+  of the following geometric slot identified 36 exact groups and 42 occurrences as explicit
+  unlock-condition bars, while the sole normal-title group was visibly right-clipped and covers two
+  occurrences. A separate edge-focused pass settled 17 visibly right-clipped title groups covering
+  24 occurrences without using the edge measurement itself as a label. The cumulative private
+  decision document therefore settles 88 groups and 112 occurrences, leaving 9,488 unknown. The
+  resulting private motion artifact was regenerated and independently verified with the existing
+  183 stationary and 57 scrolling pair labels. All uncertain groups remain unknown by
+  construction.
 - The same gate normalized selected frames with artifact
   `0441099011fdd09d372d6c9b5e18d6c4f2da2809a653e01f8ccb55756d8658cf`.
   A separately invoked explicit FFmpeg transform produced the same file SHA-256
@@ -563,7 +569,7 @@ is outside this checkpoint.
 - The title-model export requirements still have only synthetic contract coverage. The music-list
   contract has one artifact-bound real-row verification and a complete measured pair artifact, but
   although all 240 pair motion states have now been human-reviewed and exact duplicates have a
-  verified review plan, 7,973 unique-pixel groups covering 9,594 row presentation annotations
+  verified review plan, 7,889 unique-pixel groups covering 9,488 row presentation annotations
   still await human review. No scorepeek-owned dictionary/model has been trained or exported, and
   no accepted stability threshold or provisional music-list label exists.
 - The live `ObservedFrame`/domain-normalizer/`CanonicalFrame` runtime boundary,
@@ -626,8 +632,8 @@ is outside this checkpoint.
 ## Next executable task
 
 Preserve result certainty as the primary gate. Use the verified private review plan and partial
-review-application command to inspect the remaining 7,973 exact-pixel groups in bounded batches and
-propagate each decision only to the listed identical occurrences, replacing the remaining 9,594
+review-application command to inspect the remaining 7,889 exact-pixel groups in bounded batches and
+propagate each decision only to the listed identical occurrences, replacing the remaining 9,488
 `unknown` row semantics in the private motion request with
 human-observed title, selected, clipped, non-title, or still-unobservable content. Retain the
 already-reviewed pair motion independently. For titles, record availability (`available` or
