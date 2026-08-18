@@ -261,6 +261,14 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek-corpus -- music-list motion verify "$@"
 '''
 
+[tasks."corpus:music-list:motion:review-plan"]
+description = "Group exact duplicate row crops in a verified music-list motion artifact"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- music-list motion review-plan "$@"
+'''
+
 [tasks."ocr:sync"]
 description = "Synchronize the locked offline OCR development environment"
 run = "uv sync --locked --no-dev"

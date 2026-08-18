@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::MetadataExt as _;
@@ -13,6 +13,7 @@ use crate::{
 const OBSERVATION_SCHEMA: &str = "scorepeek-private-music-list-row-observation-draft-v2";
 const MOTION_REQUEST_SCHEMA: &str = "scorepeek-private-music-list-motion-request-v1";
 const MOTION_ARTIFACT_SCHEMA: &str = "scorepeek-private-music-list-motion-artifact-v1";
+const MOTION_REVIEW_PLAN_SCHEMA: &str = "scorepeek-private-music-list-motion-review-plan-v1";
 const MAX_DOCUMENT_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_OBSERVATIONS: usize = 250_000;
 const MUSIC_LIST_SLOTS: u8 = 20;
@@ -239,6 +240,59 @@ pub struct MusicListMotionSummary {
     pub unknown_count: usize,
     pub aggregate_rgb_l1_min: Option<u64>,
     pub aggregate_rgb_l1_max: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct MusicListMotionReviewPlanSummary {
+    pub schema: &'static str,
+    pub evidence_verified: bool,
+    pub pair_count: usize,
+    pub observation_count: usize,
+    pub unique_crop_count: usize,
+    pub duplicate_group_count: usize,
+    pub exact_duplicate_savings_count: usize,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MusicListMotionReviewPlan {
+    schema: &'static str,
+    source_artifact_sha256: String,
+    catalog_sha256: String,
+    source_manifest_sha256: String,
+    capture_profile_id: String,
+    normalizer_artifact_sha256: String,
+    canonical_layout_sha256: String,
+    groups: Vec<MusicListMotionReviewGroup>,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MusicListMotionReviewGroup {
+    crop_pixel_sha256: String,
+    occurrences: Vec<MusicListMotionReviewOccurrence>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum MusicListMotionFrameRole {
+    First,
+    Second,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MusicListMotionReviewOccurrence {
+    pair_id: String,
+    frame_role: MusicListMotionFrameRole,
+    frame_id: String,
+    source_pts: i64,
+    decode_index: u64,
+    slot: u8,
+    pair_motion: PairMotion,
+    current_annotation: PairRowAnnotation,
+    crop_path: PathBuf,
+    crop_file_sha256: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -523,14 +577,161 @@ pub fn verify_music_list_motion(
         validate_pair_identity(pair, &mut ids, &mut frame_pairs)?;
         validate_row_annotations(&pair.first_rows)?;
         validate_row_annotations(&pair.second_rows)?;
-        let first = verify_complete_frame_artifacts(&domain, &pair.first_frame)?.1;
-        let second = verify_complete_frame_artifacts(&domain, &pair.second_frame)?.1;
-        let (rows, aggregate) = measure_rows(&first, &second)?;
-        if rows != pair.row_rgb_l1_sums || aggregate != pair.aggregate_rgb_l1_sum {
-            return Err(invalid("motion artifact RGB L1 measurements changed"));
-        }
+        verify_motion_pair_artifacts(&domain, pair)?;
     }
     Ok(summarize_motion(&artifact, true))
+}
+
+/// Builds a create-only review plan that groups artifact-verified identical row crops.
+///
+/// Every one of the forty row occurrences per pair remains explicit. Grouping uses only the
+/// rehashed crop pixel SHA-256 and never derives or changes a semantic annotation.
+///
+/// # Errors
+/// Returns an error when either path is not absolute, the source artifact fails complete
+/// verification, the row-observation bound is exceeded, or the output already exists.
+pub fn plan_music_list_motion_review(
+    artifact_path: impl AsRef<Path>,
+    output_path: impl AsRef<Path>,
+) -> Result<MusicListMotionReviewPlanSummary, CorpusError> {
+    let artifact_path = artifact_path.as_ref();
+    let output_path = output_path.as_ref();
+    if !artifact_path.is_absolute() || !output_path.is_absolute() {
+        return Err(invalid(
+            "motion artifact and review-plan paths must be absolute",
+        ));
+    }
+    let bytes = read_bounded_regular(artifact_path)?;
+    let artifact: MusicListMotionArtifact = serde_json::from_slice(&bytes)?;
+    if canonical_json(&artifact)? != bytes || artifact.schema != MOTION_ARTIFACT_SCHEMA {
+        return Err(invalid("motion artifact must be canonical and versioned"));
+    }
+    validate_motion_metadata(
+        &artifact.catalog_sha256,
+        &artifact.source_manifest_sha256,
+        &artifact.capture_profile_id,
+        &artifact.normalizer_artifact_sha256,
+        &artifact.canonical_layout_sha256,
+        artifact.pairs.len(),
+    )?;
+    let observation_count = artifact
+        .pairs
+        .len()
+        .checked_mul(usize::from(MUSIC_LIST_SLOTS) * 2)
+        .filter(|count| *count <= MAX_OBSERVATIONS)
+        .ok_or(CorpusError::CapacityExceeded)?;
+    let domain = motion_domain(
+        &artifact.catalog_sha256,
+        &artifact.source_manifest_sha256,
+        &artifact.capture_profile_id,
+        &artifact.normalizer_artifact_sha256,
+        &artifact.canonical_layout_sha256,
+    );
+    let mut ids = BTreeSet::new();
+    let mut frame_pairs = BTreeSet::new();
+    let mut groups = BTreeMap::<String, Vec<MusicListMotionReviewOccurrence>>::new();
+    for pair in &artifact.pairs {
+        validate_pair_identity(pair, &mut ids, &mut frame_pairs)?;
+        validate_row_annotations(&pair.first_rows)?;
+        validate_row_annotations(&pair.second_rows)?;
+        let (first, second) = verify_motion_pair_artifacts(&domain, pair)?;
+        add_review_manifest(
+            pair,
+            MusicListMotionFrameRole::First,
+            &pair.first_frame,
+            &pair.first_rows,
+            &first.0,
+            &mut groups,
+        )?;
+        add_review_manifest(
+            pair,
+            MusicListMotionFrameRole::Second,
+            &pair.second_frame,
+            &pair.second_rows,
+            &second.0,
+            &mut groups,
+        )?;
+    }
+    let duplicate_group_count = groups
+        .values()
+        .filter(|occurrences| occurrences.len() > 1)
+        .count();
+    let unique_crop_count = groups.len();
+    let summary = MusicListMotionReviewPlanSummary {
+        schema: "scorepeek-music-list-motion-review-plan-summary-v1",
+        evidence_verified: true,
+        pair_count: artifact.pairs.len(),
+        observation_count,
+        unique_crop_count,
+        duplicate_group_count,
+        exact_duplicate_savings_count: observation_count - unique_crop_count,
+    };
+    let plan = MusicListMotionReviewPlan {
+        schema: MOTION_REVIEW_PLAN_SCHEMA,
+        source_artifact_sha256: digest_bytes(&bytes),
+        catalog_sha256: artifact.catalog_sha256,
+        source_manifest_sha256: artifact.source_manifest_sha256,
+        capture_profile_id: artifact.capture_profile_id,
+        normalizer_artifact_sha256: artifact.normalizer_artifact_sha256,
+        canonical_layout_sha256: artifact.canonical_layout_sha256,
+        groups: groups
+            .into_iter()
+            .map(
+                |(crop_pixel_sha256, occurrences)| MusicListMotionReviewGroup {
+                    crop_pixel_sha256,
+                    occurrences,
+                },
+            )
+            .collect(),
+    };
+    write_new_canonical(output_path, &plan)?;
+    Ok(summary)
+}
+
+fn add_review_manifest(
+    pair: &MusicListMotionPair,
+    frame_role: MusicListMotionFrameRole,
+    frame: &MusicListPairFrame,
+    annotations: &[PairRowAnnotation; 20],
+    manifest: &MusicSelectCropManifest,
+    groups: &mut BTreeMap<String, Vec<MusicListMotionReviewOccurrence>>,
+) -> Result<(), CorpusError> {
+    for (slot, annotation) in annotations.iter().enumerate() {
+        let crop = manifest
+            .crops
+            .get(slot + 1)
+            .ok_or_else(|| invalid("music-list slot crop is absent"))?;
+        groups.entry(crop.pixel_sha256.clone()).or_default().push(
+            MusicListMotionReviewOccurrence {
+                pair_id: pair.pair_id.clone(),
+                frame_role,
+                frame_id: frame.frame_id.clone(),
+                source_pts: frame.source_pts,
+                decode_index: frame.decode_index,
+                slot: u8::try_from(slot).map_err(|_| CorpusError::CapacityExceeded)?,
+                pair_motion: pair.motion.clone(),
+                current_annotation: annotation.clone(),
+                crop_path: frame.crop_directory.join(&crop.filename),
+                crop_file_sha256: crop.file_sha256.clone(),
+            },
+        );
+    }
+    Ok(())
+}
+
+type VerifiedFrameArtifacts = (MusicSelectCropManifest, Vec<Vec<u8>>);
+
+fn verify_motion_pair_artifacts(
+    domain: &MusicListRowObservationDocument,
+    pair: &MusicListMotionPair,
+) -> Result<(VerifiedFrameArtifacts, VerifiedFrameArtifacts), CorpusError> {
+    let first = verify_complete_frame_artifacts(domain, &pair.first_frame)?;
+    let second = verify_complete_frame_artifacts(domain, &pair.second_frame)?;
+    let (rows, aggregate) = measure_rows(&first.1, &second.1)?;
+    if rows != pair.row_rgb_l1_sums || aggregate != pair.aggregate_rgb_l1_sum {
+        return Err(invalid("motion artifact RGB L1 measurements changed"));
+    }
+    Ok((first, second))
 }
 
 fn validate_motion_request(request: &MusicListMotionRequest) -> Result<(), CorpusError> {
@@ -1737,6 +1938,27 @@ mod tests {
                 .unwrap()
                 .evidence_verified
         );
+        let review_plan_path = directory.path().join("motion-review-plan.json");
+        let review_summary =
+            plan_music_list_motion_review(&motion_artifact_path, &review_plan_path).unwrap();
+        assert!(review_summary.evidence_verified);
+        assert_eq!(review_summary.pair_count, 1);
+        assert_eq!(review_summary.observation_count, 40);
+        assert_eq!(review_summary.unique_crop_count, 2);
+        assert_eq!(review_summary.duplicate_group_count, 2);
+        assert_eq!(review_summary.exact_duplicate_savings_count, 38);
+        let review_plan: serde_json::Value =
+            serde_json::from_slice(&fs::read(&review_plan_path).unwrap()).unwrap();
+        assert_eq!(review_plan["schema"], MOTION_REVIEW_PLAN_SCHEMA);
+        assert_eq!(
+            review_plan["source_artifact_sha256"],
+            digest_bytes(&fs::read(&motion_artifact_path).unwrap())
+        );
+        assert_eq!(review_plan["groups"].as_array().unwrap().len(), 2);
+        assert!(
+            plan_music_list_motion_review(&motion_artifact_path, &review_plan_path).is_err(),
+            "review planning must not replace an existing plan"
+        );
         assert!(
             measure_music_list_motion(&motion_request_path, &motion_artifact_path).is_err(),
             "measurement must not replace an existing artifact"
@@ -1750,6 +1972,22 @@ mod tests {
         )
         .unwrap();
         assert!(verify_music_list_motion(&motion_artifact_path).is_err());
+        let aggregate_tamper_plan = directory.path().join("aggregate-tamper-review-plan.json");
+        assert!(
+            plan_music_list_motion_review(&motion_artifact_path, &aggregate_tamper_plan).is_err()
+        );
+        assert!(!aggregate_tamper_plan.exists());
+
+        changed_artifact.pairs[0].aggregate_rgb_l1_sum -= 1;
+        changed_artifact.pairs[0].row_rgb_l1_sums[0] += 1;
+        fs::write(
+            &motion_artifact_path,
+            canonical_json(&changed_artifact).unwrap(),
+        )
+        .unwrap();
+        let row_tamper_plan = directory.path().join("row-tamper-review-plan.json");
+        assert!(plan_music_list_motion_review(&motion_artifact_path, &row_tamper_plan).is_err());
+        assert!(!row_tamper_plan.exists());
 
         let mut tampered = fs::read(second_crop_directory.join("list-title-03.ppm")).unwrap();
         *tampered.last_mut().unwrap() = 2;

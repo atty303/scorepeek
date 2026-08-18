@@ -77,6 +77,7 @@ mise run corpus:music-list:observation-draft:inspect -- /absolute/private/music-
 mise run corpus:music-list:observation-draft:verify -- /absolute/private/music-list-observation-draft.json
 mise run corpus:music-list:motion:measure -- --output /absolute/private/music-list-motion-artifact.json /absolute/private/music-list-motion-request.json
 mise run corpus:music-list:motion:verify -- /absolute/private/music-list-motion-artifact.json
+mise run corpus:music-list:motion:review-plan -- --output /absolute/private/music-list-motion-review-plan.json /absolute/private/music-list-motion-artifact.json
 mise run ocr:model:fetch
 mise run ocr:onnx:model:fetch
 mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --output /absolute/private/ocr-result.json
@@ -142,7 +143,9 @@ crop, records all twenty row RGB L1 sums and their checked aggregate, and create
 entry point recomputes all measurements. Unknown pairs remain measurement evidence but cannot set a
 stability threshold; locked/dimmed, INFINITAS-blue, LEGGENDARIA-purple, selected, clipped,
 separator, and unlock-condition annotations remain explicit rather than being folded into title
-motion.
+motion. The create-only review-plan command re-verifies the complete artifact and groups only exact
+pixel-SHA-256-identical row crops while retaining every occurrence, current annotation, and pair
+motion. It never derives a semantic label from color, brightness, OCR output, or measured motion.
 
 Python 3.13.7 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
 PaddlePaddle CPU 3.3.1, and their complete dependency graph. The

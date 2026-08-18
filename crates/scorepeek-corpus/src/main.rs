@@ -5,7 +5,8 @@ use std::process::ExitCode;
 
 use scorepeek_corpus::{
     CorpusStore, inspect_music_list_row_observation_draft, measure_music_list_motion,
-    render_synthetic_title_set, verify_music_list_motion, verify_music_list_row_observation_draft,
+    plan_music_list_motion_review, render_synthetic_title_set, verify_music_list_motion,
+    verify_music_list_row_observation_draft,
 };
 
 fn main() -> ExitCode {
@@ -38,6 +39,17 @@ fn run(args: &[OsString]) -> Result<(), String> {
         let summary = verify_music_list_motion(PathBuf::from(document))
             .map_err(|error| format!("music-list motion verification failed: {error}"))?;
         return print_json(&summary, "music-list motion verification");
+    }
+    if let [music_list, motion, review_plan, output, plan, artifact] = args
+        && music_list == "music-list"
+        && motion == "motion"
+        && review_plan == "review-plan"
+        && output == "--output"
+    {
+        let summary =
+            plan_music_list_motion_review(PathBuf::from(artifact), PathBuf::from(plan))
+                .map_err(|error| format!("music-list motion review planning failed: {error}"))?;
+        return print_json(&summary, "music-list motion review planning");
     }
     if let [music_list, observation, inspect, document] = args
         && music_list == "music-list"
@@ -162,7 +174,7 @@ fn run_legacy(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "usage: scorepeek-corpus <recording import --store ROOT --capture-context CONTEXT [--external] RECORDING|dataset seal|push|pull|verify|remote-verify ...|ingest --store ROOT SOURCE REQUEST|generation seal --store ROOT GENERATION_ID|label author --store ROOT DOCUMENT|index generate --store ROOT PLAN|media probe --store ROOT --output MANIFEST FIXTURE_ID|media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST|canonical extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|replay validate --store ROOT SUITE>"
+            "usage: scorepeek-corpus <recording import --store ROOT --capture-context CONTEXT [--external] RECORDING|dataset seal|push|pull|verify|remote-verify ...|ingest --store ROOT SOURCE REQUEST|generation seal --store ROOT GENERATION_ID|label author --store ROOT DOCUMENT|index generate --store ROOT PLAN|media probe --store ROOT --output MANIFEST FIXTURE_ID|media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST|canonical extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|music-list motion review-plan --output PLAN ARTIFACT|replay validate --store ROOT SUITE>"
                 .to_owned(),
         ),
     }
@@ -340,7 +352,7 @@ fn print_json(value: &impl serde::Serialize, context: &str) -> Result<(), String
 
 fn print_usage() {
     println!(
-        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus recording import --store ROOT --capture-context CONTEXT [--external] RECORDING\n  scorepeek-corpus dataset seal --store ROOT DATASET_ID\n  scorepeek-corpus dataset push --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus dataset pull --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus dataset verify --store ROOT GENERATION_SHA256\n  scorepeek-corpus dataset remote-verify --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus ingest --store ROOT SOURCE REQUEST\n  scorepeek-corpus generation seal --store ROOT GENERATION_ID\n  scorepeek-corpus label author --store ROOT DOCUMENT\n  scorepeek-corpus index generate --store ROOT PLAN\n  scorepeek-corpus media probe --store ROOT --output MANIFEST FIXTURE_ID\n  scorepeek-corpus media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST\n  scorepeek-corpus canonical extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST\n  scorepeek-corpus synthetic render --output DIRECTORY REQUEST\n  scorepeek-corpus music-list observation-draft inspect DOCUMENT\n  scorepeek-corpus music-list observation-draft verify DOCUMENT\n  scorepeek-corpus music-list motion measure --output ARTIFACT REQUEST\n  scorepeek-corpus music-list motion verify ARTIFACT\n  scorepeek-corpus replay validate --store ROOT SUITE",
+        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus recording import --store ROOT --capture-context CONTEXT [--external] RECORDING\n  scorepeek-corpus dataset seal --store ROOT DATASET_ID\n  scorepeek-corpus dataset push --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus dataset pull --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus dataset verify --store ROOT GENERATION_SHA256\n  scorepeek-corpus dataset remote-verify --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus ingest --store ROOT SOURCE REQUEST\n  scorepeek-corpus generation seal --store ROOT GENERATION_ID\n  scorepeek-corpus label author --store ROOT DOCUMENT\n  scorepeek-corpus index generate --store ROOT PLAN\n  scorepeek-corpus media probe --store ROOT --output MANIFEST FIXTURE_ID\n  scorepeek-corpus media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST\n  scorepeek-corpus canonical extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST\n  scorepeek-corpus synthetic render --output DIRECTORY REQUEST\n  scorepeek-corpus music-list observation-draft inspect DOCUMENT\n  scorepeek-corpus music-list observation-draft verify DOCUMENT\n  scorepeek-corpus music-list motion measure --output ARTIFACT REQUEST\n  scorepeek-corpus music-list motion verify ARTIFACT\n  scorepeek-corpus music-list motion review-plan --output PLAN ARTIFACT\n  scorepeek-corpus replay validate --store ROOT SUITE",
         env!("CARGO_PKG_VERSION")
     );
 }

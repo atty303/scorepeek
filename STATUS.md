@@ -207,6 +207,9 @@ is outside this checkpoint.
   twenty row RGB L1 values plus their checked aggregate. Measurement never infers a motion label
   from pixels, creates but does not replace its canonical output, and a separate verifier recomputes
   the complete artifact.
+- A create-only complete-pair review plan that re-verifies the motion artifact and preserves every
+  row occurrence, current annotation, and pair motion while grouping only exact pixel-SHA-256-
+  identical crops. It does not derive labels from color, brightness, OCR output, or motion values.
 - A mise-pinned Python 3.13.7 and uv 0.11.7 offline environment with a committed
   `uv.lock` for PaddleOCR 3.7.0 and PaddlePaddle CPU 3.3.1. Python and its
   approximately 1.2 GiB development environment do not enter the Rust
@@ -306,7 +309,7 @@ is outside this checkpoint.
   including exact validation of the selected-title and twenty list-slot files.
 - `mise run catalog:schedule:systemd:verify`: passed without installing the
   release binary or user units.
-- `cargo test --locked -p scorepeek-corpus`: passed all 50 offline corpus
+- `cargo test --locked -p scorepeek-corpus`: passed all 55 offline corpus
   tests, including idempotent private ingest, fixture-ID conflict
   rejection, canonical source/complete-label binding, pre-mutation symlink
   rejection, canonical/private/idempotent complete-label authoring with owned
@@ -394,6 +397,13 @@ is outside this checkpoint.
   through 40,782,712. All 9,600 row presentation annotations remain
   `unknown: pending-review`; the private requests, artifacts, and comparison pages remain temporary
   derivatives outside the repository.
+- The complete-pair review planner independently rehashed that private artifact and retained all
+  9,600 row occurrences in 7,977 exact-pixel groups. There are 1,621 duplicate groups, saving 1,623
+  repeated visual decisions without treating similar but non-identical pixels as equivalent. The
+  4,815,725-byte canonical private plan remains outside the repository. Exploratory brightness and
+  hue ordering successfully surfaced locked/dimmed and LEGGENDARIA-purple candidates, but also
+  selected, clipped, unlock-condition, and scrolling UI samples; those measurements therefore
+  remain review-ordering hints rather than labels.
 - The same gate normalized selected frames with artifact
   `0441099011fdd09d372d6c9b5e18d6c4f2da2809a653e01f8ccb55756d8658cf`.
   A separately invoked explicit FFmpeg transform produced the same file SHA-256
@@ -539,9 +549,10 @@ is outside this checkpoint.
   is a single warmed development-host measurement, not a performance gate.
 - The title-model export requirements still have only synthetic contract coverage. The music-list
   contract has one artifact-bound real-row verification and a complete measured pair artifact, but
-  although all 240 pair motion states have now been human-reviewed, its 9,600 row presentation
-  annotations still await human review. No scorepeek-owned dictionary/model has been trained or
-  exported, and no accepted stability threshold or provisional music-list label exists.
+  although all 240 pair motion states have now been human-reviewed and exact duplicates have a
+  verified review plan, its 7,977 unique-pixel groups covering 9,600 row presentation annotations
+  still await human review. No scorepeek-owned dictionary/model has been trained or exported, and
+  no accepted stability threshold or provisional music-list label exists.
 - The live `ObservedFrame`/domain-normalizer/`CanonicalFrame` runtime boundary,
   model-bundle promotion, and last-known-good model rollback remain
   unimplemented. Recognition accepts only digest-bound offline canonical
@@ -601,11 +612,13 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Preserve result certainty as the primary gate. Review all 9,600 row annotations in the private
-motion request against the canonical frames and replace each `unknown` row semantic with
-human-observed stationary, scrolling, selected, clipped, non-title, or still-unobservable state.
-For stationary and scrolling titles, record availability (`available` or `locked_dimmed`) and color
-domain (`standard`, `infinitas_blue`, or `leggendaria_purple`) independently. Classify separators
+Preserve result certainty as the primary gate. Use the verified private review plan to inspect its
+7,977 exact-pixel groups and propagate each decision only to the listed identical occurrences,
+replacing all 9,600 `unknown` row semantics in the private motion request with
+human-observed title, selected, clipped, non-title, or still-unobservable content. Retain the
+already-reviewed pair motion independently. For titles, record availability (`available` or
+`locked_dimmed`) and color domain (`standard`, `infinitas_blue`, or `leggendaria_purple`)
+independently. Classify separators
 and unlock-condition bars as explicit non-title slots; the selected row and the unlock condition
 displayed below it must remain separate geometric slots. Regenerate and verify the immutable
 complete-pair artifact before accepting the reviewed pair-level gap as a profile- and
