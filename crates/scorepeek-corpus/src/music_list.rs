@@ -14,6 +14,8 @@ const OBSERVATION_SCHEMA: &str = "scorepeek-private-music-list-row-observation-d
 const MOTION_REQUEST_SCHEMA: &str = "scorepeek-private-music-list-motion-request-v1";
 const MOTION_ARTIFACT_SCHEMA: &str = "scorepeek-private-music-list-motion-artifact-v1";
 const MOTION_REVIEW_PLAN_SCHEMA: &str = "scorepeek-private-music-list-motion-review-plan-v1";
+const MOTION_REVIEW_DECISIONS_SCHEMA: &str =
+    "scorepeek-private-music-list-motion-review-decisions-v1";
 const MAX_DOCUMENT_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_OBSERVATIONS: usize = 250_000;
 const MUSIC_LIST_SLOTS: u8 = 20;
@@ -253,10 +255,19 @@ pub struct MusicListMotionReviewPlanSummary {
     pub exact_duplicate_savings_count: usize,
 }
 
-#[derive(Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct MusicListMotionReviewApplySummary {
+    pub schema: &'static str,
+    pub evidence_verified: bool,
+    pub decision_count: usize,
+    pub applied_occurrence_count: usize,
+    pub remaining_unknown_occurrence_count: usize,
+}
+
+#[derive(Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MusicListMotionReviewPlan {
-    schema: &'static str,
+    schema: String,
     source_artifact_sha256: String,
     catalog_sha256: String,
     source_manifest_sha256: String,
@@ -266,21 +277,21 @@ struct MusicListMotionReviewPlan {
     groups: Vec<MusicListMotionReviewGroup>,
 }
 
-#[derive(Debug, Eq, PartialEq, Serialize)]
+#[derive(Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MusicListMotionReviewGroup {
     crop_pixel_sha256: String,
     occurrences: Vec<MusicListMotionReviewOccurrence>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum MusicListMotionFrameRole {
     First,
     Second,
 }
 
-#[derive(Debug, Eq, PartialEq, Serialize)]
+#[derive(Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MusicListMotionReviewOccurrence {
     pair_id: String,
@@ -293,6 +304,21 @@ struct MusicListMotionReviewOccurrence {
     current_annotation: PairRowAnnotation,
     crop_path: PathBuf,
     crop_file_sha256: String,
+}
+
+#[derive(Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MusicListMotionReviewDecisions {
+    schema: String,
+    source_review_plan_sha256: String,
+    decisions: Vec<MusicListMotionReviewDecision>,
+}
+
+#[derive(Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MusicListMotionReviewDecision {
+    crop_pixel_sha256: String,
+    annotation: PairRowAnnotation,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -667,7 +693,7 @@ pub fn plan_music_list_motion_review(
         exact_duplicate_savings_count: observation_count - unique_crop_count,
     };
     let plan = MusicListMotionReviewPlan {
-        schema: MOTION_REVIEW_PLAN_SCHEMA,
+        schema: MOTION_REVIEW_PLAN_SCHEMA.to_owned(),
         source_artifact_sha256: digest_bytes(&bytes),
         catalog_sha256: artifact.catalog_sha256,
         source_manifest_sha256: artifact.source_manifest_sha256,
@@ -686,6 +712,225 @@ pub fn plan_music_list_motion_review(
     };
     write_new_canonical(output_path, &plan)?;
     Ok(summary)
+}
+
+/// Applies explicit, partial human review decisions to a verified motion artifact.
+///
+/// The review plan is independently reconstructed from the artifact and its crop bytes before any
+/// decision is accepted. Omitted groups remain unchanged, so callers can quarantine ambiguity as
+/// `unknown` and accumulate reviewed batches without guessing.
+///
+/// # Errors
+/// Returns an error when an input is non-canonical, its digest binding is stale, a decision is
+/// duplicated or does not name an exact crop group, evidence verification fails, or the create-only
+/// output already exists.
+pub fn apply_music_list_motion_review(
+    artifact_path: impl AsRef<Path>,
+    plan_path: impl AsRef<Path>,
+    decisions_path: impl AsRef<Path>,
+    output_path: impl AsRef<Path>,
+) -> Result<MusicListMotionReviewApplySummary, CorpusError> {
+    let artifact_path = artifact_path.as_ref();
+    let plan_path = plan_path.as_ref();
+    let decisions_path = decisions_path.as_ref();
+    let output_path = output_path.as_ref();
+    if !artifact_path.is_absolute()
+        || !plan_path.is_absolute()
+        || !decisions_path.is_absolute()
+        || !output_path.is_absolute()
+    {
+        return Err(invalid("motion review paths must be absolute"));
+    }
+
+    let artifact_bytes = read_bounded_regular(artifact_path)?;
+    let (artifact, expected_plan) = verified_motion_review_plan(&artifact_bytes)?;
+
+    let plan_bytes = read_bounded_regular(plan_path)?;
+    let plan: MusicListMotionReviewPlan = serde_json::from_slice(&plan_bytes)?;
+    if canonical_json(&plan)? != plan_bytes
+        || plan.schema != MOTION_REVIEW_PLAN_SCHEMA
+        || plan != expected_plan
+    {
+        return Err(invalid(
+            "motion review plan is not the verified plan for the artifact",
+        ));
+    }
+
+    let by_hash = read_motion_review_decisions(decisions_path, &plan_bytes, &plan)?;
+
+    let mut pairs: Vec<MusicListMotionPairRequest> = artifact
+        .pairs
+        .iter()
+        .map(|pair| MusicListMotionPairRequest {
+            pair_id: pair.pair_id.clone(),
+            first_frame: pair.first_frame.clone(),
+            second_frame: pair.second_frame.clone(),
+            motion: pair.motion.clone(),
+            first_rows: pair.first_rows.clone(),
+            second_rows: pair.second_rows.clone(),
+        })
+        .collect();
+    let pair_indexes: BTreeMap<_, _> = pairs
+        .iter()
+        .enumerate()
+        .map(|(index, pair)| (pair.pair_id.clone(), index))
+        .collect();
+    let mut applied_occurrence_count = 0_usize;
+    for group in &plan.groups {
+        let Some(annotation) = by_hash.get(&group.crop_pixel_sha256) else {
+            continue;
+        };
+        for occurrence in &group.occurrences {
+            let pair = pair_indexes
+                .get(&occurrence.pair_id)
+                .and_then(|index| pairs.get_mut(*index))
+                .ok_or_else(|| invalid("verified review occurrence pair is absent"))?;
+            let rows = match occurrence.frame_role {
+                MusicListMotionFrameRole::First => &mut pair.first_rows,
+                MusicListMotionFrameRole::Second => &mut pair.second_rows,
+            };
+            rows[usize::from(occurrence.slot)] = annotation.clone();
+            applied_occurrence_count += 1;
+        }
+    }
+    let remaining_unknown_occurrence_count = pairs
+        .iter()
+        .flat_map(|pair| pair.first_rows.iter().chain(pair.second_rows.iter()))
+        .filter(|annotation| matches!(annotation, PairRowAnnotation::Unknown { .. }))
+        .count();
+    let request = MusicListMotionRequest {
+        schema: MOTION_REQUEST_SCHEMA.to_owned(),
+        catalog_sha256: artifact.catalog_sha256,
+        source_manifest_sha256: artifact.source_manifest_sha256,
+        capture_profile_id: artifact.capture_profile_id,
+        normalizer_artifact_sha256: artifact.normalizer_artifact_sha256,
+        canonical_layout_sha256: artifact.canonical_layout_sha256,
+        pairs,
+    };
+    validate_motion_request(&request)?;
+    write_new_canonical(output_path, &request)?;
+    Ok(MusicListMotionReviewApplySummary {
+        schema: "scorepeek-music-list-motion-review-apply-summary-v1",
+        evidence_verified: true,
+        decision_count: by_hash.len(),
+        applied_occurrence_count,
+        remaining_unknown_occurrence_count,
+    })
+}
+
+fn read_motion_review_decisions(
+    decisions_path: &Path,
+    plan_bytes: &[u8],
+    plan: &MusicListMotionReviewPlan,
+) -> Result<BTreeMap<String, PairRowAnnotation>, CorpusError> {
+    let decisions_bytes = read_bounded_regular(decisions_path)?;
+    let decisions: MusicListMotionReviewDecisions = serde_json::from_slice(&decisions_bytes)?;
+    if canonical_json(&decisions)? != decisions_bytes
+        || decisions.schema != MOTION_REVIEW_DECISIONS_SCHEMA
+        || decisions.source_review_plan_sha256 != digest_bytes(plan_bytes)
+    {
+        return Err(invalid(
+            "motion review decisions must be canonical and bind the review plan",
+        ));
+    }
+    let known_groups: BTreeSet<_> = plan
+        .groups
+        .iter()
+        .map(|group| group.crop_pixel_sha256.as_str())
+        .collect();
+    let mut by_hash = BTreeMap::new();
+    for decision in decisions.decisions {
+        validate_sha256(
+            &decision.crop_pixel_sha256,
+            "crop_pixel_sha256",
+            crate::ErrorContext::Replay,
+        )?;
+        if !known_groups.contains(decision.crop_pixel_sha256.as_str()) {
+            return Err(invalid(
+                "motion review decision names an unknown crop group",
+            ));
+        }
+        if matches!(decision.annotation, PairRowAnnotation::Unknown { .. }) {
+            return Err(invalid(
+                "omit unresolved crop groups instead of deciding unknown",
+            ));
+        }
+        if by_hash
+            .insert(decision.crop_pixel_sha256, decision.annotation)
+            .is_some()
+        {
+            return Err(invalid("motion review decision crop group is duplicated"));
+        }
+    }
+    Ok(by_hash)
+}
+
+fn verified_motion_review_plan(
+    artifact_bytes: &[u8],
+) -> Result<(MusicListMotionArtifact, MusicListMotionReviewPlan), CorpusError> {
+    let artifact: MusicListMotionArtifact = serde_json::from_slice(artifact_bytes)?;
+    if canonical_json(&artifact)? != artifact_bytes || artifact.schema != MOTION_ARTIFACT_SCHEMA {
+        return Err(invalid("motion artifact must be canonical and versioned"));
+    }
+    validate_motion_metadata(
+        &artifact.catalog_sha256,
+        &artifact.source_manifest_sha256,
+        &artifact.capture_profile_id,
+        &artifact.normalizer_artifact_sha256,
+        &artifact.canonical_layout_sha256,
+        artifact.pairs.len(),
+    )?;
+    let domain = motion_domain(
+        &artifact.catalog_sha256,
+        &artifact.source_manifest_sha256,
+        &artifact.capture_profile_id,
+        &artifact.normalizer_artifact_sha256,
+        &artifact.canonical_layout_sha256,
+    );
+    let mut ids = BTreeSet::new();
+    let mut frame_pairs = BTreeSet::new();
+    let mut groups = BTreeMap::<String, Vec<MusicListMotionReviewOccurrence>>::new();
+    for pair in &artifact.pairs {
+        validate_pair_identity(pair, &mut ids, &mut frame_pairs)?;
+        validate_row_annotations(&pair.first_rows)?;
+        validate_row_annotations(&pair.second_rows)?;
+        let (first, second) = verify_motion_pair_artifacts(&domain, pair)?;
+        add_review_manifest(
+            pair,
+            MusicListMotionFrameRole::First,
+            &pair.first_frame,
+            &pair.first_rows,
+            &first.0,
+            &mut groups,
+        )?;
+        add_review_manifest(
+            pair,
+            MusicListMotionFrameRole::Second,
+            &pair.second_frame,
+            &pair.second_rows,
+            &second.0,
+            &mut groups,
+        )?;
+    }
+    let plan = MusicListMotionReviewPlan {
+        schema: MOTION_REVIEW_PLAN_SCHEMA.to_owned(),
+        source_artifact_sha256: digest_bytes(artifact_bytes),
+        catalog_sha256: artifact.catalog_sha256.clone(),
+        source_manifest_sha256: artifact.source_manifest_sha256.clone(),
+        capture_profile_id: artifact.capture_profile_id.clone(),
+        normalizer_artifact_sha256: artifact.normalizer_artifact_sha256.clone(),
+        canonical_layout_sha256: artifact.canonical_layout_sha256.clone(),
+        groups: groups
+            .into_iter()
+            .map(
+                |(crop_pixel_sha256, occurrences)| MusicListMotionReviewGroup {
+                    crop_pixel_sha256,
+                    occurrences,
+                },
+            )
+            .collect(),
+    };
+    Ok((artifact, plan))
 }
 
 fn add_review_manifest(
@@ -1955,6 +2200,52 @@ mod tests {
             digest_bytes(&fs::read(&motion_artifact_path).unwrap())
         );
         assert_eq!(review_plan["groups"].as_array().unwrap().len(), 2);
+        let reviewed_group = review_plan["groups"][0]["crop_pixel_sha256"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let decisions = MusicListMotionReviewDecisions {
+            schema: MOTION_REVIEW_DECISIONS_SCHEMA.to_owned(),
+            source_review_plan_sha256: digest_bytes(&fs::read(&review_plan_path).unwrap()),
+            decisions: vec![MusicListMotionReviewDecision {
+                crop_pixel_sha256: reviewed_group,
+                annotation: PairRowAnnotation::Selected,
+            }],
+        };
+        let decisions_path = directory.path().join("motion-review-decisions.json");
+        fs::write(&decisions_path, canonical_json(&decisions).unwrap()).unwrap();
+        let reviewed_request_path = directory.path().join("reviewed-motion-request.json");
+        let apply_summary = apply_music_list_motion_review(
+            &motion_artifact_path,
+            &review_plan_path,
+            &decisions_path,
+            &reviewed_request_path,
+        )
+        .unwrap();
+        assert_eq!(apply_summary.decision_count, 1);
+        assert_eq!(apply_summary.applied_occurrence_count, 20);
+        assert_eq!(apply_summary.remaining_unknown_occurrence_count, 20);
+        let reviewed_request: MusicListMotionRequest =
+            serde_json::from_slice(&fs::read(&reviewed_request_path).unwrap()).unwrap();
+        assert_eq!(
+            reviewed_request.pairs[0]
+                .first_rows
+                .iter()
+                .chain(reviewed_request.pairs[0].second_rows.iter())
+                .filter(|annotation| matches!(annotation, PairRowAnnotation::Selected))
+                .count(),
+            20
+        );
+        assert!(
+            apply_music_list_motion_review(
+                &motion_artifact_path,
+                &review_plan_path,
+                &decisions_path,
+                &reviewed_request_path,
+            )
+            .is_err(),
+            "review application must not replace an existing request"
+        );
         assert!(
             plan_music_list_motion_review(&motion_artifact_path, &review_plan_path).is_err(),
             "review planning must not replace an existing plan"

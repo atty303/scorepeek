@@ -78,6 +78,7 @@ mise run corpus:music-list:observation-draft:verify -- /absolute/private/music-l
 mise run corpus:music-list:motion:measure -- --output /absolute/private/music-list-motion-artifact.json /absolute/private/music-list-motion-request.json
 mise run corpus:music-list:motion:verify -- /absolute/private/music-list-motion-artifact.json
 mise run corpus:music-list:motion:review-plan -- --output /absolute/private/music-list-motion-review-plan.json /absolute/private/music-list-motion-artifact.json
+mise run corpus:music-list:motion:review-apply -- --output /absolute/private/reviewed-motion-request.json /absolute/private/music-list-motion-artifact.json /absolute/private/music-list-motion-review-plan.json /absolute/private/music-list-motion-review-decisions.json
 mise run ocr:model:fetch
 mise run ocr:onnx:model:fetch
 mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --output /absolute/private/ocr-result.json
@@ -144,8 +145,10 @@ entry point recomputes all measurements. Unknown pairs remain measurement eviden
 stability threshold; locked/dimmed, INFINITAS-blue, LEGGENDARIA-purple, selected, clipped,
 separator, and unlock-condition annotations remain explicit rather than being folded into title
 motion. The create-only review-plan command re-verifies the complete artifact and groups only exact
-pixel-SHA-256-identical row crops while retaining every occurrence, current annotation, and pair
-motion. It never derives a semantic label from color, brightness, OCR output, or measured motion.
+pixel-identical row crops. The create-only review-apply command reconstructs that plan from verified
+artifact bytes, accepts only canonical plan-digest-bound partial human decisions, and leaves omitted
+groups with their original annotations unchanged; initially these are usually unknown. It never
+derives labels from luminance, color, OCR, or motion values.
 
 Python 3.13.7 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
 PaddlePaddle CPU 3.3.1, and their complete dependency graph. The

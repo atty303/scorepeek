@@ -164,6 +164,7 @@ pair全体に`stationary`、`scrolling`または理由付き`unknown`を付け�
 mise run corpus:music-list:motion:measure -- --output /absolute/private/music-list-motion-artifact.json /absolute/private/music-list-motion-request.json
 mise run corpus:music-list:motion:verify -- /absolute/private/music-list-motion-artifact.json
 mise run corpus:music-list:motion:review-plan -- --output /absolute/private/music-list-motion-review-plan.json /absolute/private/music-list-motion-artifact.json
+mise run corpus:music-list:motion:review-apply -- --output /absolute/private/reviewed-motion-request.json /absolute/private/music-list-motion-artifact.json /absolute/private/music-list-motion-review-plan.json /absolute/private/music-list-motion-review-decisions.json
 ```
 
 出力は`scorepeek-private-music-list-motion-artifact-v1`であり、既存fileを置換しない。`unknown` pairは
@@ -171,6 +172,11 @@ mise run corpus:music-list:motion:review-plan -- --output /absolute/private/musi
 LEGGENDARIA-purple、selected、clipped、separator、unlock-conditionも個別に保持し、標準titleへ暗黙変換しない。
 `review-plan`はartifactを再検証し、全row occurrenceを残したまま、pixel SHA-256が完全一致するcropだけを
 一つの目視単位へまとめる。色、明るさ、OCR結果またはmotion測定値からannotationを生成しない。
+`review-apply`はartifactからplanを再構築して完全一致を確認し、plan SHA-256へbindしたcanonicalな
+`scorepeek-private-music-list-motion-review-decisions-v1`だけを受け入れる。各decisionは
+`crop_pixel_sha256`とunknown以外の`annotation`を一つ持つ。未確定groupはdecisionから省略し、出力requestでは
+元のannotation（通常は理由付きunknown）のまま残す。decisionの重複、planにないhash、改変されたartifact/plan、
+既存outputは拒否する。出力requestを再度`motion measure`へ渡すことで、部分レビュー済みartifactを作成できる。
 
 ## generationを固定して保存する
 

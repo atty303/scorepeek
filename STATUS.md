@@ -210,6 +210,11 @@ is outside this checkpoint.
 - A create-only complete-pair review plan that re-verifies the motion artifact and preserves every
   row occurrence, current annotation, and pair motion while grouping only exact pixel-SHA-256-
   identical crops. It does not derive labels from color, brightness, OCR output, or motion values.
+- A create-only partial review application that reconstructs the exact-crop plan from the verified
+  artifact, requires canonical human decisions bound to the plan SHA-256, rejects duplicate,
+  unknown-group, and explicit-unknown decisions, and leaves every omitted group unchanged. Its
+  output is a new motion request that can be measured and verified through the existing evidence
+  path; it never promotes brightness, color, OCR, or motion measurements into semantic labels.
 - A mise-pinned Python 3.13.7 and uv 0.11.7 offline environment with a committed
   `uv.lock` for PaddleOCR 3.7.0 and PaddlePaddle CPU 3.3.1. Python and its
   approximately 1.2 GiB development environment do not enter the Rust
@@ -404,6 +409,14 @@ is outside this checkpoint.
   hue ordering successfully surfaced locked/dimmed and LEGGENDARIA-purple candidates, but also
   selected, clipped, unlock-condition, and scrolling UI samples; those measurements therefore
   remain review-ordering hints rather than labels.
+- The first low-luma stationary review batch contains 394 exact-pixel groups across seven private
+  contact sheets. Visual inspection confirmed that the batch mixes complete dimmed titles with
+  left/right-clipped titles, nearly empty rows, and selection-boundary UI. None of the 394 groups
+  has been bulk-labelled. The first bounded decision document marks only one visually empty group
+  and three unambiguous left-clipped groups; exact-duplicate propagation changed six occurrences
+  and left 9,594 unknown. The resulting private motion artifact was regenerated and independently
+  verified with the existing 183 stationary and 57 scrolling pair labels. All uncertain groups
+  remain unknown by construction.
 - The same gate normalized selected frames with artifact
   `0441099011fdd09d372d6c9b5e18d6c4f2da2809a653e01f8ccb55756d8658cf`.
   A separately invoked explicit FFmpeg transform produced the same file SHA-256
@@ -550,7 +563,7 @@ is outside this checkpoint.
 - The title-model export requirements still have only synthetic contract coverage. The music-list
   contract has one artifact-bound real-row verification and a complete measured pair artifact, but
   although all 240 pair motion states have now been human-reviewed and exact duplicates have a
-  verified review plan, its 7,977 unique-pixel groups covering 9,600 row presentation annotations
+  verified review plan, 7,973 unique-pixel groups covering 9,594 row presentation annotations
   still await human review. No scorepeek-owned dictionary/model has been trained or exported, and
   no accepted stability threshold or provisional music-list label exists.
 - The live `ObservedFrame`/domain-normalizer/`CanonicalFrame` runtime boundary,
@@ -612,9 +625,10 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Preserve result certainty as the primary gate. Use the verified private review plan to inspect its
-7,977 exact-pixel groups and propagate each decision only to the listed identical occurrences,
-replacing all 9,600 `unknown` row semantics in the private motion request with
+Preserve result certainty as the primary gate. Use the verified private review plan and partial
+review-application command to inspect the remaining 7,973 exact-pixel groups in bounded batches and
+propagate each decision only to the listed identical occurrences, replacing the remaining 9,594
+`unknown` row semantics in the private motion request with
 human-observed title, selected, clipped, non-title, or still-unobservable content. Retain the
 already-reviewed pair motion independently. For titles, record availability (`available` or
 `locked_dimmed`) and color domain (`standard`, `infinitas_blue`, or `leggendaria_purple`)
