@@ -27,6 +27,9 @@ fn run(args: &[OsString]) -> Result<(), String> {
     if let Some(result) = try_title_onnx_parity(args) {
         return result;
     }
+    if let Some(result) = try_title_dictionary_audit(args) {
+        return result;
+    }
     match args {
         [command] if command == "doctor" => {
             println!("{}", inventory::collect().to_json());
@@ -117,6 +120,25 @@ fn run(args: &[OsString]) -> Result<(), String> {
         }
         _ => Err("usage: scorepeek --help".to_owned()),
     }
+}
+
+fn try_title_dictionary_audit(args: &[OsString]) -> Option<Result<(), String>> {
+    let [
+        recognition,
+        audit,
+        store_flag,
+        store,
+        dictionary_flag,
+        dictionary,
+    ] = args
+    else {
+        return None;
+    };
+    (recognition == "recognition"
+        && audit == "title-dictionary-audit"
+        && store_flag == "--catalog-store"
+        && dictionary_flag == "--dictionary")
+        .then(|| title_dictionary_audit(store, dictionary))
 }
 
 fn try_title_onnx_parity(args: &[OsString]) -> Option<Result<(), String>> {
@@ -282,6 +304,34 @@ fn diagnostic_title_spike(
     Ok(())
 }
 
+#[derive(Serialize)]
+struct TitleDictionaryAuditSummary {
+    schema: &'static str,
+    catalog_sha256: String,
+    audit: recognition::CatalogTitleDictionaryAudit,
+}
+
+fn title_dictionary_audit(catalog_store: &OsStr, dictionary: &OsStr) -> Result<(), String> {
+    let catalog_store = absolute_directory(PathBuf::from(catalog_store), "catalog store")?;
+    let active = CatalogStore::new(catalog_store)
+        .load_active()
+        .map_err(|error| format!("active catalog load failed: {error}"))?
+        .ok_or_else(|| "catalog store has no active catalog".to_owned())?;
+    let audit = recognition::audit_catalog_title_dictionary(&active.catalog, Path::new(dictionary))
+        .map_err(|error| error.to_string())?;
+    let summary = TitleDictionaryAuditSummary {
+        schema: "scorepeek-catalog-title-dictionary-audit-v1",
+        catalog_sha256: active.digest,
+        audit,
+    };
+    println!(
+        "{}",
+        serde_json::to_string(&summary)
+            .map_err(|error| format!("title dictionary audit encoding failed: {error}"))?
+    );
+    Ok(())
+}
+
 fn title_onnx_parity(arguments: [&OsStr; 8]) -> Result<(), String> {
     let [
         model,
@@ -399,7 +449,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE",
+        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE",
         env!("CARGO_PKG_VERSION")
     );
 }

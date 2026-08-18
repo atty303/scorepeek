@@ -18,8 +18,9 @@ pub use title::{
     diagnostic_title_candidate,
 };
 pub use title_decoder::{
-    CatalogTitleDecision, CatalogTitleDecoderError, CatalogTitleUnknownReason,
-    DiagnosticTitleThresholds, TITLE_DICTIONARY_SHA256, score_catalog_titles,
+    CatalogTitleDecision, CatalogTitleDecoderError, CatalogTitleDictionaryAudit,
+    CatalogTitleUnknownReason, DiagnosticTitleThresholds, TITLE_DICTIONARY_SHA256,
+    TitleDictionaryVariantKindAudit, audit_catalog_title_dictionary, score_catalog_titles,
 };
 pub use title_onnx::{
     OnnxParityError, OnnxParitySummary, OnnxTitleDiagnosticRequest, compare_paddle_onnx,

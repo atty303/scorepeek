@@ -22,6 +22,44 @@ pub enum CatalogTitleDecoderError {
     InvalidThresholds,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CatalogTitleDictionaryAudit {
+    pub schema: &'static str,
+    pub dictionary_sha256: &'static str,
+    pub maximum_ctc_timesteps: usize,
+    pub song_count: usize,
+    pub non_search_variant_count: usize,
+    pub encodable_variant_count: usize,
+    pub rejected_variant_count: usize,
+    pub songs_without_non_search_variant: usize,
+    pub coverage_complete: bool,
+    pub by_variant_kind: Vec<TitleDictionaryVariantKindAudit>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct TitleDictionaryVariantKindAudit {
+    pub kind: DisplayVariantKind,
+    pub variant_count: usize,
+    pub encodable_variant_count: usize,
+    pub rejected_variant_count: usize,
+    pub unsupported_character_variant_count: usize,
+    pub ctc_timestep_excess_variant_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct VariantCoverageCounts {
+    variants: usize,
+    encodable: usize,
+    unsupported_characters: usize,
+    ctc_timestep_excess: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TitleEncodability {
+    unsupported_characters: bool,
+    ctc_timestep_excess: bool,
+}
+
 impl std::fmt::Display for CatalogTitleDecoderError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -167,6 +205,114 @@ pub fn score_catalog_titles(
         thresholds,
         catalog_coverage_complete,
     ))
+}
+
+/// Audits exact catalog-title coverage of the immutable registered OCR dictionary.
+///
+/// The report contains aggregate counts only. It does not expose catalog strings, silently omit
+/// rejected variants, or treat search aliases as display-title candidates.
+///
+/// # Errors
+/// Returns an error when the supplied file is not the registered dictionary.
+pub fn audit_catalog_title_dictionary(
+    catalog: &Catalog,
+    inference_yml: impl AsRef<Path>,
+) -> Result<CatalogTitleDictionaryAudit, CatalogTitleDecoderError> {
+    let dictionary = load_dictionary(inference_yml.as_ref())?;
+    let indexes = dictionary_indexes(&dictionary)?;
+    Ok(audit_catalog_title_dictionary_with_indexes(
+        catalog, &indexes,
+    ))
+}
+
+fn audit_catalog_title_dictionary_with_indexes(
+    catalog: &Catalog,
+    indexes: &BTreeMap<char, u32>,
+) -> CatalogTitleDictionaryAudit {
+    let kinds = [
+        DisplayVariantKind::InGameDisplay,
+        DisplayVariantKind::OfficialDisplay,
+        DisplayVariantKind::EamusementCsv,
+        DisplayVariantKind::AlternateDisplay,
+    ];
+    let mut counts = BTreeMap::<DisplayVariantKind, VariantCoverageCounts>::new();
+    let mut songs_without_non_search_variant = 0;
+    for song in catalog.songs().values() {
+        let mut has_non_search_variant = false;
+        for variant in song
+            .title_variants()
+            .iter()
+            .filter(|variant| variant.kind != DisplayVariantKind::SearchTerm)
+        {
+            has_non_search_variant = true;
+            let coverage = counts.entry(variant.kind).or_default();
+            coverage.variants += 1;
+            let encodability = title_encodability(&variant.value, indexes);
+            if encodability.unsupported_characters {
+                coverage.unsupported_characters += 1;
+            }
+            if encodability.ctc_timestep_excess {
+                coverage.ctc_timestep_excess += 1;
+            }
+            if !encodability.unsupported_characters && !encodability.ctc_timestep_excess {
+                coverage.encodable += 1;
+            }
+        }
+        if !has_non_search_variant {
+            songs_without_non_search_variant += 1;
+        }
+    }
+    let by_variant_kind: Vec<_> = kinds
+        .into_iter()
+        .map(|kind| {
+            let coverage = counts.remove(&kind).unwrap_or_default();
+            TitleDictionaryVariantKindAudit {
+                kind,
+                variant_count: coverage.variants,
+                encodable_variant_count: coverage.encodable,
+                rejected_variant_count: coverage.variants - coverage.encodable,
+                unsupported_character_variant_count: coverage.unsupported_characters,
+                ctc_timestep_excess_variant_count: coverage.ctc_timestep_excess,
+            }
+        })
+        .collect();
+    let non_search_variant_count = by_variant_kind
+        .iter()
+        .map(|coverage| coverage.variant_count)
+        .sum();
+    let encodable_variant_count = by_variant_kind
+        .iter()
+        .map(|coverage| coverage.encodable_variant_count)
+        .sum();
+    let rejected_variant_count = non_search_variant_count - encodable_variant_count;
+    CatalogTitleDictionaryAudit {
+        schema: "scorepeek-title-dictionary-coverage-audit-v1",
+        dictionary_sha256: TITLE_DICTIONARY_SHA256,
+        maximum_ctc_timesteps: MAX_TITLE_TOKENS,
+        song_count: catalog.songs().len(),
+        non_search_variant_count,
+        encodable_variant_count,
+        rejected_variant_count,
+        songs_without_non_search_variant,
+        coverage_complete: rejected_variant_count == 0 && songs_without_non_search_variant == 0,
+        by_variant_kind,
+    }
+}
+
+fn title_encodability(title: &str, indexes: &BTreeMap<char, u32>) -> TitleEncodability {
+    let unsupported_characters = title
+        .chars()
+        .any(|character| !indexes.contains_key(&character));
+    let characters: Vec<_> = title.chars().collect();
+    let ctc_timesteps = characters.len()
+        + characters
+            .windows(2)
+            .filter(|pair| pair[0] == pair[1])
+            .count();
+    TitleEncodability {
+        unsupported_characters,
+        ctc_timestep_excess: ctc_timesteps > MAX_TITLE_TOKENS,
+    }
 }
 
 fn decide_ranked(
@@ -430,6 +576,32 @@ mod tests {
         assert_eq!(tokenize("A\nB", &indexes), None);
         assert!(tokenize(&"A".repeat(21), &indexes).is_none());
         assert_eq!(tokenize(&"AB".repeat(20), &indexes).unwrap().len(), 40);
+    }
+
+    #[test]
+    fn coverage_reports_unsupported_characters_and_ctc_length_independently() {
+        let indexes = BTreeMap::from([('A', 1), ('B', 2)]);
+        assert_eq!(
+            title_encodability("AB", &indexes),
+            TitleEncodability {
+                unsupported_characters: false,
+                ctc_timestep_excess: false,
+            }
+        );
+        assert_eq!(
+            title_encodability("A!", &indexes),
+            TitleEncodability {
+                unsupported_characters: true,
+                ctc_timestep_excess: false,
+            }
+        );
+        assert_eq!(
+            title_encodability(&"AA".repeat(14), &indexes),
+            TitleEncodability {
+                unsupported_characters: false,
+                ctc_timestep_excess: true,
+            }
+        );
     }
 
     #[test]

@@ -71,6 +71,7 @@ mise run corpus:canonical:extract -- --store /absolute/private/store --output /a
 mise run recognition:inspect -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID
 mise run recognition:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/crops
 mise run recognition:music-select:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/music-select-crops
+mise run recognition:title:dictionary:audit -- --catalog-store /absolute/private/catalog --dictionary /absolute/private/models/inference.yml
 mise run ocr:model:fetch
 mise run ocr:onnx:model:fetch
 mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --output /absolute/private/ocr-result.json
@@ -94,6 +95,17 @@ visible-list slots. A slot can contain a separator, clipped row, or overlay;
 downstream recognition keeps such content unknown instead of assuming every
 slot is a title. OCR `--output` is create-only and retains the diagnostic JSON
 for later replay without repeating inference.
+
+`recognition:title:dictionary:audit` verifies the immutable registered dictionary and the active
+catalog, then emits catalog- and dictionary-digest-bound aggregate coverage. It splits non-search
+variants by display kind and reports unsupported-character and CTC-timestep rejection counts
+without exposing title strings. A rejected variant is never silently removed from inference scope.
+
+Stationary non-selected right-list rows may contribute provisional thin-title training evidence,
+but retain their music-list origin. Selected rows, scrolling transitions, separators, and crops
+whose title is hidden at either edge do not receive a complete-title target. Temporal stability
+thresholds require a representative continuous-scroll recording; the current two frames are not a
+calibration set.
 
 Python 3.13.7 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
 PaddlePaddle CPU 3.3.1, and their complete dependency graph. The

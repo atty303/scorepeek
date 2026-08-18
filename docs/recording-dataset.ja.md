@@ -119,6 +119,19 @@ capture routeのsupport gateで必要な反復やsoak recordingは、同じimpor
 含める。ただし最初から全gate分を撮り切る必要はない。まず各peer profileのobserved contractを
 1本ずつ確立し、既存録画の解析で不足が判明した時点で対象を絞って追加する。
 
+### 所有曲listを1回で収録する場合
+
+全曲title用のmusic-select録画では、連続高速scrollだけにしない。一定のsort/filterと先頭位置を
+記録したうえで、1回に8–10 row進め、入力を離して0.5秒以上停止する操作を末尾まで繰り返す。
+前後の画面にrowを重複させることで、ある画面で選択状態、左右clip、overlay重なりになった曲も、
+別画面では非選択の完全rowとして観測できる。先頭と末尾では2秒程度停止し、wrapせず終了する。
+
+scroll中のframeも削除しないが、negative transitionとして扱う。positive provisional labelは、隣接
+frameから垂直移動が止まったことを確認できる非選択rowにだけ付ける。中央の大型selected title、
+選択中の右row、separator、UIに隠れた長いtitle、画面端の部分rowには完全titleを割り当てない。
+現在は実scroll sequenceから安定度分布をまだ測っていないため、録画後にthresholdを固定するまで
+自動採用しない。この収録はresult-only holdoutを代替せず、result画面は得られる範囲で別途保持する。
+
 ## generationを固定して保存する
 
 必要な録画をimportしたら、その時点でstoreにある全録画をsealする。

@@ -239,7 +239,10 @@ training corpusは次の二系統に分ける。
 - private real crop: 実game frameからresult title、music-selectの選択中titleおよび可視list rowを
   保存する。開発中はprovenance-bound active catalogからprovisional labelを作成できるが、accepted
   holdout、thresholdおよびrelease gateは人間がcatalog IDと表示文字列を確認する。model prediction
-  だけによるaccepted self-labelは禁止する。
+  だけによるaccepted self-labelは禁止する。右listの静止・非選択rowはthin result titleと同じglyph
+  rasterizationを支持する実測があるためprovisional trainingへ利用できるが、screen originを保持し、
+  result-only holdoutを置き換えない。scroll transition、選択row、UIに隠れた左右端、非title rowは
+  完全title labelへ昇格せず、連続frameから静止を確認する。
 - synthetic: 再配布可能なfontと許諾済み文章またはrandom character n-gramをrenderし、font、
   size、spacing、stretch、outline、shadow、glow、gradient、background、anti-alias、subpixel、
   blur、noise、truncation、4K-to-FHD downscaleを変化させる。

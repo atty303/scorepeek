@@ -224,6 +224,10 @@ is outside this checkpoint.
   trie, and returns a song only when explicit diagnostic absolute and runner-up
   bounds pass. Ties, unencodable catalogs, and insufficient evidence remain
   `unknown`; the command produces no free OCR text or accepted title.
+- A value-free registered-dictionary coverage audit that verifies the exact immutable dictionary,
+  binds aggregate output to the active catalog digest, splits every non-search variant by display
+  kind, and reports unsupported-character and CTC-timestep rejections without exposing or silently
+  dropping catalog strings.
 - A Rust diagnostic title-candidate bridge with versioned comparison key
   `scorepeek-title-nfc-without-ascii-space-v1`. It applies NFC and removes only
   U+0020, preserves case, punctuation, other whitespace, and all other
@@ -266,7 +270,7 @@ is outside this checkpoint.
 
 - `mise run check`, `cargo clippy --locked --workspace --all-targets -- -D
   warnings`, and `cargo test --locked --workspace`: passed on the development
-  host. The current workspace run covered 76 `scorepeek` library tests, 12
+  host. The current workspace run covered 77 `scorepeek` library tests, 12
   binary tests, 44 offline corpus tests, and 10 offline Python OCR tests.
 - Targeted recognition tests passed with the added music-select predicate and
   21-crop artifact contract. The offline OCR contract suite passed 10 tests,
@@ -367,6 +371,21 @@ is outside this checkpoint.
   clipped first characters, separators, appended UI text, Japanese glyph
   substitutions, and low confidence. These are diagnostic observations, not
   accepted labels or calibrated recognition.
+- The same recording supplied `ABSOLUTE EVIL` in a result at source PTS 190000 and in right-list
+  slot 10 at PTS 110000. The intact `BSOLUTE EVIL` suffix required translation only, not scaling;
+  a neutral foreground-mask comparison measured intersection-over-union 0.9561805101373446. This
+  supports shared thin-title glyph rasterization for that observation but does not establish
+  universal texture identity. Visual inspection separately showed a different large selected-title
+  renderer, the selected right row shifted into the generic crop's left edge, and long titles hidden
+  by the list UI at the right edge. ADR 0016 therefore admits only stationary non-selected rows as
+  provisional shared-title evidence while preserving result-only holdout.
+- Against active catalog `65a8e164f3cb28e20c09114eecc3eb7200d32ed7c7383c7c04432053b78411eb`,
+  the registered dictionary encoded 4,756 of 4,810 non-search variants from 2,548 songs. All songs
+  had at least one non-search variant, but 54 variants were rejected. In-game display names accounted
+  for 37 rejections: 10 contained unsupported characters and 27 exceeded the graph's 40 CTC
+  timesteps. Official display, e-amusement CSV, and alternate display contributed 5, 1, and 11
+  additional rejections respectively. The retained ignored audit is diagnostic and no variant was
+  removed from the inference domain.
 - The same title crop produced Paddle parity reference manifest
   `799addeaa8f9ce877169003f03fe837cf2b1e4fede759fdddf46f182edfca699`.
   Regeneration from retained crop bytes and a verified temporary Paddle-model
@@ -448,7 +467,7 @@ is outside this checkpoint.
   diagnostic parity gate now covers the Rust-produced input, official graph's
   post-softmax CTC tensor, token order, the reference's three-candidate ranking,
   and exact active-catalog trie scoring. Calibrated absolute/runner-up bounds,
-  complete active-catalog dictionary coverage, temporal agreement, independent
+  complete active-catalog dictionary coverage, scroll stability calibration, temporal agreement, independent
   screen context, and accepted title semantics remain unimplemented.
   Music-select replay execution, scorepeek-owned model export,
   catalog-update recognition replay, event daemon, and the integrated live
@@ -512,18 +531,19 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Preserve result certainty as the primary gate: implement the smallest
-value-free, catalog-digest-bound registered-dictionary coverage audit, split by
-non-search variant kind, and use it to define the next scorepeek-owned
-dictionary/model export boundary without silently dropping an unencodable
-variant. In parallel, turn the retained music-select crops into a
-catalog-digest-bound provisional-label/replay generation so every visible slot
-is explicitly title, non-title, clipped, or unknown. After complete dictionary
-coverage is available, execute replay over the two result observations and the
-larger music-select set before fixing absolute or runner-up thresholds. Do not
-tune thresholds from the current single recording, promote diagnostic commands
-into accepted recognition, recognize bare PPM or `ObservedFrame`, auto-download
-a runtime model, or treat the OBS profile, current ROIs, confidence, timing, or
+Preserve result certainty as the primary gate: use the measured 54 rejected
+variants to define the smallest scorepeek-owned dictionary/model export
+boundary without silently dropping a catalog variant. Define a versioned
+music-list row observation contract with explicit stationary, scrolling,
+selected, clipped, non-title, and unknown states before processing the planned
+overlapping full-list recording. Calibrate stability only from adjacent frames
+in that recording, then deduplicate settled non-selected rows and generate
+catalog-digest-bound provisional labels. After complete dictionary coverage is
+available, execute replay over the two result observations and the larger
+music-select set before fixing absolute or runner-up thresholds. Do not tune
+thresholds from the current single recording, promote diagnostic commands into
+accepted recognition, recognize bare PPM or `ObservedFrame`, auto-download a
+runtime model, or treat the OBS profile, current ROIs, confidence, timing, or
 diagnostic thresholds as supported.
 
 S3 replication and another profile are intentionally deferred. When capture

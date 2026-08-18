@@ -213,6 +213,14 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- recognition title-spike "$@"
 '''
 
+[tasks."recognition:title:dictionary:audit"]
+description = "Audit active-catalog title coverage against the registered OCR dictionary"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- recognition title-dictionary-audit "$@"
+'''
+
 [tasks."ocr:sync"]
 description = "Synchronize the locked offline OCR development environment"
 run = "uv sync --locked --no-dev"

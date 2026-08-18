@@ -96,6 +96,7 @@ mise run corpus:canonical:extract -- --store /absolute/private/store --output /a
 mise run recognition:inspect -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID
 mise run recognition:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/crops
 mise run recognition:music-select:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/music-select-crops
+mise run recognition:title:dictionary:audit -- --catalog-store /absolute/private/catalog --dictionary /absolute/private/models/inference.yml
 mise run ocr:sync
 mise run ocr:model:fetch
 mise run ocr:onnx:model:fetch
@@ -177,9 +178,12 @@ diagnostic parity path verifies exact graph bytes, reproduces Paddle's complete
 BGR/resize/normalize input from the bound RGB8 crop in Rust, compares Rust/ONNX
 Runtime output and CTC token order, and scores the active catalog with the
 registered dictionary. It neither accepts a bare image nor emits an accepted
-title. Production glyph/font coverage, scorepeek-owned export, replay
-execution, threshold calibration, and supported-profile evaluation remain
-later stages and will not become Python game-session runtime dependencies.
+title. The aggregate dictionary audit binds its result to the exact active
+catalog and registered dictionary, reports every rejected non-search variant
+by display kind and rejection class, and emits no catalog strings. Production
+glyph/font coverage, scorepeek-owned export, replay execution, threshold
+calibration, and supported-profile evaluation remain later stages and will not
+become Python game-session runtime dependencies.
 
 `scorepeek catalog sync` is the scheduling interface. A user may keep recurring
 execution disabled and run it manually, or select any scheduler that preserves
