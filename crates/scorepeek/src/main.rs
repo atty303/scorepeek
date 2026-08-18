@@ -72,6 +72,26 @@ fn run(args: &[OsString]) -> Result<(), String> {
         }
         [
             recognition,
+            crop,
+            extraction_flag,
+            extraction,
+            digest_flag,
+            digest,
+            frame_flag,
+            frame_id,
+            output_flag,
+            output,
+        ] if recognition == "recognition"
+            && crop == "music-select-crop"
+            && extraction_flag == "--extraction"
+            && digest_flag == "--extraction-sha256"
+            && frame_flag == "--frame-id"
+            && output_flag == "--output" =>
+        {
+            crop_canonical_music_select(extraction, digest, frame_id, output)
+        }
+        [
+            recognition,
             title_spike,
             store_flag,
             store,
@@ -184,6 +204,30 @@ fn crop_canonical_result(
     let frame = CanonicalFrame::read_extraction(extraction, frame_id, extraction_sha256)
         .map_err(|error| error.to_string())?;
     let summary = recognition::export_result_crops(&frame, frame_id, output)
+        .map_err(|error| error.to_string())?;
+    println!(
+        "{}",
+        serde_json::to_string(&summary)
+            .map_err(|error| format!("crop export summary encoding failed: {error}"))?
+    );
+    Ok(())
+}
+
+fn crop_canonical_music_select(
+    extraction: &OsStr,
+    extraction_sha256: &OsStr,
+    frame_id: &OsStr,
+    output: &OsStr,
+) -> Result<(), String> {
+    let extraction_sha256 = extraction_sha256
+        .to_str()
+        .ok_or_else(|| "canonical extraction SHA-256 must be UTF-8".to_owned())?;
+    let frame_id = frame_id
+        .to_str()
+        .ok_or_else(|| "canonical frame ID must be UTF-8".to_owned())?;
+    let frame = CanonicalFrame::read_extraction(extraction, frame_id, extraction_sha256)
+        .map_err(|error| error.to_string())?;
+    let summary = recognition::export_music_select_crops(&frame, frame_id, output)
         .map_err(|error| error.to_string())?;
     println!(
         "{}",
@@ -355,7 +399,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE",
+        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE",
         env!("CARGO_PKG_VERSION")
     );
 }

@@ -24,12 +24,48 @@ from scorepeek_ocr.parity import ParityError, _canonical_json, ctc_log_probabili
 from scorepeek_ocr.spike import (
     CALIBRATED_NORMALIZER_SHA256,
     SpikeError,
+    _write_output,
     load_crops,
     load_layout_contract,
 )
 
 
 class ContractTests(unittest.TestCase):
+    def test_ocr_output_publication_is_create_only_and_cleans_failed_staging(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary).resolve()
+            output = directory / "ocr.json"
+            _write_output(output, '{"complete":true}\n')
+            self.assertEqual(output.read_text(), '{"complete":true}\n')
+            with self.assertRaises(SpikeError):
+                _write_output(output, '{"complete":false}\n')
+            self.assertEqual(output.read_text(), '{"complete":true}\n')
+
+            failed = directory / "failed.json"
+            with patch("scorepeek_ocr.spike.os.link", side_effect=OSError("full")):
+                with self.assertRaises(SpikeError):
+                    _write_output(failed, '{"complete":true}\n')
+            self.assertFalse(failed.exists())
+            self.assertEqual(
+                [path.name for path in directory.iterdir()],
+                ["ocr.json"],
+            )
+
+            unsynced = directory / "unsynced.json"
+            with patch(
+                "scorepeek_ocr.spike._sync_directory",
+                side_effect=[OSError("sync"), None],
+            ):
+                with self.assertRaises(SpikeError):
+                    _write_output(unsynced, '{"complete":true}\n')
+            self.assertFalse(unsynced.exists())
+            self.assertEqual(
+                [path.name for path in directory.iterdir()],
+                ["ocr.json"],
+            )
+
     def test_registered_model_manifest_is_exact(self) -> None:
         manifest = (
             Path(__file__).parents[2]
@@ -244,6 +280,45 @@ class ContractTests(unittest.TestCase):
                 output.write(b"x")
             with self.assertRaises(SpikeError):
                 load_crops(directory, digest)
+
+    def test_music_select_crop_contract_accepts_selected_and_list_slots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary).resolve()
+            layout_sha256, definitions = load_layout_contract("music_select")
+            entries = []
+            for index, (field, (filename, roi)) in enumerate(definitions.items()):
+                pixels = bytes([index]) * (roi["width"] * roi["height"] * 3)
+                header = f'P6\n{roi["width"]} {roi["height"]}\n255\n'.encode()
+                data = header + pixels
+                (directory / filename).write_bytes(data)
+                entries.append(
+                    {
+                        "field": field,
+                        "filename": filename,
+                        "roi": roi,
+                        "pixel_sha256": hashlib.sha256(pixels).hexdigest(),
+                        "file_sha256": hashlib.sha256(data).hexdigest(),
+                        "bytes": len(data),
+                    }
+                )
+            manifest = {
+                "schema": "scorepeek-private-canonical-music-select-crops-v1",
+                "frame_id": "music-select-001",
+                "frame_extraction_sha256": "1" * 64,
+                "canonical_frame_sha256": "2" * 64,
+                "normalizer_artifact_sha256": CALIBRATED_NORMALIZER_SHA256,
+                "canonical_layout_sha256": layout_sha256,
+                "crops": entries,
+            }
+            manifest_bytes = json.dumps(
+                manifest, ensure_ascii=False, separators=(",", ":")
+            ).encode() + b"\n"
+            (directory / "manifest.json").write_bytes(manifest_bytes)
+            digest = hashlib.sha256(manifest_bytes).hexdigest()
+            _, crops = load_crops(directory, digest)
+            self.assertEqual(len(crops), 21)
+            self.assertEqual(crops[0].field, "selected_title")
+            self.assertEqual(crops[-1].field, "list_title_19")
 
 
 if __name__ == "__main__":

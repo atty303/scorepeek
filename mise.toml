@@ -197,6 +197,14 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- recognition crop "$@"
 '''
 
+[tasks."recognition:music-select:crop"]
+description = "Export selected and visible-list title crops from one validated music-select frame"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- recognition music-select-crop "$@"
+'''
+
 [tasks."recognition:title:spike"]
 description = "Resolve diagnostic open-text OCR to one exact catalog candidate"
 run = '''

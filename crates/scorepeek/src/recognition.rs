@@ -53,6 +53,7 @@ pub enum RecognitionError {
     InvalidCanonicalFrame,
     InvalidCanonicalLayout,
     NotResultScreen,
+    NotMusicSelectScreen,
 }
 
 impl std::fmt::Display for RecognitionError {
@@ -63,6 +64,9 @@ impl std::fmt::Display for RecognitionError {
             Self::InvalidCanonicalFrame => formatter.write_str("canonical frame is invalid"),
             Self::InvalidCanonicalLayout => formatter.write_str("canonical layout is invalid"),
             Self::NotResultScreen => formatter.write_str("canonical frame is not a result screen"),
+            Self::NotMusicSelectScreen => {
+                formatter.write_str("canonical frame is not a music-select screen")
+            }
         }
     }
 }
@@ -410,6 +414,45 @@ pub struct ResultLayout {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct MusicSelectLayout {
+    presence: MusicSelectPresencePredicate,
+    pub header: Roi,
+    pub level_column: Roi,
+    pub selected_title: Roi,
+    pub list_titles: RepeatedRoi,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MusicSelectPresencePredicate {
+    cyan_header_pixels_min: u32,
+    green_level_pixels_min: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepeatedRoi {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    stride_y: u32,
+    slots: u32,
+}
+
+impl RepeatedRoi {
+    fn rois(self) -> impl Iterator<Item = Roi> {
+        (0..self.slots).map(move |slot| Roi {
+            x: self.x,
+            y: self.y + slot * self.stride_y,
+            width: self.width,
+            height: self.height,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ResultPresencePredicate {
     warm_pixels_min: u32,
     red_pixels_min: u32,
@@ -419,6 +462,7 @@ struct ResultPresencePredicate {
 #[serde(rename_all = "snake_case")]
 pub enum ScreenClass {
     Result,
+    MusicSelect,
     Unknown,
 }
 
@@ -431,6 +475,7 @@ pub struct RecognitionSnapshot {
     pub canonical_layout_sha256: String,
     pub screen: ScreenClass,
     pub result_presence: ResultPresenceEvidence,
+    pub music_select_presence: MusicSelectPresenceEvidence,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -474,12 +519,51 @@ pub struct ResultCropExportSummary {
     pub manifest_sha256: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MusicSelectCropArtifact {
+    pub schema: String,
+    pub frame_id: String,
+    pub frame_extraction_sha256: String,
+    pub canonical_frame_sha256: String,
+    pub normalizer_artifact_sha256: String,
+    pub canonical_layout_sha256: String,
+    pub crops: Vec<MusicSelectCropEvidence>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MusicSelectCropEvidence {
+    pub field: String,
+    pub filename: String,
+    pub roi: Roi,
+    pub pixel_sha256: String,
+    pub file_sha256: String,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct MusicSelectCropExportSummary {
+    pub schema: String,
+    pub output: PathBuf,
+    pub manifest_sha256: String,
+    pub list_slot_count: u32,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct ResultPresenceEvidence {
     pub warm_pixels: u32,
     pub warm_pixels_min: u32,
     pub red_pixels: u32,
     pub red_pixels_min: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct MusicSelectPresenceEvidence {
+    pub cyan_header_pixels: u32,
+    pub cyan_header_pixels_min: u32,
+    pub green_level_pixels: u32,
+    pub green_level_pixels_min: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -490,6 +574,7 @@ pub struct CanonicalLayout {
     width: u32,
     height: u32,
     pub result: ResultLayout,
+    pub music_select: MusicSelectLayout,
 }
 
 impl CanonicalLayout {
@@ -514,7 +599,13 @@ impl CanonicalLayout {
             layout.result.level,
             layout.result.notes,
             layout.result.current_score,
+            layout.music_select.header,
+            layout.music_select.level_column,
+            layout.music_select.selected_title,
         ] {
+            roi.validate(layout.width, layout.height)?;
+        }
+        for roi in layout.music_select.list_titles.rois() {
             roi.validate(layout.width, layout.height)?;
         }
         let header_pixels = layout
@@ -527,6 +618,27 @@ impl CanonicalLayout {
             || layout.result.presence.red_pixels_min == 0
             || layout.result.presence.warm_pixels_min > header_pixels
             || layout.result.presence.red_pixels_min > header_pixels
+        {
+            return Err(RecognitionError::InvalidCanonicalLayout);
+        }
+        let header_pixels = layout
+            .music_select
+            .header
+            .width
+            .checked_mul(layout.music_select.header.height)
+            .ok_or(RecognitionError::InvalidCanonicalLayout)?;
+        let level_pixels = layout
+            .music_select
+            .level_column
+            .width
+            .checked_mul(layout.music_select.level_column.height)
+            .ok_or(RecognitionError::InvalidCanonicalLayout)?;
+        if layout.music_select.list_titles.slots == 0
+            || layout.music_select.list_titles.stride_y == 0
+            || layout.music_select.presence.cyan_header_pixels_min == 0
+            || layout.music_select.presence.green_level_pixels_min == 0
+            || layout.music_select.presence.cyan_header_pixels_min > header_pixels
+            || layout.music_select.presence.green_level_pixels_min > level_pixels
         {
             return Err(RecognitionError::InvalidCanonicalLayout);
         }
@@ -557,15 +669,35 @@ pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, Recognitio
             red += 1;
         }
     }
+    let music_header = frame.crop(layout.music_select.header)?;
+    let cyan_header_pixels = music_header
+        .chunks_exact(3)
+        .filter(|pixel| {
+            let [r, g, b] = [pixel[0], pixel[1], pixel[2]];
+            g > 120 && b > 150 && u16::from(b) * 2 > u16::from(r) * 3
+        })
+        .fold(0_u32, |count, _| count + 1);
+    let level_column = frame.crop(layout.music_select.level_column)?;
+    let green_level_pixels = level_column
+        .chunks_exact(3)
+        .filter(|pixel| {
+            let [r, g, b] = [pixel[0], pixel[1], pixel[2]];
+            g > 130 && u16::from(g) * 2 > u16::from(r) * 3 && u16::from(g) * 5 > u16::from(b) * 6
+        })
+        .fold(0_u32, |count, _| count + 1);
     let screen = if warm >= layout.result.presence.warm_pixels_min
         && red >= layout.result.presence.red_pixels_min
     {
         ScreenClass::Result
+    } else if cyan_header_pixels >= layout.music_select.presence.cyan_header_pixels_min
+        && green_level_pixels >= layout.music_select.presence.green_level_pixels_min
+    {
+        ScreenClass::MusicSelect
     } else {
         ScreenClass::Unknown
     };
     Ok(RecognitionSnapshot {
-        schema: "scorepeek-recognition-spike-v1".to_owned(),
+        schema: "scorepeek-recognition-spike-v2".to_owned(),
         canonical_frame_sha256: encode_sha256(frame.pixels()),
         normalizer_artifact_sha256: frame.normalizer_artifact_sha256.clone(),
         frame_extraction_sha256: frame.frame_extraction_sha256.clone(),
@@ -576,6 +708,12 @@ pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, Recognitio
             warm_pixels_min: layout.result.presence.warm_pixels_min,
             red_pixels: red,
             red_pixels_min: layout.result.presence.red_pixels_min,
+        },
+        music_select_presence: MusicSelectPresenceEvidence {
+            cyan_header_pixels,
+            cyan_header_pixels_min: layout.music_select.presence.cyan_header_pixels_min,
+            green_level_pixels,
+            green_level_pixels_min: layout.music_select.presence.green_level_pixels_min,
         },
     })
 }
@@ -651,6 +789,85 @@ pub fn export_result_crops(
         schema: "scorepeek-result-crop-export-summary-v1".to_owned(),
         output: output.to_path_buf(),
         manifest_sha256: encode_sha256(&manifest),
+    })
+}
+
+/// Exports the selected title and every visible music-list title slot from a validated frame.
+///
+/// List slots are geometric observations. Separators and partially visible rows remain in the
+/// artifact and must be rejected by downstream recognition rather than silently omitted.
+///
+/// # Errors
+/// Returns an error for a non-music-select screen, invalid layout, or any output I/O failure.
+pub fn export_music_select_crops(
+    frame: &CanonicalFrame,
+    frame_id: &str,
+    output: impl AsRef<Path>,
+) -> Result<MusicSelectCropExportSummary, RecognitionError> {
+    if frame_id.is_empty() || frame_id.len() > 256 || frame_id.chars().any(char::is_control) {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
+    let snapshot = inspect(frame)?;
+    if snapshot.screen != ScreenClass::MusicSelect {
+        return Err(RecognitionError::NotMusicSelectScreen);
+    }
+    let output = output.as_ref();
+    fs::create_dir(output)?;
+
+    let layout = CanonicalLayout::load()?;
+    let mut selections = Vec::with_capacity(layout.music_select.list_titles.slots as usize + 1);
+    selections.push((
+        "selected_title".to_owned(),
+        "selected-title.ppm".to_owned(),
+        layout.music_select.selected_title,
+    ));
+    selections.extend(
+        layout
+            .music_select
+            .list_titles
+            .rois()
+            .enumerate()
+            .map(|(slot, roi)| {
+                (
+                    format!("list_title_{slot:02}"),
+                    format!("list-title-{slot:02}.ppm"),
+                    roi,
+                )
+            }),
+    );
+    let mut crops = Vec::with_capacity(selections.len());
+    for (field, filename, roi) in selections {
+        let pixels = frame.crop(roi)?;
+        let header = format!("P6\n{} {}\n255\n", roi.width, roi.height);
+        let mut bytes = Vec::with_capacity(header.len() + pixels.len());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(&pixels);
+        write_private_file(&output.join(&filename), &bytes)?;
+        crops.push(MusicSelectCropEvidence {
+            field,
+            filename,
+            roi,
+            pixel_sha256: encode_sha256(&pixels),
+            file_sha256: encode_sha256(&bytes),
+            bytes: bytes.len() as u64,
+        });
+    }
+    let artifact = MusicSelectCropArtifact {
+        schema: "scorepeek-private-canonical-music-select-crops-v1".to_owned(),
+        frame_id: frame_id.to_owned(),
+        frame_extraction_sha256: snapshot.frame_extraction_sha256,
+        canonical_frame_sha256: snapshot.canonical_frame_sha256,
+        normalizer_artifact_sha256: snapshot.normalizer_artifact_sha256,
+        canonical_layout_sha256: snapshot.canonical_layout_sha256,
+        crops,
+    };
+    let manifest = canonical_evidence_json(&artifact)?;
+    write_private_file(&output.join("manifest.json"), &manifest)?;
+    Ok(MusicSelectCropExportSummary {
+        schema: "scorepeek-music-select-crop-export-summary-v1".to_owned(),
+        output: output.to_path_buf(),
+        manifest_sha256: encode_sha256(&manifest),
+        list_slot_count: layout.music_select.list_titles.slots,
     })
 }
 
@@ -825,6 +1042,56 @@ mod tests {
 
         let empty = test_frame(vec![0_u8; CANONICAL_BYTES]);
         assert_eq!(inspect(&empty).unwrap().screen, ScreenClass::Unknown);
+    }
+
+    #[test]
+    fn music_select_presence_and_crops_are_fail_closed_and_layout_bound() {
+        let layout = CanonicalLayout::load().unwrap();
+        let mut pixels = vec![0_u8; CANONICAL_BYTES];
+        for index in 0..layout.music_select.presence.cyan_header_pixels_min as usize {
+            let x = layout.music_select.header.x as usize
+                + index % layout.music_select.header.width as usize;
+            let y = layout.music_select.header.y as usize
+                + index / layout.music_select.header.width as usize;
+            pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&[20, 160, 220]);
+        }
+        for index in 0..layout.music_select.presence.green_level_pixels_min as usize {
+            let x = layout.music_select.level_column.x as usize
+                + index % layout.music_select.level_column.width as usize;
+            let y = layout.music_select.level_column.y as usize
+                + index / layout.music_select.level_column.width as usize;
+            pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&[20, 180, 40]);
+        }
+        let frame = test_frame(pixels);
+        let snapshot = inspect(&frame).unwrap();
+        assert_eq!(snapshot.screen, ScreenClass::MusicSelect);
+        assert_eq!(snapshot.music_select_presence.cyan_header_pixels, 7_000);
+        assert_eq!(snapshot.music_select_presence.green_level_pixels, 1_000);
+
+        let directory = tempdir().unwrap();
+        let output = directory.path().join("music-select-crops");
+        let summary = export_music_select_crops(&frame, "select-001", &output).unwrap();
+        let manifest = fs::read(output.join("manifest.json")).unwrap();
+        assert_eq!(summary.manifest_sha256, encode_sha256(&manifest));
+        assert_eq!(summary.list_slot_count, 20);
+        let artifact: MusicSelectCropArtifact = serde_json::from_slice(&manifest).unwrap();
+        assert_eq!(
+            artifact.schema,
+            "scorepeek-private-canonical-music-select-crops-v1"
+        );
+        assert_eq!(artifact.crops.len(), 21);
+        assert_eq!(artifact.crops[0].field, "selected_title");
+        assert_eq!(artifact.crops[0].roi, layout.music_select.selected_title);
+        assert_eq!(artifact.crops[1].field, "list_title_00");
+        assert_eq!(artifact.crops[20].field, "list_title_19");
+        assert!(
+            export_music_select_crops(
+                &test_frame(vec![0; CANONICAL_BYTES]),
+                "empty",
+                directory.path().join("unknown")
+            )
+            .is_err()
+        );
     }
 
     #[test]

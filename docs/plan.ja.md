@@ -9,8 +9,9 @@
 - M1.2 live acquisitionとsync orchestration: manual/scheduled syncまで完了
 - M2 observed-profile private corpus、synthetic renderer、label/replay tooling: 完了
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
-- M4 offline canonical/recognition spike: 着手（OBS/vkcapture実録画からnormalizer、共通result layout、
-  fail-closed screen判定、title cropのRust前処理/Paddle/公式ONNX CTC parity、active catalog trie診断まで）
+- M4 offline canonical/recognition spike: 着手（OBS/vkcapture実録画からnormalizer、共通result/music-select
+  layout、fail-closed screen判定、result title cropのRust前処理/Paddle/公式ONNX CTC parity、
+  music-selectの選択中titleおよび可視list row crop、active catalog trie診断まで）
 - scorepeek-owned OCR学習/export、accepted field認識、live capture、event daemon: 未着手
 - Bazzite実機検証とprivate corpus収集: 着手（OBS/vkcapture実録画1本のcopyless isolated
   import、canonical変換、目視確認まで）
@@ -235,13 +236,18 @@ trainingとRust runtimeで同一preprocessing contractを使用する。
 
 training corpusは次の二系統に分ける。
 
-- private real crop: 実game frameからtitle ROIだけを保存し、人間がcatalog IDと表示文字列を
-  確認する。model predictionによるself-labelは禁止する。
+- private real crop: 実game frameからresult title、music-selectの選択中titleおよび可視list rowを
+  保存する。開発中はprovenance-bound active catalogからprovisional labelを作成できるが、accepted
+  holdout、thresholdおよびrelease gateは人間がcatalog IDと表示文字列を確認する。model prediction
+  だけによるaccepted self-labelは禁止する。
 - synthetic: 再配布可能なfontと許諾済み文章またはrandom character n-gramをrenderし、font、
   size、spacing、stretch、outline、shadow、glow、gradient、background、anti-alias、subpixel、
   blur、noise、truncation、4K-to-FHD downscaleを変化させる。
 
-external catalog stringはinference lexiconだけに使い、training textへ自動投入しない。
+private developmentでは、catalog digest、source lineage/revisionおよびpermission statusを記録した
+external catalog stringをprovisional training textへ利用できる。このdataとそれを含むmodelは、必要な
+許諾とlicense evidenceが揃うまで配布またはrelease bundleへ昇格しない。runtime inference lexiconとしての
+利用、accepted holdoutおよびthreshold calibrationは従来どおりfail-closedに扱う。
 通常のtrain、validation、holdoutはtitle、session、playをまたがせず、同じcapture profile内でも
 独立session/titleによるin-profile holdoutを持てるようにする。これと別に、学習からcapture profile
 全体を外したprofile-disjoint evaluation suiteを持ち、未知domainへの汎化を測る。

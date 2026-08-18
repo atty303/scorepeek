@@ -70,9 +70,10 @@ instead of selecting a nearby transform.
 mise run corpus:canonical:extract -- --store /absolute/private/store --output /absolute/private/canonical PROBE_MANIFEST REQUEST
 mise run recognition:inspect -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID
 mise run recognition:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/crops
+mise run recognition:music-select:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/music-select-crops
 mise run ocr:model:fetch
 mise run ocr:onnx:model:fetch
-mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256
+mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --output /absolute/private/ocr-result.json
 mise run recognition:title:spike -- --catalog-store /absolute/private/catalog --ocr-text OCR_TEXT --ocr-confidence OCR_CONFIDENCE
 mise run ocr:parity:reference -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --candidates /absolute/private/parity-candidates.json --output /absolute/private/paddle-reference
 mise run ocr:parity:run -- --model /absolute/private/models/inference.onnx --reference /absolute/private/paddle-reference --reference-sha256 REFERENCE_MANIFEST_SHA256 --crop-artifact /absolute/private/crops --catalog-store /absolute/private/catalog --dictionary /absolute/private/models/inference.yml --minimum-log-probability SCORE --minimum-runner-up-margin SCORE
@@ -85,8 +86,14 @@ and the selected PPM's file and pixel hashes before constructing a
 `recognition:crop` additionally requires the result predicate to pass, then
 writes the layout-bound title, artist, difficulty, level, notes, and current
 score PPM files plus a digest-bound manifest. The offline OCR command accepts
-only that manifest with its expected SHA-256 and the registered normalizer
-digest; it does not accept a bare crop.
+only an exact result or music-select manifest with its expected SHA-256 and the
+registered normalizer digest; it does not accept a bare crop.
+`recognition:music-select:crop` uses an
+independent predicate and writes the selected title plus twenty geometric
+visible-list slots. A slot can contain a separator, clipped row, or overlay;
+downstream recognition keeps such content unknown instead of assuming every
+slot is a title. OCR `--output` is create-only and retains the diagnostic JSON
+for later replay without repeating inference.
 
 Python 3.13.7 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
 PaddlePaddle CPU 3.3.1, and their complete dependency graph. The

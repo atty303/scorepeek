@@ -12,5 +12,19 @@
     "level": { "x": 875, "y": 1030, "width": 30, "height": 35 },
     "notes": { "x": 1000, "y": 1030, "width": 105, "height": 35 },
     "current_score": { "x": 470, "y": 525, "width": 50, "height": 60 }
+  },
+  "music_select": {
+    "presence": { "cyan_header_pixels_min": 7000, "green_level_pixels_min": 1000 },
+    "header": { "x": 0, "y": 0, "width": 650, "height": 130 },
+    "level_column": { "x": 1240, "y": 0, "width": 110, "height": 1080 },
+    "selected_title": { "x": 400, "y": 310, "width": 540, "height": 110 },
+    "list_titles": {
+      "x": 1335,
+      "y": 20,
+      "width": 475,
+      "height": 45,
+      "stride_y": 50,
+      "slots": 20
+    }
   }
 }

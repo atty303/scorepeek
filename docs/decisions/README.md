@@ -22,6 +22,8 @@ authoritative.
   supersedes ADR 0009's multi-profile-first sequencing requirement.
 - [ADR 0014: Delegate local filesystem permissions to the operator](0014-delegate-local-filesystem-permissions.md)
   supersedes ADR 0010 and ADR 0012 only for local filesystem mode policy.
+- [ADR 0015: Use provisional private title data during development](0015-use-provisional-private-title-data-during-development.md)
+  supersedes ADR 0006 only for private-development training-data source policy.
 
 ## Historical
 

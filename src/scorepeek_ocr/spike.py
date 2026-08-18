@@ -8,6 +8,7 @@ import importlib.metadata
 import json
 import os
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -69,7 +70,9 @@ def _read_regular(path: Path, maximum: int) -> bytes:
     return data
 
 
-def load_layout_contract() -> tuple[str, dict[str, tuple[str, dict[str, int]]]]:
+def load_layout_contract(
+    screen: str = "result",
+) -> tuple[str, dict[str, tuple[str, dict[str, int]]]]:
     layout_bytes = _read_regular(CANONICAL_LAYOUT_PATH, MAX_LAYOUT_BYTES)
     try:
         raw = json.loads(layout_bytes)
@@ -77,7 +80,14 @@ def load_layout_contract() -> tuple[str, dict[str, tuple[str, dict[str, int]]]]:
         raise SpikeError("canonical layout is invalid JSON") from error
     raw = _exact_object(
         raw,
-        {"schema", "canonical_frame_contract_id", "width", "height", "result"},
+        {
+            "schema",
+            "canonical_frame_contract_id",
+            "width",
+            "height",
+            "result",
+            "music_select",
+        },
         "canonical layout",
     )
     if (
@@ -102,7 +112,7 @@ def load_layout_contract() -> tuple[str, dict[str, tuple[str, dict[str, int]]]]:
         },
         "canonical result layout",
     )
-    expected_files = {
+    result_files = {
         "title": "title.ppm",
         "artist": "artist.ppm",
         "difficulty": "difficulty.ppm",
@@ -110,8 +120,8 @@ def load_layout_contract() -> tuple[str, dict[str, tuple[str, dict[str, int]]]]:
         "notes": "notes.ppm",
         "current_score": "current-score.ppm",
     }
-    expected = {}
-    for field, filename in expected_files.items():
+    result_expected = {}
+    for field, filename in result_files.items():
         roi = _exact_object(
             result[field], {"x", "y", "width", "height"}, f"{field} ROI"
         )
@@ -123,7 +133,68 @@ def load_layout_contract() -> tuple[str, dict[str, tuple[str, dict[str, int]]]]:
             or roi["y"] + roi["height"] > raw["height"]
         ):
             raise SpikeError("canonical result ROI is invalid")
-        expected[field] = (filename, roi)
+        result_expected[field] = (filename, roi)
+
+    music_select = _exact_object(
+        raw["music_select"],
+        {"presence", "header", "level_column", "selected_title", "list_titles"},
+        "canonical music-select layout",
+    )
+    _exact_object(
+        music_select["presence"],
+        {"cyan_header_pixels_min", "green_level_pixels_min"},
+        "music-select presence predicate",
+    )
+    for field in ("header", "level_column", "selected_title"):
+        roi = _exact_object(
+            music_select[field], {"x", "y", "width", "height"}, f"{field} ROI"
+        )
+        if (
+            not all(isinstance(roi[key], int) and roi[key] >= 0 for key in roi)
+            or roi["width"] == 0
+            or roi["height"] == 0
+            or roi["x"] + roi["width"] > raw["width"]
+            or roi["y"] + roi["height"] > raw["height"]
+        ):
+            raise SpikeError("canonical music-select ROI is invalid")
+    repeated = _exact_object(
+        music_select["list_titles"],
+        {"x", "y", "width", "height", "stride_y", "slots"},
+        "music-select list title ROIs",
+    )
+    if (
+        not all(isinstance(repeated[key], int) and repeated[key] >= 0 for key in repeated)
+        or repeated["width"] == 0
+        or repeated["height"] == 0
+        or repeated["stride_y"] == 0
+        or repeated["slots"] == 0
+        or repeated["x"] + repeated["width"] > raw["width"]
+        or repeated["y"]
+        + repeated["height"]
+        + (repeated["slots"] - 1) * repeated["stride_y"]
+        > raw["height"]
+    ):
+        raise SpikeError("canonical music-select repeated ROI is invalid")
+    music_expected = {
+        "selected_title": ("selected-title.ppm", music_select["selected_title"])
+    }
+    for slot in range(repeated["slots"]):
+        field = f"list_title_{slot:02}"
+        music_expected[field] = (
+            f"list-title-{slot:02}.ppm",
+            {
+                "x": repeated["x"],
+                "y": repeated["y"] + slot * repeated["stride_y"],
+                "width": repeated["width"],
+                "height": repeated["height"],
+            },
+        )
+    expected = {
+        "result": result_expected,
+        "music_select": music_expected,
+    }.get(screen)
+    if expected is None:
+        raise SpikeError("unsupported crop screen")
     return hashlib.sha256(layout_bytes).hexdigest(), expected
 
 
@@ -154,17 +225,23 @@ def load_crops(directory: Path, expected_sha256: str) -> tuple[str, list[Crop]]:
         },
         "crop manifest",
     )
-    layout_sha256, expected_crops = load_layout_contract()
+    schema = raw["schema"]
+    screen = {
+        "scorepeek-private-canonical-result-crops-v1": "result",
+        "scorepeek-private-canonical-music-select-crops-v1": "music_select",
+    }.get(schema)
+    if screen is None:
+        raise SpikeError("crop manifest schema is invalid")
+    layout_sha256, expected_crops = load_layout_contract(screen)
     if (
-        raw["schema"] != "scorepeek-private-canonical-result-crops-v1"
-        or not isinstance(raw["frame_id"], str)
+        not isinstance(raw["frame_id"], str)
         or not raw["frame_id"]
         or not _valid_sha256(raw["frame_extraction_sha256"])
         or not _valid_sha256(raw["canonical_frame_sha256"])
         or raw["normalizer_artifact_sha256"] != CALIBRATED_NORMALIZER_SHA256
         or raw["canonical_layout_sha256"] != layout_sha256
         or not isinstance(raw["crops"], list)
-        or len(raw["crops"]) != 6
+        or len(raw["crops"]) != len(expected_crops)
     ):
         raise SpikeError("crop manifest values are invalid")
 
@@ -296,23 +373,91 @@ def run(
     }
 
 
+def _validate_output(output: Path) -> None:
+    if (
+        not output.is_absolute()
+        or output.parent.is_symlink()
+        or not output.parent.is_dir()
+        or output.parent.resolve() != output.parent
+        or output.is_symlink()
+        or output.exists()
+    ):
+        raise SpikeError("output path is invalid or already exists")
+
+
+def _sync_directory(directory: Path) -> None:
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _write_output(output: Path, encoded: str) -> None:
+    _validate_output(output)
+    descriptor = -1
+    staging: Path | None = None
+    linked = False
+    try:
+        descriptor, staging_name = tempfile.mkstemp(
+            prefix=".scorepeek-ocr-staging-", dir=output.parent
+        )
+        staging = Path(staging_name)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+            descriptor = -1
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(staging, output)
+        linked = True
+        staging.unlink()
+        staging = None
+        _sync_directory(output.parent)
+    except OSError as error:
+        if linked and output.exists():
+            try:
+                output.unlink()
+            except OSError:
+                pass
+        if staging is not None and staging.exists():
+            try:
+                staging.unlink()
+                staging = None
+            except OSError:
+                pass
+        try:
+            _sync_directory(output.parent)
+        except OSError:
+            pass
+        raise SpikeError("OCR output could not be published") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--crop-artifact", type=Path, required=True)
     parser.add_argument("--crop-manifest-sha256", required=True)
     parser.add_argument("--model-store", type=Path, default=None)
+    parser.add_argument("--output", type=Path, default=None)
     arguments = parser.parse_args()
     try:
+        if arguments.output is not None:
+            _validate_output(arguments.output)
         store = arguments.model_store or default_store()
         result = run(
             arguments.crop_artifact,
             arguments.crop_manifest_sha256,
             store,
         )
+        encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")) + "\n"
+        if arguments.output is not None:
+            _write_output(arguments.output, encoded)
     except (SpikeError, ModelStoreError, OSError) as error:
         print(f"scorepeek OCR spike failed: {error}", file=sys.stderr)
         raise SystemExit(2) from error
-    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    print(encoded, end="")
 
 
 if __name__ == "__main__":

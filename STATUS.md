@@ -187,6 +187,12 @@ is outside this checkpoint.
   digest-bound private manifest. The offline OCR consumer requires the expected
   crop-manifest digest and registered normalizer digest, and cannot accept a
   bare observed or canonical PPM directly.
+- A music-select spike measured from the same canonical profile. Its independent
+  cyan-header and green-level-column predicate classifies the two retained
+  representative frames fail closed, then exports one selected-title crop and
+  twenty fixed visible-list row slots as a digest-bound private artifact.
+  Geometric list slots deliberately preserve separators, clipped rows, and other
+  non-title content for downstream rejection instead of silently filtering them.
 - A mise-pinned Python 3.13.7 and uv 0.11.7 offline environment with a committed
   `uv.lock` for PaddleOCR 3.7.0 and PaddlePaddle CPU 3.3.1. Python and its
   approximately 1.2 GiB development environment do not enter the Rust
@@ -260,8 +266,11 @@ is outside this checkpoint.
 
 - `mise run check`, `cargo clippy --locked --workspace --all-targets -- -D
   warnings`, and `cargo test --locked --workspace`: passed on the development
-  host. The current workspace run covered 75 `scorepeek` library tests, 12
-  binary tests, 44 offline corpus tests, and 8 offline Python OCR tests.
+  host. The current workspace run covered 76 `scorepeek` library tests, 12
+  binary tests, 44 offline corpus tests, and 10 offline Python OCR tests.
+- Targeted recognition tests passed with the added music-select predicate and
+  21-crop artifact contract. The offline OCR contract suite passed 10 tests,
+  including exact validation of the selected-title and twenty list-slot files.
 - `mise run catalog:schedule:systemd:verify`: passed without installing the
   release binary or user units.
 - `cargo test --locked -p scorepeek-corpus`: passed all 44 offline corpus
@@ -345,6 +354,19 @@ is outside this checkpoint.
   `6ef33da9-090a-500c-844a-8bffd14de63f`, corresponding to the visually
   inspected `ABSOLUTE EVIL` title. This remains a single-recording diagnostic,
   not holdout, confidence calibration, or accepted recognition evidence.
+- Two music-select frames at source PTS 110000 and 270000 were normalized once
+  into retained ignored private artifacts at extraction digest
+  `93d2a0d0338eb3941cc70663f944dcfbbc20f3ccf60d525118ace64113e09589`.
+  Both passed the new predicate. PP-OCR read the selected titles as
+  `ABSOLUTEEVIL` and `ANEMONE` above 0.999 confidence. Across visible list rows,
+  nine observed strings independently resolved to unique songs in active
+  catalog `65a8e164f3cb28e20c09114eecc3eb7200d32ed7c7383c7c04432053b78411eb`:
+  those two titles plus `Apocalypse ~dirge of swans~`, `bass 2 bass`,
+  `Chewingood!!!`, `COLOR BURST`, `Critical Crystal`, `Fantasia`, and
+  `quick master (reform version)`. Other slots exposed real errors including
+  clipped first characters, separators, appended UI text, Japanese glyph
+  substitutions, and low confidence. These are diagnostic observations, not
+  accepted labels or calibrated recognition.
 - The same title crop produced Paddle parity reference manifest
   `799addeaa8f9ce877169003f03fe837cf2b1e4fede759fdddf46f182edfca699`.
   Regeneration from retained crop bytes and a verified temporary Paddle-model
@@ -428,7 +450,7 @@ is outside this checkpoint.
   and exact active-catalog trie scoring. Calibrated absolute/runner-up bounds,
   complete active-catalog dictionary coverage, temporal agreement, independent
   screen context, and accepted title semantics remain unimplemented.
-  Music-select layout, scorepeek-owned model export, replay execution,
+  Music-select replay execution, scorepeek-owned model export,
   catalog-update recognition replay, event daemon, and the integrated live
   flow remain unvalidated. The observed 649 ms CPU process and inference time
   is a single warmed development-host measurement, not a performance gate.
@@ -483,19 +505,26 @@ is outside this checkpoint.
 - External-source access and reuse must remain within `docs/sources.md`; a
   source requiring new permission cannot be enabled until that permission is
   obtained.
+- ADR 0015 allows provenance-bound catalog strings and real title crops in
+  private provisional development generations. Any model containing such data
+  remains non-distributable until the planned upstream permissions and license
+  evidence cover every contributing generation.
 
 ## Next executable task
 
-Implement the smallest value-free, catalog-digest-bound registered-dictionary
-coverage audit, split by non-search variant kind, and use it to define the next
-scorepeek-owned dictionary/model export boundary without silently dropping an
-unencodable variant. After complete coverage is available, add digest-bound
-replay execution over human-labelled independent sessions/titles before fixing
-absolute or runner-up thresholds. Do not tune thresholds from the current
-single recording, promote diagnostic commands into accepted recognition,
-recognize bare PPM or `ObservedFrame`, auto-download a runtime model, or treat
-the OBS profile, current ROIs, confidence, timing, or diagnostic thresholds as
-supported.
+Preserve result certainty as the primary gate: implement the smallest
+value-free, catalog-digest-bound registered-dictionary coverage audit, split by
+non-search variant kind, and use it to define the next scorepeek-owned
+dictionary/model export boundary without silently dropping an unencodable
+variant. In parallel, turn the retained music-select crops into a
+catalog-digest-bound provisional-label/replay generation so every visible slot
+is explicitly title, non-title, clipped, or unknown. After complete dictionary
+coverage is available, execute replay over the two result observations and the
+larger music-select set before fixing absolute or runner-up thresholds. Do not
+tune thresholds from the current single recording, promote diagnostic commands
+into accepted recognition, recognize bare PPM or `ObservedFrame`, auto-download
+a runtime model, or treat the OBS profile, current ROIs, confidence, timing, or
+diagnostic thresholds as supported.
 
 S3 replication and another profile are intentionally deferred. When capture
 work resumes, start **M3** with narrow Portal and Gamescope direct observed
