@@ -380,15 +380,20 @@ is outside this checkpoint.
   were at or below 2,279,433 RGB L1 across all twenty slots and 57 were at or above 10,737,346,
   after excluding the final filter-menu pair. Individual rows overlap (stationary maximum 287,170;
   scrolling minimum 107,403), so no row-only stability threshold is accepted from this clustering.
-  A versioned complete-pair verifier and semantic annotations are still required before fixing a
-  threshold.
+  Complete row presentation annotations are still required before accepting a profile- and
+  presentation-bound pair-level threshold.
 - The new complete-pair gate generated and independently reverified a private
   `scorepeek-private-music-list-motion-artifact-v1` for 240 adjacent pairs (the final filter-menu
   pair remains excluded). It rehashed 480 canonical frames and their complete crop artifacts and
-  retained all 240 motion labels and both sets of row semantics as `unknown: pending-review` rather
-  than deriving ground truth from the measured distribution. Verified aggregate RGB L1 spans 0
-  through 40,782,712. The private request and artifact remain temporary derivatives outside the
-  repository.
+  initially retained all 240 motion labels and both sets of row semantics as
+  `unknown: pending-review` rather than deriving ground truth from the measured distribution.
+  Human review of all fifteen private comparison pages found every pair at or below 2,279,433 to
+  be stationary and every pair at or above 10,737,346 to be scrolling, with no pair in the gap.
+  The regenerated private request and independently reverified artifact therefore contain 183
+  stationary, 57 scrolling, and zero unknown motion labels. Verified aggregate RGB L1 spans 0
+  through 40,782,712. All 9,600 row presentation annotations remain
+  `unknown: pending-review`; the private requests, artifacts, and comparison pages remain temporary
+  derivatives outside the repository.
 - The same gate normalized selected frames with artifact
   `0441099011fdd09d372d6c9b5e18d6c4f2da2809a653e01f8ccb55756d8658cf`.
   A separately invoked explicit FFmpeg transform produced the same file SHA-256
@@ -534,9 +539,9 @@ is outside this checkpoint.
   is a single warmed development-host measurement, not a performance gate.
 - The title-model export requirements still have only synthetic contract coverage. The music-list
   contract has one artifact-bound real-row verification and a complete measured pair artifact, but
-  its 240 pair motion states and row presentation annotations still await human review. No scorepeek-owned
-  dictionary/model has been trained or exported, and no accepted stability threshold or provisional
-  music-list label exists.
+  although all 240 pair motion states have now been human-reviewed, its 9,600 row presentation
+  annotations still await human review. No scorepeek-owned dictionary/model has been trained or
+  exported, and no accepted stability threshold or provisional music-list label exists.
 - The live `ObservedFrame`/domain-normalizer/`CanonicalFrame` runtime boundary,
   model-bundle promotion, and last-known-good model rollback remain
   unimplemented. Recognition accepts only digest-bound offline canonical
@@ -596,11 +601,14 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Preserve result certainty as the primary gate. Review the 240-pair private motion request against
-the canonical frames and replace each `unknown` motion and row semantic with human-observed
-stationary/scrolling, locked/dimmed, INFINITAS-blue, LEGGENDARIA-purple, selected, clipped,
-separator, unlock-condition, or still-unobservable annotations. Regenerate and verify the immutable
-complete-pair artifact before accepting the observed pair-level gap as a profile- and
+Preserve result certainty as the primary gate. Review all 9,600 row annotations in the private
+motion request against the canonical frames and replace each `unknown` row semantic with
+human-observed stationary, scrolling, selected, clipped, non-title, or still-unobservable state.
+For stationary and scrolling titles, record availability (`available` or `locked_dimmed`) and color
+domain (`standard`, `infinitas_blue`, or `leggendaria_purple`) independently. Classify separators
+and unlock-condition bars as explicit non-title slots; the selected row and the unlock condition
+displayed below it must remain separate geometric slots. Regenerate and verify the immutable
+complete-pair artifact before accepting the reviewed pair-level gap as a profile- and
 presentation-bound stability threshold. Then deduplicate settled complete non-selected standard
 rows and generate catalog-digest-bound provisional labels; keep locked and non-standard color
 domains quarantined until a measured correction exists. Use the title-model export requirements to implement the
