@@ -321,6 +321,14 @@ set -euo pipefail
 exec uv run --locked --no-dev python -m scorepeek_ocr.provisional_labels "$@"
 '''
 
+[tasks."ocr:training-input-manifest"]
+description = "Seal reviewed provisional music-list labels into title-disjoint training splits"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.training_inputs "$@"
+'''
+
 [tasks."ocr:parity:reference"]
 description = "Generate a digest-bound Paddle parity reference from a verified title crop"
 run = '''

@@ -472,6 +472,15 @@ is outside this checkpoint.
   including both ASCII OCR observations of fullwidth `ＰＡＳＴＥＬＩＳＭ`. Three `Turii` groups
   are corrected from Tachi's `alternate_display` wave-dash value to its catalog-authoritative
   `in_game_display` fullwidth-tilde value. Catalog acquisition and federation remain unchanged.
+- A private `scorepeek-private-title-training-input-manifest-v1` now accepts the user-supplied
+  candidate, automated-label, visual-audit, final-label, crop, and source artifacts only at their
+  exact SHA-256 bindings. It rejects path, JSON, schema, required-field, UUID, permission-status,
+  and split-contract mistakes, then assigns every crop for one catalog song to the same deterministic
+  train, validation, or evaluation split. It retains the music-list origin and
+  `permission_not_recorded` status and explicitly records that these are provisional, not accepted
+  holdout truth. The private artifact inputs are trusted operator inputs; this boundary detects
+  accidental contract/binding mistakes but does not independently re-adjudicate every label against
+  every source artifact.
 - The same gate normalized selected frames with artifact
   `0441099011fdd09d372d6c9b5e18d6c4f2da2809a653e01f8ccb55756d8658cf`.
   A separately invoked explicit FFmpeg transform produced the same file SHA-256
@@ -689,13 +698,8 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Preserve result certainty as the primary gate. Build a private immutable training-input manifest
-from the 3,061 provisional observations,
-grouping all crops for the same catalog song together so a title cannot cross train, validation, or
-evaluation splits. Bind the manifest to the v2 candidate, automated-label, visual-audit, final-label,
-crop, and source artifact hashes. Keep their music-list origin and `permission_not_recorded` status
-explicit; do not use them as accepted holdout truth. Use the title-model export requirements to implement the
-offline scorepeek-owned dictionary, training, and export record without silently dropping a
+Preserve result certainty as the primary gate. Use the title-model export requirements to implement
+the offline scorepeek-owned dictionary, training, and export record without silently dropping a
 catalog variant, then measure coverage before training a private development model. Keep the 24
 INFINITAS-blue, 299 LEGGENDARIA-purple, 351 locked/unobservable, 438
 possible right-clips, vertical-motion, selected, obscured, and redacted-secret groups quarantined

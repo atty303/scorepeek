@@ -38,9 +38,76 @@ from scorepeek_ocr.spike import (
     load_crops,
     load_layout_contract,
 )
+from scorepeek_ocr.training_inputs import TrainingInputError, generate as generate_training_inputs
 
 
 class ContractTests(unittest.TestCase):
+    def test_training_inputs_are_song_disjoint_and_bind_every_private_artifact(self) -> None:
+        def write(directory: Path, name: str, value: object) -> tuple[Path, str]:
+            path = directory / name
+            data = json.dumps(value, separators=(",", ":")).encode()
+            path.write_bytes(data)
+            return path, hashlib.sha256(data).hexdigest()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary).resolve()
+            candidate, candidate_sha = write(directory, "candidate.json", {
+                "schema": "scorepeek-private-provisional-title-candidates-v1"
+            })
+            automated, automated_sha = write(directory, "automated.json", {
+                "schema": "scorepeek-private-provisional-music-list-title-labels-v1"
+            })
+            audit, audit_sha = write(directory, "audit.json", {"schema": "audit"})
+            source, source_sha = write(directory, "source.json", {"schema": "source"})
+            crops, crops_sha = write(directory, "crops.json", {"schema": "crops"})
+            first_song = "123e4567-e89b-12d3-a456-426614174000"
+            second_song = "123e4567-e89b-12d3-a456-426614174001"
+            final, final_sha = write(directory, "final.json", {
+                "schema": "scorepeek-private-final-music-list-title-labels-v1",
+                "candidate_artifact_sha256": candidate_sha,
+                "automated_label_sha256": automated_sha,
+                "visual_audit_sha256": audit_sha,
+                "source_artifact_sha256": source_sha,
+                "crop_artifact_sha256": crops_sha,
+                "labels": [
+                    {"group_id": "G00001", "crop_pixel_sha256": "1" * 64,
+                     "crop_file_sha256": "2" * 64, "occurrence_count": 2,
+                     "song_id": first_song, "title": "A", "origin": "music_list",
+                     "permission_status": "permission_not_recorded"},
+                    {"group_id": "G00002", "crop_pixel_sha256": "3" * 64,
+                     "crop_file_sha256": "4" * 64, "occurrence_count": 1,
+                     "song_id": first_song, "title": "A", "origin": "music_list",
+                     "permission_status": "permission_not_recorded"},
+                    {"group_id": "G00003", "crop_pixel_sha256": "5" * 64,
+                     "crop_file_sha256": "6" * 64, "occurrence_count": 1,
+                     "song_id": second_song, "title": "B", "origin": "music_list",
+                     "permission_status": "permission_not_recorded"},
+                ],
+            })
+            manifest = generate_training_inputs(
+                candidate, candidate_sha, automated, automated_sha, audit, audit_sha,
+                final, final_sha, source, source_sha, crops, crops_sha,
+            )
+            songs = {}
+            for split, labels in manifest["splits"].items():
+                for label in labels:
+                    previous = songs.setdefault(label["song_id"], split)
+                    self.assertEqual(previous, split)
+            self.assertIn(first_song, songs)
+            self.assertEqual(manifest["label_count"], 3)
+            self.assertTrue(manifest["provisional"])
+            self.assertFalse(manifest["accepted_holdout_truth"])
+
+            raw = json.loads(final.read_text())
+            raw["crop_artifact_sha256"] = "0" * 64
+            final.write_text(json.dumps(raw, separators=(",", ":")))
+            with self.assertRaises(TrainingInputError):
+                generate_training_inputs(
+                    candidate, candidate_sha, automated, automated_sha, audit, audit_sha,
+                    final, hashlib.sha256(final.read_bytes()).hexdigest(), source, source_sha,
+                    crops, crops_sha,
+                )
+
     def test_comparison_keys_preserve_exact_tier_and_bound_ascii_width_fallback(
         self,
     ) -> None:

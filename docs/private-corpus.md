@@ -136,6 +136,16 @@ that complete set. The catalog digest, baseline dictionary digest, scalar dictio
 class count, timestep count, and `scorepeek-title-ctc-f32-logits-btc-v1` tensor contract are bound
 together. This is an export requirement boundary, not a trained model or a distributable bundle.
 
+`ocr:training-input-manifest` accepts separately digest-bound v2 candidate, automated-label,
+visual-audit, final-label, crop, and source artifacts. Its final-label input retains only reviewed
+stationary standard music-list titles with `permission_not_recorded`; it must bind all six inputs.
+The manifest assigns a song, rather than an individual crop, to one deterministic SHA-256 split, so
+no catalog song can cross train, validation, or evaluation. It is private, provisional evidence:
+it is explicitly not accepted holdout truth and cannot calibrate recognition thresholds. The
+operator-supplied private artifacts are trusted inputs: this boundary detects accidental digest,
+schema, binding, and split mistakes, but does not independently re-adjudicate every label against
+each source artifact.
+
 Stationary non-selected right-list rows may contribute provisional thin-title training evidence,
 but retain their music-list origin. Selected rows, scrolling transitions, separators, and crops
 whose title is hidden at either edge do not receive a complete-title target. Temporal stability
