@@ -146,6 +146,12 @@ operator-supplied private artifacts are trusted inputs: this boundary detects ac
 schema, binding, and split mistakes, but does not independently re-adjudicate every label against
 each source artifact.
 
+This distinction applies throughout the private workflow. Operator-provided artifacts receive only
+the validation needed to catch ordinary selection, digest, schema, or result-invariant mistakes.
+Content from a network, remote store, concurrent writer, or mutable filesystem boundary remains
+independently verified because it can change outside that operator action; those checks are not a
+trust judgment about the operator.
+
 Stationary non-selected right-list rows may contribute provisional thin-title training evidence,
 but retain their music-list origin. Selected rows, scrolling transitions, separators, and crops
 whose title is hidden at either edge do not receive a complete-title target. Temporal stability

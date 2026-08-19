@@ -75,6 +75,20 @@
 - Respect source-specific access and reuse policy. RemyWiki is reference-only
   unless its administrators grant explicit permission for automated reuse.
 
+## Trust boundaries
+
+- Treat private artifacts that the operator explicitly creates or selects as
+  trusted inputs. Validate only what detects ordinary mistakes at the boundary:
+  declared digest, required schema/fields, and invariants needed by the
+  requested result. Do not add per-record cross-artifact re-adjudication,
+  adversarial substitution defenses, or equivalent repeated full reads solely
+  to defend against that operator.
+- Keep validation for untrusted or mutable boundaries: network/catalog bytes,
+  remote storage, concurrent writers, content-addressed stores, filesystem
+  traversal, crash recovery, and a runtime's own acceptance contracts. Remove
+  an existing trusted-input check when its cost is material and it provides no
+  ordinary-mistake detection or one of these boundary guarantees.
+
 ## Tooling and verification
 
 - Expose normal repository operations through `mise`.
