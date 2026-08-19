@@ -113,8 +113,10 @@ accepts only the digest-bound review disposition, its original review plan and
 source motion artifact, and that exact candidate artifact. It rehashes every
 selected 475x45 crop, requires every occurrence in its exact-pixel group to bind
 stationary pair motion, runs the registered offline PP-OCRv6 model, and associates
-only confidence-at-least-0.95 text whose NFC-plus-ASCII-space comparison key
-resolves to one song and one display string. Low-confidence text, absent catalog
+only confidence-at-least-0.95 text whose versioned post-OCR comparison first applies
+Unicode 17 NFC and removes U+0020, then, only when that exact tier has no candidate, folds U+FF01
+through U+FF5E to ASCII and removes U+0020 and U+3000. A tier must resolve to one song
+and one display string. Low-confidence text, absent catalog
 keys, cross-song collisions, and display-string ambiguity remain reason-bearing
 unknowns. The caller supplies the expected eligible-group count and explicit
 permission status. These outputs are private provisional training inputs, not
@@ -226,10 +228,12 @@ holdout evidence, and a supported profile remain unimplemented. The command
 never emits free OCR text or an accepted title.
 
 `recognition:title:spike` is a private-evaluation bridge for the open-text OCR
-diagnostic. Its versioned comparison key applies NFC and removes only U+0020;
-case, punctuation, other whitespace, and every other character remain exact.
+diagnostic. Its versioned post-OCR comparison first applies Unicode 17 NFC and removes U+0020. Only when
+that exact tier has no candidate does it fold U+FF01 through U+FF5E to ASCII and remove U+0020
+and U+3000. Case, non-ASCII-width compatibility characters, punctuation outside that range, and
+other whitespace remain exact. An exact-tier candidate is never made ambiguous by the fallback.
 Search-term aliases are excluded. Confidence below the fixed diagnostic bound,
-no exact candidate, or a comparison-key collision across songs returns unknown.
+no catalog candidate in either tier, or a comparison-key collision across songs returns unknown.
 Even a unique candidate is not an accepted title because this spike has no raw
 CTC-logit score, runner-up margin, temporal agreement, or independent screen
 context.

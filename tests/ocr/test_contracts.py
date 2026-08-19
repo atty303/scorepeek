@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import scorepeek_ocr.model_store as model_store
 import numpy as np
+import unicodedata2 as unicodedata
 from scorepeek_ocr.model_store import (
     ModelFile,
     ModelSource,
@@ -22,10 +23,12 @@ from scorepeek_ocr.model_store import (
 )
 from scorepeek_ocr.parity import ParityError, _canonical_json, ctc_log_probability
 from scorepeek_ocr.provisional_labels import (
+    CandidateIndex,
     ProvisionalLabelError,
     Variant,
     _associate,
     _comparison_key,
+    _exact_comparison_key,
     _load_reviewed_groups,
 )
 from scorepeek_ocr.spike import (
@@ -38,19 +41,136 @@ from scorepeek_ocr.spike import (
 
 
 class ContractTests(unittest.TestCase):
+    def test_comparison_keys_preserve_exact_tier_and_bound_ascii_width_fallback(
+        self,
+    ) -> None:
+        self.assertEqual(unicodedata.unidata_version, "17.0.0")
+        self.assertEqual(_exact_comparison_key("ABSOLUTE EVIL"), "ABSOLUTEEVIL")
+        self.assertEqual(_exact_comparison_key("ＰＡＳＴＥＬＩＳＭ"), "ＰＡＳＴＥＬＩＳＭ")
+        self.assertEqual(_comparison_key("Cafe\N{COMBINING ACUTE ACCENT} Noir"), "CaféNoir")
+        self.assertEqual(_comparison_key("ＰＡＳＴＥＬＩＳＭ"), "PASTELISM")
+        self.assertEqual(_comparison_key("Ａ！　Ｂ～"), "A!B~")
+        self.assertEqual(_comparison_key("Absolute\tEvil"), "Absolute\tEvil")
+        self.assertEqual(
+            _comparison_key("Absolute\N{NO-BREAK SPACE}Evil"),
+            "Absolute\N{NO-BREAK SPACE}Evil",
+        )
+        self.assertEqual(_comparison_key("Ⅰ①ｶ"), "Ⅰ①ｶ")
+        self.assertEqual(
+            _comparison_key("a\u0897\u0316"),
+            _comparison_key("a\u0316\u0897"),
+        )
+        self.assertEqual(
+            _comparison_key("".join(chr(codepoint) for codepoint in range(0xFF01, 0xFF5F))),
+            "".join(chr(codepoint) for codepoint in range(0x21, 0x7F)),
+        )
+        self.assertNotEqual(
+            _comparison_key("ABSOLUTE EVIL"),
+            _comparison_key("Absolute Evil"),
+        )
+
     def test_provisional_association_is_exact_and_fail_closed(self) -> None:
         first = Variant("song-a", "ABSOLUTE EVIL", "in_game_display", ("tachi", "r", "d"))
         same = Variant("song-a", "ABSOLUTE EVIL", "official_display", ("textage", "r", "d"))
         spaced = Variant("song-a", "ABSOLUTE  EVIL", "alternate_display", ("tachi", "r", "d"))
         collision = Variant("song-b", "ABSOLUTEEVIL", "in_game_display", ("tachi", "r", "d"))
-        key = _comparison_key("ABSOLUTE EVIL")
+        key = _exact_comparison_key("ABSOLUTE EVIL")
 
-        self.assertEqual(_associate("ABSOLUTE EVIL", 0.949, {key: [first]})[0], "low_confidence")
-        self.assertEqual(_associate("absolute evil", 1.0, {key: [first]})[0], "no_exact_catalog_candidate")
-        self.assertEqual(_associate("ABSOLUTE EVIL", 1.0, {key: [first, same]})[0], "unique")
-        self.assertEqual(_associate("ABSOLUTEEVIL", 1.0, {key: [first, spaced]})[0], "ambiguous_display_text")
-        self.assertEqual(_associate("ABSOLUTE EVIL", 1.0, {key: [first, spaced]})[0], "ambiguous_display_text")
-        self.assertEqual(_associate("ABSOLUTE EVIL", 1.0, {key: [first, collision]})[0], "ambiguous_catalog_songs")
+        def candidates(*variants: Variant) -> CandidateIndex:
+            values = list(variants)
+            return CandidateIndex({key: values}, {key: values})
+
+        self.assertEqual(
+            _associate("ABSOLUTE EVIL", 0.949, candidates(first))[0],
+            "low_confidence",
+        )
+        self.assertEqual(
+            _associate("absolute evil", 1.0, candidates(first))[0],
+            "no_exact_catalog_candidate",
+        )
+        self.assertEqual(
+            _associate("ABSOLUTE EVIL", 1.0, candidates(first, same))[0],
+            "unique",
+        )
+        self.assertEqual(
+            _associate("ABSOLUTEEVIL", 1.0, candidates(first, spaced))[0],
+            "ambiguous_display_text",
+        )
+        self.assertEqual(
+            _associate("ABSOLUTE EVIL", 1.0, candidates(first, spaced))[0],
+            "ambiguous_display_text",
+        )
+        self.assertEqual(
+            _associate("ABSOLUTE EVIL", 1.0, candidates(first, collision))[0],
+            "ambiguous_catalog_songs",
+        )
+
+        pastel = Variant(
+            "song-pastel",
+            "ＰＡＳＴＥＬＩＳＭ",
+            "in_game_display",
+            ("tachi", "r", "d"),
+        )
+        pastel_key = _comparison_key(pastel.value)
+        pastel_candidates = CandidateIndex({}, {pastel_key: [pastel]})
+        self.assertEqual(_associate("PASTELISM", 1.0, pastel_candidates)[0], "unique")
+        ascii_pastel = Variant(
+            "song-pastel",
+            "PASTELISM",
+            "alternate_display",
+            ("tachi", "r", "d"),
+        )
+        self.assertEqual(
+            _associate(
+                "PASTELISM",
+                1.0,
+                CandidateIndex({}, {pastel_key: [pastel, ascii_pastel]}),
+            )[0],
+            "ambiguous_display_text",
+        )
+
+        exact_first = CandidateIndex(
+            {
+                _exact_comparison_key("A!"): [
+                    Variant("song-a", "A!", "in_game_display", ("tachi", "r", "d"))
+                ]
+            },
+            {
+                _comparison_key("A!"): [
+                    Variant("song-a", "A!", "in_game_display", ("tachi", "r", "d")),
+                    Variant("song-b", "Ａ！", "in_game_display", ("tachi", "r", "d")),
+                ]
+            },
+        )
+        self.assertEqual(_associate("A!", 1.0, exact_first)[0], "unique")
+
+        unicode_17_first = Variant(
+            "song-a",
+            "a\u0897\u0316",
+            "in_game_display",
+            ("tachi", "r", "d"),
+        )
+        unicode_17_second = Variant(
+            "song-b",
+            "a\u0316\u0897",
+            "in_game_display",
+            ("tachi", "r", "d"),
+        )
+        unicode_17_key = _exact_comparison_key(unicode_17_first.value)
+        unicode_17_candidates = CandidateIndex(
+            {
+                unicode_17_key: [unicode_17_first, unicode_17_second],
+            },
+            {
+                unicode_17_key: [unicode_17_first, unicode_17_second],
+            },
+        )
+        state, _ = _associate(
+            unicode_17_first.value,
+            1.0,
+            unicode_17_candidates,
+        )
+        self.assertEqual(state, "ambiguous_catalog_songs")
 
     def test_provisional_review_groups_require_only_stationary_occurrences(self) -> None:
         digest = "1" * 64

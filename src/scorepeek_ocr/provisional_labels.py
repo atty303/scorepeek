@@ -9,13 +9,13 @@ import json
 import os
 import sys
 import time
-import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import unicodedata2 as unicodedata
 
 from scorepeek_ocr.model_store import (
     ModelStoreError,
@@ -27,7 +27,7 @@ from scorepeek_ocr.model_store import (
 from scorepeek_ocr.spike import SpikeError, _write_output
 
 SCHEMA = "scorepeek-private-provisional-music-list-title-labels-v1"
-COMPARISON_KEY_ID = "scorepeek-title-nfc-without-ascii-space-v1"
+COMPARISON_KEY_ID = "scorepeek-title-nfc-ucd17-exact-then-ascii-width-fold-v2"
 MINIMUM_CONFIDENCE = 0.95
 MAX_INPUT_BYTES = 256 * 1024 * 1024
 MAX_CANDIDATE_BYTES = 32 * 1024 * 1024
@@ -48,6 +48,12 @@ class Variant:
     value: str
     kind: str
     evidence_id: tuple[str, str, str]
+
+
+@dataclass(frozen=True)
+class CandidateIndex:
+    exact: dict[str, list[Variant]]
+    folded: dict[str, list[Variant]]
 
 
 def _sha256(data: bytes) -> str:
@@ -79,7 +85,7 @@ def _read_json(path: Path, expected_sha256: str, maximum: int) -> tuple[bytes, A
         raise ProvisionalLabelError(f"input is invalid JSON: {path}") from error
 
 
-def _comparison_key(value: str) -> str:
+def _exact_comparison_key(value: str) -> str:
     return "".join(
         character
         for character in unicodedata.normalize("NFC", value)
@@ -87,7 +93,19 @@ def _comparison_key(value: str) -> str:
     )
 
 
-def _load_candidates(raw: Any) -> tuple[str, dict[str, dict[str, Any]], dict[str, list[Variant]]]:
+def _comparison_key(value: str) -> str:
+    key = []
+    for character in unicodedata.normalize("NFC", value):
+        codepoint = ord(character)
+        if character in {" ", "\u3000"}:
+            continue
+        if 0xFF01 <= codepoint <= 0xFF5E:
+            character = chr(codepoint - 0xFEE0)
+        key.append(character)
+    return "".join(key)
+
+
+def _load_candidates(raw: Any) -> tuple[str, dict[str, dict[str, Any]], CandidateIndex]:
     if (
         not isinstance(raw, dict)
         or set(raw)
@@ -143,7 +161,8 @@ def _load_candidates(raw: Any) -> tuple[str, dict[str, dict[str, Any]], dict[str
             raise ProvisionalLabelError("candidate source evidence values are invalid")
         evidence[key] = item
 
-    by_key: dict[str, list[Variant]] = defaultdict(list)
+    exact: dict[str, list[Variant]] = defaultdict(list)
+    folded: dict[str, list[Variant]] = defaultdict(list)
     seen_songs = set()
     for candidate in raw["candidates"]:
         if not isinstance(candidate, dict) or set(candidate) != {"song_id", "variants"}:
@@ -182,20 +201,23 @@ def _load_candidates(raw: Any) -> tuple[str, dict[str, dict[str, Any]], dict[str
             ):
                 raise ProvisionalLabelError("candidate variant values are invalid")
             variant = Variant(song_id, item["value"], item["kind"], evidence_key)
-            by_key[_comparison_key(variant.value)].append(variant)
-    return raw["catalog_sha256"], evidence, by_key
+            exact[_exact_comparison_key(variant.value)].append(variant)
+            folded[_comparison_key(variant.value)].append(variant)
+    return raw["catalog_sha256"], evidence, CandidateIndex(exact, folded)
 
 
 def _associate(
     observed_text: str,
     confidence: float,
-    by_key: dict[str, list[Variant]],
+    candidates: CandidateIndex,
 ) -> tuple[str, list[Variant]]:
     if not isinstance(observed_text, str) or not isinstance(confidence, float):
         raise ProvisionalLabelError("OCR output type is invalid")
     if not confidence >= MINIMUM_CONFIDENCE:
         return "low_confidence", []
-    variants = by_key.get(_comparison_key(observed_text), [])
+    variants = candidates.exact.get(_exact_comparison_key(observed_text), [])
+    if not variants:
+        variants = candidates.folded.get(_comparison_key(observed_text), [])
     if not variants:
         return "no_exact_catalog_candidate", []
     song_ids = {variant.song_id for variant in variants}
@@ -426,7 +448,7 @@ def generate(
         source_artifact_sha256,
         expected_eligible_groups,
     )
-    candidate_catalog, evidence, by_key = _load_candidates(candidate_raw)
+    candidate_catalog, evidence, candidates = _load_candidates(candidate_raw)
     if review_catalog != candidate_catalog:
         raise ProvisionalLabelError("review and candidate catalog digests differ")
     source, outputs, elapsed_ms = _predict(groups, model_store)
@@ -435,7 +457,7 @@ def generate(
     unknowns = []
     reasons: Counter[str] = Counter()
     for group, (text, score) in zip(groups, outputs, strict=True):
-        state, variants = _associate(text, score, by_key)
+        state, variants = _associate(text, score, candidates)
         common = {
             "group_id": group["group_id"],
             "crop_pixel_sha256": group["crop_pixel_sha256"],

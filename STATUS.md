@@ -257,13 +257,16 @@ is outside this checkpoint.
   class/timestep shape, and an explicit batch-timestep-class float32 logits contract. This defines
   the export boundary but does not train or export a model.
 - A Rust diagnostic title-candidate bridge with versioned comparison key
-  `scorepeek-title-nfc-without-ascii-space-v1`. It applies NFC and removes only
-  U+0020, preserves case, punctuation, other whitespace, and all other
-  characters, excludes search-term aliases, and returns a song ID only when
-  the fixed 0.95 diagnostic confidence bound passes and exactly one catalog
-  song owns the matching key. Low confidence, no match, and cross-song
-  collisions remain explicitly unknown. This open-text bridge is private
-  evaluation only and does not produce an accepted title value.
+  `scorepeek-title-nfc-ucd17-exact-then-ascii-width-fold-v2`. Its first tier applies Unicode
+  17 NFC and removes
+  only U+0020. Only when that tier has no candidate, its fallback maps U+FF01 through U+FF5E to
+  ASCII and removes U+0020 and U+3000. It does not apply general NFKC, alter case, fold
+  halfwidth kana, or change other whitespace and characters. Exact-tier candidates take
+  precedence over fallback collisions. The bridge excludes search-term aliases and returns a
+  song ID only when the fixed 0.95 diagnostic confidence bound passes and exactly one catalog
+  song owns the resolved tier's key. Low confidence, no match, and cross-song collisions remain
+  explicitly unknown. This open-text bridge is private evaluation only and does not produce an
+  accepted title value.
 - Immutable recording-dataset generations that bind every imported recording
   to five typed byte roles and revalidate their canonical manifest
   relationships as well as size and complete SHA-256. The generation digest is
@@ -296,10 +299,9 @@ is outside this checkpoint.
 
 ## Verified in this checkpoint
 
-- `mise run check`, `cargo clippy --locked --workspace --all-targets -- -D
-  warnings`, and `cargo test --locked --workspace`: passed on the development
-  host. The current workspace run covered 79 `scorepeek` library tests, 12 binary tests, 55 offline
-  corpus tests, 10 offline Python OCR tests, and the recording-dataset E2E gate.
+- `mise run check` and the complete `mise run test` entry point passed on the development host.
+  The current workspace run covered 83 `scorepeek` library tests, 13 binary tests, 55 offline
+  corpus tests, 13 offline Python OCR tests, and the recording-dataset E2E gate.
 - The new title-model requirements regressions preserve baseline scalar coverage, append missing
   catalog characters, increase exact repeated-token CTC alignment length, and reject invalid or
   empty variant sets. The music-list row regressions cover all six explicit states, require
@@ -310,8 +312,9 @@ is outside this checkpoint.
   path replacement or file growth. Synthetic artifact regressions prove that verification detects
   crop tampering and recomputes L1 from canonical-frame-bound bytes.
 - Targeted recognition tests passed with the added music-select predicate and
-  21-crop artifact contract. The offline OCR contract suite passed 10 tests,
-  including exact validation of the selected-title and twenty list-slot files.
+  21-crop artifact contract. The offline OCR contract suite passed 13 tests,
+  including exact validation of the selected-title and twenty list-slot files and the Unicode 17
+  exact-first width-fold contract. All eight targeted Rust title-association tests also passed.
 - `mise run catalog:schedule:systemd:verify`: passed without installing the
   release binary or user units.
 - `cargo test --locked -p scorepeek-corpus`: passed all 55 offline corpus
@@ -442,32 +445,33 @@ is outside this checkpoint.
   variant's lineage, revision, content digest, and rights statement. Against catalog
   `65a8e164f3cb28e20c09114eecc3eb7200d32ed7c7383c7c04432053b78411eb`, the retained private
   candidate artifact contains 1,879 songs at SHA-256
-  `04b6345fe0699aa2de98659ee2a6625a1b3abe16ca7fd06fb4ef25bfaa307c27`. Rehashed application to
-  exactly the 3,062 settled stationary standard groups produced 2,605 provisional crop labels
-  covering 976 distinct songs and 457 reason-bearing unknowns: 363 below the fixed 0.95 diagnostic
-  confidence, 90 without an exact catalog key, and four with ambiguous display text. Every label records crop
+  `e2273634f478026a59d9c7f82dacf518a41481070bfd926356e171f9d1903d6a`. Rehashed application of
+  the exact-first v2 key to exactly the 3,062 settled stationary standard groups produced 2,611
+  provisional crop labels and 451 reason-bearing unknowns: 363 below the fixed 0.95 diagnostic
+  confidence, 84 without a catalog key, and four with ambiguous display text. Every label records crop
   file/pixel digests, catalog source provenance, and `permission_not_recorded`; no unknown, blue,
   purple, locked, selected, clipped, obscured, scrolling, unlock-condition, or redacted row was
-  promoted. Two independent inference runs produced byte-identical label/unknown payloads at
-  digest `1b64c0d8ed6ced5aa76cc39021be5bb184581db0d3bf6ae003ef38fdb20f70dc`. The final create-only
+  promoted. Two independent inference runs produced semantically identical label/unknown payloads
+  at digest `9eb7a3a761d395aeb5880b9144be8f13ea20ab94df43768158fc2b1ff16898de`; only elapsed-time
+  metadata differed. The first create-only
   private artifact is SHA-256
-  `4ad9d16105102c1e763547712d037decc57a8215961d47347a199488e4c91de7` and remains outside the
+  `7a2b1a4368419c409626f194019dcd833818031a95ec57d7bf4197cbce72b496` and remains outside the
   repository. These are automated provisional training inputs, not accepted labels or holdout
   evidence.
-- Visual review covered all 457 reason-bearing OCR unknown groups from that automated artifact.
-  It accepted 456 groups and excluded `G06461` as the purple LEGGENDARIA `VERSION` UI rather than
-  a song title. The resulting private label artifact at SHA-256
-  `3c3d127f3dd75bdc5e66bed9da5debefc9fd05f1f7ba1d71a69aa6d5f42d3bbc` contains 3,061
-  exact-pixel groups, 3,986 occurrences, and 1,119 catalog song IDs: 2,605 automated exact
-  associations plus 456 visually reviewed associations, with zero remaining unknowns or catalog
-  gaps. Its 457-decision audit is bound at SHA-256
-  `ebcb8417ba371832230d94b4fbd7e80d5608f5f536f0920b84877fa3619d8d09`; rerunning the private
+- The prior visual audit was hash-rebound to all 451 reason-bearing OCR unknown groups that remain
+  after the v2 automated pass. It accepted 450 groups and retained `G06461` as excluded because it
+  is the purple LEGGENDARIA `VERSION` UI rather than a song title. The resulting private label
+  artifact at SHA-256
+  `53aaedaca3efee110d5378f8b7277fcefe00e8e9e255d40ad794f9ed6d4cee5a` contains 3,061
+  exact-pixel groups, 3,986 occurrences, and 1,119 catalog song IDs: 2,611 automated associations
+  plus 450 visually reviewed associations, with zero remaining unknowns or catalog gaps. Its
+  451-decision audit is bound at SHA-256
+  `8e8326d08aca6e87ca1fea2ec121e5ad47b481da470d61a22145d2342d97d6cf`; rerunning the private
   generator reproduced both hashes. Every retained label remains `permission_not_recorded` and
-  provisional rather than accepted holdout truth. Two reviewed groups exposed one bounded
-  post-OCR comparison issue: Paddle returned ASCII `PASTELISM`, while the unique Tachi in-game and
-  Textage official display value is fullwidth `ＰＡＳＴＥＬＩＳＭ` for song ID
-  `af380cef-a79e-5b2f-9172-b1ecd8cd02cf`. Both groups are now explicitly bound to that catalog
-  song and fullwidth display value; catalog acquisition and federation were already correct.
+  provisional rather than accepted holdout truth. The fallback automatically resolves six groups,
+  including both ASCII OCR observations of fullwidth `ＰＡＳＴＥＬＩＳＭ`. Three `Turii` groups
+  are corrected from Tachi's `alternate_display` wave-dash value to its catalog-authoritative
+  `in_game_display` fullwidth-tilde value. Catalog acquisition and federation remain unchanged.
 - The same gate normalized selected frames with artifact
   `0441099011fdd09d372d6c9b5e18d6c4f2da2809a653e01f8ccb55756d8658cf`.
   A separately invoked explicit FFmpeg transform produced the same file SHA-256
@@ -618,13 +622,14 @@ is outside this checkpoint.
   right-clipping, or redacted secret-title pixels. The presentation clusters are private
   single-recording evidence, not a supported classifier or reusable automatic threshold. No
   scorepeek-owned dictionary/model has been trained or exported. The 3,061 catalog-bound
-  music-list labels are provisional only: the 2,605 automated exact associations and 456 visual
+  music-list labels are provisional only: the 2,611 automated associations and 450 visual
   associations do not establish accepted holdout truth, a stability threshold, or a release gate.
-  No eligible standard group remains unknown in this recording, but the post-OCR comparison key
-  still lacks the bounded ASCII/fullwidth fold demonstrated by `ＰＡＳＴＥＬＩＳＭ`. An exploratory
-  fold limited to fullwidth ASCII and space produced zero cross-song collisions across the 1,879
-  candidates, while 47 keys still had multiple display values for the same song; the versioned
-  fail-closed variant-selection contract and tests remain unimplemented.
+  No eligible standard group remains unknown in this recording. The versioned v2 comparison key
+  and cross-language Unicode 17 tests implement exact-first, bounded ASCII/fullwidth fallback without general
+  compatibility normalization. The private 1,879-candidate audit found zero cross-song fallback
+  collisions and 47 fallback keys with multiple display values for one song; training-label
+  association remains unknown when the resolved tier does not identify one display value. Exact
+  matches therefore cannot be invalidated by a broader fallback collision.
 - The live `ObservedFrame`/domain-normalizer/`CanonicalFrame` runtime boundary,
   model-bundle promotion, and last-known-good model rollback remain
   unimplemented. Recognition accepts only digest-bound offline canonical
@@ -666,7 +671,7 @@ is outside this checkpoint.
   approval after version, license, alternatives, and host/bundle impact are
   presented.
 - Offline Python 3.13.7, uv 0.11.7, PaddleOCR 3.7.0, PaddlePaddle CPU 3.3.1,
-  and the pinned PP-OCRv6 small multilingual recognition model were approved
+  Apache-2.0 `unicodedata2` 17.0.1, and the pinned PP-OCRv6 small multilingual recognition model were approved
   and added only to offline development; they do not enter the Rust
   game-session dependency graph.
 - `ort` 2.0.0-rc.13 (MIT OR Apache-2.0) with a CPU ONNX Runtime 1.28 static
@@ -684,16 +689,12 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Preserve result certainty as the primary gate. First replace the diagnostic OCR association's
-comparison key with a new versioned post-OCR key that retains the raw OCR output, folds only
-fullwidth ASCII and fullwidth space for lookup, and does not apply general NFKC or alter catalog
-federation identity. It must still fail closed for cross-song collisions and for one song's
-multiple display values when the exact training target is unresolved; reproduce the two
-`ＰＡＳＴＥＬＩＳＭ` associations and the complete 1,879-candidate collision audit in tests. Then
-build a private immutable training-input manifest from the 3,061 provisional observations,
+Preserve result certainty as the primary gate. Build a private immutable training-input manifest
+from the 3,061 provisional observations,
 grouping all crops for the same catalog song together so a title cannot cross train, validation, or
-evaluation splits. Keep their music-list origin and `permission_not_recorded` status explicit; do
-not use them as accepted holdout truth. Use the title-model export requirements to implement the
+evaluation splits. Bind the manifest to the v2 candidate, automated-label, visual-audit, final-label,
+crop, and source artifact hashes. Keep their music-list origin and `permission_not_recorded` status
+explicit; do not use them as accepted holdout truth. Use the title-model export requirements to implement the
 offline scorepeek-owned dictionary, training, and export record without silently dropping a
 catalog variant, then measure coverage before training a private development model. Keep the 24
 INFINITAS-blue, 299 LEGGENDARIA-purple, 351 locked/unobservable, 438

@@ -10,7 +10,8 @@ use crate::catalog::{
     ScorepeekSongId, SourceEvidence,
 };
 
-pub const DIAGNOSTIC_TITLE_COMPARISON_KEY_ID: &str = "scorepeek-title-nfc-without-ascii-space-v1";
+pub const DIAGNOSTIC_TITLE_COMPARISON_KEY_ID: &str =
+    "scorepeek-title-nfc-ucd17-exact-then-ascii-width-fold-v2";
 pub const DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE: f64 = 0.95;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -155,12 +156,29 @@ fn unique_candidate<'a, T: Copy + Ord>(
     ocr_text: &str,
     candidates: impl IntoIterator<Item = (T, DisplayVariantKind, &'a str)>,
 ) -> CandidateMatch<T> {
-    let observed_key = comparison_key(ocr_text);
-    let matches: BTreeSet<_> = candidates
-        .into_iter()
-        .filter(|(_, kind, _)| *kind != DisplayVariantKind::SearchTerm)
-        .filter_map(|(id, _, value)| (comparison_key(value) == observed_key).then_some(id))
-        .collect();
+    let observed_exact_key = exact_comparison_key(ocr_text);
+    let observed_folded_key = folded_comparison_key(ocr_text);
+    let mut exact_matches = BTreeSet::new();
+    let mut folded_matches = BTreeSet::new();
+    for (id, kind, value) in candidates {
+        if kind == DisplayVariantKind::SearchTerm {
+            continue;
+        }
+        if exact_comparison_key(value) == observed_exact_key {
+            exact_matches.insert(id);
+        }
+        if folded_comparison_key(value) == observed_folded_key {
+            folded_matches.insert(id);
+        }
+    }
+    candidate_match(if exact_matches.is_empty() {
+        folded_matches
+    } else {
+        exact_matches
+    })
+}
+
+fn candidate_match<T: Copy + Ord>(matches: BTreeSet<T>) -> CandidateMatch<T> {
     let mut matches = matches.into_iter();
     match (matches.next(), matches.next()) {
         (None, _) => CandidateMatch::None,
@@ -169,22 +187,38 @@ fn unique_candidate<'a, T: Copy + Ord>(
     }
 }
 
-fn comparison_key(value: &str) -> String {
+fn exact_comparison_key(value: &str) -> String {
     value.nfc().filter(|character| *character != ' ').collect()
+}
+
+fn folded_comparison_key(value: &str) -> String {
+    value
+        .nfc()
+        .filter_map(|character| match character {
+            ' ' | '\u{3000}' => None,
+            '\u{ff01}'..='\u{ff5e}' => char::from_u32(u32::from(character) - 0xfee0),
+            _ => Some(character),
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         CandidateMatch, DiagnosticTitleCandidate, DiagnosticTitleError,
-        DiagnosticTitleUnknownReason, comparison_key, diagnostic_title_candidate,
-        provisional_title_candidates, unique_candidate,
+        DiagnosticTitleUnknownReason, diagnostic_title_candidate, exact_comparison_key,
+        folded_comparison_key, provisional_title_candidates, unique_candidate,
     };
     use crate::catalog::{Catalog, Difficulty, DisplayVariantKind, InfinitasStatus, PlayType};
 
     #[test]
     fn provisional_candidate_domain_is_explicit_even_when_empty() {
+        assert_eq!(unicode_normalization::UNICODE_VERSION, (17, 0, 0));
         let candidates = provisional_title_candidates(&Catalog::default());
+        assert_eq!(
+            candidates.comparison_key_id,
+            "scorepeek-title-nfc-ucd17-exact-then-ascii-width-fold-v2"
+        );
         assert_eq!(candidates.domain.play_type, PlayType::Single);
         assert_eq!(candidates.domain.difficulty, Difficulty::Hyper);
         assert_eq!(
@@ -195,16 +229,33 @@ mod tests {
     }
 
     #[test]
-    fn comparison_key_removes_only_ascii_space_after_nfc() {
-        assert_eq!(comparison_key("ABSOLUTE EVIL"), "ABSOLUTEEVIL");
-        assert_eq!(comparison_key("Cafe\u{301} Noir"), "Caf\u{e9}Noir");
-        assert_eq!(comparison_key("Absolute\tEvil"), "Absolute\tEvil");
-        assert_eq!(comparison_key("Absolute\u{a0}Evil"), "Absolute\u{a0}Evil");
-        assert_ne!(
-            comparison_key("ABSOLUTE EVIL"),
-            comparison_key("Absolute Evil")
+    fn comparison_keys_preserve_exact_tier_and_bound_ascii_width_fallback() {
+        assert_eq!(exact_comparison_key("ABSOLUTE EVIL"), "ABSOLUTEEVIL");
+        assert_eq!(
+            exact_comparison_key("ＰＡＳＴＥＬＩＳＭ"),
+            "ＰＡＳＴＥＬＩＳＭ"
         );
-        assert_ne!(comparison_key("A-B"), comparison_key("AB"));
+        assert_eq!(folded_comparison_key("Cafe\u{301} Noir"), "Caf\u{e9}Noir");
+        assert_eq!(folded_comparison_key("ＰＡＳＴＥＬＩＳＭ"), "PASTELISM");
+        assert_eq!(folded_comparison_key("Ａ！　Ｂ～"), "A!B~");
+        assert_eq!(folded_comparison_key("Absolute\tEvil"), "Absolute\tEvil");
+        assert_eq!(
+            folded_comparison_key("Absolute\u{a0}Evil"),
+            "Absolute\u{a0}Evil"
+        );
+        assert_eq!(folded_comparison_key("Ⅰ①ｶ"), "Ⅰ①ｶ");
+        assert_eq!(
+            folded_comparison_key("a\u{0897}\u{0316}"),
+            folded_comparison_key("a\u{0316}\u{0897}")
+        );
+        let fullwidth_ascii: String = (0xff01..=0xff5e).filter_map(char::from_u32).collect();
+        let ascii: String = (0x21..=0x7e).filter_map(char::from_u32).collect();
+        assert_eq!(folded_comparison_key(&fullwidth_ascii), ascii);
+        assert_ne!(
+            folded_comparison_key("ABSOLUTE EVIL"),
+            folded_comparison_key("Absolute Evil")
+        );
+        assert_ne!(folded_comparison_key("A-B"), folded_comparison_key("AB"));
     }
 
     #[test]
@@ -217,6 +268,48 @@ mod tests {
         assert_eq!(
             unique_candidate("ABSOLUTEEVIL", candidates),
             CandidateMatch::Unique(1)
+        );
+    }
+
+    #[test]
+    fn candidate_match_accepts_ascii_ocr_for_fullwidth_catalog_title() {
+        assert_eq!(
+            unique_candidate(
+                "PASTELISM",
+                [
+                    (1, DisplayVariantKind::InGameDisplay, "ＰＡＳＴＥＬＩＳＭ"),
+                    (1, DisplayVariantKind::OfficialDisplay, "ＰＡＳＴＥＬＩＳＭ"),
+                ],
+            ),
+            CandidateMatch::Unique(1)
+        );
+    }
+
+    #[test]
+    fn candidate_match_prefers_exact_tier_over_folded_collision() {
+        assert_eq!(
+            unique_candidate(
+                "A!",
+                [
+                    (1, DisplayVariantKind::InGameDisplay, "A!"),
+                    (2, DisplayVariantKind::InGameDisplay, "Ａ！"),
+                ],
+            ),
+            CandidateMatch::Unique(1)
+        );
+    }
+
+    #[test]
+    fn unicode_17_combining_order_matches_the_python_contract() {
+        assert_eq!(
+            unique_candidate(
+                "a\u{0897}\u{0316}",
+                [
+                    (1, DisplayVariantKind::InGameDisplay, "a\u{0897}\u{0316}"),
+                    (2, DisplayVariantKind::InGameDisplay, "a\u{0316}\u{0897}"),
+                ],
+            ),
+            CandidateMatch::Ambiguous
         );
     }
 

@@ -1012,12 +1012,14 @@ source = { editable = "." }
 dependencies = [
     { name = "paddleocr" },
     { name = "paddlepaddle" },
+    { name = "unicodedata2" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "paddleocr", specifier = "==3.7.0" },
     { name = "paddlepaddle", specifier = "==3.3.1" },
+    { name = "unicodedata2", specifier = "==17.0.1" },
 ]
 
 [[package]]
@@ -1126,6 +1128,22 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/fa/0a/8e583cce90f9f91ca1bedb3e628b6f5642aed91feb29b197431268d4c4be/ujson-5.13.0-cp313-cp313-win32.whl", hash = "sha256:b63d3820f978bc8e98cc3f1fe26a33b0d2ea237733a23fe5e9cb5d51f466bd97", size = 40069, upload-time = "2026-06-14T22:35:55.019Z" },
     { url = "https://files.pythonhosted.org/packages/b4/b5/1fe203bc294e98fdd65606883692ad8dc0aaac73838b89c99c3513404424/ujson-5.13.0-cp313-cp313-win_amd64.whl", hash = "sha256:17a59d5cf23ef98f7c9314524976b4b288374d83200add01d953024fb06404f9", size = 41098, upload-time = "2026-06-14T22:35:55.966Z" },
     { url = "https://files.pythonhosted.org/packages/50/5e/aceadce24fdb7cbc67f02286b1d4e91a575aaef5afb876c9908d6e6e5769/ujson-5.13.0-cp313-cp313-win_arm64.whl", hash = "sha256:b49516fbe803ff30d6caa9ccc3799ec7f968992747ce3099eae4758928577b53", size = 38877, upload-time = "2026-06-14T22:35:56.936Z" },
+]
+
+[[package]]
+name = "unicodedata2"
+version = "17.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/44/cb/520721a715da85530e21c71953b9b9a85a44e0d80d3b34bf9303c422d208/unicodedata2-17.0.1.tar.gz", hash = "sha256:d79943d153f5f6bfbe3f55a5ec611985184bda37fcedb3ecc75322d82ae6ad3b", size = 679856, upload-time = "2026-02-12T10:05:41.465Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4e/93/b30e22fc5c06827a112bf399fa9d583ccd3209ae5b6bb9fa101823d85cc3/unicodedata2-17.0.1-cp313-cp313-macosx_10_13_universal2.whl", hash = "sha256:e700dbedf1ec4466e1f36d2172fa2c856141e8d8ee256f5d1ef32507f7afa2b8", size = 973390, upload-time = "2026-02-12T10:04:41.854Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/71/61d7694139f62e9bbfc9d51c36e1fb7ce578d530074a75573ca59fb76c97/unicodedata2-17.0.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:fc83524357ea99933ff0b33eb781f35381b6da0e89fb466bbfd9e52d3b701602", size = 495284, upload-time = "2026-02-12T10:04:43.184Z" },
+    { url = "https://files.pythonhosted.org/packages/67/c8/4a227db7c366c10e6135dc53c7389060f295ae234e696ae41406ace2c92c/unicodedata2-17.0.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:e3aefd1fd71d95e87ba8df580f54ae4d52076e4394eddc97d0f4609849f01ae4", size = 531970, upload-time = "2026-02-12T10:04:44.532Z" },
+    { url = "https://files.pythonhosted.org/packages/ae/62/4dfe56801216acfff25c07a68d2a0b5330e802fbd1f89cf8ba4ae3374b2e/unicodedata2-17.0.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:8a4c70a9b1438b2303ab577c6c3a80c650952c76f496418ef7ab6755ff1ffbea", size = 531750, upload-time = "2026-02-12T10:04:45.952Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/eb/c078cc851bf3212e56711bbd56e63579645f9a2d14cc1aa04397b90ba552/unicodedata2-17.0.1-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:761c53084ca0f3a1beda52f1c3980a0d561221f860a56a1342087c67879fd547", size = 530549, upload-time = "2026-02-12T10:04:47.83Z" },
+    { url = "https://files.pythonhosted.org/packages/a5/c9/f95deb4a197bdd9af29bcbd8091a9847431ca16fcc5f9981efcdbe0e057e/unicodedata2-17.0.1-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:ba5f094d6ff67c130fe36fbdad64371c7b2e7672f4e35166f98ae6c88646ccda", size = 531457, upload-time = "2026-02-12T10:04:49.254Z" },
+    { url = "https://files.pythonhosted.org/packages/30/f6/de84a37d8fbbb2cd57ce6b6ba1af8bba9ffbecd05c046630e47629e74147/unicodedata2-17.0.1-cp313-cp313-win32.whl", hash = "sha256:e314cd8a8f64aa0d2bcf940b9d8e742cb726566574bf241a02b23d0ea9c779c9", size = 483971, upload-time = "2026-02-12T10:04:51.11Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/7e/94116c542f4348b2def3e34654b4e1af66862e93e884c7405b361c6e92d6/unicodedata2-17.0.1-cp313-cp313-win_amd64.whl", hash = "sha256:7ec69751488663ad5644b2bce67be9bbf9a178ba9ad3089ca652b05cf5a2aa49", size = 484193, upload-time = "2026-02-12T10:04:52.585Z" },
 ]
 
 [[package]]
