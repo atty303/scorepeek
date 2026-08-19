@@ -224,7 +224,8 @@ is outside this checkpoint.
   PaddleOCR source URL, commit, Apache-2.0 license, training/export entrypoints,
   PP-OCRv6 small recognition configuration, and requirements-file digests. It
   establishes a reproducible offline source boundary without vendoring upstream
-  code; training and export have not yet run.
+  code. `ocr:training-source:verify` independently passed against the pinned
+  checkout before it can be consumed; training and export have not yet run.
 - An immutable `PP-OCRv6_small_rec` registration containing its official source
   URL, Apache-2.0 license reference, package compatibility, and exact archive
   and extracted-file sizes and SHA-256 values. Explicit acquisition publishes
@@ -307,7 +308,7 @@ is outside this checkpoint.
 
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
   The current workspace run covered 83 `scorepeek` library tests, 13 binary tests, 55 offline
-  corpus tests, 13 offline Python OCR tests, and the recording-dataset E2E gate.
+  corpus tests, 15 offline Python OCR tests, and the recording-dataset E2E gate.
 - The new title-model requirements regressions preserve baseline scalar coverage, append missing
   catalog characters, increase exact repeated-token CTC alignment length, and reject invalid or
   empty variant sets. The music-list row regressions cover all six explicit states, require

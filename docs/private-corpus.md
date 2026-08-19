@@ -193,8 +193,9 @@ registers the official PaddleOCR checkout URL and immutable commit, its Apache-2
 license, and SHA-256 bindings for the training and export entrypoints, PP-OCRv6
 small recognition config, and source requirements. It is a reproducibility
 record only: upstream code is neither vendored nor trusted as a pixel/layout
-reference, and a private training or export run must verify this source before
-it consumes it. The
+reference. `ocr:training-source:verify --source <absolute-checkout>` requires
+that exact commit and all four file digests before a private training or export
+run consumes it. The
 `PP-OCRv6_small_rec` source manifest records the official archive URL, exact
 archive and extracted-file sizes and SHA-256 values, Apache-2.0 license
 reference, and compatible package versions. `ocr:model:fetch` downloads only

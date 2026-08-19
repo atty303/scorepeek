@@ -39,9 +39,42 @@ from scorepeek_ocr.spike import (
     load_layout_contract,
 )
 from scorepeek_ocr.training_inputs import TrainingInputError, generate as generate_training_inputs
+from scorepeek_ocr.training_source import (
+    TrainingSourceError,
+    load_registered_source as load_registered_training_source,
+    verify_source as verify_training_source,
+)
 
 
 class ContractTests(unittest.TestCase):
+    def test_registered_training_source_requires_the_pinned_checkout_and_files(self) -> None:
+        source = load_registered_training_source()
+        self.assertEqual(source.commit, "b03f46425e8ff4442b268ce449e3eef758146cd4")
+        self.assertEqual(source.license_id, "Apache-2.0")
+        self.assertEqual(
+            [item.path for item in (
+                source.training_entrypoint, source.export_entrypoint,
+                source.small_rec_config, source.requirements,
+            )],
+            [
+                "tools/train.py", "tools/export_model.py",
+                "configs/rec/PP-OCRv6/PP-OCRv6_small_rec.yml", "requirements.txt",
+            ],
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with patch("scorepeek_ocr.training_source._head", return_value=source.commit), patch(
+                "scorepeek_ocr.training_source._sha256_regular_file",
+                side_effect=[item.sha256 for item in (
+                    source.training_entrypoint, source.export_entrypoint,
+                    source.small_rec_config, source.requirements,
+                )],
+            ):
+                verify_training_source(root, source)
+            with patch("scorepeek_ocr.training_source._head", return_value="0" * 40):
+                with self.assertRaises(TrainingSourceError):
+                    verify_training_source(root, source)
+
     def test_training_inputs_are_song_disjoint_and_bind_every_private_artifact(self) -> None:
         def write(directory: Path, name: str, value: object) -> tuple[Path, str]:
             path = directory / name

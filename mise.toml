@@ -329,6 +329,14 @@ set -euo pipefail
 exec uv run --locked --no-dev python -m scorepeek_ocr.training_inputs "$@"
 '''
 
+[tasks."ocr:training-source:verify"]
+description = "Verify an explicit PaddleOCR checkout against the registered v3.7.0 source"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.training_source "$@"
+'''
+
 [tasks."ocr:parity:reference"]
 description = "Generate a digest-bound Paddle parity reference from a verified title crop"
 run = '''
