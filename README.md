@@ -169,7 +169,7 @@ external to the repository. The separate seed-only synthetic renderer emits
 deterministic RGB8 PPM title crops and a canonical manifest without accepting
 catalog text, fonts, images, or private corpus data. Its procedural ASCII
 domain establishes the renderer contract but is not yet representative
-production OCR training data. Python 3.13 and uv are mise-pinned; PaddleOCR and
+production OCR training data. Python 3.12 and uv are mise-pinned; PaddleOCR and
 PaddlePaddle are uv-locked for offline experiments only. The registered
 PP-OCRv6 model is explicitly fetched into a local content-addressed model
 store and is never auto-downloaded by recognition. A separately registered

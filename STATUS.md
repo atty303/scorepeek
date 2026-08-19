@@ -215,8 +215,9 @@ is outside this checkpoint.
   unknown-group, and explicit-unknown decisions, and leaves every omitted group unchanged. Its
   output is a new motion request that can be measured and verified through the existing evidence
   path; it never promotes brightness, color, OCR, or motion measurements into semantic labels.
-- A mise-pinned Python 3.13.7 and uv 0.11.7 offline environment with a committed
-  `uv.lock` for PaddleOCR 3.7.0 and PaddlePaddle CPU 3.3.1. Python and its
+- A mise-pinned Python 3.12.13 and uv 0.11.7 offline environment with a committed
+  `uv.lock` for PaddleOCR 3.7.0, PaddlePaddle CPU 3.3.1, and Apache-2.0
+  `paddle2onnx` 2.1.0. Python and its
   approximately 1.2 GiB development environment do not enter the Rust
   game-session dependency graph.
 - An immutable `PP-OCRv6_small_rec` registration containing its official source
@@ -679,8 +680,8 @@ is outside this checkpoint.
 - Any new runtime, parser, capture, or training dependency requires user
   approval after version, license, alternatives, and host/bundle impact are
   presented.
-- Offline Python 3.13.7, uv 0.11.7, PaddleOCR 3.7.0, PaddlePaddle CPU 3.3.1,
-  Apache-2.0 `unicodedata2` 17.0.1, and the pinned PP-OCRv6 small multilingual recognition model were approved
+- Offline Python 3.12.13, uv 0.11.7, PaddleOCR 3.7.0, PaddlePaddle CPU 3.3.1,
+  Apache-2.0 `paddle2onnx` 2.1.0 and `unicodedata2` 17.0.1, and the pinned PP-OCRv6 small multilingual recognition model were approved
   and added only to offline development; they do not enter the Rust
   game-session dependency graph.
 - `ort` 2.0.0-rc.13 (MIT OR Apache-2.0) with a CPU ONNX Runtime 1.28 static

@@ -3,7 +3,7 @@ min_version = "2026.8.3"
 [tools]
 actionlint = "1.7.12"
 hk = "1.54.1"
-python = "3.13.7"
+python = "3.12.13"
 rclone = "1.74.2"
 rust = { version = "1.97.1", components = ["clippy", "rustfmt"] }
 taplo = "0.10.0"

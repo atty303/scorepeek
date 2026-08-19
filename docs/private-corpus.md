@@ -186,8 +186,9 @@ artifact bytes, accepts only canonical plan-digest-bound partial human decisions
 groups with their original annotations unchanged; initially these are usually unknown. It never
 derives labels from luminance, color, OCR, or motion values.
 
-Python 3.13.7 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
-PaddlePaddle CPU 3.3.1, and their complete dependency graph. The
+Python 3.12.13 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
+PaddlePaddle CPU 3.3.1, Apache-2.0 `paddle2onnx` 2.1.0, and their complete
+dependency graph. The
 `PP-OCRv6_small_rec` source manifest records the official archive URL, exact
 archive and extracted-file sizes and SHA-256 values, Apache-2.0 license
 reference, and compatible package versions. `ocr:model:fetch` downloads only

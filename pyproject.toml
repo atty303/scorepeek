@@ -2,10 +2,11 @@
 name = "scorepeek-ocr"
 version = "0.0.0"
 description = "Reproducible offline OCR experiments for scorepeek canonical crops"
-requires-python = "==3.13.*"
+requires-python = "==3.12.*"
 dependencies = [
   "paddleocr==3.7.0",
   "paddlepaddle==3.3.1",
+  "paddle2onnx==2.1.0",
   "unicodedata2==17.0.1",
 ]
 
