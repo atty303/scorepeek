@@ -337,6 +337,22 @@ set -euo pipefail
 exec uv run --locked --no-dev python -m scorepeek_ocr.training_source "$@"
 '''
 
+[tasks."ocr:title-model:prepare"]
+description = "Prepare a complete private dictionary and digest-bound Paddle training inputs"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.training_artifacts prepare "$@"
+'''
+
+[tasks."ocr:title-model:record-export"]
+description = "Record a private Paddle/ONNX export without promoting it to runtime"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.training_artifacts record-export "$@"
+'''
+
 [tasks."ocr:parity:reference"]
 description = "Generate a digest-bound Paddle parity reference from a verified title crop"
 run = '''

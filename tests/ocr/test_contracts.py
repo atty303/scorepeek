@@ -39,6 +39,11 @@ from scorepeek_ocr.spike import (
     load_layout_contract,
 )
 from scorepeek_ocr.training_inputs import TrainingInputError, generate as generate_training_inputs
+from scorepeek_ocr.training_artifacts import (
+    TrainingArtifactError,
+    prepare as prepare_training_artifacts,
+    record_export,
+)
 from scorepeek_ocr.training_source import (
     TrainingSourceError,
     load_registered_source as load_registered_training_source,
@@ -47,6 +52,193 @@ from scorepeek_ocr.training_source import (
 
 
 class ContractTests(unittest.TestCase):
+    def test_title_model_preparation_requires_complete_dictionary_and_exact_crop_map(self) -> None:
+        def write_json(directory: Path, name: str, value: object) -> tuple[Path, str]:
+            path = directory / name
+            data = json.dumps(value, separators=(",", ":")).encode()
+            path.write_bytes(data)
+            return path, hashlib.sha256(data).hexdigest()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary).resolve()
+            crop = directory / "crop.ppm"
+            pixels = bytes((0, 1, 2, 3, 4, 5))
+            crop.write_bytes(b"P6\n2 1\n255\n" + pixels)
+            crop_sha = hashlib.sha256(crop.read_bytes()).hexdigest()
+            pixel_sha = hashlib.sha256(pixels).hexdigest()
+            requirements, requirements_sha = write_json(directory, "requirements.json", {
+                "schema": "scorepeek-private-title-model-export-requirements-v1",
+                "catalog_sha256": "a" * 64,
+                "requirements": {
+                    "schema": "scorepeek-title-model-export-requirements-v1",
+                    "baseline_dictionary_sha256": "b" * 64,
+                    "dictionary_contract_id": "scorepeek-title-unicode-scalar-dictionary-v1",
+                    "output_tensor_contract_id": "scorepeek-title-ctc-f32-logits-btc-v1",
+                    "ctc_blank_token": 0,
+                    "output_timesteps": 40,
+                    "output_classes": 5,
+                    "baseline_character_count": 2,
+                    "appended_catalog_character_count": 1,
+                    "non_search_variant_count": 2,
+                    "covered_variant_count": 2,
+                    "coverage_complete": True,
+                    "non_blank_tokens": ["A", "B", "Ω", " "],
+                },
+            })
+            training, training_sha = write_json(directory, "training.json", {
+                "schema": "scorepeek-private-title-training-input-manifest-v1",
+                "split_contract_id": "scorepeek-title-song-disjoint-sha256-80-10-10-v1",
+                "candidate_artifact_sha256": "1" * 64,
+                "automated_label_sha256": "2" * 64,
+                "visual_audit_sha256": "3" * 64,
+                "final_label_sha256": "4" * 64,
+                "source_artifact_sha256": "5" * 64,
+                "crop_artifact_sha256": "6" * 64,
+                "origin": "music_list",
+                "permission_status": "permission_not_recorded",
+                "provisional": True,
+                "accepted_holdout_truth": False,
+                "song_count": 1,
+                "label_count": 1,
+                "split_song_counts": {"train": 1, "validation": 0, "evaluation": 0},
+                "splits": {
+                    "train": [{
+                        "group_id": "G00001",
+                        "song_id": "123e4567-e89b-12d3-a456-426614174000",
+                        "title": "A B",
+                        "crop_pixel_sha256": pixel_sha,
+                        "crop_file_sha256": crop_sha,
+                        "occurrence_count": 1,
+                        "origin": "music_list",
+                        "permission_status": "permission_not_recorded",
+                    }],
+                    "validation": [],
+                    "evaluation": [],
+                },
+            })
+            crop_map, crop_map_sha = write_json(directory, "crop-map.json", {
+                "schema": "scorepeek-private-title-training-crop-map-v1",
+                "training_input_sha256": training_sha,
+                "entries": [{
+                    "group_id": "G00001",
+                    "path": str(crop),
+                    "file_sha256": crop_sha,
+                    "pixel_sha256": pixel_sha,
+                }],
+            })
+            source = load_registered_training_source()
+            output = directory / "prepared #quoted"
+            source_config = directory / source.small_rec_config.path
+            source_config.parent.mkdir(parents=True)
+            source_config.write_text(
+                "max_text_length: &max_text_length 25\n"
+                "character_dict_path: ppocr/utils/dict/ppocrv6_dict.txt\n"
+                "  d2s_train_image_shape: [3, 48, 320]\n"
+                "scales: [[320, 32], [320, 48], [320, 64]]\n"
+                "image_shape: [48, 320, 3]\n"
+                "        image_shape: [3, 48, 320]\n"
+                "    data_dir: ./train_data/\n"
+                "    - ./train_data/train_list.txt\n"
+                "    data_dir: ./train_data\n"
+                "    - ./train_data/val_list.txt\n"
+            )
+            with patch("scorepeek_ocr.training_artifacts.verify_source"):
+                summary = prepare_training_artifacts(
+                    requirements, requirements_sha, training, training_sha,
+                    crop_map, crop_map_sha, directory, output,
+                )
+            manifest = json.loads((output / "manifest.json").read_text())
+            self.assertTrue(summary["coverage_complete"])
+            self.assertEqual((output / "dictionary.txt").read_text(), "A\nB\nΩ\n")
+            self.assertEqual((output / "train.txt").read_text(), f"{crop}\tA B\n")
+            self.assertEqual(manifest["output_classes"], 5)
+            self.assertEqual(manifest["model_input_width"], 320)
+            derived_config = (output / "training-config.yml").read_text()
+            self.assertIn(
+                f"character_dict_path: {json.dumps(str(output / 'dictionary.txt'))}",
+                derived_config,
+            )
+            self.assertIn(f"- {json.dumps(str(output / 'train.txt'))}", derived_config)
+            self.assertIn("max_text_length: &max_text_length 40", derived_config)
+            self.assertIn("d2s_train_image_shape: [3, 48, 320]", derived_config)
+            self.assertIn("scales: [[320, 32], [320, 48], [320, 64]]", derived_config)
+            self.assertIn("image_shape: [48, 320, 3]", derived_config)
+            self.assertIn("image_shape: [3, 48, 320]", derived_config)
+            self.assertFalse(manifest["accepted_holdout_truth"])
+
+            bad = json.loads(requirements.read_text())
+            bad["requirements"]["coverage_complete"] = False
+            bad_requirements, bad_sha = write_json(directory, "bad-requirements.json", bad)
+            with patch("scorepeek_ocr.training_artifacts.verify_source"), self.assertRaises(
+                TrainingArtifactError
+            ):
+                prepare_training_artifacts(
+                    bad_requirements, bad_sha, training, training_sha,
+                    crop_map, crop_map_sha, directory, directory / "bad-output",
+                )
+
+            bad_path_map = json.loads(crop_map.read_text())
+            bad_path_map["entries"][0]["path"] = f"{crop}\tinvalid"
+            bad_path_map_path, bad_path_map_sha = write_json(
+                directory, "bad-path-map.json", bad_path_map
+            )
+            with patch("scorepeek_ocr.training_artifacts.verify_source"), self.assertRaises(
+                TrainingArtifactError
+            ):
+                prepare_training_artifacts(
+                    requirements, requirements_sha, training, training_sha,
+                    bad_path_map_path, bad_path_map_sha, directory,
+                    directory / "bad-path-output",
+                )
+
+            moved = json.loads(training.read_text())
+            moved["split_song_counts"] = {"train": 0, "validation": 1, "evaluation": 0}
+            moved["splits"]["validation"] = moved["splits"]["train"]
+            moved["splits"]["train"] = []
+            moved_path, moved_sha = write_json(directory, "moved-training.json", moved)
+            moved_crop_map = json.loads(crop_map.read_text())
+            moved_crop_map["training_input_sha256"] = moved_sha
+            moved_map_path, moved_map_sha = write_json(
+                directory, "moved-crop-map.json", moved_crop_map
+            )
+            with patch("scorepeek_ocr.training_artifacts.verify_source"), self.assertRaises(
+                TrainingArtifactError
+            ):
+                prepare_training_artifacts(
+                    requirements, requirements_sha, moved_path, moved_sha,
+                    moved_map_path, moved_map_sha, directory, directory / "moved-output",
+                )
+
+            failed_output = directory / "failed-output"
+            with patch("scorepeek_ocr.training_artifacts.verify_source"), patch(
+                "scorepeek_ocr.training_artifacts._sync_directory",
+                side_effect=[None, OSError("parent fsync failed"), None],
+            ), self.assertRaises(OSError):
+                prepare_training_artifacts(
+                    requirements, requirements_sha, training, training_sha,
+                    crop_map, crop_map_sha, directory, failed_output,
+                )
+            self.assertFalse(failed_output.exists())
+
+            paddle = directory / "model.pdiparams"
+            onnx = directory / "model.onnx"
+            paddle.write_bytes(b"paddle")
+            onnx.write_bytes(b"onnx")
+            export = directory / "export.json"
+            record_export(output, summary["manifest_sha256"], paddle, onnx, export)
+            export_record = json.loads(export.read_text())
+            self.assertFalse(export_record["distributable"])
+            self.assertFalse(export_record["accepted_for_runtime"])
+            self.assertEqual(export_record["required_output_classes"], 5)
+            self.assertFalse(export_record["model_shape_verified"])
+
+            (output / "dictionary.txt").write_text("B\nA\nΩ\n")
+            with self.assertRaises(TrainingArtifactError):
+                record_export(
+                    output, summary["manifest_sha256"], paddle, onnx,
+                    directory / "tampered-export.json",
+                )
+
     def test_registered_training_source_requires_the_pinned_checkout_and_files(self) -> None:
         source = load_registered_training_source()
         self.assertEqual(source.commit, "b03f46425e8ff4442b268ce449e3eef758146cd4")

@@ -284,6 +284,10 @@ fn build_title_model_export_requirements<'a>(
         }
     }
     let baseline_character_count = characters.len();
+    if !retained.contains(&' ') {
+        return Err(CatalogTitleDecoderError::InvalidCatalogTitle);
+    }
+    characters.retain(|character| *character != ' ');
     let mut catalog_characters = BTreeSet::new();
     let mut non_search_variant_count = 0_usize;
     let mut required_timesteps = 0_usize;
@@ -309,7 +313,8 @@ fn build_title_model_export_requirements<'a>(
         .filter(|character| retained.insert(*character))
         .collect();
     let appended_catalog_character_count = appended.len();
-    characters.extend(appended);
+    characters.extend(appended.into_iter().filter(|character| *character != ' '));
+    characters.push(' ');
     let output_classes = characters
         .len()
         .checked_add(1)
@@ -743,7 +748,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             requirements.non_blank_tokens,
-            ["A", "X", "Y", " ", "Z", "Ω"]
+            ["A", "X", "Y", "Z", "Ω", " "]
         );
         assert_eq!(requirements.baseline_character_count, 4);
         assert_eq!(requirements.appended_catalog_character_count, 2);

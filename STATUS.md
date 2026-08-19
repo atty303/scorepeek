@@ -263,6 +263,14 @@ is outside this checkpoint.
   longest exact alignment, and binds catalog and baseline digests, ordered scalar dictionary,
   class/timestep shape, and an explicit batch-timestep-class float32 logits contract. This defines
   the export boundary but does not train or export a model.
+- A create-only private title-model preparation boundary that turns those complete-catalog
+  requirements into a Paddle dictionary and exact title-disjoint label lists. It binds the pinned
+  PaddleOCR source/config, rehashes an explicit one-to-one crop-path map, rejects labels outside the
+  dictionary, preserves U+0020 through `use_space_char`, derives the recognition width from the
+  required CTC timestep count, and records aggregate coverage without exposing title values in its
+  summary. A separate export record binds selected Paddle and ONNX bytes to the preparation while
+  remaining provisional, non-distributable, unaccepted for runtime, and explicit that actual model
+  tensor shape is not yet verified.
 - A Rust diagnostic title-candidate bridge with versioned comparison key
   `scorepeek-title-nfc-ucd17-exact-then-ascii-width-fold-v2`. Its first tier applies Unicode
   17 NFC and removes
@@ -308,7 +316,24 @@ is outside this checkpoint.
 
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
   The current workspace run covered 83 `scorepeek` library tests, 13 binary tests, 55 offline
-  corpus tests, 15 offline Python OCR tests, and the recording-dataset E2E gate.
+  corpus tests, 16 offline Python OCR tests, and the recording-dataset E2E gate.
+- The prior session's 3,061 provisional private labels and bound crops were recovered from its
+  temporary tree into an operator-owned stable private-artifact root, with all crop paths and
+  complete file/pixel SHA-256 evidence revalidated after relocation. The resulting song-disjoint
+  manifest contains 2,362 training, 329 validation, and 370 evaluation labels across 1,119 songs;
+  it remains `permission_not_recorded` and is not accepted holdout truth.
+- A live catalog sync activated catalog
+  `ceabe2931815c492b9eb088282ab6df55cabff2545fd9d8de3e0ae11b1b2b541`. Its complete-catalog
+  requirements retain 4,810 non-search variants, require 18,725 output classes and 65 CTC
+  timesteps, and report complete scalar coverage. The real private preparation rehashed every crop
+  and produced a 520-pixel input width, complete scalar dictionary, and exact split lists. The
+  requirements manifest is
+  `dff306998233b7c4d70824e1326cb0eb1b3eced017695e1b094089f18563e1ca`; its non-blank token order
+  places U+0020 last to match Paddle's `use_space_char` behavior. The
+  preparation manifest is
+  `9be3c219834e9dbd8c4355fbe810ab55cda85e5399165f95c881221ebfdc839c`; its dictionary is
+  `b3a5e331f8f5ccf70a228c7d831ef945b87aa7a098b70f68f2b58fea88c1358f` and derived config is
+  `bb02e772797c3f733ff7af6b6b49f74c37901b60d844edeb513857b816935d2d`.
 - The new title-model requirements regressions preserve baseline scalar coverage, append missing
   catalog characters, increase exact repeated-token CTC alignment length, and reject invalid or
   empty variant sets. The music-list row regressions cover all six explicit states, require
@@ -631,13 +656,17 @@ is outside this checkpoint.
   catalog-update recognition replay, event daemon, and the integrated live
   flow remain unvalidated. The observed 649 ms CPU process and inference time
   is a single warmed development-host measurement, not a performance gate.
-- The title-model export requirements still have only synthetic contract coverage. The music-list
-  contract has one artifact-bound real-row verification, a complete measured pair artifact, and a
+- The title-model requirements and preparation boundaries have synthetic regressions and one real
+  private-artifact execution. The music-list contract has one artifact-bound real-row verification,
+  a complete measured pair artifact, and a
   review disposition for all 7,977 exact-pixel groups, but 2,959 groups covering 3,192 occurrences
   intentionally remain unknown for vertical motion, unobservable locked-row color, possible
   right-clipping, or redacted secret-title pixels. The presentation clusters are private
-  single-recording evidence, not a supported classifier or reusable automatic threshold. No
-  scorepeek-owned dictionary/model has been trained or exported. The 3,061 catalog-bound
+  single-recording evidence, not a supported classifier or reusable automatic threshold. The
+  scorepeek-owned dictionary and title-disjoint preparation have been produced from the private
+  artifacts, but no scorepeek-owned model has been trained or exported. The derived 65-timestep,
+  18,725-class graph shape is a requirement, not verified model output, until export and parity.
+  The export-record boundary still has synthetic contract coverage only. The 3,061 catalog-bound
   music-list labels are provisional only: the 2,611 automated associations and 450 visual
   associations do not establish accepted holdout truth, a stability threshold, or a release gate.
   No eligible standard group remains unknown in this recording. The versioned v2 comparison key
@@ -705,17 +734,19 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Preserve result certainty as the primary gate. Use the title-model export requirements to implement
-the offline scorepeek-owned dictionary, training, and export record without silently dropping a
-catalog variant, then measure coverage before training a private development model. Keep the 24
+Preserve result certainty as the primary gate. Register a compatible pretrained training checkpoint
+or explicitly choose scratch initialization before starting the private development run; the current
+repository pins the Paddle training source and inference model but no compatible pretrained training
+checkpoint. Keep the 24
 INFINITAS-blue, 299 LEGGENDARIA-purple, 351 locked/unobservable, 438
 possible right-clips, vertical-motion, selected, obscured, and redacted-secret groups quarantined
-until their separate correction or completeness evidence exists. After complete dictionary
-coverage is available, execute replay over the two result observations and the larger music-select
-set before fixing absolute or runner-up thresholds. Do not tune recognition thresholds from the
-current two recordings, promote diagnostic commands into accepted recognition, recognize bare PPM
-or `ObservedFrame`, auto-download a runtime model, or treat the OBS profile, current ROIs,
-confidence, timing, or diagnostic thresholds as supported.
+until their separate correction or completeness evidence exists. Using the completed preparation,
+train and export only a private provisional model, record its exact bytes, and
+verify its actual tensor/dictionary contract through parity. Then execute replay over the two result
+observations and the larger music-select set before fixing absolute or runner-up thresholds. Do not
+tune recognition thresholds from the current two recordings, promote diagnostic commands into
+accepted recognition, recognize bare PPM or `ObservedFrame`, auto-download a runtime model, or
+treat the OBS profile, current ROIs, confidence, timing, or diagnostic thresholds as supported.
 
 S3 replication and another profile are intentionally deferred. When capture
 work resumes, start **M3** with narrow Portal and Gamescope direct observed

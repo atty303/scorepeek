@@ -132,9 +132,11 @@ without exposing title strings. A rejected variant is never silently removed fro
 printing its character inventory. Starting from the registered baseline dictionary, it retains
 every Unicode scalar that baseline entries can express, appends every missing scalar from every
 active non-search catalog variant, and chooses at least the largest exact CTC alignment required by
-that complete set. The catalog digest, baseline dictionary digest, scalar dictionary ordering,
-class count, timestep count, and `scorepeek-title-ctc-f32-logits-btc-v1` tensor contract are bound
-together. This is an export requirement boundary, not a trained model or a distributable bundle.
+that complete set. The non-blank order places U+0020 last because Paddle's `use_space_char` appends
+it after reading the dictionary file. The catalog digest, baseline dictionary digest, resulting
+scalar dictionary ordering, class count, timestep count, and
+`scorepeek-title-ctc-f32-logits-btc-v1` tensor contract are bound together. This is an export
+requirement boundary, not a trained model or a distributable bundle.
 
 `ocr:training-input-manifest` accepts separately digest-bound v2 candidate, automated-label,
 visual-audit, final-label, crop, and source artifacts. Its final-label input retains only reviewed
@@ -145,6 +147,27 @@ it is explicitly not accepted holdout truth and cannot calibrate recognition thr
 operator-supplied private artifacts are trusted inputs: this boundary detects accidental digest,
 schema, binding, and split mistakes, but does not independently re-adjudicate every label against
 each source artifact.
+
+`ocr:title-model:prepare` consumes that training manifest, the create-only complete-catalog model
+requirements, a separately digest-bound map from every group ID to its current absolute private
+crop path, and the verified PaddleOCR v3.7.0 checkout. It rehashes each strict P6 crop, requires the
+map to cover the training labels exactly, rejects any label outside the complete scalar dictionary,
+and publishes a private create-only preparation directory. The directory contains a Paddle-format
+dictionary, title-disjoint train/validation/evaluation lists, a derived Paddle config whose input
+width is eight pixels per required CTC timestep, and aggregate complete-catalog coverage evidence.
+The preparation independently recomputes every song's deterministic split and all declared split
+counts. The derivation fails if the pinned upstream config no longer contains every expected source
+value; the exported graph must still prove its actual shape through parity. U+0020 is represented
+only through Paddle's `use_space_char` setting; it is not encoded as an ambiguous blank dictionary
+line.
+
+`ocr:title-model:record-export` hash-records an explicitly selected Paddle model and ONNX graph
+against one preparation after rehashing its dictionary, derived config, and all three split lists.
+The record remains provisional, non-distributable, and unaccepted for runtime. It carries the
+required output tensor contract and shape but deliberately marks the model's actual shape
+unverified; a later Python-to-Rust parity/replay gate must establish that boundary before promotion.
+Neither command starts training, downloads a checkpoint, chooses a device, or converts provisional
+music-list labels into accepted holdout truth.
 
 This distinction applies throughout the private workflow. Operator-provided artifacts receive only
 the validation needed to catch ordinary selection, digest, schema, or result-invariant mistakes.
