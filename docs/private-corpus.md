@@ -188,7 +188,13 @@ derives labels from luminance, color, OCR, or motion values.
 
 Python 3.12.13 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
 PaddlePaddle CPU 3.3.1, Apache-2.0 `paddle2onnx` 2.1.0, and their complete
-dependency graph. The
+dependency graph. `models/manifests/paddleocr-v3.7.0-training-source.json`
+registers the official PaddleOCR checkout URL and immutable commit, its Apache-2.0
+license, and SHA-256 bindings for the training and export entrypoints, PP-OCRv6
+small recognition config, and source requirements. It is a reproducibility
+record only: upstream code is neither vendored nor trusted as a pixel/layout
+reference, and a private training or export run must verify this source before
+it consumes it. The
 `PP-OCRv6_small_rec` source manifest records the official archive URL, exact
 archive and extracted-file sizes and SHA-256 values, Apache-2.0 license
 reference, and compatible package versions. `ocr:model:fetch` downloads only

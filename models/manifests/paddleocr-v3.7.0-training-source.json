@@ -1,0 +1,22 @@
+{
+  "schema": "scorepeek-ocr-training-source-v1",
+  "source_url": "https://github.com/PaddlePaddle/PaddleOCR.git",
+  "commit": "b03f46425e8ff4442b268ce449e3eef758146cd4",
+  "license_id": "Apache-2.0",
+  "training_entrypoint": {
+    "path": "tools/train.py",
+    "sha256": "f9b5b9d211080df94f0e30b66116514a2cf0aacd1de0de5a1376ff4b35872be2"
+  },
+  "export_entrypoint": {
+    "path": "tools/export_model.py",
+    "sha256": "2547e3119dcc709c652863f822f386e4c7f395295d6dbc623b6d5320c3dd1561"
+  },
+  "small_rec_config": {
+    "path": "configs/rec/PP-OCRv6/PP-OCRv6_small_rec.yml",
+    "sha256": "5efcffafdd9f5375bb5917db0a050afb52a319bf6e9bcda5a594dd49a268df43"
+  },
+  "requirements": {
+    "path": "requirements.txt",
+    "sha256": "d33da5c48e908fc328b48569098e52c4a9df4529a177fe09920c1ccb4531a9ef"
+  }
+}

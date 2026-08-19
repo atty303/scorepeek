@@ -220,6 +220,11 @@ is outside this checkpoint.
   `paddle2onnx` 2.1.0. Python and its
   approximately 1.2 GiB development environment do not enter the Rust
   game-session dependency graph.
+- A registered `paddleocr-v3.7.0-training-source.json` fixes the official
+  PaddleOCR source URL, commit, Apache-2.0 license, training/export entrypoints,
+  PP-OCRv6 small recognition configuration, and requirements-file digests. It
+  establishes a reproducible offline source boundary without vendoring upstream
+  code; training and export have not yet run.
 - An immutable `PP-OCRv6_small_rec` registration containing its official source
   URL, Apache-2.0 license reference, package compatibility, and exact archive
   and extracted-file sizes and SHA-256 values. Explicit acquisition publishes
