@@ -383,6 +383,11 @@ impl CatalogSong {
     }
 
     #[must_use]
+    pub fn charts(&self) -> &BTreeMap<ChartKey, Chart> {
+        &self.charts
+    }
+
+    #[must_use]
     pub const fn infinitas_status(&self) -> InfinitasStatus {
         self.infinitas_status
     }

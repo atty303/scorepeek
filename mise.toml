@@ -213,6 +213,14 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- recognition title-spike "$@"
 '''
 
+[tasks."recognition:title:provisional-candidates"]
+description = "Export the active-catalog SP HYPER title domain for private provisional labeling"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- recognition provisional-title-candidates "$@"
+'''
+
 [tasks."recognition:title:dictionary:audit"]
 description = "Audit active-catalog title coverage against the registered OCR dictionary"
 run = '''
@@ -303,6 +311,14 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 exec uv run --locked --no-dev python -m scorepeek_ocr.spike "$@"
+'''
+
+[tasks."ocr:provisional-labels"]
+description = "Generate catalog-bound provisional labels from reviewed music-list crops"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.provisional_labels "$@"
 '''
 
 [tasks."ocr:parity:reference"]

@@ -15,7 +15,8 @@ mod title_preprocessor;
 pub use title::{
     DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
     DiagnosticTitleCandidate, DiagnosticTitleError, DiagnosticTitleUnknownReason,
-    diagnostic_title_candidate,
+    ProvisionalTitleCandidate, ProvisionalTitleCandidateDomain, ProvisionalTitleCandidateSet,
+    diagnostic_title_candidate, provisional_title_candidates,
 };
 pub use title_decoder::{
     CatalogTitleDecision, CatalogTitleDecoderError, CatalogTitleDictionaryAudit,

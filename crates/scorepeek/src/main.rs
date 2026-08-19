@@ -29,13 +29,11 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &[OsString]) -> Result<(), String> {
-    if let Some(result) = try_title_onnx_parity(args) {
-        return result;
-    }
-    if let Some(result) = try_title_dictionary_audit(args) {
-        return result;
-    }
-    if let Some(result) = try_title_model_export_requirements(args) {
+    if let Some(result) = try_provisional_title_candidates(args)
+        .or_else(|| try_title_onnx_parity(args))
+        .or_else(|| try_title_dictionary_audit(args))
+        .or_else(|| try_title_model_export_requirements(args))
+    {
         return result;
     }
     match args {
@@ -128,6 +126,17 @@ fn run(args: &[OsString]) -> Result<(), String> {
         }
         _ => Err("usage: scorepeek --help".to_owned()),
     }
+}
+
+fn try_provisional_title_candidates(args: &[OsString]) -> Option<Result<(), String>> {
+    let [recognition, export, store_flag, store, output_flag, output] = args else {
+        return None;
+    };
+    (recognition == "recognition"
+        && export == "provisional-title-candidates"
+        && store_flag == "--catalog-store"
+        && output_flag == "--output")
+        .then(|| provisional_title_candidates(store, output))
 }
 
 fn try_title_model_export_requirements(args: &[OsString]) -> Option<Result<(), String>> {
@@ -296,6 +305,118 @@ struct DiagnosticTitleSpikeSummary {
     comparison_key_id: &'static str,
     minimum_confidence: f64,
     candidate: recognition::DiagnosticTitleCandidate,
+}
+
+#[derive(Serialize)]
+struct ProvisionalTitleCandidatesArtifact {
+    schema: &'static str,
+    catalog_sha256: String,
+    #[serde(flatten)]
+    candidates: recognition::ProvisionalTitleCandidateSet,
+}
+
+#[derive(Serialize)]
+struct ProvisionalTitleCandidatesSummary {
+    schema: &'static str,
+    output: PathBuf,
+    artifact_sha256: String,
+    catalog_sha256: String,
+    candidate_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PrivatePublicationPoint {
+    FileSynced,
+    Linked,
+    StagingRemoved,
+}
+
+fn publish_private_file(output: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    publish_private_file_with(output, bytes, |_| Ok(()))
+}
+
+fn publish_private_file_with(
+    output: &Path,
+    bytes: &[u8],
+    mut checkpoint: impl FnMut(PrivatePublicationPoint) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let parent = output.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "output has no parent")
+    })?;
+    let mut staging = tempfile::Builder::new()
+        .prefix(".scorepeek-private-staging-")
+        .tempfile_in(parent)?;
+    staging.as_file_mut().write_all(bytes)?;
+    staging.as_file_mut().sync_all()?;
+    checkpoint(PrivatePublicationPoint::FileSynced)?;
+
+    let staging_path = staging.path().to_owned();
+    let mut linked = false;
+    let publication = (|| {
+        fs::hard_link(&staging_path, output)?;
+        linked = true;
+        checkpoint(PrivatePublicationPoint::Linked)?;
+        fs::remove_file(&staging_path)?;
+        checkpoint(PrivatePublicationPoint::StagingRemoved)?;
+        fs::File::open(parent)?.sync_all()
+    })();
+    if let Err(error) = publication {
+        if linked {
+            let _ = fs::remove_file(output);
+        }
+        let _ = fs::remove_file(&staging_path);
+        let _ = fs::File::open(parent).and_then(|directory| directory.sync_all());
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn provisional_title_candidates(catalog_store: &OsStr, output: &OsStr) -> Result<(), String> {
+    let catalog_store = absolute_directory(PathBuf::from(catalog_store), "catalog store")?;
+    let output = PathBuf::from(output);
+    if !output.is_absolute() || output.as_os_str().is_empty() {
+        return Err("provisional title candidate output must be an absolute path".to_owned());
+    }
+    let parent = output
+        .parent()
+        .ok_or_else(|| "provisional title candidate output must have a parent".to_owned())?;
+    let metadata = parent.symlink_metadata().map_err(|error| {
+        format!("provisional title candidate output parent inspection failed: {error}")
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(
+            "provisional title candidate output parent must be a regular directory".to_owned(),
+        );
+    }
+    let active = CatalogStore::new(catalog_store)
+        .load_active()
+        .map_err(|error| format!("active catalog load failed: {error}"))?
+        .ok_or_else(|| "catalog store has no active catalog".to_owned())?;
+    let candidates = recognition::provisional_title_candidates(&active.catalog);
+    let candidate_count = candidates.candidates.len();
+    let artifact = ProvisionalTitleCandidatesArtifact {
+        schema: "scorepeek-private-provisional-title-candidates-v1",
+        catalog_sha256: active.digest.clone(),
+        candidates,
+    };
+    let mut bytes = serde_json::to_vec(&artifact)
+        .map_err(|error| format!("provisional title candidate encoding failed: {error}"))?;
+    bytes.push(b'\n');
+    publish_private_file(&output, &bytes)
+        .map_err(|error| format!("provisional title candidate publication failed: {error}"))?;
+    let summary = ProvisionalTitleCandidatesSummary {
+        schema: "scorepeek-private-provisional-title-candidates-summary-v1",
+        output,
+        artifact_sha256: encode_sha256(&bytes),
+        catalog_sha256: active.digest,
+        candidate_count,
+    };
+    println!(
+        "{}",
+        serde_json::to_string(&summary)
+            .map_err(|error| format!("provisional title candidate summary failed: {error}"))?
+    );
+    Ok(())
 }
 
 fn diagnostic_title_spike(
@@ -580,20 +701,54 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE",
+        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE",
         env!("CARGO_PKG_VERSION")
     );
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{catalog_paths, catalog_sync_error};
+    use super::{
+        PrivatePublicationPoint, catalog_paths, catalog_sync_error, publish_private_file,
+        publish_private_file_with,
+    };
     use scorepeek::catalog::{
         AdapterError, CatalogStoreError, CatalogSyncError, DqnAcquisitionError,
         TachiAcquisitionError, TachiResource, TextageAcquisitionError, TextageResource,
     };
     use std::ffi::OsStr;
+    use std::fs;
     use std::path::PathBuf;
+
+    #[test]
+    fn private_file_publication_is_no_clobber_and_cleans_every_failed_checkpoint() {
+        for failed_point in [
+            PrivatePublicationPoint::FileSynced,
+            PrivatePublicationPoint::Linked,
+            PrivatePublicationPoint::StagingRemoved,
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let output = root.path().join("artifact.json");
+            let error = publish_private_file_with(&output, b"complete\n", |point| {
+                if point == failed_point {
+                    Err(std::io::Error::other("checkpoint failure"))
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::Other);
+            assert!(!output.exists());
+            assert_eq!(root.path().read_dir().unwrap().count(), 0);
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("artifact.json");
+        publish_private_file(&output, b"first\n").unwrap();
+        assert_eq!(fs::read(&output).unwrap(), b"first\n");
+        assert!(publish_private_file(&output, b"second\n").is_err());
+        assert_eq!(fs::read(&output).unwrap(), b"first\n");
+    }
 
     #[test]
     fn catalog_paths_use_absolute_xdg_directories() {

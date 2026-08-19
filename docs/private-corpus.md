@@ -83,6 +83,8 @@ mise run ocr:model:fetch
 mise run ocr:onnx:model:fetch
 mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --output /absolute/private/ocr-result.json
 mise run recognition:title:spike -- --catalog-store /absolute/private/catalog --ocr-text OCR_TEXT --ocr-confidence OCR_CONFIDENCE
+mise run recognition:title:provisional-candidates -- --catalog-store /absolute/private/catalog --output /absolute/private/provisional-hyper-title-candidates.json
+mise run ocr:provisional-labels -- --review-disposition /absolute/private/review-disposition.json --review-disposition-sha256 DISPOSITION_SHA256 --review-plan /absolute/private/review-plan.json --review-plan-sha256 PLAN_SHA256 --source-artifact /absolute/private/source-motion-artifact.json --source-artifact-sha256 SOURCE_ARTIFACT_SHA256 --candidates /absolute/private/provisional-hyper-title-candidates.json --candidates-sha256 CANDIDATES_SHA256 --permission-status permission_not_recorded --expected-eligible-groups COUNT --output /absolute/private/provisional-hyper-title-labels.json
 mise run ocr:parity:reference -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --candidates /absolute/private/parity-candidates.json --output /absolute/private/paddle-reference
 mise run ocr:parity:run -- --model /absolute/private/models/inference.onnx --reference /absolute/private/paddle-reference --reference-sha256 REFERENCE_MANIFEST_SHA256 --crop-artifact /absolute/private/crops --catalog-store /absolute/private/catalog --dictionary /absolute/private/models/inference.yml --minimum-log-probability SCORE --minimum-runner-up-margin SCORE
 ```
@@ -102,6 +104,22 @@ visible-list slots. A slot can contain a separator, clipped row, or overlay;
 downstream recognition keeps such content unknown instead of assuming every
 slot is a title. OCR `--output` is create-only and retains the diagnostic JSON
 for later replay without repeating inference.
+
+The provisional candidate export is fixed to the independently catalogued
+single-play HYPER charts whose INFINITAS status is confirmed present. It excludes
+search aliases and records every retained display variant with its source evidence,
+lineage, revision, content digest, and rights statement. Provisional labeling
+accepts only the digest-bound review disposition, its original review plan and
+source motion artifact, and that exact candidate artifact. It rehashes every
+selected 475x45 crop, requires every occurrence in its exact-pixel group to bind
+stationary pair motion, runs the registered offline PP-OCRv6 model, and associates
+only confidence-at-least-0.95 text whose NFC-plus-ASCII-space comparison key
+resolves to one song and one display string. Low-confidence text, absent catalog
+keys, cross-song collisions, and display-string ambiguity remain reason-bearing
+unknowns. The caller supplies the expected eligible-group count and explicit
+permission status. These outputs are private provisional training inputs, not
+human-confirmed labels, accepted holdout evidence, calibrated thresholds, or
+redistributable data.
 
 `recognition:title:dictionary:audit` verifies the immutable registered dictionary and the active
 catalog, then emits catalog- and dictionary-digest-bound aggregate coverage. It splits non-search

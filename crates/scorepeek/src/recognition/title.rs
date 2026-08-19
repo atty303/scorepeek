@@ -5,10 +5,76 @@ use std::fmt;
 use serde::Serialize;
 use unicode_normalization::UnicodeNormalization as _;
 
-use crate::catalog::{Catalog, DisplayVariantKind, ScorepeekSongId};
+use crate::catalog::{
+    Catalog, ChartKey, Difficulty, DisplayVariant, DisplayVariantKind, InfinitasStatus, PlayType,
+    ScorepeekSongId, SourceEvidence,
+};
 
 pub const DIAGNOSTIC_TITLE_COMPARISON_KEY_ID: &str = "scorepeek-title-nfc-without-ascii-space-v1";
 pub const DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE: f64 = 0.95;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProvisionalTitleCandidate {
+    pub song_id: ScorepeekSongId,
+    pub variants: Vec<DisplayVariant>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProvisionalTitleCandidateSet {
+    pub comparison_key_id: &'static str,
+    pub domain: ProvisionalTitleCandidateDomain,
+    pub source_evidence: Vec<SourceEvidence>,
+    pub candidates: Vec<ProvisionalTitleCandidate>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct ProvisionalTitleCandidateDomain {
+    pub play_type: PlayType,
+    pub difficulty: Difficulty,
+    pub infinitas_status: InfinitasStatus,
+}
+
+/// Exports the exact non-search title decision domain for private provisional labeling.
+///
+/// The caller must bind this value to the active catalog digest when it publishes an artifact.
+#[must_use]
+pub fn provisional_title_candidates(catalog: &Catalog) -> ProvisionalTitleCandidateSet {
+    let domain = ProvisionalTitleCandidateDomain {
+        play_type: PlayType::Single,
+        difficulty: Difficulty::Hyper,
+        infinitas_status: InfinitasStatus::ConfirmedPresent,
+    };
+    let chart_key = ChartKey {
+        play_type: domain.play_type,
+        difficulty: domain.difficulty,
+    };
+    let candidates = catalog
+        .songs()
+        .iter()
+        .filter(|(_, song)| {
+            song.infinitas_status() == domain.infinitas_status
+                && song.charts().contains_key(&chart_key)
+        })
+        .filter_map(|(song_id, song)| {
+            let variants: Vec<_> = song
+                .title_variants()
+                .iter()
+                .filter(|variant| variant.kind != DisplayVariantKind::SearchTerm)
+                .cloned()
+                .collect();
+            (!variants.is_empty()).then_some(ProvisionalTitleCandidate {
+                song_id: *song_id,
+                variants,
+            })
+        })
+        .collect();
+    ProvisionalTitleCandidateSet {
+        comparison_key_id: DIAGNOSTIC_TITLE_COMPARISON_KEY_ID,
+        domain,
+        source_evidence: catalog.source_evidence().values().cloned().collect(),
+        candidates,
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -111,9 +177,22 @@ fn comparison_key(value: &str) -> String {
 mod tests {
     use super::{
         CandidateMatch, DiagnosticTitleCandidate, DiagnosticTitleError,
-        DiagnosticTitleUnknownReason, comparison_key, diagnostic_title_candidate, unique_candidate,
+        DiagnosticTitleUnknownReason, comparison_key, diagnostic_title_candidate,
+        provisional_title_candidates, unique_candidate,
     };
-    use crate::catalog::{Catalog, DisplayVariantKind};
+    use crate::catalog::{Catalog, Difficulty, DisplayVariantKind, InfinitasStatus, PlayType};
+
+    #[test]
+    fn provisional_candidate_domain_is_explicit_even_when_empty() {
+        let candidates = provisional_title_candidates(&Catalog::default());
+        assert_eq!(candidates.domain.play_type, PlayType::Single);
+        assert_eq!(candidates.domain.difficulty, Difficulty::Hyper);
+        assert_eq!(
+            candidates.domain.infinitas_status,
+            InfinitasStatus::ConfirmedPresent
+        );
+        assert!(candidates.candidates.is_empty());
+    }
 
     #[test]
     fn comparison_key_removes_only_ascii_space_after_nfc() {

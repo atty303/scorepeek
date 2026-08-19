@@ -437,6 +437,23 @@ is outside this checkpoint.
   with the existing 183 stationary and 57 scrolling pair labels, zero unknown pair-motion labels,
   and aggregate RGB L1 from 0 through 40,782,712. No review sheet, captured pixel, decision,
   disposition, request, or artifact was added to the repository.
+- The catalog-bound provisional-label gate now exports only active-catalog songs with a confirmed
+  INFINITAS presence and an SP HYPER chart, excluding search aliases while preserving every display
+  variant's lineage, revision, content digest, and rights statement. Against catalog
+  `65a8e164f3cb28e20c09114eecc3eb7200d32ed7c7383c7c04432053b78411eb`, the retained private
+  candidate artifact contains 1,879 songs at SHA-256
+  `04b6345fe0699aa2de98659ee2a6625a1b3abe16ca7fd06fb4ef25bfaa307c27`. Rehashed application to
+  exactly the 3,062 settled stationary standard groups produced 2,605 provisional crop labels
+  covering 976 distinct songs and 457 reason-bearing unknowns: 363 below the fixed 0.95 diagnostic
+  confidence, 90 without an exact catalog key, and four with ambiguous display text. Every label records crop
+  file/pixel digests, catalog source provenance, and `permission_not_recorded`; no unknown, blue,
+  purple, locked, selected, clipped, obscured, scrolling, unlock-condition, or redacted row was
+  promoted. Two independent inference runs produced byte-identical label/unknown payloads at
+  digest `1b64c0d8ed6ced5aa76cc39021be5bb184581db0d3bf6ae003ef38fdb20f70dc`. The final create-only
+  private artifact is SHA-256
+  `4ad9d16105102c1e763547712d037decc57a8215961d47347a199488e4c91de7` and remains outside the
+  repository. These are automated provisional training inputs, not accepted labels or holdout
+  evidence.
 - The same gate normalized selected frames with artifact
   `0441099011fdd09d372d6c9b5e18d6c4f2da2809a653e01f8ccb55756d8658cf`.
   A separately invoked explicit FFmpeg transform produced the same file SHA-256
@@ -586,8 +603,10 @@ is outside this checkpoint.
   intentionally remain unknown for vertical motion, unobservable locked-row color, possible
   right-clipping, or redacted secret-title pixels. The presentation clusters are private
   single-recording evidence, not a supported classifier or reusable automatic threshold. No
-  scorepeek-owned dictionary/model has been trained or exported, and no accepted stability
-  threshold or catalog-bound provisional music-list label exists.
+  scorepeek-owned dictionary/model has been trained or exported. The 2,605 catalog-bound
+  music-list labels are provisional only: automated exact association does not establish human
+  confirmation, accepted holdout truth, a stability threshold, or a release gate, and 457 eligible
+  standard groups remain unknown after OCR.
 - The live `ObservedFrame`/domain-normalizer/`CanonicalFrame` runtime boundary,
   model-bundle promotion, and last-known-good model rollback remain
   unimplemented. Recognition accepts only digest-bound offline canonical
@@ -647,24 +666,21 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Preserve result certainty as the primary gate. Start from the plan- and decision-digest-bound
-private disposition together with the independently verified private motion artifact. Deduplicate
-only the 3,062 settled complete, available,
-non-selected standard groups and generate catalog-digest-bound provisional labels without using
-the 2,959 reason-bearing unknown groups. Keep the 24 INFINITAS-blue, 299 LEGGENDARIA-purple, and 351
-locked/unobservable groups quarantined until separately versioned color/dimming corrections are
-measured against artifact-bound observations. The 438 possible right-clips require full-frame or
-independent complete-title evidence before promotion; vertical-motion and redacted-secret groups
-remain exclusions rather than a backlog to guess. Calibrate any profile- and presentation-bound
-pair-level stability threshold only from admissible settled rows, preserve the already-reviewed
-pair motion independently, and fail closed if a retained domain does not establish separation.
-Use the title-model export requirements to implement the
-offline scorepeek-owned dictionary/training/export record without silently dropping a catalog
-variant. After complete dictionary coverage is available, execute replay over the two result
-observations and the larger music-select set before fixing absolute or runner-up thresholds. Do not
-tune recognition thresholds from the current two recordings, promote diagnostic commands into accepted
-recognition, recognize bare PPM or `ObservedFrame`, auto-download a runtime model, or treat the OBS
-profile, current ROIs, confidence, timing, or diagnostic thresholds as supported.
+Preserve result certainty as the primary gate. Build a private immutable training-input manifest
+from the 2,605 provisional observations, grouping all crops for the same catalog song together so a
+title cannot cross train, validation, or evaluation splits. Keep their music-list origin and
+`permission_not_recorded` status explicit; do not use them as accepted holdout truth. Use the
+title-model export requirements to implement the offline scorepeek-owned dictionary, training, and
+export record without silently dropping a catalog variant, then measure coverage before training a
+private development model. The 457 OCR unknowns remain a later human-review queue rather than
+self-label input. Keep the 24 INFINITAS-blue, 299 LEGGENDARIA-purple, 351 locked/unobservable, 438
+possible right-clips, vertical-motion, selected, obscured, and redacted-secret groups quarantined
+until their separate correction or completeness evidence exists. After complete dictionary
+coverage is available, execute replay over the two result observations and the larger music-select
+set before fixing absolute or runner-up thresholds. Do not tune recognition thresholds from the
+current two recordings, promote diagnostic commands into accepted recognition, recognize bare PPM
+or `ObservedFrame`, auto-download a runtime model, or treat the OBS profile, current ROIs,
+confidence, timing, or diagnostic thresholds as supported.
 
 S3 replication and another profile are intentionally deferred. When capture
 work resumes, start **M3** with narrow Portal and Gamescope direct observed

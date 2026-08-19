@@ -21,6 +21,13 @@ from scorepeek_ocr.model_store import (
     load_registered_source,
 )
 from scorepeek_ocr.parity import ParityError, _canonical_json, ctc_log_probability
+from scorepeek_ocr.provisional_labels import (
+    ProvisionalLabelError,
+    Variant,
+    _associate,
+    _comparison_key,
+    _load_reviewed_groups,
+)
 from scorepeek_ocr.spike import (
     CALIBRATED_NORMALIZER_SHA256,
     SpikeError,
@@ -31,6 +38,77 @@ from scorepeek_ocr.spike import (
 
 
 class ContractTests(unittest.TestCase):
+    def test_provisional_association_is_exact_and_fail_closed(self) -> None:
+        first = Variant("song-a", "ABSOLUTE EVIL", "in_game_display", ("tachi", "r", "d"))
+        same = Variant("song-a", "ABSOLUTE EVIL", "official_display", ("textage", "r", "d"))
+        spaced = Variant("song-a", "ABSOLUTE  EVIL", "alternate_display", ("tachi", "r", "d"))
+        collision = Variant("song-b", "ABSOLUTEEVIL", "in_game_display", ("tachi", "r", "d"))
+        key = _comparison_key("ABSOLUTE EVIL")
+
+        self.assertEqual(_associate("ABSOLUTE EVIL", 0.949, {key: [first]})[0], "low_confidence")
+        self.assertEqual(_associate("absolute evil", 1.0, {key: [first]})[0], "no_exact_catalog_candidate")
+        self.assertEqual(_associate("ABSOLUTE EVIL", 1.0, {key: [first, same]})[0], "unique")
+        self.assertEqual(_associate("ABSOLUTEEVIL", 1.0, {key: [first, spaced]})[0], "ambiguous_display_text")
+        self.assertEqual(_associate("ABSOLUTE EVIL", 1.0, {key: [first, spaced]})[0], "ambiguous_display_text")
+        self.assertEqual(_associate("ABSOLUTE EVIL", 1.0, {key: [first, collision]})[0], "ambiguous_catalog_songs")
+
+    def test_provisional_review_groups_require_only_stationary_occurrences(self) -> None:
+        digest = "1" * 64
+        occurrence = {
+            "pair_motion": {"state": "stationary"},
+            "crop_file_sha256": "2" * 64,
+            "crop_path": "/private/crop.ppm",
+        }
+        group = {"crop_pixel_sha256": "3" * 64, "occurrences": [occurrence]}
+        decision = {
+            "group_id": "G00000",
+            "crop_pixel_sha256": "3" * 64,
+            "occurrence_count": 1,
+            "status": "decided",
+            "annotation": {
+                "content": "title",
+                "presentation": {"availability": "available", "color_domain": "standard"},
+            },
+        }
+        plan = {
+            "schema": "scorepeek-private-music-list-motion-review-plan-v1",
+            "source_artifact_sha256": digest,
+            "catalog_sha256": "4" * 64,
+            "groups": [group],
+        }
+        disposition = {
+            "schema": "scorepeek-private-music-list-motion-review-disposition-v1",
+            "source_review_plan_sha256": "5" * 64,
+            "dispositions": [decision],
+        }
+        source = {
+            "schema": "scorepeek-private-music-list-motion-artifact-v1",
+            "catalog_sha256": "4" * 64,
+        }
+        selected = _load_reviewed_groups(
+            disposition, plan, source, "6" * 64, "5" * 64, digest, 1
+        )[1]
+        self.assertEqual(len(selected), 1)
+
+        occurrence["pair_motion"]["state"] = "scrolling"
+        with self.assertRaises(ProvisionalLabelError):
+            _load_reviewed_groups(
+                disposition, plan, source, "6" * 64, "5" * 64, digest, 1
+            )
+
+        occurrence["pair_motion"]["state"] = "stationary"
+        decision["occurrence_count"] = 2
+        with self.assertRaises(ProvisionalLabelError):
+            _load_reviewed_groups(
+                disposition, plan, source, "6" * 64, "5" * 64, digest, 1
+            )
+
+        decision["occurrence_count"] = True
+        with self.assertRaises(ProvisionalLabelError):
+            _load_reviewed_groups(
+                disposition, plan, source, "6" * 64, "5" * 64, digest, 1
+            )
+
     def test_ocr_output_publication_is_create_only_and_cleans_failed_staging(
         self,
     ) -> None:
