@@ -454,6 +454,20 @@ is outside this checkpoint.
   `4ad9d16105102c1e763547712d037decc57a8215961d47347a199488e4c91de7` and remains outside the
   repository. These are automated provisional training inputs, not accepted labels or holdout
   evidence.
+- Visual review covered all 457 reason-bearing OCR unknown groups from that automated artifact.
+  It accepted 456 groups and excluded `G06461` as the purple LEGGENDARIA `VERSION` UI rather than
+  a song title. The resulting private label artifact at SHA-256
+  `3c3d127f3dd75bdc5e66bed9da5debefc9fd05f1f7ba1d71a69aa6d5f42d3bbc` contains 3,061
+  exact-pixel groups, 3,986 occurrences, and 1,119 catalog song IDs: 2,605 automated exact
+  associations plus 456 visually reviewed associations, with zero remaining unknowns or catalog
+  gaps. Its 457-decision audit is bound at SHA-256
+  `ebcb8417ba371832230d94b4fbd7e80d5608f5f536f0920b84877fa3619d8d09`; rerunning the private
+  generator reproduced both hashes. Every retained label remains `permission_not_recorded` and
+  provisional rather than accepted holdout truth. Two reviewed groups exposed one bounded
+  post-OCR comparison issue: Paddle returned ASCII `PASTELISM`, while the unique Tachi in-game and
+  Textage official display value is fullwidth `ＰＡＳＴＥＬＩＳＭ` for song ID
+  `af380cef-a79e-5b2f-9172-b1ecd8cd02cf`. Both groups are now explicitly bound to that catalog
+  song and fullwidth display value; catalog acquisition and federation were already correct.
 - The same gate normalized selected frames with artifact
   `0441099011fdd09d372d6c9b5e18d6c4f2da2809a653e01f8ccb55756d8658cf`.
   A separately invoked explicit FFmpeg transform produced the same file SHA-256
@@ -603,10 +617,14 @@ is outside this checkpoint.
   intentionally remain unknown for vertical motion, unobservable locked-row color, possible
   right-clipping, or redacted secret-title pixels. The presentation clusters are private
   single-recording evidence, not a supported classifier or reusable automatic threshold. No
-  scorepeek-owned dictionary/model has been trained or exported. The 2,605 catalog-bound
-  music-list labels are provisional only: automated exact association does not establish human
-  confirmation, accepted holdout truth, a stability threshold, or a release gate, and 457 eligible
-  standard groups remain unknown after OCR.
+  scorepeek-owned dictionary/model has been trained or exported. The 3,061 catalog-bound
+  music-list labels are provisional only: the 2,605 automated exact associations and 456 visual
+  associations do not establish accepted holdout truth, a stability threshold, or a release gate.
+  No eligible standard group remains unknown in this recording, but the post-OCR comparison key
+  still lacks the bounded ASCII/fullwidth fold demonstrated by `ＰＡＳＴＥＬＩＳＭ`. An exploratory
+  fold limited to fullwidth ASCII and space produced zero cross-song collisions across the 1,879
+  candidates, while 47 keys still had multiple display values for the same song; the versioned
+  fail-closed variant-selection contract and tests remain unimplemented.
 - The live `ObservedFrame`/domain-normalizer/`CanonicalFrame` runtime boundary,
   model-bundle promotion, and last-known-good model rollback remain
   unimplemented. Recognition accepts only digest-bound offline canonical
@@ -666,14 +684,19 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Preserve result certainty as the primary gate. Build a private immutable training-input manifest
-from the 2,605 provisional observations, grouping all crops for the same catalog song together so a
-title cannot cross train, validation, or evaluation splits. Keep their music-list origin and
-`permission_not_recorded` status explicit; do not use them as accepted holdout truth. Use the
-title-model export requirements to implement the offline scorepeek-owned dictionary, training, and
-export record without silently dropping a catalog variant, then measure coverage before training a
-private development model. The 457 OCR unknowns remain a later human-review queue rather than
-self-label input. Keep the 24 INFINITAS-blue, 299 LEGGENDARIA-purple, 351 locked/unobservable, 438
+Preserve result certainty as the primary gate. First replace the diagnostic OCR association's
+comparison key with a new versioned post-OCR key that retains the raw OCR output, folds only
+fullwidth ASCII and fullwidth space for lookup, and does not apply general NFKC or alter catalog
+federation identity. It must still fail closed for cross-song collisions and for one song's
+multiple display values when the exact training target is unresolved; reproduce the two
+`ＰＡＳＴＥＬＩＳＭ` associations and the complete 1,879-candidate collision audit in tests. Then
+build a private immutable training-input manifest from the 3,061 provisional observations,
+grouping all crops for the same catalog song together so a title cannot cross train, validation, or
+evaluation splits. Keep their music-list origin and `permission_not_recorded` status explicit; do
+not use them as accepted holdout truth. Use the title-model export requirements to implement the
+offline scorepeek-owned dictionary, training, and export record without silently dropping a
+catalog variant, then measure coverage before training a private development model. Keep the 24
+INFINITAS-blue, 299 LEGGENDARIA-purple, 351 locked/unobservable, 438
 possible right-clips, vertical-motion, selected, obscured, and redacted-secret groups quarantined
 until their separate correction or completeness evidence exists. After complete dictionary
 coverage is available, execute replay over the two result observations and the larger music-select
