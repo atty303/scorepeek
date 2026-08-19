@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import scorepeek_ocr.model_store as model_store
 import numpy as np
+import paddle
 import unicodedata2 as unicodedata
 from scorepeek_ocr.model_store import (
     ModelFile,
@@ -49,9 +50,77 @@ from scorepeek_ocr.training_source import (
     load_registered_source as load_registered_training_source,
     verify_source as verify_training_source,
 )
+from scorepeek_ocr.training_initializer import (
+    TrainingInitializerError,
+    _copy_classes,
+    _load_checkpoint_manifest,
+    _publish,
+    _read_regular,
+    _tokens,
+)
 
 
 class ContractTests(unittest.TestCase):
+    def test_registered_pretrained_checkpoint_and_class_mapping(self) -> None:
+        source = _load_checkpoint_manifest()
+        self.assertEqual(source["bytes"], 124_912_348)
+        old_tokens = ["blank", "A", "B", " "]
+        new_tokens = ["blank", "A", "B", "Ω", " "]
+        source_values = paddle.to_tensor([[0.0, 1.0, 2.0, 3.0]])
+        destination = paddle.full([1, 5], -1.0)
+        mapped = _copy_classes(destination, source_values, old_tokens, new_tokens, 1)
+        np.testing.assert_array_equal(
+            mapped.numpy(), np.array([[0.0, 1.0, 2.0, -1.0, 3.0]], dtype=np.float32)
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / "config.yml"
+            dictionary = root / "dict.txt"
+            target = root / "target.txt"
+            config.write_text("Global:\n  character_dict_path: dict.txt\n")
+            dictionary.write_text("A\nB\n")
+            target.write_text("A\nB\nΩ\n")
+            registered = {
+                "training_config": {
+                    "path": "config.yml", "sha256": hashlib.sha256(config.read_bytes()).hexdigest(),
+                },
+                "character_dictionary": {
+                    "path": "dict.txt", "sha256": hashlib.sha256(dictionary.read_bytes()).hexdigest(),
+                },
+            }
+            self.assertEqual(_tokens(root, registered, target.read_bytes()), (["A", "B"], ["A", "B", "Ω"]))
+            dictionary.write_text("B\nA\n")
+            with self.assertRaises(TrainingInitializerError):
+                _tokens(root, registered, target.read_bytes())
+
+            oversized = root / "oversized.bin"
+            oversized.write_bytes(b"x" * 9)
+            with self.assertRaises(TrainingInitializerError):
+                _read_regular(oversized, 8)
+            snapshot = root / "snapshot.bin"
+            snapshot.write_bytes(b"registered")
+            registered_bytes = _read_regular(
+                snapshot, 32, hashlib.sha256(b"registered").hexdigest()
+            )
+            snapshot.write_bytes(b"replacement")
+            self.assertEqual(registered_bytes, b"registered")
+
+    def test_initializer_publication_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            staging = root / "staging"
+            output = root / "output"
+            staging.mkdir()
+            (staging / "artifact").write_bytes(b"complete")
+            with patch(
+                "scorepeek_ocr.training_initializer._sync_directory",
+                side_effect=[None, OSError("injected"), None],
+            ), self.assertRaises(OSError):
+                _publish(staging, output)
+            self.assertFalse(output.exists())
+
+
     def test_title_model_preparation_requires_complete_dictionary_and_exact_crop_map(self) -> None:
         def write_json(directory: Path, name: str, value: object) -> tuple[Path, str]:
             path = directory / name

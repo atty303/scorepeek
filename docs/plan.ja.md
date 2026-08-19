@@ -221,6 +221,9 @@ last-known-goodを維持し、gameplay daemonへnetwork fallbackを追加しな�
 sequence modelへ入力し、CTC logitsをexact catalog title trieへ直接scoreする。
 
 - baseline: PP-OCRv6 small recognition modelをfine-tune
+- initialization: 公式pretrained checkpointの同一文字classをCTC/NRTR両headへ移植し、追加文字classだけを
+  新規初期化する。初期化候補は互換性の二値判定ではなく、固定validationに対する低コストな実認識比較で
+  選ぶ。scratchは移植初期化が実測で成立しない場合のfallbackとする
 - training/export: pinned Python、Paddle/PaddleOCR、offline environment
 - runtime: pinned ONNX modelをRust/ONNX Runtimeで実行
 - model dictionary: 現在catalogへ縮小せず、pretrainedの広い文字集合を維持

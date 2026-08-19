@@ -1,0 +1,20 @@
+{
+  "schema": "scorepeek-ocr-training-checkpoint-source-v1",
+  "model_id": "pp-ocrv6-small-rec-pretrained-v1",
+  "model_name": "PP-OCRv6_small_rec",
+  "source_url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_pretrained_model/PP-OCRv6_small_rec_pretrained.pdparams",
+  "sha256": "25c9bd54b0e5900916e8bb6ada938abeffb1eac1baedac0ca54a45b1c9310825",
+  "bytes": 124912348,
+  "license_id": "Apache-2.0",
+  "license_url": "https://github.com/PaddlePaddle/PaddleOCR/blob/v3.7.0/LICENSE",
+  "paddleocr_version": "3.7.0",
+  "paddlepaddle_version": "3.3.1",
+  "training_config": {
+    "path": "configs/rec/PP-OCRv6/PP-OCRv6_small_rec.yml",
+    "sha256": "5efcffafdd9f5375bb5917db0a050afb52a319bf6e9bcda5a594dd49a268df43"
+  },
+  "character_dictionary": {
+    "path": "ppocr/utils/dict/ppocrv6_dict.txt",
+    "sha256": "b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d"
+  }
+}

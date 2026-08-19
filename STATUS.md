@@ -316,7 +316,7 @@ is outside this checkpoint.
 
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
   The current workspace run covered 83 `scorepeek` library tests, 13 binary tests, 55 offline
-  corpus tests, 16 offline Python OCR tests, and the recording-dataset E2E gate.
+  corpus tests, 18 offline Python OCR tests, and the recording-dataset E2E gate.
 - The prior session's 3,061 provisional private labels and bound crops were recovered from its
   temporary tree into an operator-owned stable private-artifact root, with all crop paths and
   complete file/pixel SHA-256 evidence revalidated after relocation. The resulting song-disjoint
@@ -334,6 +334,18 @@ is outside this checkpoint.
   `9be3c219834e9dbd8c4355fbe810ab55cda85e5399165f95c881221ebfdc839c`; its dictionary is
   `b3a5e331f8f5ccf70a228c7d831ef945b87aa7a098b70f68f2b58fea88c1358f` and derived config is
   `bb02e772797c3f733ff7af6b6b49f74c37901b60d844edeb513857b816935d2d`.
+- The official PP-OCRv6 small recognition training checkpoint is registered at exact SHA-256
+  `25c9bd54b0e5900916e8bb6ada938abeffb1eac1baedac0ca54a45b1c9310825` (124,912,348
+  bytes) and stored content-addressed outside the repository. Its 422 tensor names match the
+  prepared graph: 418 shapes match directly and the four class-dependent CTC/NRTR tensors differ
+  only by the 15 appended characters. A create-only private initializer maps every baseline
+  dictionary character plus space and all NRTR special tokens, leaving only those 15 new classes
+  randomly initialized. Aggregate open-text exact recognition on all 329 provisional validation
+  crops measured 275/329 (83.6%) before fine-tuning; both scratch and Paddle's ordinary
+  shape-matched-only load measured 0/329 in the same probe. The initialized checkpoint is
+  `e2fcc377e9705e1059a31dd6000ee0968bf0628bee396ef9c72d1672240fa9ba` (124,965,680
+  bytes). This selects the mapped initializer for the private pilot but does not make the
+  provisional labels accepted holdout truth or establish a release threshold.
 - The new title-model requirements regressions preserve baseline scalar coverage, append missing
   catalog characters, increase exact repeated-token CTC alignment length, and reject invalid or
   empty variant sets. The music-list row regressions cover all six explicit states, require
@@ -663,9 +675,10 @@ is outside this checkpoint.
   intentionally remain unknown for vertical motion, unobservable locked-row color, possible
   right-clipping, or redacted secret-title pixels. The presentation clusters are private
   single-recording evidence, not a supported classifier or reusable automatic threshold. The
-  scorepeek-owned dictionary and title-disjoint preparation have been produced from the private
-  artifacts, but no scorepeek-owned model has been trained or exported. The derived 65-timestep,
-  18,725-class graph shape is a requirement, not verified model output, until export and parity.
+  scorepeek-owned dictionary, title-disjoint preparation, and mapped training initializer have been
+  produced from the private artifacts, but no scorepeek-owned model has been trained or exported.
+  The initializer's observed 65-timestep, 18,725-class CTC output is not an exported runtime graph
+  until export and parity.
   The export-record boundary still has synthetic contract coverage only. The 3,061 catalog-bound
   music-list labels are provisional only: the 2,611 automated associations and 450 visual
   associations do not establish accepted holdout truth, a stability threshold, or a release gate.
@@ -734,10 +747,10 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Preserve result certainty as the primary gate. Register a compatible pretrained training checkpoint
-or explicitly choose scratch initialization before starting the private development run; the current
-repository pins the Paddle training source and inference model but no compatible pretrained training
-checkpoint. Keep the 24
+Preserve result certainty as the primary gate. Start the private development run from the registered,
+dictionary-mapped initializer. Compare short fixed-step checkpoints on the provisional validation
+split and stop at the cheapest checkpoint that improves measured recognition; do not spend a full
+training schedule merely because the prepared dictionary differs from the official checkpoint. Keep the 24
 INFINITAS-blue, 299 LEGGENDARIA-purple, 351 locked/unobservable, 438
 possible right-clips, vertical-motion, selected, obscured, and redacted-secret groups quarantined
 until their separate correction or completeness evidence exists. Using the completed preparation,

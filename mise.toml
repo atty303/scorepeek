@@ -353,6 +353,14 @@ set -euo pipefail
 exec uv run --locked --no-dev python -m scorepeek_ocr.training_artifacts record-export "$@"
 '''
 
+[tasks."ocr:title-model:initialize"]
+description = "Map a registered PP-OCRv6 checkpoint to a prepared private dictionary and probe validation"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.training_initializer "$@"
+'''
+
 [tasks."ocr:parity:reference"]
 description = "Generate a digest-bound Paddle parity reference from a verified title crop"
 run = '''
