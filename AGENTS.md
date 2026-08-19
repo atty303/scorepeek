@@ -62,6 +62,15 @@
 
 ## Private data and credentials
 
+- In this repository, `private` primarily describes storage, provenance,
+  redistribution, and repository-inclusion boundaries; it does not by itself
+  mean confidential. Catalog strings and artifact paths or IDs are not secrets
+  unless separately identified as credentials, personal or player data, or
+  explicitly redacted content. Do not add output suppression, path redaction,
+  fixed generic errors, or privacy-review requirements solely because an
+  artifact is called private. Continue to keep raw external catalog snapshots
+  and generated catalogs out of commits and honor source-reuse and
+  personal-data boundaries.
 - Never commit captured frames, game assets, player/rival data, raw external
   catalog snapshots, generated catalogs, OCR models, OBS passwords, tokens, or
   raw external API responses containing secrets.
