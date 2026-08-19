@@ -409,20 +409,34 @@ is outside this checkpoint.
   hue ordering successfully surfaced locked/dimmed and LEGGENDARIA-purple candidates, but also
   selected, clipped, unlock-condition, and scrolling UI samples; those measurements therefore
   remain review-ordering hints rather than labels.
-- The first low-luma stationary review batch contains 394 exact-pixel groups across seven private
-  contact sheets. Visual inspection confirmed that the batch mixes complete dimmed titles with
-  left/right-clipped titles, nearly empty rows, and selection-boundary UI. None of the 394 groups
-  has been bulk-labelled. Full-frame review corrected the initial crop-only interpretation: all 34
-  dark groups from geometric slot 10 carry the selection boundary and are `selected`, including the
-  four groups initially misclassified as empty or left-clipped. They cover 44 occurrences. Review
-  of the following geometric slot identified 36 exact groups and 42 occurrences as explicit
-  unlock-condition bars, while the sole normal-title group was visibly right-clipped and covers two
-  occurrences. A separate edge-focused pass settled 17 visibly right-clipped title groups covering
-  24 occurrences without using the edge measurement itself as a label. The cumulative private
-  decision document therefore settles 88 groups and 112 occurrences, leaving 9,488 unknown. The
-  resulting private motion artifact was regenerated and independently verified with the existing
-  183 stationary and 57 scrolling pair labels. All uncertain groups remain unknown by
-  construction.
+- Review disposition now covers all 7,977 exact-pixel groups and all 9,600 occurrences. Full-frame
+  inspection established that every one of the 420 slot-10 groups carries the selection boundary,
+  so selection takes precedence over crop-only clipping or apparent emptiness. They cover 480
+  occurrences. Review of all 448 exact groups observed directly below those selections retained
+  exactly 36 groups and 42 occurrences as explicit unlock-condition bars; partially overlaid BIT
+  text and ordinary titles were not promoted. Fixed list geometry separately established that
+  stationary slots 0, 3, 9, and 19 are obscured by other UI, yielding 1,159 `clipped: obscured`
+  groups and 1,464 occurrences. The earlier full-frame pass retains 18 `clipped: right` groups and
+  26 occurrences.
+- Private brightness and foreground-color features were used only after contact-sheet calibration
+  exposed disjoint reviewed clusters and an empty ambiguity band. The settled complete available
+  title set contains 3,062 standard groups (3,990 occurrences), 24 INFINITAS-blue groups (24
+  occurrences), and 299 LEGGENDARIA-purple groups (382 occurrences). The private canonical decision
+  document at SHA-256 `2793a9c28702918160bb42ff2a41d228ad7beabe497ff42888bb379407c555bc`
+  therefore settles 5,018 groups and 6,408 occurrences. The plan- and decision-digest-bound private
+  disposition at SHA-256 `6fb95524787bf04ba401398a1e181c11347a2aa85d52df5f2008f46f94b4eeeb`
+  records every remaining group as reason-bearing unknown: 2,166 vertical-motion groups, 351
+  locked rows whose color domain is not observable without correction, 438 possible right-clips,
+  and four intentionally redacted secret titles. Those 2,959 groups cover 3,192 occurrences and
+  were not guessed.
+- Partial review application independently reconstructed and verified the original plan, accepted
+  all 5,018 decisions, and applied them to exactly 6,408 occurrences. The resulting private request
+  SHA-256 is `6360ddb432dd5394ada3a4eb34d7a55732ec859a4d934df0163822ae534f648c`.
+  Regeneration and independent verification produced private motion artifact SHA-256
+  `8bcd7851f96bb61928252b0ae7b21799f01098f777b2bd4220574bbd3750b163`
+  with the existing 183 stationary and 57 scrolling pair labels, zero unknown pair-motion labels,
+  and aggregate RGB L1 from 0 through 40,782,712. No review sheet, captured pixel, decision,
+  disposition, request, or artifact was added to the repository.
 - The same gate normalized selected frames with artifact
   `0441099011fdd09d372d6c9b5e18d6c4f2da2809a653e01f8ccb55756d8658cf`.
   A separately invoked explicit FFmpeg transform produced the same file SHA-256
@@ -567,11 +581,13 @@ is outside this checkpoint.
   flow remain unvalidated. The observed 649 ms CPU process and inference time
   is a single warmed development-host measurement, not a performance gate.
 - The title-model export requirements still have only synthetic contract coverage. The music-list
-  contract has one artifact-bound real-row verification and a complete measured pair artifact, but
-  although all 240 pair motion states have now been human-reviewed and exact duplicates have a
-  verified review plan, 7,889 unique-pixel groups covering 9,488 row presentation annotations
-  still await human review. No scorepeek-owned dictionary/model has been trained or exported, and
-  no accepted stability threshold or provisional music-list label exists.
+  contract has one artifact-bound real-row verification, a complete measured pair artifact, and a
+  review disposition for all 7,977 exact-pixel groups, but 2,959 groups covering 3,192 occurrences
+  intentionally remain unknown for vertical motion, unobservable locked-row color, possible
+  right-clipping, or redacted secret-title pixels. The presentation clusters are private
+  single-recording evidence, not a supported classifier or reusable automatic threshold. No
+  scorepeek-owned dictionary/model has been trained or exported, and no accepted stability
+  threshold or catalog-bound provisional music-list label exists.
 - The live `ObservedFrame`/domain-normalizer/`CanonicalFrame` runtime boundary,
   model-bundle promotion, and last-known-good model rollback remain
   unimplemented. Recognition accepts only digest-bound offline canonical
@@ -631,20 +647,18 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Preserve result certainty as the primary gate. Use the verified private review plan and partial
-review-application command to inspect the remaining 7,889 exact-pixel groups in bounded batches and
-propagate each decision only to the listed identical occurrences, replacing the remaining 9,488
-`unknown` row semantics in the private motion request with
-human-observed title, selected, clipped, non-title, or still-unobservable content. Retain the
-already-reviewed pair motion independently. For titles, record availability (`available` or
-`locked_dimmed`) and color domain (`standard`, `infinitas_blue`, or `leggendaria_purple`)
-independently. Classify separators
-and unlock-condition bars as explicit non-title slots; the selected row and the unlock condition
-displayed below it must remain separate geometric slots. Regenerate and verify the immutable
-complete-pair artifact before accepting the reviewed pair-level gap as a profile- and
-presentation-bound stability threshold. Then deduplicate settled complete non-selected standard
-rows and generate catalog-digest-bound provisional labels; keep locked and non-standard color
-domains quarantined until a measured correction exists. Use the title-model export requirements to implement the
+Preserve result certainty as the primary gate. Start from the plan- and decision-digest-bound
+private disposition together with the independently verified private motion artifact. Deduplicate
+only the 3,062 settled complete, available,
+non-selected standard groups and generate catalog-digest-bound provisional labels without using
+the 2,959 reason-bearing unknown groups. Keep the 24 INFINITAS-blue, 299 LEGGENDARIA-purple, and 351
+locked/unobservable groups quarantined until separately versioned color/dimming corrections are
+measured against artifact-bound observations. The 438 possible right-clips require full-frame or
+independent complete-title evidence before promotion; vertical-motion and redacted-secret groups
+remain exclusions rather than a backlog to guess. Calibrate any profile- and presentation-bound
+pair-level stability threshold only from admissible settled rows, preserve the already-reviewed
+pair motion independently, and fail closed if a retained domain does not establish separation.
+Use the title-model export requirements to implement the
 offline scorepeek-owned dictionary/training/export record without silently dropping a catalog
 variant. After complete dictionary coverage is available, execute replay over the two result
 observations and the larger music-select set before fixing absolute or runner-up thresholds. Do not
