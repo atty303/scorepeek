@@ -32,6 +32,8 @@ authoritative.
 - [ADR 0020: Select an official ONNX recognizer before custom training](0020-select-official-onnx-before-custom-training.md)
   supersedes ADR 0006 for its mandatory fine-tuning/custom-export sequence and ADR 0018 only for
   model candidates requiring set-inclusion growth.
+- [ADR 0021: Search the full song catalog from imperfect text observations](0021-search-the-full-song-catalog-from-imperfect-text.md)
+  supersedes ADR 0020 only for its direct-encodability or derived-signature evaluation gate.
 
 ## Historical
 

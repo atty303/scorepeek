@@ -409,6 +409,14 @@ set -euo pipefail
 exec uv run --locked --no-dev python -m scorepeek_ocr.training_census "$@"
 '''
 
+[tasks."ocr:official-onnx:census"]
+description = "Measure an official ONNX recognizer with full-catalog song search"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.official_census "$@"
+'''
+
 [tasks."ocr:parity:reference"]
 description = "Generate a digest-bound Paddle parity reference from a verified title crop"
 run = '''

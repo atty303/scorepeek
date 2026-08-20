@@ -768,6 +768,24 @@ is outside this checkpoint.
   thresholds or select a runtime graph. ADR 0020 invalidates the assumption that this mapped
   initializer should be the next runtime baseline: official ONNX recognition artifacts must be
   measured first under the same song-identity contract.
+  ADR 0021 supersedes ADR 0020's direct-encodability evaluation gate. The official model's text is
+  treated as an imperfect observation and searched against every complete catalog title; dictionary
+  and 40-timestep limitations do not remove or rewrite songs. The immutable official PP-OCRv6-small
+  ONNX graph was run once over all 3,061 stationary crops, then three global searches used the same
+  output across all 1,879 catalog songs. Exact comparison-key search fully recognized 991/1,119
+  songs with zero wrong unique crop decisions and 269 unknown/tied crops. Absolute Levenshtein
+  distance reached 1,108/1,119 with four wrong unique and 18 unknown/tied crops. Normalized
+  Levenshtein similarity reached 1,110/1,119 with three wrong unique and 16 unknown/tied crops.
+  Its minimum correct margin 0.0434782505 overlaps its maximum incorrect margin 0.0519480556, so it
+  is an evaluation lead rather than a live acceptance policy. The reproducible private v6 census
+  artifact has SHA-256 `606c952245675c0c10a230b9e26a5ba398687faea790d952f292a89015916913`
+  and retains digest-bound open-text observations at SHA-256
+  `e3efb4b3963bc1ade3fe67925cbc8510a396152676884e19a5e344ac00db6388`.
+  The decoder rejected non-finite or negative output and accepted the registered 18,710-class
+  softmax within a measured `0.0001` row-sum tolerance; the observed boundary case summed to
+  `1.000023766`. Replaying those 3,061 observations through the
+  same census entry point without model arguments reproduced all three strategy metrics without
+  running ONNX again.
   The 3,061 catalog-bound
   music-list labels are provisional only: the 2,611 automated associations and 450 visual
   associations do not establish accepted holdout truth, a stability threshold, or a release gate.
@@ -839,29 +857,30 @@ is outside this checkpoint.
 ## Next executable task
 
 Do not continue from the mapped initializer, re-evaluate the six historical fine-tuning pilots, export
-a custom runtime graph, or start another OCR training run. Generalize the private census to consume a
-registered official ONNX recognition model with its own immutable preprocessing, dictionary, input,
-timestep, and output contract. First measure the already registered PP-OCRv6-small official ONNX over
-all 3,061 eligible stationary crops and 1,119 songs. Replace the old every-variant coverage rejection
-with a song-domain safety audit: every active song must retain an encodable sequence or an explicitly
-accepted collision-safe model-free signature, and an unrepresented song must not silently leave the
-competitive domain.
+a custom runtime graph, or start another OCR training run. Keep the official PP-OCRv6-small v6 census
+as the first model/decoder matrix row. Inspect its nine normalized-distance incomplete songs and three
+wrong unique crop decisions, then test the lowest-cost global search alternatives on the already
+decoded observations where possible. Keep all 1,879 complete catalog titles in competition; do not
+delete, truncate, or replace a title because the current model cannot encode it exactly. Prefer a
+global policy that increases fully correct songs while eliminating wrong unique decisions. Do not
+derive an acceptance threshold from the positive-only corpus or select normalized distance merely
+because it currently has the highest coverage.
 
 Then register and measure the official ONNX PP-OCRv6 tiny/medium and PP-OCRv5 mobile/server candidates
 when their official immutable artifact, license, preprocessing, and dictionary metadata can be bound.
 Use the same crops, catalog, comparison key, song-decision rules, and complete-corpus metric while
 preserving each model's native tensor contract. Compare the unmodified official models first. Apply
 later global decoder alternatives and stationary multi-frame score aggregation uniformly across every
-registered official model whose immutable contract can run and whose song-domain safety audit can be
-satisfied; initial coverage or rank cannot exclude a model, and every contract/safety exclusion must be
-recorded in the comparison matrix. Do not tune one model or song. A candidate may advance only when the complete
+registered official model whose immutable contract can run; initial coverage or rank cannot exclude a
+model, and every contract exclusion must be recorded in the comparison matrix. Do not tune one model
+or song. A candidate may advance only when the complete
 1,119-song census increases the total correctly and uniquely recognized song count. Report gained and
 lost song sets, but do not require set inclusion: a local regression does not outweigh higher global
 coverage. Wrong unique crop decisions remain failures. When correct-song coverage is equal, prefer
 fewer wrong unique crop decisions, then the official model with the smaller and simpler runtime bundle,
 then measured target latency. Title-disjoint validation/evaluation remain guards rather than the
-selection oracle. Do not add broad Unicode compatibility, case, Greek/Latin-confusable, or edit-distance
-folding, and do not tune live thresholds from this positive-only corpus. Keep the 24
+selection oracle. Do not add broad Unicode compatibility, case, Greek/Latin-confusable folding, or
+per-song edit-distance exceptions, and do not tune live thresholds from this positive-only corpus. Keep the 24
 INFINITAS-blue and 299 LEGGENDARIA-purple groups out of training until their labels are established
 independently of the recognition output; evaluate any future color correction under the same
 explicit transform ID in training and replay.

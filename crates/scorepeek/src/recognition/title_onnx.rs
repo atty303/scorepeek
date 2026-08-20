@@ -4,6 +4,8 @@ use std::fmt::Write as _;
 use std::fs::File;
 use std::io::Read as _;
 use std::path::Path;
+use std::path::PathBuf;
+use std::time::Instant;
 
 use ort::session::Session;
 use ort::value::Tensor;
@@ -16,6 +18,7 @@ use super::title_decoder::{
 };
 use super::title_preprocessor::{
     TITLE_INPUT_SHAPE, TITLE_INPUT_VALUES, TITLE_PREPROCESSOR_ID, preprocess_title_crop,
+    preprocess_title_image,
 };
 use super::{RecognitionError, read_title_crop_artifact};
 use crate::catalog::Catalog;
@@ -35,6 +38,10 @@ const MAX_INPUT_ABSOLUTE_ERROR: f32 = 1e-6;
 const MAX_CANDIDATE_LOG_PROBABILITY_ERROR: f64 = 1e-3;
 const IDENTITY_PRESENTATION_TRANSFORM_ID: &str = "scorepeek-title-rgb-identity-v1";
 const CHANNEL_MAX_PRESENTATION_TRANSFORM_ID: &str = "scorepeek-title-channel-max-rgb-v1";
+const MAX_BATCH_REQUEST_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_BATCH_CROP_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_BATCH_ROWS: usize = 4_096;
+const CENSUS_BATCH_SIZE: usize = 8;
 
 #[derive(Debug)]
 pub enum OnnxParityError {
@@ -44,6 +51,9 @@ pub enum OnnxParityError {
     Recognition(RecognitionError),
     CatalogDecoder(CatalogTitleDecoderError),
     InvalidArtifact,
+    NonFiniteProbability,
+    NegativeProbability,
+    ProbabilityRowSum { sum: f64 },
     TensorMismatch,
     TokenOrderMismatch,
     CandidateRankingMismatch,
@@ -60,6 +70,18 @@ impl std::fmt::Display for OnnxParityError {
                 write!(formatter, "catalog title scoring failed: {error}")
             }
             Self::InvalidArtifact => formatter.write_str("ONNX parity artifact is invalid"),
+            Self::NonFiniteProbability => {
+                formatter.write_str("ONNX output contains a non-finite probability")
+            }
+            Self::NegativeProbability => {
+                formatter.write_str("ONNX output contains a negative probability")
+            }
+            Self::ProbabilityRowSum { sum } => {
+                write!(
+                    formatter,
+                    "ONNX output probability row does not sum to one: {sum:.9}"
+                )
+            }
             Self::TensorMismatch => formatter.write_str("Paddle and ONNX tensors differ"),
             Self::TokenOrderMismatch => formatter.write_str("Paddle and ONNX token order differs"),
             Self::CandidateRankingMismatch => {
@@ -211,6 +233,31 @@ pub struct OnnxParitySummary {
     pub candidate_ranking_matches: bool,
     pub top_candidate_song_id: String,
     pub catalog_title_decision: CatalogTitleDecision,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OfficialOnnxDecodeRequest {
+    schema: String,
+    rows: Vec<OfficialOnnxDecodeRequestRow>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OfficialOnnxDecodeRequestRow {
+    path: PathBuf,
+    file_sha256: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OfficialOnnxDecodeSummary {
+    pub schema: &'static str,
+    pub model_id: String,
+    pub model_sha256: String,
+    pub dictionary_sha256: &'static str,
+    pub preprocessor_id: &'static str,
+    pub elapsed_ms: u128,
+    pub decoded_text: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -392,6 +439,30 @@ fn validate_probability_rows(probabilities: &[f32], classes: usize) -> Result<()
     Ok(())
 }
 
+fn validate_argmax_probability_rows(
+    probabilities: &[f32],
+    classes: usize,
+) -> Result<(), OnnxParityError> {
+    const SUM_TOLERANCE: f64 = 1e-4;
+
+    if classes == 0 || !probabilities.len().is_multiple_of(classes) {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    for row in probabilities.chunks_exact(classes) {
+        let sum: f64 = row.iter().map(|value| f64::from(*value)).sum();
+        if row.iter().any(|value| !value.is_finite()) {
+            return Err(OnnxParityError::NonFiniteProbability);
+        }
+        if row.iter().any(|value| *value < 0.0) {
+            return Err(OnnxParityError::NegativeProbability);
+        }
+        if (sum - 1.0).abs() > SUM_TOLERANCE {
+            return Err(OnnxParityError::ProbabilityRowSum { sum });
+        }
+    }
+    Ok(())
+}
+
 /// Runs the registered Rust preprocessor and ONNX graph against one verified title crop.
 ///
 /// The Paddle reference remains an independent parity oracle for the complete input and output
@@ -491,6 +562,123 @@ pub fn compare_paddle_onnx(
         top_candidate_song_id: actual[0].to_owned(),
         catalog_title_decision,
     })
+}
+
+/// Runs the registered official ONNX recognizer over a digest-bound batch of strict P6 crops.
+///
+/// This boundary returns only the model's collapsed open-text observations. Song matching remains
+/// a separate offline evaluation concern so a model's dictionary or timestep limit cannot remove
+/// catalog songs from the comparison domain.
+///
+/// # Errors
+/// Returns an error for unregistered model or dictionary bytes, malformed crop evidence, or an
+/// unexpected ONNX tensor contract.
+pub fn decode_official_onnx_crops(
+    model_path: &Path,
+    inference_yml: &Path,
+    request_path: &Path,
+) -> Result<OfficialOnnxDecodeSummary, OnnxParityError> {
+    let manifest = OnnxModelManifest::load_registered()?;
+    let model_bytes = read_exact_regular(model_path, MODEL_BYTES)?;
+    if encode_sha256(&model_bytes) != manifest.sha256 {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    let dictionary =
+        load_dictionary_contract(inference_yml, TITLE_DICTIONARY_SHA256, OUTPUT_SHAPE[2])?;
+    let request_bytes = read_bounded_regular(request_path, MAX_BATCH_REQUEST_BYTES)?;
+    let request: OfficialOnnxDecodeRequest = serde_json::from_slice(&request_bytes)?;
+    if request.schema != "scorepeek-private-official-onnx-decode-request-v1"
+        || request.rows.is_empty()
+        || request.rows.len() > MAX_BATCH_ROWS
+    {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    let mut crops = Vec::with_capacity(request.rows.len());
+    for row in &request.rows {
+        if !row.path.is_absolute() || !valid_sha256(&row.file_sha256) {
+            return Err(OnnxParityError::InvalidArtifact);
+        }
+        let bytes = read_bounded_regular(&row.path, MAX_BATCH_CROP_BYTES)?;
+        if encode_sha256(&bytes) != row.file_sha256 {
+            return Err(OnnxParityError::InvalidArtifact);
+        }
+        let (width, height, pixels) = strict_p6(&bytes)?;
+        crops.push(preprocess_title_image(pixels, width, height)?);
+    }
+
+    let started = Instant::now();
+    let mut session = Session::builder()?.commit_from_memory(&model_bytes)?;
+    if session.inputs().len() != 1 || session.outputs().len() != 1 {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    let mut decoded_text = Vec::with_capacity(crops.len());
+    for batch in crops.chunks(CENSUS_BATCH_SIZE) {
+        let batch_size = batch.len();
+        let input: Vec<_> = batch.iter().flatten().copied().collect();
+        let input_shape = [batch_size, 3, TITLE_INPUT_SHAPE[2], TITLE_INPUT_SHAPE[3]];
+        let outputs = session.run(ort::inputs![Tensor::from_array((input_shape, input))?])?;
+        let (shape, probabilities) = outputs[0].try_extract_tensor::<f32>()?;
+        let expected_shape = [
+            i64::try_from(batch_size).map_err(|_| OnnxParityError::InvalidArtifact)?,
+            i64::try_from(OUTPUT_SHAPE[1]).map_err(|_| OnnxParityError::InvalidArtifact)?,
+            i64::try_from(OUTPUT_SHAPE[2]).map_err(|_| OnnxParityError::InvalidArtifact)?,
+        ];
+        if shape.as_ref() != expected_shape
+            || probabilities.len() != batch_size * OUTPUT_SHAPE[1] * OUTPUT_SHAPE[2]
+        {
+            return Err(OnnxParityError::InvalidArtifact);
+        }
+        validate_argmax_probability_rows(probabilities, OUTPUT_SHAPE[2])?;
+        for output in probabilities.chunks_exact(OUTPUT_SHAPE[1] * OUTPUT_SHAPE[2]) {
+            let (_, collapsed) = argmax_tokens(output, OUTPUT_SHAPE[1], OUTPUT_SHAPE[2])?;
+            let mut text = String::new();
+            for token in collapsed {
+                text.push_str(
+                    dictionary
+                        .get(usize::try_from(token).map_err(|_| OnnxParityError::InvalidArtifact)?)
+                        .ok_or(OnnxParityError::InvalidArtifact)?,
+                );
+            }
+            decoded_text.push(text);
+        }
+    }
+    Ok(OfficialOnnxDecodeSummary {
+        schema: "scorepeek-official-onnx-open-text-batch-v1",
+        model_id: manifest.model_id,
+        model_sha256: manifest.sha256,
+        dictionary_sha256: TITLE_DICTIONARY_SHA256,
+        preprocessor_id: TITLE_PREPROCESSOR_ID,
+        elapsed_ms: started.elapsed().as_millis(),
+        decoded_text,
+    })
+}
+
+fn strict_p6(bytes: &[u8]) -> Result<(usize, usize, &[u8]), OnnxParityError> {
+    let mut parts = bytes.splitn(4, |byte| *byte == b'\n');
+    let magic = parts.next().ok_or(OnnxParityError::InvalidArtifact)?;
+    let dimensions = parts.next().ok_or(OnnxParityError::InvalidArtifact)?;
+    let maximum = parts.next().ok_or(OnnxParityError::InvalidArtifact)?;
+    let pixels = parts.next().ok_or(OnnxParityError::InvalidArtifact)?;
+    let dimensions = std::str::from_utf8(dimensions)
+        .map_err(|_| OnnxParityError::InvalidArtifact)?
+        .split_whitespace()
+        .map(str::parse::<usize>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| OnnxParityError::InvalidArtifact)?;
+    let [width, height] = dimensions.as_slice() else {
+        return Err(OnnxParityError::InvalidArtifact);
+    };
+    if magic != b"P6"
+        || maximum != b"255"
+        || *width == 0
+        || *height == 0
+        || *width > 4_096
+        || *height > 4_096
+        || pixels.len() != width * height * 3
+    {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    Ok((*width, *height, pixels))
 }
 
 fn load_verified_title_inputs(
@@ -825,7 +1013,10 @@ fn encode_sha256(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{argmax_tokens, ctc_log_probability, valid_presentation_transform_id};
+    use super::{
+        argmax_tokens, ctc_log_probability, strict_p6, valid_presentation_transform_id,
+        validate_argmax_probability_rows,
+    };
 
     #[test]
     fn export_contract_accepts_only_registered_presentation_transforms() {
@@ -875,5 +1066,23 @@ mod tests {
         let (raw, collapsed) = argmax_tokens(&probabilities, 3, 2).unwrap();
         assert_eq!(raw, [0, 0, 0]);
         assert!(collapsed.is_empty());
+    }
+
+    #[test]
+    fn batch_crop_reader_accepts_only_strict_complete_p6() {
+        let bytes = b"P6\n2 1\n255\n\x00\x01\x02\x03\x04\x05";
+        assert_eq!(strict_p6(bytes).unwrap(), (2, 1, &bytes[11..]));
+        assert!(strict_p6(b"P6\n2 1\n255\n\x00").is_err());
+        assert!(strict_p6(b"P3\n2 1\n255\n\x00\x01\x02\x03\x04\x05").is_err());
+    }
+
+    #[test]
+    fn batch_decode_rejects_invalid_probability_rows() {
+        assert!(validate_argmax_probability_rows(&[0.0, 1.0], 2).is_ok());
+        assert!(validate_argmax_probability_rows(&[0.000_05, 1.0], 2).is_ok());
+        assert!(validate_argmax_probability_rows(&[f32::NAN, 1.0], 2).is_err());
+        assert!(validate_argmax_probability_rows(&[-0.25, 1.25], 2).is_err());
+        assert!(validate_argmax_probability_rows(&[0.25, 0.25], 2).is_err());
+        assert!(validate_argmax_probability_rows(&[0.001, 1.0], 2).is_err());
     }
 }

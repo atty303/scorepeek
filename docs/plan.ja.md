@@ -230,10 +230,10 @@ IDをcandidate artifactへbindする。詳細はADR 0019に従う。
 - model contract: 各公式modelのinput geometry、preprocessing、dictionary、timestepおよびoutput shapeを
   そのままversion固定する。同一評価基準のためにmodel固有contractを変形しない
 - decoder comparison: まず共通の未調整decoderで比較し、その後globalなmodel-free decoder候補を全modelへ
-  同様に適用する。対象はimmutable contractを実行でき、song-domain safety auditが成立する全登録公式model
-  とし、初期coverageや順位では除外しない。実行不能またはsafety不成立のmodelは理由をmatrixへ記録する。
-  全active songはencodable sequenceまたは別途acceptedなcollision-safe signatureとして競合domainに残し、
-  表現不能songを除外して他songをacceptしない
+  同様に適用する。対象はimmutable contractを実行できる全登録公式modelとし、初期coverageや順位では
+  除外しない。dictionaryやtimestepで直接表現できないsongもfull catalog titleのまま距離検索の競合domainへ
+  残し、modelに合わせたtitle削除、短縮または別identityへの置換を行わない。実行不能なmodelは理由を
+  matrixへ記録する
 - training/export: 公式modelとglobal decoder、stationary multi-frame aggregationでも有限corpus goalに
   届かないと実測された場合だけ、pinned Python、Paddle/PaddleOCRによるcustom経路を再検討する
 - runtime: 選定したpinned official ONNXをRust/ONNX Runtimeで実行する。mapped initializerは診断比較に

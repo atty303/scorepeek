@@ -17,13 +17,21 @@ pub fn preprocess_title_crop(rgb: &[u8], roi: Roi) -> Result<Vec<f32>, Recogniti
     {
         return Err(RecognitionError::InvalidCanonicalFrame);
     }
-    let source_width = roi.width as usize;
-    let source_height = roi.height as usize;
-    let resized_height = TITLE_INPUT_SHAPE[2];
-    let resized_width = (resized_height * source_width).div_ceil(source_height);
-    if resized_width > TITLE_INPUT_SHAPE[3] {
+    preprocess_title_image(rgb, roi.width as usize, roi.height as usize)
+}
+
+pub(super) fn preprocess_title_image(
+    rgb: &[u8],
+    source_width: usize,
+    source_height: usize,
+) -> Result<Vec<f32>, RecognitionError> {
+    if source_width == 0 || source_height == 0 || rgb.len() != source_width * source_height * 3 {
         return Err(RecognitionError::InvalidCanonicalFrame);
     }
+    let resized_height = TITLE_INPUT_SHAPE[2];
+    let resized_width = (resized_height * source_width)
+        .div_ceil(source_height)
+        .min(TITLE_INPUT_SHAPE[3]);
 
     let resized = resize_linear_rgb(
         rgb,
@@ -91,7 +99,7 @@ fn resize_linear_rgb(
 )]
 fn interpolation_axis(target: usize, source_size: usize, target_size: usize) -> (usize, [i32; 2]) {
     // These casts reproduce OpenCV's registered double-to-float and float-to-fixed-point path.
-    // All callers use the fixed 600x100 to 288x48 title geometry.
+    // The fixed-point path matches the registered OpenCV linear resize for result and list crops.
     const COEFFICIENT_SCALE: f32 = 2048.0;
     let coordinate = ((target as f64 + 0.5) * source_size as f64 / target_size as f64 - 0.5) as f32;
     if coordinate <= 0.0 {
@@ -155,5 +163,16 @@ mod tests {
             super::super::encode_sha256(&bytes),
             "978a4c52cb1a3644c2904f43ab5252e2fdfc76662eb9ce36ee88aed024649500"
         );
+    }
+
+    #[test]
+    fn wide_music_list_crop_uses_the_complete_registered_input_width() {
+        let rgb = vec![255_u8; 475 * 45 * 3];
+        let tensor = preprocess_title_image(&rgb, 475, 45).unwrap();
+        let plane = 48 * 320;
+        assert_eq!(tensor.len(), TITLE_INPUT_VALUES);
+        assert_eq!(tensor[319].to_bits(), 1.0_f32.to_bits());
+        assert_eq!(tensor[plane + 319].to_bits(), 1.0_f32.to_bits());
+        assert_eq!(tensor[plane * 2 + 319].to_bits(), 1.0_f32.to_bits());
     }
 }

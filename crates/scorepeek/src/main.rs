@@ -30,6 +30,7 @@ fn main() -> ExitCode {
 
 fn run(args: &[OsString]) -> Result<(), String> {
     if let Some(result) = try_provisional_title_candidates(args)
+        .or_else(|| try_official_onnx_decode(args))
         .or_else(|| try_title_model_contract_parity(args))
         .or_else(|| try_title_onnx_parity(args))
         .or_else(|| try_title_dictionary_audit(args))
@@ -127,6 +128,41 @@ fn run(args: &[OsString]) -> Result<(), String> {
         }
         _ => Err("usage: scorepeek --help".to_owned()),
     }
+}
+
+fn try_official_onnx_decode(args: &[OsString]) -> Option<Result<(), String>> {
+    let [
+        recognition,
+        decode,
+        model_flag,
+        model,
+        dictionary_flag,
+        dictionary,
+        request_flag,
+        request,
+    ] = args
+    else {
+        return None;
+    };
+    (recognition == "recognition"
+        && decode == "title-official-onnx-decode"
+        && model_flag == "--model"
+        && dictionary_flag == "--dictionary"
+        && request_flag == "--request")
+        .then(|| {
+            let summary = recognition::decode_official_onnx_crops(
+                Path::new(model),
+                Path::new(dictionary),
+                Path::new(request),
+            )
+            .map_err(|error| error.to_string())?;
+            println!(
+                "{}",
+                serde_json::to_string(&summary)
+                    .map_err(|error| format!("official ONNX decode summary failed: {error}"))?
+            );
+            Ok(())
+        })
 }
 
 fn try_provisional_title_candidates(args: &[OsString]) -> Option<Result<(), String>> {
@@ -763,7 +799,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
+        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
         env!("CARGO_PKG_VERSION")
     );
 }
