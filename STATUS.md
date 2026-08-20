@@ -317,7 +317,7 @@ is outside this checkpoint.
 
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
   The current workspace run covered 91 `scorepeek` library tests, 13 binary tests, 55 offline
-  corpus tests, 48 offline Python OCR tests, and the recording-dataset E2E gate.
+  corpus tests, 66 offline Python OCR tests, and the recording-dataset E2E gate.
 - The prior session's 3,061 provisional private labels and bound crops were recovered from its
   temporary tree into an operator-owned stable private-artifact root, with all crop paths and
   complete file/pixel SHA-256 evidence revalidated after relocation. The resulting song-disjoint
@@ -938,6 +938,37 @@ is outside this checkpoint.
   remains non-distributable until the planned upstream permissions and license
   evidence cover every contributing generation.
 
+The registered PP-OCRv6 tiny bundle has now completed the full provisional census under its
+pixel-exact native dynamic preprocessor. The census ran all 3,061 stationary crops in 128-crop
+process batches while Rust retained only one crop's tensors at a time. The create-only private v1
+artifact is SHA-256 `b7a534b8e488fe7b664331b85d3343269f980f401ba5b9cf8538b9dd725e1ce6`;
+its reusable digest- and row-bound observations are SHA-256
+`df543cd3c0808a1107c08dbb78825ddeef8188b65b06f61ff71297f66c216fe6`. Replaying those
+observations without ONNX produced artifact SHA-256
+`3cab6d47afe26b7c6e32b9658c76ce24f982b4d184f919c850ce5aa3bfd3b555` and byte-identical
+strategy metrics, incomplete-song records, and gain/loss sets. Exact comparison-key search fully
+recognized 803/1,119 songs, made three wrong unique crop decisions, and left 779 crops unknown or
+tied. Absolute Levenshtein reached 1,019 songs with 44 wrong unique and 182 unknown/tied crops,
+gaining 216 songs and losing none relative to exact search. Normalized Levenshtein reached 1,035
+songs with 80 wrong unique and 102 unknown/tied crops, gaining 232 songs and losing none relative
+to exact search. Its minimum correct margin `0.0128205121` overlaps its maximum incorrect margin
+`0.5`; it is neither a live threshold nor a selected model. Tiny emits `V` consistently for all
+three `∀` crops but normalized search maps them uniquely to the wrong song, while all three `〆`
+crops remain empty. These are reusable multiple-path observations, not evidence to route or select
+from the two titles alone. A bounded sibling diagnostic directory is create-only published from a
+marker-complete and synced staging directory, then atomically updates a snapshot
+recording model ID, operation, completed/total crop count, completeness, and stable error type; it
+contains no paths or titles,
+retains only the latest run under a writer lock, and diagnostic recording failure does not change
+the census result. The current boundary also
+publishes the bound observation bytes as a create-only sibling before catalog search, so search
+failure does not require inference again. Final-code replay produced the same
+`3cab6d47afe26b7c6e32b9658c76ce24f982b4d184f919c850ce5aa3bfd3b555` census artifact and a
+sibling observation file at the same `df543cd3c0808a1107c08dbb78825ddeef8188b65b06f61ff71297f66c216fe6`
+digest. Decoder cancellation, timeout, output bounds, and unexpected exceptions now own bounded
+TERM/KILL/wait cleanup for the complete child process group; timeout and other low-cardinality
+failure classes remain distinguishable in the diagnostic snapshot.
+
 ## Next executable task
 
 Do not continue from the mapped initializer, re-evaluate the six historical fine-tuning pilots, export
@@ -950,15 +981,7 @@ recognition path to handle every song. A unified path and bounded multiple-path 
 be compared by global song uniqueness, wrong unique decisions, runtime cost, and implementation
 complexity; that is a selection criterion, not a conclusion from the current 26-crop observation.
 
-The registered tiny graph has now passed the pixel-exact synthetic preprocessing and one-crop native
-execution gates. Extend the official census boundary to consume the registered tiny bundle and its
-dynamic summary schema, then stream the complete 3,061-crop census through the existing full
-competing catalog domain without retaining aggregate input or output tensors. Publish reusable
-digest-bound open-text observations before applying the same exact, absolute-Levenshtein, and
-normalized-Levenshtein global searches used for the small model. Report full song coverage, wrong
-unique crop decisions, unknown/tied crops, and gained/lost song sets. Do not use the successful one
-crop or a one-character-only score to select or reject the model. Then register and measure the
-remaining official PP-OCRv6 medium and PP-OCRv5 mobile/server
+Tiny is measured but not selected. Register and measure the remaining official PP-OCRv6 medium and PP-OCRv5 mobile/server
 candidates under the same complete-census contract; remeasure small with the corrected dynamic
 preprocessor. After every runnable official model has a native baseline, apply any
 global presentation, alias, calibration, or stationary aggregation candidate uniformly to all of

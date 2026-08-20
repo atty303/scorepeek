@@ -224,6 +224,37 @@ for generalization and overfitting; neither substitutes for complete-corpus cove
 offline development measurement and does not calibrate the live absolute-score or runner-up-margin
 rejection thresholds.
 
+`ocr:official-onnx:census` applies the same complete-corpus song-identity measurement to pinned
+official ONNX recognizers without removing or rewriting catalog titles to fit a model dictionary.
+The legacy registered small graph uses explicit `--model` and `--dictionary` files; a registered
+multi-file candidate such as `pp-ocrv6-tiny-rec-onnx-v1` uses its verified `--bundle` directory and
+the model's registered native dynamic preprocessor. Inference is split into 128-crop process
+batches, while the Rust decoder retains only one crop's input and output tensors at a time. Each
+batch response is bound to its request digest and exact model, dictionary, preprocessor, width,
+timestep, and input-tensor digests. The census publishes reusable open-text observations before
+running exact comparison-key, absolute-Levenshtein, and normalized-Levenshtein search over every
+catalog song. The create-only sibling defaults to `<output>.observations.json`, or an explicit new
+`--observation-output` sibling; it therefore survives interruption or failure during catalog
+search. A later run may supply that observation path and digest without model arguments to reproduce
+all three searches without ONNX inference. A successful census also retains the same bytes inside
+its create-only result directory.
+
+By default the command uses one scorepeek-owned
+`.scorepeek-official-census-diagnostic` directory in the output parent. Its fixed marker, writer
+lock, and single mutable `snapshot.json` bound ordinary retention to one latest run and less than
+4 KiB of recording data. A first run completes the marker in a unique sibling staging directory,
+syncs it, and publishes the store without replacing an existing path; later runs require the marker
+exactly and reuse the same directory under the non-blocking writer lock. The recorder retains an open descriptor
+for that exact directory inode, so renaming or replacing the outer pathname cannot redirect later
+updates to an unrelated file. Each snapshot atomically records the current operation, total and
+completed crop counts, model ID, completion state, and a fixed low-cardinality error type. It
+contains neither crop paths nor titles; that allowlist supports low-cost progress and failure
+diagnosis rather than a confidentiality requirement. `--diagnostic-output` selects another owned
+latest-run store and `--no-recording` disables recording. An unowned path, active writer, or
+diagnostic write failure is reported as dropped in the normal summary but does not change the census
+result. The create-only census directory remains the result artifact and never includes this mutable
+progress snapshot.
+
 `ocr:short-title:probe` reproduces bounded observations for explicitly named one-character groups
 without selecting a recognizer. It revalidates the private training input, crop map, registered
 Paddle model, and complete catalog by SHA-256; evaluates the original crop plus two fixed diagnostic
