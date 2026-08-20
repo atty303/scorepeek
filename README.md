@@ -103,6 +103,7 @@ mise run ocr:onnx:model:fetch
 mise run ocr:official-model:fetch -- --model-id pp-ocrv6-tiny-rec-onnx-v1
 mise run ocr:official-model:fetch -- --model-id pp-ocrv6-medium-rec-onnx-v1
 mise run ocr:official-model:fetch -- --model-id pp-ocrv5-mobile-rec-onnx-v1
+mise run ocr:official-model:fetch -- --model-id pp-ocrv5-server-rec-onnx-v1
 mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --output /absolute/private/ocr-result.json
 mise run recognition:title:spike -- --catalog-store /absolute/private/catalog --ocr-text OCR_TEXT --ocr-confidence OCR_CONFIDENCE
 mise run ocr:parity:reference -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --candidates /absolute/private/parity-candidates.json --output /absolute/private/paddle-reference

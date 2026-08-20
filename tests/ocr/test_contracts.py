@@ -1145,6 +1145,21 @@ class ContractTests(unittest.TestCase):
             "da72dc72ca4dc220df0dfde68c1dedc31c58d3e76a25871122e5056227d50092",
         )
 
+    def test_registered_v5_server_onnx_bundle_is_exact(self) -> None:
+        source = load_registered_onnx_bundle("pp-ocrv5-server-rec-onnx-v1")
+        self.assertEqual(source.model_name, "PP-OCRv5_server_rec")
+        self.assertEqual(source.native_contract.output_classes, 18_385)
+        self.assertEqual(
+            {item.filename for item in source.files},
+            {"inference.onnx", "inference.yml"},
+        )
+        onnx = next(item for item in source.files if item.filename == "inference.onnx")
+        self.assertEqual(onnx.bytes, 84_503_027)
+        self.assertEqual(
+            onnx.sha256,
+            "d9dc333c9c7b042c6dffb8e33d72b6f65c9c1d463d0a3c2f78174fea55e94752",
+        )
+
     def test_unregistered_onnx_bundle_is_rejected(self) -> None:
         with self.assertRaises(model_store.ModelStoreError):
             load_registered_onnx_bundle("not-registered")

@@ -55,6 +55,10 @@ const V5_MOBILE_BUNDLE_MANIFEST_BYTES: &[u8] =
     include_bytes!("../../../../models/manifests/pp-ocrv5-mobile-rec-onnx-bundle-v1.json");
 const V5_MOBILE_BUNDLE_MANIFEST_SHA256: &str =
     "ebbd34d2c0e360b1cf55199fc1400886e7bfbb4d6917c7d86a994b79c2256971";
+const V5_SERVER_BUNDLE_MANIFEST_BYTES: &[u8] =
+    include_bytes!("../../../../models/manifests/pp-ocrv5-server-rec-onnx-bundle-v1.json");
+const V5_SERVER_BUNDLE_MANIFEST_SHA256: &str =
+    "4fe22f41508ed31b86e86caa88d433a20702d0a6e95cea07bcaca577441594fe";
 
 #[derive(Debug)]
 pub enum OnnxParityError {
@@ -302,6 +306,26 @@ fn registered_dynamic_bundle(model_id: &str) -> Result<RegisteredDynamicBundle, 
                 (
                     "inference.yml",
                     "5dfeb2777f6d0db8177d8128a8acfcf6e6276dc4ac73ea3bf0dc06d6a5e85d8e",
+                    148_345,
+                ),
+            ],
+        )),
+        "pp-ocrv5-server-rec-onnx-v1" => Ok((
+            V5_SERVER_BUNDLE_MANIFEST_BYTES,
+            V5_SERVER_BUNDLE_MANIFEST_SHA256,
+            "PP-OCRv5_server_rec",
+            "PaddlePaddle/PP-OCRv5_server_rec_onnx",
+            "b70df217f4fd99d14f970bad092cebe7d74cc4d1",
+            18_385,
+            &[
+                (
+                    "inference.onnx",
+                    "d9dc333c9c7b042c6dffb8e33d72b6f65c9c1d463d0a3c2f78174fea55e94752",
+                    84_503_027,
+                ),
+                (
+                    "inference.yml",
+                    "2c719dba044c4e2228aef8ff92f5f575394d75d24c16de096a33b7cfd902f66d",
                     148_345,
                 ),
             ],
@@ -1380,6 +1404,15 @@ mod tests {
         let manifest =
             DynamicBundleManifest::load_registered("pp-ocrv5-mobile-rec-onnx-v1").unwrap();
         assert_eq!(manifest.model_id, "pp-ocrv5-mobile-rec-onnx-v1");
+        assert_eq!(manifest.native_contract.output_classes, 18_385);
+        assert_eq!(manifest.files.len(), 2);
+    }
+
+    #[test]
+    fn registered_v5_server_bundle_manifest_is_exact() {
+        let manifest =
+            DynamicBundleManifest::load_registered("pp-ocrv5-server-rec-onnx-v1").unwrap();
+        assert_eq!(manifest.model_id, "pp-ocrv5-server-rec-onnx-v1");
         assert_eq!(manifest.native_contract.output_classes, 18_385);
         assert_eq!(manifest.files.len(), 2);
     }

@@ -343,13 +343,13 @@ model.
 
 Official-model comparisons use a separate bundle registry so they do not alter
 the accepted small-model parity object. The registered candidates are
-`pp-ocrv6-tiny-rec-onnx-v1`, `pp-ocrv6-medium-rec-onnx-v1`, and
-`pp-ocrv5-mobile-rec-onnx-v1`; each candidate's exact registered file set and
-native input/output contract are revision- and digest-bound together. For example,
+`pp-ocrv6-tiny-rec-onnx-v1`, `pp-ocrv6-medium-rec-onnx-v1`,
+`pp-ocrv5-mobile-rec-onnx-v1`, and `pp-ocrv5-server-rec-onnx-v1`; each candidate's exact registered
+file set and native input/output contract are revision- and digest-bound together. For example,
 `ocr:official-model:fetch -- --model-id pp-ocrv5-mobile-rec-onnx-v1` publishes
 or re-verifies the complete v5 mobile bundle below the private model store. A registered bundle's
 exact file set is model-specific; v6 bundles include inference JSON while the official v5 mobile
-bundle contains only its ONNX graph and inference YAML. Bundle
+and server bundles contain only their ONNX graph and inference YAML. Bundle
 publication holds a writer lock, removes only marker-owned interrupted staging,
 fsyncs files and directory transitions, and permits at most eight bundles and
 512 MiB total (192 MiB per bundle). An already present identical bundle remains
