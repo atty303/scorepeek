@@ -26,6 +26,7 @@ authoritative.
   supersedes ADR 0006 only for private-development training-data source policy.
 - [ADR 0016: Use stationary music-list rows as result-title evidence](0016-use-stationary-list-rows-as-result-title-evidence.md)
 - [ADR 0017: Separate music-list title presentation domains](0017-separate-music-list-title-presentation-domains.md)
+- [ADR 0018: Stage title training on stationary music-list evidence](0018-stage-title-training-on-stationary-music-list-evidence.md)
 
 ## Historical
 

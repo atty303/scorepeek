@@ -3,7 +3,7 @@
 ## 状態
 
 - 初回決定日: 2026-08-15
-- 最終更新日: 2026-08-18
+- 最終更新日: 2026-08-20
 - repository bootstrapとtarget inventory probe: 完了
 - M1.1 catalog contractとlocal federation core: 完了
 - M1.2 live acquisitionとsync orchestration: manual/scheduled syncまで完了
@@ -249,6 +249,18 @@ training corpusは次の二系統に分ける。
 - synthetic: 再配布可能なfontと許諾済み文章またはrandom character n-gramをrenderし、font、
   size、spacing、stretch、outline、shadow、glow、gradient、background、anti-alias、subpixel、
   blur、noise、truncation、4K-to-FHD downscaleを変化させる。
+
+title modelの改善順序は、収集コストの低いstationary・non-selected・完全表示のstandard
+music-list row corpusを先に使う。complete corpusで一意認識できるsong集合を既認識songの回帰なしに
+増やし、title-disjoint splitを汎化guardとして維持する。music-select live認識はscroll停止後の安定状態
+だけを対象とし、scrolling中の認識を要求しない。最終目的とrelease gateはresult記録漏れの防止だが、
+result dataを増やすための専用playは前提にしない。通常のlive sessionからresult evidenceを自動的かつ
+privateに蓄積する。収集はresult detector、OCRまたはevent発行だけをtriggerにせず、見逃したresult
+episodeも後から列挙できる独立session timelineを保持する。result evidenceはtitle、session、play単位で
+開発用transfer sentinelと、model・threshold・candidate選定から凍結したaccepted holdoutへ分ける。
+music-list改善だけでresult改善を主張せず、凍結holdoutまたはcandidate確定後のprospectiveな通常sessionで、
+screen検出、song一意決定、event emission、session処理、dedupを含むcomplete result pathを最終的に
+検証する。詳細はADR 0018に従う。
 
 private developmentでは、catalog digest、source lineage/revisionおよびpermission statusを記録した
 external catalog stringをprovisional training textへ利用できる。このdataとそれを含むmodelは、必要な

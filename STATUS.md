@@ -843,10 +843,21 @@ independently of the recognition output; evaluate any future color correction un
 explicit transform ID in training and replay.
 Keep the 351 locked/unobservable, 438 possible right-clips, vertical-motion, selected, obscured,
 and redacted-secret groups quarantined until their separate correction or completeness evidence
-exists. After a music-select candidate clears the provisional split, export it through the
-registered Paddle/ONNX path and replay the graph before runtime selection. Then collect result
-observations with distinct titles; the current two result screens both contain `ABSOLUTE EVIL` and
-cannot establish title-disjoint result accuracy or thresholds. Do not
+exists. ADR 0018 fixes this music-list-first sequence as a low-collection-cost surrogate for the
+non-negotiable result-recording goal. Music-select live recognition needs only a calibrated stable
+state after scrolling stops; scrolling recognition is not required. After a music-select candidate
+clears the provisional split, export it through the registered Paddle/ONNX path and replay the graph
+before runtime selection. Collect result observations passively from ordinary live sessions rather
+than requiring dedicated data-collection play. Preserve an independently reviewable session timeline
+that can enumerate result episodes even when detection, OCR, and event emission all miss them; the
+recognition path cannot be the sole evidence trigger. Split naturally accumulated result evidence by
+title, session, and play into a development transfer sentinel and a frozen accepted holdout. Replay
+viable candidates only against the sentinel; final acceptance uses the frozen holdout or prospective
+ordinary sessions collected after model and thresholds are fixed. The current two result screens both
+contain `ABSOLUTE EVIL` and cannot establish title-disjoint result accuracy or thresholds. Music-list
+coverage and sentinel replay are not result release-accuracy claims; final acceptance must cover
+result screen detection, unique song resolution, event emission, session handling, and deduplication.
+Do not
 tune recognition thresholds from the current two recordings, promote diagnostic commands into
 accepted recognition, recognize bare PPM or `ObservedFrame`, auto-download a runtime model, or
 treat the OBS profile, current ROIs, confidence, timing, or diagnostic thresholds as supported.
