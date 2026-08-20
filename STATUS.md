@@ -757,6 +757,17 @@ is outside this checkpoint.
   incomplete: `ΕΛΠΙΣ`, `〆`, `Ｘ↑Ｘ↓`, `ＰＡＳＴＥＬＩＳＭ`, and `∀`. Correct and incorrect margins
   overlap, so this census does not calibrate the live rejection thresholds. The winner's observed
   65-timestep, 18,725-class CTC output is not yet a selected exported runtime graph.
+  Follow-up investigation established that this census does not yet apply the accepted exact-first,
+  bounded ASCII/fullwidth comparison key to catalog-constrained CTC candidates. Both
+  `ＰＡＳＴＥＬＩＳＭ` crops produced ASCII `PASTELISM` from the provisional-label source model at
+  confidence above 0.9998 and associate uniquely with the correct song through the comparison key,
+  but the Python census and Rust catalog-title decoder tokenize only the catalog's fullwidth
+  variant. All seven separately evaluated census models select `RISLIM` instead, with runner-up
+  margins between approximately 9.7 and 11.1; their score for an ASCII folded alias has not yet been
+  measured. The missing candidate-domain integration is a confirmed decoder-contract defect and the
+  present result cannot establish that these two crops require training. Whether the corrected
+  candidate domain recovers them under each retained checkpoint remains unverified; the reported
+  1,114/1,119 model coverage must be remeasured after the correction.
   The 3,061 catalog-bound
   music-list labels are provisional only: the 2,611 automated associations and 450 visual
   associations do not establish accepted holdout truth, a stability threshold, or a release gate.
@@ -827,17 +838,30 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Keep the catalog-v2 checkpoint as the current private winner. Improve music-select recognition from
-the standard domain first. Its five incomplete corpus songs consist of three train songs (`〆`,
-`ＰＡＳＴＥＬＩＳＭ`, and `∀`) with eight failed crops, one validation song (`Ｘ↑Ｘ↓`), and one evaluation
-song (`ΕΛΠΙΣ`). Run the smallest targeted candidate using only those eight already independent train
-crops; do not train on the validation or evaluation failures. A candidate may advance only when the
-complete 1,119-song census preserves every fully recognized song and strictly grows that song set
-beyond 1,114. Validation, evaluation, strict text, and comparison-key counts remain diagnostics and
-may move independently; no split alone is the finite-corpus selection oracle. Runner-up and absolute
-thresholds remain uncalibrated until negative, transition, and similar-title live inputs exist. The
-channel-maximum transform matches the best coverage but is not preferred over the identity-domain
-catalog-v2 checkpoint, is not a default, and is not a live-only correction. Keep the 24
+Keep the catalog-v2 checkpoint as the current private winner. Before any further title-model
+training, correct the catalog-constrained CTC candidate domain in both the Python census and Rust
+catalog-title decoder, which remains an offline diagnostic and future runtime path, so the accepted
+`scorepeek-title-nfc-ucd17-exact-then-ascii-width-fold-v2` identity contract is applied consistently.
+Preserve exact-first precedence; derive bounded ASCII/fullwidth aliases only when they identify one
+song, and leave a cross-song folded collision unknown rather than guessing. Bind the comparison-key
+ID to the evaluated candidate artifact and add Python/Rust parity coverage for candidate sequences,
+scores, and ranking. Rerun the complete 1,119-song census for every retained checkpoint before
+changing model weights. Verify and report whether the folded alias changes either existing
+`ＰＡＳＴＥＬＩＳＭ` crop to the unique correct song under each checkpoint, while preserving every song
+previously fully recognized by catalog-v2. Do not assume the new finite-corpus baseline becomes
+1,115/1,119 before that measurement.
+
+Only after that remeasurement, diagnose the remaining failures from their catalog ranks and CTC
+scores and compare lower-cost non-training remedies, including stationary multi-frame score
+aggregation, before selecting another training candidate. Do not train on `ＰＡＳＴＥＬＩＳＭ` as a
+width-fold workaround. Keep validation song `Ｘ↑Ｘ↓` and evaluation song `ΕΛΠΙΣ` out of training.
+Any later candidate may advance only when the corrected complete census preserves every fully
+recognized song and strictly grows that song set. Validation, evaluation, and strict open-text
+counts remain diagnostics and may move independently; no split alone is the finite-corpus selection
+oracle. Runner-up and absolute thresholds remain uncalibrated until negative, transition, and
+similar-title live inputs exist. The channel-maximum transform matches the current best coverage but
+is not preferred over the identity-domain catalog-v2 checkpoint, is not a default, and is not a
+live-only correction. Keep the 24
 INFINITAS-blue and 299 LEGGENDARIA-purple groups out of training until their labels are established
 independently of the recognition output; evaluate any future color correction under the same
 explicit transform ID in training and replay.
