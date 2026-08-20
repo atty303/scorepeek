@@ -845,6 +845,19 @@ is outside this checkpoint.
   evidence refutes treating either measured foreground presentation as a uniform replacement even
   within one-character titles. It does not select a route detector, specialist path, model,
   presentation, alias, bias, or threshold.
+  The official `PP-OCRv6_tiny_rec` ONNX candidate is now registered as a complete immutable bundle
+  rather than as an unbound graph. Manifest SHA-256
+  `d24f1ec10098065efd24216b23b405bb2af5feabbb815bc499ba0a5735b8bfd0` binds official repository
+  revision `2612ab37152ae0a677521bae4e1e3d4fb4cf7c30`, Apache-2.0 provenance, the ONNX graph, inference
+  JSON, inference YAML/dictionary, and their exact byte sizes and SHA-256 values. Its recorded native
+  contract is NCHW BGR input with height 48, preprocessing width 320 through 3,200, CTC blank token
+  zero, and 6,906 output classes. `ocr:official-model:fetch` acquired the three files into the
+  separate private bundle store and a second invocation reverified and reused them. The new store
+  serializes writers, recovers only marker-owned interrupted staging, fsyncs publication, and bounds
+  storage at eight bundles, 192 MiB per bundle, and 512 MiB aggregate while preserving identical
+  reuse at capacity. This does not alter the accepted small-model parity object. PaddleOCR 3.7 rejected the official ONNX directory
+  because it contains no Paddle inference files, so no tiny accuracy or song-identity result has yet
+  been measured; that is an execution-backend boundary, not evidence for or against the model.
   The 3,061 catalog-bound
   music-list labels are provisional only: the 2,611 automated associations and 450 visual
   associations do not establish accepted holdout truth, a stability threshold, or a release gate.
@@ -925,14 +938,16 @@ recognition path to handle every song. A unified path and bounded multiple-path 
 be compared by global song uniqueness, wrong unique decisions, runtime cost, and implementation
 complexity; that is a selection criterion, not a conclusion from the current 26-crop observation.
 
-With this evidence now reproducible, compare the implementation and runtime costs of a second
-presentation, a model-bound alias/calibration artifact, an alternate official model, and model
-fine-tuning. This bounded observation matrix may prioritize later measurements but cannot select or
-advance any candidate. Preserve ADR 0020's phase order: first register and compare the unmodified
-official PP-OCRv6 tiny/small/medium and PP-OCRv5 mobile/server models under their native contracts,
-then apply any global presentation, alias, calibration, or stationary aggregation candidate
-uniformly to every runnable registered model. Do not start fine-tuning before those two phases are
-measured.
+With the tiny graph and its dictionary/config now registered, implement its smallest bounded native
+Rust execution slice. First reproduce OpenCV preprocessing exactly for the synthetic 475x45 to
+506x48 upscale and verify one digest-bound crop against the registered 6,906-class dynamic ONNX
+contract. Only after those gates pass, stream the complete 3,061-crop census through bounded batches
+and the full competing catalog domain. Do not use a one-character-only score to select or reject the
+model. Then register and measure the remaining official PP-OCRv6 medium and PP-OCRv5 mobile/server
+candidates under the same complete-census contract; remeasure small only after its dynamic
+preprocessing is corrected. After every runnable official model has a native baseline, apply any
+global presentation, alias, calibration, or stationary aggregation candidate uniformly to all of
+them. Do not start fine-tuning before those two phases are measured.
 
 Selection requires the same complete 3,061-crop, 1,119-song census and full competing catalog domain.
 That census must use pixel-exact native preprocessing and bounded streaming batches; the provisional

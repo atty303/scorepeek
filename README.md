@@ -100,6 +100,7 @@ mise run recognition:title:dictionary:audit -- --catalog-store /absolute/private
 mise run ocr:sync
 mise run ocr:model:fetch
 mise run ocr:onnx:model:fetch
+mise run ocr:official-model:fetch -- --model-id pp-ocrv6-tiny-rec-onnx-v1
 mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --output /absolute/private/ocr-result.json
 mise run recognition:title:spike -- --catalog-store /absolute/private/catalog --ocr-text OCR_TEXT --ocr-confidence OCR_CONFIDENCE
 mise run ocr:parity:reference -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --candidates /absolute/private/parity-candidates.json --output /absolute/private/paddle-reference

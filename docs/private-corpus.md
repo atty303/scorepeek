@@ -308,6 +308,18 @@ only those verified bytes to the private content-addressed model store. It is
 an explicit offline acquisition step; the Rust command never downloads a
 model.
 
+Official-model comparisons use a separate bundle registry so they do not alter
+the accepted small-model parity object. The first registered candidate is
+`pp-ocrv6-tiny-rec-onnx-v1`; its ONNX graph, inference JSON, inference YAML and
+native input/output contract are revision- and digest-bound together.
+`ocr:official-model:fetch -- --model-id pp-ocrv6-tiny-rec-onnx-v1` publishes or
+re-verifies that complete bundle below the private model store. Bundle
+publication holds a writer lock, removes only marker-owned interrupted staging,
+fsyncs files and directory transitions, and permits at most eight bundles and
+512 MiB total (192 MiB per bundle). An already present identical bundle remains
+reusable at capacity. Registration and acquisition do not select the model or
+establish recognition accuracy.
+
 The parity candidate file is private canonical JSON. It contains at least two
 exact catalog candidates and is shaped as follows:
 

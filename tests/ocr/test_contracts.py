@@ -23,7 +23,11 @@ import unicodedata2 as unicodedata
 from scorepeek_ocr.model_store import (
     ModelFile,
     ModelSource,
+    OnnxBundleFile,
+    OnnxBundleSource,
     OnnxModelSource,
+    OnnxNativeContract,
+    load_registered_onnx_bundle,
     load_registered_onnx_source,
     load_registered_source,
 )
@@ -1095,6 +1099,212 @@ class ContractTests(unittest.TestCase):
             source.sha256,
             "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634",
         )
+
+    def test_registered_tiny_onnx_bundle_is_exact(self) -> None:
+        source = load_registered_onnx_bundle("pp-ocrv6-tiny-rec-onnx-v1")
+        self.assertEqual(source.model_name, "PP-OCRv6_tiny_rec")
+        self.assertEqual(source.native_contract.input_color_order, "BGR")
+        self.assertEqual(source.native_contract.input_height, 48)
+        self.assertEqual(source.native_contract.preprocessor_minimum_width, 320)
+        self.assertEqual(source.native_contract.preprocessor_maximum_width, 3200)
+        self.assertEqual(source.native_contract.output_classes, 6906)
+        self.assertEqual(
+            {item.filename for item in source.files},
+            {"inference.onnx", "inference.json", "inference.yml"},
+        )
+        onnx = next(item for item in source.files if item.filename == "inference.onnx")
+        self.assertEqual(onnx.bytes, 4_462_639)
+        self.assertEqual(
+            onnx.sha256,
+            "9ef676d6ed3c88256a2d92c640c44f25b0c40947e111b14b8be8f594091563e6",
+        )
+
+    def test_unregistered_onnx_bundle_is_rejected(self) -> None:
+        with self.assertRaises(model_store.ModelStoreError):
+            load_registered_onnx_bundle("not-registered")
+
+    def test_onnx_bundle_verification_binds_complete_file_set(self) -> None:
+        contents = {
+            "inference.onnx": b"onnx",
+            "inference.json": b"json",
+            "inference.yml": b"yml",
+        }
+        source = OnnxBundleSource(
+            manifest_sha256="1" * 64,
+            model_id="test",
+            model_name="test",
+            source_repository="test/test",
+            source_revision="2" * 40,
+            native_contract=OnnxNativeContract("NCHW", "BGR", 3, 48, 320, 3200, 4, 0),
+            files=tuple(
+                OnnxBundleFile(
+                    filename=filename,
+                    source_url=f"https://example.invalid/{filename}",
+                    sha256=hashlib.sha256(data).hexdigest(),
+                    bytes=len(data),
+                )
+                for filename, data in contents.items()
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for filename, data in contents.items():
+                (directory / filename).write_bytes(data)
+            model_store.verify_onnx_bundle(directory, source)
+            (directory / "unexpected").write_bytes(b"x")
+            with self.assertRaises(model_store.ModelStoreError):
+                model_store.verify_onnx_bundle(directory, source)
+
+    def test_onnx_bundle_store_recovers_owned_staging_and_bounds_capacity(self) -> None:
+        contents = {
+            "inference.onnx": b"onnx",
+            "inference.json": b"json",
+            "inference.yml": b"yml",
+        }
+
+        def bundle(manifest_sha256: str) -> OnnxBundleSource:
+            return OnnxBundleSource(
+                manifest_sha256=manifest_sha256,
+                model_id="test",
+                model_name="test",
+                source_repository="test/test",
+                source_revision="2" * 40,
+                native_contract=OnnxNativeContract(
+                    "NCHW", "BGR", 3, 48, 320, 3200, 4, 0
+                ),
+                files=tuple(
+                    OnnxBundleFile(
+                        filename=filename,
+                        source_url=f"https://example.invalid/{filename}",
+                        sha256=hashlib.sha256(data).hexdigest(),
+                        bytes=len(data),
+                    )
+                    for filename, data in contents.items()
+                ),
+            )
+
+        def download(item: OnnxBundleFile, path: Path) -> None:
+            path.write_bytes(contents[item.filename])
+
+        first = bundle("1" * 64)
+        second = bundle("2" * 64)
+        with tempfile.TemporaryDirectory() as temporary:
+            store = Path(temporary) / "store"
+            with (
+                patch.object(
+                    model_store, "load_registered_onnx_bundle", return_value=first
+                ),
+                patch.object(
+                    model_store, "_download_onnx_bundle_file", side_effect=download
+                ),
+            ):
+                published = model_store.fetch_onnx_bundle(store, first.model_id)
+            self.assertFalse(published["reused"])
+            bundles = store / "bundles"
+            abandoned = bundles / f"{model_store.ONNX_BUNDLE_STAGING_PREFIX}abandoned"
+            abandoned.mkdir()
+            # This is the crash window immediately after mkdtemp and before the
+            # per-run marker. The pre-existing store marker makes it recoverable.
+            with patch.object(
+                model_store, "load_registered_onnx_bundle", return_value=first
+            ):
+                recovered = model_store.fetch_onnx_bundle(store, first.model_id)
+            self.assertTrue(recovered["reused"])
+            self.assertFalse(abandoned.exists())
+            self.assertNotIn(
+                model_store.ONNX_BUNDLE_STAGING_MARKER,
+                {entry.name for entry in (bundles / first.manifest_sha256).iterdir()},
+            )
+
+            with (
+                patch.object(
+                    model_store, "load_registered_onnx_bundle", return_value=second
+                ),
+                patch.object(model_store, "MAX_ONNX_BUNDLE_COUNT", 1),
+                patch.object(
+                    model_store,
+                    "_download_onnx_bundle_file",
+                    side_effect=AssertionError("capacity must fail before download"),
+                ),
+                self.assertRaises(model_store.ModelStoreError),
+            ):
+                model_store.fetch_onnx_bundle(store, second.model_id)
+
+            with (
+                patch.object(
+                    model_store, "load_registered_onnx_bundle", return_value=first
+                ),
+                patch.object(model_store, "MAX_ONNX_BUNDLE_COUNT", 1),
+            ):
+                reused = model_store.fetch_onnx_bundle(store, first.model_id)
+            self.assertTrue(reused["reused"])
+
+    def test_onnx_bundle_download_failure_cleans_owned_staging(self) -> None:
+        data = b"model"
+        source = OnnxBundleSource(
+            manifest_sha256="3" * 64,
+            model_id="test",
+            model_name="test",
+            source_repository="test/test",
+            source_revision="4" * 40,
+            native_contract=OnnxNativeContract("NCHW", "BGR", 3, 48, 320, 3200, 4, 0),
+            files=(
+                OnnxBundleFile(
+                    filename="inference.onnx",
+                    source_url="https://example.invalid/inference.onnx",
+                    sha256=hashlib.sha256(data).hexdigest(),
+                    bytes=len(data),
+                ),
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            store = Path(temporary) / "store"
+            with (
+                patch.object(
+                    model_store, "load_registered_onnx_bundle", return_value=source
+                ),
+                patch.object(
+                    model_store,
+                    "_download_onnx_bundle_file",
+                    side_effect=model_store.ModelStoreError("injected failure"),
+                ),
+                self.assertRaises(model_store.ModelStoreError),
+            ):
+                model_store.fetch_onnx_bundle(store, source.model_id)
+            self.assertEqual(
+                {entry.name for entry in (store / "bundles").iterdir()},
+                {model_store.ONNX_BUNDLE_STORE_MARKER},
+            )
+
+    def test_existing_unmarked_bundle_store_is_not_claimed_or_recovered(self) -> None:
+        source = load_registered_onnx_bundle("pp-ocrv6-tiny-rec-onnx-v1")
+        with tempfile.TemporaryDirectory() as temporary:
+            store = Path(temporary) / "store"
+            abandoned = (
+                store
+                / "bundles"
+                / f"{model_store.ONNX_BUNDLE_STAGING_PREFIX}operator"
+            )
+            abandoned.mkdir(parents=True)
+            with self.assertRaises(model_store.ModelStoreError):
+                model_store.fetch_onnx_bundle(store, source.model_id)
+            self.assertTrue(abandoned.is_dir())
+            self.assertFalse(
+                (store / "bundles" / model_store.ONNX_BUNDLE_STORE_MARKER).exists()
+            )
+
+    def test_atomic_bundle_store_claim_resumes_initialization(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = Path(temporary) / "store"
+            store.mkdir()
+            (store / model_store.ONNX_BUNDLE_STORE_CLAIM).mkdir()
+            bundles = model_store._ensure_onnx_bundle_store(store)
+            self.assertTrue(
+                (bundles / model_store.ONNX_BUNDLE_STORE_MARKER).is_file()
+            )
+            self.assertEqual(
+                list((store / model_store.ONNX_BUNDLE_STORE_CLAIM).iterdir()), []
+            )
 
     def test_onnx_fetch_rejects_symlinked_managed_directories(self) -> None:
         data = b"x"

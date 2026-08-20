@@ -305,6 +305,14 @@ set -euo pipefail
 exec uv run --locked --no-dev python -m scorepeek_ocr.model_store fetch-onnx "$@"
 '''
 
+[tasks."ocr:official-model:fetch"]
+description = "Fetch a registered official ONNX model bundle outside the repository"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.model_store fetch-onnx-bundle "$@"
+'''
+
 [tasks."ocr:spike"]
 description = "Run PP-OCRv6 against a verified canonical crop artifact"
 run = '''
