@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
 import sys
@@ -17,6 +18,7 @@ from scorepeek_ocr.training_artifacts import (
     _prepared_manifest,
     _verify_prepared_files,
 )
+from scorepeek_ocr.provisional_labels import _valid_sha256
 from scorepeek_ocr.training_initializer import (
     MAX_MANIFEST_BYTES,
     _publish,
@@ -24,7 +26,7 @@ from scorepeek_ocr.training_initializer import (
 )
 from scorepeek_ocr.training_process import run_checked
 from scorepeek_ocr.training_source import load_registered_source, verify_source
-from scorepeek_ocr.title_presentation import TRANSFORM_IDS
+from scorepeek_ocr.title_presentation import IDENTITY_TRANSFORM_ID, TRANSFORM_IDS
 
 EXPORT_SCHEMA = "scorepeek-private-title-model-converted-export-v1"
 ONNX_OPSET = 11
@@ -36,17 +38,126 @@ class TrainingExportError(Exception):
     """The selected private title model could not be exported."""
 
 
-def _pilot(path: Path, expected_sha256: str, preparation_sha256: str) -> dict[str, Any]:
+def _catalog_probe_valid(probe: Any, *, candidate: bool) -> bool:
+    keys = {
+        "sample_count",
+        "song_count",
+        "fully_correct_song_count",
+        "correct_unique_song_id_decision_count",
+        "incorrect_or_tied_song_id_decision_count",
+        "strict_open_text_count",
+        "minimum_correct_runner_up_margin",
+        "maximum_incorrect_runner_up_margin",
+        "elapsed_ms",
+    }
+    if candidate:
+        keys |= {"steps", "training_sample_count", "training_list_sha256"}
+    if not isinstance(probe, dict) or set(probe) != keys:
+        return False
+    counts = [
+        probe[name]
+        for name in (
+            "sample_count",
+            "song_count",
+            "fully_correct_song_count",
+            "correct_unique_song_id_decision_count",
+            "incorrect_or_tied_song_id_decision_count",
+            "strict_open_text_count",
+            "elapsed_ms",
+        )
+    ]
+    if any(type(value) is not int or value < 0 for value in counts):
+        return False
+    sample_count = probe["sample_count"]
+    if (
+        probe["correct_unique_song_id_decision_count"]
+        + probe["incorrect_or_tied_song_id_decision_count"]
+        != sample_count
+        or not 0 <= probe["fully_correct_song_count"] <= probe["song_count"] <= sample_count
+        or probe["strict_open_text_count"] > sample_count
+    ):
+        return False
+    for name in (
+        "minimum_correct_runner_up_margin",
+        "maximum_incorrect_runner_up_margin",
+    ):
+        value = probe[name]
+        if value is not None and (
+            type(value) not in (int, float) or not math.isfinite(value) or value < 0
+        ):
+            return False
+    return not candidate or (
+        probe["steps"] in (1, 2, 4)
+        and type(probe["training_sample_count"]) is int
+        and probe["training_sample_count"] == probe["steps"] * 4
+        and _valid_sha256(probe["training_list_sha256"])
+    )
+
+
+def _pilot(path: Path, expected_sha256: str, prepared: dict[str, Any]) -> dict[str, Any]:
     data = _read_regular(path / "manifest.json", MAX_MANIFEST_BYTES, expected_sha256)
     try:
         record = json.loads(data)
     except json.JSONDecodeError as error:
         raise TrainingExportError("training pilot manifest is invalid JSON") from error
     recipe = record.get("recipe") if isinstance(record, dict) else None
+    schema = record.get("schema") if isinstance(record, dict) else None
+    if schema == "scorepeek-private-title-model-training-pilot-v1" and isinstance(
+        recipe, dict
+    ):
+        record = dict(record)
+        recipe = dict(recipe)
+        recipe.setdefault("presentation_transform_id", IDENTITY_TRANSFORM_ID)
+        record["recipe"] = recipe
+    v2_fields = {
+        "schema",
+        "training_preparation_sha256",
+        "training_input_sha256",
+        "catalog_candidate_artifact_sha256",
+        "training_source_commit",
+        "initializer_manifest_sha256",
+        "initializer_checkpoint",
+        "recipe",
+        "baseline_probe",
+        "candidates",
+        "selected_steps",
+        "selected_checkpoint",
+        "provisional",
+        "accepted_holdout_truth",
+        "permission_status",
+    }
+    v2_valid = schema != "scorepeek-private-title-model-training-pilot-v2" or (
+        set(record) == v2_fields
+        and record.get("training_input_sha256") == prepared["training_input_sha256"]
+        and _valid_sha256(record.get("catalog_candidate_artifact_sha256"))
+        and _valid_sha256(record.get("initializer_manifest_sha256"))
+        and _catalog_probe_valid(record.get("baseline_probe"), candidate=False)
+        and isinstance(record.get("candidates"), list)
+        and bool(record["candidates"])
+        and all(_catalog_probe_valid(item, candidate=True) for item in record["candidates"])
+        and [item["steps"] for item in record["candidates"]]
+        in ([1], [1, 2], [1, 2, 4])
+        and record["candidates"][-1].get("steps") == record.get("selected_steps")
+        and record["baseline_probe"]["sample_count"]
+        == prepared.get("split_label_counts", {}).get("validation")
+        and all(
+            item["sample_count"] == record["baseline_probe"]["sample_count"]
+            and item["song_count"] == record["baseline_probe"]["song_count"]
+            for item in record["candidates"]
+        )
+        and record["candidates"][-1]["fully_correct_song_count"]
+        > record["baseline_probe"]["fully_correct_song_count"]
+    )
     if (
         not isinstance(record, dict)
-        or record.get("schema") != "scorepeek-private-title-model-training-pilot-v1"
-        or record.get("training_preparation_sha256") != preparation_sha256
+        or schema
+        not in {
+            "scorepeek-private-title-model-training-pilot-v1",
+            "scorepeek-private-title-model-training-pilot-v2",
+        }
+        or not v2_valid
+        or record.get("training_preparation_sha256")
+        != prepared["training_preparation_sha256"]
         or not record.get("provisional")
         or record.get("accepted_holdout_truth") is not False
         or record.get("permission_status") != "permission_not_recorded"
@@ -79,7 +190,11 @@ def export(
     )
     prepared = _prepared_manifest(json.loads(prepared_data))
     _verify_prepared_files(preparation, prepared)
-    pilot_record = _pilot(pilot, pilot_manifest_sha256, preparation_sha256)
+    pilot_record = _pilot(
+        pilot,
+        pilot_manifest_sha256,
+        {**prepared, "training_preparation_sha256": preparation_sha256},
+    )
     source = load_registered_source()
     verify_source(source_root, source)
     if not output.is_absolute() or output.exists() or not output.parent.is_dir():

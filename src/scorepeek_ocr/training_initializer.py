@@ -221,10 +221,8 @@ def _evaluate(
                 ]
             )
             predictions = model(paddle.to_tensor(images)).numpy()
-            exact += sum(
-                _decode(prediction, tokens) == title
-                for prediction, (_, title, _) in zip(predictions, batch, strict=True)
-            )
+            for prediction, (_, title, _) in zip(predictions, batch, strict=True):
+                exact += _decode(prediction, tokens) == title
     return {
         "sample_count": len(rows),
         "exact_count": exact,

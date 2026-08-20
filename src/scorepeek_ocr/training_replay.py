@@ -15,14 +15,16 @@ import numpy as np
 import paddle
 import yaml
 
-from scorepeek_ocr.provisional_labels import _exact_comparison_key
+from scorepeek_ocr.provisional_labels import _exact_comparison_key, _load_candidates
 from scorepeek_ocr.spike import load_crops
 from scorepeek_ocr.training_artifacts import (
     MAX_MODEL_FILE_BYTES,
     _prepared_manifest,
+    _training_labels,
     _verify_prepared_files,
     prepared_rows,
 )
+from scorepeek_ocr.training_catalog import CatalogTrie, evaluate_catalog, training_truth
 from scorepeek_ocr.training_initializer import (
     MAX_MANIFEST_BYTES,
     _decode,
@@ -31,11 +33,12 @@ from scorepeek_ocr.training_initializer import (
     _read_regular,
 )
 from scorepeek_ocr.training_pilot import _initializer, _model
+from scorepeek_ocr.training_inputs import MAX_INPUT_BYTES
 from scorepeek_ocr.training_source import load_registered_source, verify_source
-from scorepeek_ocr.title_presentation import TRANSFORM_IDS
+from scorepeek_ocr.title_presentation import IDENTITY_TRANSFORM_ID, TRANSFORM_IDS
 
 REQUEST_SCHEMA = "scorepeek-private-title-model-result-replay-request-v1"
-REPLAY_SCHEMA = "scorepeek-private-title-model-replay-v1"
+REPLAY_SCHEMA = "scorepeek-private-title-model-replay-v2"
 
 
 class TrainingReplayError(Exception):
@@ -51,7 +54,19 @@ def _pilot(path: Path, expected_sha256: str, preparation_sha256: str) -> dict[st
     checkpoint = record.get("selected_checkpoint") if isinstance(record, dict) else None
     recipe = record.get("recipe") if isinstance(record, dict) else None
     if (
-        record.get("schema") != "scorepeek-private-title-model-training-pilot-v1"
+        record.get("schema") == "scorepeek-private-title-model-training-pilot-v1"
+        and isinstance(recipe, dict)
+    ):
+        record = dict(record)
+        recipe = dict(recipe)
+        recipe.setdefault("presentation_transform_id", IDENTITY_TRANSFORM_ID)
+        record["recipe"] = recipe
+    if (
+        record.get("schema")
+        not in {
+            "scorepeek-private-title-model-training-pilot-v1",
+            "scorepeek-private-title-model-training-pilot-v2",
+        }
         or record.get("training_preparation_sha256") != preparation_sha256
         or record.get("selected_steps") not in (1, 2, 4)
         or record.get("provisional") is not True
@@ -186,6 +201,10 @@ def run(
     initializer_manifest_sha256: str,
     pilot: Path,
     pilot_manifest_sha256: str,
+    training_input: Path,
+    training_input_sha256: str,
+    catalog_candidates: Path,
+    catalog_candidates_sha256: str,
     result_request: Path,
     result_request_sha256: str,
     output: Path,
@@ -193,10 +212,35 @@ def run(
     prepared_data = _read_regular(preparation / "manifest.json", MAX_MANIFEST_BYTES, preparation_sha256)
     prepared = _prepared_manifest(json.loads(prepared_data))
     _verify_prepared_files(preparation, prepared)
+    if training_input_sha256 != prepared["training_input_sha256"]:
+        raise TrainingReplayError("training input is not bound to the preparation")
+    try:
+        training_raw = json.loads(
+            _read_regular(training_input, MAX_INPUT_BYTES, training_input_sha256)
+        )
+        candidate_raw = json.loads(
+            _read_regular(
+                catalog_candidates,
+                MAX_INPUT_BYTES,
+                catalog_candidates_sha256,
+            )
+        )
+    except json.JSONDecodeError as error:
+        raise TrainingReplayError("catalog evaluation input is invalid JSON") from error
+    labels = _training_labels(training_raw, training_input_sha256)
+    candidate_catalog, _, _ = _load_candidates(candidate_raw)
+    if candidate_catalog != prepared["catalog_sha256"]:
+        raise TrainingReplayError("candidate catalog differs from the preparation")
     _initializer(initializer, initializer_manifest_sha256, preparation_sha256)
     pilot_record = _pilot(pilot, pilot_manifest_sha256, preparation_sha256)
     if pilot_record.get("initializer_manifest_sha256") != initializer_manifest_sha256:
         raise TrainingReplayError("pilot is not bound to the initializer")
+    if pilot_record.get("schema") == "scorepeek-private-title-model-training-pilot-v2" and (
+        pilot_record.get("training_input_sha256") != training_input_sha256
+        or pilot_record.get("catalog_candidate_artifact_sha256")
+        != catalog_candidates_sha256
+    ):
+        raise TrainingReplayError("pilot catalog evaluation inputs differ from replay")
     source = load_registered_source()
     verify_source(source_root, source)
     if not output.is_absolute() or output.exists() or not output.parent.is_dir():
@@ -225,9 +269,29 @@ def run(
     if ctc_tokens != pilot_tokens:
         raise TrainingReplayError("initializer and pilot token orders differ")
     presentation_transform_id = pilot_record["recipe"]["presentation_transform_id"]
+    trie = CatalogTrie(
+        candidate_raw["candidates"], ctc_tokens, prepared["output_timesteps"]
+    )
+    evaluation_truth = training_truth(evaluation_rows, labels["evaluation"])
 
-    initializer_evaluation = _infer(initializer_model, evaluation_rows, ctc_tokens, prepared["model_input_width"], presentation_transform_id)
-    pilot_evaluation = _infer(pilot_model, evaluation_rows, ctc_tokens, prepared["model_input_width"], presentation_transform_id)
+    initializer_evaluation, _ = evaluate_catalog(
+        initializer_model,
+        evaluation_rows,
+        evaluation_truth,
+        ctc_tokens,
+        prepared["model_input_width"],
+        trie,
+        presentation_transform_id,
+    )
+    pilot_evaluation, _ = evaluate_catalog(
+        pilot_model,
+        evaluation_rows,
+        evaluation_truth,
+        ctc_tokens,
+        prepared["model_input_width"],
+        trie,
+        presentation_transform_id,
+    )
     initializer_results = _infer(initializer_model, result_rows, ctc_tokens, prepared["model_input_width"], presentation_transform_id)
     pilot_results = _infer(pilot_model, result_rows, ctc_tokens, prepared["model_input_width"], presentation_transform_id)
 
@@ -238,6 +302,8 @@ def run(
             "training_preparation_sha256": preparation_sha256,
             "initializer_manifest_sha256": initializer_manifest_sha256,
             "pilot_manifest_sha256": pilot_manifest_sha256,
+            "training_input_sha256": training_input_sha256,
+            "catalog_candidate_artifact_sha256": catalog_candidates_sha256,
             "selected_steps": pilot_record["selected_steps"],
             "presentation_transform_id": presentation_transform_id,
             "evaluation_list_sha256": prepared["label_file_sha256"]["evaluation"],
@@ -246,25 +312,23 @@ def run(
             "provisional": True,
             "accepted_holdout_truth": False,
             "initializer": {
-                "evaluation": _aggregate(initializer_evaluation),
+                "evaluation": initializer_evaluation,
                 "results": _aggregate(initializer_results),
                 "result_predictions": initializer_results["predictions"],
                 "result_open_text_exact": initializer_results["open_text_exact"],
                 "result_comparison_key_exact": initializer_results["comparison_key_exact"],
             },
             "pilot": {
-                "evaluation": _aggregate(pilot_evaluation),
+                "evaluation": pilot_evaluation,
                 "results": _aggregate(pilot_results),
                 "result_predictions": pilot_results["predictions"],
                 "result_open_text_exact": pilot_results["open_text_exact"],
                 "result_comparison_key_exact": pilot_results["comparison_key_exact"],
             },
-            "evaluation_open_text_exact_delta": pilot_evaluation["open_text_exact_count"]
-            - initializer_evaluation["open_text_exact_count"],
-            "evaluation_comparison_key_exact_delta": pilot_evaluation[
-                "comparison_key_exact_count"
+            "evaluation_fully_correct_song_delta": pilot_evaluation[
+                "fully_correct_song_count"
             ]
-            - initializer_evaluation["comparison_key_exact_count"],
+            - initializer_evaluation["fully_correct_song_count"],
             "result_open_text_exact_delta": pilot_results["open_text_exact_count"]
             - initializer_results["open_text_exact_count"],
             "result_comparison_key_exact_delta": pilot_results["comparison_key_exact_count"]
@@ -292,6 +356,10 @@ def main() -> None:
     parser.add_argument("--initializer-manifest-sha256", required=True)
     parser.add_argument("--pilot", type=Path, required=True)
     parser.add_argument("--pilot-manifest-sha256", required=True)
+    parser.add_argument("--training-input", type=Path, required=True)
+    parser.add_argument("--training-input-sha256", required=True)
+    parser.add_argument("--catalog-candidates", type=Path, required=True)
+    parser.add_argument("--catalog-candidates-sha256", required=True)
     parser.add_argument("--result-request", type=Path, required=True)
     parser.add_argument("--result-request-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -305,6 +373,10 @@ def main() -> None:
             arguments.initializer_manifest_sha256,
             arguments.pilot,
             arguments.pilot_manifest_sha256,
+            arguments.training_input,
+            arguments.training_input_sha256,
+            arguments.catalog_candidates,
+            arguments.catalog_candidates_sha256,
             arguments.result_request,
             arguments.result_request_sha256,
             arguments.output,

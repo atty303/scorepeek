@@ -15,28 +15,36 @@ from typing import Any
 import paddle
 import yaml
 
+from scorepeek_ocr.provisional_labels import _load_candidates
 from scorepeek_ocr.training_artifacts import (
     MAX_CROP_BYTES,
     MAX_MODEL_FILE_BYTES,
     _hash_unpinned_file,
     _prepared_manifest,
+    _training_labels,
     _verify_prepared_files,
     prepared_rows,
 )
+from scorepeek_ocr.training_catalog import (
+    CatalogTrie,
+    evaluate_catalog,
+    improves_catalog_identity,
+    training_truth,
+)
 from scorepeek_ocr.training_initializer import (
     MAX_MANIFEST_BYTES,
-    _evaluate,
     _publish,
     _read_regular,
 )
 from scorepeek_ocr.training_process import run_checked
+from scorepeek_ocr.training_inputs import MAX_INPUT_BYTES
 from scorepeek_ocr.training_source import load_registered_source, verify_source
 from scorepeek_ocr.title_presentation import (
     TRANSFORM_IDS,
     transform_crop_bytes,
 )
 
-PILOT_SCHEMA = "scorepeek-private-title-model-training-pilot-v1"
+PILOT_SCHEMA = "scorepeek-private-title-model-training-pilot-v2"
 CANDIDATE_STEPS = (1, 2, 4)
 BATCH_SIZE = 4
 LEARNING_RATE = 1e-5
@@ -96,13 +104,6 @@ def _select_rows(
     )[:count]
 
 
-def _first_improvement(baseline: int, candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
-    return next(
-        (candidate for candidate in candidates if candidate["exact_count"] > baseline),
-        None,
-    )
-
-
 def _config(
     base: dict[str, Any],
     initializer: Path,
@@ -157,6 +158,10 @@ def run(
     source_root: Path,
     initializer: Path,
     initializer_manifest_sha256: str,
+    training_input: Path,
+    training_input_sha256: str,
+    catalog_candidates: Path,
+    catalog_candidates_sha256: str,
     output: Path,
     presentation_transform_id: str,
 ) -> dict[str, Any]:
@@ -165,6 +170,23 @@ def run(
     )
     prepared = _prepared_manifest(json.loads(prepared_data))
     _verify_prepared_files(preparation, prepared)
+    if training_input_sha256 != prepared["training_input_sha256"]:
+        raise TrainingPilotError("training input is not bound to the preparation")
+    training_data = _read_regular(
+        training_input, MAX_INPUT_BYTES, training_input_sha256
+    )
+    candidate_data = _read_regular(
+        catalog_candidates, MAX_INPUT_BYTES, catalog_candidates_sha256
+    )
+    try:
+        training_raw = json.loads(training_data)
+        candidate_raw = json.loads(candidate_data)
+    except json.JSONDecodeError as error:
+        raise TrainingPilotError("catalog evaluation input is invalid JSON") from error
+    labels = _training_labels(training_raw, training_input_sha256)
+    candidate_catalog, _, _ = _load_candidates(candidate_raw)
+    if candidate_catalog != prepared["catalog_sha256"]:
+        raise TrainingPilotError("candidate catalog differs from the preparation")
     initializer_record = _initializer(
         initializer, initializer_manifest_sha256, preparation_sha256
     )
@@ -187,19 +209,24 @@ def run(
     validation_rows = prepared_rows(preparation, prepared, "validation")
     base_config = yaml.safe_load(config_data)
     tokens = dictionary_data.decode().splitlines()
+    ctc_tokens = ["blank", *tokens, " "]
+    trie = CatalogTrie(candidate_raw["candidates"], ctc_tokens, prepared["output_timesteps"])
+    validation_truth = training_truth(validation_rows, labels["validation"])
 
     sys.path.insert(0, str(source_root))
     model, ctc_tokens = _model(base_config, tokens)
     model.set_state_dict(paddle.load(str(initializer / "initializer.pdparams")))
-    baseline = _evaluate(
+    baseline, baseline_decisions = evaluate_catalog(
         model,
         validation_rows,
+        validation_truth,
         ctc_tokens,
         prepared["model_input_width"],
+        trie,
         presentation_transform_id,
     )
 
-    candidates: list[dict[str, Any]] = []
+    candidate_records: list[dict[str, Any]] = []
     selected_checkpoint: Path | None = None
     with tempfile.TemporaryDirectory(prefix="scorepeek-title-model-pilot-") as temporary:
         temporary_root = Path(temporary)
@@ -250,11 +277,13 @@ def run(
             checkpoint = candidate_root / "output/latest.pdparams"
             candidate_model, candidate_tokens = _model(base_config, tokens)
             candidate_model.set_state_dict(paddle.load(str(checkpoint)))
-            probe = _evaluate(
+            probe, decisions = evaluate_catalog(
                 candidate_model,
                 validation_rows,
+                validation_truth,
                 candidate_tokens,
                 prepared["model_input_width"],
+                trie,
                 presentation_transform_id,
             )
             candidate = {
@@ -263,22 +292,31 @@ def run(
                 "training_list_sha256": _sha256(selection),
                 **probe,
             }
-            candidates.append(candidate)
-            if _first_improvement(baseline["exact_count"], candidates) is candidate:
+            candidate_records.append(candidate)
+            if improves_catalog_identity(baseline_decisions, decisions):
                 selected_checkpoint = checkpoint
                 break
         if selected_checkpoint is None:
-            raise TrainingPilotError("no bounded candidate improved strict validation recognition")
+            summary = ", ".join(
+                f"{candidate['steps']}={candidate['fully_correct_song_count']}"
+                for candidate in candidate_records
+            )
+            raise TrainingPilotError(
+                "no bounded candidate added a unique correct catalog song without regression "
+                f"from {baseline['fully_correct_song_count']}: {summary}"
+            )
 
         staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent))
         try:
             model_path = staging / "model.pdparams"
             shutil.copyfile(selected_checkpoint, model_path)
             model_file = _hash_unpinned_file(model_path, "selected pilot checkpoint")
-            selected = candidates[-1]
+            selected = candidate_records[-1]
             record = {
                 "schema": PILOT_SCHEMA,
                 "training_preparation_sha256": preparation_sha256,
+                "training_input_sha256": training_input_sha256,
+                "catalog_candidate_artifact_sha256": catalog_candidates_sha256,
                 "training_source_commit": source.commit,
                 "initializer_manifest_sha256": initializer_manifest_sha256,
                 "initializer_checkpoint": initializer_record["initialized_checkpoint"],
@@ -293,7 +331,7 @@ def run(
                     "device": "cpu",
                 },
                 "baseline_probe": baseline,
-                "candidates": candidates,
+                "candidates": candidate_records,
                 "selected_steps": selected["steps"],
                 "selected_checkpoint": model_file,
                 "provisional": True,
@@ -319,6 +357,10 @@ def main() -> None:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--initializer", type=Path, required=True)
     parser.add_argument("--initializer-manifest-sha256", required=True)
+    parser.add_argument("--training-input", type=Path, required=True)
+    parser.add_argument("--training-input-sha256", required=True)
+    parser.add_argument("--catalog-candidates", type=Path, required=True)
+    parser.add_argument("--catalog-candidates-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--presentation-transform", choices=TRANSFORM_IDS, required=True)
     arguments = parser.parse_args()
@@ -329,6 +371,10 @@ def main() -> None:
             arguments.source,
             arguments.initializer,
             arguments.initializer_manifest_sha256,
+            arguments.training_input,
+            arguments.training_input_sha256,
+            arguments.catalog_candidates,
+            arguments.catalog_candidates_sha256,
             arguments.output,
             arguments.presentation_transform,
         )

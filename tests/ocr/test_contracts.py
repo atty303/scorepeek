@@ -44,11 +44,21 @@ from scorepeek_ocr.spike import (
     load_layout_contract,
 )
 from scorepeek_ocr.training_inputs import TrainingInputError, generate as generate_training_inputs
+from scorepeek_ocr.training_export import (
+    TrainingExportError,
+    _pilot as load_export_pilot,
+)
 from scorepeek_ocr.training_artifacts import (
     TrainingArtifactError,
     prepared_rows,
     prepare as prepare_training_artifacts,
     record_export,
+)
+from scorepeek_ocr.training_catalog import (
+    CatalogDecisions,
+    CatalogTrie,
+    improves_catalog_identity,
+    training_truth,
 )
 from scorepeek_ocr.training_source import (
     TrainingSourceError,
@@ -67,7 +77,6 @@ from scorepeek_ocr.training_initializer import (
 from scorepeek_ocr.training_pilot import (
     TrainingPilotError,
     _config,
-    _first_improvement,
     _select_rows,
 )
 from scorepeek_ocr.training_process import TrainingProcessError, run_checked
@@ -168,7 +177,7 @@ class ContractTests(unittest.TestCase):
                 timeout_seconds=5,
             )
 
-    def test_training_pilot_selects_nested_rows_and_first_strict_improvement(self) -> None:
+    def test_training_pilot_selects_nested_rows(self) -> None:
         rows = [
             (f"/crop/{index}.ppm", f"TITLE {index}", f"{index:064x}")
             for index in range(20)
@@ -179,14 +188,6 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(two_steps[:4], one_step)
         with self.assertRaises(TrainingPilotError):
             _select_rows(rows[:3], 1)
-
-        candidates = [
-            {"steps": 1, "exact_count": 275},
-            {"steps": 2, "exact_count": 278},
-            {"steps": 4, "exact_count": 280},
-        ]
-        self.assertIs(_first_improvement(275, candidates), candidates[1])
-        self.assertIsNone(_first_improvement(280, candidates))
 
         configured = _config(
             {
@@ -202,6 +203,162 @@ class ContractTests(unittest.TestCase):
             424,
         )
         self.assertEqual(configured["Train"]["sampler"]["scales"], [[424, 48]])
+
+    def test_training_catalog_trie_matches_exhaustive_ctc_and_requires_monotonic_gain(
+        self,
+    ) -> None:
+        trie = CatalogTrie(
+            [
+                {"song_id": "song-a", "variants": [{"value": "A"}]},
+                {"song_id": "song-b", "variants": [{"value": "B"}]},
+            ],
+            ["blank", "A", "B"],
+            3,
+        )
+        probabilities = np.asarray(
+            [[0.5, 0.4, 0.1], [0.4, 0.5, 0.1], [0.5, 0.4, 0.1]],
+            dtype=np.float32,
+        )
+        scores = trie.score(probabilities)
+        self.assertAlmostEqual(scores[0], ctc_log_probability(probabilities, [1]), places=6)
+        self.assertAlmostEqual(scores[1], ctc_log_probability(probabilities, [2]), places=6)
+        self.assertEqual(trie.expected_indexes(["song-b", "song-a"]), [1, 0])
+
+        truth = ("song-a", "song-b", "song-a")
+        baseline = CatalogDecisions((True, False, True), (3.0, 1.0, 2.0), truth)
+        gain = CatalogDecisions((True, True, True), (2.0, 1.5, 1.0), truth)
+        regression = CatalogDecisions((False, True, True), (1.0, 1.5, 1.0), truth)
+        self.assertTrue(improves_catalog_identity(baseline, gain))
+        self.assertFalse(improves_catalog_identity(baseline, regression))
+        self.assertFalse(improves_catalog_identity(baseline, baseline))
+
+        rows = [("/crop/a.ppm", "A", "1" * 64)]
+        labels = [{"crop_file_sha256": "1" * 64, "song_id": "song-a"}]
+        self.assertEqual(training_truth(rows, labels), ["song-a"])
+
+    def test_export_accepts_legacy_identity_pilot_but_rejects_v2_relabel(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkpoint = root / "model.pdparams"
+            checkpoint.write_bytes(b"checkpoint")
+            checkpoint_record = {
+                "sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+                "bytes": checkpoint.stat().st_size,
+            }
+            common = {
+                "training_preparation_sha256": "1" * 64,
+                "provisional": True,
+                "accepted_holdout_truth": False,
+                "permission_status": "permission_not_recorded",
+                "recipe": {},
+                "selected_checkpoint": checkpoint_record,
+            }
+            manifest = root / "manifest.json"
+            legacy = {
+                "schema": "scorepeek-private-title-model-training-pilot-v1",
+                **common,
+            }
+            manifest.write_text(json.dumps(legacy, separators=(",", ":")) + "\n")
+            digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+            prepared = {
+                "training_preparation_sha256": "1" * 64,
+                "training_input_sha256": "2" * 64,
+                "split_label_counts": {"validation": 3},
+            }
+            loaded = load_export_pilot(root, digest, prepared)
+            self.assertEqual(
+                loaded["recipe"]["presentation_transform_id"],
+                "scorepeek-title-rgb-identity-v1",
+            )
+
+            relabelled = {**legacy, "schema": "scorepeek-private-title-model-training-pilot-v2"}
+            manifest.write_text(json.dumps(relabelled, separators=(",", ":")) + "\n")
+            digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+            with self.assertRaises(TrainingExportError):
+                load_export_pilot(root, digest, prepared)
+
+            disguised = {
+                **relabelled,
+                "training_input_sha256": "2" * 64,
+                "catalog_candidate_artifact_sha256": "3" * 64,
+                "training_source_commit": "4" * 40,
+                "initializer_manifest_sha256": "5" * 64,
+                "initializer_checkpoint": checkpoint_record,
+                "baseline_probe": {
+                    "sample_count": 3,
+                    "exact_count": 2,
+                    "elapsed_ms": 1,
+                },
+                "candidates": [
+                    {
+                        "steps": 1,
+                        "training_sample_count": 4,
+                        "training_list_sha256": "6" * 64,
+                        "sample_count": 3,
+                        "exact_count": 3,
+                        "elapsed_ms": 1,
+                    }
+                ],
+                "selected_steps": 1,
+            }
+            manifest.write_text(json.dumps(disguised, separators=(",", ":")) + "\n")
+            digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+            with self.assertRaises(TrainingExportError):
+                load_export_pilot(root, digest, prepared)
+
+            baseline_probe = {
+                "sample_count": 3,
+                "song_count": 2,
+                "fully_correct_song_count": 1,
+                "correct_unique_song_id_decision_count": 2,
+                "incorrect_or_tied_song_id_decision_count": 1,
+                "strict_open_text_count": 2,
+                "minimum_correct_runner_up_margin": 1.0,
+                "maximum_incorrect_runner_up_margin": 0.5,
+                "elapsed_ms": 1,
+            }
+            candidate_probe = {
+                **baseline_probe,
+                "steps": 1,
+                "training_sample_count": 4,
+                "training_list_sha256": "6" * 64,
+                "fully_correct_song_count": 2,
+                "correct_unique_song_id_decision_count": 3,
+                "incorrect_or_tied_song_id_decision_count": 0,
+                "strict_open_text_count": 3,
+                "maximum_incorrect_runner_up_margin": None,
+            }
+            valid_v2 = {
+                **disguised,
+                "recipe": {
+                    "presentation_transform_id": "scorepeek-title-rgb-identity-v1"
+                },
+                "baseline_probe": baseline_probe,
+                "candidates": [candidate_probe],
+            }
+            manifest.write_text(json.dumps(valid_v2, separators=(",", ":")) + "\n")
+            digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+            self.assertEqual(
+                load_export_pilot(root, digest, prepared)["schema"],
+                "scorepeek-private-title-model-training-pilot-v2",
+            )
+
+            mismatched = {
+                **valid_v2,
+                "candidates": [
+                    {
+                        **candidate_probe,
+                        "sample_count": 4,
+                        "song_count": 3,
+                        "correct_unique_song_id_decision_count": 4,
+                    }
+                ],
+            }
+            manifest.write_text(json.dumps(mismatched, separators=(",", ":")) + "\n")
+            digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+            with self.assertRaises(TrainingExportError):
+                load_export_pilot(root, digest, prepared)
+
 
     def test_registered_pretrained_checkpoint_and_class_mapping(self) -> None:
         source = _load_checkpoint_manifest()

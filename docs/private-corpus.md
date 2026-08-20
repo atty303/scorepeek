@@ -162,16 +162,22 @@ value; the exported graph must still prove its actual shape through parity. U+00
 only through Paddle's `use_space_char` setting; it is not encoded as an ambiguous blank dictionary
 line.
 
-`ocr:title-model:pilot` starts from a digest-bound dictionary-mapped initializer and measures the
-strict open-text exact count on the provisional validation split. It tries CPU candidates at 1, 2,
-then 4 optimizer steps with batch size 4 and a constant `1e-5` learning rate, stopping at the first
-strict improvement. The nested training subsets are selected deterministically, while the selected
-checkpoint's actual bytes and observed probes remain the evidence for a run. The selected
-checkpoint and its recipe, subset digests, and candidate probes are published as a create-only
-private artifact. This bounded pilot is not a full training schedule and does not turn the
-provisional split into accepted holdout truth. Before Paddle sees a selected training row, the
-runner verifies its sidecar digest and copies those exact bytes into a short-lived private snapshot;
-validation and replay decode each path through a single digest-checked read.
+`ocr:title-model:pilot` starts from a digest-bound dictionary-mapped initializer and scores every
+validation crop against every non-search title in an explicitly digest-bound current-catalog
+candidate artifact. The vectorized Python CTC prefix trie follows the runtime scorer's exact-title
+semantics; argmax open-text exact count is diagnostic only. It tries CPU candidates at 1, 2, then 4
+optimizer steps with batch size 4 and a constant `1e-5` learning rate. A candidate is selected only
+when it preserves every previously correct crop decision and increases the set of songs for which
+all available validation crops resolve to the correct unique song ID. The training input fixes the
+label truth and may retain an older source-catalog binding; `--catalog-candidates` separately fixes
+the current live search space and must match the preparation's catalog digest. The nested training
+subsets are selected deterministically, while the selected checkpoint's actual bytes and observed
+probes remain the evidence for a run. The selected checkpoint and its recipe, subset digests, and
+candidate probes are published as a create-only v2 private artifact. This bounded pilot is not a
+full training schedule and does not turn the provisional split into accepted holdout truth. Before
+Paddle sees a selected training row, the runner verifies its sidecar digest and copies those exact
+bytes into a short-lived private snapshot; validation and replay decode each path through a single
+digest-checked read.
 
 `ocr:title-model:export` revalidates the preparation, registered PaddleOCR source, and selected
 pilot checkpoint before invoking the registered Paddle export entrypoint. It converts the produced
@@ -192,15 +198,17 @@ dictionary class count, dynamic input width and timestep relation, every output 
 the complete prepared dictionary token order, argmax, and collapsed token orders. This proves the exported graph contract; it does not select
 the model or calibrate a recognition threshold.
 
-`ocr:title-model:replay` compares the mapped initializer and the pilot checkpoint on the complete
-provisional evaluation split and an explicit digest-bound private result-crop request. It reports
-strict open-text exact counts separately from the versioned exact comparison-key count, because an
-OCR output that omits ASCII title spacing can still select the same catalog spelling without being
-an open-text transcription match. Every result artifact passes the same complete current-layout
-crop contract as ordinary offline recognition input, and the replay records its extraction,
-canonical-frame, normalizer, layout, and title-crop hashes. Result predictions are ordinary private diagnostic output, not
+`ocr:title-model:replay` compares the mapped initializer and either a v1 or v2 pilot checkpoint on
+the complete provisional evaluation split and an explicit digest-bound private result-crop request.
+Evaluation uses the same current-catalog CTC song-ID scorer and reports fully-correct song coverage,
+crop-decision coverage, and runner-up margins; this lets an old checkpoint be re-evaluated without
+retraining it. The two current result crops retain strict open-text and versioned exact
+comparison-key diagnostics because their request has title truth rather than independent song-ID
+truth. Every result artifact passes the same complete current-layout crop contract as ordinary
+offline recognition input, and the replay records its extraction, canonical-frame, normalizer,
+layout, and title-crop hashes. Result predictions are ordinary private diagnostic output, not
 accepted holdout truth. A validation improvement is not sufficient to select the pilot when this
-outside replay is flat or worse.
+outside replay does not increase fully-correct evaluation-song coverage.
 
 `ocr:title-model:record-export` hash-records an explicitly selected Paddle model and ONNX graph
 against one preparation after rehashing its dictionary, derived config, and all three split lists.
