@@ -270,7 +270,10 @@ def run(
         raise TrainingReplayError("initializer and pilot token orders differ")
     presentation_transform_id = pilot_record["recipe"]["presentation_transform_id"]
     trie = CatalogTrie(
-        candidate_raw["candidates"], ctc_tokens, prepared["output_timesteps"]
+        candidate_raw["candidates"],
+        ctc_tokens,
+        prepared["output_timesteps"],
+        candidate_raw["comparison_key_id"],
     )
     evaluation_truth = training_truth(evaluation_rows, labels["evaluation"])
 

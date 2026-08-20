@@ -210,7 +210,12 @@ def run(
     base_config = yaml.safe_load(config_data)
     tokens = dictionary_data.decode().splitlines()
     ctc_tokens = ["blank", *tokens, " "]
-    trie = CatalogTrie(candidate_raw["candidates"], ctc_tokens, prepared["output_timesteps"])
+    trie = CatalogTrie(
+        candidate_raw["candidates"],
+        ctc_tokens,
+        prepared["output_timesteps"],
+        candidate_raw["comparison_key_id"],
+    )
     validation_truth = training_truth(validation_rows, labels["validation"])
 
     sys.path.insert(0, str(source_root))

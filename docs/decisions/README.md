@@ -27,6 +27,8 @@ authoritative.
 - [ADR 0016: Use stationary music-list rows as result-title evidence](0016-use-stationary-list-rows-as-result-title-evidence.md)
 - [ADR 0017: Separate music-list title presentation domains](0017-separate-music-list-title-presentation-domains.md)
 - [ADR 0018: Stage title training on stationary music-list evidence](0018-stage-title-training-on-stationary-music-list-evidence.md)
+- [ADR 0019: Apply comparison keys to catalog-constrained CTC candidates](0019-apply-comparison-keys-to-ctc-candidates.md)
+  supersedes ADR 0006 only for exact-only catalog candidate sequences.
 
 ## Historical
 

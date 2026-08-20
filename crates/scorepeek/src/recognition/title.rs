@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
@@ -202,12 +202,54 @@ fn folded_comparison_key(value: &str) -> String {
         .collect()
 }
 
+pub(super) fn ctc_candidate_sequences<'a, T: Copy + Ord>(
+    candidates: impl IntoIterator<Item = (T, DisplayVariantKind, &'a str)>,
+) -> BTreeMap<T, BTreeSet<String>> {
+    let variants: Vec<_> = candidates
+        .into_iter()
+        .filter(|(_, kind, _)| *kind != DisplayVariantKind::SearchTerm)
+        .map(|(id, _, value)| {
+            (
+                id,
+                value.to_owned(),
+                exact_comparison_key(value),
+                folded_comparison_key(value),
+            )
+        })
+        .collect();
+    let mut folded_songs = BTreeMap::<String, BTreeSet<T>>::new();
+    for (id, _, _, folded) in &variants {
+        if !folded.is_empty() {
+            folded_songs.entry(folded.clone()).or_default().insert(*id);
+        }
+    }
+
+    let mut sequences = BTreeMap::<T, BTreeSet<String>>::new();
+    for (id, raw, exact, folded) in variants {
+        let song_sequences = sequences.entry(id).or_default();
+        song_sequences.insert(raw);
+        if !exact.is_empty() {
+            song_sequences.insert(exact);
+        }
+        if folded_songs
+            .get(&folded)
+            .is_some_and(|songs| songs.len() == 1)
+        {
+            song_sequences.insert(folded);
+        }
+    }
+    sequences
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::{
         CandidateMatch, DiagnosticTitleCandidate, DiagnosticTitleError,
-        DiagnosticTitleUnknownReason, diagnostic_title_candidate, exact_comparison_key,
-        folded_comparison_key, provisional_title_candidates, unique_candidate,
+        DiagnosticTitleUnknownReason, ctc_candidate_sequences, diagnostic_title_candidate,
+        exact_comparison_key, folded_comparison_key, provisional_title_candidates,
+        unique_candidate,
     };
     use crate::catalog::{Catalog, Difficulty, DisplayVariantKind, InfinitasStatus, PlayType};
 
@@ -256,6 +298,26 @@ mod tests {
             folded_comparison_key("Absolute Evil")
         );
         assert_ne!(folded_comparison_key("A-B"), folded_comparison_key("AB"));
+    }
+
+    #[test]
+    fn ctc_sequences_add_only_song_unique_comparison_aliases() {
+        let sequences = ctc_candidate_sequences([
+            (1, DisplayVariantKind::InGameDisplay, "ＰＡＳＴＥＬＩＳＭ"),
+            (2, DisplayVariantKind::InGameDisplay, "A B"),
+            (3, DisplayVariantKind::InGameDisplay, "ＡＢ"),
+            (4, DisplayVariantKind::SearchTerm, "PASTELISM"),
+        ]);
+        assert_eq!(
+            sequences[&1],
+            BTreeSet::from(["PASTELISM".to_owned(), "ＰＡＳＴＥＬＩＳＭ".to_owned(),])
+        );
+        assert_eq!(
+            sequences[&2],
+            BTreeSet::from(["A B".to_owned(), "AB".to_owned()])
+        );
+        assert_eq!(sequences[&3], BTreeSet::from(["ＡＢ".to_owned()]));
+        assert!(!sequences.contains_key(&4));
     }
 
     #[test]

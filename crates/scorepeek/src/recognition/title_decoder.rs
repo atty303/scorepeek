@@ -6,6 +6,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::catalog::{Catalog, DisplayVariantKind, ScorepeekSongId};
+use crate::recognition::title::ctc_candidate_sequences;
 
 pub const TITLE_DICTIONARY_SHA256: &str =
     "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1";
@@ -141,11 +142,12 @@ struct TrieNode {
     songs: BTreeSet<ScorepeekSongId>,
 }
 
-/// Scores every exactly encodable non-search catalog title through one CTC prefix trie.
+/// Scores exact catalog titles and song-unique comparison-key aliases through one CTC prefix trie.
 ///
 /// This is an offline diagnostic boundary. Thresholds are explicit because the current profile
 /// has no calibrated acceptance policy. A title that cannot be represented by the registered
-/// model dictionary is not approximated or normalized.
+/// model dictionary is not approximated. Bounded aliases use the registered title comparison key;
+/// a folded key shared by multiple songs is never added as a decision sequence.
 ///
 /// # Errors
 /// Returns an error for an unregistered dictionary, malformed probability tensor, or invalid
@@ -167,7 +169,7 @@ pub fn score_catalog_titles(
     let indexes = dictionary_indexes(&dictionary)?;
     let mut trie = vec![TrieNode::default()];
     let mut catalog_coverage_complete = true;
-    for (song_id, song) in catalog.songs() {
+    for song in catalog.songs().values() {
         let mut has_non_search_variant = false;
         for variant in song
             .title_variants()
@@ -175,8 +177,20 @@ pub fn score_catalog_titles(
             .filter(|variant| variant.kind != DisplayVariantKind::SearchTerm)
         {
             has_non_search_variant = true;
-            let Some(tokens) = tokenize(&variant.value, &indexes) else {
+            if tokenize(&variant.value, &indexes).is_none() {
                 catalog_coverage_complete = false;
+            }
+        }
+        catalog_coverage_complete &= has_non_search_variant;
+    }
+    let candidates = catalog.songs().iter().flat_map(|(song_id, song)| {
+        song.title_variants()
+            .iter()
+            .map(move |variant| (*song_id, variant.kind, variant.value.as_str()))
+    });
+    for (song_id, sequences) in ctc_candidate_sequences(candidates) {
+        for sequence in sequences {
+            let Some(tokens) = tokenize(&sequence, &indexes) else {
                 continue;
             };
             let mut node = 0;
@@ -194,9 +208,8 @@ pub fn score_catalog_titles(
                     child
                 };
             }
-            trie[node].songs.insert(*song_id);
+            trie[node].songs.insert(song_id);
         }
-        catalog_coverage_complete &= has_non_search_variant;
     }
     if trie.iter().all(|node| node.songs.is_empty()) {
         return Ok(CatalogTitleDecision::Unknown {

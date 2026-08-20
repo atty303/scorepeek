@@ -41,7 +41,7 @@ from scorepeek_ocr.training_pilot import _model
 from scorepeek_ocr.training_source import load_registered_source, verify_source
 from scorepeek_ocr.title_presentation import TRANSFORM_IDS
 
-CENSUS_SCHEMA = "scorepeek-private-title-model-coverage-census-v1"
+CENSUS_SCHEMA = "scorepeek-private-title-model-coverage-census-v2"
 MODEL_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 SPLITS = ("train", "validation", "evaluation")
 
@@ -218,6 +218,7 @@ def run(
         candidate_raw["candidates"],
         ["blank", *tokens, " "],
         prepared["output_timesteps"],
+        candidate_raw["comparison_key_id"],
     )
     records = []
     for identifier, checkpoint, checkpoint_sha256, transform in models:
@@ -272,6 +273,7 @@ def run(
         "training_preparation_sha256": preparation_sha256,
         "training_input_sha256": training_input_sha256,
         "catalog_candidate_artifact_sha256": catalog_candidates_sha256,
+        "comparison_key_id": candidate_raw["comparison_key_id"],
         "catalog_sha256": prepared["catalog_sha256"],
         "provisional": True,
         "accepted_holdout_truth": False,

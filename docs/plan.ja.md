@@ -218,7 +218,10 @@ last-known-goodを維持し、gameplay daemonへnetwork fallbackを追加しな�
 ## OCR modelとcorpus
 
 曲ごとのclosed-set classifierやimage prototype databaseは作らない。固定title ROIを
-sequence modelへ入力し、CTC logitsをexact catalog title trieへ直接scoreする。
+sequence modelへ入力し、CTC logitsをcatalog title trieへ直接scoreする。trieはrawのnon-search
+display variantとexact comparison keyを保持し、bounded ASCII/fullwidth folded keyはcandidate domain
+全体で1 songに一意な場合だけaliasとして追加する。cross-song collisionはaliasを作らず、comparison-key
+IDをcandidate artifactへbindする。詳細はADR 0019に従う。
 
 - baseline: PP-OCRv6 small recognition modelをfine-tune
 - initialization: 公式pretrained checkpointの同一文字classをCTC/NRTR両headへ移植し、追加文字classだけを

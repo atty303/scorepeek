@@ -58,6 +58,8 @@ from scorepeek_ocr.training_artifacts import (
 from scorepeek_ocr.training_catalog import (
     CatalogDecisions,
     CatalogTrie,
+    TrainingCatalogError,
+    catalog_candidate_sequences,
     improves_catalog_identity,
     training_truth,
 )
@@ -216,6 +218,7 @@ class ContractTests(unittest.TestCase):
             ],
             ["blank", "A", "B"],
             3,
+            "scorepeek-title-nfc-ucd17-exact-then-ascii-width-fold-v2",
         )
         probabilities = np.asarray(
             [[0.5, 0.4, 0.1], [0.4, 0.5, 0.1], [0.5, 0.4, 0.1]],
@@ -253,6 +256,23 @@ class ContractTests(unittest.TestCase):
         rows = [("/crop/a.ppm", "A", "1" * 64)]
         labels = [{"crop_file_sha256": "1" * 64, "song_id": "song-a"}]
         self.assertEqual(training_truth(rows, labels), ["song-a"])
+
+    def test_training_catalog_uses_only_song_unique_comparison_aliases(self) -> None:
+        candidates = [
+            {"song_id": "song-pastel", "variants": [{"value": "ＰＡＳＴＥＬＩＳＭ"}]},
+            {"song_id": "song-ascii", "variants": [{"value": "A B"}]},
+            {"song_id": "song-fullwidth", "variants": [{"value": "ＡＢ"}]},
+        ]
+        self.assertEqual(
+            catalog_candidate_sequences(candidates),
+            {
+                "song-pastel": ("PASTELISM", "ＰＡＳＴＥＬＩＳＭ"),
+                "song-ascii": ("A B", "AB"),
+                "song-fullwidth": ("ＡＢ",),
+            },
+        )
+        with self.assertRaises(TrainingCatalogError):
+            CatalogTrie(candidates, ["blank", "A", "B", " "], 20, "unknown")
 
     def test_training_census_summarizes_unrecognized_songs(self) -> None:
         decisions = CatalogDecisions(

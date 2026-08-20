@@ -248,11 +248,12 @@ is outside this checkpoint.
   registered graph, dictionary, reference, and bound crop bytes, independently
   reproduces the complete 3x48x320 BGR/resize/normalize input, and fails if the
   input/output tensors, token order, or parity candidate scores/ranking exceed
-  their bounds. It then tokenizes every exactly encodable non-search title in
-  the identified active catalog without normalization, scores their shared CTC
-  trie, and returns a song only when explicit diagnostic absolute and runner-up
-  bounds pass. Ties, unencodable catalogs, and insufficient evidence remain
-  `unknown`; the command produces no free OCR text or accepted title.
+  their bounds. It then tokenizes every exactly encodable raw and exact-key
+  non-search title in the identified active catalog, adds a width-folded key
+  only when that key identifies one song, scores their shared CTC trie, and
+  returns a song only when explicit diagnostic absolute and runner-up bounds
+  pass. Ties, unencodable catalogs, and insufficient evidence remain `unknown`;
+  the command produces no free OCR text or accepted title.
 - A value-free registered-dictionary coverage audit that verifies the exact immutable dictionary,
   binds aggregate output to the active catalog digest, splits every non-search variant by display
   kind, and reports unsupported-character and CTC-timestep rejections without exposing or silently
@@ -744,30 +745,26 @@ is outside this checkpoint.
   preserved every previously correct validation crop and raised fully resolved validation songs
   from 109 to 110. Replay manifest SHA-256
   `971df3c809e40fd2592151228c9db7b1c5c7180acdbcc0c20213c1b4701a5035` remained
-  132/133 on evaluation. A complete 3,061-crop, 1,119-song census then re-evaluated the initializer
-  and all six retained pilot checkpoints against all 1,879 current-catalog candidates. The private
-  census manifest at SHA-256
-  `bfeae677001efd1dc8beeb7cafeca1eea73a98bfa4c71be89a8edc360b3259ed` measured the initializer at
-  1,112/1,119 fully recognized songs. Pilot v1 reached 1,113; pilot v2, pilot v3, channel-max v1,
-  catalog v1, and catalog v2 each reached 1,114. Those five candidates preserved every initializer-
-  recognized song and additionally resolved `If` and `■□模様`; the earlier evaluation-only rejection
-  was therefore not valid for the finite-corpus goal. The latest fully current-bound catalog-v2
-  checkpoint is the private winner at SHA-256
-  `a027393671e2a6dd65fd8009e7692c848c9dc42c1d8931aeee99568282d46a50`, leaving five corpus songs
-  incomplete: `ΕΛΠΙΣ`, `〆`, `Ｘ↑Ｘ↓`, `ＰＡＳＴＥＬＩＳＭ`, and `∀`. Correct and incorrect margins
-  overlap, so this census does not calibrate the live rejection thresholds. The winner's observed
-  65-timestep, 18,725-class CTC output is not yet a selected exported runtime graph.
-  Follow-up investigation established that this census does not yet apply the accepted exact-first,
-  bounded ASCII/fullwidth comparison key to catalog-constrained CTC candidates. Both
-  `ＰＡＳＴＥＬＩＳＭ` crops produced ASCII `PASTELISM` from the provisional-label source model at
-  confidence above 0.9998 and associate uniquely with the correct song through the comparison key,
-  but the Python census and Rust catalog-title decoder tokenize only the catalog's fullwidth
-  variant. All seven separately evaluated census models select `RISLIM` instead, with runner-up
-  margins between approximately 9.7 and 11.1; their score for an ASCII folded alias has not yet been
-  measured. The missing candidate-domain integration is a confirmed decoder-contract defect and the
-  present result cannot establish that these two crops require training. Whether the corrected
-  candidate domain recovers them under each retained checkpoint remains unverified; the reported
-  1,114/1,119 model coverage must be remeasured after the correction.
+  132/133 on evaluation. A complete 3,061-crop, 1,119-song census then evaluated the initializer and
+  six fine-tuning pilots against all 1,879 current-catalog candidates. Its exact-only decoder
+  reported the initializer at 1,112/1,119 fully recognized songs, pilot v1 at 1,113, and five later
+  pilots at 1,114. That comparison did not apply the already accepted title comparison key to CTC
+  candidate sequences, so its model-selection conclusion and `catalog-v2` winner designation are
+  invalidated. The private checkpoints remain reproducible historical artifacts but are not active
+  candidates and were not re-evaluated or selected under the corrected decoder.
+
+  ADR 0019 now supersedes ADR 0006's exact-only candidate sequences. Python and Rust retain raw and
+  exact-key sequences and add a bounded ASCII/fullwidth folded alias only when its complete candidate
+  domain maps to one song. The Python census rejects an unregistered comparison-key ID, and its v2
+  manifest records the accepted ID directly. The corrected initializer-only census used no
+  fine-tuning and published private artifact SHA-256
+  `4f73520907519e6c0079540f5fabfffe1fc7a5c44b1d0796e9dfc79a60333c67`. It measured 3,051/3,061
+  correct crop decisions and 1,114/1,119 fully recognized songs. Relative to the same initializer's
+  exact-only census, it recovered `ＰＡＳＴＥＬＩＳＭ` and `Ｘ↑Ｘ↓` with no newly incomplete song. The
+  remaining five songs are `ΕΛΠΙΣ`, `〆`, `If`, `∀`, and `■□模様`. Correct and incorrect margins still
+  overlap: minimum correct 0.6368393436 versus maximum incorrect 2.1667671144. This census therefore
+  establishes the new no-fine-tuning finite-corpus baseline but does not calibrate live rejection
+  thresholds or select an exported runtime graph.
   The 3,061 catalog-bound
   music-list labels are provisional only: the 2,611 automated associations and 450 visual
   associations do not establish accepted holdout truth, a stability threshold, or a release gate.
@@ -838,30 +835,17 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Keep the catalog-v2 checkpoint as the current private winner. Before any further title-model
-training, correct the catalog-constrained CTC candidate domain in both the Python census and Rust
-catalog-title decoder, which remains an offline diagnostic and future runtime path, so the accepted
-`scorepeek-title-nfc-ucd17-exact-then-ascii-width-fold-v2` identity contract is applied consistently.
-Preserve exact-first precedence; derive bounded ASCII/fullwidth aliases only when they identify one
-song, and leave a cross-song folded collision unknown rather than guessing. Bind the comparison-key
-ID to the evaluated candidate artifact and add Python/Rust parity coverage for candidate sequences,
-scores, and ranking. Rerun the complete 1,119-song census for every retained checkpoint before
-changing model weights. Verify and report whether the folded alias changes either existing
-`ＰＡＳＴＥＬＩＳＭ` crop to the unique correct song under each checkpoint, while preserving every song
-previously fully recognized by catalog-v2. Do not assume the new finite-corpus baseline becomes
-1,115/1,119 before that measurement.
-
-Only after that remeasurement, diagnose the remaining failures from their catalog ranks and CTC
-scores and compare lower-cost non-training remedies, including stationary multi-frame score
-aggregation, before selecting another training candidate. Do not train on `ＰＡＳＴＥＬＩＳＭ` as a
-width-fold workaround. Keep validation song `Ｘ↑Ｘ↓` and evaluation song `ΕΛΠΙΣ` out of training.
-Any later candidate may advance only when the corrected complete census preserves every fully
-recognized song and strictly grows that song set. Validation, evaluation, and strict open-text
-counts remain diagnostics and may move independently; no split alone is the finite-corpus selection
-oracle. Runner-up and absolute thresholds remain uncalibrated until negative, transition, and
-similar-title live inputs exist. The channel-maximum transform matches the current best coverage but
-is not preferred over the identity-domain catalog-v2 checkpoint, is not a default, and is not a
-live-only correction. Keep the 24
+Keep the corrected, non-fine-tuned initializer census at 1,114/1,119 as the current private baseline.
+Do not use the six historical fine-tuning pilots for selection and do not start another OCR training
+run. Extend the private census diagnostic just enough to record, for each incorrect crop, the expected
+song's rank and score plus a bounded top candidate list with sequence length. Use those observations
+to test whether the remaining failures arise from the raw CTC scorer's preference for one-character
+candidates. Compare only global, model-free decoder alternatives and stationary multi-frame score
+aggregation against the unchanged initializer output. A candidate may advance only when the complete
+1,119-song census preserves every currently fully recognized song and strictly grows that song set;
+title-disjoint validation/evaluation remain guards rather than the selection oracle. Do not add broad
+Unicode compatibility, case, Greek/Latin-confusable, or edit-distance folding, and do not tune live
+thresholds from this positive-only corpus. Keep the 24
 INFINITAS-blue and 299 LEGGENDARIA-purple groups out of training until their labels are established
 independently of the recognition output; evaluate any future color correction under the same
 explicit transform ID in training and replay.

@@ -10,6 +10,11 @@ from typing import Any
 import numpy as np
 import paddle
 
+from scorepeek_ocr.provisional_labels import (
+    COMPARISON_KEY_ID,
+    _comparison_key,
+    _exact_comparison_key,
+)
 from scorepeek_ocr.training_initializer import _decode, _preprocess
 from scorepeek_ocr.title_presentation import IDENTITY_TRANSFORM_ID
 
@@ -27,14 +32,17 @@ class CatalogDecisions:
 
 
 class CatalogTrie:
-    """A vectorized equivalent of the runtime's exact catalog-title CTC trie."""
+    """A vectorized equivalent of the catalog-title CTC trie."""
 
     def __init__(
         self,
         candidates: list[dict[str, Any]],
         tokens: list[str],
         maximum_timesteps: int,
+        comparison_key_id: str,
     ) -> None:
+        if comparison_key_id != COMPARISON_KEY_ID:
+            raise TrainingCatalogError("catalog comparison key is not registered")
         indexes: dict[str, int] = {}
         duplicates = set()
         for index, token in enumerate(tokens[1:], 1):
@@ -53,11 +61,12 @@ class CatalogTrie:
         terminal_nodes = []
         terminal_songs = []
         song_ids = []
+        sequences = catalog_candidate_sequences(candidates)
         for song_index, candidate in enumerate(candidates):
             song_ids.append(candidate["song_id"])
-            for variant in candidate["variants"]:
+            for value in sequences[candidate["song_id"]]:
                 try:
-                    sequence = [indexes[character] for character in variant["value"]]
+                    sequence = [indexes[character] for character in value]
                 except KeyError as error:
                     raise TrainingCatalogError(
                         "catalog title is outside the prepared dictionary"
@@ -137,6 +146,33 @@ class CatalogTrie:
             return [self._song_indexes[song_id] for song_id in song_ids]
         except KeyError as error:
             raise TrainingCatalogError("training truth is absent from the candidate catalog") from error
+
+
+def catalog_candidate_sequences(
+    candidates: list[dict[str, Any]],
+) -> dict[str, tuple[str, ...]]:
+    variants = [
+        (
+            candidate["song_id"],
+            variant["value"],
+            _exact_comparison_key(variant["value"]),
+            _comparison_key(variant["value"]),
+        )
+        for candidate in candidates
+        for variant in candidate["variants"]
+    ]
+    folded_songs: dict[str, set[str]] = {}
+    for song_id, _, _, folded in variants:
+        if folded:
+            folded_songs.setdefault(folded, set()).add(song_id)
+    sequences = {candidate["song_id"]: set() for candidate in candidates}
+    for song_id, raw, exact, folded in variants:
+        sequences[song_id].add(raw)
+        if exact:
+            sequences[song_id].add(exact)
+        if len(folded_songs.get(folded, ())) == 1:
+            sequences[song_id].add(folded)
+    return {song_id: tuple(sorted(values)) for song_id, values in sequences.items()}
 
 
 def training_truth(
