@@ -734,19 +734,29 @@ is outside this checkpoint.
   at 327/329 and 369/370. Every candidate that improved validation reached 328/329 but remained
   369/370 on evaluation; the older v1 pilot regressed validation to 325/329. The initializer's
   correct runner-up margins remained separated from its incorrect margins across these splits,
-  while each fine-tuned candidate introduced overlap. The initializer therefore remains the
-  private winner for song identification even where a candidate improved open-text transcription.
-  The initializer fully resolves 109/111 validation songs and 132/133 evaluation songs across all
-  available crops. A current-catalog candidate artifact at SHA-256
+  while each fine-tuned candidate introduced overlap. The initializer fully resolves 109/111
+  validation songs and 132/133 evaluation songs across all available crops. Those title-disjoint
+  subsets are generalization diagnostics rather than the finite-corpus model-selection oracle. A
+  current-catalog candidate artifact at SHA-256
   `36fa8d3fff16eefb27cadea2f16c4395b6d40ca4ea1505d8e9c119ca84748e1a`
   independently regenerated the `ceabe293` search space. The v2 catalog-selected one-step pilot at
   manifest SHA-256 `d2d84a29bb9164caf9fd4cc7ba45c384db17f187771472db5277b26f4da8690a`
   preserved every previously correct validation crop and raised fully resolved validation songs
   from 109 to 110. Replay manifest SHA-256
   `971df3c809e40fd2592151228c9db7b1c5c7180acdbcc0c20213c1b4701a5035` remained
-  132/133 on evaluation, so the candidate did not increase song coverage and was not promoted.
-  The better initializer's observed 65-timestep, 18,725-class CTC output is not yet a selected
-  exported runtime graph.
+  132/133 on evaluation. A complete 3,061-crop, 1,119-song census then re-evaluated the initializer
+  and all six retained pilot checkpoints against all 1,879 current-catalog candidates. The private
+  census manifest at SHA-256
+  `bfeae677001efd1dc8beeb7cafeca1eea73a98bfa4c71be89a8edc360b3259ed` measured the initializer at
+  1,112/1,119 fully recognized songs. Pilot v1 reached 1,113; pilot v2, pilot v3, channel-max v1,
+  catalog v1, and catalog v2 each reached 1,114. Those five candidates preserved every initializer-
+  recognized song and additionally resolved `If` and `■□模様`; the earlier evaluation-only rejection
+  was therefore not valid for the finite-corpus goal. The latest fully current-bound catalog-v2
+  checkpoint is the private winner at SHA-256
+  `a027393671e2a6dd65fd8009e7692c848c9dc42c1d8931aeee99568282d46a50`, leaving five corpus songs
+  incomplete: `ΕΛΠΙΣ`, `〆`, `Ｘ↑Ｘ↓`, `ＰＡＳＴＥＬＩＳＭ`, and `∀`. Correct and incorrect margins
+  overlap, so this census does not calibrate the live rejection thresholds. The winner's observed
+  65-timestep, 18,725-class CTC output is not yet a selected exported runtime graph.
   The 3,061 catalog-bound
   music-list labels are provisional only: the 2,611 automated associations and 450 visual
   associations do not establish accepted holdout truth, a stability threshold, or a release gate.
@@ -817,19 +827,20 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Keep the mapped initializer as the current private winner. Improve music-select recognition from
-the standard domain first. Diagnose the remaining two validation and one evaluation incorrect
-catalog decisions from their exact CTC candidate rankings and independently labelled training
-coverage, then run the smallest title-disjoint candidate that addresses an observed error class.
-A pilot may advance only when it preserves every previously correct validation crop and increases
-the number of songs whose complete validation observation set resolves to the correct unique song
-ID. The outside evaluation replay must then increase that same song-level coverage; strict and
-comparison-key text counts remain diagnostics and may move in either direction. Runner-up and
-absolute thresholds remain uncalibrated until negative, transition, and similar-title live inputs
-exist. The channel-maximum transform is a recorded negative candidate, not a
-default and not a live-only correction. Keep the 24 INFINITAS-blue and 299 LEGGENDARIA-purple
-groups out of training until their labels are established independently of the recognition output;
-evaluate any future color correction under the same explicit transform ID in training and replay.
+Keep the catalog-v2 checkpoint as the current private winner. Improve music-select recognition from
+the standard domain first. Its five incomplete corpus songs consist of three train songs (`〆`,
+`ＰＡＳＴＥＬＩＳＭ`, and `∀`) with eight failed crops, one validation song (`Ｘ↑Ｘ↓`), and one evaluation
+song (`ΕΛΠΙΣ`). Run the smallest targeted candidate using only those eight already independent train
+crops; do not train on the validation or evaluation failures. A candidate may advance only when the
+complete 1,119-song census preserves every fully recognized song and strictly grows that song set
+beyond 1,114. Validation, evaluation, strict text, and comparison-key counts remain diagnostics and
+may move independently; no split alone is the finite-corpus selection oracle. Runner-up and absolute
+thresholds remain uncalibrated until negative, transition, and similar-title live inputs exist. The
+channel-maximum transform matches the best coverage but is not preferred over the identity-domain
+catalog-v2 checkpoint, is not a default, and is not a live-only correction. Keep the 24
+INFINITAS-blue and 299 LEGGENDARIA-purple groups out of training until their labels are established
+independently of the recognition output; evaluate any future color correction under the same
+explicit transform ID in training and replay.
 Keep the 351 locked/unobservable, 438 possible right-clips, vertical-motion, selected, obscured,
 and redacted-secret groups quarantined until their separate correction or completeness evidence
 exists. After a music-select candidate clears the provisional split, export it through the

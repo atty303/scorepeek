@@ -167,8 +167,9 @@ validation crop against every non-search title in an explicitly digest-bound cur
 candidate artifact. The vectorized Python CTC prefix trie follows the runtime scorer's exact-title
 semantics; argmax open-text exact count is diagnostic only. It tries CPU candidates at 1, 2, then 4
 optimizer steps with batch size 4 and a constant `1e-5` learning rate. A candidate is selected only
-when it preserves every previously correct crop decision and increases the set of songs for which
-all available validation crops resolve to the correct unique song ID. The training input fixes the
+when it preserves the set of songs for which every available validation crop resolves correctly and
+strictly increases that fully recognized song set. Correct-crop monotonicity within a song that was
+already incomplete is not a selection requirement. The training input fixes the
 label truth and may retain an older source-catalog binding; `--catalog-candidates` separately fixes
 the current live search space and must match the preparation's catalog digest. The nested training
 subsets are selected deterministically, while the selected checkpoint's actual bytes and observed
@@ -207,8 +208,21 @@ comparison-key diagnostics because their request has title truth rather than ind
 truth. Every result artifact passes the same complete current-layout crop contract as ordinary
 offline recognition input, and the replay records its extraction, canonical-frame, normalizer,
 layout, and title-crop hashes. Result predictions are ordinary private diagnostic output, not
-accepted holdout truth. A validation improvement is not sufficient to select the pilot when this
-outside replay does not increase fully-correct evaluation-song coverage.
+accepted holdout truth. Replay remains a title-disjoint generalization diagnostic; model selection
+for the finite known corpus is made by the complete-corpus census below, not by validation or
+evaluation alone.
+
+`ocr:title-model:census` is the primary finite-corpus coverage measurement. It accepts one or more
+explicitly named, digest-bound private Paddle checkpoints and scores all train, validation, and
+evaluation crops against the same complete current-catalog candidate trie. Its create-only private
+artifact reports total and per-split fully recognized song counts, every incomplete song, each
+failing crop digest, the unique top song ID (or null for a tie), and the runner-up margin. Model selection for the
+current 1,119-song corpus uses strict growth of the complete-corpus fully recognized song set: an
+accepted candidate may change text or crop decisions inside an already incomplete song, but must not
+lose a previously fully recognized song. Validation and evaluation remain title-disjoint diagnostics
+for generalization and overfitting; neither substitutes for complete-corpus coverage. Census is an
+offline development measurement and does not calibrate the live absolute-score or runner-up-margin
+rejection thresholds.
 
 `ocr:title-model:record-export` hash-records an explicitly selected Paddle model and ONNX graph
 against one preparation after rehashing its dictionary, derived config, and all three split lists.

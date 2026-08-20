@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import os
@@ -60,6 +61,7 @@ from scorepeek_ocr.training_catalog import (
     improves_catalog_identity,
     training_truth,
 )
+from scorepeek_ocr.training_census import TrainingCensusError, summarize_songs
 from scorepeek_ocr.training_source import (
     TrainingSourceError,
     load_registered_source as load_registered_training_source,
@@ -225,16 +227,74 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(trie.expected_indexes(["song-b", "song-a"]), [1, 0])
 
         truth = ("song-a", "song-b", "song-a")
-        baseline = CatalogDecisions((True, False, True), (3.0, 1.0, 2.0), truth)
-        gain = CatalogDecisions((True, True, True), (2.0, 1.5, 1.0), truth)
-        regression = CatalogDecisions((False, True, True), (1.0, 1.5, 1.0), truth)
+        predictions = ("song-a", "song-a", "song-a")
+        baseline = CatalogDecisions((True, False, True), (3.0, 1.0, 2.0), truth, predictions)
+        gain = CatalogDecisions((True, True, True), (2.0, 1.5, 1.0), truth, predictions)
+        regression = CatalogDecisions((False, True, True), (1.0, 1.5, 1.0), truth, predictions)
         self.assertTrue(improves_catalog_identity(baseline, gain))
         self.assertFalse(improves_catalog_identity(baseline, regression))
         self.assertFalse(improves_catalog_identity(baseline, baseline))
 
+        partial_truth = ("song-a", "song-a", "song-b")
+        partial_baseline = CatalogDecisions(
+            (True, False, False),
+            (3.0, 1.0, 2.0),
+            partial_truth,
+            predictions,
+        )
+        partial_gain = CatalogDecisions(
+            (False, True, True),
+            (2.0, 1.5, 1.0),
+            partial_truth,
+            predictions,
+        )
+        self.assertTrue(improves_catalog_identity(partial_baseline, partial_gain))
+
         rows = [("/crop/a.ppm", "A", "1" * 64)]
         labels = [{"crop_file_sha256": "1" * 64, "song_id": "song-a"}]
         self.assertEqual(training_truth(rows, labels), ["song-a"])
+
+    def test_training_census_summarizes_unrecognized_songs(self) -> None:
+        decisions = CatalogDecisions(
+            (True, False, True),
+            (4.0, 0.25, 3.0),
+            ("song-a", "song-a", "song-b"),
+            ("song-a", "song-c", "song-b"),
+        )
+        labels = [
+            {
+                "group_id": f"group-{index}",
+                "song_id": song_id,
+                "title": title,
+                "crop_file_sha256": f"{index + 1:064x}",
+                "crop_pixel_sha256": f"{index + 11:064x}",
+            }
+            for index, (song_id, title) in enumerate(
+                (("song-a", "A"), ("song-a", "A"), ("song-b", "B"))
+            )
+        ]
+        summary, unrecognized = summarize_songs(decisions, labels)
+        self.assertEqual(summary["fully_correct_song_count"], 1)
+        self.assertEqual(summary["unrecognized_song_count"], 1)
+        self.assertEqual(unrecognized[0]["song_id"], "song-a")
+        self.assertEqual(unrecognized[0]["failures"][0]["predicted_song_id"], "song-c")
+        with self.assertRaises(TrainingCensusError):
+            summarize_songs(decisions, labels[:2])
+
+        tied = CatalogDecisions(
+            (False,),
+            (0.0,),
+            ("song-a",),
+            (None,),
+        )
+        _, tied_unrecognized = summarize_songs(tied, labels[:1])
+        self.assertIsNone(tied_unrecognized[0]["failures"][0]["predicted_song_id"])
+
+        checkpoint = io.BytesIO()
+        paddle.save({"weight": paddle.to_tensor([1.0])}, checkpoint)
+        checkpoint.seek(0)
+        loaded = paddle.load(checkpoint)
+        np.testing.assert_array_equal(loaded["weight"].numpy(), np.array([1.0]))
 
     def test_export_accepts_legacy_identity_pilot_but_rejects_v2_relabel(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -23,6 +23,7 @@ class CatalogDecisions:
     correct: tuple[bool, ...]
     margins: tuple[float, ...]
     expected_song_ids: tuple[str, ...]
+    predicted_song_ids: tuple[str | None, ...]
 
 
 class CatalogTrie:
@@ -168,6 +169,7 @@ def evaluate_catalog(
     started = time.perf_counter()
     correct = []
     margins = []
+    predicted_song_ids = []
     strict = 0
     model.eval()
     with paddle.no_grad():
@@ -188,6 +190,7 @@ def evaluate_catalog(
                 ranked = top_two[np.argsort(scores[top_two])[::-1]]
                 top = int(ranked[0])
                 margin = float(scores[ranked[0]] - scores[ranked[1]])
+                predicted_song_ids.append(trie.song_ids[top] if margin > 0 else None)
                 correct.append(
                     margin > 0 and top == expected_indexes[offset + local]
                 )
@@ -219,7 +222,10 @@ def evaluate_catalog(
         "elapsed_ms": round((time.perf_counter() - started) * 1000),
     }
     return probe, CatalogDecisions(
-        tuple(correct), tuple(margins), tuple(expected_song_ids)
+        tuple(correct),
+        tuple(margins),
+        tuple(expected_song_ids),
+        tuple(predicted_song_ids),
     )
 
 
@@ -230,12 +236,6 @@ def improves_catalog_identity(
         raise TrainingCatalogError("catalog decision counts differ")
     if baseline.expected_song_ids != candidate.expected_song_ids:
         raise TrainingCatalogError("catalog decision truth differs")
-    if not all(
-        not before or after
-        for before, after in zip(baseline.correct, candidate.correct, strict=True)
-    ):
-        return False
-
     def fully_correct(decisions: CatalogDecisions) -> set[str]:
         return {
             song_id
