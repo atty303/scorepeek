@@ -57,6 +57,13 @@ REGISTERED_ONNX_BUNDLE_MANIFESTS = {
         / "pp-ocrv6-medium-rec-onnx-bundle-v1.json",
         "f794d77fb6d9860e2aadedd1ef575bd67c044b83fe2821243867b66c9a7c5abe",
     ),
+    "pp-ocrv5-mobile-rec-onnx-v1": (
+        PROJECT_ROOT
+        / "models"
+        / "manifests"
+        / "pp-ocrv5-mobile-rec-onnx-bundle-v1.json",
+        "ebbd34d2c0e360b1cf55199fc1400886e7bfbb4d6917c7d86a994b79c2256971",
+    ),
 }
 REGISTERED_ONNX_BUNDLE_CONTRACTS = {
     "pp-ocrv6-tiny-rec-onnx-v1": {
@@ -96,6 +103,22 @@ REGISTERED_ONNX_BUNDLE_CONTRACTS = {
             "inference.yml": (
                 "991b700facf5b50a7de193468207d5f4255b538dde0d312ae3b7c7a9b6873129",
                 150_580,
+            ),
+        },
+    },
+    "pp-ocrv5-mobile-rec-onnx-v1": {
+        "model_name": "PP-OCRv5_mobile_rec",
+        "repository": "PaddlePaddle/PP-OCRv5_mobile_rec_onnx",
+        "revision": "ed152b8b495f84de93cda5709d768548a9127622",
+        "output_classes": 18385,
+        "files": {
+            "inference.onnx": (
+                "da72dc72ca4dc220df0dfde68c1dedc31c58d3e76a25871122e5056227d50092",
+                16_534_782,
+            ),
+            "inference.yml": (
+                "5dfeb2777f6d0db8177d8128a8acfcf6e6276dc4ac73ea3bf0dc06d6a5e85d8e",
+                148_345,
             ),
         },
     },
@@ -606,7 +629,7 @@ def load_registered_onnx_bundle(model_id: str) -> OnnxBundleSource:
             "ctc_blank_token": 0,
         }
         or not isinstance(raw["files"], list)
-        or len(raw["files"]) != 3
+        or len(raw["files"]) != len(expected_contract["files"])
     ):
         raise ModelStoreError("ONNX bundle manifest values are invalid")
     expected_files = expected_contract["files"]

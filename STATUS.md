@@ -990,6 +990,28 @@ safe live threshold or preferred decoder. Replaying the saved observations witho
 artifact SHA-256 `17c7cec8a89c04311cd5194445106d0283477b8dff518fe26e116260669ef895`
 with byte-identical strategy metrics, incomplete-song records, and gain/loss sets.
 
+The official `PP-OCRv5_mobile_rec` ONNX candidate is now registered and measured without selecting
+it. Manifest SHA-256 `ebbd34d2c0e360b1cf55199fc1400886e7bfbb4d6917c7d86a994b79c2256971`
+binds official repository revision `ed152b8b495f84de93cda5709d768548a9127622`, Apache-2.0 provenance,
+the 16,534,782-byte graph, inference YAML/dictionary, and its native NCHW BGR 3x48 dynamic-width,
+18,385-class CTC contract. The model-specific registry now binds the exact two-file v5 bundle while
+retaining the exact three-file v6 bundle sets. A one-crop probe again produced width 506, the shared
+pixel-exact tensor SHA-256, 63 timesteps, and open text `smile`.
+
+The complete v5 mobile census ran the same 3,061 stationary crops, 1,119 songs, and 1,879 catalog
+candidates. Its private artifact SHA-256 is
+`4b7a919ea4e2518abacdf5a652e9e6aa8762edfc097d3d49ea344bcaf1a6813a`; reusable observations are
+SHA-256 `f2032d6dab99cefaedbec3422411000dc27102f5be0cc46f8f6b8d45bd3af6e6`. Exact comparison-key
+search fully recognized 882 songs with three wrong unique and 508 unknown/tied crop decisions.
+Absolute Levenshtein reached 1,099 songs with five wrong unique and 30 unknown/tied decisions.
+Normalized Levenshtein reached 1,108 songs with eight wrong unique and 15 unknown/tied decisions;
+its maximum incorrect margin was `0.8000000119`. These unadjusted results do not surpass medium's
+1,110-song absolute-distance result with three wrong unique decisions. The smaller mobile bundle is
+still observation material rather than a selected or phase-two-excluded model. Replaying the saved
+observations without ONNX produced artifact SHA-256
+`03820a183cdebfaaa9beb9ad5441212fe1c6b845e36fea5ac3a0d5e5929a6b87` with byte-identical
+strategy metrics, incomplete-song records, and gain/loss sets.
+
 ## Next executable task
 
 Do not continue from the mapped initializer, re-evaluate the six historical fine-tuning pilots, export
@@ -1002,8 +1024,9 @@ recognition path to handle every song. A unified path and bounded multiple-path 
 be compared by global song uniqueness, wrong unique decisions, runtime cost, and implementation
 complexity; that is a selection criterion, not a conclusion from the current 26-crop observation.
 
-Tiny and medium are measured but neither is selected. Register and measure the remaining official
-PP-OCRv5 mobile/server candidates under the same complete-census contract; remeasure small with the corrected dynamic
+Tiny, medium, and v5 mobile are measured but none is selected or removed from phase two. Register
+and measure the remaining official PP-OCRv5 server candidate under the same complete-census contract;
+remeasure small with the corrected dynamic
 preprocessor. After every runnable official model has a native baseline, apply any
 global presentation, alias, calibration, or stationary aggregation candidate uniformly to all of
 them. Do not start fine-tuning before those two phases are measured.
