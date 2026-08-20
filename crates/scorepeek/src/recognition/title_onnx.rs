@@ -33,6 +33,8 @@ const MAX_REFERENCE_MANIFEST_BYTES: u64 = 256 * 1024;
 const MAX_TENSOR_ABSOLUTE_ERROR: f32 = 2e-5;
 const MAX_INPUT_ABSOLUTE_ERROR: f32 = 1e-6;
 const MAX_CANDIDATE_LOG_PROBABILITY_ERROR: f64 = 1e-3;
+const IDENTITY_PRESENTATION_TRANSFORM_ID: &str = "scorepeek-title-rgb-identity-v1";
+const CHANNEL_MAX_PRESENTATION_TRANSFORM_ID: &str = "scorepeek-title-channel-max-rgb-v1";
 
 #[derive(Debug)]
 pub enum OnnxParityError {
@@ -240,6 +242,7 @@ struct ExportContractReference {
     validation_row_index: usize,
     crop_file_sha256: String,
     export_manifest_sha256: String,
+    presentation_transform_id: String,
     onnx_model_sha256: String,
     inference_config_sha256: String,
     input: TensorArtifact,
@@ -264,6 +267,7 @@ pub struct ExportContractParitySummary {
     pub reference_manifest_sha256: String,
     pub onnx_model_sha256: String,
     pub inference_config_sha256: String,
+    pub presentation_transform_id: String,
     pub input_shape: Vec<usize>,
     pub output_shape: Vec<usize>,
     pub maximum_tensor_absolute_error: f32,
@@ -366,6 +370,7 @@ pub fn compare_export_contract(
         reference_manifest_sha256: request.reference_sha256.to_owned(),
         onnx_model_sha256: request.model_sha256.to_owned(),
         inference_config_sha256: reference.inference_config_sha256,
+        presentation_transform_id: reference.presentation_transform_id,
         input_shape: reference.input.shape,
         output_shape: reference.paddle_output.shape,
         maximum_tensor_absolute_error,
@@ -624,6 +629,7 @@ impl ExportContractReference {
             || hashes.into_iter().any(|hash| !valid_sha256(hash))
             || self.validation_row_index != 0
             || self.onnx_model_sha256 != model_sha256
+            || !valid_presentation_transform_id(&self.presentation_transform_id)
             || self.input.filename != "input.f32le"
             || self.paddle_output.filename != "paddle-output.f32le"
             || self.input.bytes != self.input.shape.iter().product::<usize>() as u64 * 4
@@ -644,6 +650,13 @@ impl ExportContractReference {
         }
         Ok(())
     }
+}
+
+fn valid_presentation_transform_id(value: &str) -> bool {
+    matches!(
+        value,
+        IDENTITY_PRESENTATION_TRANSFORM_ID | CHANNEL_MAX_PRESENTATION_TRANSFORM_ID
+    )
 }
 
 impl TensorArtifact {
@@ -812,7 +825,18 @@ fn encode_sha256(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{argmax_tokens, ctc_log_probability};
+    use super::{argmax_tokens, ctc_log_probability, valid_presentation_transform_id};
+
+    #[test]
+    fn export_contract_accepts_only_registered_presentation_transforms() {
+        assert!(valid_presentation_transform_id(
+            "scorepeek-title-rgb-identity-v1"
+        ));
+        assert!(valid_presentation_transform_id(
+            "scorepeek-title-channel-max-rgb-v1"
+        ));
+        assert!(!valid_presentation_transform_id("unknown"));
+    }
 
     #[test]
     fn ctc_score_sums_blank_repeat_and_direct_alignments() {

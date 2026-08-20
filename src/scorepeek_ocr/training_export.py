@@ -24,6 +24,7 @@ from scorepeek_ocr.training_initializer import (
 )
 from scorepeek_ocr.training_process import run_checked
 from scorepeek_ocr.training_source import load_registered_source, verify_source
+from scorepeek_ocr.title_presentation import TRANSFORM_IDS
 
 EXPORT_SCHEMA = "scorepeek-private-title-model-converted-export-v1"
 ONNX_OPSET = 11
@@ -41,6 +42,7 @@ def _pilot(path: Path, expected_sha256: str, preparation_sha256: str) -> dict[st
         record = json.loads(data)
     except json.JSONDecodeError as error:
         raise TrainingExportError("training pilot manifest is invalid JSON") from error
+    recipe = record.get("recipe") if isinstance(record, dict) else None
     if (
         not isinstance(record, dict)
         or record.get("schema") != "scorepeek-private-title-model-training-pilot-v1"
@@ -48,6 +50,8 @@ def _pilot(path: Path, expected_sha256: str, preparation_sha256: str) -> dict[st
         or not record.get("provisional")
         or record.get("accepted_holdout_truth") is not False
         or record.get("permission_status") != "permission_not_recorded"
+        or not isinstance(recipe, dict)
+        or recipe.get("presentation_transform_id") not in TRANSFORM_IDS
         or not isinstance(record.get("selected_checkpoint"), dict)
         or set(record["selected_checkpoint"]) != {"sha256", "bytes"}
     ):
@@ -143,6 +147,9 @@ def export(
                 "training_source_commit": source.commit,
                 "pilot_manifest_sha256": pilot_manifest_sha256,
                 "selected_checkpoint": pilot_record["selected_checkpoint"],
+                "presentation_transform_id": pilot_record["recipe"][
+                    "presentation_transform_id"
+                ],
                 "paddle2onnx_version": "2.1.0",
                 "onnx_opset": ONNX_OPSET,
                 "onnx_optimization": "none",

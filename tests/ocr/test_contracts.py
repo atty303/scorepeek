@@ -14,6 +14,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import cv2
 import scorepeek_ocr.model_store as model_store
 import numpy as np
 import paddle
@@ -59,6 +60,7 @@ from scorepeek_ocr.training_initializer import (
     _copy_classes,
     _load_checkpoint_manifest,
     _publish,
+    _preprocess,
     _read_regular,
     _tokens,
 )
@@ -70,9 +72,51 @@ from scorepeek_ocr.training_pilot import (
 )
 from scorepeek_ocr.training_process import TrainingProcessError, run_checked
 from scorepeek_ocr.training_replay import _result_rows
+from scorepeek_ocr.title_presentation import (
+    CHANNEL_MAX_TRANSFORM_ID,
+    IDENTITY_TRANSFORM_ID,
+    TitlePresentationError,
+    apply_transform,
+    transform_crop_bytes,
+)
 
 
 class ContractTests(unittest.TestCase):
+    def test_channel_max_title_presentation_is_versioned_and_deterministic(self) -> None:
+        image = np.array([[[7, 19, 11], [255, 3, 4]]], dtype=np.uint8)
+        transformed = apply_transform(image, CHANNEL_MAX_TRANSFORM_ID)
+        np.testing.assert_array_equal(
+            transformed,
+            np.array([[[19, 19, 19], [255, 255, 255]]], dtype=np.uint8),
+        )
+        encoded = transform_crop_bytes(
+            b"P6\n2 1\n255\n" + image.tobytes(), CHANNEL_MAX_TRANSFORM_ID
+        )
+        decoded = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
+        np.testing.assert_array_equal(decoded, transformed)
+        self.assertEqual(CHANNEL_MAX_TRANSFORM_ID, "scorepeek-title-channel-max-rgb-v1")
+        self.assertIs(apply_transform(image, IDENTITY_TRANSFORM_ID), image)
+        with tempfile.TemporaryDirectory() as temporary:
+            crop = Path(temporary) / "crop.ppm"
+            crop.write_bytes(b"P6\n2 1\n255\n" + image.tobytes())
+            identity_tensor = _preprocess(
+                str(crop), 96, presentation_transform_id=IDENTITY_TRANSFORM_ID
+            )
+            channel_max_tensor = _preprocess(
+                str(crop), 96, presentation_transform_id=CHANNEL_MAX_TRANSFORM_ID
+            )
+            self.assertFalse(np.array_equal(identity_tensor, channel_max_tensor))
+            np.testing.assert_array_equal(
+                channel_max_tensor[0], channel_max_tensor[1]
+            )
+            np.testing.assert_array_equal(
+                channel_max_tensor[1], channel_max_tensor[2]
+            )
+        with self.assertRaises(TitlePresentationError):
+            apply_transform(np.zeros((1, 1), dtype=np.uint8), IDENTITY_TRANSFORM_ID)
+        with self.assertRaises(TitlePresentationError):
+            apply_transform(image, "unknown")
+
     def test_training_process_is_bounded_and_checks_exit_status(self) -> None:
         with self.assertRaises(TrainingProcessError):
             run_checked(

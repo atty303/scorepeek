@@ -32,6 +32,7 @@ from scorepeek_ocr.training_initializer import (
 )
 from scorepeek_ocr.training_pilot import _initializer, _model
 from scorepeek_ocr.training_source import load_registered_source, verify_source
+from scorepeek_ocr.title_presentation import TRANSFORM_IDS
 
 REQUEST_SCHEMA = "scorepeek-private-title-model-result-replay-request-v1"
 REPLAY_SCHEMA = "scorepeek-private-title-model-replay-v1"
@@ -48,6 +49,7 @@ def _pilot(path: Path, expected_sha256: str, preparation_sha256: str) -> dict[st
     except json.JSONDecodeError as error:
         raise TrainingReplayError("pilot manifest is invalid JSON") from error
     checkpoint = record.get("selected_checkpoint") if isinstance(record, dict) else None
+    recipe = record.get("recipe") if isinstance(record, dict) else None
     if (
         record.get("schema") != "scorepeek-private-title-model-training-pilot-v1"
         or record.get("training_preparation_sha256") != preparation_sha256
@@ -55,6 +57,8 @@ def _pilot(path: Path, expected_sha256: str, preparation_sha256: str) -> dict[st
         or record.get("provisional") is not True
         or record.get("accepted_holdout_truth") is not False
         or record.get("permission_status") != "permission_not_recorded"
+        or not isinstance(recipe, dict)
+        or recipe.get("presentation_transform_id") not in TRANSFORM_IDS
         or not isinstance(checkpoint, dict)
         or set(checkpoint) != {"sha256", "bytes"}
     ):
@@ -123,7 +127,11 @@ def _result_rows(
 
 
 def _infer(
-    model, rows: list[tuple[str, str, str]], tokens: list[str], width: int
+    model,
+    rows: list[tuple[str, str, str]],
+    tokens: list[str],
+    width: int,
+    presentation_transform_id: str,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     predictions: list[str] = []
@@ -132,7 +140,10 @@ def _infer(
         for offset in range(0, len(rows), 8):
             batch = rows[offset : offset + 8]
             images = np.stack(
-                [_preprocess(path, width, digest) for path, _, digest in batch]
+                [
+                    _preprocess(path, width, digest, presentation_transform_id)
+                    for path, _, digest in batch
+                ]
             )
             tensors = model(paddle.to_tensor(images)).numpy()
             predictions.extend(_decode(tensor, tokens) for tensor in tensors)
@@ -213,11 +224,12 @@ def run(
     pilot_model.set_state_dict(paddle.load(str(pilot / "model.pdparams")))
     if ctc_tokens != pilot_tokens:
         raise TrainingReplayError("initializer and pilot token orders differ")
+    presentation_transform_id = pilot_record["recipe"]["presentation_transform_id"]
 
-    initializer_evaluation = _infer(initializer_model, evaluation_rows, ctc_tokens, prepared["model_input_width"])
-    pilot_evaluation = _infer(pilot_model, evaluation_rows, ctc_tokens, prepared["model_input_width"])
-    initializer_results = _infer(initializer_model, result_rows, ctc_tokens, prepared["model_input_width"])
-    pilot_results = _infer(pilot_model, result_rows, ctc_tokens, prepared["model_input_width"])
+    initializer_evaluation = _infer(initializer_model, evaluation_rows, ctc_tokens, prepared["model_input_width"], presentation_transform_id)
+    pilot_evaluation = _infer(pilot_model, evaluation_rows, ctc_tokens, prepared["model_input_width"], presentation_transform_id)
+    initializer_results = _infer(initializer_model, result_rows, ctc_tokens, prepared["model_input_width"], presentation_transform_id)
+    pilot_results = _infer(pilot_model, result_rows, ctc_tokens, prepared["model_input_width"], presentation_transform_id)
 
     staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent))
     try:
@@ -227,6 +239,7 @@ def run(
             "initializer_manifest_sha256": initializer_manifest_sha256,
             "pilot_manifest_sha256": pilot_manifest_sha256,
             "selected_steps": pilot_record["selected_steps"],
+            "presentation_transform_id": presentation_transform_id,
             "evaluation_list_sha256": prepared["label_file_sha256"]["evaluation"],
             "result_request_sha256": result_request_sha256,
             "result_provenance": result_provenance,

@@ -29,6 +29,7 @@ from scorepeek_ocr.training_initializer import (
     _publish,
     _read_regular,
 )
+from scorepeek_ocr.title_presentation import TRANSFORM_IDS
 
 REFERENCE_SCHEMA = "scorepeek-private-title-model-export-parity-reference-v1"
 
@@ -56,6 +57,7 @@ def _export_record(path: Path, expected_sha256: str, preparation_sha256: str) ->
         or record.get("onnx_checker") is not True
         or record.get("provisional") is not True
         or record.get("accepted_for_runtime") is not False
+        or record.get("presentation_transform_id") not in TRANSFORM_IDS
         or not isinstance(files, dict)
         or set(files) != set(required_files)
     ):
@@ -103,7 +105,14 @@ def generate(
     crop_path, _, crop_sha256 = rows[0]
     crop_data = _read_regular(Path(crop_path), MAX_CROP_BYTES, crop_sha256)
     input_tensor = np.stack(
-        [_preprocess(crop_path, prepared["model_input_width"], crop_sha256)]
+        [
+            _preprocess(
+                crop_path,
+                prepared["model_input_width"],
+                crop_sha256,
+                export_record["presentation_transform_id"],
+            )
+        ]
     )
 
     inference_config = yaml.safe_load((model_export / "inference.yml").read_bytes())
@@ -168,6 +177,7 @@ def generate(
             "validation_row_index": 0,
             "crop_file_sha256": hashlib.sha256(crop_data).hexdigest(),
             "export_manifest_sha256": export_manifest_sha256,
+            "presentation_transform_id": export_record["presentation_transform_id"],
             "onnx_model_sha256": export_record["files"]["onnx_model"]["sha256"],
             "inference_config_sha256": export_record["files"]["inference_config"]["sha256"],
             "input": input_record,

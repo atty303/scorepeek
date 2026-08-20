@@ -315,8 +315,8 @@ is outside this checkpoint.
 ## Verified in this checkpoint
 
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
-  The current workspace run covered 83 `scorepeek` library tests, 13 binary tests, 55 offline
-  corpus tests, 23 offline Python OCR tests, and the recording-dataset E2E gate.
+  The current workspace run covered 84 `scorepeek` library tests, 13 binary tests, 55 offline
+  corpus tests, 24 offline Python OCR tests, and the recording-dataset E2E gate.
 - The prior session's 3,061 provisional private labels and bound crops were recovered from its
   temporary tree into an operator-owned stable private-artifact root, with all crop paths and
   complete file/pixel SHA-256 evidence revalidated after relocation. The resulting song-disjoint
@@ -377,6 +377,24 @@ is outside this checkpoint.
   2/2 results while the pilot measured 298/370 and 2/2 results. The open-text improvement conflicts
   with a three-row regression in scorepeek's catalog comparison metric; the one-step checkpoint is not selected over the initializer and
   no threshold was fixed.
+- Music-select presentation was measured before changing either training or live recognition. On
+  all 3,061 known standard crops, a channel-maximum RGB transform changed the official model's
+  strict exact count from 2,715 to 2,725 and comparison-key exact from 2,859 to 2,871; the mapped
+  initializer changed from 2,515 to 2,524 and 2,607 to 2,613 respectively. The same untrained
+  initializer was neutral on the 24 INFINITAS-blue catalog resolutions and lost four of 232
+  LEGGENDARIA-purple unique resolutions, with no conflicting unique resolutions. A versioned
+  `scorepeek-title-channel-max-rgb-v1` pilot therefore transformed only the existing standard
+  training crops and applied the identical transform to validation and replay. One optimizer step
+  improved validation from 275/329 to 276/329, but held-out provisional evaluation regressed from
+  298/370 to 297/370 strict exact and from 303/370 to 300/370 comparison-key exact; both result
+  observations remained 2/2. The candidate checkpoint is
+  `2ee81f70714bb9de25c72bbdcb4715b4f765f7acaac2278988d04b1e1bb6bfdb`, its pilot manifest is
+  `a0c45834395641abf83780757e114cd7e5e47b2f7d816f51f42b65a2d3e40466`, and its replay manifest is
+  `93b365610b0e9076a7542f284948b0db7e826480797ac085c92c48cf55c2a83e`. The transform is rejected as
+  a default. Offline pilot, replay, and export artifacts must now carry an explicit registered
+  presentation-transform ID so a future accepted model cannot silently train and run under
+  different presentation contracts. Export parity references and Rust contract summaries retain
+  and validate the same ID rather than silently reverting to identity preprocessing.
 - The new title-model requirements regressions preserve baseline scalar coverage, append missing
   catalog characters, increase exact repeated-token CTC alignment length, and reject invalid or
   empty variant sets. The music-list row regressions cover all six explicit states, require
@@ -781,16 +799,20 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Preserve result certainty as the primary gate. Keep the mapped initializer as the current private
-winner because the validation-selected one-step checkpoint gained two strict evaluation rows but
-lost two comparison-key exact rows and was flat on both result observations. Export the
-initializer directly through the same registered Paddle/ONNX path, verify its tensor contract, and
-replay the exported graph before any runtime selection. Then collect result observations with
-distinct titles; the current two result screens both contain `ABSOLUTE EVIL` and cannot establish
-title-disjoint result accuracy or thresholds. Keep the 24
-INFINITAS-blue, 299 LEGGENDARIA-purple, 351 locked/unobservable, 438
-possible right-clips, vertical-motion, selected, obscured, and redacted-secret groups quarantined
-until their separate correction or completeness evidence exists. Do not
+Keep the mapped initializer as the current private winner. Improve music-select recognition from
+the standard domain first: compare the initializer's validation/evaluation error sets by title
+length, character class, and crop presentation, then run the smallest title-disjoint candidate
+that addresses an observed error class and require improvement in both strict and comparison-key
+metrics before export. The channel-maximum transform is a recorded negative candidate, not a
+default and not a live-only correction. Keep the 24 INFINITAS-blue and 299 LEGGENDARIA-purple
+groups out of training until their labels are established independently of the recognition output;
+evaluate any future color correction under the same explicit transform ID in training and replay.
+Keep the 351 locked/unobservable, 438 possible right-clips, vertical-motion, selected, obscured,
+and redacted-secret groups quarantined until their separate correction or completeness evidence
+exists. After a music-select candidate clears the provisional split, export it through the
+registered Paddle/ONNX path and replay the graph before runtime selection. Then collect result
+observations with distinct titles; the current two result screens both contain `ABSOLUTE EVIL` and
+cannot establish title-disjoint result accuracy or thresholds. Do not
 tune recognition thresholds from the current two recordings, promote diagnostic commands into
 accepted recognition, recognize bare PPM or `ObservedFrame`, auto-download a runtime model, or
 treat the OBS profile, current ROIs, confidence, timing, or diagnostic thresholds as supported.

@@ -31,6 +31,10 @@ from scorepeek_ocr.training_initializer import (
 )
 from scorepeek_ocr.training_process import run_checked
 from scorepeek_ocr.training_source import load_registered_source, verify_source
+from scorepeek_ocr.title_presentation import (
+    TRANSFORM_IDS,
+    transform_crop_bytes,
+)
 
 PILOT_SCHEMA = "scorepeek-private-title-model-training-pilot-v1"
 CANDIDATE_STEPS = (1, 2, 4)
@@ -154,6 +158,7 @@ def run(
     initializer: Path,
     initializer_manifest_sha256: str,
     output: Path,
+    presentation_transform_id: str,
 ) -> dict[str, Any]:
     prepared_data = _read_regular(
         preparation / "manifest.json", MAX_MANIFEST_BYTES, preparation_sha256
@@ -187,7 +192,11 @@ def run(
     model, ctc_tokens = _model(base_config, tokens)
     model.set_state_dict(paddle.load(str(initializer / "initializer.pdparams")))
     baseline = _evaluate(
-        model, validation_rows, ctc_tokens, prepared["model_input_width"]
+        model,
+        validation_rows,
+        ctc_tokens,
+        prepared["model_input_width"],
+        presentation_transform_id,
     )
 
     candidates: list[dict[str, Any]] = []
@@ -204,7 +213,7 @@ def run(
             for index, (path, title, digest) in enumerate(selected_rows):
                 data = _read_regular(Path(path), MAX_CROP_BYTES, digest)
                 copied = snapshot / f"{index:04}.ppm"
-                copied.write_bytes(data)
+                copied.write_bytes(transform_crop_bytes(data, presentation_transform_id))
                 os.chmod(copied, 0o600)
                 training_rows.append(f"{copied}\t{title}\n")
             train_list = candidate_root / "train.txt"
@@ -246,6 +255,7 @@ def run(
                 validation_rows,
                 candidate_tokens,
                 prepared["model_input_width"],
+                presentation_transform_id,
             )
             candidate = {
                 "steps": step_count,
@@ -273,6 +283,7 @@ def run(
                 "initializer_manifest_sha256": initializer_manifest_sha256,
                 "initializer_checkpoint": initializer_record["initialized_checkpoint"],
                 "recipe": {
+                    "presentation_transform_id": presentation_transform_id,
                     "candidate_steps": list(CANDIDATE_STEPS),
                     "batch_size": BATCH_SIZE,
                     "learning_rate": LEARNING_RATE,
@@ -309,6 +320,7 @@ def main() -> None:
     parser.add_argument("--initializer", type=Path, required=True)
     parser.add_argument("--initializer-manifest-sha256", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--presentation-transform", choices=TRANSFORM_IDS, required=True)
     arguments = parser.parse_args()
     try:
         result = run(
@@ -318,6 +330,7 @@ def main() -> None:
             arguments.initializer,
             arguments.initializer_manifest_sha256,
             arguments.output,
+            arguments.presentation_transform,
         )
     except Exception as error:
         print(f"scorepeek training pilot failed: {error}", file=sys.stderr)

@@ -32,6 +32,7 @@ from scorepeek_ocr.training_artifacts import (
 )
 from scorepeek_ocr.spike import _sync_directory
 from scorepeek_ocr.training_source import load_registered_source, verify_source
+from scorepeek_ocr.title_presentation import IDENTITY_TRANSFORM_ID, apply_transform
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CHECKPOINT_MANIFEST = (
@@ -169,11 +170,17 @@ def _copy_classes(destination, source, old_tokens: list[str], new_tokens: list[s
     return result
 
 
-def _preprocess(path: str, width: int, expected_sha256: str | None = None) -> np.ndarray:
+def _preprocess(
+    path: str,
+    width: int,
+    expected_sha256: str | None = None,
+    presentation_transform_id: str = IDENTITY_TRANSFORM_ID,
+) -> np.ndarray:
     data = _read_regular(Path(path), MAX_CROP_BYTES, expected_sha256)
     image = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise TrainingInitializerError("validation crop could not be decoded")
+    image = apply_transform(image, presentation_transform_id)
     height, original_width = image.shape[:2]
     resized_width = min(width, int(math.ceil(48 * original_width / height)))
     resized = cv2.resize(image, (resized_width, 48), interpolation=cv2.INTER_LINEAR)
@@ -195,7 +202,11 @@ def _decode(probabilities: np.ndarray, tokens: list[str]) -> str:
 
 
 def _evaluate(
-    model, rows: list[tuple[str, str, str]], tokens: list[str], width: int
+    model,
+    rows: list[tuple[str, str, str]],
+    tokens: list[str],
+    width: int,
+    presentation_transform_id: str = IDENTITY_TRANSFORM_ID,
 ) -> dict[str, int]:
     started = time.perf_counter()
     exact = 0
@@ -204,7 +215,10 @@ def _evaluate(
         for offset in range(0, len(rows), 8):
             batch = rows[offset : offset + 8]
             images = np.stack(
-                [_preprocess(path, width, digest) for path, _, digest in batch]
+                [
+                    _preprocess(path, width, digest, presentation_transform_id)
+                    for path, _, digest in batch
+                ]
             )
             predictions = model(paddle.to_tensor(images)).numpy()
             exact += sum(
