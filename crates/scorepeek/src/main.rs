@@ -30,6 +30,7 @@ fn main() -> ExitCode {
 
 fn run(args: &[OsString]) -> Result<(), String> {
     if let Some(result) = try_provisional_title_candidates(args)
+        .or_else(|| try_title_model_contract_parity(args))
         .or_else(|| try_title_onnx_parity(args))
         .or_else(|| try_title_dictionary_audit(args))
         .or_else(|| try_title_model_export_requirements(args))
@@ -137,6 +138,42 @@ fn try_provisional_title_candidates(args: &[OsString]) -> Option<Result<(), Stri
         && store_flag == "--catalog-store"
         && output_flag == "--output")
         .then(|| provisional_title_candidates(store, output))
+}
+
+fn try_title_model_contract_parity(args: &[OsString]) -> Option<Result<(), String>> {
+    let [
+        recognition,
+        parity,
+        model_flag,
+        model,
+        model_digest_flag,
+        model_digest,
+        reference_flag,
+        reference,
+        reference_digest_flag,
+        reference_digest,
+        dictionary_flag,
+        dictionary,
+    ] = args
+    else {
+        return None;
+    };
+    (recognition == "recognition"
+        && parity == "title-model-contract-parity"
+        && model_flag == "--model"
+        && model_digest_flag == "--model-sha256"
+        && reference_flag == "--reference"
+        && reference_digest_flag == "--reference-sha256"
+        && dictionary_flag == "--dictionary")
+        .then(|| {
+            title_model_contract_parity([
+                model,
+                model_digest,
+                reference,
+                reference_digest,
+                dictionary,
+            ])
+        })
 }
 
 fn try_title_model_export_requirements(args: &[OsString]) -> Option<Result<(), String>> {
@@ -629,6 +666,31 @@ fn title_onnx_parity(arguments: [&OsStr; 8]) -> Result<(), String> {
     Ok(())
 }
 
+fn title_model_contract_parity(arguments: [&OsStr; 5]) -> Result<(), String> {
+    let [model, model_sha256, reference, reference_sha256, dictionary] = arguments;
+    let model_sha256 = model_sha256
+        .to_str()
+        .ok_or_else(|| "model SHA-256 must be UTF-8".to_owned())?;
+    let reference_sha256 = reference_sha256
+        .to_str()
+        .ok_or_else(|| "parity reference SHA-256 must be UTF-8".to_owned())?;
+    let request = recognition::ExportContractParityRequest {
+        model_path: Path::new(model),
+        model_sha256,
+        reference_directory: Path::new(reference),
+        reference_sha256,
+        inference_yml: Path::new(dictionary),
+    };
+    let summary =
+        recognition::compare_export_contract(request).map_err(|error| error.to_string())?;
+    println!(
+        "{}",
+        serde_json::to_string(&summary)
+            .map_err(|error| format!("export contract parity encoding failed: {error}"))?
+    );
+    Ok(())
+}
+
 fn parse_f64(value: &OsStr, label: &str) -> Result<f64, String> {
     value
         .to_str()
@@ -701,7 +763,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE",
+        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
         env!("CARGO_PKG_VERSION")
     );
 }

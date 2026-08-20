@@ -4,9 +4,12 @@ import hashlib
 import json
 import math
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -42,6 +45,7 @@ from scorepeek_ocr.spike import (
 from scorepeek_ocr.training_inputs import TrainingInputError, generate as generate_training_inputs
 from scorepeek_ocr.training_artifacts import (
     TrainingArtifactError,
+    prepared_rows,
     prepare as prepare_training_artifacts,
     record_export,
 )
@@ -58,9 +62,103 @@ from scorepeek_ocr.training_initializer import (
     _read_regular,
     _tokens,
 )
+from scorepeek_ocr.training_pilot import (
+    TrainingPilotError,
+    _config,
+    _first_improvement,
+    _select_rows,
+)
+from scorepeek_ocr.training_process import TrainingProcessError, run_checked
+from scorepeek_ocr.training_replay import _result_rows
 
 
 class ContractTests(unittest.TestCase):
+    def test_training_process_is_bounded_and_checks_exit_status(self) -> None:
+        with self.assertRaises(TrainingProcessError):
+            run_checked(
+                [sys.executable, "-c", "raise SystemExit(7)"],
+                timeout_seconds=5,
+            )
+        with self.assertRaisesRegex(TrainingProcessError, "timed out"):
+            run_checked(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                timeout_seconds=1,
+            )
+
+    def test_training_process_cleans_descendants_after_leader_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            child_pid_path = Path(temporary) / "child-pid"
+            program = (
+                "import pathlib, subprocess; "
+                "child = subprocess.Popen(['sleep', '30']); "
+                f"pathlib.Path({str(child_pid_path)!r}).write_text(str(child.pid)); "
+                "raise SystemExit(7)"
+            )
+            with self.assertRaisesRegex(TrainingProcessError, "status 7"):
+                run_checked([sys.executable, "-c", program], timeout_seconds=5)
+            child_pid = int(child_pid_path.read_text())
+            deadline = time.monotonic() + 1
+            while True:
+                try:
+                    os.kill(child_pid, 0)
+                except ProcessLookupError:
+                    break
+                if time.monotonic() >= deadline:
+                    self.fail("training subprocess descendant survived cleanup")
+                time.sleep(0.01)
+
+    def test_training_process_handles_signal_during_spawn(self) -> None:
+        original_popen = subprocess.Popen
+
+        def spawn_and_interrupt(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+            process = original_popen(*args, **kwargs)
+            signal.pthread_kill(threading.get_ident(), signal.SIGTERM)
+            return process
+
+        with patch(
+            "scorepeek_ocr.training_process.subprocess.Popen",
+            side_effect=spawn_and_interrupt,
+        ), self.assertRaisesRegex(TrainingProcessError, "signal"):
+            run_checked(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                timeout_seconds=5,
+            )
+
+    def test_training_pilot_selects_nested_rows_and_first_strict_improvement(self) -> None:
+        rows = [
+            (f"/crop/{index}.ppm", f"TITLE {index}", f"{index:064x}")
+            for index in range(20)
+        ]
+        one_step = _select_rows(rows, 1)
+        two_steps = _select_rows(rows, 2)
+        self.assertEqual(len(one_step), 4)
+        self.assertEqual(two_steps[:4], one_step)
+        with self.assertRaises(TrainingPilotError):
+            _select_rows(rows[:3], 1)
+
+        candidates = [
+            {"steps": 1, "exact_count": 275},
+            {"steps": 2, "exact_count": 278},
+            {"steps": 4, "exact_count": 280},
+        ]
+        self.assertIs(_first_improvement(275, candidates), candidates[1])
+        self.assertIsNone(_first_improvement(280, candidates))
+
+        configured = _config(
+            {
+                "Global": {},
+                "Optimizer": {"lr": {}},
+                "Train": {"dataset": {}, "sampler": {}, "loader": {}},
+                "Eval": {"loader": {}},
+            },
+            Path("initializer"),
+            Path("train.txt"),
+            Path("output"),
+            1,
+            424,
+        )
+        self.assertEqual(configured["Train"]["sampler"]["scales"], [[424, 48]])
+
     def test_registered_pretrained_checkpoint_and_class_mapping(self) -> None:
         source = _load_checkpoint_manifest()
         self.assertEqual(source["bytes"], 124_912_348)
@@ -119,6 +217,46 @@ class ContractTests(unittest.TestCase):
             ), self.assertRaises(OSError):
                 _publish(staging, output)
             self.assertFalse(output.exists())
+
+            staging = root / "second-staging"
+            staging.mkdir()
+            (staging / "artifact").write_bytes(b"replacement")
+            output.mkdir()
+            marker = output / "marker"
+            marker.write_bytes(b"existing")
+            with self.assertRaises(FileExistsError):
+                _publish(staging, output)
+            self.assertEqual(marker.read_bytes(), b"existing")
+            self.assertFalse(staging.exists())
+
+    def test_result_replay_rejects_incomplete_crop_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            crop_directory = root / "crops"
+            crop_directory.mkdir()
+            manifest_data = json.dumps(
+                {"schema": "scorepeek-result-crops-v1"}, separators=(",", ":")
+            ).encode()
+            (crop_directory / "manifest.json").write_bytes(manifest_data)
+            manifest_sha256 = hashlib.sha256(manifest_data).hexdigest()
+            request_data = json.dumps(
+                {
+                    "schema": "scorepeek-private-title-model-result-replay-request-v1",
+                    "observations": [
+                        {
+                            "crop_directory": str(crop_directory),
+                            "crop_manifest_sha256": manifest_sha256,
+                            "expected_title": "TITLE",
+                            "source_pts": 1,
+                        }
+                    ],
+                },
+                separators=(",", ":"),
+            ).encode()
+            request_path = root / "request.json"
+            request_path.write_bytes(request_data)
+            with self.assertRaises(SpikeError):
+                _result_rows(request_path, hashlib.sha256(request_data).hexdigest())
 
 
     def test_title_model_preparation_requires_complete_dictionary_and_exact_crop_map(self) -> None:
@@ -220,6 +358,12 @@ class ContractTests(unittest.TestCase):
             self.assertTrue(summary["coverage_complete"])
             self.assertEqual((output / "dictionary.txt").read_text(), "A\nB\nΩ\n")
             self.assertEqual((output / "train.txt").read_text(), f"{crop}\tA B\n")
+            self.assertEqual(
+                prepared_rows(output, manifest, "train"),
+                [(str(crop), "A B", crop_sha)],
+            )
+            evidence = json.loads((output / "train-crop-evidence.json").read_text())
+            self.assertEqual(evidence["rows"][0]["file_sha256"], crop_sha)
             self.assertEqual(manifest["output_classes"], 5)
             self.assertEqual(manifest["model_input_width"], 320)
             derived_config = (output / "training-config.yml").read_text()

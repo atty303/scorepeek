@@ -153,13 +153,54 @@ requirements, a separately digest-bound map from every group ID to its current a
 crop path, and the verified PaddleOCR v3.7.0 checkout. It rehashes each strict P6 crop, requires the
 map to cover the training labels exactly, rejects any label outside the complete scalar dictionary,
 and publishes a private create-only preparation directory. The directory contains a Paddle-format
-dictionary, title-disjoint train/validation/evaluation lists, a derived Paddle config whose input
-width is eight pixels per required CTC timestep, and aggregate complete-catalog coverage evidence.
+dictionary, title-disjoint train/validation/evaluation lists, per-row crop file/pixel digest
+sidecars, a derived Paddle config whose input width is eight pixels per required CTC timestep, and
+aggregate complete-catalog coverage evidence.
 The preparation independently recomputes every song's deterministic split and all declared split
 counts. The derivation fails if the pinned upstream config no longer contains every expected source
 value; the exported graph must still prove its actual shape through parity. U+0020 is represented
 only through Paddle's `use_space_char` setting; it is not encoded as an ambiguous blank dictionary
 line.
+
+`ocr:title-model:pilot` starts from a digest-bound dictionary-mapped initializer and measures the
+strict open-text exact count on the provisional validation split. It tries CPU candidates at 1, 2,
+then 4 optimizer steps with batch size 4 and a constant `1e-5` learning rate, stopping at the first
+strict improvement. The nested training subsets are selected deterministically, while the selected
+checkpoint's actual bytes and observed probes remain the evidence for a run. The selected
+checkpoint and its recipe, subset digests, and candidate probes are published as a create-only
+private artifact. This bounded pilot is not a full training schedule and does not turn the
+provisional split into accepted holdout truth. Before Paddle sees a selected training row, the
+runner verifies its sidecar digest and copies those exact bytes into a short-lived private snapshot;
+validation and replay decode each path through a single digest-checked read.
+
+`ocr:title-model:export` revalidates the preparation, registered PaddleOCR source, and selected
+pilot checkpoint before invoking the registered Paddle export entrypoint. It converts the produced
+Paddle graph with pinned `paddle2onnx` at opset 11, with checker enabled, automatic opset updates and
+optional optimizer dependency loading disabled. The Paddle graph, parameters, embedded dictionary
+config, ONNX graph, and all exact hashes are published together as a create-only private artifact.
+Training, export, and conversion subprocesses run in owned process groups with explicit timeouts
+and bounded terminate/kill/wait cleanup on success, non-zero exit, timeout, or an interrupt that
+arrives while the child is being spawned. Preparation, initializer, pilot, replay, and export
+directory publication serialize their final existence check and rename with one parent-directory
+lock. Export completes in a temporary work directory before verified files enter the short-lived
+create-only publication staging directory.
+
+`ocr:title-model:parity-reference` runs that exported Paddle graph on one preparation-bound crop and
+publishes its exact input tensor, probability tensor, shapes, and CTC token orders. The Rust
+`ocr:title-model:parity-run` command independently verifies the ONNX and inference-config hashes,
+dictionary class count, dynamic input width and timestep relation, every output probability, and
+the complete prepared dictionary token order, argmax, and collapsed token orders. This proves the exported graph contract; it does not select
+the model or calibrate a recognition threshold.
+
+`ocr:title-model:replay` compares the mapped initializer and the pilot checkpoint on the complete
+provisional evaluation split and an explicit digest-bound private result-crop request. It reports
+strict open-text exact counts separately from the versioned exact comparison-key count, because an
+OCR output that omits ASCII title spacing can still select the same catalog spelling without being
+an open-text transcription match. Every result artifact passes the same complete current-layout
+crop contract as ordinary offline recognition input, and the replay records its extraction,
+canonical-frame, normalizer, layout, and title-crop hashes. Result predictions are ordinary private diagnostic output, not
+accepted holdout truth. A validation improvement is not sufficient to select the pilot when this
+outside replay is flat or worse.
 
 `ocr:title-model:record-export` hash-records an explicitly selected Paddle model and ONNX graph
 against one preparation after rehashing its dictionary, derived config, and all three split lists.

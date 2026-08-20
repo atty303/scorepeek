@@ -225,7 +225,7 @@ is outside this checkpoint.
   PP-OCRv6 small recognition configuration, and requirements-file digests. It
   establishes a reproducible offline source boundary without vendoring upstream
   code. `ocr:training-source:verify` independently passed against the pinned
-  checkout before it can be consumed; training and export have not yet run.
+  checkout before the bounded private training and export runs recorded below.
 - An immutable `PP-OCRv6_small_rec` registration containing its official source
   URL, Apache-2.0 license reference, package compatibility, and exact archive
   and extracted-file sizes and SHA-256 values. Explicit acquisition publishes
@@ -316,7 +316,7 @@ is outside this checkpoint.
 
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
   The current workspace run covered 83 `scorepeek` library tests, 13 binary tests, 55 offline
-  corpus tests, 18 offline Python OCR tests, and the recording-dataset E2E gate.
+  corpus tests, 23 offline Python OCR tests, and the recording-dataset E2E gate.
 - The prior session's 3,061 provisional private labels and bound crops were recovered from its
   temporary tree into an operator-owned stable private-artifact root, with all crop paths and
   complete file/pixel SHA-256 evidence revalidated after relocation. The resulting song-disjoint
@@ -331,9 +331,11 @@ is outside this checkpoint.
   `dff306998233b7c4d70824e1326cb0eb1b3eced017695e1b094089f18563e1ca`; its non-blank token order
   places U+0020 last to match Paddle's `use_space_char` behavior. The
   preparation manifest is
-  `9be3c219834e9dbd8c4355fbe810ab55cda85e5399165f95c881221ebfdc839c`; its dictionary is
+  `e2544e8d11b7c4e6fdb4448b512dd31d8e72a2c1d06b2539f8e93a3175699c23`; its dictionary is
   `b3a5e331f8f5ccf70a228c7d831ef945b87aa7a098b70f68f2b58fea88c1358f` and derived config is
-  `bb02e772797c3f733ff7af6b6b49f74c37901b60d844edeb513857b816935d2d`.
+  `ab74e660bd11f3c42a90a8933db57c02f8b73add5fedb437be2e7cca27a51b1d`. Each split now
+  carries a preparation-bound crop-digest sidecar; the pilot trains only from verified temporary
+  snapshots and validation/replay use one digest-checked read per crop.
 - The official PP-OCRv6 small recognition training checkpoint is registered at exact SHA-256
   `25c9bd54b0e5900916e8bb6ada938abeffb1eac1baedac0ca54a45b1c9310825` (124,912,348
   bytes) and stored content-addressed outside the repository. Its 422 tensor names match the
@@ -343,9 +345,38 @@ is outside this checkpoint.
   randomly initialized. Aggregate open-text exact recognition on all 329 provisional validation
   crops measured 275/329 (83.6%) before fine-tuning; both scratch and Paddle's ordinary
   shape-matched-only load measured 0/329 in the same probe. The initialized checkpoint is
-  `e2fcc377e9705e1059a31dd6000ee0968bf0628bee396ef9c72d1672240fa9ba` (124,965,680
+  `6b3774ae7c7ef42df47220bd69b1b67f9db6afbe7650782919f53ee451cff72a` (124,965,680
   bytes). This selects the mapped initializer for the private pilot but does not make the
   provisional labels accepted holdout truth or establish a release threshold.
+- The bounded CPU pilot stopped after the first optimizer step improved provisional validation.
+  The mapped initializer measured 275/329 strict open-text exact and one step measured 277/329.
+  The selected one-step checkpoint is
+  `a0c2c70277a5b2d3c032366ec5ca0fc4d082b4f3fbb71271e29b0c62938806e2` (124,965,688
+  bytes), bound by pilot manifest
+  `2bf72df1015dd62bd10dae0e1ca25a1c4c9170c8f0365e4fc803a698b13f7a38`.
+  Its private Paddle/ONNX export manifest is
+  `ba7d4dc3ab90ae0da9291d4c76099b9d1e4f298261bb47659d1b856242735ea3`; the ONNX graph is
+  `70faf846ab2625d3de0602cbed3a492a3bea631f3627483c8872873a706f4c5c` (21,155,598
+  bytes). Rust reproduced the Paddle `[1,65,18725]` tensor with maximum absolute error
+  `0.0000011324883`, the exact prepared dictionary order, and identical argmax and collapsed token
+  order. Paddle training/export/conversion now run with explicit timeout and process-group cleanup;
+  cleanup covers spawn-time signals, timeouts, non-zero leaders, and surviving descendants. Export
+  subprocesses write outside the artifact root until verified publication. Preparation and model
+  directory publication serialize the final no-clobber check and rename under one parent lock.
+- Past-session evidence and retained recording bytes restored the ignored recognition spike to
+  the current private-artifact root. A low-frequency scan found the earlier result transition at
+  PTS 140000 and the stable result at PTS 145000; only the stable frame was admitted beside the
+  existing PTS 190000 frame. Both visibly contain `ABSOLUTE EVIL`. The older PTS 190000 crop bound
+  a superseded layout and was regenerated from its retained canonical extraction under the current
+  layout. Replay manifest
+  `411d34b487c9dc42d2fd10214c5149ec38c674072e8fdae7242e74e7045719a3` compares those two
+  fully revalidated result-crop artifacts and all 370 provisional evaluation rows, and records each
+  crop's extraction, canonical-frame, normalizer, layout, and title-byte provenance. The initializer and one-step
+  pilot measured 293/370 and 295/370 strict open-text exact respectively, and both decoded the two results as
+  `ABSOLUTEEVIL`. Under the versioned exact comparison key, the initializer measured 301/370 and
+  2/2 results while the pilot measured 298/370 and 2/2 results. The open-text improvement conflicts
+  with a three-row regression in scorepeek's catalog comparison metric; the one-step checkpoint is not selected over the initializer and
+  no threshold was fixed.
 - The new title-model requirements regressions preserve baseline scalar coverage, append missing
   catalog characters, increase exact repeated-token CTC alignment length, and reject invalid or
   empty variant sets. The music-list row regressions cover all six explicit states, require
@@ -356,7 +387,7 @@ is outside this checkpoint.
   path replacement or file growth. Synthetic artifact regressions prove that verification detects
   crop tampering and recomputes L1 from canonical-frame-bound bytes.
 - Targeted recognition tests passed with the added music-select predicate and
-  21-crop artifact contract. The offline OCR contract suite passed 13 tests,
+  21-crop artifact contract. The offline OCR contract suite passed 20 tests,
   including exact validation of the selected-title and twenty list-slot files and the Unicode 17
   exact-first width-fold contract. All eight targeted Rust title-association tests also passed.
 - `mise run catalog:schedule:systemd:verify`: passed without installing the
@@ -664,8 +695,9 @@ is outside this checkpoint.
   and exact active-catalog trie scoring. Calibrated absolute/runner-up bounds,
   complete active-catalog dictionary coverage, scroll stability calibration, temporal agreement, independent
   screen context, and accepted title semantics remain unimplemented.
-  Music-select replay execution, scorepeek-owned model export,
-  catalog-update recognition replay, event daemon, and the integrated live
+  A scorepeek-owned candidate export and its tensor contract have been verified, but outside
+  replay rejected that fine-tuned checkpoint in favor of the mapped initializer. Direct export and
+  ONNX replay of that initializer, catalog-update recognition replay, event daemon, and the integrated live
   flow remain unvalidated. The observed 649 ms CPU process and inference time
   is a single warmed development-host measurement, not a performance gate.
 - The title-model requirements and preparation boundaries have synthetic regressions and one real
@@ -675,11 +707,11 @@ is outside this checkpoint.
   intentionally remain unknown for vertical motion, unobservable locked-row color, possible
   right-clipping, or redacted secret-title pixels. The presentation clusters are private
   single-recording evidence, not a supported classifier or reusable automatic threshold. The
-  scorepeek-owned dictionary, title-disjoint preparation, and mapped training initializer have been
-  produced from the private artifacts, but no scorepeek-owned model has been trained or exported.
-  The initializer's observed 65-timestep, 18,725-class CTC output is not an exported runtime graph
-  until export and parity.
-  The export-record boundary still has synthetic contract coverage only. The 3,061 catalog-bound
+  scorepeek-owned dictionary, title-disjoint preparation, mapped training initializer, bounded
+  fine-tuning candidate, export, parity reference, and replay have been produced from private
+  artifacts. The replay rejected the fine-tuned candidate, and the better initializer's observed
+  65-timestep, 18,725-class CTC output is not yet a selected exported runtime graph.
+  The 3,061 catalog-bound
   music-list labels are provisional only: the 2,611 automated associations and 450 visual
   associations do not establish accepted holdout truth, a stability threshold, or a release gate.
   No eligible standard group remains unknown in this recording. The versioned v2 comparison key
@@ -729,7 +761,9 @@ is outside this checkpoint.
   approval after version, license, alternatives, and host/bundle impact are
   presented.
 - Offline Python 3.12.13, uv 0.11.7, PaddleOCR 3.7.0, PaddlePaddle CPU 3.3.1,
-  Apache-2.0 `paddle2onnx` 2.1.0 and `unicodedata2` 17.0.1, and the pinned PP-OCRv6 small multilingual recognition model were approved
+  Apache-2.0 `paddle2onnx` 2.1.0, `scikit-image` 0.26.0, `albumentations` 2.0.8,
+  `albucore` 0.0.24, `lmdb` 2.3.0, `rapidfuzz` 3.14.5, and `unicodedata2` 17.0.1,
+  and the pinned PP-OCRv6 small multilingual recognition model were approved
   and added only to offline development; they do not enter the Rust
   game-session dependency graph.
 - `ort` 2.0.0-rc.13 (MIT OR Apache-2.0) with a CPU ONNX Runtime 1.28 static
@@ -747,16 +781,16 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Preserve result certainty as the primary gate. Start the private development run from the registered,
-dictionary-mapped initializer. Compare short fixed-step checkpoints on the provisional validation
-split and stop at the cheapest checkpoint that improves measured recognition; do not spend a full
-training schedule merely because the prepared dictionary differs from the official checkpoint. Keep the 24
+Preserve result certainty as the primary gate. Keep the mapped initializer as the current private
+winner because the validation-selected one-step checkpoint gained two strict evaluation rows but
+lost two comparison-key exact rows and was flat on both result observations. Export the
+initializer directly through the same registered Paddle/ONNX path, verify its tensor contract, and
+replay the exported graph before any runtime selection. Then collect result observations with
+distinct titles; the current two result screens both contain `ABSOLUTE EVIL` and cannot establish
+title-disjoint result accuracy or thresholds. Keep the 24
 INFINITAS-blue, 299 LEGGENDARIA-purple, 351 locked/unobservable, 438
 possible right-clips, vertical-motion, selected, obscured, and redacted-secret groups quarantined
-until their separate correction or completeness evidence exists. Using the completed preparation,
-train and export only a private provisional model, record its exact bytes, and
-verify its actual tensor/dictionary contract through parity. Then execute replay over the two result
-observations and the larger music-select set before fixing absolute or runner-up thresholds. Do not
+until their separate correction or completeness evidence exists. Do not
 tune recognition thresholds from the current two recordings, promote diagnostic commands into
 accepted recognition, recognize bare PPM or `ObservedFrame`, auto-download a runtime model, or
 treat the OBS profile, current ROIs, confidence, timing, or diagnostic thresholds as supported.

@@ -478,6 +478,14 @@ fn validate_probabilities(probabilities: &[f32]) -> Result<(), CatalogTitleDecod
 }
 
 fn load_dictionary(path: &Path) -> Result<Vec<String>, CatalogTitleDecoderError> {
+    load_dictionary_contract(path, TITLE_DICTIONARY_SHA256, OUTPUT_CLASSES)
+}
+
+pub(super) fn load_dictionary_contract(
+    path: &Path,
+    expected_sha256: &str,
+    output_classes: usize,
+) -> Result<Vec<String>, CatalogTitleDecoderError> {
     let metadata = path.symlink_metadata()?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_INFERENCE_YML_BYTES {
         return Err(CatalogTitleDecoderError::InvalidDictionary);
@@ -488,9 +496,7 @@ fn load_dictionary(path: &Path) -> Result<Vec<String>, CatalogTitleDecoderError>
     File::open(path)?
         .take(MAX_INFERENCE_YML_BYTES + 1)
         .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 != metadata.len()
-        || super::encode_sha256(&bytes) != TITLE_DICTIONARY_SHA256
-    {
+    if bytes.len() as u64 != metadata.len() || super::encode_sha256(&bytes) != expected_sha256 {
         return Err(CatalogTitleDecoderError::InvalidDictionary);
     }
     let text =
@@ -499,7 +505,7 @@ fn load_dictionary(path: &Path) -> Result<Vec<String>, CatalogTitleDecoderError>
     let (_, body) = text
         .split_once(marker)
         .ok_or(CatalogTitleDecoderError::InvalidDictionary)?;
-    let mut dictionary = Vec::with_capacity(OUTPUT_CLASSES);
+    let mut dictionary = Vec::with_capacity(output_classes);
     dictionary.push("blank".to_owned());
     for line in body.lines() {
         let Some(value) = line.strip_prefix("  - ") else {
@@ -508,7 +514,7 @@ fn load_dictionary(path: &Path) -> Result<Vec<String>, CatalogTitleDecoderError>
         dictionary.push(parse_yaml_scalar(value)?);
     }
     dictionary.push(" ".to_owned());
-    if dictionary.len() != OUTPUT_CLASSES {
+    if dictionary.len() != output_classes {
         return Err(CatalogTitleDecoderError::InvalidDictionary);
     }
     Ok(dictionary)

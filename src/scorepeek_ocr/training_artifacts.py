@@ -15,6 +15,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from scorepeek_ocr.private_publication import destination_exists, publication_lock
 from scorepeek_ocr.spike import SpikeError, _sync_directory, _write_output
 from scorepeek_ocr.training_source import (
     TrainingSourceError,
@@ -237,7 +238,7 @@ def _prepared_manifest(raw: dict[str, Any]) -> dict[str, Any]:
             "output_tensor_contract_id", "output_timesteps", "model_input_width",
             "output_classes", "coverage_complete", "non_search_variant_count", "provisional",
             "accepted_holdout_truth", "permission_status", "split_label_counts",
-            "label_file_sha256",
+            "label_file_sha256", "crop_evidence_sha256",
         },
         "training preparation",
     )
@@ -266,6 +267,9 @@ def _prepared_manifest(raw: dict[str, Any]) -> dict[str, Any]:
         or not isinstance(raw["label_file_sha256"], dict)
         or set(raw["label_file_sha256"]) != split_names
         or any(not _valid_sha256(value) for value in raw["label_file_sha256"].values())
+        or not isinstance(raw["crop_evidence_sha256"], dict)
+        or set(raw["crop_evidence_sha256"]) != split_names
+        or any(not _valid_sha256(value) for value in raw["crop_evidence_sha256"].values())
         or any(
             not _valid_sha256(raw[key])
             for key in (
@@ -297,6 +301,57 @@ def _verify_prepared_files(preparation: Path, prepared: dict[str, Any]) -> None:
         _read(
             preparation / f"{split}.txt", digest, MAX_JSON_BYTES, allow_empty=True
         )
+        _read(
+            preparation / f"{split}-crop-evidence.json",
+            prepared["crop_evidence_sha256"][split],
+            MAX_JSON_BYTES,
+        )
+
+
+def prepared_rows(
+    preparation: Path, prepared: dict[str, Any], split: str
+) -> list[tuple[str, str, str]]:
+    if split not in {"train", "validation", "evaluation"}:
+        raise TrainingArtifactError("training split is invalid")
+    label_data = _read(
+        preparation / f"{split}.txt",
+        prepared["label_file_sha256"][split],
+        MAX_JSON_BYTES,
+        allow_empty=True,
+    )
+    evidence_data = _read(
+        preparation / f"{split}-crop-evidence.json",
+        prepared["crop_evidence_sha256"][split],
+        MAX_JSON_BYTES,
+    )
+    try:
+        evidence = json.loads(evidence_data)
+    except json.JSONDecodeError as error:
+        raise TrainingArtifactError("crop evidence is invalid JSON") from error
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != {"schema", "split", "rows"}
+        or evidence["schema"] != "scorepeek-private-title-model-crop-evidence-v1"
+        or evidence["split"] != split
+        or not isinstance(evidence["rows"], list)
+    ):
+        raise TrainingArtifactError("crop evidence values are invalid")
+    labels = [row.split("\t", 1) for row in label_data.decode().splitlines()]
+    if len(labels) != len(evidence["rows"]) or len(labels) != prepared["split_label_counts"][split]:
+        raise TrainingArtifactError("crop evidence row count mismatched")
+    rows: list[tuple[str, str, str]] = []
+    for label, item in zip(labels, evidence["rows"], strict=True):
+        if (
+            len(label) != 2
+            or not isinstance(item, dict)
+            or set(item) != {"path", "file_sha256", "pixel_sha256"}
+            or item["path"] != label[0]
+            or not _valid_sha256(item["file_sha256"])
+            or not _valid_sha256(item["pixel_sha256"])
+        ):
+            raise TrainingArtifactError("crop evidence row mismatched")
+        rows.append((label[0], label[1], item["file_sha256"]))
+    return rows
 
 
 def _crop_pixels(path: Path, file_sha256: str, pixel_sha256: str) -> None:
@@ -415,8 +470,10 @@ def prepare(
     )
     token_set = set(tokens)
     label_files: dict[str, bytes] = {}
+    crop_evidence_files: dict[str, bytes] = {}
     for split, labels in splits.items():
         rows = []
+        evidence_rows = []
         for label in labels:
             crop = crops[label["group_id"]]
             if crop["file_sha256"] != label["crop_file_sha256"] or crop["pixel_sha256"] != label["crop_pixel_sha256"]:
@@ -425,7 +482,26 @@ def prepare(
             if any(character not in token_set for character in label["title"]):
                 raise TrainingArtifactError("training title is not covered by the model dictionary")
             rows.append(f"{crop['path']}\t{label['title']}\n")
+            evidence_rows.append(
+                {
+                    "path": str(crop["path"]),
+                    "file_sha256": crop["file_sha256"],
+                    "pixel_sha256": crop["pixel_sha256"],
+                }
+            )
         label_files[split] = "".join(rows).encode()
+        crop_evidence_files[split] = (
+            json.dumps(
+                {
+                    "schema": "scorepeek-private-title-model-crop-evidence-v1",
+                    "split": split,
+                    "rows": evidence_rows,
+                },
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+            + b"\n"
+        )
     record = {
         "schema": PREPARATION_SCHEMA,
         "requirements_sha256": requirements_sha256,
@@ -448,6 +524,9 @@ def prepare(
         "permission_status": "permission_not_recorded",
         "split_label_counts": {split: len(splits[split]) for split in splits},
         "label_file_sha256": {split: _sha256(label_files[split]) for split in splits},
+        "crop_evidence_sha256": {
+            split: _sha256(crop_evidence_files[split]) for split in splits
+        },
     }
     if not output.is_absolute() or output.exists() or not output.parent.is_dir() or output.parent.is_symlink():
         raise TrainingArtifactError("output must be a new absolute directory below a regular parent")
@@ -459,6 +538,9 @@ def prepare(
         (staging / "training-config.yml").write_bytes(training_config)
         for split, data in label_files.items():
             (staging / f"{split}.txt").write_bytes(data)
+            (staging / f"{split}-crop-evidence.json").write_bytes(
+                crop_evidence_files[split]
+            )
         manifest = json.dumps(record, separators=(",", ":"), allow_nan=False).encode() + b"\n"
         (staging / "manifest.json").write_bytes(manifest)
         for path in staging.iterdir():
@@ -466,9 +548,12 @@ def prepare(
             with path.open("rb") as file:
                 os.fsync(file.fileno())
         _sync_directory(staging)
-        staging.rename(output)
-        published = True
-        _sync_directory(output.parent)
+        with publication_lock(output.parent):
+            if destination_exists(output):
+                raise FileExistsError("private output already exists")
+            staging.rename(output)
+            published = True
+            _sync_directory(output.parent)
     except BaseException as error:
         cleanup_errors = []
         target = output if published else staging

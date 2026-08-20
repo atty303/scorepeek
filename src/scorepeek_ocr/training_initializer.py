@@ -21,12 +21,14 @@ import numpy as np
 import paddle
 import yaml
 
+from scorepeek_ocr.private_publication import destination_exists, publication_lock
 from scorepeek_ocr.training_artifacts import (
     MAX_CROP_BYTES,
     MAX_MODEL_FILE_BYTES,
     _hash_unpinned_file,
     _prepared_manifest,
     _verify_prepared_files,
+    prepared_rows,
 )
 from scorepeek_ocr.spike import _sync_directory
 from scorepeek_ocr.training_source import load_registered_source, verify_source
@@ -167,8 +169,8 @@ def _copy_classes(destination, source, old_tokens: list[str], new_tokens: list[s
     return result
 
 
-def _preprocess(path: str, width: int) -> np.ndarray:
-    data = _read_regular(Path(path), MAX_CROP_BYTES)
+def _preprocess(path: str, width: int, expected_sha256: str | None = None) -> np.ndarray:
+    data = _read_regular(Path(path), MAX_CROP_BYTES, expected_sha256)
     image = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise TrainingInitializerError("validation crop could not be decoded")
@@ -192,19 +194,22 @@ def _decode(probabilities: np.ndarray, tokens: list[str]) -> str:
     return "".join(output)
 
 
-def _evaluate(model, validation_data: bytes, tokens: list[str], width: int) -> dict[str, int]:
-    rows = [row.split("\t", 1) for row in validation_data.decode().splitlines()]
+def _evaluate(
+    model, rows: list[tuple[str, str, str]], tokens: list[str], width: int
+) -> dict[str, int]:
     started = time.perf_counter()
     exact = 0
     model.eval()
     with paddle.no_grad():
         for offset in range(0, len(rows), 8):
             batch = rows[offset : offset + 8]
-            images = np.stack([_preprocess(path, width) for path, _ in batch])
+            images = np.stack(
+                [_preprocess(path, width, digest) for path, _, digest in batch]
+            )
             predictions = model(paddle.to_tensor(images)).numpy()
             exact += sum(
                 _decode(prediction, tokens) == title
-                for prediction, (_, title) in zip(predictions, batch, strict=True)
+                for prediction, (_, title, _) in zip(predictions, batch, strict=True)
             )
     return {
         "sample_count": len(rows),
@@ -222,9 +227,12 @@ def _publish(staging: Path, output: Path) -> None:
                 os.fsync(handle.fileno())
         _sync_directory(staging)
         os.chmod(staging, 0o700)
-        staging.rename(output)
-        published = True
-        _sync_directory(output.parent)
+        with publication_lock(output.parent):
+            if destination_exists(output):
+                raise FileExistsError("private output already exists")
+            staging.rename(output)
+            published = True
+            _sync_directory(output.parent)
     except BaseException as error:
         cleanup_errors = []
         target_path = output if published else staging
@@ -264,11 +272,7 @@ def initialize(
         MAX_MANIFEST_BYTES,
         prepared["derived_training_config_sha256"],
     )
-    validation_data = _read_regular(
-        preparation / "validation.txt",
-        MAX_MODEL_FILE_BYTES,
-        prepared["label_file_sha256"]["validation"],
-    )
+    validation_rows = prepared_rows(preparation, prepared, "validation")
     source = load_registered_source()
     verify_source(source_root, source)
     registered = _load_checkpoint_manifest()
@@ -318,7 +322,7 @@ def initialize(
         state[key] = _copy_classes(current[key], pretrained[key], old_tokens, new_tokens, axis)
     model.set_state_dict(state)
     probe = _evaluate(
-        model, validation_data, ctc_tokens, prepared["model_input_width"]
+        model, validation_rows, ctc_tokens, prepared["model_input_width"]
     )
 
     if not output.is_absolute() or output.exists() or not output.parent.is_dir():

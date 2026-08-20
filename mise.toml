@@ -361,6 +361,46 @@ set -euo pipefail
 exec uv run --locked --no-dev python -m scorepeek_ocr.training_initializer "$@"
 '''
 
+[tasks."ocr:title-model:pilot"]
+description = "Run bounded fixed-step private title-model fine-tuning and select the first improvement"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.training_pilot "$@"
+'''
+
+[tasks."ocr:title-model:export"]
+description = "Export a selected private title model through registered Paddle and ONNX entrypoints"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.training_export "$@"
+'''
+
+[tasks."ocr:title-model:parity-reference"]
+description = "Create a Paddle tensor reference for a scorepeek-owned title-model export"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.export_parity "$@"
+'''
+
+[tasks."ocr:title-model:parity-run"]
+description = "Verify scorepeek-owned Paddle and ONNX tensor and dictionary contracts"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- recognition title-model-contract-parity "$@"
+'''
+
+[tasks."ocr:title-model:replay"]
+description = "Compare the mapped initializer and selected pilot on private result and evaluation inputs"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.training_replay "$@"
+'''
+
 [tasks."ocr:parity:reference"]
 description = "Generate a digest-bound Paddle parity reference from a verified title crop"
 run = '''

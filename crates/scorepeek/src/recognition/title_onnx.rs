@@ -12,7 +12,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::title_decoder::{
     CatalogTitleDecision, CatalogTitleDecoderError, DiagnosticTitleThresholds,
-    TITLE_DICTIONARY_SHA256, score_catalog_titles,
+    TITLE_DICTIONARY_SHA256, load_dictionary_contract, score_catalog_titles,
 };
 use super::title_preprocessor::{
     TITLE_INPUT_SHAPE, TITLE_INPUT_VALUES, TITLE_PREPROCESSOR_ID, preprocess_title_crop,
@@ -228,6 +228,163 @@ struct VerifiedTitleInputs {
     rust_input: Vec<f32>,
     paddle_output: Vec<f32>,
     maximum_input_absolute_error: f32,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExportContractReference {
+    schema: String,
+    training_preparation_sha256: String,
+    validation_list_sha256: String,
+    dictionary_sha256: String,
+    validation_row_index: usize,
+    crop_file_sha256: String,
+    export_manifest_sha256: String,
+    onnx_model_sha256: String,
+    inference_config_sha256: String,
+    input: TensorArtifact,
+    paddle_output: TensorArtifact,
+    ctc_blank_token: u32,
+    argmax_token_order: Vec<u32>,
+    collapsed_token_order: Vec<u32>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ExportContractParityRequest<'a> {
+    pub model_path: &'a Path,
+    pub model_sha256: &'a str,
+    pub reference_directory: &'a Path,
+    pub reference_sha256: &'a str,
+    pub inference_yml: &'a Path,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ExportContractParitySummary {
+    pub schema: &'static str,
+    pub reference_manifest_sha256: String,
+    pub onnx_model_sha256: String,
+    pub inference_config_sha256: String,
+    pub input_shape: Vec<usize>,
+    pub output_shape: Vec<usize>,
+    pub maximum_tensor_absolute_error: f32,
+    pub argmax_token_order_matches: bool,
+    pub collapsed_token_order_matches: bool,
+}
+
+/// Compares a scorepeek-owned Paddle tensor reference with its ONNX export.
+///
+/// This boundary verifies exact model, dictionary, tensor shape, probability, and token-order
+/// evidence. It does not recognize a title or calibrate an acceptance threshold.
+///
+/// # Errors
+/// Returns an error for invalid digest-bound evidence or any Paddle/ONNX contract mismatch.
+pub fn compare_export_contract(
+    request: ExportContractParityRequest<'_>,
+) -> Result<ExportContractParitySummary, OnnxParityError> {
+    if !valid_sha256(request.model_sha256) || !valid_sha256(request.reference_sha256) {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    let manifest_bytes = read_bounded_regular(
+        &request.reference_directory.join("manifest.json"),
+        MAX_REFERENCE_MANIFEST_BYTES,
+    )?;
+    if encode_sha256(&manifest_bytes) != request.reference_sha256 {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    let reference: ExportContractReference = serde_json::from_slice(&manifest_bytes)?;
+    reference.validate(request.model_sha256)?;
+    let model_bytes = read_bounded_regular(request.model_path, 512 * 1024 * 1024)?;
+    if encode_sha256(&model_bytes) != request.model_sha256 {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    let input = decode_f32(&reference.input.read(request.reference_directory)?)?;
+    let paddle_output = decode_f32(&reference.paddle_output.read(request.reference_directory)?)?;
+    let [batch, channels, height, width] = reference.input.shape.as_slice() else {
+        return Err(OnnxParityError::InvalidArtifact);
+    };
+    let [output_batch, timesteps, classes] = reference.paddle_output.shape.as_slice() else {
+        return Err(OnnxParityError::InvalidArtifact);
+    };
+    if (*batch, *channels, *height) != (1, 3, 48)
+        || *output_batch != 1
+        || *width
+            != timesteps
+                .checked_mul(8)
+                .ok_or(OnnxParityError::InvalidArtifact)?
+        || input.len() != batch * channels * height * width
+        || paddle_output.len() != output_batch * timesteps * classes
+    {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    let dictionary = load_dictionary_contract(
+        request.inference_yml,
+        &reference.inference_config_sha256,
+        *classes,
+    )?;
+    if dictionary.len() != *classes {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    let dictionary_bytes = dictionary[1..dictionary.len() - 1]
+        .iter()
+        .flat_map(|token| token.bytes().chain(std::iter::once(b'\n')))
+        .collect::<Vec<_>>();
+    if encode_sha256(&dictionary_bytes) != reference.dictionary_sha256 {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    validate_probability_rows(&paddle_output, *classes)?;
+
+    let mut session = Session::builder()?.commit_from_memory(&model_bytes)?;
+    if session.inputs().len() != 1 || session.outputs().len() != 1 {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    let input_shape = [*batch, *channels, *height, *width];
+    let outputs = session.run(ort::inputs![Tensor::from_array((input_shape, input))?])?;
+    let (output_shape, onnx_output) = outputs[0].try_extract_tensor::<f32>()?;
+    let expected_output_shape = [
+        i64::try_from(*output_batch).map_err(|_| OnnxParityError::InvalidArtifact)?,
+        i64::try_from(*timesteps).map_err(|_| OnnxParityError::InvalidArtifact)?,
+        i64::try_from(*classes).map_err(|_| OnnxParityError::InvalidArtifact)?,
+    ];
+    if output_shape.as_ref() != expected_output_shape {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    validate_probability_rows(onnx_output, *classes)?;
+    let maximum_tensor_absolute_error = onnx_output
+        .iter()
+        .zip(&paddle_output)
+        .map(|(onnx, paddle)| (onnx - paddle).abs())
+        .fold(0.0_f32, f32::max);
+    if maximum_tensor_absolute_error > MAX_TENSOR_ABSOLUTE_ERROR {
+        return Err(OnnxParityError::TensorMismatch);
+    }
+    let (argmax, collapsed) = argmax_tokens(onnx_output, *timesteps, *classes)?;
+    if argmax != reference.argmax_token_order || collapsed != reference.collapsed_token_order {
+        return Err(OnnxParityError::TokenOrderMismatch);
+    }
+    Ok(ExportContractParitySummary {
+        schema: "scorepeek-title-model-export-contract-parity-v1",
+        reference_manifest_sha256: request.reference_sha256.to_owned(),
+        onnx_model_sha256: request.model_sha256.to_owned(),
+        inference_config_sha256: reference.inference_config_sha256,
+        input_shape: reference.input.shape,
+        output_shape: reference.paddle_output.shape,
+        maximum_tensor_absolute_error,
+        argmax_token_order_matches: true,
+        collapsed_token_order_matches: true,
+    })
+}
+
+fn validate_probability_rows(probabilities: &[f32], classes: usize) -> Result<(), OnnxParityError> {
+    if classes == 0 || !probabilities.len().is_multiple_of(classes) {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    for row in probabilities.chunks_exact(classes) {
+        let sum: f64 = row.iter().map(|value| f64::from(*value)).sum();
+        if row.iter().any(|value| !value.is_finite() || *value <= 0.0) || (sum - 1.0).abs() > 2e-5 {
+            return Err(OnnxParityError::InvalidArtifact);
+        }
+    }
+    Ok(())
 }
 
 /// Runs the registered Rust preprocessor and ONNX graph against one verified title crop.
@@ -446,6 +603,44 @@ impl ParityReference {
                 }
             }
             previous = Some((&candidate.song_id, candidate.paddle_log_probability));
+        }
+        Ok(())
+    }
+}
+
+impl ExportContractReference {
+    fn validate(&self, model_sha256: &str) -> Result<(), OnnxParityError> {
+        let hashes = [
+            &self.training_preparation_sha256,
+            &self.validation_list_sha256,
+            &self.dictionary_sha256,
+            &self.crop_file_sha256,
+            &self.export_manifest_sha256,
+            &self.onnx_model_sha256,
+            &self.inference_config_sha256,
+        ];
+        let output_classes = self.paddle_output.shape.get(2).copied().unwrap_or(0);
+        if self.schema != "scorepeek-private-title-model-export-parity-reference-v1"
+            || hashes.into_iter().any(|hash| !valid_sha256(hash))
+            || self.validation_row_index != 0
+            || self.onnx_model_sha256 != model_sha256
+            || self.input.filename != "input.f32le"
+            || self.paddle_output.filename != "paddle-output.f32le"
+            || self.input.bytes != self.input.shape.iter().product::<usize>() as u64 * 4
+            || self.paddle_output.bytes
+                != self.paddle_output.shape.iter().product::<usize>() as u64 * 4
+            || self.ctc_blank_token != 0
+            || self.argmax_token_order.len()
+                != self.paddle_output.shape.get(1).copied().unwrap_or(0)
+            || self
+                .argmax_token_order
+                .iter()
+                .any(|token| usize::try_from(*token).map_or(true, |token| token >= output_classes))
+            || self.collapsed_token_order.iter().any(|token| {
+                *token == 0 || usize::try_from(*token).map_or(true, |token| token >= output_classes)
+            })
+        {
+            return Err(OnnxParityError::InvalidArtifact);
         }
         Ok(())
     }
