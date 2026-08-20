@@ -770,7 +770,7 @@ is outside this checkpoint.
   measured first under the same song-identity contract.
   ADR 0021 supersedes ADR 0020's direct-encodability evaluation gate. The official model's text is
   treated as an imperfect observation and searched against every complete catalog title; dictionary
-  and 40-timestep limitations do not remove or rewrite songs. The immutable official PP-OCRv6-small
+  and timestep limitations do not remove or rewrite songs. The immutable official PP-OCRv6-small
   ONNX graph was run once over all 3,061 stationary crops, then three global searches used the same
   output across all 1,879 catalog songs. Exact comparison-key search fully recognized 991/1,119
   songs with zero wrong unique crop decisions and 269 unknown/tied crops. Absolute Levenshtein
@@ -783,9 +783,50 @@ is outside this checkpoint.
   `e3efb4b3963bc1ade3fe67925cbc8510a396152676884e19a5e344ac00db6388`.
   The decoder rejected non-finite or negative output and accepted the registered 18,710-class
   softmax within a measured `0.0001` row-sum tolerance; the observed boundary case summed to
-  `1.000023766`. Replaying those 3,061 observations through the
-  same census entry point without model arguments reproduced all three strategy metrics without
-  running ONNX again.
+  `1.000023766`. Replaying those 3,061 observations through the same census entry point without
+  model arguments reproduced all three strategy metrics without running ONNX again.
+
+  Later inspection established that the graph is natively dynamic:
+  `[batch,3,48,dynamic_width]` input and `[batch,dynamic_timesteps,18710]` output. PaddleX 3.7 uses
+  minimum width 320, increases it for the source aspect ratio, and caps it at 3,200; a 475x45 crop
+  therefore uses width 506 and 63 timesteps. The committed v6 census forced those crops through width
+  320 and 40 timesteps and is not an unmodified-official-model baseline. A provisional dynamic Rust
+  census was not promoted into this checkpoint: a synthetic 475x45 parity test found 395 uint8
+  channel values differing from OpenCV by one after upscale, and independent review found that its
+  eager preprocessing could allocate about 7.55 GB for a valid 4,096-row width-3,200 request. Native
+  dynamic Rust implementation and a corrected full census remain unverified.
+
+  Focused Paddle inference then isolated the two one-symbol titles whose original 475x45 views
+  collapse to empty argmax text. All six original `∀` and `〆` crops had blank as argmax at all 63
+  timesteps. This was not absence of image signal: the official small model's single-token CTC ranks
+  for `∀` were 456, 513, and 25, while `〆` ranked 6,333, 6,367, and 5,896 and instead assigned mass
+  to line and `x`-like tokens. PP-OCRv6 medium produced consistent `A` observations for `∀` and
+  `x`-family observations for `〆`; PP-OCRv6 tiny, PP-OCRv5 mobile/server, PP-OCRv4 server document,
+  and the Japanese PP-OCRv3 mobile model also retained proxy shape signals but did not read `〆`
+  directly. These model probes are observations only; their temporary official artifacts are not
+  registered candidates and no model was selected or rejected from this evidence.
+
+  A bounded presentation sweep over only the six symbol crops found a direct small-model route for
+  `∀`: thresholding grayscale above 80, taking its 19x21 foreground box, and retaining 12 horizontal
+  and one vertical source pixel of margin made `∀` the top single-token CTC sequence for all three
+  crops. Against the immutable `ceabe293` SQLite catalog, all three then ranked `∀` first among the
+  2,515 songs with at least one dictionary-encodable and 40-timestep-alignable variant; `A` was
+  runner-up and the log-score
+  margins were 0.0834203, 0.0957958, and 0.1364892. The same catalog retained 2,548 song identities;
+  twelve variants covered unsupported characters, seven identities had no dictionary-encodable
+  variant, and 33 identities in total lacked a directly scoreable variant after the 40-timestep
+  alignment bound. They were not removed or rewritten.
+
+  `〆` did not become a high-ranked direct token under any measured margin or official model. The
+  small model's horizontal-only view instead separated it from the actual one-character title `X`:
+  `x/X` score ratios were 0.805 to 1.89 for three `〆` crops and 0.061 to 0.112 for three `X` crops.
+  Adding a diagnostic model-and-presentation-bound `x` alias to `〆` made two `〆` crops rank first
+  without bias. A constant log-score bias of 0.25 made all three `〆` and all three `X` crops rank
+  their correct song first over the same 2,515 scoreable-song domain. The smallest `〆` margin was
+  0.0816993 and the smallest `X` margin was 1.4005711. The six observed crops stay correct for any
+  alias bias strictly between approximately 0.1683 and 1.6506. The current catalog has no non-search
+  title `x`. This establishes available discriminating signal, not an accepted alias, bias,
+  foreground detector, runtime branch, or threshold.
   The 3,061 catalog-bound
   music-list labels are provisional only: the 2,611 automated associations and 450 visual
   associations do not establish accepted holdout truth, a stability threshold, or a release gate.
@@ -857,30 +898,43 @@ is outside this checkpoint.
 ## Next executable task
 
 Do not continue from the mapped initializer, re-evaluate the six historical fine-tuning pilots, export
-a custom runtime graph, or start another OCR training run. Keep the official PP-OCRv6-small v6 census
-as the first model/decoder matrix row. Inspect its nine normalized-distance incomplete songs and three
-wrong unique crop decisions, then test the lowest-cost global search alternatives on the already
-decoded observations where possible. Keep all 1,879 complete catalog titles in competition; do not
-delete, truncate, or replace a title because the current model cannot encode it exactly. Prefer a
-global policy that increases fully correct songs while eliminating wrong unique decisions. Do not
-derive an acceptance threshold from the positive-only corpus or select normalized distance merely
-because it currently has the highest coverage.
+a custom runtime graph, or start another OCR training run. Preserve the six-crop short-title
+observations without selecting the small, medium, or any alternate official model, presentation,
+alias, bias, or decoder. First turn the `∀` tight-view and `〆`/`X` horizontal-view probes into one
+digest-bound private evaluation command over explicit crop IDs, the registered model, presentation
+parameters, complete catalog identities, and retained unscoreable-title counts. Reproduce the
+reported ranks and margins without using the temporary model cache.
 
-Then register and measure the official ONNX PP-OCRv6 tiny/medium and PP-OCRv5 mobile/server candidates
-when their official immutable artifact, license, preprocessing, and dictionary metadata can be bound.
-Use the same crops, catalog, comparison key, song-decision rules, and complete-corpus metric while
-preserving each model's native tensor contract. Compare the unmodified official models first. Apply
-later global decoder alternatives and stationary multi-frame score aggregation uniformly across every
-registered official model whose immutable contract can run; initial coverage or rank cannot exclude a
-model, and every contract exclusion must be recorded in the comparison matrix. Do not tune one model
-or song. A candidate may advance only when the complete
-1,119-song census increases the total correctly and uniquely recognized song count. Report gained and
-lost song sets, but do not require set inclusion: a local regression does not outweigh higher global
-coverage. Wrong unique crop decisions remain failures. When correct-song coverage is equal, prefer
-fewer wrong unique crop decisions, then the official model with the smaller and simpler runtime bundle,
-then measured target latency. Title-disjoint validation/evaluation remain guards rather than the
-selection oracle. Do not add broad Unicode compatibility, case, Greek/Latin-confusable folding, or
-per-song edit-distance exceptions, and do not tune live thresholds from this positive-only corpus. Keep the 24
+Then test only the architectural boundary exposed by these observations. The secondary presentation
+must be fail-closed and must not replace the original view when foreground extraction is ambiguous.
+Use the existing 26 crops from eleven one-character titles as the first negative set; simple
+grayscale thresholding already expanded to almost the complete row for decorated `D` and `朧`
+examples, so foreground geometry is not yet a general short-title detector. Keep every complete
+catalog title in competition and retain the open-text path for all 33 catalog identities that this
+CTC-only probe could not score. Measure whether fixed, globally registered presentation parameters
+and a model-bound confusion alias preserve song uniqueness; do not tune from one crop at live time.
+
+Once this evidence is reproducible, compare the implementation and runtime costs of a second
+presentation, a model-bound alias/calibration artifact, an alternate official model, and model
+fine-tuning. This bounded observation matrix may prioritize later measurements but cannot select or
+advance any candidate. Preserve ADR 0020's phase order: first register and compare the unmodified
+official PP-OCRv6 tiny/small/medium and PP-OCRv5 mobile/server models under their native contracts,
+then apply any global presentation, alias, calibration, or stationary aggregation candidate
+uniformly to every runnable registered model. Do not start fine-tuning before those two phases are
+measured.
+
+Selection requires the same complete 3,061-crop, 1,119-song census and full competing catalog domain.
+That census must use pixel-exact native preprocessing and bounded streaming batches; the provisional
+dynamic Rust path must first fix both OpenCV upscale parity and aggregate tensor allocation. A
+candidate may advance only when the complete census increases correctly and uniquely recognized
+songs under the existing ranking gate. Report gained and lost song sets, but do not require set
+inclusion: a local regression does not outweigh higher global coverage. Wrong unique crop decisions
+remain failures. When correct-song coverage is equal, prefer fewer wrong unique crop decisions, then
+the official model with the smaller and simpler runtime bundle, then measured target latency.
+Title-disjoint validation/evaluation remain guards rather than the selection oracle. Do not add broad
+Unicode compatibility, case,
+Greek/Latin-confusable folding, or unbound per-song edit-distance exceptions, and do not tune live
+thresholds from this positive-only corpus. Keep the 24
 INFINITAS-blue and 299 LEGGENDARIA-purple groups out of training until their labels are established
 independently of the recognition output; evaluate any future color correction under the same
 explicit transform ID in training and replay.
