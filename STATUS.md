@@ -827,6 +827,24 @@ is outside this checkpoint.
   alias bias strictly between approximately 0.1683 and 1.6506. The current catalog has no non-search
   title `x`. This establishes available discriminating signal, not an accepted alias, bias,
   foreground detector, runtime branch, or threshold.
+
+  `ocr:short-title:probe` now makes those observations reproducible without the temporary model
+  cache. It binds training input `833ddb...`, crop map `c0e8cd...`, catalog `ceabe293...`, the
+  registered Paddle model archive, the nine explicit `∀`/`〆`/`X` group IDs, and all presentation and
+  alias parameters into a create-only private artifact. Two independent runs produced artifact
+  SHA-256 `e6c3de55d3cb23256cb502d6480da96a1ce3e24b50f33a4a42e5823e8a66283c`.
+  The reproduced target ranks and margins exactly matched the earlier temporary probes and each
+  target ranking explicitly retained 33 unscoreable catalog identities outside its 2,515-song CTC
+  domain.
+
+  The same command observed all 26 one-character crops from eleven songs under the original, tight,
+  and horizontal presentations. Truth was the top single-token sequence for 17, 20, and 18 crops,
+  respectively; argmax text exactly matched truth for 13, 20, and 18 crops, and blank argmax counts
+  were 11, zero, and zero. The tight presentation regressed one previously top-ranked `朧` crop to
+  rank two. The horizontal presentation regressed both `朧` crops to rank four. Thus the bounded
+  evidence refutes treating either measured foreground presentation as a uniform replacement even
+  within one-character titles. It does not select a route detector, specialist path, model,
+  presentation, alias, bias, or threshold.
   The 3,061 catalog-bound
   music-list labels are provisional only: the 2,611 automated associations and 450 visual
   associations do not establish accepted holdout truth, a stability threshold, or a release gate.
@@ -898,23 +916,16 @@ is outside this checkpoint.
 ## Next executable task
 
 Do not continue from the mapped initializer, re-evaluate the six historical fine-tuning pilots, export
-a custom runtime graph, or start another OCR training run. Preserve the six-crop short-title
-observations without selecting the small, medium, or any alternate official model, presentation,
-alias, bias, or decoder. First turn the `∀` tight-view and `〆`/`X` horizontal-view probes into one
-digest-bound private evaluation command over explicit crop IDs, the registered model, presentation
-parameters, complete catalog identities, and retained unscoreable-title counts. Reproduce the
-reported ranks and margins without using the temporary model cache.
+a custom runtime graph, or start another OCR training run. Preserve the reproducible short-title
+artifact as observation material without selecting the small, medium, or any alternate official
+model, presentation, alias, bias, decoder, route detector, or specialist architecture. Do not now
+expand this probe into a one-character router or measure a routing threshold. When the completed
+evidence is later used for selection, do not require one model, presentation, parameter set, or
+recognition path to handle every song. A unified path and bounded multiple-path candidates may both
+be compared by global song uniqueness, wrong unique decisions, runtime cost, and implementation
+complexity; that is a selection criterion, not a conclusion from the current 26-crop observation.
 
-Then test only the architectural boundary exposed by these observations. The secondary presentation
-must be fail-closed and must not replace the original view when foreground extraction is ambiguous.
-Use the existing 26 crops from eleven one-character titles as the first negative set; simple
-grayscale thresholding already expanded to almost the complete row for decorated `D` and `朧`
-examples, so foreground geometry is not yet a general short-title detector. Keep every complete
-catalog title in competition and retain the open-text path for all 33 catalog identities that this
-CTC-only probe could not score. Measure whether fixed, globally registered presentation parameters
-and a model-bound confusion alias preserve song uniqueness; do not tune from one crop at live time.
-
-Once this evidence is reproducible, compare the implementation and runtime costs of a second
+With this evidence now reproducible, compare the implementation and runtime costs of a second
 presentation, a model-bound alias/calibration artifact, an alternate official model, and model
 fine-tuning. This bounded observation matrix may prioritize later measurements but cannot select or
 advance any candidate. Preserve ADR 0020's phase order: first register and compare the unmodified

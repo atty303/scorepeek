@@ -417,6 +417,14 @@ set -euo pipefail
 exec uv run --locked --no-dev python -m scorepeek_ocr.official_census "$@"
 '''
 
+[tasks."ocr:short-title:probe"]
+description = "Reproduce private one-character title OCR signal observations"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.short_title_probe "$@"
+'''
+
 [tasks."ocr:parity:reference"]
 description = "Generate a digest-bound Paddle parity reference from a verified title crop"
 run = '''

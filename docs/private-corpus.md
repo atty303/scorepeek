@@ -224,6 +224,16 @@ for generalization and overfitting; neither substitutes for complete-corpus cove
 offline development measurement and does not calibrate the live absolute-score or runner-up-margin
 rejection thresholds.
 
+`ocr:short-title:probe` reproduces bounded observations for explicitly named one-character groups
+without selecting a recognizer. It revalidates the private training input, crop map, registered
+Paddle model, and complete catalog by SHA-256; evaluates the original crop plus two fixed diagnostic
+foreground presentations over every one-character crop in that input; and performs complete
+scoreable-catalog ranking only for the explicitly supplied target groups. Its create-only private
+manifest records crop/model/catalog bindings, foreground geometry, input and output shapes, argmax
+text, single-token ranks, target runner-up margins, and the number of catalog songs retained but not
+directly scoreable at each target's timestep bound. The diagnostic `〆`/`x` alias and bias are
+observations, not accepted catalog variants, runtime behavior, or calibrated thresholds.
+
 `ocr:title-model:record-export` hash-records an explicitly selected Paddle model and ONNX graph
 against one preparation after rehashing its dictionary, derived config, and all three split lists.
 The record remains provisional, non-distributable, and unaccepted for runtime. It carries the
