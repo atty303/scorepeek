@@ -316,8 +316,8 @@ is outside this checkpoint.
 ## Verified in this checkpoint
 
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
-  The current workspace run covered 84 `scorepeek` library tests, 13 binary tests, 55 offline
-  corpus tests, 24 offline Python OCR tests, and the recording-dataset E2E gate.
+  The current workspace run covered 91 `scorepeek` library tests, 13 binary tests, 55 offline
+  corpus tests, 48 offline Python OCR tests, and the recording-dataset E2E gate.
 - The prior session's 3,061 provisional private labels and bound crops were recovered from its
   temporary tree into an operator-owned stable private-artifact root, with all crop paths and
   complete file/pixel SHA-256 evidence revalidated after relocation. The resulting song-disjoint
@@ -793,8 +793,9 @@ is outside this checkpoint.
   320 and 40 timesteps and is not an unmodified-official-model baseline. A provisional dynamic Rust
   census was not promoted into this checkpoint: a synthetic 475x45 parity test found 395 uint8
   channel values differing from OpenCV by one after upscale, and independent review found that its
-  eager preprocessing could allocate about 7.55 GB for a valid 4,096-row width-3,200 request. Native
-  dynamic Rust implementation and a corrected full census remain unverified.
+  eager preprocessing could allocate about 7.55 GB for a valid 4,096-row width-3,200 request. The
+  subsequent native slice fixed the shared dynamic preprocessor and streams one crop at a time, but
+  the corrected complete small-model census remains unrun.
 
   Focused Paddle inference then isolated the two one-symbol titles whose original 475x45 views
   collapse to empty argmax text. All six original `∀` and `〆` crops had blank as argmax at all 63
@@ -856,8 +857,19 @@ is outside this checkpoint.
   serializes writers, recovers only marker-owned interrupted staging, fsyncs publication, and bounds
   storage at eight bundles, 192 MiB per bundle, and 512 MiB aggregate while preserving identical
   reuse at capacity. This does not alter the accepted small-model parity object. PaddleOCR 3.7 rejected the official ONNX directory
-  because it contains no Paddle inference files, so no tiny accuracy or song-identity result has yet
-  been measured; that is an execution-backend boundary, not evidence for or against the model.
+  because it contains no Paddle inference files; that is an execution-backend boundary, not evidence
+  for or against the model. A bounded native Rust command now verifies all three registered bundle
+  files, preprocesses and executes each digest-bound strict P6 crop before reading the next row, and
+  validates dynamic `[1,3,48,width]` input plus non-empty `[1,timesteps,6906]` probability output.
+  The OpenCV mismatch was isolated to vertical border handling: OpenCV preserves the fractional
+  vertical weights while clipping both source-row references to the edge. The corrected synthetic
+  475x45 to 506x48 resize and BGR CHW tensor match independent OpenCV 5.0.0 SHA-256 references exactly.
+  One provisional corpus crop at file SHA-256
+  `940c7287428285ace95de1c1da9cecb182897fba3139431186b0a1005b7018f1` then produced input tensor
+  SHA-256 `dbf5b53528c0f5176dd1a8c223b5dd34d4a758d6dc977471cfd9266cab5ddb14`, width 506, 63 output
+  timesteps, and open text `smile`, matching its existing provisional label. This establishes the
+  registered native execution contract for one crop only; no tiny complete-corpus accuracy,
+  song-identity result, or model selection has yet been measured.
   The 3,061 catalog-bound
   music-list labels are provisional only: the 2,611 automated associations and 450 visual
   associations do not establish accepted holdout truth, a stability threshold, or a release gate.
@@ -938,20 +950,23 @@ recognition path to handle every song. A unified path and bounded multiple-path 
 be compared by global song uniqueness, wrong unique decisions, runtime cost, and implementation
 complexity; that is a selection criterion, not a conclusion from the current 26-crop observation.
 
-With the tiny graph and its dictionary/config now registered, implement its smallest bounded native
-Rust execution slice. First reproduce OpenCV preprocessing exactly for the synthetic 475x45 to
-506x48 upscale and verify one digest-bound crop against the registered 6,906-class dynamic ONNX
-contract. Only after those gates pass, stream the complete 3,061-crop census through bounded batches
-and the full competing catalog domain. Do not use a one-character-only score to select or reject the
-model. Then register and measure the remaining official PP-OCRv6 medium and PP-OCRv5 mobile/server
-candidates under the same complete-census contract; remeasure small only after its dynamic
-preprocessing is corrected. After every runnable official model has a native baseline, apply any
+The registered tiny graph has now passed the pixel-exact synthetic preprocessing and one-crop native
+execution gates. Extend the official census boundary to consume the registered tiny bundle and its
+dynamic summary schema, then stream the complete 3,061-crop census through the existing full
+competing catalog domain without retaining aggregate input or output tensors. Publish reusable
+digest-bound open-text observations before applying the same exact, absolute-Levenshtein, and
+normalized-Levenshtein global searches used for the small model. Report full song coverage, wrong
+unique crop decisions, unknown/tied crops, and gained/lost song sets. Do not use the successful one
+crop or a one-character-only score to select or reject the model. Then register and measure the
+remaining official PP-OCRv6 medium and PP-OCRv5 mobile/server
+candidates under the same complete-census contract; remeasure small with the corrected dynamic
+preprocessor. After every runnable official model has a native baseline, apply any
 global presentation, alias, calibration, or stationary aggregation candidate uniformly to all of
 them. Do not start fine-tuning before those two phases are measured.
 
 Selection requires the same complete 3,061-crop, 1,119-song census and full competing catalog domain.
-That census must use pixel-exact native preprocessing and bounded streaming batches; the provisional
-dynamic Rust path must first fix both OpenCV upscale parity and aggregate tensor allocation. A
+That census must continue to use the now-verified pixel-exact native preprocessing and bounded
+one-crop streaming rather than restoring the provisional aggregate tensor allocation. A
 candidate may advance only when the complete census increases correctly and uniquely recognized
 songs under the existing ranking gate. Report gained and lost song sets, but do not require set
 inclusion: a local regression does not outweigh higher global coverage. Wrong unique crop decisions

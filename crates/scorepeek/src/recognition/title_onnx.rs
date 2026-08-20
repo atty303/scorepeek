@@ -17,8 +17,9 @@ use super::title_decoder::{
     TITLE_DICTIONARY_SHA256, load_dictionary_contract, score_catalog_titles,
 };
 use super::title_preprocessor::{
-    TITLE_INPUT_SHAPE, TITLE_INPUT_VALUES, TITLE_PREPROCESSOR_ID, preprocess_title_crop,
-    preprocess_title_image,
+    DYNAMIC_TITLE_INPUT_HEIGHT, DYNAMIC_TITLE_PREPROCESSOR_ID, TITLE_INPUT_SHAPE,
+    TITLE_INPUT_VALUES, TITLE_PREPROCESSOR_ID, preprocess_dynamic_title_image,
+    preprocess_title_crop, preprocess_title_image,
 };
 use super::{RecognitionError, read_title_crop_artifact};
 use crate::catalog::Catalog;
@@ -42,6 +43,11 @@ const MAX_BATCH_REQUEST_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_BATCH_CROP_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_BATCH_ROWS: usize = 4_096;
 const CENSUS_BATCH_SIZE: usize = 8;
+const TINY_BUNDLE_MANIFEST_BYTES: &[u8] =
+    include_bytes!("../../../../models/manifests/pp-ocrv6-tiny-rec-onnx-bundle-v1.json");
+const TINY_BUNDLE_MANIFEST_SHA256: &str =
+    "d24f1ec10098065efd24216b23b405bb2af5feabbb815bc499ba0a5735b8bfd0";
+const TINY_OUTPUT_CLASSES: usize = 6_906;
 
 #[derive(Debug)]
 pub enum OnnxParityError {
@@ -177,6 +183,117 @@ impl OnnxModelManifest {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct TinyBundleManifest {
+    schema: String,
+    model_id: String,
+    model_name: String,
+    source_repository: String,
+    source_revision: String,
+    license_id: String,
+    license_url: String,
+    native_contract: TinyNativeContract,
+    files: Vec<TinyBundleFile>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TinyNativeContract {
+    input_layout: String,
+    input_color_order: String,
+    input_channels: usize,
+    input_height: usize,
+    preprocessor_minimum_width: usize,
+    preprocessor_maximum_width: usize,
+    output_classes: usize,
+    ctc_blank_token: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TinyBundleFile {
+    filename: String,
+    source_url: String,
+    sha256: String,
+    bytes: u64,
+}
+
+impl TinyBundleManifest {
+    fn load_registered() -> Result<Self, OnnxParityError> {
+        if encode_sha256(TINY_BUNDLE_MANIFEST_BYTES) != TINY_BUNDLE_MANIFEST_SHA256 {
+            return Err(OnnxParityError::InvalidArtifact);
+        }
+        let manifest: Self = serde_json::from_slice(TINY_BUNDLE_MANIFEST_BYTES)?;
+        let revision = "2612ab37152ae0a677521bae4e1e3d4fb4cf7c30";
+        let expected_files = [
+            (
+                "inference.onnx",
+                "9ef676d6ed3c88256a2d92c640c44f25b0c40947e111b14b8be8f594091563e6",
+                4_462_639,
+            ),
+            (
+                "inference.json",
+                "b5b14770c7dcf092781e92f4278a2ae5f95048f08b4b8a04140e88cb2745f147",
+                108_959,
+            ),
+            (
+                "inference.yml",
+                "66170210bad538e83fff3c4a3867e547d6bf20b50d64b20347c4b913f3034ea1",
+                55_571,
+            ),
+        ];
+        if manifest.schema != "scorepeek-ocr-onnx-model-bundle-v1"
+            || manifest.model_id != "pp-ocrv6-tiny-rec-onnx-v1"
+            || manifest.model_name != "PP-OCRv6_tiny_rec"
+            || manifest.source_repository != "PaddlePaddle/PP-OCRv6_tiny_rec_onnx"
+            || manifest.source_revision != revision
+            || manifest.license_id != "Apache-2.0"
+            || manifest.license_url
+                != format!(
+                    "https://huggingface.co/PaddlePaddle/PP-OCRv6_tiny_rec_onnx/blob/{revision}/README.md"
+                )
+            || manifest.native_contract.input_layout != "NCHW"
+            || manifest.native_contract.input_color_order != "BGR"
+            || manifest.native_contract.input_channels != 3
+            || manifest.native_contract.input_height != DYNAMIC_TITLE_INPUT_HEIGHT
+            || manifest.native_contract.preprocessor_minimum_width != 320
+            || manifest.native_contract.preprocessor_maximum_width != 3_200
+            || manifest.native_contract.output_classes != TINY_OUTPUT_CLASSES
+            || manifest.native_contract.ctc_blank_token != 0
+            || manifest.files.len() != expected_files.len()
+        {
+            return Err(OnnxParityError::InvalidArtifact);
+        }
+        for (file, (filename, sha256, bytes)) in manifest.files.iter().zip(expected_files) {
+            if file.filename != filename
+                || file.sha256 != sha256
+                || file.bytes != bytes
+                || file.source_url
+                    != format!(
+                        "https://huggingface.co/PaddlePaddle/PP-OCRv6_tiny_rec_onnx/resolve/{revision}/{filename}"
+                    )
+            {
+                return Err(OnnxParityError::InvalidArtifact);
+            }
+        }
+        Ok(manifest)
+    }
+
+    fn verified_file(&self, bundle: &Path, filename: &str) -> Result<Vec<u8>, OnnxParityError> {
+        let file = self
+            .files
+            .iter()
+            .find(|file| file.filename == filename)
+            .ok_or(OnnxParityError::InvalidArtifact)?;
+        let bytes = read_exact_regular(&bundle.join(filename), file.bytes)?;
+        if encode_sha256(&bytes) != file.sha256 {
+            return Err(OnnxParityError::InvalidArtifact);
+        }
+        Ok(bytes)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ParityReference {
     schema: String,
     frame_extraction_sha256: String,
@@ -257,6 +374,21 @@ pub struct OfficialOnnxDecodeSummary {
     pub dictionary_sha256: &'static str,
     pub preprocessor_id: &'static str,
     pub elapsed_ms: u128,
+    pub decoded_text: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DynamicOfficialOnnxDecodeSummary {
+    pub schema: &'static str,
+    pub request_sha256: String,
+    pub model_id: String,
+    pub model_sha256: String,
+    pub dictionary_sha256: String,
+    pub preprocessor_id: &'static str,
+    pub elapsed_ms: u128,
+    pub input_widths: Vec<usize>,
+    pub input_tensor_sha256s: Vec<String>,
+    pub output_timesteps: Vec<usize>,
     pub decoded_text: Vec<String>,
 }
 
@@ -653,6 +785,116 @@ pub fn decode_official_onnx_crops(
     })
 }
 
+/// Runs the registered tiny recognizer over digest-bound strict P6 crops without retaining tensors.
+///
+/// Each crop is preprocessed and executed before the next crop is read. This keeps the dynamic
+/// width contract bounded even for the maximum request row count.
+///
+/// # Errors
+/// Returns an error for incomplete registered bundle bytes, malformed crop evidence, or an
+/// unexpected dynamic ONNX tensor contract.
+pub fn decode_dynamic_tiny_onnx_crops(
+    bundle_path: &Path,
+    request_path: &Path,
+) -> Result<DynamicOfficialOnnxDecodeSummary, OnnxParityError> {
+    let manifest = TinyBundleManifest::load_registered()?;
+    let model_bytes = manifest.verified_file(bundle_path, "inference.onnx")?;
+    manifest.verified_file(bundle_path, "inference.json")?;
+    manifest.verified_file(bundle_path, "inference.yml")?;
+    let dictionary_file = manifest
+        .files
+        .iter()
+        .find(|file| file.filename == "inference.yml")
+        .ok_or(OnnxParityError::InvalidArtifact)?;
+    let dictionary = load_dictionary_contract(
+        &bundle_path.join("inference.yml"),
+        &dictionary_file.sha256,
+        TINY_OUTPUT_CLASSES,
+    )?;
+    let model_file = manifest
+        .files
+        .iter()
+        .find(|file| file.filename == "inference.onnx")
+        .ok_or(OnnxParityError::InvalidArtifact)?;
+    let request_bytes = read_bounded_regular(request_path, MAX_BATCH_REQUEST_BYTES)?;
+    let request_sha256 = encode_sha256(&request_bytes);
+    let request: OfficialOnnxDecodeRequest = serde_json::from_slice(&request_bytes)?;
+    if request.schema != "scorepeek-private-official-onnx-decode-request-v1"
+        || request.rows.is_empty()
+        || request.rows.len() > MAX_BATCH_ROWS
+    {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+
+    let started = Instant::now();
+    let mut session = Session::builder()?.commit_from_memory(&model_bytes)?;
+    if session.inputs().len() != 1 || session.outputs().len() != 1 {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    let mut input_widths = Vec::with_capacity(request.rows.len());
+    let mut input_tensor_sha256s = Vec::with_capacity(request.rows.len());
+    let mut output_timesteps = Vec::with_capacity(request.rows.len());
+    let mut decoded_text = Vec::with_capacity(request.rows.len());
+    for row in &request.rows {
+        if !row.path.is_absolute() || !valid_sha256(&row.file_sha256) {
+            return Err(OnnxParityError::InvalidArtifact);
+        }
+        let crop_bytes = read_bounded_regular(&row.path, MAX_BATCH_CROP_BYTES)?;
+        if encode_sha256(&crop_bytes) != row.file_sha256 {
+            return Err(OnnxParityError::InvalidArtifact);
+        }
+        let (source_width, source_height, pixels) = strict_p6(&crop_bytes)?;
+        let input = preprocess_dynamic_title_image(pixels, source_width, source_height)?;
+        let input_tensor_sha256 = encode_f32_sha256(&input.values);
+        let input_shape = [1, 3, DYNAMIC_TITLE_INPUT_HEIGHT, input.width];
+        let outputs = session.run(ort::inputs![Tensor::from_array((
+            input_shape,
+            input.values
+        ))?])?;
+        let (shape, probabilities) = outputs[0].try_extract_tensor::<f32>()?;
+        let [batch, timesteps, classes] = shape.as_ref() else {
+            return Err(OnnxParityError::InvalidArtifact);
+        };
+        let timesteps =
+            usize::try_from(*timesteps).map_err(|_| OnnxParityError::InvalidArtifact)?;
+        if *batch != 1
+            || timesteps == 0
+            || usize::try_from(*classes).map_err(|_| OnnxParityError::InvalidArtifact)?
+                != TINY_OUTPUT_CLASSES
+            || probabilities.len() != timesteps * TINY_OUTPUT_CLASSES
+        {
+            return Err(OnnxParityError::InvalidArtifact);
+        }
+        validate_argmax_probability_rows(probabilities, TINY_OUTPUT_CLASSES)?;
+        let (_, collapsed) = argmax_tokens(probabilities, timesteps, TINY_OUTPUT_CLASSES)?;
+        let mut text = String::new();
+        for token in collapsed {
+            text.push_str(
+                dictionary
+                    .get(usize::try_from(token).map_err(|_| OnnxParityError::InvalidArtifact)?)
+                    .ok_or(OnnxParityError::InvalidArtifact)?,
+            );
+        }
+        input_widths.push(input.width);
+        input_tensor_sha256s.push(input_tensor_sha256);
+        output_timesteps.push(timesteps);
+        decoded_text.push(text);
+    }
+    Ok(DynamicOfficialOnnxDecodeSummary {
+        schema: "scorepeek-official-onnx-dynamic-open-text-batch-v1",
+        request_sha256,
+        model_id: manifest.model_id,
+        model_sha256: model_file.sha256.clone(),
+        dictionary_sha256: dictionary_file.sha256.clone(),
+        preprocessor_id: DYNAMIC_TITLE_PREPROCESSOR_ID,
+        elapsed_ms: started.elapsed().as_millis(),
+        input_widths,
+        input_tensor_sha256s,
+        output_timesteps,
+        decoded_text,
+    })
+}
+
 fn strict_p6(bytes: &[u8]) -> Result<(usize, usize, &[u8]), OnnxParityError> {
     let mut parts = bytes.splitn(4, |byte| *byte == b'\n');
     let magic = parts.next().ok_or(OnnxParityError::InvalidArtifact)?;
@@ -1011,12 +1253,32 @@ fn encode_sha256(bytes: &[u8]) -> String {
     encoded
 }
 
+fn encode_f32_sha256(values: &[f32]) -> String {
+    let mut digest = Sha256::new();
+    for value in values {
+        digest.update(value.to_le_bytes());
+    }
+    let mut encoded = String::with_capacity(64);
+    for byte in digest.finalize() {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        argmax_tokens, ctc_log_probability, strict_p6, valid_presentation_transform_id,
-        validate_argmax_probability_rows,
+        TinyBundleManifest, argmax_tokens, ctc_log_probability, strict_p6,
+        valid_presentation_transform_id, validate_argmax_probability_rows,
     };
+
+    #[test]
+    fn registered_tiny_bundle_manifest_is_exact() {
+        let manifest = TinyBundleManifest::load_registered().unwrap();
+        assert_eq!(manifest.model_id, "pp-ocrv6-tiny-rec-onnx-v1");
+        assert_eq!(manifest.native_contract.output_classes, 6_906);
+        assert_eq!(manifest.files.len(), 3);
+    }
 
     #[test]
     fn export_contract_accepts_only_registered_presentation_transforms() {
