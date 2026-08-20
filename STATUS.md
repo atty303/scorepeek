@@ -714,10 +714,11 @@ is outside this checkpoint.
   and exact active-catalog trie scoring. Calibrated absolute/runner-up bounds,
   complete active-catalog dictionary coverage, scroll stability calibration, temporal agreement, independent
   screen context, and accepted title semantics remain unimplemented.
-  A scorepeek-owned candidate export and its tensor contract have been verified, but outside
-  replay rejected that fine-tuned checkpoint in favor of the mapped initializer. Direct export and
-  ONNX replay of that initializer, catalog-update recognition replay, event daemon, and the integrated live
-  flow remain unvalidated. The observed 649 ms CPU process and inference time
+  A scorepeek-owned candidate export and its tensor contract were verified, but outside replay rejected
+  that fine-tuned checkpoint and ADR 0020 no longer selects the mapped initializer for runtime export.
+  Complete-corpus comparison and replay of the registered official ONNX models, catalog-update
+  recognition replay, event daemon, and the integrated live flow remain unvalidated. The observed
+  649 ms CPU process and inference time
   is a single warmed development-host measurement, not a performance gate.
 - The title-model requirements and preparation boundaries have synthetic regressions and one real
   private-artifact execution. The music-list contract has one artifact-bound real-row verification,
@@ -763,8 +764,10 @@ is outside this checkpoint.
   exact-only census, it recovered `ＰＡＳＴＥＬＩＳＭ` and `Ｘ↑Ｘ↓` with no newly incomplete song. The
   remaining five songs are `ΕΛΠΙΣ`, `〆`, `If`, `∀`, and `■□模様`. Correct and incorrect margins still
   overlap: minimum correct 0.6368393436 versus maximum incorrect 2.1667671144. This census therefore
-  establishes the new no-fine-tuning finite-corpus baseline but does not calibrate live rejection
-  thresholds or select an exported runtime graph.
+  establishes a no-fine-tuning diagnostic comparison point but does not calibrate live rejection
+  thresholds or select a runtime graph. ADR 0020 invalidates the assumption that this mapped
+  initializer should be the next runtime baseline: official ONNX recognition artifacts must be
+  measured first under the same song-identity contract.
   The 3,061 catalog-bound
   music-list labels are provisional only: the 2,611 automated associations and 450 visual
   associations do not establish accepted holdout truth, a stability threshold, or a release gate.
@@ -835,17 +838,30 @@ is outside this checkpoint.
 
 ## Next executable task
 
-Keep the corrected, non-fine-tuned initializer census at 1,114/1,119 as the current private baseline.
-Do not use the six historical fine-tuning pilots for selection and do not start another OCR training
-run. Extend the private census diagnostic just enough to record, for each incorrect crop, the expected
-song's rank and score plus a bounded top candidate list with sequence length. Use those observations
-to test whether the remaining failures arise from the raw CTC scorer's preference for one-character
-candidates. Compare only global, model-free decoder alternatives and stationary multi-frame score
-aggregation against the unchanged initializer output. A candidate may advance only when the complete
-1,119-song census preserves every currently fully recognized song and strictly grows that song set;
-title-disjoint validation/evaluation remain guards rather than the selection oracle. Do not add broad
-Unicode compatibility, case, Greek/Latin-confusable, or edit-distance folding, and do not tune live
-thresholds from this positive-only corpus. Keep the 24
+Do not continue from the mapped initializer, re-evaluate the six historical fine-tuning pilots, export
+a custom runtime graph, or start another OCR training run. Generalize the private census to consume a
+registered official ONNX recognition model with its own immutable preprocessing, dictionary, input,
+timestep, and output contract. First measure the already registered PP-OCRv6-small official ONNX over
+all 3,061 eligible stationary crops and 1,119 songs. Replace the old every-variant coverage rejection
+with a song-domain safety audit: every active song must retain an encodable sequence or an explicitly
+accepted collision-safe model-free signature, and an unrepresented song must not silently leave the
+competitive domain.
+
+Then register and measure the official ONNX PP-OCRv6 tiny/medium and PP-OCRv5 mobile/server candidates
+when their official immutable artifact, license, preprocessing, and dictionary metadata can be bound.
+Use the same crops, catalog, comparison key, song-decision rules, and complete-corpus metric while
+preserving each model's native tensor contract. Compare the unmodified official models first. Apply
+later global decoder alternatives and stationary multi-frame score aggregation uniformly across every
+registered official model whose immutable contract can run and whose song-domain safety audit can be
+satisfied; initial coverage or rank cannot exclude a model, and every contract/safety exclusion must be
+recorded in the comparison matrix. Do not tune one model or song. A candidate may advance only when the complete
+1,119-song census increases the total correctly and uniquely recognized song count. Report gained and
+lost song sets, but do not require set inclusion: a local regression does not outweigh higher global
+coverage. Wrong unique crop decisions remain failures. When correct-song coverage is equal, prefer
+fewer wrong unique crop decisions, then the official model with the smaller and simpler runtime bundle,
+then measured target latency. Title-disjoint validation/evaluation remain guards rather than the
+selection oracle. Do not add broad Unicode compatibility, case, Greek/Latin-confusable, or edit-distance
+folding, and do not tune live thresholds from this positive-only corpus. Keep the 24
 INFINITAS-blue and 299 LEGGENDARIA-purple groups out of training until their labels are established
 independently of the recognition output; evaluate any future color correction under the same
 explicit transform ID in training and replay.
@@ -853,9 +869,10 @@ Keep the 351 locked/unobservable, 438 possible right-clips, vertical-motion, sel
 and redacted-secret groups quarantined until their separate correction or completeness evidence
 exists. ADR 0018 fixes this music-list-first sequence as a low-collection-cost surrogate for the
 non-negotiable result-recording goal. Music-select live recognition needs only a calibrated stable
-state after scrolling stops; scrolling recognition is not required. After a music-select candidate
-clears the provisional split, export it through the registered Paddle/ONNX path and replay the graph
-before runtime selection. Collect result observations passively from ordinary live sessions rather
+state after scrolling stops; scrolling recognition is not required. After an official music-select
+candidate clears the provisional split, replay its already pinned official ONNX graph before runtime
+selection. Require the registered Paddle/export/parity path only if a later custom candidate is selected.
+Collect result observations passively from ordinary live sessions rather
 than requiring dedicated data-collection play. Preserve an independently reviewable session timeline
 that can enumerate result episodes even when detection, OCR, and event emission all miss them; the
 recognition path cannot be the sole evidence trigger. Split naturally accumulated result evidence by
@@ -885,7 +902,7 @@ moving route-independent ROIs.
 | M1.2 | Live acquisition and sync orchestration | complete |
 | M2 | Observed-profile private corpus, synthetic renderer, and replay tooling | complete |
 | M3 | Portal/Gamescope observed-frame profiles and calibration corpus | pending |
-| M4 | Shared canonical layout, domain normalization, OCR training/export, and parity | in progress |
+| M4 | Shared canonical layout, domain normalization, official recognizer selection, and parity; custom training/export only if justified | in progress |
 | M5 | Supported capture-profile evaluation and default selection | pending |
 | M6 | Fail-closed field recognition and cross-field validation | pending |
 | M7 | Deterministic session, versioned events, and NDJSON daemon | pending |

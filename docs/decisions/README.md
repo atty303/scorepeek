@@ -29,6 +29,9 @@ authoritative.
 - [ADR 0018: Stage title training on stationary music-list evidence](0018-stage-title-training-on-stationary-music-list-evidence.md)
 - [ADR 0019: Apply comparison keys to catalog-constrained CTC candidates](0019-apply-comparison-keys-to-ctc-candidates.md)
   supersedes ADR 0006 only for exact-only catalog candidate sequences.
+- [ADR 0020: Select an official ONNX recognizer before custom training](0020-select-official-onnx-before-custom-training.md)
+  supersedes ADR 0006 for its mandatory fine-tuning/custom-export sequence and ADR 0018 only for
+  model candidates requiring set-inclusion growth.
 
 ## Historical
 
