@@ -47,7 +47,10 @@ const TINY_BUNDLE_MANIFEST_BYTES: &[u8] =
     include_bytes!("../../../../models/manifests/pp-ocrv6-tiny-rec-onnx-bundle-v1.json");
 const TINY_BUNDLE_MANIFEST_SHA256: &str =
     "d24f1ec10098065efd24216b23b405bb2af5feabbb815bc499ba0a5735b8bfd0";
-const TINY_OUTPUT_CLASSES: usize = 6_906;
+const MEDIUM_BUNDLE_MANIFEST_BYTES: &[u8] =
+    include_bytes!("../../../../models/manifests/pp-ocrv6-medium-rec-onnx-bundle-v1.json");
+const MEDIUM_BUNDLE_MANIFEST_SHA256: &str =
+    "f794d77fb6d9860e2aadedd1ef575bd67c044b83fe2821243867b66c9a7c5abe";
 
 #[derive(Debug)]
 pub enum OnnxParityError {
@@ -183,7 +186,7 @@ impl OnnxModelManifest {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TinyBundleManifest {
+struct DynamicBundleManifest {
     schema: String,
     model_id: String,
     model_name: String,
@@ -191,13 +194,13 @@ struct TinyBundleManifest {
     source_revision: String,
     license_id: String,
     license_url: String,
-    native_contract: TinyNativeContract,
-    files: Vec<TinyBundleFile>,
+    native_contract: DynamicNativeContract,
+    files: Vec<DynamicBundleFile>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TinyNativeContract {
+struct DynamicNativeContract {
     input_layout: String,
     input_color_order: String,
     input_channels: usize,
@@ -210,54 +213,88 @@ struct TinyNativeContract {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TinyBundleFile {
+struct DynamicBundleFile {
     filename: String,
     source_url: String,
     sha256: String,
     bytes: u64,
 }
 
-impl TinyBundleManifest {
-    fn load_registered() -> Result<Self, OnnxParityError> {
-        if encode_sha256(TINY_BUNDLE_MANIFEST_BYTES) != TINY_BUNDLE_MANIFEST_SHA256 {
+impl DynamicBundleManifest {
+    fn load_registered(model_id: &str) -> Result<Self, OnnxParityError> {
+        let (bytes, digest, model_name, repository, revision, output_classes, expected_files) =
+            match model_id {
+                "pp-ocrv6-tiny-rec-onnx-v1" => (
+                    TINY_BUNDLE_MANIFEST_BYTES,
+                    TINY_BUNDLE_MANIFEST_SHA256,
+                    "PP-OCRv6_tiny_rec",
+                    "PaddlePaddle/PP-OCRv6_tiny_rec_onnx",
+                    "2612ab37152ae0a677521bae4e1e3d4fb4cf7c30",
+                    6_906,
+                    [
+                        (
+                            "inference.onnx",
+                            "9ef676d6ed3c88256a2d92c640c44f25b0c40947e111b14b8be8f594091563e6",
+                            4_462_639,
+                        ),
+                        (
+                            "inference.json",
+                            "b5b14770c7dcf092781e92f4278a2ae5f95048f08b4b8a04140e88cb2745f147",
+                            108_959,
+                        ),
+                        (
+                            "inference.yml",
+                            "66170210bad538e83fff3c4a3867e547d6bf20b50d64b20347c4b913f3034ea1",
+                            55_571,
+                        ),
+                    ],
+                ),
+                "pp-ocrv6-medium-rec-onnx-v1" => (
+                    MEDIUM_BUNDLE_MANIFEST_BYTES,
+                    MEDIUM_BUNDLE_MANIFEST_SHA256,
+                    "PP-OCRv6_medium_rec",
+                    "PaddlePaddle/PP-OCRv6_medium_rec_onnx",
+                    "50c7eacafc52fa7bcf4194e8cd08e46f8558504b",
+                    18_710,
+                    [
+                        (
+                            "inference.onnx",
+                            "9c09abf0957f7968c7586464b7397b84ad2387a0497a351af40e9acc71b673ba",
+                            76_554_979,
+                        ),
+                        (
+                            "inference.json",
+                            "0b2e25e990bd072f1bf77d59d67d508bce6c4bd44af6624e0fb27d6da2cd00e8",
+                            221_814,
+                        ),
+                        (
+                            "inference.yml",
+                            "991b700facf5b50a7de193468207d5f4255b538dde0d312ae3b7c7a9b6873129",
+                            150_580,
+                        ),
+                    ],
+                ),
+                _ => return Err(OnnxParityError::InvalidArtifact),
+            };
+        if encode_sha256(bytes) != digest {
             return Err(OnnxParityError::InvalidArtifact);
         }
-        let manifest: Self = serde_json::from_slice(TINY_BUNDLE_MANIFEST_BYTES)?;
-        let revision = "2612ab37152ae0a677521bae4e1e3d4fb4cf7c30";
-        let expected_files = [
-            (
-                "inference.onnx",
-                "9ef676d6ed3c88256a2d92c640c44f25b0c40947e111b14b8be8f594091563e6",
-                4_462_639,
-            ),
-            (
-                "inference.json",
-                "b5b14770c7dcf092781e92f4278a2ae5f95048f08b4b8a04140e88cb2745f147",
-                108_959,
-            ),
-            (
-                "inference.yml",
-                "66170210bad538e83fff3c4a3867e547d6bf20b50d64b20347c4b913f3034ea1",
-                55_571,
-            ),
-        ];
+        let manifest: Self = serde_json::from_slice(bytes)?;
         if manifest.schema != "scorepeek-ocr-onnx-model-bundle-v1"
-            || manifest.model_id != "pp-ocrv6-tiny-rec-onnx-v1"
-            || manifest.model_name != "PP-OCRv6_tiny_rec"
-            || manifest.source_repository != "PaddlePaddle/PP-OCRv6_tiny_rec_onnx"
+            || manifest.model_id != model_id
+            || manifest.model_name != model_name
+            || manifest.source_repository != repository
             || manifest.source_revision != revision
             || manifest.license_id != "Apache-2.0"
             || manifest.license_url
-                != format!(
-                    "https://huggingface.co/PaddlePaddle/PP-OCRv6_tiny_rec_onnx/blob/{revision}/README.md"
-                )
+                != format!("https://huggingface.co/{repository}/blob/{revision}/README.md")
             || manifest.native_contract.input_layout != "NCHW"
             || manifest.native_contract.input_color_order != "BGR"
             || manifest.native_contract.input_channels != 3
             || manifest.native_contract.input_height != DYNAMIC_TITLE_INPUT_HEIGHT
             || manifest.native_contract.preprocessor_minimum_width != 320
             || manifest.native_contract.preprocessor_maximum_width != 3_200
-            || manifest.native_contract.output_classes != TINY_OUTPUT_CLASSES
+            || manifest.native_contract.output_classes != output_classes
             || manifest.native_contract.ctc_blank_token != 0
             || manifest.files.len() != expected_files.len()
         {
@@ -268,9 +305,7 @@ impl TinyBundleManifest {
                 || file.sha256 != sha256
                 || file.bytes != bytes
                 || file.source_url
-                    != format!(
-                        "https://huggingface.co/PaddlePaddle/PP-OCRv6_tiny_rec_onnx/resolve/{revision}/{filename}"
-                    )
+                    != format!("https://huggingface.co/{repository}/resolve/{revision}/{filename}")
             {
                 return Err(OnnxParityError::InvalidArtifact);
             }
@@ -785,7 +820,7 @@ pub fn decode_official_onnx_crops(
     })
 }
 
-/// Runs the registered tiny recognizer over digest-bound strict P6 crops without retaining tensors.
+/// Runs a registered dynamic recognizer over digest-bound strict P6 crops without retaining tensors.
 ///
 /// Each crop is preprocessed and executed before the next crop is read. This keeps the dynamic
 /// width contract bounded even for the maximum request row count.
@@ -793,11 +828,13 @@ pub fn decode_official_onnx_crops(
 /// # Errors
 /// Returns an error for incomplete registered bundle bytes, malformed crop evidence, or an
 /// unexpected dynamic ONNX tensor contract.
-pub fn decode_dynamic_tiny_onnx_crops(
+pub fn decode_dynamic_official_onnx_crops(
+    model_id: &str,
     bundle_path: &Path,
     request_path: &Path,
 ) -> Result<DynamicOfficialOnnxDecodeSummary, OnnxParityError> {
-    let manifest = TinyBundleManifest::load_registered()?;
+    let manifest = DynamicBundleManifest::load_registered(model_id)?;
+    let output_classes = manifest.native_contract.output_classes;
     let model_bytes = manifest.verified_file(bundle_path, "inference.onnx")?;
     manifest.verified_file(bundle_path, "inference.json")?;
     manifest.verified_file(bundle_path, "inference.yml")?;
@@ -809,7 +846,7 @@ pub fn decode_dynamic_tiny_onnx_crops(
     let dictionary = load_dictionary_contract(
         &bundle_path.join("inference.yml"),
         &dictionary_file.sha256,
-        TINY_OUTPUT_CLASSES,
+        output_classes,
     )?;
     let model_file = manifest
         .files
@@ -860,13 +897,13 @@ pub fn decode_dynamic_tiny_onnx_crops(
         if *batch != 1
             || timesteps == 0
             || usize::try_from(*classes).map_err(|_| OnnxParityError::InvalidArtifact)?
-                != TINY_OUTPUT_CLASSES
-            || probabilities.len() != timesteps * TINY_OUTPUT_CLASSES
+                != output_classes
+            || probabilities.len() != timesteps * output_classes
         {
             return Err(OnnxParityError::InvalidArtifact);
         }
-        validate_argmax_probability_rows(probabilities, TINY_OUTPUT_CLASSES)?;
-        let (_, collapsed) = argmax_tokens(probabilities, timesteps, TINY_OUTPUT_CLASSES)?;
+        validate_argmax_probability_rows(probabilities, output_classes)?;
+        let (_, collapsed) = argmax_tokens(probabilities, timesteps, output_classes)?;
         let mut text = String::new();
         for token in collapsed {
             text.push_str(
@@ -1268,15 +1305,24 @@ fn encode_f32_sha256(values: &[f32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        TinyBundleManifest, argmax_tokens, ctc_log_probability, strict_p6,
+        DynamicBundleManifest, argmax_tokens, ctc_log_probability, strict_p6,
         valid_presentation_transform_id, validate_argmax_probability_rows,
     };
 
     #[test]
     fn registered_tiny_bundle_manifest_is_exact() {
-        let manifest = TinyBundleManifest::load_registered().unwrap();
+        let manifest = DynamicBundleManifest::load_registered("pp-ocrv6-tiny-rec-onnx-v1").unwrap();
         assert_eq!(manifest.model_id, "pp-ocrv6-tiny-rec-onnx-v1");
         assert_eq!(manifest.native_contract.output_classes, 6_906);
+        assert_eq!(manifest.files.len(), 3);
+    }
+
+    #[test]
+    fn registered_medium_bundle_manifest_is_exact() {
+        let manifest =
+            DynamicBundleManifest::load_registered("pp-ocrv6-medium-rec-onnx-v1").unwrap();
+        assert_eq!(manifest.model_id, "pp-ocrv6-medium-rec-onnx-v1");
+        assert_eq!(manifest.native_contract.output_classes, 18_710);
         assert_eq!(manifest.files.len(), 3);
     }
 

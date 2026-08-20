@@ -20,6 +20,7 @@ from typing import Any
 
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
+MAX_ONNX_BUNDLE_FILE_BYTES = 128 * 1024 * 1024
 MAX_ONNX_BUNDLE_COUNT = 8
 MAX_ONNX_BUNDLE_BYTES = 512 * 1024 * 1024
 MAX_ONNX_BUNDLE_OBJECT_BYTES = 192 * 1024 * 1024
@@ -48,7 +49,56 @@ REGISTERED_ONNX_BUNDLE_MANIFESTS = {
         / "manifests"
         / "pp-ocrv6-tiny-rec-onnx-bundle-v1.json",
         "d24f1ec10098065efd24216b23b405bb2af5feabbb815bc499ba0a5735b8bfd0",
-    )
+    ),
+    "pp-ocrv6-medium-rec-onnx-v1": (
+        PROJECT_ROOT
+        / "models"
+        / "manifests"
+        / "pp-ocrv6-medium-rec-onnx-bundle-v1.json",
+        "f794d77fb6d9860e2aadedd1ef575bd67c044b83fe2821243867b66c9a7c5abe",
+    ),
+}
+REGISTERED_ONNX_BUNDLE_CONTRACTS = {
+    "pp-ocrv6-tiny-rec-onnx-v1": {
+        "model_name": "PP-OCRv6_tiny_rec",
+        "repository": "PaddlePaddle/PP-OCRv6_tiny_rec_onnx",
+        "revision": "2612ab37152ae0a677521bae4e1e3d4fb4cf7c30",
+        "output_classes": 6906,
+        "files": {
+            "inference.onnx": (
+                "9ef676d6ed3c88256a2d92c640c44f25b0c40947e111b14b8be8f594091563e6",
+                4_462_639,
+            ),
+            "inference.json": (
+                "b5b14770c7dcf092781e92f4278a2ae5f95048f08b4b8a04140e88cb2745f147",
+                108_959,
+            ),
+            "inference.yml": (
+                "66170210bad538e83fff3c4a3867e547d6bf20b50d64b20347c4b913f3034ea1",
+                55_571,
+            ),
+        },
+    },
+    "pp-ocrv6-medium-rec-onnx-v1": {
+        "model_name": "PP-OCRv6_medium_rec",
+        "repository": "PaddlePaddle/PP-OCRv6_medium_rec_onnx",
+        "revision": "50c7eacafc52fa7bcf4194e8cd08e46f8558504b",
+        "output_classes": 18710,
+        "files": {
+            "inference.onnx": (
+                "9c09abf0957f7968c7586464b7397b84ad2387a0497a351af40e9acc71b673ba",
+                76_554_979,
+            ),
+            "inference.json": (
+                "0b2e25e990bd072f1bf77d59d67d508bce6c4bd44af6624e0fb27d6da2cd00e8",
+                221_814,
+            ),
+            "inference.yml": (
+                "991b700facf5b50a7de193468207d5f4255b538dde0d312ae3b7c7a9b6873129",
+                150_580,
+            ),
+        },
+    },
 }
 
 
@@ -307,7 +357,7 @@ def _onnx_bundle_store_usage(bundles: Path) -> tuple[int, int]:
         object_bytes = 0
         file_count = 0
         for item in entry.iterdir():
-            size = _regular_size(item, MAX_ARCHIVE_BYTES)
+            size = _regular_size(item, MAX_ONNX_BUNDLE_FILE_BYTES)
             file_count += 1
             object_bytes += size
             if file_count > 8 or object_bytes > MAX_ONNX_BUNDLE_OBJECT_BYTES:
@@ -496,6 +546,7 @@ def load_registered_onnx_bundle(model_id: str) -> OnnxBundleSource:
     if registration is None:
         raise ModelStoreError("ONNX bundle model ID is not registered")
     path, expected_manifest_sha256 = registration
+    expected_contract = REGISTERED_ONNX_BUNDLE_CONTRACTS[model_id]
     data = _read_regular_bytes(path, MAX_MANIFEST_BYTES)
     if hashlib.sha256(data).hexdigest() != expected_manifest_sha256:
         raise ModelStoreError("registered ONNX bundle manifest digest mismatch")
@@ -518,8 +569,8 @@ def load_registered_onnx_bundle(model_id: str) -> OnnxBundleSource:
         },
         "ONNX bundle manifest",
     )
-    revision = "2612ab37152ae0a677521bae4e1e3d4fb4cf7c30"
-    repository = "PaddlePaddle/PP-OCRv6_tiny_rec_onnx"
+    revision = expected_contract["revision"]
+    repository = expected_contract["repository"]
     contract_raw = _exact_object(
         raw["native_contract"],
         {
@@ -537,7 +588,7 @@ def load_registered_onnx_bundle(model_id: str) -> OnnxBundleSource:
     if (
         raw["schema"] != "scorepeek-ocr-onnx-model-bundle-v1"
         or raw["model_id"] != model_id
-        or raw["model_name"] != "PP-OCRv6_tiny_rec"
+        or raw["model_name"] != expected_contract["model_name"]
         or raw["source_repository"] != repository
         or raw["source_revision"] != revision
         or raw["license_id"] != "Apache-2.0"
@@ -551,27 +602,14 @@ def load_registered_onnx_bundle(model_id: str) -> OnnxBundleSource:
             "input_height": 48,
             "preprocessor_minimum_width": 320,
             "preprocessor_maximum_width": 3200,
-            "output_classes": 6906,
+            "output_classes": expected_contract["output_classes"],
             "ctc_blank_token": 0,
         }
         or not isinstance(raw["files"], list)
         or len(raw["files"]) != 3
     ):
         raise ModelStoreError("ONNX bundle manifest values are invalid")
-    expected_files = {
-        "inference.onnx": (
-            "9ef676d6ed3c88256a2d92c640c44f25b0c40947e111b14b8be8f594091563e6",
-            4_462_639,
-        ),
-        "inference.json": (
-            "b5b14770c7dcf092781e92f4278a2ae5f95048f08b4b8a04140e88cb2745f147",
-            108_959,
-        ),
-        "inference.yml": (
-            "66170210bad538e83fff3c4a3867e547d6bf20b50d64b20347c4b913f3034ea1",
-            55_571,
-        ),
-    }
+    expected_files = expected_contract["files"]
     files = []
     for entry in raw["files"]:
         entry = _exact_object(
@@ -586,7 +624,7 @@ def load_registered_onnx_bundle(model_id: str) -> OnnxBundleSource:
             or Path(entry["filename"]).name != entry["filename"]
             or entry["source_url"] != expected_url
             or (entry["sha256"], entry["bytes"]) != expected
-            or entry["bytes"] > MAX_ARCHIVE_BYTES
+            or entry["bytes"] > MAX_ONNX_BUNDLE_FILE_BYTES
         ):
             raise ModelStoreError("ONNX bundle file values are invalid")
         files.append(OnnxBundleFile(**entry))

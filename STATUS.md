@@ -868,8 +868,7 @@ is outside this checkpoint.
   `940c7287428285ace95de1c1da9cecb182897fba3139431186b0a1005b7018f1` then produced input tensor
   SHA-256 `dbf5b53528c0f5176dd1a8c223b5dd34d4a758d6dc977471cfd9266cab5ddb14`, width 506, 63 output
   timesteps, and open text `smile`, matching its existing provisional label. This establishes the
-  registered native execution contract for one crop only; no tiny complete-corpus accuracy,
-  song-identity result, or model selection has yet been measured.
+  registered native execution contract; the complete tiny census is recorded below.
   The 3,061 catalog-bound
   music-list labels are provisional only: the 2,611 automated associations and 450 visual
   associations do not establish accepted holdout truth, a stability threshold, or a release gate.
@@ -969,6 +968,28 @@ digest. Decoder cancellation, timeout, output bounds, and unexpected exceptions 
 TERM/KILL/wait cleanup for the complete child process group; timeout and other low-cardinality
 failure classes remain distinguishable in the diagnostic snapshot.
 
+The official `PP-OCRv6_medium_rec` ONNX candidate is now registered and measured without selecting
+it. Manifest SHA-256 `f794d77fb6d9860e2aadedd1ef575bd67c044b83fe2821243867b66c9a7c5abe`
+binds official repository revision `50c7eacafc52fa7bcf4194e8cd08e46f8558504b`, Apache-2.0 provenance,
+the 76,554,979-byte graph, inference JSON, inference YAML/dictionary, and the native NCHW BGR
+3x48 dynamic-width, 18,710-class CTC contract. The existing bounded bundle store acquired and
+verified it. A one-crop native probe reproduced the same width-506 tensor SHA-256 and 63 timesteps
+as tiny and decoded `smile`.
+
+The complete census then ran all 3,061 stationary crops and 1,119 songs against the unchanged 1,879
+catalog candidates. Its private artifact SHA-256 is
+`1d473457e2fea6cd176db6301cb3af23e6404ce99ad7e8c7f2b487522329dd88`; reusable observations are
+SHA-256 `dfd47ad78605cc922cab79ccf4c7b5aac2f7000efa94a1b5432ed5cd0692ecd9`. Exact comparison-key
+search fully recognized 1,042 songs with three wrong unique and 153 unknown/tied crop decisions.
+Absolute Levenshtein reached 1,110 songs with three wrong unique and 20 unknown/tied decisions.
+Normalized Levenshtein reached 1,111 songs but increased wrong unique decisions to fourteen, with
+six unknown/tied decisions. All three exact and absolute-distance wrong unique decisions are the
+three `∀` crops. The normalized strategy additionally misidentifies crops from `〆`, `OOO`, `3V0`,
+and `≡+≡`; its maximum incorrect margin is 0.5, so its one-song coverage gain does not establish a
+safe live threshold or preferred decoder. Replaying the saved observations without ONNX produced
+artifact SHA-256 `17c7cec8a89c04311cd5194445106d0283477b8dff518fe26e116260669ef895`
+with byte-identical strategy metrics, incomplete-song records, and gain/loss sets.
+
 ## Next executable task
 
 Do not continue from the mapped initializer, re-evaluate the six historical fine-tuning pilots, export
@@ -981,8 +1002,8 @@ recognition path to handle every song. A unified path and bounded multiple-path 
 be compared by global song uniqueness, wrong unique decisions, runtime cost, and implementation
 complexity; that is a selection criterion, not a conclusion from the current 26-crop observation.
 
-Tiny is measured but not selected. Register and measure the remaining official PP-OCRv6 medium and PP-OCRv5 mobile/server
-candidates under the same complete-census contract; remeasure small with the corrected dynamic
+Tiny and medium are measured but neither is selected. Register and measure the remaining official
+PP-OCRv5 mobile/server candidates under the same complete-census contract; remeasure small with the corrected dynamic
 preprocessor. After every runnable official model has a native baseline, apply any
 global presentation, alias, calibration, or stationary aggregation candidate uniformly to all of
 them. Do not start fine-tuning before those two phases are measured.

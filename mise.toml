@@ -425,12 +425,12 @@ set -euo pipefail
 exec uv run --locked --no-dev python -m scorepeek_ocr.official_census "$@"
 '''
 
-[tasks."ocr:official-onnx:decode-tiny"]
-description = "Run the registered dynamic tiny ONNX bundle over digest-bound crops"
+[tasks."ocr:official-onnx:decode-dynamic"]
+description = "Run a registered dynamic ONNX bundle over digest-bound crops"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek -- recognition title-official-tiny-onnx-decode "$@"
+exec cargo run --locked --quiet -p scorepeek -- recognition title-official-dynamic-onnx-decode "$@"
 '''
 
 [tasks."ocr:short-title:probe"]

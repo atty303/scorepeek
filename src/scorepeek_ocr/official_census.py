@@ -122,8 +122,8 @@ def _small_contract() -> OfficialModelContract:
     )
 
 
-def _tiny_contract() -> OfficialModelContract:
-    source = load_registered_onnx_bundle("pp-ocrv6-tiny-rec-onnx-v1")
+def _bundle_contract(model_id: str) -> OfficialModelContract:
+    source = load_registered_onnx_bundle(model_id)
     files = {entry.filename: entry.sha256 for entry in source.files}
     return OfficialModelContract(
         source.model_id,
@@ -138,10 +138,12 @@ def _registered_contract(model_id: str) -> OfficialModelContract:
     small = _small_contract()
     if model_id == small.model_id:
         return small
-    tiny = _tiny_contract()
-    if model_id == tiny.model_id:
-        return tiny
-    raise OfficialCensusError("saved observation model ID is not registered")
+    try:
+        return _bundle_contract(model_id)
+    except ModelStoreError as error:
+        raise OfficialCensusError(
+            "saved observation model ID is not registered"
+        ) from error
 
 
 def _sha256(data: bytes) -> str:
@@ -824,14 +826,15 @@ def _decode_rows(
     model: Path | None,
     dictionary: Path | None,
     bundle: Path | None,
+    bundle_model_id: str | None,
     recorder: _DiagnosticRecorder,
 ) -> dict[str, Any]:
     if bundle is not None:
-        if model is not None or dictionary is not None:
+        if model is not None or dictionary is not None or bundle_model_id is None:
             raise OfficialCensusError("bundle cannot be combined with model arguments")
-        contract = _tiny_contract()
+        contract = _bundle_contract(bundle_model_id)
     else:
-        if model is None or dictionary is None:
+        if model is None or dictionary is None or bundle_model_id is not None:
             raise OfficialCensusError("model and dictionary are required for ONNX inference")
         contract = _small_contract()
     recorder.update(operation="decode_batches", model_id=contract.model_id)
@@ -870,7 +873,9 @@ def _decode_rows(
             if bundle is not None:
                 command.extend(
                     [
-                        "title-official-tiny-onnx-decode",
+                        "title-official-dynamic-onnx-decode",
+                        "--model-id",
+                        contract.model_id,
                         "--bundle",
                         str(bundle),
                         "--request",
@@ -1115,6 +1120,7 @@ def _run_census(
     model: Path | None,
     dictionary: Path | None,
     bundle: Path | None,
+    bundle_model_id: str | None,
     observations: Path | None,
     observations_sha256: str | None,
     output: Path,
@@ -1176,6 +1182,7 @@ def _run_census(
                 or model
                 or dictionary
                 or bundle
+                or bundle_model_id
             ):
                 raise OfficialCensusError(
                     "saved observations require their path and digest without model arguments"
@@ -1192,7 +1199,9 @@ def _run_census(
                 completed_rows=len(rows), model_id=decoded["model_id"]
             )
         else:
-            decoded = _decode_rows(rows, model, dictionary, bundle, recorder)
+            decoded = _decode_rows(
+                rows, model, dictionary, bundle, bundle_model_id, recorder
+            )
     except BaseException as error:
         _record_failure(recorder, error)
         raise
@@ -1314,6 +1323,7 @@ def run(
     output: Path,
     diagnostic_output: Path | None = None,
     observation_output: Path | None = None,
+    bundle_model_id: str | None = None,
 ) -> dict[str, Any]:
     recorder = _DiagnosticRecorder(diagnostic_output, 0)
     try:
@@ -1327,6 +1337,7 @@ def run(
             model,
             dictionary,
             bundle,
+            bundle_model_id,
             observations,
             observations_sha256,
             output,
@@ -1348,6 +1359,7 @@ def main() -> None:
     parser.add_argument("--model", type=Path)
     parser.add_argument("--dictionary", type=Path)
     parser.add_argument("--bundle", type=Path)
+    parser.add_argument("--bundle-model-id")
     parser.add_argument("--observations", type=Path)
     parser.add_argument("--observations-sha256")
     parser.add_argument("--output", type=Path, required=True)
@@ -1381,6 +1393,7 @@ def main() -> None:
             arguments.output,
             diagnostic_output,
             observation_output,
+            arguments.bundle_model_id,
         )
     except (
         OSError,

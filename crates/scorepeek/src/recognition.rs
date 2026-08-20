@@ -27,7 +27,7 @@ pub use title_decoder::{
 pub use title_onnx::{
     DynamicOfficialOnnxDecodeSummary, ExportContractParityRequest, ExportContractParitySummary,
     OfficialOnnxDecodeSummary, OnnxParityError, OnnxParitySummary, OnnxTitleDiagnosticRequest,
-    compare_export_contract, compare_paddle_onnx, decode_dynamic_tiny_onnx_crops,
+    compare_export_contract, compare_paddle_onnx, decode_dynamic_official_onnx_crops,
     decode_official_onnx_crops,
 };
 pub use title_preprocessor::{TITLE_PREPROCESSOR_ID, preprocess_title_crop};

@@ -217,9 +217,10 @@ explicitly named, digest-bound private Paddle checkpoints and scores all train, 
 evaluation crops against the same complete current-catalog candidate trie. Its create-only private
 artifact reports total and per-split fully recognized song counts, every incomplete song, each
 failing crop digest, the unique top song ID (or null for a tie), and the runner-up margin. Model selection for the
-current 1,119-song corpus uses strict growth of the complete-corpus fully recognized song set: an
-accepted candidate may change text or crop decisions inside an already incomplete song, but must not
-lose a previously fully recognized song. Validation and evaluation remain title-disjoint diagnostics
+current 1,119-song corpus prioritizes the global count of fully recognized songs across the complete
+corpus. Report gained and lost song sets, but do not require set inclusion: a local regression can be
+accepted when global correct unique coverage increases. Wrong unique crop decisions remain failures,
+and ties remain unknown. Validation and evaluation remain title-disjoint diagnostics
 for generalization and overfitting; neither substitutes for complete-corpus coverage. Census is an
 offline development measurement and does not calibrate the live absolute-score or runner-up-margin
 rejection thresholds.
@@ -227,8 +228,9 @@ rejection thresholds.
 `ocr:official-onnx:census` applies the same complete-corpus song-identity measurement to pinned
 official ONNX recognizers without removing or rewriting catalog titles to fit a model dictionary.
 The legacy registered small graph uses explicit `--model` and `--dictionary` files; a registered
-multi-file candidate such as `pp-ocrv6-tiny-rec-onnx-v1` uses its verified `--bundle` directory and
-the model's registered native dynamic preprocessor. Inference is split into 128-crop process
+multi-file candidate such as `pp-ocrv6-tiny-rec-onnx-v1` or
+`pp-ocrv6-medium-rec-onnx-v1` uses its verified `--bundle` directory, explicit registered
+`--bundle-model-id`, and the model's registered native dynamic preprocessor. Inference is split into 128-crop process
 batches, while the Rust decoder retains only one crop's input and output tensors at a time. Each
 batch response is bound to its request digest and exact model, dictionary, preprocessor, width,
 timestep, and input-tensor digests. The census publishes reusable open-text observations before
@@ -340,11 +342,12 @@ an explicit offline acquisition step; the Rust command never downloads a
 model.
 
 Official-model comparisons use a separate bundle registry so they do not alter
-the accepted small-model parity object. The first registered candidate is
-`pp-ocrv6-tiny-rec-onnx-v1`; its ONNX graph, inference JSON, inference YAML and
-native input/output contract are revision- and digest-bound together.
-`ocr:official-model:fetch -- --model-id pp-ocrv6-tiny-rec-onnx-v1` publishes or
-re-verifies that complete bundle below the private model store. Bundle
+the accepted small-model parity object. The registered candidates are
+`pp-ocrv6-tiny-rec-onnx-v1` and `pp-ocrv6-medium-rec-onnx-v1`; each candidate's
+ONNX graph, inference JSON, inference YAML and native input/output contract are
+revision- and digest-bound together. For example,
+`ocr:official-model:fetch -- --model-id pp-ocrv6-medium-rec-onnx-v1` publishes
+or re-verifies the complete medium bundle below the private model store. Bundle
 publication holds a writer lock, removes only marker-owned interrupted staging,
 fsyncs files and directory transitions, and permits at most eight bundles and
 512 MiB total (192 MiB per bundle). An already present identical bundle remains

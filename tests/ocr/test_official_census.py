@@ -361,17 +361,20 @@ class OfficialCensusTests(unittest.TestCase):
             "output_timesteps": [63],
             "decoded_text": ["CAT"],
         }
-        from scorepeek_ocr.official_census import _tiny_contract
+        from scorepeek_ocr.official_census import _bundle_contract
 
         validated = _validate_decoded_response(
-            response, 1, _tiny_contract(), "1" * 64
+            response,
+            1,
+            _bundle_contract("pp-ocrv6-tiny-rec-onnx-v1"),
+            "1" * 64,
         )
         self.assertEqual(validated["decoded_text"], ["CAT"])
         with self.assertRaises(OfficialCensusError):
             _validate_decoded_response(
                 {**response, "request_sha256": "3" * 64},
                 1,
-                _tiny_contract(),
+                _bundle_contract("pp-ocrv6-tiny-rec-onnx-v1"),
                 "1" * 64,
             )
 
@@ -408,7 +411,12 @@ class OfficialCensusTests(unittest.TestCase):
                 "scorepeek_ocr.official_census._run_bounded", side_effect=decode
             ) as bounded:
                 result = _decode_rows(
-                    rows, None, None, Path(temporary) / "bundle", recorder
+                    rows,
+                    None,
+                    None,
+                    Path(temporary) / "bundle",
+                    "pp-ocrv6-tiny-rec-onnx-v1",
+                    recorder,
                 )
             self.assertEqual(bounded.call_count, 2)
             self.assertEqual(result["decoded_text"], ["CAT"] * 129)
