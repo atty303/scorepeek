@@ -425,6 +425,14 @@ set -euo pipefail
 exec uv run --locked --no-dev python -m scorepeek_ocr.official_census "$@"
 '''
 
+[tasks."ocr:official-onnx:residual-matrix"]
+description = "Cross-tabulate two saved official-model censuses without ONNX inference"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.official_residual_matrix "$@"
+'''
+
 [tasks."ocr:official-onnx:decode-dynamic"]
 description = "Run a registered dynamic ONNX bundle over digest-bound crops"
 run = '''

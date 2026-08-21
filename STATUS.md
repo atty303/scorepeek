@@ -1066,6 +1066,19 @@ dynamic small observations. The same failed replay oracle then succeeded. Replay
 strategy metrics, incomplete-song records, and gain/loss sets, and republishes the same observation
 SHA-256.
 
+A deterministic saved-observation residual matrix now compares the corrected small and medium
+normalized-distance decisions without another ONNX run. The create-only private artifact SHA-256 is
+`68f532af6fe38668a5587211ba525782554fec17864dc75905a3fbd5762ff3ca`; it binds both census and
+observation digests, the common 3,061-crop/1,119-song/full-catalog domain, and exact crop order. The
+models agree on 3,036 correct crop decisions. Small has 17 unknown/tied decisions and medium has six;
+their union is 19 crops, but no crop in that union has empty open text from both models. Four crops
+remain unknown/tied under both normalized searches: two `I` crops with small `""` and medium `"1"`,
+one `〆` crop with small `""` and medium `"a"`, and one `ΕΛΠΙΣ` crop for which both emit `"EANIΣ"`.
+Thus the small/medium pair has zero signal-less unknown crops under the measured open-text contract;
+the four shared unknown decisions are catalog-search ties, not absence of recognizer output. An
+explicit per-crop ground-truth oracle over the two existing decisions would fully recognize 1,113
+songs, two more than medium alone, but is diagnostic only and is not an implementable runtime policy.
+
 ## Next executable task
 
 Do not continue from the mapped initializer, re-evaluate the six historical fine-tuning pilots, export
@@ -1079,10 +1092,12 @@ be compared by global song uniqueness, wrong unique decisions, runtime cost, and
 complexity; that is a selection criterion, not a conclusion from the current 26-crop observation.
 
 Small, tiny, medium, v5 mobile, and v5 server now have corrected native baselines, but none is selected
-or removed from phase two. Build a cross-model residual matrix from the saved observations without
-running ONNX again, then define the first global model-free decoder candidate from that evidence and
-apply it uniformly to every runnable model. Preserve song-level gain/loss sets and wrong unique crop
-decisions for each model. Do not start fine-tuning before the global decoder and stationary
+or removed from phase two. The small/medium residual matrix has closed the signal-less-unknown question:
+do not rerun ONNX or add a specialist OCR route for those 19 crops. Define the first global model-free
+decoder candidate from the four shared ties and the remaining cross-model residuals, then apply it
+uniformly to every runnable model's saved observations. Preserve song-level gain/loss sets and wrong
+unique crop decisions for each model. Do not mistake non-empty text for a correct decision, use the
+ground-truth oracle as a runtime policy, or start fine-tuning before the global decoder and stationary
 aggregation phase is measured.
 
 Selection requires the same complete 3,061-crop, 1,119-song census and full competing catalog domain.
