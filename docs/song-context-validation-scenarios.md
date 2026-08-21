@@ -66,10 +66,51 @@ observer does not own mode and never rewrites earlier observations.
 ## Replay use
 
 At least one retained private recording contains an ordinary play session from
-launch onward. The next validation slice must inspect that recording and report
-the observed composition before translating it into private labels or a
-committed synthetic contract. Real frames, complete labels, song strings, and
-recording paths remain outside the repository.
+launch onward. Its observed composition is reported here before the projection
+into a private label and committed synthetic contract. Real frames, complete
+labels, song strings, and recording paths remain outside the repository.
+
+That inspection is now complete for one 458.3-second FFV1 recording. Its media
+probe indexes 27,499 contiguous decode positions from source PTS 0 through
+458,300 ms. PTS is strictly increasing with a maximum adjacent delta of 17 ms,
+so the retained packet index exposes no recording coverage gap. Visual scene
+composition was sampled every five seconds. The 145–190-second interval was
+additionally sampled every 250 ms to distinguish a direct replay from a short
+intervening selection. Scene boundaries below therefore remain sample-bracketed
+rather than frame-exact.
+
+| Source PTS | Recording observation | Song-context projection |
+| --- | --- | --- |
+| 0–50 s | black, launch/loading, warning, publisher splash, then title | clear at the observed title |
+| 60–90 s | play-style, player-entry, loading, then mode selection | preserve while empty |
+| 105–115 s | stable selection for opaque song A | set A |
+| 120–145 s | transition, gameplay, failure transition, result A | preserve; resolve result against A |
+| 145–148.5 s | result A | resolve against A without consuming context |
+| 148.75–151.75 s | result-to-selection transition | preserve A |
+| 152–154.25 s | short stable selection for A | replace with A |
+| 154.5–159.5 s | play intro and transition | preserve A |
+| 159.75–190 s | gameplay A, failure transition, then result A | preserve; resolve the second result against A |
+| 195–235 s | transition back to selection A, with settings overlays | replace with A; overlays preserve |
+| 240–280 s | selection changes to opaque song B, then menu/settings overlays and stable B | replace with B; overlays preserve |
+| 285–425 s | transition, gameplay B, then result B | preserve; resolve result against B |
+| 430–440 s | transition, music-selection scene without a confirmed stable song, then game-ended screen | preserve through the unconfirmed scene; clear on session end |
+| 445–458.3 s | post-session black | remain empty |
+
+This recording confirms a non-vacuous session-end clear, but it does not
+confirm result-to-gameplay replay without an intervening selection. The dense
+interval contains a short music-selection scene that five-second sampling alone
+would miss. It also does not contain a gameplay restart without result, dan
+play, a return to title after selection, or abrupt termination. Those
+operator-supplied cases remain required validation material but are not
+recording-derived facts.
+
+The provisional private replay label is bound to the immutable recording,
+probe, and capture profile and is marked
+`agent_observed_pending_operator_review`. Its SHA-256 is
+`cc2dd0a95d2874e9c775311af156aa14ff9da995b71f0fcab3dbdc401970a7e1`.
+The committed value-free projection is
+`crates/scorepeek/src/song-context-conformance-v1.json`; it contains opaque song
+tokens and no recording identity, timestamp, path, player data, or game string.
 
 The replay scenarios must demonstrate only these context properties:
 

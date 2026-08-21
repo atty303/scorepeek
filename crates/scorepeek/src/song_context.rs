@@ -155,9 +155,194 @@ fn unique_result<S: Clone + Ord>(result: &SongCandidates<S>) -> Option<Contextua
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
+
+    const RECORDING_DERIVED_CONFORMANCE: &str = include_str!("song-context-conformance-v1.json");
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ConformanceDocument {
+        schema: String,
+        origin: String,
+        steps: Vec<ConformanceStep>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+    enum ConformanceStep {
+        StableSelection {
+            candidates: Vec<String>,
+            expected_change: ExpectedChange,
+        },
+        Preserve {
+            scene: String,
+            expected_change: ExpectedChange,
+        },
+        Clear {
+            reason: ConformanceClearReason,
+            expected_change: ExpectedChange,
+        },
+        ResolveResult {
+            candidates: Vec<String>,
+            expected_decision: ExpectedDecision,
+        },
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum ExpectedChange {
+        Replaced,
+        Preserved,
+        Cleared,
+        AlreadyEmpty,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum ConformanceClearReason {
+        TitleObserved,
+        SessionEnded,
+        CoverageGap,
+        RecognitionBindingChanged,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+    enum ExpectedDecision {
+        Accepted {
+            song_id: String,
+            evidence: ExpectedEvidence,
+        },
+        Unknown {
+            reason: ExpectedUnknownReason,
+        },
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum ExpectedEvidence {
+        ResultOnly,
+        ResultAndStableSelection,
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum ExpectedUnknownReason {
+        AmbiguousResult,
+        SelectionConflict,
+    }
 
     fn candidates(values: &[u8]) -> SongCandidates<u8> {
         SongCandidates::new(values.iter().copied()).unwrap()
+    }
+
+    fn string_candidates(values: Vec<String>) -> SongCandidates<String> {
+        SongCandidates::new(values).unwrap()
+    }
+
+    #[test]
+    fn recording_derived_standard_session_conforms_without_attempt_state() {
+        let document: ConformanceDocument =
+            serde_json::from_str(RECORDING_DERIVED_CONFORMANCE).unwrap();
+        assert_eq!(document.schema, "scorepeek-song-context-conformance-v1");
+        assert_eq!(
+            document.origin,
+            "recording_observed_ordinary_standard_session"
+        );
+
+        let mut context = SongContext::new();
+        for step in document.steps {
+            match step {
+                ConformanceStep::StableSelection {
+                    candidates,
+                    expected_change,
+                } => {
+                    let actual = context.observe(SongContextObservation::StableSelection(
+                        string_candidates(candidates),
+                    ));
+                    assert_eq!(actual, expected_change.into());
+                }
+                ConformanceStep::Preserve {
+                    scene,
+                    expected_change,
+                } => {
+                    assert!(!scene.is_empty());
+                    let actual = context.observe(SongContextObservation::Preserve);
+                    assert_eq!(actual, expected_change.into());
+                }
+                ConformanceStep::Clear {
+                    reason,
+                    expected_change,
+                } => {
+                    let actual = context.observe(SongContextObservation::Clear(reason.into()));
+                    assert_eq!(actual, expected_change.into());
+                }
+                ConformanceStep::ResolveResult {
+                    candidates,
+                    expected_decision,
+                } => {
+                    let actual = context.resolve_result(&string_candidates(candidates));
+                    assert_eq!(actual, expected_decision.into());
+                }
+            }
+        }
+        assert_eq!(context.stable_selection(), None);
+    }
+
+    impl From<ExpectedChange> for SongContextChange {
+        fn from(value: ExpectedChange) -> Self {
+            match value {
+                ExpectedChange::Replaced => Self::Replaced,
+                ExpectedChange::Preserved => Self::Preserved,
+                ExpectedChange::Cleared => Self::Cleared,
+                ExpectedChange::AlreadyEmpty => Self::AlreadyEmpty,
+            }
+        }
+    }
+
+    impl From<ConformanceClearReason> for SongContextClearReason {
+        fn from(value: ConformanceClearReason) -> Self {
+            match value {
+                ConformanceClearReason::TitleObserved => Self::TitleObserved,
+                ConformanceClearReason::SessionEnded => Self::SessionEnded,
+                ConformanceClearReason::CoverageGap => Self::CoverageGap,
+                ConformanceClearReason::RecognitionBindingChanged => {
+                    Self::RecognitionBindingChanged
+                }
+            }
+        }
+    }
+
+    impl From<ExpectedDecision> for ContextualSongDecision<String> {
+        fn from(value: ExpectedDecision) -> Self {
+            match value {
+                ExpectedDecision::Accepted { song_id, evidence } => Self::Accepted {
+                    song_id,
+                    evidence: evidence.into(),
+                },
+                ExpectedDecision::Unknown { reason } => Self::Unknown {
+                    reason: reason.into(),
+                },
+            }
+        }
+    }
+
+    impl From<ExpectedEvidence> for ContextualSongEvidence {
+        fn from(value: ExpectedEvidence) -> Self {
+            match value {
+                ExpectedEvidence::ResultOnly => Self::ResultOnly,
+                ExpectedEvidence::ResultAndStableSelection => Self::ResultAndStableSelection,
+            }
+        }
+    }
+
+    impl From<ExpectedUnknownReason> for ContextualSongUnknownReason {
+        fn from(value: ExpectedUnknownReason) -> Self {
+            match value {
+                ExpectedUnknownReason::AmbiguousResult => Self::AmbiguousResult,
+                ExpectedUnknownReason::SelectionConflict => Self::SelectionConflict,
+            }
+        }
     }
 
     #[test]

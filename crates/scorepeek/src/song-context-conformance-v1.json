@@ -1,0 +1,128 @@
+{
+  "schema": "scorepeek-song-context-conformance-v1",
+  "origin": "recording_observed_ordinary_standard_session",
+  "steps": [
+    {
+      "operation": "clear",
+      "reason": "title_observed",
+      "expected_change": "already_empty"
+    },
+    {
+      "operation": "stable_selection",
+      "candidates": ["song-a", "selection-decoy"],
+      "expected_change": "replaced"
+    },
+    {
+      "operation": "preserve",
+      "scene": "selection-to-gameplay-transition",
+      "expected_change": "preserved"
+    },
+    {
+      "operation": "preserve",
+      "scene": "gameplay",
+      "expected_change": "preserved"
+    },
+    {
+      "operation": "resolve_result",
+      "candidates": ["song-a", "result-decoy"],
+      "expected_decision": {
+        "outcome": "accepted",
+        "song_id": "song-a",
+        "evidence": "result_and_stable_selection"
+      }
+    },
+    {
+      "operation": "preserve",
+      "scene": "result-to-selection-transition",
+      "expected_change": "preserved"
+    },
+    {
+      "operation": "stable_selection",
+      "candidates": ["song-a"],
+      "expected_change": "replaced"
+    },
+    {
+      "operation": "preserve",
+      "scene": "selection-to-gameplay-intro",
+      "expected_change": "preserved"
+    },
+    {
+      "operation": "preserve",
+      "scene": "selection-to-gameplay-transition",
+      "expected_change": "preserved"
+    },
+    {
+      "operation": "preserve",
+      "scene": "gameplay",
+      "expected_change": "preserved"
+    },
+    {
+      "operation": "resolve_result",
+      "candidates": ["song-a", "second-result-decoy"],
+      "expected_decision": {
+        "outcome": "accepted",
+        "song_id": "song-a",
+        "evidence": "result_and_stable_selection"
+      }
+    },
+    {
+      "operation": "stable_selection",
+      "candidates": ["song-a"],
+      "expected_change": "replaced"
+    },
+    {
+      "operation": "preserve",
+      "scene": "settings-overlay",
+      "expected_change": "preserved"
+    },
+    {
+      "operation": "stable_selection",
+      "candidates": ["song-b", "selection-decoy"],
+      "expected_change": "replaced"
+    },
+    {
+      "operation": "preserve",
+      "scene": "selection-menu-overlay",
+      "expected_change": "preserved"
+    },
+    {
+      "operation": "stable_selection",
+      "candidates": ["song-b"],
+      "expected_change": "replaced"
+    },
+    {
+      "operation": "preserve",
+      "scene": "selection-to-gameplay-transition",
+      "expected_change": "preserved"
+    },
+    {
+      "operation": "preserve",
+      "scene": "gameplay",
+      "expected_change": "preserved"
+    },
+    {
+      "operation": "resolve_result",
+      "candidates": ["song-b", "result-decoy"],
+      "expected_decision": {
+        "outcome": "accepted",
+        "song_id": "song-b",
+        "evidence": "result_and_stable_selection"
+      }
+    },
+    {
+      "operation": "preserve",
+      "scene": "result-to-selection-transition",
+      "expected_change": "preserved"
+    },
+    {
+      "operation": "preserve",
+      "scene": "music-selection-without-confirmed-stable-song",
+      "expected_change": "preserved"
+    },
+    {
+      "operation": "clear",
+      "reason": "session_ended",
+      "expected_change": "cleared"
+    }
+  ]
+}

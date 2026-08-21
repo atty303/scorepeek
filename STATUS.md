@@ -335,7 +335,7 @@ is outside this checkpoint.
 ## Verified in this checkpoint
 
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
-  The current workspace run covered 97 `scorepeek` library tests, 13 binary tests, 55 offline
+  The current workspace run covered 104 `scorepeek` library tests, 13 binary tests, 55 offline
   corpus tests, 75 offline Python OCR tests, and the recording-dataset E2E gate.
 - The corrected integrated-context observer ran over both visually reviewed music-select frames and the
   retained PTS-190000 result frame with model SHA-256
@@ -1160,25 +1160,44 @@ The operator-supplied INFINITAS flow remains validation material in
 selection/gameplay/result repetition, finite non-fixed dan gameplay/result repetition, optional final
 dan result, gameplay restart without result, result-to-gameplay replay, return to title, normal exit,
 and abrupt termination. These scenes are not discarded merely because they are not runtime states.
-Tests currently distill them into context set/preserve/replace/clear behavior and verify that retry
-does not create a play counter. At least one retained private recording covers an ordinary session
-from launch and is the next source of observable scenario composition. Its actual anchors, neutral
-intervals, reset boundaries, and exceptions have not yet been extracted or confirmed.
+Tests distill them into context set/preserve/replace/clear behavior and verify that retry does not
+create a play counter.
 
 Recognition-independent bounded local diagnostics remain required so missed result evidence does not
 disappear when screen detection, OCR, or event emission misses. That application-owned recording,
 retention, completeness, target cadence, result-denominator logic, and public event path remain
 unimplemented and unverified; they do not expand `SongContext` into a session state machine.
 
+The retained ordinary-session recording has now been inspected over source PTS 0 through 458,300
+ms. Its immutable media probe contains 27,499 contiguous decode indexes, strictly increasing PTS,
+and a maximum adjacent delta of 17 ms, so its packet index exposes no coverage gap. Five-second
+visual sampling observed launch/title, play-style and mode selection, two stable song selections,
+three gameplay/result pairs, settings and menu overlays, and normal game termination. Additional
+250-ms sampling from 145,000 through 190,000 ms found a short same-song selection between the first
+result and the next gameplay; this recording therefore does not establish direct result-to-gameplay
+replay without selection. The final result returned briefly to music selection before the game-ended
+screen cleared a non-empty context. Gameplay restart without result, direct result-to-gameplay replay,
+dan play, return to title after selection, and abrupt termination were not observed and remain
+operator-supplied validation cases rather than recording-derived facts. Sampling brackets scene
+boundaries rather than establishing frame-exact transitions.
+
+The immutable recording/probe/profile-bound private label is marked
+`agent_observed_pending_operator_review` at SHA-256
+`cc2dd0a95d2874e9c775311af156aa14ff9da995b71f0fcab3dbdc401970a7e1`; no private path, frame, song
+string, or player data is committed. The committed value-free
+`scorepeek-song-context-conformance-v1` scenario uses opaque song tokens and verifies set,
+preserve, same-song reselection, contextual result resolution without result consumption, and
+session-end clear without adding mode, attempt, or retry counters.
+
 ## Next executable task
 
-Inspect the retained private recording that covers an ordinary session from launch. Report its
-observed composition separately from the operator-supplied game-flow facts, including stable
-music-selection windows, result windows, confirmed neutral/unrecognized intervals, title/session-end
-resets, retry shapes if present, coverage gaps, and unresolved boundaries. Translate only the
-set/preserve/replace/clear behavior needed by `SongContext` into a private replay label and committed
-synthetic conformance scenario. Do not add mode, attempt, play-count, retry-count, or full-session
-state to the recognition core; do not infer a reset from frame-recognition failure alone; and do not
+Obtain operator review of the reported ordinary-session composition and correct the private label if
+the recording omits or misclassifies an operator-known scene. Do not treat
+`agent_observed_pending_operator_review` as accepted replay truth. After confirmation, define the
+smallest application-owned, recognition-trigger-independent bounded diagnostic run needed to replay
+canonical evidence, sequence/timing, binding changes, context observations, decisions, outcomes, and
+recording completeness. Keep this recording inventory separate from `SongContext`; do not add mode,
+attempt, play-count, retry-count, or full-session state, infer a reset from recognition failure, or
 claim target cadence or support from one recording. Treat the corrected active-row ROI as measurement
 evidence only; do not derive an alias or recognition threshold from these two frames.
 
