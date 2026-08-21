@@ -9,8 +9,34 @@ support, or a public event API change.
 scorepeek first infers a timeline from recording evidence alone. The output is
 always a **proposal**: `proposed_episodes` identifies screen-local ranges and
 `proposed_attempts` links a music-selection episode through gameplay to result.
+Every observed screen kind, including `other`, remains visible as an episode;
+`other` breaks attempt linkage rather than disappearing from the composition.
+An attempt proposal contains only those three episode links. Live
+`event_outcome` never changes the proposal oracle; it is used only for miss
+accounting and discrepancies in the review report.
 The initial `timeline_review` is `needs_operator_review` with
 `operator_notes_applied: false`.
+
+Each sampled canonical frame carries `timeline_evidence`, which is the
+recording-replay inference used by the pure reducer. It is separate from
+`screen_observation`, `song_decision`, and `event_outcome`, which preserve what
+the live path did at that point. A replay-inferred result may therefore be
+reported even when the live detector was not run.
+
+The v1 synthetic replay contract requires at least two fresh music-selection
+observations spanning at least 250 ms before that episode can seed an attempt.
+Its policy is fixed at a 250 ms target interval, a 500 ms maximum observation
+gap, and the synthetic 1,000 ms result dwell value.
+`calibrated_profile` evidence is rejected until a separate versioned contract
+can bind an immutable calibration artifact. These values make stability
+explicit for this scenario; they are not a target-profile cadence or support
+claim. An unstable selection remains in the
+episode report but is not linked.
+Each music-selection observation also carries a recording-derived fingerprint
+of the versioned selection-context pixels. Only the trailing run of one
+fingerprint can satisfy stability; a change or unknown continuity resets the
+candidate without consulting the live `song_decision`. Fingerprints and changes
+are shown in the operator report.
 
 Before treating a scenario as confirmed, report this composition to the
 operator:
@@ -39,9 +65,20 @@ values.
 
 The synthetic scenario proves only schema, ordering, and missed-event
 enumeration. Its 1,000 ms result dwell is not target-machine calibration. A
-profile can count result absence only when a complete segment's measured
-maximum observation gap is strictly below a separately calibrated minimum
-result dwell. Partial and dropped intervals never prove absence.
+result episode is counted independently of whether it can be linked to an
+attempt. Its event absence is counted only when a complete segment's measured
+maximum observation gap is strictly below v1's fixed synthetic 1,000 ms result
+dwell. This is diagnostic miss accounting only, not target-profile calibration;
+partial and dropped intervals never prove absence.
+Because a segment-level partial/dropped marker does not locate every hidden
+transition, the reducer disables all attempt linkage in that segment. Explicit
+unknown evidence breaks episodes at its exact sequence, while its segment-local
+sequence and complete live detector/song/event outcome remain visible in the
+gaps/discrepancies section. Covered observations retain the same typed
+per-observation live evidence, including IDs and reasons, rather than only
+aggregate counts. A recording may validly
+produce zero episodes or zero attempts; its gaps and review questions must still
+be reportable.
 
 ## Bounds and privacy
 
@@ -56,10 +93,22 @@ is disabled.
 Artifacts are referenced by kind, byte length, and SHA-256 rather than path.
 The contract contains no raw OCR candidates, player/rival fields, credentials,
 or recognized display strings. It does not change the public NDJSON boundary.
+Opaque accepted song IDs are listed in the local review report so conflicts
+within an episode or between linked selection/result episodes cannot disappear
+behind aggregate counts.
+For result miss accounting, `suppressed` and `absent` both mean that no public
+result event was emitted; suppression remains separately visible with its typed
+reason. Accepted songs or emitted events on gameplay/other screens and duplicate
+result emissions are retained as input evidence and called out as discrepancies
+rather than making the report unreadable.
 
 ## Next implementation boundary
 
-The next slice may implement a pure deterministic reducer that consumes this
-fixture and emits the proposed timeline report. Live recording, event delivery,
-automatic confirmation, and target cadence calibration remain outside that
-slice.
+The pure deterministic reducer and report renderer consume this fixture and
+verify that the committed proposal is reproduced from `timeline_evidence`. The
+public scenario validator performs the same oracle check, so structural
+validation cannot accept stale links on a partial or dropped segment. The
+next slice must supply recording-replay screen evidence from canonical frames
+without using the live event path as its trigger. Live recording, event
+delivery, automatic confirmation, and target cadence calibration remain
+outside that slice.

@@ -1151,26 +1151,61 @@ uncovered ranges, and recording-external exception questions before confirmation
 facts are not guessed or silently folded into recording evidence.
 
 Validation fail-closes on schema drift, binding drift, non-monotonic or non-contiguous observations,
-overlapping episodes, invalid attempt order, and mismatched event expectations. Complete miss
+overlapping episodes, invalid attempt order, and a committed proposal that mismatches recording-only
+replay. Complete miss
 accounting requires at least two observations and a measured maximum gap strictly below the minimum
 result dwell; the synthetic 1,000 ms dwell is not target calibration. The contract bounds a document
 to 1 MiB, 8 segments, 4,096 observations per segment, 1,024 episodes, 512 attempts, 15 minutes and
 32 GiB per segment, and 128 GiB retained across 2 normal and 6 priority runs. Recording is default-on
 with opt-out, canonical full frames remain local until the ROI contract stabilizes, and remote export
-is disabled. The state machine, live recorder, report renderer, target cadence calibration, and public
-event path remain unimplemented and unverified.
+is disabled.
+
+A pure deterministic replay reducer now derives contiguous screen-local episode proposals from
+recording-only `timeline_evidence`, resets linkage across unknown evidence, sequence gaps, segments,
+and therefore binding changes, and links only an adjacent selection → gameplay → result sequence.
+Every observed screen kind, including `other`, remains in the episode composition; `other` resets
+attempt linkage rather than being discarded.
+Partial or dropped segment-level evidence disables all linkage because the hidden transition location
+is unknown. Zero-episode and zero-attempt proposals remain reportable. A selection can seed a link
+only after the v1 synthetic contract's two fresh observations and 250 ms minimum dwell; these values
+and the 250 ms target, 500 ms maximum gap, plus 1,000 ms synthetic result dwell are fixed scenario
+replay invariants, not target cadence calibration. `calibrated_profile` evidence is rejected until a
+separate versioned contract binds immutable calibration evidence. A recording-derived selection-context
+fingerprint, independent of live song recognition, makes continuity explicit; only the trailing run of
+one fingerprint may satisfy stability, while change or unknown evidence resets the candidate.
+The committed proposal remains a replay oracle: mismatch between inferred and committed episodes or
+three-episode attempt links fails with a distinct typed error in both public validation and report
+rendering, including when partial/dropped completeness invalidates a retained link. Live event
+outcomes do not enter that
+oracle; they affect only miss accounting and the report. The human-facing Markdown report includes
+exact scenario and binding identities, segment completeness and timing, recording-only inferred
+episode ranges and proposed links, plus a separate gaps/discrepancies section with per-episode live
+detector/song/event counts, segment-qualified observation discrepancies, uncovered evidence,
+accepted song-ID sets and within-/cross-screen conflicts, and three explicit operator-review
+questions. It distinguishes suppressed from absent evidence while treating both as no emitted public
+result event. Result episodes are enumerated independently of attempt linkage, but absence is counted
+and asserted only for complete segments; partial/dropped segments retain typed observation outcomes
+without an episode-wide miss claim. The report calls out gameplay/other song or event outcomes and duplicate result emissions
+without rejecting the diagnostic input. Uncovered observations retain their complete live
+detector/song/event state on the segment-qualified discrepancy line rather than disappearing from
+episode summaries. Covered observations likewise retain per-observation typed live states, IDs, and
+reasons in that section in addition to episode aggregates. In the synthetic missed-result scenario, recording
+replay infers result sequences 5–6 while the live detector and song decision were not run and no result
+event was emitted. The reducer never reads operator-only facts and cannot auto-confirm the proposal.
+The recording-replay evidence producer, live state machine, live recorder, target cadence calibration,
+and public event path remain unimplemented and unverified.
 
 ## Next executable task
 
-Implement the pure deterministic replay reducer and human-facing timeline proposal report against the
-versioned synthetic scenario. The reducer must derive screen-local episode proposals and an explicit
-selection → gameplay → result proposal from recorded observations, preserve unknown transitions and
-binding resets, and reproduce the fixture summary without reading operator-only facts. The report must
-show the proposed composition, gaps/discrepancies, and explicit operator-review questions; it must not
-auto-confirm or overwrite recording evidence when corrections or exceptions are supplied. Keep live
-recording, event delivery, target cadence calibration, and public API changes outside this slice.
-Treat the corrected active-row ROI as measurement evidence only; do not derive an alias or recognition
-threshold from these two frames.
+Define and implement the smallest offline recording-replay screen-evidence producer for the existing
+canonical scenario frames. It must populate `timeline_evidence` and the versioned selection-context
+fingerprint independently of live detector, song recognition, and event outcomes; preserve `unknown`
+for ambiguous or uncovered frames; and feed the
+pure reducer so the same proposal report is reproduced. Use only the registered screen predicates and
+binding evidence already accepted for the exact canonical profile; do not introduce a live state
+machine, recorder, event delivery, target cadence claim, or public API change. Report the inferred
+composition for operator review rather than auto-confirming it. Treat the corrected active-row ROI as
+measurement evidence only; do not derive an alias or recognition threshold from these two frames.
 
 Do not continue the exhaustive official-model comparison, custom training/export, mapped initializer,
 one-character router, per-song alias, or other OCR-only deep dive. Reopen one only after integrated

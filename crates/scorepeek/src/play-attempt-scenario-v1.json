@@ -11,6 +11,8 @@
     "recording_opt_out_supported": true,
     "target_interval_ms": 250,
     "maximum_observation_gap_ms": 500,
+    "minimum_stable_selection_observations": 2,
+    "minimum_stable_selection_dwell_ms": 250,
     "maximum_segment_duration_ms": 900000,
     "maximum_observations_per_segment": 4096,
     "maximum_artifact_bytes_per_segment": 34359738368,
@@ -55,6 +57,8 @@
           "monotonic_ms": 0,
           "canonical_frame_sha256": "0101010101010101010101010101010101010101010101010101010101010101",
           "artifact": { "kind": "canonical_rgb8_ppm", "file_sha256": "1111111111111111111111111111111111111111111111111111111111111111", "bytes": 6220817 },
+          "timeline_evidence": { "state": "observed", "screen": "music_select" },
+          "selection_evidence": { "state": "observed", "fingerprint_sha256": "9999999999999999999999999999999999999999999999999999999999999999" },
           "screen_observation": { "state": "observed", "screen": "music_select" },
           "song_decision": { "state": "accepted", "song_id": "song-001" },
           "event_outcome": { "state": "emitted", "event_id": "event-music-001" }
@@ -64,6 +68,8 @@
           "monotonic_ms": 250,
           "canonical_frame_sha256": "0202020202020202020202020202020202020202020202020202020202020202",
           "artifact": { "kind": "canonical_rgb8_ppm", "file_sha256": "1212121212121212121212121212121212121212121212121212121212121212", "bytes": 6220817 },
+          "timeline_evidence": { "state": "observed", "screen": "music_select" },
+          "selection_evidence": { "state": "observed", "fingerprint_sha256": "9999999999999999999999999999999999999999999999999999999999999999" },
           "screen_observation": { "state": "observed", "screen": "music_select" },
           "song_decision": { "state": "accepted", "song_id": "song-001" },
           "event_outcome": { "state": "suppressed", "reason": "deduplicated" }
@@ -73,6 +79,8 @@
           "monotonic_ms": 500,
           "canonical_frame_sha256": "0303030303030303030303030303030303030303030303030303030303030303",
           "artifact": { "kind": "canonical_rgb8_ppm", "file_sha256": "1313131313131313131313131313131313131313131313131313131313131313", "bytes": 6220817 },
+          "timeline_evidence": { "state": "observed", "screen": "gameplay" },
+          "selection_evidence": { "state": "not_applicable" },
           "screen_observation": { "state": "observed", "screen": "gameplay" },
           "song_decision": { "state": "not_applicable" },
           "event_outcome": { "state": "absent" }
@@ -82,6 +90,8 @@
           "monotonic_ms": 750,
           "canonical_frame_sha256": "0404040404040404040404040404040404040404040404040404040404040404",
           "artifact": { "kind": "canonical_rgb8_ppm", "file_sha256": "1414141414141414141414141414141414141414141414141414141414141414", "bytes": 6220817 },
+          "timeline_evidence": { "state": "observed", "screen": "gameplay" },
+          "selection_evidence": { "state": "not_applicable" },
           "screen_observation": { "state": "observed", "screen": "gameplay" },
           "song_decision": { "state": "not_applicable" },
           "event_outcome": { "state": "absent" }
@@ -91,6 +101,8 @@
           "monotonic_ms": 1000,
           "canonical_frame_sha256": "0505050505050505050505050505050505050505050505050505050505050505",
           "artifact": { "kind": "canonical_rgb8_ppm", "file_sha256": "1515151515151515151515151515151515151515151515151515151515151515", "bytes": 6220817 },
+          "timeline_evidence": { "state": "observed", "screen": "result" },
+          "selection_evidence": { "state": "not_applicable" },
           "screen_observation": { "state": "not_run", "reason": "sparse_diagnostic_cadence" },
           "song_decision": { "state": "not_run", "reason": "sparse_diagnostic_cadence" },
           "event_outcome": { "state": "absent" }
@@ -100,6 +112,8 @@
           "monotonic_ms": 1250,
           "canonical_frame_sha256": "0606060606060606060606060606060606060606060606060606060606060606",
           "artifact": { "kind": "canonical_rgb8_ppm", "file_sha256": "1616161616161616161616161616161616161616161616161616161616161616", "bytes": 6220817 },
+          "timeline_evidence": { "state": "observed", "screen": "result" },
+          "selection_evidence": { "state": "not_applicable" },
           "screen_observation": { "state": "not_run", "reason": "sparse_diagnostic_cadence" },
           "song_decision": { "state": "not_run", "reason": "sparse_diagnostic_cadence" },
           "event_outcome": { "state": "absent" }
@@ -117,8 +131,7 @@
       "attempt_id": "attempt-001",
       "selection_episode_id": "selection-001",
       "gameplay_episode_id": "gameplay-001",
-      "result_episode_id": "result-001",
-      "proposed_result_event": "absent"
+      "result_episode_id": "result-001"
     }
   ]
 }

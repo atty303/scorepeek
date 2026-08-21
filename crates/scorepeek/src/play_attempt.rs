@@ -14,11 +14,17 @@ const MAX_SEGMENT_DURATION_MS: u64 = 15 * 60 * 1_000;
 const MAX_ARTIFACT_BYTES_PER_SEGMENT: u64 = 32 * 1024 * 1024 * 1024;
 const MAX_RETAINED_BYTES: u64 = 128 * 1024 * 1024 * 1024;
 const CANONICAL_FRAME_FILE_BYTES: u64 = 6_220_817;
+const SYNTHETIC_TARGET_INTERVAL_MS: u64 = 250;
+const SYNTHETIC_MAXIMUM_OBSERVATION_GAP_MS: u64 = 500;
+const SYNTHETIC_STABLE_SELECTION_OBSERVATIONS: usize = 2;
+const SYNTHETIC_STABLE_SELECTION_DWELL_MS: u64 = 250;
+const SYNTHETIC_MINIMUM_RESULT_DWELL_MS: u64 = 1_000;
 
 #[derive(Debug)]
 pub enum PlayAttemptScenarioError {
     Json(serde_json::Error),
     InvalidContract,
+    TimelineMismatch,
 }
 
 impl std::fmt::Display for PlayAttemptScenarioError {
@@ -26,6 +32,8 @@ impl std::fmt::Display for PlayAttemptScenarioError {
         match self {
             Self::Json(error) => write!(formatter, "play-attempt scenario JSON failed: {error}"),
             Self::InvalidContract => formatter.write_str("play-attempt scenario is invalid"),
+            Self::TimelineMismatch => formatter
+                .write_str("recording-derived timeline does not match the scenario proposal"),
         }
     }
 }
@@ -110,6 +118,8 @@ struct DiagnosticPolicy {
     recording_opt_out_supported: bool,
     target_interval_ms: u64,
     maximum_observation_gap_ms: u64,
+    minimum_stable_selection_observations: usize,
+    minimum_stable_selection_dwell_ms: u64,
     maximum_segment_duration_ms: u64,
     maximum_observations_per_segment: usize,
     maximum_artifact_bytes_per_segment: u64,
@@ -215,10 +225,41 @@ struct Observation {
     monotonic_ms: u64,
     canonical_frame_sha256: String,
     artifact: FrameArtifact,
+    timeline_evidence: TimelineEvidence,
+    selection_evidence: SelectionEvidence,
     #[serde(rename = "screen_observation")]
     screen: ScreenObservation,
     song_decision: SongDecision,
     event_outcome: EventOutcome,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+enum SelectionEvidence {
+    Observed { fingerprint_sha256: String },
+    Unknown { reason: SelectionUnknownReason },
+    NotApplicable,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum SelectionUnknownReason {
+    Ambiguous,
+    Uncovered,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+enum TimelineEvidence {
+    Observed { screen: ScreenKind },
+    Unknown { reason: TimelineUnknownReason },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum TimelineUnknownReason {
+    RecordingAmbiguous,
+    UncoveredInterval,
 }
 
 #[derive(Debug, Deserialize)]
@@ -265,7 +306,7 @@ enum ScreenKind {
     Other,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 enum SongDecision {
     NotRun { reason: NotRunReason },
@@ -289,7 +330,7 @@ enum SongRejectionReason {
     BindingChanged,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 enum EventOutcome {
     Absent,
@@ -304,7 +345,7 @@ enum SuppressionReason {
     Rejected,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct Episode {
     #[serde(rename = "episode_id")]
@@ -315,14 +356,17 @@ struct Episode {
     last_sequence: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct ProposedAttempt {
-    attempt_id: String,
-    selection_episode_id: String,
-    gameplay_episode_id: String,
-    result_episode_id: String,
-    proposed_result_event: ProposedResultEvent,
+    #[serde(rename = "attempt_id")]
+    id: String,
+    #[serde(rename = "selection_episode_id")]
+    selection: String,
+    #[serde(rename = "gameplay_episode_id")]
+    gameplay: String,
+    #[serde(rename = "result_episode_id")]
+    result: String,
 }
 
 type ObservationMap<'a> = BTreeMap<(&'a str, u64), &'a Observation>;
@@ -342,7 +386,8 @@ enum ProposedResultEvent {
 ///
 /// # Errors
 /// Returns an error for malformed or over-limit input, binding drift, non-monotonic observations,
-/// invalid completeness evidence, overlapping episodes, or an impossible play-attempt ordering.
+/// invalid completeness evidence, overlapping episodes, an impossible play-attempt ordering, or a
+/// committed proposal that differs from the recording-only replay.
 pub fn validate_play_attempt_scenario(
     bytes: &[u8],
 ) -> Result<PlayAttemptScenarioSummary, PlayAttemptScenarioError> {
@@ -354,8 +399,14 @@ pub fn validate_play_attempt_scenario(
     let bindings = validate_bindings(&scenario)?;
     let (observations, miss_accounting_scope) = validate_segments(&scenario, &bindings)?;
     let episodes = validate_episodes(&scenario, &observations)?;
+    validate_attempts(&scenario, &episodes)?;
+    if derive_episodes(&scenario) != scenario.proposed_episodes
+        || derive_attempts(&scenario, &scenario.proposed_episodes) != scenario.proposed_attempts
+    {
+        return Err(PlayAttemptScenarioError::TimelineMismatch);
+    }
     let (result_episode_count, absent_result_event_count) =
-        validate_attempts(&scenario, &episodes, &observations)?;
+        result_episode_counts(&scenario, &observations);
     Ok(PlayAttemptScenarioSummary {
         schema: SCHEMA,
         scenario_sha256: encode_sha256(bytes),
@@ -382,9 +433,10 @@ fn validate_header(scenario: &Scenario) -> Result<(), PlayAttemptScenarioError> 
             != (scenario.timeline_review.state == TimelineReviewState::Confirmed)
         || policy.recording_default != RecordingDefault::Enabled
         || !policy.recording_opt_out_supported
-        || policy.target_interval_ms == 0
-        || policy.target_interval_ms > policy.maximum_observation_gap_ms
-        || policy.maximum_observation_gap_ms == 0
+        || policy.target_interval_ms != SYNTHETIC_TARGET_INTERVAL_MS
+        || policy.maximum_observation_gap_ms != SYNTHETIC_MAXIMUM_OBSERVATION_GAP_MS
+        || policy.minimum_stable_selection_observations != SYNTHETIC_STABLE_SELECTION_OBSERVATIONS
+        || policy.minimum_stable_selection_dwell_ms != SYNTHETIC_STABLE_SELECTION_DWELL_MS
         || policy.maximum_segment_duration_ms == 0
         || policy.maximum_segment_duration_ms > MAX_SEGMENT_DURATION_MS
         || policy.maximum_observations_per_segment == 0
@@ -401,9 +453,7 @@ fn validate_header(scenario: &Scenario) -> Result<(), PlayAttemptScenarioError> 
         || policy.retention.total_bytes > MAX_RETAINED_BYTES
         || scenario.segments.is_empty()
         || scenario.segments.len() > MAX_SEGMENTS
-        || scenario.proposed_episodes.is_empty()
         || scenario.proposed_episodes.len() > MAX_EPISODES
-        || scenario.proposed_attempts.is_empty()
         || scenario.proposed_attempts.len() > MAX_ATTEMPTS
     {
         return Err(PlayAttemptScenarioError::InvalidContract);
@@ -443,7 +493,6 @@ fn validate_segments<'a>(
 ) -> Result<(ObservationMap<'a>, MissAccountingScope), PlayAttemptScenarioError> {
     let mut segment_ids = BTreeSet::new();
     let mut observations = BTreeMap::new();
-    let mut calibrated = true;
     let mut total_artifact_bytes = 0_u64;
     for segment in &scenario.segments {
         if !valid_id(&segment.id)
@@ -465,7 +514,7 @@ fn validate_segments<'a>(
                 .checked_sub(1)
                 .and_then(|previous| segment.observations.get(previous))
             {
-                if observation.sequence != previous.sequence + 1
+                if previous.sequence.checked_add(1) != Some(observation.sequence)
                     || observation.monotonic_ms <= previous.monotonic_ms
                 {
                     return Err(PlayAttemptScenarioError::InvalidContract);
@@ -503,43 +552,31 @@ fn validate_segments<'a>(
                 minimum_result_dwell_ms,
                 dwell_evidence,
             } => {
+                if let DwellEvidence::CalibratedProfile { calibration_id } = dwell_evidence {
+                    let _ = calibration_id;
+                    return Err(PlayAttemptScenarioError::InvalidContract);
+                }
                 if segment.observations.len() < 2
                     || *maximum_observation_gap_ms != maximum_gap
                     || maximum_gap > scenario.policy.maximum_observation_gap_ms
                     || maximum_gap >= *minimum_result_dwell_ms
+                    || *minimum_result_dwell_ms != SYNTHETIC_MINIMUM_RESULT_DWELL_MS
                 {
                     return Err(PlayAttemptScenarioError::InvalidContract);
-                }
-                match dwell_evidence {
-                    DwellEvidence::SyntheticScenario => calibrated = false,
-                    DwellEvidence::CalibratedProfile { calibration_id } => {
-                        if !valid_id(calibration_id) {
-                            return Err(PlayAttemptScenarioError::InvalidContract);
-                        }
-                    }
                 }
             }
             RecordingCompleteness::Partial { reason } => {
                 let _ = reason;
-                calibrated = false;
             }
             RecordingCompleteness::Dropped { reason } => {
                 let _ = reason;
-                calibrated = false;
             }
         }
     }
     if total_artifact_bytes > scenario.policy.retention.total_bytes {
         return Err(PlayAttemptScenarioError::InvalidContract);
     }
-    Ok((
-        observations,
-        if calibrated {
-            MissAccountingScope::CalibratedProfile
-        } else {
-            MissAccountingScope::SyntheticScenario
-        },
-    ))
+    Ok((observations, MissAccountingScope::SyntheticScenario))
 }
 
 fn validate_observation(observation: &Observation) -> Result<(), PlayAttemptScenarioError> {
@@ -549,6 +586,42 @@ fn validate_observation(observation: &Observation) -> Result<(), PlayAttemptScen
         || observation.artifact.bytes != CANONICAL_FRAME_FILE_BYTES
     {
         return Err(PlayAttemptScenarioError::InvalidContract);
+    }
+    match &observation.timeline_evidence {
+        TimelineEvidence::Observed { screen } => {
+            let _ = screen;
+        }
+        TimelineEvidence::Unknown { reason } => {
+            let _ = reason;
+        }
+    }
+    match (
+        &observation.timeline_evidence,
+        &observation.selection_evidence,
+    ) {
+        (
+            TimelineEvidence::Observed {
+                screen: ScreenKind::MusicSelect,
+            },
+            SelectionEvidence::Observed { fingerprint_sha256 },
+        ) if valid_sha256(fingerprint_sha256) => {}
+        (
+            TimelineEvidence::Observed {
+                screen: ScreenKind::MusicSelect,
+            }
+            | TimelineEvidence::Unknown { .. },
+            SelectionEvidence::Unknown { reason },
+        ) => {
+            let _ = reason;
+        }
+        (
+            TimelineEvidence::Observed {
+                screen: ScreenKind::Gameplay | ScreenKind::Result | ScreenKind::Other,
+            }
+            | TimelineEvidence::Unknown { .. },
+            SelectionEvidence::NotApplicable,
+        ) => {}
+        _ => return Err(PlayAttemptScenarioError::InvalidContract),
     }
     match &observation.screen {
         ScreenObservation::NotRun { reason } => {
@@ -613,23 +686,21 @@ fn validate_episodes<'a>(
 fn validate_attempts(
     scenario: &Scenario,
     episodes: &BTreeMap<&str, &Episode>,
-    observations: &BTreeMap<(&str, u64), &Observation>,
-) -> Result<(usize, usize), PlayAttemptScenarioError> {
+) -> Result<(), PlayAttemptScenarioError> {
     let mut attempt_ids = BTreeSet::new();
     let mut used_episodes = BTreeSet::new();
-    let mut absent_result_event_count = 0;
     for attempt in &scenario.proposed_attempts {
         let selection = episodes
-            .get(attempt.selection_episode_id.as_str())
+            .get(attempt.selection.as_str())
             .ok_or(PlayAttemptScenarioError::InvalidContract)?;
         let gameplay = episodes
-            .get(attempt.gameplay_episode_id.as_str())
+            .get(attempt.gameplay.as_str())
             .ok_or(PlayAttemptScenarioError::InvalidContract)?;
         let result = episodes
-            .get(attempt.result_episode_id.as_str())
+            .get(attempt.result.as_str())
             .ok_or(PlayAttemptScenarioError::InvalidContract)?;
-        if !valid_id(&attempt.attempt_id)
-            || !attempt_ids.insert(attempt.attempt_id.as_str())
+        if !valid_id(&attempt.id)
+            || !attempt_ids.insert(attempt.id.as_str())
             || selection.kind != ScreenKind::MusicSelect
             || gameplay.kind != ScreenKind::Gameplay
             || result.kind != ScreenKind::Result
@@ -643,34 +714,906 @@ fn validate_attempts(
         {
             return Err(PlayAttemptScenarioError::InvalidContract);
         }
-        let result_event_absent = (result.first_sequence..=result.last_sequence).all(|sequence| {
-            observations
-                .get(&(result.segment_id.as_str(), sequence))
-                .is_some_and(|observation| {
-                    matches!(&observation.event_outcome, EventOutcome::Absent)
-                })
-        });
-        let result_event_emitted = (result.first_sequence..=result.last_sequence).any(|sequence| {
-            observations
-                .get(&(result.segment_id.as_str(), sequence))
-                .is_some_and(|observation| {
-                    matches!(&observation.event_outcome, EventOutcome::Emitted { .. })
-                })
-        });
-        match attempt.proposed_result_event {
-            ProposedResultEvent::Absent if result_event_absent => absent_result_event_count += 1,
-            ProposedResultEvent::Emitted if result_event_emitted => {}
-            _ => return Err(PlayAttemptScenarioError::InvalidContract),
+    }
+    Ok(())
+}
+
+fn result_episode_counts(scenario: &Scenario, observations: &ObservationMap<'_>) -> (usize, usize) {
+    let results: Vec<_> = scenario
+        .proposed_episodes
+        .iter()
+        .filter(|episode| episode.kind == ScreenKind::Result)
+        .collect();
+    let absent = results
+        .iter()
+        .filter(|episode| segment_is_complete(scenario, &episode.segment_id))
+        .filter(|episode| {
+            result_event_from_outcomes((episode.first_sequence..=episode.last_sequence).map(
+                |sequence| {
+                    &observations
+                        .get(&(episode.segment_id.as_str(), sequence))
+                        .expect("validated episode observation")
+                        .event_outcome
+                },
+            )) == ProposedResultEvent::Absent
+        })
+        .count();
+    (results.len(), absent)
+}
+
+/// Replays recording-only timeline evidence and renders the proposal for operator review.
+///
+/// This function is pure: it does not inspect frame bytes, read operator notes, publish events, or
+/// confirm the proposal. The scenario's proposed episodes and attempts are replay oracles and must
+/// exactly match the derived composition.
+///
+/// # Errors
+/// Returns an error when the scenario contract is invalid or its proposal differs from replay.
+pub fn render_timeline_proposal_report(bytes: &[u8]) -> Result<String, PlayAttemptScenarioError> {
+    let summary = validate_play_attempt_scenario(bytes)?;
+    let scenario: Scenario = serde_json::from_slice(bytes)?;
+    let episodes = derive_episodes(&scenario);
+    let attempts = derive_attempts(&scenario, &episodes);
+    Ok(render_report(&scenario, &summary, &episodes, &attempts))
+}
+
+fn derive_episodes(scenario: &Scenario) -> Vec<Episode> {
+    let mut episodes = Vec::new();
+    let mut counts = BTreeMap::new();
+    for segment in &scenario.segments {
+        let mut current: Option<Episode> = None;
+        for observation in &segment.observations {
+            let observed = match observation.timeline_evidence {
+                TimelineEvidence::Observed { screen } => Some(screen),
+                TimelineEvidence::Unknown { .. } => None,
+            };
+            match (&mut current, observed) {
+                (Some(episode), Some(screen)) if episode.kind == screen => {
+                    episode.last_sequence = observation.sequence;
+                }
+                (slot, Some(screen)) => {
+                    if let Some(completed) = slot.take() {
+                        episodes.push(completed);
+                    }
+                    let count = counts.entry(screen).or_insert(0_u64);
+                    *count += 1;
+                    *slot = Some(Episode {
+                        id: format!("{}-{count:03}", episode_prefix(screen)),
+                        segment_id: segment.id.clone(),
+                        kind: screen,
+                        first_sequence: observation.sequence,
+                        last_sequence: observation.sequence,
+                    });
+                }
+                (slot, None) => {
+                    if let Some(completed) = slot.take() {
+                        episodes.push(completed);
+                    }
+                }
+            }
+        }
+        if let Some(completed) = current {
+            episodes.push(completed);
         }
     }
-    Ok((
-        scenario
-            .proposed_episodes
+    episodes
+}
+
+fn derive_attempts(scenario: &Scenario, episodes: &[Episode]) -> Vec<ProposedAttempt> {
+    let mut attempts = Vec::new();
+    let mut current_segment = None;
+    let mut selection: Option<&Episode> = None;
+    let mut gameplay: Option<(&Episode, &Episode)> = None;
+    for episode in episodes {
+        if current_segment != Some(episode.segment_id.as_str()) {
+            current_segment = Some(episode.segment_id.as_str());
+            selection = None;
+            gameplay = None;
+        }
+        if !segment_is_complete(scenario, &episode.segment_id) {
+            selection = None;
+            gameplay = None;
+            continue;
+        }
+        match episode.kind {
+            ScreenKind::MusicSelect => {
+                selection = selection_is_stable(scenario, episode).then_some(episode);
+                gameplay = None;
+            }
+            ScreenKind::Gameplay => {
+                gameplay = selection
+                    .filter(|selected| {
+                        selected.last_sequence.checked_add(1) == Some(episode.first_sequence)
+                    })
+                    .map(|selected| (selected, episode));
+                if gameplay.is_none() {
+                    selection = None;
+                }
+            }
+            ScreenKind::Result => {
+                if let Some((selected, played)) = gameplay.take().filter(|(_, played)| {
+                    played.last_sequence.checked_add(1) == Some(episode.first_sequence)
+                }) {
+                    attempts.push(ProposedAttempt {
+                        id: format!("attempt-{:03}", attempts.len() + 1),
+                        selection: selected.id.clone(),
+                        gameplay: played.id.clone(),
+                        result: episode.id.clone(),
+                    });
+                }
+                selection = None;
+            }
+            ScreenKind::Other => {
+                selection = None;
+                gameplay = None;
+            }
+        }
+    }
+    attempts
+}
+
+fn segment_is_complete(scenario: &Scenario, segment_id: &str) -> bool {
+    scenario.segments.iter().any(|segment| {
+        segment.id == segment_id
+            && matches!(segment.completeness, RecordingCompleteness::Complete { .. })
+    })
+}
+
+fn selection_is_stable(scenario: &Scenario, episode: &Episode) -> bool {
+    let segment = scenario
+        .segments
+        .iter()
+        .find(|segment| segment.id == episode.segment_id)
+        .expect("validated episode segment");
+    let observations: Vec<_> = segment
+        .observations
+        .iter()
+        .filter(|observation| {
+            (episode.first_sequence..=episode.last_sequence).contains(&observation.sequence)
+        })
+        .collect();
+    let Some(SelectionEvidence::Observed {
+        fingerprint_sha256: latest,
+    }) = observations
+        .last()
+        .map(|observation| &observation.selection_evidence)
+    else {
+        return false;
+    };
+    let stable_suffix: Vec<_> = observations
+        .iter()
+        .rev()
+        .take_while(|observation| {
+            matches!(
+                &observation.selection_evidence,
+                SelectionEvidence::Observed { fingerprint_sha256 }
+                    if fingerprint_sha256 == latest
+            )
+        })
+        .copied()
+        .collect();
+    stable_suffix.len() >= scenario.policy.minimum_stable_selection_observations
+        && stable_suffix
+            .first()
+            .zip(stable_suffix.last())
+            .is_some_and(|(last, first)| {
+                last.monotonic_ms - first.monotonic_ms
+                    >= scenario.policy.minimum_stable_selection_dwell_ms
+            })
+}
+
+fn result_event_for_episode(scenario: &Scenario, episode: &Episode) -> ProposedResultEvent {
+    let observations = scenario
+        .segments
+        .iter()
+        .find(|segment| segment.id == episode.segment_id)
+        .expect("validated episode segment")
+        .observations
+        .iter()
+        .filter(|observation| {
+            (episode.first_sequence..=episode.last_sequence).contains(&observation.sequence)
+        });
+    result_event_from_outcomes(observations.map(|observation| &observation.event_outcome))
+}
+
+fn result_event_from_outcomes<'a>(
+    outcomes: impl Iterator<Item = &'a EventOutcome>,
+) -> ProposedResultEvent {
+    if outcomes
+        .into_iter()
+        .any(|outcome| matches!(outcome, EventOutcome::Emitted { .. }))
+    {
+        ProposedResultEvent::Emitted
+    } else {
+        ProposedResultEvent::Absent
+    }
+}
+
+fn render_report(
+    scenario: &Scenario,
+    summary: &PlayAttemptScenarioSummary,
+    episodes: &[Episode],
+    attempts: &[ProposedAttempt],
+) -> String {
+    let mut report = String::new();
+    writeln!(report, "# Timeline proposal: {}", scenario.id).expect("String write");
+    writeln!(report).expect("String write");
+    writeln!(report, "- Scenario SHA-256: `{}`", summary.scenario_sha256).expect("String write");
+    writeln!(
+        report,
+        "- Review state: `{}`",
+        review_state_name(summary.timeline_review_state)
+    )
+    .expect("String write");
+    writeln!(report, "- Inference source: `recording_only`").expect("String write");
+
+    render_recording_structure(&mut report, scenario, episodes, attempts);
+
+    writeln!(report, "\n## Gaps and discrepancies").expect("String write");
+    render_discrepancies(&mut report, scenario, episodes, attempts);
+
+    writeln!(report, "\n## Operator review questions").expect("String write");
+    writeln!(report, "\n- Are the inferred episode boundaries correct?").expect("String write");
+    writeln!(
+        report,
+        "- Does each proposed selection → gameplay → result link describe one play?"
+    )
+    .expect("String write");
+    writeln!(
+        report,
+        "- Are there recording-external exceptions or missing facts to apply?"
+    )
+    .expect("String write");
+    report
+}
+
+fn render_recording_structure(
+    report: &mut String,
+    scenario: &Scenario,
+    episodes: &[Episode],
+    attempts: &[ProposedAttempt],
+) {
+    writeln!(report, "\n## Bindings").expect("String write");
+    for binding in &scenario.bindings {
+        writeln!(
+            report,
+            "\n- `{}`: generation {}; capture `{}`; normalizer `{}`; layout `{}`; catalog `{}`; model `{}`; runtime `{}`",
+            binding.binding_id,
+            binding.capture_generation,
+            binding.capture_profile_sha256,
+            binding.normalizer_sha256,
+            binding.canonical_layout_sha256,
+            binding.catalog_sha256,
+            binding.model_sha256,
+            binding.runtime_sha256
+        )
+        .expect("String write");
+    }
+
+    writeln!(report, "\n## Segments").expect("String write");
+    for segment in &scenario.segments {
+        let first = segment
+            .observations
+            .first()
+            .expect("validated observations");
+        let last = segment.observations.last().expect("validated observations");
+        writeln!(
+            report,
+            "\n- `{}`: binding `{}`, sequences {}–{}, monotonic {}–{} ms, {}",
+            segment.id,
+            segment.binding_id,
+            first.sequence,
+            last.sequence,
+            first.monotonic_ms,
+            last.monotonic_ms,
+            completeness_description(&segment.completeness)
+        )
+        .expect("String write");
+    }
+
+    writeln!(report, "\n## Inferred episodes").expect("String write");
+    if episodes.is_empty() {
+        writeln!(report, "\n- None inferred from the recording evidence.").expect("String write");
+    }
+    for episode in episodes {
+        write!(
+            report,
+            "\n- `{}`: `{}` sequences {}–{} in `{}`",
+            episode.id,
+            screen_name(episode.kind),
+            episode.first_sequence,
+            episode.last_sequence,
+            episode.segment_id
+        )
+        .expect("String write");
+        if episode.kind == ScreenKind::MusicSelect {
+            let fingerprints = selection_fingerprints(scenario, episode)
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(", ");
+            write!(
+                report,
+                "; recording selection fingerprints [{fingerprints}], stable `{}`",
+                selection_is_stable(scenario, episode)
+            )
+            .expect("String write");
+        }
+        writeln!(report).expect("String write");
+    }
+
+    writeln!(report, "\n## Proposed play attempts").expect("String write");
+    if attempts.is_empty() {
+        writeln!(
+            report,
+            "\n- None; no complete unbroken stable selection → gameplay → result link was inferred."
+        )
+        .expect("String write");
+    }
+    for attempt in attempts {
+        writeln!(
+            report,
+            "\n- `{}`: `{}` → `{}` → `{}`",
+            attempt.id, attempt.selection, attempt.gameplay, attempt.result
+        )
+        .expect("String write");
+    }
+}
+
+fn render_discrepancies(
+    report: &mut String,
+    scenario: &Scenario,
+    episodes: &[Episode],
+    attempts: &[ProposedAttempt],
+) {
+    let mut count = render_observation_discrepancies(report, scenario);
+    count += render_episode_discrepancies(report, scenario, episodes);
+    count += render_attempt_discrepancies(report, scenario, episodes, attempts);
+    if count == 0 {
+        writeln!(report, "\n- None in the recorded evidence.").expect("String write");
+    }
+}
+
+fn render_observation_discrepancies(report: &mut String, scenario: &Scenario) -> usize {
+    let mut count = 0;
+    for segment in &scenario.segments {
+        count += render_segment_discrepancy(report, segment);
+        for observation in &segment.observations {
+            count += render_covered_live_evidence(report, &segment.id, observation);
+            count += render_screen_discrepancy(report, &segment.id, observation);
+            count += render_song_discrepancy(report, &segment.id, observation);
+            count += render_event_discrepancy(report, &segment.id, observation);
+        }
+    }
+    count
+}
+
+fn render_covered_live_evidence(
+    report: &mut String,
+    segment_id: &str,
+    observation: &Observation,
+) -> usize {
+    if !matches!(
+        observation.timeline_evidence,
+        TimelineEvidence::Observed { .. }
+    ) {
+        return 0;
+    }
+    writeln!(
+        report,
+        "\n- `{segment_id}` sequence {} live evidence: {}",
+        observation.sequence,
+        live_observation_summary(observation)
+    )
+    .expect("String write");
+    1
+}
+
+fn render_segment_discrepancy(report: &mut String, segment: &Segment) -> usize {
+    if matches!(segment.completeness, RecordingCompleteness::Complete { .. }) {
+        return 0;
+    }
+    writeln!(
+        report,
+        "\n- `{}`: {} recording; gap location is not fully known, so attempt linkage is disabled for the segment",
+        segment.id,
+        completeness_state_name(&segment.completeness)
+    )
+    .expect("String write");
+    1
+}
+
+fn render_screen_discrepancy(
+    report: &mut String,
+    segment_id: &str,
+    observation: &Observation,
+) -> usize {
+    match (&observation.timeline_evidence, &observation.screen) {
+        (
+            TimelineEvidence::Observed { screen: inferred },
+            ScreenObservation::Observed { screen: detected },
+        ) if inferred != detected => {
+            writeln!(
+                report,
+                "\n- `{segment_id}` sequence {}: recording replay `{}` conflicts with live detector `{}`",
+                observation.sequence,
+                screen_name(*inferred),
+                screen_name(*detected)
+            )
+            .expect("String write");
+            1
+        }
+        (
+            TimelineEvidence::Observed { screen: inferred },
+            ScreenObservation::Unknown { .. } | ScreenObservation::NotRun { .. },
+        ) => {
+            writeln!(
+                report,
+                "\n- `{segment_id}` sequence {}: recording replay inferred `{}` while the live detector was `{}`",
+                observation.sequence,
+                screen_name(*inferred),
+                detector_state_name(&observation.screen)
+            )
+            .expect("String write");
+            1
+        }
+        (TimelineEvidence::Unknown { reason }, _) => {
+            writeln!(
+                report,
+                "\n- `{segment_id}` sequence {}: timeline uncovered (`{}`); {}",
+                observation.sequence,
+                timeline_unknown_name(*reason),
+                live_observation_summary(observation)
+            )
+            .expect("String write");
+            1
+        }
+        _ => 0,
+    }
+}
+
+fn render_song_discrepancy(
+    report: &mut String,
+    segment_id: &str,
+    observation: &Observation,
+) -> usize {
+    match (&observation.timeline_evidence, &observation.song_decision) {
+        (
+            TimelineEvidence::Observed {
+                screen: ScreenKind::MusicSelect | ScreenKind::Result,
+            },
+            decision,
+        ) if !matches!(decision, SongDecision::Accepted { .. }) => {
+            writeln!(
+                report,
+                "\n- `{segment_id}` sequence {}: `{}` timeline has song decision `{}`",
+                observation.sequence,
+                timeline_screen_name(&observation.timeline_evidence),
+                song_decision_state_name(decision)
+            )
+            .expect("String write");
+            1
+        }
+        (
+            TimelineEvidence::Observed {
+                screen: ScreenKind::Gameplay | ScreenKind::Other,
+            },
+            SongDecision::Accepted { .. },
+        ) => {
+            writeln!(
+                report,
+                "\n- `{segment_id}` sequence {}: `{}` timeline unexpectedly has an accepted song decision",
+                observation.sequence,
+                timeline_screen_name(&observation.timeline_evidence)
+            )
+            .expect("String write");
+            1
+        }
+        _ => 0,
+    }
+}
+
+fn render_event_discrepancy(
+    report: &mut String,
+    segment_id: &str,
+    observation: &Observation,
+) -> usize {
+    match (&observation.timeline_evidence, &observation.event_outcome) {
+        (
+            TimelineEvidence::Observed {
+                screen: ScreenKind::Gameplay | ScreenKind::Other,
+            },
+            EventOutcome::Emitted { .. },
+        ) => {
+            writeln!(
+                report,
+                "\n- `{segment_id}` sequence {}: `{}` timeline unexpectedly emitted a public event",
+                observation.sequence,
+                timeline_screen_name(&observation.timeline_evidence)
+            )
+            .expect("String write");
+            1
+        }
+        (
+            TimelineEvidence::Observed {
+                screen: ScreenKind::Result,
+            },
+            EventOutcome::Suppressed { reason },
+        ) => {
+            writeln!(
+                report,
+                "\n- `{segment_id}` sequence {}: result event was suppressed (`{}`)",
+                observation.sequence,
+                suppression_reason_name(*reason)
+            )
+            .expect("String write");
+            1
+        }
+        _ => 0,
+    }
+}
+
+fn render_episode_discrepancies(
+    report: &mut String,
+    scenario: &Scenario,
+    episodes: &[Episode],
+) -> usize {
+    let mut count = 0;
+    for episode in episodes {
+        count += 1;
+        writeln!(
+            report,
+            "\n- `{}` live observations: {}",
+            episode.id,
+            episode_live_outcome_summary(scenario, episode)
+        )
+        .expect("String write");
+    }
+    for episode in episodes.iter().filter(|episode| {
+        episode.kind == ScreenKind::Result && segment_is_complete(scenario, &episode.segment_id)
+    }) {
+        if result_event_for_episode(scenario, episode) == ProposedResultEvent::Absent {
+            count += 1;
+            writeln!(
+                report,
+                "\n- `{}`: result episode inferred but no result event was emitted",
+                episode.id
+            )
+            .expect("String write");
+        }
+        let emitted = episode_observations(scenario, episode)
+            .filter(|observation| matches!(observation.event_outcome, EventOutcome::Emitted { .. }))
+            .count();
+        if emitted > 1 {
+            count += 1;
+            writeln!(
+                report,
+                "\n- `{}`: result episode emitted {emitted} public events",
+                episode.id
+            )
+            .expect("String write");
+        }
+    }
+    for episode in episodes {
+        let accepted = accepted_song_ids(scenario, episode);
+        if accepted.len() > 1 {
+            count += 1;
+            writeln!(
+                report,
+                "\n- `{}`: conflicting accepted song IDs [{}]",
+                episode.id,
+                accepted.into_iter().collect::<Vec<_>>().join(", ")
+            )
+            .expect("String write");
+        }
+        if episode.kind == ScreenKind::MusicSelect {
+            let fingerprints = selection_fingerprints(scenario, episode);
+            if fingerprints.len() > 1 {
+                count += 1;
+                writeln!(
+                    report,
+                    "\n- `{}`: recording selection fingerprint changed [{}]",
+                    episode.id,
+                    fingerprints.into_iter().collect::<Vec<_>>().join(", ")
+                )
+                .expect("String write");
+            }
+            let unknown = selection_unknown_count(scenario, episode);
+            if unknown > 0 {
+                count += 1;
+                writeln!(
+                    report,
+                    "\n- `{}`: recording selection continuity is unknown for {unknown} observations",
+                    episode.id
+                )
+                .expect("String write");
+            }
+        }
+    }
+    count
+}
+
+fn render_attempt_discrepancies(
+    report: &mut String,
+    scenario: &Scenario,
+    episodes: &[Episode],
+    attempts: &[ProposedAttempt],
+) -> usize {
+    let mut count = 0;
+    for attempt in attempts {
+        let selection = episodes
             .iter()
-            .filter(|episode| episode.kind == ScreenKind::Result)
-            .count(),
-        absent_result_event_count,
-    ))
+            .find(|episode| episode.id == attempt.selection)
+            .expect("derived selection episode");
+        let result = episodes
+            .iter()
+            .find(|episode| episode.id == attempt.result)
+            .expect("derived result episode");
+        let selection_ids = accepted_song_ids(scenario, selection);
+        let result_ids = accepted_song_ids(scenario, result);
+        if selection_ids.len() == 1 && result_ids.len() == 1 && selection_ids != result_ids {
+            count += 1;
+            writeln!(
+                report,
+                "\n- `{}`: selection accepted [{}] but result accepted [{}]",
+                attempt.id,
+                selection_ids.into_iter().collect::<Vec<_>>().join(", "),
+                result_ids.into_iter().collect::<Vec<_>>().join(", ")
+            )
+            .expect("String write");
+        }
+    }
+    count
+}
+
+fn episode_live_outcome_summary(scenario: &Scenario, episode: &Episode) -> String {
+    let observations = scenario
+        .segments
+        .iter()
+        .find(|segment| segment.id == episode.segment_id)
+        .expect("validated episode segment")
+        .observations
+        .iter()
+        .filter(|observation| {
+            (episode.first_sequence..=episode.last_sequence).contains(&observation.sequence)
+        });
+    let mut detected = 0;
+    let mut detector_unknown = 0;
+    let mut detector_not_run = 0;
+    let mut song_accepted = 0;
+    let mut song_other = 0;
+    let mut event_emitted = 0;
+    let mut event_suppressed = 0;
+    let mut event_absent = 0;
+    for observation in observations {
+        match observation.screen {
+            ScreenObservation::Observed { .. } => detected += 1,
+            ScreenObservation::Unknown { .. } => detector_unknown += 1,
+            ScreenObservation::NotRun { .. } => detector_not_run += 1,
+        }
+        match observation.song_decision {
+            SongDecision::Accepted { .. } => song_accepted += 1,
+            _ => song_other += 1,
+        }
+        match observation.event_outcome {
+            EventOutcome::Emitted { .. } => event_emitted += 1,
+            EventOutcome::Suppressed { .. } => event_suppressed += 1,
+            EventOutcome::Absent => event_absent += 1,
+        }
+    }
+    let accepted = accepted_song_ids(scenario, episode)
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let fingerprints = selection_fingerprints(scenario, episode)
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "selection fingerprints [{fingerprints}]; live detector observed/unknown/not-run {detected}/{detector_unknown}/{detector_not_run}; song accepted/other {song_accepted}/{song_other}, IDs [{accepted}]; events emitted/suppressed/absent {event_emitted}/{event_suppressed}/{event_absent}"
+    )
+}
+
+fn accepted_song_ids<'a>(scenario: &'a Scenario, episode: &Episode) -> BTreeSet<&'a str> {
+    episode_observations(scenario, episode)
+        .filter_map(|observation| match &observation.song_decision {
+            SongDecision::Accepted { song_id } => Some(song_id.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn selection_fingerprints<'a>(scenario: &'a Scenario, episode: &Episode) -> BTreeSet<&'a str> {
+    episode_observations(scenario, episode)
+        .filter_map(|observation| match &observation.selection_evidence {
+            SelectionEvidence::Observed { fingerprint_sha256 } => Some(fingerprint_sha256.as_str()),
+            SelectionEvidence::Unknown { .. } | SelectionEvidence::NotApplicable => None,
+        })
+        .collect()
+}
+
+fn selection_unknown_count(scenario: &Scenario, episode: &Episode) -> usize {
+    episode_observations(scenario, episode)
+        .filter(|observation| {
+            matches!(
+                observation.selection_evidence,
+                SelectionEvidence::Unknown { .. }
+            )
+        })
+        .count()
+}
+
+fn episode_observations<'a>(
+    scenario: &'a Scenario,
+    episode: &Episode,
+) -> impl Iterator<Item = &'a Observation> {
+    let first_sequence = episode.first_sequence;
+    let last_sequence = episode.last_sequence;
+    scenario
+        .segments
+        .iter()
+        .find(|segment| segment.id == episode.segment_id)
+        .expect("validated episode segment")
+        .observations
+        .iter()
+        .filter(move |observation| (first_sequence..=last_sequence).contains(&observation.sequence))
+}
+
+fn episode_prefix(screen: ScreenKind) -> &'static str {
+    match screen {
+        ScreenKind::MusicSelect => "selection",
+        ScreenKind::Gameplay => "gameplay",
+        ScreenKind::Result => "result",
+        ScreenKind::Other => "other",
+    }
+}
+
+fn screen_name(screen: ScreenKind) -> &'static str {
+    match screen {
+        ScreenKind::MusicSelect => "music_select",
+        ScreenKind::Gameplay => "gameplay",
+        ScreenKind::Result => "result",
+        ScreenKind::Other => "other",
+    }
+}
+
+fn review_state_name(state: TimelineReviewState) -> &'static str {
+    match state {
+        TimelineReviewState::NeedsOperatorReview => "needs_operator_review",
+        TimelineReviewState::Confirmed => "confirmed",
+    }
+}
+
+fn detector_state_name(observation: &ScreenObservation) -> &'static str {
+    match observation {
+        ScreenObservation::NotRun { .. } => "not_run",
+        ScreenObservation::Unknown { .. } => "unknown",
+        ScreenObservation::Observed { .. } => "observed",
+    }
+}
+
+fn timeline_screen_name(evidence: &TimelineEvidence) -> &'static str {
+    match evidence {
+        TimelineEvidence::Observed { screen } => screen_name(*screen),
+        TimelineEvidence::Unknown { .. } => "unknown",
+    }
+}
+
+fn song_decision_state_name(decision: &SongDecision) -> &'static str {
+    match decision {
+        SongDecision::NotRun { .. } => "not_run",
+        SongDecision::NotApplicable => "not_applicable",
+        SongDecision::Unknown { .. } => "unknown",
+        SongDecision::Rejected { .. } => "rejected",
+        SongDecision::Accepted { .. } => "accepted",
+    }
+}
+
+fn suppression_reason_name(reason: SuppressionReason) -> &'static str {
+    match reason {
+        SuppressionReason::Deduplicated => "deduplicated",
+        SuppressionReason::Rejected => "rejected",
+    }
+}
+
+fn timeline_unknown_name(reason: TimelineUnknownReason) -> &'static str {
+    match reason {
+        TimelineUnknownReason::RecordingAmbiguous => "recording_ambiguous",
+        TimelineUnknownReason::UncoveredInterval => "uncovered_interval",
+    }
+}
+
+fn live_observation_summary(observation: &Observation) -> String {
+    format!(
+        "live detector {}; song {}; event {}",
+        live_screen_description(&observation.screen),
+        live_song_description(&observation.song_decision),
+        live_event_description(&observation.event_outcome)
+    )
+}
+
+fn live_screen_description(observation: &ScreenObservation) -> String {
+    match observation {
+        ScreenObservation::Observed { screen } => format!("observed({})", screen_name(*screen)),
+        ScreenObservation::NotRun { .. } => "not_run(sparse_diagnostic_cadence)".to_owned(),
+        ScreenObservation::Unknown { reason } => format!(
+            "unknown({})",
+            match reason {
+                ScreenUnknownReason::DetectorUnknown => "detector_unknown",
+                ScreenUnknownReason::Transition => "transition",
+            }
+        ),
+    }
+}
+
+fn live_song_description(decision: &SongDecision) -> String {
+    match decision {
+        SongDecision::Accepted { song_id } => format!("accepted({song_id})"),
+        SongDecision::NotRun { .. } => "not_run(sparse_diagnostic_cadence)".to_owned(),
+        SongDecision::NotApplicable => "not_applicable".to_owned(),
+        SongDecision::Unknown { reason } => format!(
+            "unknown({})",
+            match reason {
+                SongUnknownReason::InsufficientEvidence => "insufficient_evidence",
+                SongUnknownReason::DetectorUnknown => "detector_unknown",
+            }
+        ),
+        SongDecision::Rejected { reason } => format!(
+            "rejected({})",
+            match reason {
+                SongRejectionReason::ContextConflict => "context_conflict",
+                SongRejectionReason::BindingChanged => "binding_changed",
+            }
+        ),
+    }
+}
+
+fn live_event_description(outcome: &EventOutcome) -> String {
+    match outcome {
+        EventOutcome::Absent => "absent".to_owned(),
+        EventOutcome::Suppressed { reason } => {
+            format!("suppressed({})", suppression_reason_name(*reason))
+        }
+        EventOutcome::Emitted { event_id } => format!("emitted({event_id})"),
+    }
+}
+
+fn completeness_description(completeness: &RecordingCompleteness) -> String {
+    match completeness {
+        RecordingCompleteness::Complete {
+            maximum_observation_gap_ms,
+            minimum_result_dwell_ms,
+            dwell_evidence,
+        } => format!(
+            "complete; maximum gap {maximum_observation_gap_ms} ms; minimum result dwell {minimum_result_dwell_ms} ms; evidence `{}`",
+            match dwell_evidence {
+                DwellEvidence::SyntheticScenario => "synthetic_scenario",
+                DwellEvidence::CalibratedProfile { .. } => "calibrated_profile",
+            }
+        ),
+        RecordingCompleteness::Partial { reason } => format!(
+            "partial; reason `{}`",
+            match reason {
+                PartialReason::CaptureGap => "capture_gap",
+                PartialReason::ArtifactUnavailable => "artifact_unavailable",
+                PartialReason::RecordingFailure => "recording_failure",
+            }
+        ),
+        RecordingCompleteness::Dropped { reason } => format!(
+            "dropped; reason `{}`",
+            match reason {
+                DroppedReason::CapacityExceeded => "capacity_exceeded",
+                DroppedReason::RecordingDisabled => "recording_disabled",
+            }
+        ),
+    }
+}
+
+fn completeness_state_name(completeness: &RecordingCompleteness) -> &'static str {
+    match completeness {
+        RecordingCompleteness::Complete { .. } => "complete",
+        RecordingCompleteness::Partial { .. } => "partial",
+        RecordingCompleteness::Dropped { .. } => "dropped",
+    }
 }
 
 fn valid_id(value: &str) -> bool {
@@ -755,6 +1698,22 @@ mod tests {
     }
 
     #[test]
+    fn v1_rejects_variable_cadence_and_calibrated_scope() {
+        let mut document: serde_json::Value = serde_json::from_slice(SCENARIO).unwrap();
+        document["policy"]["target_interval_ms"] = serde_json::json!(1);
+        document["policy"]["maximum_observation_gap_ms"] = serde_json::json!(1);
+        document["policy"]["minimum_stable_selection_dwell_ms"] = serde_json::json!(1);
+        assert!(validate_play_attempt_scenario(&serde_json::to_vec(&document).unwrap()).is_err());
+
+        let mut document: serde_json::Value = serde_json::from_slice(SCENARIO).unwrap();
+        document["segments"][0]["completeness"]["dwell_evidence"] = serde_json::json!({
+            "scope": "calibrated_profile",
+            "calibration_id": "calibration-001"
+        });
+        assert!(validate_play_attempt_scenario(&serde_json::to_vec(&document).unwrap()).is_err());
+    }
+
+    #[test]
     fn confirmation_requires_explicit_operator_notes() {
         let text = std::str::from_utf8(SCENARIO).unwrap();
         let unreviewed_confirmation = text.replace(
@@ -768,5 +1727,246 @@ mod tests {
             "\"operator_notes_applied\": true",
         );
         assert!(validate_play_attempt_scenario(reviewed_confirmation.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn replay_renders_recording_proposal_and_live_discrepancies() {
+        let report = render_timeline_proposal_report(SCENARIO).unwrap();
+        assert!(report.contains("`selection-001`: `music_select` sequences 1–2"));
+        assert!(report.contains("`attempt-001`: `selection-001` → `gameplay-001` → `result-001`"));
+        assert!(report.contains(
+            "`segment-001` sequence 5: recording replay inferred `result` while the live detector was `not_run`"
+        ));
+        assert!(report.contains(
+            "`segment-001` sequence 1 live evidence: live detector observed(music_select); song accepted(song-001); event emitted(event-music-001)"
+        ));
+        assert!(report.contains(
+            "`segment-001` sequence 2 live evidence: live detector observed(music_select); song accepted(song-001); event suppressed(deduplicated)"
+        ));
+        assert!(
+            report
+                .contains("`result-001`: result episode inferred but no result event was emitted")
+        );
+        assert!(
+            report.contains("Are there recording-external exceptions or missing facts to apply?")
+        );
+    }
+
+    #[test]
+    fn replay_rejects_a_proposal_not_derived_from_recording() {
+        let text = std::str::from_utf8(SCENARIO).unwrap();
+        let changed = text.replacen(
+            "\"timeline_evidence\": { \"state\": \"observed\", \"screen\": \"result\" }",
+            "\"timeline_evidence\": { \"state\": \"observed\", \"screen\": \"gameplay\" }",
+            1,
+        );
+        assert!(matches!(
+            render_timeline_proposal_report(changed.as_bytes()),
+            Err(PlayAttemptScenarioError::TimelineMismatch)
+        ));
+        assert!(matches!(
+            validate_play_attempt_scenario(changed.as_bytes()),
+            Err(PlayAttemptScenarioError::TimelineMismatch)
+        ));
+    }
+
+    #[test]
+    fn unknown_recording_transition_breaks_attempt_linkage() {
+        let mut document: serde_json::Value = serde_json::from_slice(SCENARIO).unwrap();
+        for observation in document["segments"][0]["observations"]
+            .as_array_mut()
+            .unwrap()
+        {
+            observation["timeline_evidence"] =
+                serde_json::json!({"state": "unknown", "reason": "recording_ambiguous"});
+            observation["selection_evidence"] =
+                serde_json::json!({"state": "unknown", "reason": "ambiguous"});
+        }
+        document["proposed_episodes"] = serde_json::json!([]);
+        document["proposed_attempts"] = serde_json::json!([]);
+        let report =
+            render_timeline_proposal_report(&serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(report.contains("None inferred from the recording evidence."));
+        assert!(report.contains("None; no complete unbroken stable selection"));
+        assert!(report.contains("timeline uncovered (`recording_ambiguous`)"));
+        assert!(report.contains(
+            "`segment-001` sequence 1: timeline uncovered (`recording_ambiguous`); live detector observed(music_select); song accepted(song-001); event emitted(event-music-001)"
+        ));
+        assert!(report.contains(
+            "`segment-001` sequence 2: timeline uncovered (`recording_ambiguous`); live detector observed(music_select); song accepted(song-001); event suppressed(deduplicated)"
+        ));
+    }
+
+    #[test]
+    fn partial_segment_disables_attempt_linkage() {
+        let mut document: serde_json::Value = serde_json::from_slice(SCENARIO).unwrap();
+        document["segments"][0]["completeness"] =
+            serde_json::json!({"state": "partial", "reason": "capture_gap"});
+        document["proposed_attempts"] = serde_json::json!([]);
+        let bytes = serde_json::to_vec(&document).unwrap();
+        let summary = validate_play_attempt_scenario(&bytes).unwrap();
+        assert_eq!(summary.result_episode_count, 1);
+        assert_eq!(summary.absent_result_event_count, 0);
+        let report = render_timeline_proposal_report(&bytes).unwrap();
+        assert!(report.contains("partial recording; gap location is not fully known"));
+        assert!(report.contains("attempt linkage is disabled"));
+        assert!(!report.contains("result episode inferred but no result event was emitted"));
+    }
+
+    #[test]
+    fn validator_rejects_attempts_retained_on_a_partial_segment() {
+        let mut document: serde_json::Value = serde_json::from_slice(SCENARIO).unwrap();
+        document["segments"][0]["completeness"] =
+            serde_json::json!({"state": "partial", "reason": "capture_gap"});
+        assert!(matches!(
+            validate_play_attempt_scenario(&serde_json::to_vec(&document).unwrap()),
+            Err(PlayAttemptScenarioError::TimelineMismatch)
+        ));
+    }
+
+    #[test]
+    fn observed_other_screen_remains_in_the_recording_composition() {
+        let mut document: serde_json::Value = serde_json::from_slice(SCENARIO).unwrap();
+        document["segments"][0]["observations"][2]["timeline_evidence"] =
+            serde_json::json!({"state": "observed", "screen": "other"});
+        document["proposed_episodes"] = serde_json::json!([
+            {"episode_id": "selection-001", "segment_id": "segment-001", "kind": "music_select", "first_sequence": 1, "last_sequence": 2},
+            {"episode_id": "other-001", "segment_id": "segment-001", "kind": "other", "first_sequence": 3, "last_sequence": 3},
+            {"episode_id": "gameplay-001", "segment_id": "segment-001", "kind": "gameplay", "first_sequence": 4, "last_sequence": 4},
+            {"episode_id": "result-001", "segment_id": "segment-001", "kind": "result", "first_sequence": 5, "last_sequence": 6}
+        ]);
+        document["proposed_attempts"] = serde_json::json!([]);
+        let report =
+            render_timeline_proposal_report(&serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(report.contains("`other-001`: `other` sequences 3–3"));
+        assert!(report.contains("None; no complete unbroken stable selection"));
+    }
+
+    #[test]
+    fn one_selection_sample_is_reported_but_not_linked() {
+        let mut document: serde_json::Value = serde_json::from_slice(SCENARIO).unwrap();
+        document["segments"][0]["observations"][1]["timeline_evidence"] =
+            serde_json::json!({"state": "observed", "screen": "gameplay"});
+        document["segments"][0]["observations"][1]["selection_evidence"] =
+            serde_json::json!({"state": "not_applicable"});
+        document["proposed_episodes"] = serde_json::json!([
+            {"episode_id": "selection-001", "segment_id": "segment-001", "kind": "music_select", "first_sequence": 1, "last_sequence": 1},
+            {"episode_id": "gameplay-001", "segment_id": "segment-001", "kind": "gameplay", "first_sequence": 2, "last_sequence": 4},
+            {"episode_id": "result-001", "segment_id": "segment-001", "kind": "result", "first_sequence": 5, "last_sequence": 6}
+        ]);
+        document["proposed_attempts"] = serde_json::json!([]);
+        let bytes = serde_json::to_vec(&document).unwrap();
+        let summary = validate_play_attempt_scenario(&bytes).unwrap();
+        assert_eq!(summary.result_episode_count, 1);
+        assert_eq!(summary.absent_result_event_count, 1);
+        let report = render_timeline_proposal_report(&bytes).unwrap();
+        assert!(report.contains("`selection-001`: `music_select` sequences 1–1"));
+        assert!(report.contains("None; no complete unbroken stable selection"));
+    }
+
+    #[test]
+    fn report_exposes_accepted_song_conflicts() {
+        let mut document: serde_json::Value = serde_json::from_slice(SCENARIO).unwrap();
+        document["segments"][0]["observations"][1]["song_decision"] =
+            serde_json::json!({"state": "accepted", "song_id": "song-002"});
+        let report =
+            render_timeline_proposal_report(&serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(
+            report.contains("`selection-001`: conflicting accepted song IDs [song-001, song-002]")
+        );
+    }
+
+    #[test]
+    fn report_exposes_cross_screen_song_conflict() {
+        let mut document: serde_json::Value = serde_json::from_slice(SCENARIO).unwrap();
+        for index in [4, 5] {
+            document["segments"][0]["observations"][index]["song_decision"] =
+                serde_json::json!({"state": "accepted", "song_id": "song-002"});
+        }
+        let report =
+            render_timeline_proposal_report(&serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(report.contains(
+            "`attempt-001`: selection accepted [song-001] but result accepted [song-002]"
+        ));
+    }
+
+    #[test]
+    fn changed_selection_fingerprint_is_not_linked() {
+        let mut document: serde_json::Value = serde_json::from_slice(SCENARIO).unwrap();
+        document["segments"][0]["observations"][1]["selection_evidence"] = serde_json::json!({
+            "state": "observed",
+            "fingerprint_sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+        });
+        document["proposed_attempts"] = serde_json::json!([]);
+        let report =
+            render_timeline_proposal_report(&serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(report.contains("None; no complete unbroken stable selection"));
+    }
+
+    #[test]
+    fn suppressed_result_event_remains_reportable_as_not_emitted() {
+        let mut document: serde_json::Value = serde_json::from_slice(SCENARIO).unwrap();
+        document["segments"][0]["observations"][4]["event_outcome"] =
+            serde_json::json!({"state": "suppressed", "reason": "rejected"});
+        let report =
+            render_timeline_proposal_report(&serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(
+            report.contains("`segment-001` sequence 5: result event was suppressed (`rejected`)")
+        );
+        assert!(report.contains("events emitted/suppressed/absent 0/1/1"));
+        assert!(!report.contains("`result-001`; result event"));
+    }
+
+    #[test]
+    fn gameplay_song_and_event_outcomes_are_reported_as_discrepancies() {
+        let mut document: serde_json::Value = serde_json::from_slice(SCENARIO).unwrap();
+        document["segments"][0]["observations"][2]["song_decision"] =
+            serde_json::json!({"state": "accepted", "song_id": "song-001"});
+        document["segments"][0]["observations"][2]["event_outcome"] =
+            serde_json::json!({"state": "emitted", "event_id": "event-gameplay-001"});
+        let report =
+            render_timeline_proposal_report(&serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(report.contains(
+            "`segment-001` sequence 3: `gameplay` timeline unexpectedly has an accepted song decision"
+        ));
+        assert!(report.contains(
+            "`segment-001` sequence 3: `gameplay` timeline unexpectedly emitted a public event"
+        ));
+    }
+
+    #[test]
+    fn observation_discrepancies_identify_segment_local_sequences() {
+        let mut document: serde_json::Value = serde_json::from_slice(SCENARIO).unwrap();
+        for observation in document["segments"][0]["observations"]
+            .as_array_mut()
+            .unwrap()
+        {
+            observation["timeline_evidence"] =
+                serde_json::json!({"state": "unknown", "reason": "recording_ambiguous"});
+            observation["selection_evidence"] =
+                serde_json::json!({"state": "unknown", "reason": "ambiguous"});
+        }
+        let mut second = document["segments"][0].clone();
+        second["segment_id"] = serde_json::json!("segment-002");
+        document["segments"].as_array_mut().unwrap().push(second);
+        document["proposed_episodes"] = serde_json::json!([]);
+        document["proposed_attempts"] = serde_json::json!([]);
+
+        let report =
+            render_timeline_proposal_report(&serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(report.contains("`segment-001` sequence 1: timeline uncovered"));
+        assert!(report.contains("`segment-002` sequence 1: timeline uncovered"));
+    }
+
+    #[test]
+    fn duplicate_result_emissions_are_reported() {
+        let mut document: serde_json::Value = serde_json::from_slice(SCENARIO).unwrap();
+        for (index, event_id) in [(4, "event-result-001"), (5, "event-result-002")] {
+            document["segments"][0]["observations"][index]["event_outcome"] =
+                serde_json::json!({"state": "emitted", "event_id": event_id});
+        }
+        let report =
+            render_timeline_proposal_report(&serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(report.contains("`result-001`: result episode emitted 2 public events"));
     }
 }
