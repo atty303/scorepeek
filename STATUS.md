@@ -1139,19 +1139,38 @@ for result detection or result-only fields.
 
 Timeline development will use a small set of scenario recordings rather than require a large prepared
 dataset. Ordinary live sessions must produce bounded local, replayable evidence independently of
-recognition success so missed result episodes remain observable. The state machine, telemetry
-schema/cadence/limits, and target validation remain unimplemented and unverified.
+recognition success so missed result episodes remain observable.
+
+The strict `scorepeek-private-play-attempt-scenario-v1` diagnostic contract now separates recorded
+screen/song/event observations from a recording-only inferred timeline proposal. Its synthetic
+scenario links music selection through gameplay to a proposed result whose detector was not run and
+whose event is absent, proving that such a result remains enumerable without recognition-triggered
+evidence. Timeline proposals begin as `needs_operator_review`; the operator receives recording and
+binding identity, completeness, inferred episode boundaries, proposed attempt links, discrepancies,
+uncovered ranges, and recording-external exception questions before confirmation. Operator-only
+facts are not guessed or silently folded into recording evidence.
+
+Validation fail-closes on schema drift, binding drift, non-monotonic or non-contiguous observations,
+overlapping episodes, invalid attempt order, and mismatched event expectations. Complete miss
+accounting requires at least two observations and a measured maximum gap strictly below the minimum
+result dwell; the synthetic 1,000 ms dwell is not target calibration. The contract bounds a document
+to 1 MiB, 8 segments, 4,096 observations per segment, 1,024 episodes, 512 attempts, 15 minutes and
+32 GiB per segment, and 128 GiB retained across 2 normal and 6 priority runs. Recording is default-on
+with opt-out, canonical full frames remain local until the ROI contract stabilizes, and remote export
+is disabled. The state machine, live recorder, report renderer, target cadence calibration, and public
+event path remain unimplemented and unverified.
 
 ## Next executable task
 
-Define the minimal replayable `play_attempt` scenario and bounded diagnostic contract before
-implementing the state machine. The scenario must preserve an independently reviewable timeline that
-can enumerate selection, gameplay, and result episodes even when recognition or event emission misses
-one; define screen-local episode identity, cross-screen linkage, recording completeness, cadence,
-resource ceilings, and value-free unknown/rejection evidence. Keep this as a versioned diagnostic
-contract and replay fixture boundary, not an accepted live state machine. Preserve the current public
-event API boundary. Treat the corrected active-row ROI as measurement evidence only; do not derive an
-alias or recognition threshold from these two frames.
+Implement the pure deterministic replay reducer and human-facing timeline proposal report against the
+versioned synthetic scenario. The reducer must derive screen-local episode proposals and an explicit
+selection → gameplay → result proposal from recorded observations, preserve unknown transitions and
+binding resets, and reproduce the fixture summary without reading operator-only facts. The report must
+show the proposed composition, gaps/discrepancies, and explicit operator-review questions; it must not
+auto-confirm or overwrite recording evidence when corrections or exceptions are supplied. Keep live
+recording, event delivery, target cadence calibration, and public API changes outside this slice.
+Treat the corrected active-row ROI as measurement evidence only; do not derive an alias or recognition
+threshold from these two frames.
 
 Do not continue the exhaustive official-model comparison, custom training/export, mapped initializer,
 one-character router, per-song alias, or other OCR-only deep dive. Reopen one only after integrated
