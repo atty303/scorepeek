@@ -134,16 +134,30 @@ def _bundle_contract(model_id: str) -> OfficialModelContract:
     )
 
 
-def _registered_contract(model_id: str) -> OfficialModelContract:
+def _registered_contract(
+    model_id: str,
+    model_sha256: str,
+    dictionary_sha256: str,
+    preprocessor_id: str,
+) -> OfficialModelContract:
+    candidates = []
     small = _small_contract()
     if model_id == small.model_id:
-        return small
+        candidates.append(small)
     try:
-        return _bundle_contract(model_id)
-    except ModelStoreError as error:
-        raise OfficialCensusError(
-            "saved observation model ID is not registered"
-        ) from error
+        candidates.append(_bundle_contract(model_id))
+    except ModelStoreError:
+        pass
+    matches = [
+        contract
+        for contract in candidates
+        if contract.model_sha256 == model_sha256
+        and contract.dictionary_sha256 == dictionary_sha256
+        and contract.preprocessor_id == preprocessor_id
+    ]
+    if len(matches) != 1:
+        raise OfficialCensusError("saved observation model binding is not registered")
+    return matches[0]
 
 
 def _sha256(data: bytes) -> str:
@@ -260,7 +274,14 @@ def _load_observations(
     if not isinstance(raw, dict) or set(raw) != required:
         raise OfficialCensusError("saved observation bindings are invalid")
     contract = _registered_contract(
-        raw["model_id"] if isinstance(raw["model_id"], str) else ""
+        raw["model_id"] if isinstance(raw["model_id"], str) else "",
+        raw["model_sha256"] if isinstance(raw["model_sha256"], str) else "",
+        (
+            raw["dictionary_sha256"]
+            if isinstance(raw["dictionary_sha256"], str)
+            else ""
+        ),
+        raw["preprocessor_id"] if isinstance(raw["preprocessor_id"], str) else "",
     )
     if (
         raw["schema"] != OBSERVATION_SCHEMA

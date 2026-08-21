@@ -1119,6 +1119,21 @@ class ContractTests(unittest.TestCase):
             "9ef676d6ed3c88256a2d92c640c44f25b0c40947e111b14b8be8f594091563e6",
         )
 
+    def test_registered_small_onnx_bundle_is_exact(self) -> None:
+        source = load_registered_onnx_bundle("pp-ocrv6-small-rec-onnx-v1")
+        self.assertEqual(source.model_name, "PP-OCRv6_small_rec")
+        self.assertEqual(source.native_contract.output_classes, 18_710)
+        self.assertEqual(
+            {item.filename for item in source.files},
+            {"inference.onnx", "inference.json", "inference.yml"},
+        )
+        onnx = next(item for item in source.files if item.filename == "inference.onnx")
+        self.assertEqual(onnx.bytes, 21_159_378)
+        self.assertEqual(
+            onnx.sha256,
+            "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634",
+        )
+
     def test_registered_medium_onnx_bundle_is_exact(self) -> None:
         source = load_registered_onnx_bundle("pp-ocrv6-medium-rec-onnx-v1")
         self.assertEqual(source.model_name, "PP-OCRv6_medium_rec")

@@ -227,10 +227,10 @@ rejection thresholds.
 
 `ocr:official-onnx:census` applies the same complete-corpus song-identity measurement to pinned
 official ONNX recognizers without removing or rewriting catalog titles to fit a model dictionary.
-The legacy registered small graph uses explicit `--model` and `--dictionary` files; a registered
-multi-file candidate such as `pp-ocrv6-tiny-rec-onnx-v1` or
-`pp-ocrv6-medium-rec-onnx-v1` uses its verified `--bundle` directory, explicit registered
-`--bundle-model-id`, and the model's registered native dynamic preprocessor. Inference is split into 128-crop process
+The legacy small parity path uses explicit `--model` and `--dictionary` files. Official-model census
+instead takes a registered candidate's verified `--bundle` directory, explicit
+`--bundle-model-id`, and native dynamic preprocessor; candidates include
+`pp-ocrv6-small-rec-onnx-v1` and `pp-ocrv6-medium-rec-onnx-v1`. Inference is split into 128-crop process
 batches, while the Rust decoder retains only one crop's input and output tensors at a time. Each
 batch response is bound to its request digest and exact model, dictionary, preprocessor, width,
 timestep, and input-tensor digests. The census publishes reusable open-text observations before
@@ -238,8 +238,10 @@ running exact comparison-key, absolute-Levenshtein, and normalized-Levenshtein s
 catalog song. The create-only sibling defaults to `<output>.observations.json`, or an explicit new
 `--observation-output` sibling; it therefore survives interruption or failure during catalog
 search. A later run may supply that observation path and digest without model arguments to reproduce
-all three searches without ONNX inference. A successful census also retains the same bytes inside
-its create-only result directory.
+all three searches without ONNX inference. Saved observations select their registered contract by
+the exact model, dictionary, and preprocessor binding, so the legacy fixed-width small parity path
+and the dynamic small census path remain independently replayable under the shared model ID. A
+successful census also retains the same bytes inside its create-only result directory.
 
 By default the command uses one scorepeek-owned
 `.scorepeek-official-census-diagnostic` directory in the output parent. Its fixed marker, writer
@@ -343,7 +345,7 @@ model.
 
 Official-model comparisons use a separate bundle registry so they do not alter
 the accepted small-model parity object. The registered candidates are
-`pp-ocrv6-tiny-rec-onnx-v1`, `pp-ocrv6-medium-rec-onnx-v1`,
+`pp-ocrv6-small-rec-onnx-v1`, `pp-ocrv6-tiny-rec-onnx-v1`, `pp-ocrv6-medium-rec-onnx-v1`,
 `pp-ocrv5-mobile-rec-onnx-v1`, and `pp-ocrv5-server-rec-onnx-v1`; each candidate's exact registered
 file set and native input/output contract are revision- and digest-bound together. For example,
 `ocr:official-model:fetch -- --model-id pp-ocrv5-mobile-rec-onnx-v1` publishes

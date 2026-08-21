@@ -100,6 +100,7 @@ mise run recognition:title:dictionary:audit -- --catalog-store /absolute/private
 mise run ocr:sync
 mise run ocr:model:fetch
 mise run ocr:onnx:model:fetch
+mise run ocr:official-model:fetch -- --model-id pp-ocrv6-small-rec-onnx-v1
 mise run ocr:official-model:fetch -- --model-id pp-ocrv6-tiny-rec-onnx-v1
 mise run ocr:official-model:fetch -- --model-id pp-ocrv6-medium-rec-onnx-v1
 mise run ocr:official-model:fetch -- --model-id pp-ocrv5-mobile-rec-onnx-v1

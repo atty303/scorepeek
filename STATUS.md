@@ -1036,6 +1036,36 @@ without ONNX produced artifact SHA-256
 `2d2bed38373f55dd72db336ce30bb8df31fc5bc6e8ff1daf24ab0c295047cc7f` with byte-identical
 strategy metrics, incomplete-song records, and gain/loss sets.
 
+The official `PP-OCRv6_small_rec` graph has now been remeasured with the corrected native dynamic
+preprocessor, completing the phase-one official-model baselines. The new complete-bundle manifest
+SHA-256 `4064dfa4124ada63613fe39fe2dee92f6ce6cae898e2830b302f5ae593f60672` binds official
+repository revision `b8f84f0b80c529de40b4fbb3544b84fa7233a513`, the same previously registered
+21,159,378-byte graph SHA-256, the byte-identical inference JSON and YAML/dictionary, Apache-2.0
+provenance, and the native NCHW BGR 3x48 dynamic-width, 18,710-class CTC contract. A one-crop probe
+confirmed that the graph bytes are unchanged while the corrected path uses width 506 instead of the
+legacy official path's fixed width 320, emits 63 timesteps, and decodes `smile`.
+
+The corrected small census ran the same 3,061 stationary crops, 1,119 songs, and 1,879 catalog
+candidates. Its private artifact SHA-256 is
+`6f2e0dd2011a7690a076c9c114c29c097e4c898c4ea3c067bf718109117cbdec`; reusable observations are
+SHA-256 `000f6255c5f99616cbf488e960971febab5d08b7b5e23a620bf71968f0164652`. Exact
+comparison-key search fully recognized 1,028 songs with zero wrong unique and 196 unknown/tied crop
+decisions. Absolute Levenshtein reached 1,109 songs with three wrong unique decisions, all three
+`OOO` crops, and 20 unknown/tied decisions. Normalized Levenshtein reached 1,110 songs with one wrong
+unique `≡+≡` crop and 17 unknown/tied decisions. Its minimum correct margin `0.0434782505` remains
+below its maximum incorrect margin `0.0757575780`, so positive-only margins still cannot define a
+live threshold. Compared with the earlier fixed-width small measurement, normalized coverage remains
+1,110 songs while wrong unique decisions fall from three to one; exact coverage rises from 991 to
+1,028 songs and has no wrong unique decisions.
+
+The first saved-observation replay exposed that model-ID-only contract lookup selected the legacy
+fixed-width small contract before the new dynamic contract. Replay now resolves the exact registered
+model, dictionary, and preprocessor tuple, preserving both historical fixed-width and corrected
+dynamic small observations. The same failed replay oracle then succeeded. Replay artifact SHA-256
+`48282ab48096515a93235e8e420598d6ba3656595af5ed1fb8cae1060003082e` has byte-identical
+strategy metrics, incomplete-song records, and gain/loss sets, and republishes the same observation
+SHA-256.
+
 ## Next executable task
 
 Do not continue from the mapped initializer, re-evaluate the six historical fine-tuning pilots, export
@@ -1048,11 +1078,12 @@ recognition path to handle every song. A unified path and bounded multiple-path 
 be compared by global song uniqueness, wrong unique decisions, runtime cost, and implementation
 complexity; that is a selection criterion, not a conclusion from the current 26-crop observation.
 
-Tiny, medium, v5 mobile, and v5 server are measured but none is selected or removed from phase two.
-Remeasure the registered official PP-OCRv6 small candidate with the corrected dynamic preprocessor
-and the same complete-census contract. After every runnable official model has a native baseline, apply any
-global presentation, alias, calibration, or stationary aggregation candidate uniformly to all of
-them. Do not start fine-tuning before those two phases are measured.
+Small, tiny, medium, v5 mobile, and v5 server now have corrected native baselines, but none is selected
+or removed from phase two. Build a cross-model residual matrix from the saved observations without
+running ONNX again, then define the first global model-free decoder candidate from that evidence and
+apply it uniformly to every runnable model. Preserve song-level gain/loss sets and wrong unique crop
+decisions for each model. Do not start fine-tuning before the global decoder and stationary
+aggregation phase is measured.
 
 Selection requires the same complete 3,061-crop, 1,119-song census and full competing catalog domain.
 That census must continue to use the now-verified pixel-exact native preprocessing and bounded

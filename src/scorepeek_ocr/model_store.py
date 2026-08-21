@@ -43,6 +43,13 @@ REGISTERED_ONNX_MODEL_MANIFEST_SHA256 = (
     "48cc68b16e785c4b2a0fa2a7764bb1ac6e87e9199065f5bea090a94fca97ee6c"
 )
 REGISTERED_ONNX_BUNDLE_MANIFESTS = {
+    "pp-ocrv6-small-rec-onnx-v1": (
+        PROJECT_ROOT
+        / "models"
+        / "manifests"
+        / "pp-ocrv6-small-rec-onnx-bundle-v1.json",
+        "4064dfa4124ada63613fe39fe2dee92f6ce6cae898e2830b302f5ae593f60672",
+    ),
     "pp-ocrv6-tiny-rec-onnx-v1": (
         PROJECT_ROOT
         / "models"
@@ -73,6 +80,26 @@ REGISTERED_ONNX_BUNDLE_MANIFESTS = {
     ),
 }
 REGISTERED_ONNX_BUNDLE_CONTRACTS = {
+    "pp-ocrv6-small-rec-onnx-v1": {
+        "model_name": "PP-OCRv6_small_rec",
+        "repository": "PaddlePaddle/PP-OCRv6_small_rec_onnx",
+        "revision": "b8f84f0b80c529de40b4fbb3544b84fa7233a513",
+        "output_classes": 18710,
+        "files": {
+            "inference.onnx": (
+                "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634",
+                21_159_378,
+            ),
+            "inference.json": (
+                "f0bf53c853937a917affdd74467472167727f8ab0f0f7bded01c4a16c27e46e6",
+                208_004,
+            ),
+            "inference.yml": (
+                "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1",
+                150_579,
+            ),
+        },
+    },
     "pp-ocrv6-tiny-rec-onnx-v1": {
         "model_name": "PP-OCRv6_tiny_rec",
         "repository": "PaddlePaddle/PP-OCRv6_tiny_rec_onnx",

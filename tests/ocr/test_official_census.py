@@ -684,6 +684,38 @@ class OfficialCensusTests(unittest.TestCase):
                     path, _sha256(changed), "2" * 64, "3" * 64, labels
                 )
 
+    def test_saved_small_observations_select_the_exact_preprocessor_contract(self) -> None:
+        source = load_registered_onnx_bundle("pp-ocrv6-small-rec-onnx-v1")
+        files = {entry.filename: entry.sha256 for entry in source.files}
+        labels = [{"group_id": "group-1", "crop_file_sha256": "1" * 64}]
+        record = {
+            "schema": OBSERVATION_SCHEMA,
+            "training_input_sha256": "2" * 64,
+            "catalog_candidate_artifact_sha256": "3" * 64,
+            "model_id": source.model_id,
+            "model_sha256": files["inference.onnx"],
+            "dictionary_sha256": files["inference.yml"],
+            "preprocessor_id": (
+                "paddleocr-3.7.0-bgr-dynamic-rec-resize-3x48x320-3200-v1"
+            ),
+            "rows": [
+                {
+                    "group_id": "group-1",
+                    "crop_file_sha256": "1" * 64,
+                    "decoded_text": "CAT",
+                }
+            ],
+        }
+        encoded = (json.dumps(record, separators=(",", ":")) + "\n").encode()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "observations.json"
+            path.write_bytes(encoded)
+            decoded = _load_observations(
+                path, _sha256(encoded), "2" * 64, "3" * 64, labels
+            )
+        self.assertEqual(decoded["preprocessor_id"], record["preprocessor_id"])
+        self.assertEqual(decoded["decoded_text"], ["CAT"])
+
     def test_distance_search_keeps_unsupported_full_catalog_title(self) -> None:
         songs = [
             ("00000000-0000-0000-0000-000000000001", "CAT"),
