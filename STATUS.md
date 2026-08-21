@@ -188,8 +188,11 @@ is outside this checkpoint.
   crop-manifest digest and registered normalizer digest, and cannot accept a
   bare observed or canonical PPM directly.
 - A separately versioned integrated-context crop layout that leaves the canonical layout and its
-  historical crop artifacts unchanged. It binds the existing result artist ROI plus independently
-  measured music-select artist, selected-chart, and fixed active-row title ROIs. The create-only
+  historical crop artifacts unchanged. Its v2 contract binds the existing result artist ROI plus
+  independently measured music-select artist, selected-chart, and selected active-row title ROIs.
+  The active title preserves the normal row's right edge while extending left to the selected row's
+  title-panel boundary; it does not reuse the normal row ROI. The superseded v1 context artifacts
+  fail the current layout-digest check rather than entering recognition. The create-only
   exporter accepts only a validated canonical extraction and classified result or music-select
   frame, then publishes field, pixel, file, frame, normalizer, base-layout, and context-layout
   evidence without accepting any recognized value.
@@ -332,16 +335,17 @@ is outside this checkpoint.
 ## Verified in this checkpoint
 
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
-  The current workspace run covered 96 `scorepeek` library tests, 13 binary tests, 55 offline
+  The current workspace run covered 97 `scorepeek` library tests, 13 binary tests, 55 offline
   corpus tests, 75 offline Python OCR tests, and the recording-dataset E2E gate.
-- The integrated-context observer ran over both visually reviewed music-select frames and the
+- The corrected integrated-context observer ran over both visually reviewed music-select frames and the
   retained PTS-190000 result frame with model SHA-256
   `5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634`. It observed music-select
   artist text `YutaImai` and `BEMANI Sound Team "HuΣeR X Yvya" feat紫村 花澄`, active-row text
-  `BSOLUTEEVIL` and `NEMONE`, and result artist text `Yuta Imai`. Both selected-chart observations
-  remained explicit unknowns. These three frames establish the digest-bound diagnostic path and
-  expose active-row first-character loss; they do not establish accuracy, a correction, or an
-  acceptance threshold.
+  `ABSOLUTEEVIL` and `ANEMONE`, and result artist text `Yuta Imai`. Both selected-chart observations
+  remained explicit unknowns. The v2 layout SHA-256 is
+  `e2158019ef96c8eacdf2a46ccf387b84a3faf07566c1eeccf813b2fb1064be1a`; direct crop inspection
+  confirms complete first glyphs in both active rows. These three frames establish the corrected
+  digest-bound diagnostic path, not accuracy or an acceptance threshold.
 - The prior session's 3,061 provisional private labels and bound crops were recovered from its
   temporary tree into an operator-owned stable private-artifact root, with all crop paths and
   complete file/pixel SHA-256 evidence revalidated after relocation. The resulting song-disjoint
@@ -643,13 +647,14 @@ is outside this checkpoint.
 - Independent visual review of those same frames labelled the central artist, selected difficulty
   and level, and active right-list title as `Yuta Imai` / HYPER 10 / `ABSOLUTE EVIL` and
   `BEMANI Sound Team "HuΣeR x Yvya" feat.紫村 花澄` / HYPER 7 / `ANEMONE`. The separately
-  versioned context layout produced private manifests
-  `2c6e7382dbbbf4995eeb006efd2195044385a131599fb0b611408879bef2e793` and
-  `d5967a8ec98847e114a8f41aa94ff7332e5417572deea11dd254de7c99a7747a` with complete
+  versioned v2 context layout produced private manifests
+  `141118d7338d2ea10c4f3a07c1e73c4aaa5836b8559d60cd5e4784608e71e38e` and
+  `028d4d8af7e2cbeb53e9324bfa0985e6abd19f17071005875b15a56bbbee41aa` with complete
   artist, combined chart-context, and active-title crops. Result PTS 190000 produced artist-only
-  manifest `cc2e2184c1cddaf91b44fbeef4538cfa92e6e0badfdbf8f90872e7b83333e17a`. The active
-  title file hashes exactly match the already retained generic list-slot evidence; these three
-  temporary manifests remain outside the repository and are measurement evidence only.
+  manifest `3edcbf63af8497679b1fa84f1b00971025131cca786c5b58028b45996ab7fdf0`. The v1 active
+  title incorrectly reused generic slot 10 and clipped the selected presentation's first glyph;
+  its temporary manifests are superseded. The three v2 manifests remain outside the repository and
+  are measurement evidence only.
 - The same recording supplied `ABSOLUTE EVIL` in a result at source PTS 190000 and in right-list
   slot 10 at PTS 110000. The intact `BSOLUTE EVIL` suffix required translation only, not scaling;
   a neutral foreground-mask comparison measured intersection-over-union 0.9561805101373446. This
@@ -1145,8 +1150,8 @@ can enumerate selection, gameplay, and result episodes even when recognition or 
 one; define screen-local episode identity, cross-screen linkage, recording completeness, cadence,
 resource ceilings, and value-free unknown/rejection evidence. Keep this as a versioned diagnostic
 contract and replay fixture boundary, not an accepted live state machine. Preserve the current public
-event API boundary and do not compensate for the two active-row first-character losses with an ROI,
-alias, or threshold change based only on those frames.
+event API boundary. Treat the corrected active-row ROI as measurement evidence only; do not derive an
+alias or recognition threshold from these two frames.
 
 Do not continue the exhaustive official-model comparison, custom training/export, mapped initializer,
 one-character router, per-song alias, or other OCR-only deep dive. Reopen one only after integrated

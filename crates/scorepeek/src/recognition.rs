@@ -51,7 +51,7 @@ const MAX_NORMALIZER_BYTES: u64 = 64 * 1024;
 const PPM_HEADER: &[u8] = b"P6\n1920 1080\n255\n";
 const CANONICAL_FILE_BYTES: u64 = CANONICAL_BYTES as u64 + PPM_HEADER.len() as u64;
 const LAYOUT_BYTES: &[u8] = include_bytes!("canonical-layout-v1.json");
-const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v1.json");
+const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v2.json");
 const INTEGRATED_CONTEXT_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
 
 #[derive(Debug)]
@@ -597,17 +597,21 @@ impl IntegratedContextLayout {
     fn load() -> Result<Self, RecognitionError> {
         let layout: Self = serde_json::from_slice(INTEGRATED_CONTEXT_LAYOUT_BYTES)?;
         let canonical = CanonicalLayout::load()?;
-        if layout.schema != "scorepeek-integrated-context-layout-v1"
+        let active_list_slot = canonical
+            .music_select
+            .list_titles
+            .rois()
+            .nth(10)
+            .ok_or(RecognitionError::InvalidCanonicalLayout)?;
+        if layout.schema != "scorepeek-integrated-context-layout-v2"
             || layout.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID
             || layout.canonical_layout_sha256 != CanonicalLayout::sha256()
             || layout.result.artist != canonical.result.artist
-            || layout.music_select.active_list_title
-                != canonical
-                    .music_select
-                    .list_titles
-                    .rois()
-                    .nth(10)
-                    .ok_or(RecognitionError::InvalidCanonicalLayout)?
+            || layout.music_select.active_list_title.y != active_list_slot.y
+            || layout.music_select.active_list_title.height != active_list_slot.height
+            || layout.music_select.active_list_title.x >= active_list_slot.x
+            || layout.music_select.active_list_title.x + layout.music_select.active_list_title.width
+                != active_list_slot.x + active_list_slot.width
         {
             return Err(RecognitionError::InvalidCanonicalLayout);
         }
@@ -1525,6 +1529,27 @@ mod tests {
         );
     }
 
+    fn assert_selected_active_title_layout(
+        canonical: &CanonicalLayout,
+        context: &IntegratedContextLayout,
+    ) {
+        let active_list_slot = canonical.music_select.list_titles.rois().nth(10).unwrap();
+        assert_eq!(
+            context.music_select.active_list_title,
+            Roi {
+                x: 1305,
+                y: 520,
+                width: 505,
+                height: 45,
+            }
+        );
+        assert!(context.music_select.active_list_title.x < active_list_slot.x);
+        assert_eq!(
+            context.music_select.active_list_title.x + context.music_select.active_list_title.width,
+            active_list_slot.x + active_list_slot.width
+        );
+    }
+
     #[test]
     fn private_manifest_publication_is_atomic_and_no_clobber() {
         let root = tempdir().unwrap();
@@ -1678,10 +1703,7 @@ mod tests {
         let canonical = CanonicalLayout::load().unwrap();
         let context = IntegratedContextLayout::load().unwrap();
         assert_eq!(context.result.artist, canonical.result.artist);
-        assert_eq!(
-            context.music_select.active_list_title,
-            canonical.music_select.list_titles.rois().nth(10).unwrap()
-        );
+        assert_selected_active_title_layout(&canonical, &context);
 
         let mut music_select_pixels = vec![0_u8; CANONICAL_BYTES];
         for index in 0..canonical.music_select.presence.cyan_header_pixels_min as usize {
