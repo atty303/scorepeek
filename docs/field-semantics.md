@@ -78,11 +78,13 @@ the separately calibrated stricter title/context policy. The event preserves
 - Result emits once per result episode. Music select deduplicates a stable
   `(song, play mode, selected difficulty)` identity until it changes or the
   screen episode ends.
-- A screen-local episode ends on screen exit. A separate `play_attempt` may
-  carry a stable selection across an observed selection-to-gameplay-to-result
-  transition only while generation and every active binding remain unchanged.
-  Unknown transitions, source reconnect, or any profile/normalizer/layout/
-  catalog/model digest change reset both pending candidates and the attempt.
+- A screen-local episode ends on screen exit. Separately, the last stable
+  music-selection candidate set may contextualize result song resolution.
+  Confirmed non-state scenes, unrecognized frames, gameplay, result, and retry
+  preserve it; a new stable selection replaces it. Confident title/session end,
+  a recording coverage gap, source reconnect, or any profile/normalizer/layout/
+  catalog/model/runtime binding change clears it. Recognition failure alone is
+  not a coverage gap. The context does not infer mode, attempts, or play count.
 - Replay compares deterministic domain fields and issues. Transport event IDs
   and delivery wall time are excluded.
 - Every field needs positive, legitimate-absence where applicable, ambiguous,

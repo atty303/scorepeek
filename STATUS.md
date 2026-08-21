@@ -1129,83 +1129,58 @@ multi-model phase two and further OCR-only optimization stop here. Existing mode
 diagnostic evidence. The existing result probe read artist `Yuta Imai` at 0.9686627984046936, which is
 evidence that the selected observer can be applied to artist ROIs; it is not accepted-field validation.
 
-ADR 0023 defines independent song resolution for result and music-select contexts. Result uses title,
+ADR 0024 supersedes ADR 0023's play-attempt and full-session state inference while retaining
+independent song resolution for result and music-select contexts. Result uses title,
 artist, play mode, difficulty, level, and notes. Music select uses central title, artist, play mode,
 selected difficulty and level, and the active right-list title. Central and active titles are two
 presentations of one selection: agreement corroborates and readable conflict rejects; they are not
-blindly counted as two metadata votes. A screen-local episode stabilizes each screen, while an explicit
-`play_attempt` may link an observed stable selection through gameplay to result without substituting
-for result detection or result-only fields.
+blindly counted as two metadata votes.
 
-Timeline development will use a small set of scenario recordings rather than require a large prepared
-dataset. Ordinary live sessions must produce bounded local, replayable evidence independently of
-recognition success so missed result episodes remain observable.
+The stateful recognition boundary now owns only the last stable music-selection candidate set. A
+result candidate set intersects with that context: one shared song is accepted with explicit
+`result_and_stable_selection` provenance, an empty intersection is a typed conflict, and multiple
+members remain ambiguous. A screen-local unique result remains acceptable without context. Selection
+context cannot establish result-screen presence, savability, score, or any result-only field.
 
-The strict `scorepeek-private-play-attempt-scenario-v1` diagnostic contract now separates recorded
-screen/song/event observations from a recording-only inferred timeline proposal. Its synthetic
-scenario links music selection through gameplay to a proposed result whose detector was not run and
-whose event is absent, proving that such a result remains enumerable without recognition-triggered
-evidence. Timeline proposals begin as `needs_operator_review`; the operator receives recording and
-binding identity, completeness, inferred episode boundaries, proposed attempt links, discrepancies,
-uncovered ranges, and recording-external exception questions before confirmation. Operator-only
-facts are not guessed or silently folded into recording evidence.
+Confirmed non-state scenes, frames with no recognized semantic anchor, gameplay, ordinary result,
+gameplay restart without result, and result-to-gameplay replay preserve the context. Result processing
+does not consume it. A new stable selection replaces it. A confidently observed title, session end,
+recording coverage gap, or recognition-binding change clears it. Recognition failure by itself is not
+a coverage gap and does not clear context.
 
-Validation fail-closes on schema drift, binding drift, non-monotonic or non-contiguous observations,
-overlapping episodes, invalid attempt order, and a committed proposal that mismatches recording-only
-replay. Complete miss
-accounting requires at least two observations and a measured maximum gap strictly below the minimum
-result dwell; the synthetic 1,000 ms dwell is not target calibration. The contract bounds a document
-to 1 MiB, 8 segments, 4,096 observations per segment, 1,024 episodes, 512 attempts, 15 minutes and
-32 GiB per segment, and 128 GiB retained across 2 normal and 6 priority runs. Recording is default-on
-with opt-out, canonical full frames remain local until the ROI contract stabilizes, and remote export
-is disabled.
+The Rust `SongContext` is a pure synchronous deterministic reducer over non-empty candidate sets. It
+does not own mode, course progress, play count, attempt identity, retry detection, partial-history
+composition, or retrospective correction. Live recognition emits observed facts; persistence and
+consumers decide later composition. The removed `scorepeek-private-play-attempt-scenario-v1`, fixed
+synthetic cadence, episode proposal, attempt oracle, and report renderer are not compatibility
+boundaries and leave no legacy runtime path.
 
-A pure deterministic replay reducer now derives contiguous screen-local episode proposals from
-recording-only `timeline_evidence`, resets linkage across unknown evidence, sequence gaps, segments,
-and therefore binding changes, and links only an adjacent selection → gameplay → result sequence.
-Every observed screen kind, including `other`, remains in the episode composition; `other` resets
-attempt linkage rather than being discarded.
-Partial or dropped segment-level evidence disables all linkage because the hidden transition location
-is unknown. Zero-episode and zero-attempt proposals remain reportable. A selection can seed a link
-only after the v1 synthetic contract's two fresh observations and 250 ms minimum dwell; these values
-and the 250 ms target, 500 ms maximum gap, plus 1,000 ms synthetic result dwell are fixed scenario
-replay invariants, not target cadence calibration. `calibrated_profile` evidence is rejected until a
-separate versioned contract binds immutable calibration evidence. A recording-derived selection-context
-fingerprint, independent of live song recognition, makes continuity explicit; only the trailing run of
-one fingerprint may satisfy stability, while change or unknown evidence resets the candidate.
-The committed proposal remains a replay oracle: mismatch between inferred and committed episodes or
-three-episode attempt links fails with a distinct typed error in both public validation and report
-rendering, including when partial/dropped completeness invalidates a retained link. Live event
-outcomes do not enter that
-oracle; they affect only miss accounting and the report. The human-facing Markdown report includes
-exact scenario and binding identities, segment completeness and timing, recording-only inferred
-episode ranges and proposed links, plus a separate gaps/discrepancies section with per-episode live
-detector/song/event counts, segment-qualified observation discrepancies, uncovered evidence,
-accepted song-ID sets and within-/cross-screen conflicts, and three explicit operator-review
-questions. It distinguishes suppressed from absent evidence while treating both as no emitted public
-result event. Result episodes are enumerated independently of attempt linkage, but absence is counted
-and asserted only for complete segments; partial/dropped segments retain typed observation outcomes
-without an episode-wide miss claim. The report calls out gameplay/other song or event outcomes and duplicate result emissions
-without rejecting the diagnostic input. Uncovered observations retain their complete live
-detector/song/event state on the segment-qualified discrepancy line rather than disappearing from
-episode summaries. Covered observations likewise retain per-observation typed live states, IDs, and
-reasons in that section in addition to episode aggregates. In the synthetic missed-result scenario, recording
-replay infers result sequences 5–6 while the live detector and song decision were not run and no result
-event was emitted. The reducer never reads operator-only facts and cannot auto-confirm the proposal.
-The recording-replay evidence producer, live state machine, live recorder, target cadence calibration,
-and public event path remain unimplemented and unverified.
+The operator-supplied INFINITAS flow remains validation material in
+`docs/song-context-validation-scenarios.md`: launch, title, mode selection, unlimited standard
+selection/gameplay/result repetition, finite non-fixed dan gameplay/result repetition, optional final
+dan result, gameplay restart without result, result-to-gameplay replay, return to title, normal exit,
+and abrupt termination. These scenes are not discarded merely because they are not runtime states.
+Tests currently distill them into context set/preserve/replace/clear behavior and verify that retry
+does not create a play counter. At least one retained private recording covers an ordinary session
+from launch and is the next source of observable scenario composition. Its actual anchors, neutral
+intervals, reset boundaries, and exceptions have not yet been extracted or confirmed.
+
+Recognition-independent bounded local diagnostics remain required so missed result evidence does not
+disappear when screen detection, OCR, or event emission misses. That application-owned recording,
+retention, completeness, target cadence, result-denominator logic, and public event path remain
+unimplemented and unverified; they do not expand `SongContext` into a session state machine.
 
 ## Next executable task
 
-Define and implement the smallest offline recording-replay screen-evidence producer for the existing
-canonical scenario frames. It must populate `timeline_evidence` and the versioned selection-context
-fingerprint independently of live detector, song recognition, and event outcomes; preserve `unknown`
-for ambiguous or uncovered frames; and feed the
-pure reducer so the same proposal report is reproduced. Use only the registered screen predicates and
-binding evidence already accepted for the exact canonical profile; do not introduce a live state
-machine, recorder, event delivery, target cadence claim, or public API change. Report the inferred
-composition for operator review rather than auto-confirming it. Treat the corrected active-row ROI as
-measurement evidence only; do not derive an alias or recognition threshold from these two frames.
+Inspect the retained private recording that covers an ordinary session from launch. Report its
+observed composition separately from the operator-supplied game-flow facts, including stable
+music-selection windows, result windows, confirmed neutral/unrecognized intervals, title/session-end
+resets, retry shapes if present, coverage gaps, and unresolved boundaries. Translate only the
+set/preserve/replace/clear behavior needed by `SongContext` into a private replay label and committed
+synthetic conformance scenario. Do not add mode, attempt, play-count, retry-count, or full-session
+state to the recognition core; do not infer a reset from frame-recognition failure alone; and do not
+claim target cadence or support from one recording. Treat the corrected active-row ROI as measurement
+evidence only; do not derive an alias or recognition threshold from these two frames.
 
 Do not continue the exhaustive official-model comparison, custom training/export, mapped initializer,
 one-character router, per-song alias, or other OCR-only deep dive. Reopen one only after integrated
@@ -1257,5 +1232,5 @@ moving route-independent ROIs.
 | M4 | Shared canonical layout, domain normalization, official recognizer selection, and parity; custom training/export only if justified | in progress |
 | M5 | Supported capture-profile evaluation and default selection | pending |
 | M6 | Fail-closed title/artist/chart recognition, screen-local song resolution, and cross-field validation | pending |
-| M7 | Scenario-replayed play attempts, bounded live diagnostics, versioned events, and NDJSON daemon | pending |
+| M7 | Scenario-replayed selection song context, bounded live diagnostics, versioned events, and NDJSON daemon | pending |
 | M8 | Integrated catalog, holdout, and Bazzite release gates | pending |

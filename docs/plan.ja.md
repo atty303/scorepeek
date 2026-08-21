@@ -14,8 +14,8 @@
   music-selectの選択中titleおよび可視list row crop、result artistとmusic-select artist/chart/active-rowの
   versioned context crop、active catalog trie診断まで）
 - 公式ONNX recognition model比較とPP-OCRv6 small native-dynamic選定: 完了
-- accepted field認識、play-attempt、live replay telemetry、live capture、event daemon: 未着手
-- scorepeek-owned OCR学習/export: smallをartist/chart context/play-attemptと統合した後の凍結残差が
+- accepted field認識、selection song context統合、live replay telemetry、live capture、event daemon: 未着手
+- scorepeek-owned OCR学習/export: smallをartist/chart context/selection song contextと統合した後の凍結残差が
   missing OCR signalに帰属し、別経路が安全に解消できる場合だけ再検討
 - Bazzite実機検証とprivate corpus収集: 着手（OBS/vkcapture実録画1本のcopyless isolated
   import、canonical変換、目視確認まで）
@@ -235,7 +235,7 @@ IDをcandidate artifactへbindする。詳細はADR 0019に従う。
 - decoder: dictionaryやtimestepで直接表現できないsongもfull catalog titleのまま距離検索の競合domainへ
   残し、modelに合わせたtitle削除、短縮または別identityへの置換を行わない。実行不能なmodelは理由を
   matrixへ記録する
-- training/export: smallをartist、chart context、play-attemptと統合した後にもmissing OCR signalが残り、
+- training/export: smallをartist、chart context、selection song contextと統合した後にもmissing OCR signalが残り、
   凍結証拠上で別modelまたはcustom経路が安全に解消できる場合だけ再検討する
 - runtime: 選定したpinned official ONNXをRust/ONNX Runtimeで実行する。mapped initializerは診断比較に
   限定し、選定前にcustom exportしない
@@ -271,10 +271,13 @@ music-select live認識はscroll停止後の安定状態
 だけを対象とし、scrolling中の認識を要求しない。最終目的とrelease gateはresult記録漏れの防止だが、
 result dataを増やすための専用playは前提にしない。通常のlive sessionからresult evidenceを自動的かつ
 privateに蓄積する。収集はresult detector、OCRまたはevent発行だけをtriggerにせず、見逃したresult
-episodeも後から列挙できる独立session timelineを保持する。result evidenceはtitle、session、play単位で
-開発用transfer sentinelと、model・threshold・candidate選定から凍結したaccepted holdoutへ分ける。
-少数のscenario録画からscreen-local episodeとselection→gameplay→resultの`play_attempt`を実装し、
-大規模な手作業timelineを開発前提にしない。通常live sessionではrecognition成功と独立にbounded local
+episodeも後から列挙できる独立recording inventoryを保持する。このinventoryはrecognition coreのstate
+machineではなく、result evidenceはtitle、session、play単位で開発用transfer sentinelと、model・threshold・
+candidate選定から凍結したaccepted holdoutへ分ける。
+少数のscenario録画から、stable music-selection候補をresult候補との一意化にだけ使う最小song contextを
+検証し、大規模な手作業timelineを開発前提にしない。起動から終了、standardの無限反復、段位の有限反復、
+retry、title復帰および終了はvalidation scenarioとして保持するが、mode、attempt、play回数またはsession
+進行をrecognition coreへ実装しない。通常live sessionではrecognition成功と独立にbounded local
 telemetryを残し、canonical evidence、sequence/timing、transition、全binding、decision/outcome/completenessを
 後からreplayできるようにする。music-list改善だけでresult改善を主張せず、凍結holdoutまたはcandidate確定後のprospectiveな通常sessionで、
 screen検出、song一意決定、event emission、session処理、dedupを含むcomplete result pathを最終的に
@@ -348,8 +351,9 @@ NV12、別color profileへ黙ってfallbackしない。
 8. **M5**: 条件付きOBS candidateを含むsupported profileのlifecycle/performanceを比較し、defaultを選ぶ。
 9. **M6**: screen、savable、title/artist/chart contextのfield recognizer、full-catalog screen-local song
    resolver、digits、cross-field validationの順で追加する。
-10. **M7**: 少数scenario replayから`play_attempt` state machineとrecognition-trigger非依存のbounded
-    live telemetryを実装し、その後versioned event schemaとNDJSON daemonを統合する。
+10. **M7**: 少数scenario replayから最小selection song contextとrecognition-trigger非依存のbounded
+    live diagnosticsを検証し、その後versioned event schemaとNDJSON daemonを統合する。ゲーム全体の
+    state machine、attempt、modeまたはretry回数は実装しない。
 11. **M8**: catalog update replay、full private holdout、Bazzite live flowをrelease gateへ統合する。
 
 新規runtime、training、parser、capture dependencyは、version、license、代替案、bundle/host影響を

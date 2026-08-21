@@ -26,8 +26,8 @@ flowchart LR
   FC --> CTC
   CTC --> SR["Screen-context song resolver"]
   RE --> SR
-  SR --> SS["Deterministic session / play attempt"]
-  SS --> DE["Deterministic domain event"]
+  SR --> SC["Minimal stable-selection song context"]
+  SC --> DE["Deterministic domain event"]
   DE --> ENV["Daemon transport envelope"]
   ENV --> API["Unix socket NDJSON v1"]
   API --> UI["Future UI and consumers"]
@@ -149,13 +149,19 @@ The session output is deterministic for recorded inputs. UUIDv7 IDs and wall
 clock delivery timestamps belong to a daemon-owned transport envelope, not the
 recognition result compared by replay tests.
 
-A screen-local episode stabilizes its own fields. A separate `play_attempt`
-links an observed stable selection through gameplay to result while all capture
-and recognition bindings remain identical. Selection context can corroborate a
-weak result song identity, but never substitutes for result detection,
-savability, or result-only fields.
+A screen-local episode stabilizes its own fields. The stateful recognition
+boundary retains only the last stable music-selection candidate set. Result
+candidates may intersect with it to improve song uniqueness, but context never
+substitutes for result detection, savability, or result-only fields. Neutral or
+unrecognized scenes preserve context; a new stable selection replaces it; a
+confident title/session end, coverage gap, or recognition-binding change clears
+it. Result processing does not consume it because result-to-gameplay replay can
+occur without another selection. Mode, attempts, retry count, and full-session
+composition remain outside recognition-core ownership.
 
-Development uses a small number of scenario recordings. Bounded local live
+Development uses a small number of scenario recordings, including a retained
+ordinary full-session recording. The complete game flow remains validation
+material even though it is not a runtime state machine. Bounded local live
 diagnostics are sampled independently of recognition success and preserve
 replayable canonical evidence, sequence/timing, transitions, immutable
 bindings, decisions/outcomes, and completeness. This makes missed detections

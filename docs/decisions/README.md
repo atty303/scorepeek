@@ -37,8 +37,10 @@ authoritative.
 - [ADR 0022: Select PP-OCRv6 small for contextual song recognition](0022-select-pp-ocrv6-small-for-contextual-recognition.md)
   supersedes ADR 0006's mandatory custom/single-title sequence, ADR 0020's exhaustive phase-two/no-selection requirement, and ADR 0021 only for
   requiring every decoder policy to be compared across every model.
-- [ADR 0023: Link screen context by play attempt and record replayable live evidence](0023-link-screen-context-by-play-attempt-and-record-replayable-live-evidence.md)
-  refines ADR 0018's result-evidence sequencing and complements ADR 0016.
+- [ADR 0024: Limit temporal state to selection song context](0024-limit-state-to-selection-song-context.md)
+  supersedes ADR 0023's `play_attempt` and full-session state inference while retaining its
+  screen-context and recognition-independent recording rationale, and supersedes ADR 0022 only for
+  naming play-attempt transitions as the contextual integration gate.
 
 ## Historical
 
@@ -46,6 +48,7 @@ authoritative.
 - ADR 0003: Python upstream-resource importer and Rust runtime
 - ADR 0008: route-local normalizers mapped to an underdetermined conceptual
   canonical frame and source ingest prematurely bound layout
+- ADR 0023: explicit play-attempt linkage and full-session timeline proposal
 
 Historical ADRs describe the initial bootstrap design and are not implementation
 requirements after their named superseding decisions.
