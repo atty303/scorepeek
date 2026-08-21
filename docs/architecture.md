@@ -24,8 +24,9 @@ flowchart LR
   OP --> OM
   RE --> CTC
   FC --> CTC
-  CTC --> SS
-  RE --> SS["Deterministic recognition session"]
+  CTC --> SR["Screen-context song resolver"]
+  RE --> SR
+  SR --> SS["Deterministic session / play attempt"]
   SS --> DE["Deterministic domain event"]
   DE --> ENV["Daemon transport envelope"]
   ENV --> API["Unix socket NDJSON v1"]
@@ -107,7 +108,8 @@ and a separate stateful session boundary:
 
 ```text
 RecognitionEngine.inspect(frame) -> RecognitionSnapshot
-TitleDecoder.score(logits, catalog, context) -> AcceptedTitle | Rejected
+TextObserver.observe(roi) -> TextObservation
+ScreenSongResolver.resolve(observations, catalog, context) -> AcceptedSong | Rejected
 RecognitionSession.process(snapshot) -> DomainEvent[]
 ```
 
@@ -121,11 +123,14 @@ padding, and tensor normalization belong to a versioned OCR preprocessor bound
 to the model. Training and Rust inference use the same preprocessing contract.
 
 Fields are represented as `known`, `unknown(reason)`, or `not_applicable`.
-Title OCR emits CTC logits rather than an authoritative free-form string. The
-decoder scores exact catalog variants and requires an absolute bound, runner-up
-margin, temporal agreement, and screen-specific independent context. Result
-uses play mode, difficulty, level, and notes; music select uses play mode,
-selected difficulty, and selected level. Version participates only when it is
+PP-OCRv6 small native-dynamic is the selected v1 text observer for title and
+artist; each field keeps its own ROI and preprocessing contract. OCR output is
+an observation rather than an authoritative value. Full-catalog resolution
+requires temporal agreement and screen-specific context. Result uses title,
+artist, play mode, difficulty, level, and notes. Music select uses central
+title, artist, play mode, selected difficulty and level, and the active
+right-list title. The two title presentations are not counted as independent
+metadata votes, and readable conflict rejects. Version participates only when it is
 independently recognized. Detected events require every mandatory field to be
 known and cross-field validation to succeed. Rejection is preferable to a guess.
 
@@ -143,6 +148,21 @@ relaxation are prohibited.
 The session output is deterministic for recorded inputs. UUIDv7 IDs and wall
 clock delivery timestamps belong to a daemon-owned transport envelope, not the
 recognition result compared by replay tests.
+
+A screen-local episode stabilizes its own fields. A separate `play_attempt`
+links an observed stable selection through gameplay to result while all capture
+and recognition bindings remain identical. Selection context can corroborate a
+weak result song identity, but never substitutes for result detection,
+savability, or result-only fields.
+
+Development uses a small number of scenario recordings. Bounded local live
+diagnostics are sampled independently of recognition success and preserve
+replayable canonical evidence, sequence/timing, transitions, immutable
+bindings, decisions/outcomes, and completeness. This makes missed detections
+observable after the fact. A `complete` interval has a maximum observation gap
+below the calibrated minimum result dwell; gaps and drops downgrade
+completeness and cannot prove result absence. Diagnostic failure cannot affect recognition or
+event delivery, and remote export is disabled without opt-in.
 
 ### Event API
 
@@ -163,5 +183,6 @@ catalog-adapter, or capture internals.
 | OCR preprocessing, model artifacts, and thresholds | Versioned scorepeek model bundles |
 | OCR training corpus and model artifacts | External private store |
 | Recognition and temporal semantics | scorepeek Rust core |
+| Bounded replayable live diagnostics | scorepeek application, outside the public event stream |
 | Public event compatibility | scorepeek schema version |
 | Future UI and persistence | Later scorepeek applications |

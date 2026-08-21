@@ -34,6 +34,11 @@ authoritative.
   model candidates requiring set-inclusion growth.
 - [ADR 0021: Search the full song catalog from imperfect text observations](0021-search-the-full-song-catalog-from-imperfect-text.md)
   supersedes ADR 0020 only for its direct-encodability or derived-signature evaluation gate.
+- [ADR 0022: Select PP-OCRv6 small for contextual song recognition](0022-select-pp-ocrv6-small-for-contextual-recognition.md)
+  supersedes ADR 0006's mandatory custom/single-title sequence, ADR 0020's exhaustive phase-two/no-selection requirement, and ADR 0021 only for
+  requiring every decoder policy to be compared across every model.
+- [ADR 0023: Link screen context by play attempt and record replayable live evidence](0023-link-screen-context-by-play-attempt-and-record-replayable-live-evidence.md)
+  refines ADR 0018's result-evidence sequencing and complements ADR 0016.
 
 ## Historical
 

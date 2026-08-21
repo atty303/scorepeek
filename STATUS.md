@@ -1030,8 +1030,8 @@ comparison-key search fully recognized 247 songs with seven wrong unique and 2,1
 crop decisions. Absolute Levenshtein reached 541 songs with 345 wrong unique and 1,030
 unknown/tied decisions. Normalized Levenshtein reached 630 songs with 610 wrong unique and 504
 unknown/tied decisions; its maximum incorrect margin was `0.6666666269`. These unadjusted results
-are substantially below the other measured native baselines but do not remove server from the
-uniform phase-two decoder comparison required by ADR 0020. Replaying the saved observations
+are substantially below the other measured native baselines. At that checkpoint ADR 0020 still
+required uniform phase-two comparison; ADR 0022 now stops that work and selects small. Replaying the saved observations
 without ONNX produced artifact SHA-256
 `2d2bed38373f55dd72db336ce30bb8df31fc5bc6e8ff1daf24ab0c295047cc7f` with byte-identical
 strategy metrics, incomplete-song records, and gain/loss sets.
@@ -1079,39 +1079,45 @@ the four shared unknown decisions are catalog-search ties, not absence of recogn
 explicit per-crop ground-truth oracle over the two existing decisions would fully recognize 1,113
 songs, two more than medium alone, but is diagnostic only and is not an implementable runtime policy.
 
+## Accepted contextual-recognition direction
+
+ADR 0022 selects the registered official PP-OCRv6 small native-dynamic model as the v1 title and
+artist text observer. Its corrected census recognized 1,110/1,119 songs completely, with one wrong
+unique crop decision and 17 unknown/tied decisions, from a 21,159,378-byte graph. Medium recognized
+1,111 songs but produced 14 wrong unique decisions from a 76,554,979-byte graph. Because screen and
+transition context can resolve abstention while a false unique decision is unsafe, exhaustive
+multi-model phase two and further OCR-only optimization stop here. Existing model observations remain
+diagnostic evidence. The existing result probe read artist `Yuta Imai` at 0.9686627984046936, which is
+evidence that the selected observer can be applied to artist ROIs; it is not accepted-field validation.
+
+ADR 0023 defines independent song resolution for result and music-select contexts. Result uses title,
+artist, play mode, difficulty, level, and notes. Music select uses central title, artist, play mode,
+selected difficulty and level, and the active right-list title. Central and active titles are two
+presentations of one selection: agreement corroborates and readable conflict rejects; they are not
+blindly counted as two metadata votes. A screen-local episode stabilizes each screen, while an explicit
+`play_attempt` may link an observed stable selection through gameplay to result without substituting
+for result detection or result-only fields.
+
+Timeline development will use a small set of scenario recordings rather than require a large prepared
+dataset. Ordinary live sessions must produce bounded local, replayable evidence independently of
+recognition success so missed result episodes remain observable. The exact ROI additions, state machine,
+telemetry schema/cadence/limits, and target validation remain unimplemented and unverified.
+
 ## Next executable task
 
-Do not continue from the mapped initializer, re-evaluate the six historical fine-tuning pilots, export
-a custom runtime graph, or start another OCR training run. Preserve the reproducible short-title
-artifact as observation material without selecting the small, medium, or any alternate official
-model, presentation, alias, bias, decoder, route detector, or specialist architecture. Do not now
-expand this probe into a one-character router or measure a routing threshold. When the completed
-evidence is later used for selection, do not require one model, presentation, parameter set, or
-recognition path to handle every song. A unified path and bounded multiple-path candidates may both
-be compared by global song uniqueness, wrong unique decisions, runtime cost, and implementation
-complexity; that is a selection criterion, not a conclusion from the current 26-crop observation.
+Implement the smallest integrated-context observation slice for the selected small model. First measure
+and version result artist plus the music-select central artist/selected chart context and active
+right-list title; do not change canonical ROI coordinates until those observations are independently
+labelled. Then define the minimal replayable `play_attempt` scenario and bounded diagnostic contract
+before implementing the state machine. Preserve the current public event API boundary.
 
-Small, tiny, medium, v5 mobile, and v5 server now have corrected native baselines, but none is selected
-or removed from phase two. The small/medium residual matrix has closed the signal-less-unknown question:
-do not rerun ONNX or add a specialist OCR route for those 19 crops. Define the first global model-free
-decoder candidate from the four shared ties and the remaining cross-model residuals, then apply it
-uniformly to every runnable model's saved observations. Preserve song-level gain/loss sets and wrong
-unique crop decisions for each model. Do not mistake non-empty text for a correct decision, use the
-ground-truth oracle as a runtime policy, or start fine-tuning before the global decoder and stationary
-aggregation phase is measured.
+Do not continue the exhaustive official-model comparison, custom training/export, mapped initializer,
+one-character router, per-song alias, or other OCR-only deep dive. Reopen one only after integrated
+context leaves a frozen residual caused by missing OCR signal and the challenger safely resolves it.
 
-Selection requires the same complete 3,061-crop, 1,119-song census and full competing catalog domain.
-That census must continue to use the now-verified pixel-exact native preprocessing and bounded
-one-crop streaming rather than restoring the provisional aggregate tensor allocation. A
-candidate may advance only when the complete census increases correctly and uniquely recognized
-songs under the existing ranking gate. Report gained and lost song sets, but do not require set
-inclusion: a local regression does not outweigh higher global coverage. Wrong unique crop decisions
-remain failures. When correct-song coverage is equal, prefer fewer wrong unique crop decisions, then
-the official model with the smaller and simpler runtime bundle, then measured target latency.
-Title-disjoint validation/evaluation remain guards rather than the selection oracle. Do not add broad
-Unicode compatibility, case,
-Greek/Latin-confusable folding, or unbound per-song edit-distance exceptions, and do not tune live
-thresholds from this positive-only corpus. Keep the 24
+The complete 3,061-crop census remains the frozen title-only diagnostic baseline; do not tune live
+thresholds from this positive-only corpus or add broad Unicode compatibility, case, Greek/Latin
+confusable folding, or unbound per-song edit-distance exceptions. Keep the 24
 INFINITAS-blue and 299 LEGGENDARIA-purple groups out of training until their labels are established
 independently of the recognition output; evaluate any future color correction under the same
 explicit transform ID in training and replay.
@@ -1119,9 +1125,9 @@ Keep the 351 locked/unobservable, 438 possible right-clips, vertical-motion, sel
 and redacted-secret groups quarantined until their separate correction or completeness evidence
 exists. ADR 0018 fixes this music-list-first sequence as a low-collection-cost surrogate for the
 non-negotiable result-recording goal. Music-select live recognition needs only a calibrated stable
-state after scrolling stops; scrolling recognition is not required. After an official music-select
-candidate clears the provisional split, replay its already pinned official ONNX graph before runtime
-selection. Require the registered Paddle/export/parity path only if a later custom candidate is selected.
+state after scrolling stops; scrolling recognition is not required. Use the pinned official small ONNX
+graph for the integrated observation slice. Require the registered Paddle/export/parity path only if a
+later custom candidate is justified and selected.
 Collect result observations passively from ordinary live sessions rather
 than requiring dedicated data-collection play. Preserve an independently reviewable session timeline
 that can enumerate result episodes even when detection, OCR, and event emission all miss them; the
@@ -1154,6 +1160,6 @@ moving route-independent ROIs.
 | M3 | Portal/Gamescope observed-frame profiles and calibration corpus | pending |
 | M4 | Shared canonical layout, domain normalization, official recognizer selection, and parity; custom training/export only if justified | in progress |
 | M5 | Supported capture-profile evaluation and default selection | pending |
-| M6 | Fail-closed field recognition and cross-field validation | pending |
-| M7 | Deterministic session, versioned events, and NDJSON daemon | pending |
+| M6 | Fail-closed title/artist/chart recognition, screen-local song resolution, and cross-field validation | pending |
+| M7 | Scenario-replayed play attempts, bounded live diagnostics, versioned events, and NDJSON daemon | pending |
 | M8 | Integrated catalog, holdout, and Bazzite release gates | pending |

@@ -18,15 +18,18 @@ be established, the field is `unknown`.
 - A number is `known` only when every visible slot is accepted and the complete
   value passes its domain and cross-field constraints. Partial digits do not
   form a value.
-- A title is `known` only when catalog-constrained CTC scoring has one accepted
-  exact display variant and all independent image context available on that
-  screen is compatible. Result uses play mode, difficulty, level, and notes;
-  music select uses play mode, selected difficulty, and selected level. Version
+- A song is `known` only when full-catalog resolution has one accepted identity
+  and all independent image context available on that screen is compatible.
+  Result uses title, artist, play mode, difficulty, level, and notes; music
+  select uses central title, artist, play mode, selected difficulty, selected
+  level, and the active right-list title. The two music-select title
+  presentations corroborate one selection and are not independent metadata
+  votes; a readable conflict rejects. Version
   is additional evidence only when an independent version field is recognized.
   Candidate metadata cannot corroborate itself. Raw OCR text is not a value.
 - A boolean needs calibrated positive and negative evidence. Failure to match
   the positive class is `unknown`, not `false`.
-- All evidence used by one event must have the same capture generation,
+- All screen-local evidence used by one event must have the same capture generation,
   capture profile, normalizer, canonical layout, model/catalog binding, and
   temporal episode.
 
@@ -39,7 +42,7 @@ be established, the field is `unknown`.
 | playside | Always | Unique 1P or 2P layout anchors |
 | play mode | Always | Unique SP or DP evidence |
 | play type | Always | SP follows known SP mode; DP battle/non-battle needs explicit evidence and never defaults |
-| song | Always | Accepted title consistent with independently recognized play mode, difficulty, level, and notes |
+| song | Always | Accepted title and artist consistent with independently recognized play mode, difficulty, level, and notes; a linked selection may corroborate identity but cannot establish result presence or result-only fields |
 | difficulty and level | Always | Unique closed difficulty and complete level value consistent with the accepted catalog chart |
 | notes | Always | Complete positive integer consistent with the recognized result layout |
 | current score | Always | Complete non-negative value satisfying `score <= 2 * notes` |
@@ -58,7 +61,7 @@ minimal result event.
 | --- | --- | --- |
 | music-select state | Precondition for every music-select event | Unique layout/state anchors; rapid scroll, transition, overlay, and unknown classes reject |
 | play mode | Always | Unique SP or DP evidence |
-| song | Always | Accepted title consistent with independently recognized play mode, selected difficulty, and selected level |
+| song | Always | Accepted central title and artist consistent with play mode, selected difficulty, selected level, and the active right-list title when readable |
 | selected difficulty and level | Always | Unique selected state and complete level consistent with the accepted catalog chart |
 | INFINITAS status | Catalog metadata, not an image field | `confirmed_present`, `unknown`, or `conflicted` from the active catalog snapshot; never inferred from source absence |
 | has score data, clear, DJ level, score, miss, per-difficulty levels | Optional v1 capability after each presence/absence predicate is calibrated | Unique complete values; validated no-score state makes score fields `not_applicable` |
@@ -75,9 +78,11 @@ the separately calibrated stricter title/context policy. The event preserves
 - Result emits once per result episode. Music select deduplicates a stable
   `(song, play mode, selected difficulty)` identity until it changes or the
   screen episode ends.
-- Screen exit, source reconnect, capture generation, or any active capture
-  profile/normalizer/canonical-layout/catalog/model digest change resets pending
-  candidates.
+- A screen-local episode ends on screen exit. A separate `play_attempt` may
+  carry a stable selection across an observed selection-to-gameplay-to-result
+  transition only while generation and every active binding remain unchanged.
+  Unknown transitions, source reconnect, or any profile/normalizer/layout/
+  catalog/model digest change reset both pending candidates and the attempt.
 - Replay compares deterministic domain fields and issues. Transport event IDs
   and delivery wall time are excluded.
 - Every field needs positive, legitimate-absence where applicable, ambiguous,

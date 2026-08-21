@@ -3,7 +3,7 @@
 ## 状態
 
 - 初回決定日: 2026-08-15
-- 最終更新日: 2026-08-20
+- 最終更新日: 2026-08-21
 - repository bootstrapとtarget inventory probe: 完了
 - M1.1 catalog contractとlocal federation core: 完了
 - M1.2 live acquisitionとsync orchestration: manual/scheduled syncまで完了
@@ -12,8 +12,10 @@
 - M4 offline canonical/recognition spike: 着手（OBS/vkcapture実録画からnormalizer、共通result/music-select
   layout、fail-closed screen判定、result title cropのRust前処理/Paddle/公式ONNX CTC parity、
   music-selectの選択中titleおよび可視list row crop、active catalog trie診断まで）
-- 公式ONNX recognition modelの同一song一意性比較、accepted field認識、live capture、event daemon: 未着手
-- scorepeek-owned OCR学習/export: 公式ONNXとglobal decoderの比較で不足が実測された場合だけ着手
+- 公式ONNX recognition model比較とPP-OCRv6 small native-dynamic選定: 完了
+- accepted field認識、play-attempt、live replay telemetry、live capture、event daemon: 未着手
+- scorepeek-owned OCR学習/export: smallをartist/chart context/play-attemptと統合した後の凍結残差が
+  missing OCR signalに帰属し、別経路が安全に解消できる場合だけ再検討
 - Bazzite実機検証とprivate corpus収集: 着手（OBS/vkcapture実録画1本のcopyless isolated
   import、canonical変換、目視確認まで）
 
@@ -224,23 +226,21 @@ display variantとexact comparison keyを保持し、bounded ASCII/fullwidth fol
 全体で1 songに一意な場合だけaliasとして追加する。cross-song collisionはaliasを作らず、comparison-key
 IDをcandidate artifactへbindする。詳細はADR 0019に従う。
 
-- baseline selection: 公式配布のimmutable ONNX recognition modelを、同じ3,061 stationary crop、
-  1,119-song catalog、comparison keyおよびsong一意性metricで先に比較する。初期候補は公式artifactと
-  metadataを固定できるPP-OCRv6 tiny/small/mediumとPP-OCRv5 mobile/serverとする
+- baseline selection: 同じ3,061 stationary crop、1,119-song catalog、comparison keyおよびsong一意性で
+  比較済みの公式PP-OCRv6 small native-dynamicをv1 text observerに選定する。mediumほかのartifactは
+  診断・再検討証拠として保持するが、全model phase-two比較を継続しない
 - model contract: 各公式modelのinput geometry、preprocessing、dictionary、timestepおよびoutput shapeを
   そのままversion固定する。同一評価基準のためにmodel固有contractを変形しない
-- decoder comparison: まず共通の未調整decoderで比較し、その後globalなmodel-free decoder候補を全modelへ
-  同様に適用する。対象はimmutable contractを実行できる全登録公式modelとし、初期coverageや順位では
-  除外しない。dictionaryやtimestepで直接表現できないsongもfull catalog titleのまま距離検索の競合domainへ
+- decoder: dictionaryやtimestepで直接表現できないsongもfull catalog titleのまま距離検索の競合domainへ
   残し、modelに合わせたtitle削除、短縮または別identityへの置換を行わない。実行不能なmodelは理由を
   matrixへ記録する
-- training/export: 公式modelとglobal decoder、stationary multi-frame aggregationでも有限corpus goalに
-  届かないと実測された場合だけ、pinned Python、Paddle/PaddleOCRによるcustom経路を再検討する
+- training/export: smallをartist、chart context、play-attemptと統合した後にもmissing OCR signalが残り、
+  凍結証拠上で別modelまたはcustom経路が安全に解消できる場合だけ再検討する
 - runtime: 選定したpinned official ONNXをRust/ONNX Runtimeで実行する。mapped initializerは診断比較に
   限定し、選定前にcustom exportしない
-- acceptance: field/profile別absolute bound、runner-up margin、temporal agreementと、screenごとの
-  独立image context。resultはplay mode/difficulty/level/notes、music selectはplay mode/selected
-  difficulty/selected levelを使う。versionは独立image fieldとして認識できた場合だけ追加証拠にする
+- acceptance: screenごとの独立context。resultはtitle/artist/play mode/difficulty/level/notes、music selectは
+  central title/artist/play mode/selected difficulty/selected level/active right-list titleを使う。二つの
+  title presentationは同一selectionの整合確認であり独立票として二重計上しない
 - diagnostic open-text decode: private evaluationだけ。stable eventには出さない
 
 `CanonicalFrame`は全field recognizerが共有するRGB imageとする。titleやdigitsのROI抽出後に、
@@ -262,7 +262,7 @@ training corpusは次の二系統に分ける。
   size、spacing、stretch、outline、shadow、glow、gradient、background、anti-alias、subpixel、
   blur、noise、truncation、4K-to-FHD downscaleを変化させる。
 
-title modelの改善順序は、収集コストの低いstationary・non-selected・完全表示のstandard
+認識開発は、収集コストの低いstationary・non-selected・完全表示のstandard
 music-list row corpusを先に使う。complete corpusで正しく一意認識できるsong数を最大化し、candidate間の
 gain/loss song集合とwrong unique decisionを併記する。既認識song集合の包含は要求せず、全体coverageが
 増えるcandidateを局所的なset regressionだけで棄却しない。title-disjoint splitを汎化guardとして維持する。
@@ -272,7 +272,10 @@ result dataを増やすための専用playは前提にしない。通常のlive 
 privateに蓄積する。収集はresult detector、OCRまたはevent発行だけをtriggerにせず、見逃したresult
 episodeも後から列挙できる独立session timelineを保持する。result evidenceはtitle、session、play単位で
 開発用transfer sentinelと、model・threshold・candidate選定から凍結したaccepted holdoutへ分ける。
-music-list改善だけでresult改善を主張せず、凍結holdoutまたはcandidate確定後のprospectiveな通常sessionで、
+少数のscenario録画からscreen-local episodeとselection→gameplay→resultの`play_attempt`を実装し、
+大規模な手作業timelineを開発前提にしない。通常live sessionではrecognition成功と独立にbounded local
+telemetryを残し、canonical evidence、sequence/timing、transition、全binding、decision/outcome/completenessを
+後からreplayできるようにする。music-list改善だけでresult改善を主張せず、凍結holdoutまたはcandidate確定後のprospectiveな通常sessionで、
 screen検出、song一意決定、event emission、session処理、dedupを含むcomplete result pathを最終的に
 検証する。詳細はADR 0018に従う。
 
@@ -287,8 +290,9 @@ external catalog stringをprovisional training textへ利用できる。このda
 最初のvertical spikeは同一cropについてPython/PaddleとRust/ORTのraw CTC output、token order、
 catalog rankingが許容誤差内で一致することを証明する。公式baseline graphがpost-softmax
 probabilityを出力する場合はそのtensorを比較し、scorepeek-owned exportではlogitsまたは
-log-probabilityのどちらをbundle contractにするか明示する。PP-OCRv6 ONNX exportが安定しない場合は
-PyTorch CRNN/SVTR-style CTC modelをONNX exportする。runtime Pythonへのfallbackは作らない。
+log-probabilityのどちらをbundle contractにするか明示する。ADR 0022の再開gateを満たしてcustom経路を
+改めて採用した場合だけ、公式exportの代替としてPyTorch CRNN/SVTR-style CTC modelを検討する。
+runtime Pythonへのfallbackは作らない。
 
 認識失敗時はtitle cropとdiagnosticをprivate queueへ保存し、人間が正しいcatalog IDを付け、
 次のtraining corpusへ追加する。未知glyph、domain shift、装飾fontはunknownのまま扱い、runtime
@@ -338,13 +342,13 @@ NV12、別color profileへ黙ってfallbackしない。
    game共通canonical frame/layout、screen判定、OCR preprocessor/parityのoffline spikeを進める。
 6. **M3**: PortalとGamescope directのObservedFrame adapterをvertical spikeとして実装し、Bazziteで
    両routeの実observed contractと校正corpusを確立する。M4 bootstrapのlayoutは移動しない。
-7. **M4 completion**: peer profileごとのnormalizerとshared alignmentを検証し、公式ONNX recognition
-   modelをsong一意性で比較してRust parity gateを完了する。custom fine-tune/exportは公式modelと
-   global decoderの不足が実測された場合だけ追加する。
+7. **M4 completion**: peer profileごとのnormalizerとshared alignmentを検証し、選定済みPP-OCRv6 smallの
+   Rust parity gateを完了する。custom fine-tune/exportは統合context後のmissing OCR signalが実測された場合だけ追加する。
 8. **M5**: 条件付きOBS candidateを含むsupported profileのlifecycle/performanceを比較し、defaultを選ぶ。
-9. **M6**: screen、savable、play mode、difficulty/level、digits、title decoder、cross-field validationの順で
-   field recognizerを追加する。
-10. **M7**: deterministic session、event schema、NDJSON daemonを実装する。
+9. **M6**: screen、savable、title/artist/chart contextのfield recognizer、full-catalog screen-local song
+   resolver、digits、cross-field validationの順で追加する。
+10. **M7**: 少数scenario replayから`play_attempt` state machineとrecognition-trigger非依存のbounded
+    live telemetryを実装し、その後versioned event schemaとNDJSON daemonを統合する。
 11. **M8**: catalog update replay、full private holdout、Bazzite live flowをrelease gateへ統合する。
 
 新規runtime、training、parser、capture dependencyは、version、license、代替案、bundle/host影響を
