@@ -193,6 +193,16 @@ is outside this checkpoint.
   exporter accepts only a validated canonical extraction and classified result or music-select
   frame, then publishes field, pixel, file, frame, normalizer, base-layout, and context-layout
   evidence without accepting any recognized value.
+- A create-only integrated-context diagnostic observer fixed to the registered official
+  PP-OCRv6-small native-dynamic bundle. It revalidates the complete crop manifest and every PPM,
+  runs only result/music-select artist and active-list-title crops, and retains open text, tensor
+  digests, widths, timesteps, model, dictionary, preprocessor, and source provenance in a private
+  manifest-last complete recording. The completion manifest is atomically published from an
+  fsync-complete same-directory staging file before its directory and parent are fsynced. The
+  combined selected-chart crop never enters the text
+  decoder; its file and pixel evidence remain explicitly `unknown: observer_not_implemented`,
+  without difficulty or level values. Stdout contains only the artifact digest and aggregate
+  state, not observed text.
 - A music-select spike measured from the same canonical profile. Its independent
   cyan-header and green-level-column predicate classifies the two retained
   representative frames fail closed, then exports one selected-title crop and
@@ -324,6 +334,14 @@ is outside this checkpoint.
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
   The current workspace run covered 96 `scorepeek` library tests, 13 binary tests, 55 offline
   corpus tests, 75 offline Python OCR tests, and the recording-dataset E2E gate.
+- The integrated-context observer ran over both visually reviewed music-select frames and the
+  retained PTS-190000 result frame with model SHA-256
+  `5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634`. It observed music-select
+  artist text `YutaImai` and `BEMANI Sound Team "HuΣeR X Yvya" feat紫村 花澄`, active-row text
+  `BSOLUTEEVIL` and `NEMONE`, and result artist text `Yuta Imai`. Both selected-chart observations
+  remained explicit unknowns. These three frames establish the digest-bound diagnostic path and
+  expose active-row first-character loss; they do not establish accuracy, a correction, or an
+  acceptance threshold.
 - The prior session's 3,061 provisional private labels and bound crops were recovered from its
   temporary tree into an operator-owned stable private-artifact root, with all crop paths and
   complete file/pixel SHA-256 evidence revalidated after relocation. The resulting song-disjoint
@@ -1121,13 +1139,14 @@ schema/cadence/limits, and target validation remain unimplemented and unverified
 
 ## Next executable task
 
-Continue the smallest integrated-context observation slice with the selected small model. Run the
-registered native-dynamic observer over the versioned result/music-select artist and active-title
-crops, and define fail-closed chart-context evidence without treating the combined selected-chart crop
-as accepted difficulty or level. Keep observations separate from decisions and retain the two visually
-reviewed frames as measurement evidence, not threshold or accuracy evidence. Then define the minimal
-replayable `play_attempt` scenario and bounded diagnostic contract before implementing the state
-machine. Preserve the current public event API boundary.
+Define the minimal replayable `play_attempt` scenario and bounded diagnostic contract before
+implementing the state machine. The scenario must preserve an independently reviewable timeline that
+can enumerate selection, gameplay, and result episodes even when recognition or event emission misses
+one; define screen-local episode identity, cross-screen linkage, recording completeness, cadence,
+resource ceilings, and value-free unknown/rejection evidence. Keep this as a versioned diagnostic
+contract and replay fixture boundary, not an accepted live state machine. Preserve the current public
+event API boundary and do not compensate for the two active-row first-character losses with an ROI,
+alias, or threshold change based only on those frames.
 
 Do not continue the exhaustive official-model comparison, custom training/export, mapped initializer,
 one-character router, per-song alias, or other OCR-only deep dive. Reopen one only after integrated

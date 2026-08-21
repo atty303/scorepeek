@@ -32,6 +32,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
     if let Some(result) = try_doctor(args)
         .or_else(|| try_provisional_title_candidates(args))
         .or_else(|| try_integrated_context_crop(args))
+        .or_else(|| try_integrated_context_observe(args))
         .or_else(|| try_dynamic_official_onnx_decode(args))
         .or_else(|| try_official_onnx_decode(args))
         .or_else(|| try_title_model_contract_parity(args))
@@ -191,6 +192,56 @@ fn try_dynamic_official_onnx_decode(args: &[OsString]) -> Option<Result<(), Stri
                 "{}",
                 serde_json::to_string(&summary).map_err(|error| format!(
                     "dynamic official ONNX decode summary failed: {error}"
+                ))?
+            );
+            Ok(())
+        })
+}
+
+fn try_integrated_context_observe(args: &[OsString]) -> Option<Result<(), String>> {
+    let [
+        recognition,
+        observe,
+        crops_flag,
+        crops,
+        digest_flag,
+        digest,
+        model_id_flag,
+        model_id,
+        bundle_flag,
+        bundle,
+        output_flag,
+        output,
+    ] = args
+    else {
+        return None;
+    };
+    (recognition == "recognition"
+        && observe == "integrated-context-observe"
+        && crops_flag == "--crop-artifact"
+        && digest_flag == "--crop-artifact-sha256"
+        && model_id_flag == "--model-id"
+        && bundle_flag == "--bundle"
+        && output_flag == "--output")
+        .then(|| {
+            let digest = digest
+                .to_str()
+                .ok_or_else(|| "crop artifact SHA-256 must be UTF-8".to_owned())?;
+            let model_id = model_id
+                .to_str()
+                .ok_or_else(|| "model ID must be UTF-8".to_owned())?;
+            let summary = recognition::observe_integrated_context(
+                Path::new(crops),
+                digest,
+                model_id,
+                Path::new(bundle),
+                Path::new(output),
+            )
+            .map_err(|error| error.to_string())?;
+            println!(
+                "{}",
+                serde_json::to_string(&summary).map_err(|error| format!(
+                    "integrated context observation summary failed: {error}"
                 ))?
             );
             Ok(())
@@ -890,7 +941,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
+        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --model-id MODEL_ID --bundle DIRECTORY --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
         env!("CARGO_PKG_VERSION")
     );
 }

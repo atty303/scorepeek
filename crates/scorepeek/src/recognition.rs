@@ -52,6 +52,7 @@ const PPM_HEADER: &[u8] = b"P6\n1920 1080\n255\n";
 const CANONICAL_FILE_BYTES: u64 = CANONICAL_BYTES as u64 + PPM_HEADER.len() as u64;
 const LAYOUT_BYTES: &[u8] = include_bytes!("canonical-layout-v1.json");
 const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v1.json");
+const INTEGRATED_CONTEXT_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
 
 #[derive(Debug)]
 pub enum RecognitionError {
@@ -61,6 +62,7 @@ pub enum RecognitionError {
     InvalidCanonicalLayout,
     NotResultScreen,
     NotMusicSelectScreen,
+    Onnx(Box<OnnxParityError>),
 }
 
 impl std::fmt::Display for RecognitionError {
@@ -74,6 +76,10 @@ impl std::fmt::Display for RecognitionError {
             Self::NotMusicSelectScreen => {
                 formatter.write_str("canonical frame is not a music-select screen")
             }
+            Self::Onnx(error) => write!(
+                formatter,
+                "integrated context ONNX observation failed: {error}"
+            ),
         }
     }
 }
@@ -89,6 +95,12 @@ impl From<std::io::Error> for RecognitionError {
 impl From<serde_json::Error> for RecognitionError {
     fn from(error: serde_json::Error) -> Self {
         Self::Json(error)
+    }
+}
+
+impl From<OnnxParityError> for RecognitionError {
+    fn from(error: OnnxParityError) -> Self {
+        Self::Onnx(Box::new(error))
     }
 }
 
@@ -657,6 +669,89 @@ pub struct IntegratedContextCropExportSummary {
     pub screen: ScreenClass,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct IntegratedContextTextObservation {
+    pub field: IntegratedContextField,
+    pub crop_file_sha256: String,
+    pub input_width: usize,
+    pub input_tensor_sha256: String,
+    pub output_timesteps: usize,
+    pub open_text: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntegratedChartContextState {
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntegratedChartContextUnknownReason {
+    ObserverNotImplemented,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct IntegratedChartContextEvidence {
+    pub field: IntegratedContextField,
+    pub crop_file_sha256: String,
+    pub pixel_sha256: String,
+    pub state: IntegratedChartContextState,
+    pub reason: IntegratedChartContextUnknownReason,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntegratedContextRecordingCompleteness {
+    Complete,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct IntegratedContextObservationArtifact {
+    pub schema: &'static str,
+    pub recording_completeness: IntegratedContextRecordingCompleteness,
+    pub source_manifest_sha256: String,
+    pub frame_id: String,
+    pub frame_extraction_sha256: String,
+    pub canonical_frame_sha256: String,
+    pub normalizer_artifact_sha256: String,
+    pub canonical_layout_sha256: String,
+    pub integrated_context_layout_sha256: String,
+    pub screen: ScreenClass,
+    pub model_id: String,
+    pub model_sha256: String,
+    pub dictionary_sha256: String,
+    pub preprocessor_id: &'static str,
+    pub request_sha256: String,
+    pub elapsed_ms: u128,
+    pub text_observations: Vec<IntegratedContextTextObservation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chart_context: Option<IntegratedChartContextEvidence>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct IntegratedContextObservationSummary {
+    pub schema: &'static str,
+    pub output: PathBuf,
+    pub manifest_sha256: String,
+    pub screen: ScreenClass,
+    pub text_observation_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chart_context_state: Option<IntegratedChartContextState>,
+}
+
+#[derive(Serialize)]
+struct IntegratedContextDecodeRequest<'a> {
+    schema: &'static str,
+    rows: Vec<IntegratedContextDecodeRequestRow<'a>>,
+}
+
+#[derive(Serialize)]
+struct IntegratedContextDecodeRequestRow<'a> {
+    path: &'a Path,
+    file_sha256: &'a str,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct ResultPresenceEvidence {
     pub warm_pixels: u32,
@@ -1063,6 +1158,213 @@ pub fn export_integrated_context_crops(
     })
 }
 
+/// Runs the selected native dynamic recognizer over text-only integrated-context crops.
+///
+/// The combined selected-chart crop is deliberately excluded from OCR. Its digest-bound evidence
+/// is recorded as unknown until a dedicated chart observer is implemented. The output directory
+/// must not exist; `manifest.json` is written last, so its presence denotes a complete run.
+///
+/// # Errors
+/// Returns an error for an unregistered model choice, invalid crop evidence, incomplete model
+/// bundle, unexpected ONNX output, or output I/O failure.
+pub fn observe_integrated_context(
+    crop_directory: impl AsRef<Path>,
+    expected_manifest_sha256: &str,
+    model_id: &str,
+    bundle_path: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+) -> Result<IntegratedContextObservationSummary, RecognitionError> {
+    if model_id != INTEGRATED_CONTEXT_MODEL_ID {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
+    let crop_directory = crop_directory.as_ref();
+    let artifact = read_integrated_context_crop_artifact(crop_directory, expected_manifest_sha256)?;
+    let text_crops: Vec<_> = artifact
+        .crops
+        .iter()
+        .filter(|crop| crop.field != IntegratedContextField::MusicSelectSelectedChart)
+        .collect();
+    // Own the joined paths before serializing references into the decoder request.
+    let crop_paths: Vec<_> = text_crops
+        .iter()
+        .map(|crop| crop_directory.join(&crop.filename))
+        .collect();
+    let request = IntegratedContextDecodeRequest {
+        schema: "scorepeek-private-official-onnx-decode-request-v1",
+        rows: text_crops
+            .iter()
+            .zip(&crop_paths)
+            .map(|(crop, path)| IntegratedContextDecodeRequestRow {
+                path,
+                file_sha256: &crop.file_sha256,
+            })
+            .collect(),
+    };
+    let output = output.as_ref();
+    if !crop_directory.is_absolute() || !bundle_path.as_ref().is_absolute() || !output.is_absolute()
+    {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
+    fs::create_dir(output)?;
+    let request_bytes = canonical_evidence_json(&request)?;
+    let request_path = output.join("decode-request.json");
+    write_private_file(&request_path, &request_bytes)?;
+    let decoded =
+        decode_dynamic_official_onnx_crops(model_id, bundle_path.as_ref(), &request_path)?;
+    let row_count = text_crops.len();
+    if decoded.input_widths.len() != row_count
+        || decoded.input_tensor_sha256s.len() != row_count
+        || decoded.output_timesteps.len() != row_count
+        || decoded.decoded_text.len() != row_count
+    {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
+    let text_observations = text_crops
+        .iter()
+        .enumerate()
+        .map(|(index, crop)| IntegratedContextTextObservation {
+            field: crop.field,
+            crop_file_sha256: crop.file_sha256.clone(),
+            input_width: decoded.input_widths[index],
+            input_tensor_sha256: decoded.input_tensor_sha256s[index].clone(),
+            output_timesteps: decoded.output_timesteps[index],
+            open_text: decoded.decoded_text[index].clone(),
+        })
+        .collect();
+    let chart_context = artifact
+        .crops
+        .iter()
+        .find(|crop| crop.field == IntegratedContextField::MusicSelectSelectedChart)
+        .map(|crop| IntegratedChartContextEvidence {
+            field: crop.field,
+            crop_file_sha256: crop.file_sha256.clone(),
+            pixel_sha256: crop.pixel_sha256.clone(),
+            state: IntegratedChartContextState::Unknown,
+            reason: IntegratedChartContextUnknownReason::ObserverNotImplemented,
+        });
+    let chart_context_state = chart_context.as_ref().map(|evidence| evidence.state);
+    let observation = IntegratedContextObservationArtifact {
+        schema: "scorepeek-private-integrated-context-observation-v1",
+        recording_completeness: IntegratedContextRecordingCompleteness::Complete,
+        source_manifest_sha256: expected_manifest_sha256.to_owned(),
+        frame_id: artifact.frame_id,
+        frame_extraction_sha256: artifact.frame_extraction_sha256,
+        canonical_frame_sha256: artifact.canonical_frame_sha256,
+        normalizer_artifact_sha256: artifact.normalizer_artifact_sha256,
+        canonical_layout_sha256: artifact.canonical_layout_sha256,
+        integrated_context_layout_sha256: artifact.integrated_context_layout_sha256,
+        screen: artifact.screen,
+        model_id: decoded.model_id,
+        model_sha256: decoded.model_sha256,
+        dictionary_sha256: decoded.dictionary_sha256,
+        preprocessor_id: decoded.preprocessor_id,
+        request_sha256: decoded.request_sha256,
+        elapsed_ms: decoded.elapsed_ms,
+        text_observations,
+        chart_context,
+    };
+    let manifest = canonical_evidence_json(&observation)?;
+    publish_private_manifest(output, &manifest)?;
+    Ok(IntegratedContextObservationSummary {
+        schema: "scorepeek-integrated-context-observation-summary-v1",
+        output: output.to_path_buf(),
+        manifest_sha256: encode_sha256(&manifest),
+        screen: observation.screen,
+        text_observation_count: observation.text_observations.len(),
+        chart_context_state,
+    })
+}
+
+fn read_integrated_context_crop_artifact(
+    directory: &Path,
+    expected_manifest_sha256: &str,
+) -> Result<IntegratedContextCropArtifact, RecognitionError> {
+    if !directory.is_absolute()
+        || !directory.symlink_metadata()?.is_dir()
+        || !valid_sha256(expected_manifest_sha256)
+    {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
+    let manifest_bytes = read_bounded_regular(
+        &directory.join("manifest.json"),
+        MAX_EXTRACTION_MANIFEST_BYTES,
+        None,
+    )?;
+    if encode_sha256(&manifest_bytes) != expected_manifest_sha256 {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
+    let artifact: IntegratedContextCropArtifact = serde_json::from_slice(&manifest_bytes)?;
+    if canonical_evidence_json(&artifact)? != manifest_bytes
+        || artifact.schema != "scorepeek-private-integrated-context-crops-v1"
+        || artifact.frame_id.is_empty()
+        || !valid_sha256(&artifact.frame_extraction_sha256)
+        || !valid_sha256(&artifact.canonical_frame_sha256)
+        || !valid_sha256(&artifact.normalizer_artifact_sha256)
+        || artifact.canonical_layout_sha256 != CanonicalLayout::sha256()
+        || artifact.integrated_context_layout_sha256 != IntegratedContextLayout::sha256()
+    {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
+    let layout = IntegratedContextLayout::load()?;
+    let expected: Vec<_> = match artifact.screen {
+        ScreenClass::Result => vec![(
+            IntegratedContextField::ResultArtist,
+            "result-artist.ppm",
+            layout.result.artist,
+        )],
+        ScreenClass::MusicSelect => vec![
+            (
+                IntegratedContextField::MusicSelectArtist,
+                "music-select-artist.ppm",
+                layout.music_select.artist,
+            ),
+            (
+                IntegratedContextField::MusicSelectSelectedChart,
+                "music-select-selected-chart.ppm",
+                layout.music_select.selected_chart,
+            ),
+            (
+                IntegratedContextField::MusicSelectActiveListTitle,
+                "music-select-active-list-title.ppm",
+                layout.music_select.active_list_title,
+            ),
+        ],
+        ScreenClass::Unknown => return Err(RecognitionError::InvalidCanonicalFrame),
+    };
+    if artifact.crops.len() != expected.len() {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
+    for (crop, (field, filename, roi)) in artifact.crops.iter().zip(expected) {
+        let expected_bytes = u64::from(roi.width) * u64::from(roi.height) * 3
+            + format!("P6\n{} {}\n255\n", roi.width, roi.height).len() as u64;
+        if crop.field != field
+            || crop.filename != filename
+            || crop.roi != roi
+            || crop.bytes != expected_bytes
+            || !valid_sha256(&crop.file_sha256)
+            || !valid_sha256(&crop.pixel_sha256)
+        {
+            return Err(RecognitionError::InvalidCanonicalFrame);
+        }
+        let bytes = read_bounded_regular(
+            &directory.join(filename),
+            expected_bytes,
+            Some(expected_bytes),
+        )?;
+        if encode_sha256(&bytes) != crop.file_sha256 {
+            return Err(RecognitionError::InvalidCanonicalFrame);
+        }
+        let header = format!("P6\n{} {}\n255\n", roi.width, roi.height);
+        let pixels = bytes
+            .strip_prefix(header.as_bytes())
+            .ok_or(RecognitionError::InvalidCanonicalFrame)?;
+        if encode_sha256(pixels) != crop.pixel_sha256 {
+            return Err(RecognitionError::InvalidCanonicalFrame);
+        }
+    }
+    Ok(artifact)
+}
+
 pub(super) fn read_title_crop_artifact(
     directory: &Path,
     expected_manifest_sha256: &str,
@@ -1160,6 +1462,28 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), RecognitionError>
     Ok(())
 }
 
+fn publish_private_manifest(directory: &Path, bytes: &[u8]) -> Result<(), RecognitionError> {
+    let manifest = directory.join("manifest.json");
+    let staging = directory.join(".manifest.json.scorepeek-staging");
+    if let Err(error) = write_private_file(&staging, bytes) {
+        let _ = fs::remove_file(&staging);
+        return Err(error);
+    }
+    if let Err(error) = fs::hard_link(&staging, &manifest) {
+        let _ = fs::remove_file(&staging);
+        return Err(error.into());
+    }
+    fs::remove_file(&staging)?;
+    File::open(directory)?.sync_all()?;
+    File::open(
+        directory
+            .parent()
+            .ok_or(RecognitionError::InvalidCanonicalFrame)?,
+    )?
+    .sync_all()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1172,6 +1496,51 @@ mod tests {
             normalizer_artifact_sha256: "1".repeat(64),
             frame_extraction_sha256: "2".repeat(64),
         }
+    }
+
+    fn assert_integrated_artifact_is_strict(
+        directory: &Path,
+        summary: &IntegratedContextCropExportSummary,
+        expected: &IntegratedContextCropArtifact,
+    ) {
+        assert_eq!(
+            read_integrated_context_crop_artifact(directory, &summary.manifest_sha256).unwrap(),
+            *expected
+        );
+        let rejected_output = directory.parent().unwrap().join("rejected-observation");
+        assert!(
+            observe_integrated_context(
+                directory,
+                &summary.manifest_sha256,
+                "unregistered-model",
+                directory.parent().unwrap(),
+                &rejected_output,
+            )
+            .is_err()
+        );
+        assert!(!rejected_output.exists());
+        fs::write(directory.join("result-artist.ppm"), b"tampered").unwrap();
+        assert!(
+            read_integrated_context_crop_artifact(directory, &summary.manifest_sha256).is_err()
+        );
+    }
+
+    #[test]
+    fn private_manifest_publication_is_atomic_and_no_clobber() {
+        let root = tempdir().unwrap();
+        let output = root.path().join("observation");
+        fs::create_dir(&output).unwrap();
+        publish_private_manifest(&output, b"complete\n").unwrap();
+        assert_eq!(
+            fs::read(output.join("manifest.json")).unwrap(),
+            b"complete\n"
+        );
+        assert!(publish_private_manifest(&output, b"replacement\n").is_err());
+        assert_eq!(
+            fs::read(output.join("manifest.json")).unwrap(),
+            b"complete\n"
+        );
+        assert!(!output.join(".manifest.json.scorepeek-staging").exists());
     }
 
     #[test]
@@ -1397,6 +1766,7 @@ mod tests {
             IntegratedContextField::ResultArtist
         );
         assert_eq!(result_artifact.crops[0].roi, canonical.result.artist);
+        assert_integrated_artifact_is_strict(&result_output, &result_summary, &result_artifact);
 
         assert!(
             export_integrated_context_crops(
