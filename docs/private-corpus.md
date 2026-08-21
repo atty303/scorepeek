@@ -71,6 +71,7 @@ mise run corpus:canonical:extract -- --store /absolute/private/store --output /a
 mise run recognition:inspect -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID
 mise run recognition:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/crops
 mise run recognition:music-select:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/music-select-crops
+mise run recognition:integrated-context:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/integrated-context-crops
 mise run recognition:title:dictionary:audit -- --catalog-store /absolute/private/catalog --dictionary /absolute/private/models/inference.yml
 mise run recognition:title:model-export:requirements -- --catalog-store /absolute/private/catalog --baseline-dictionary /absolute/private/models/inference.yml --output /absolute/private/title-model-requirements
 mise run corpus:music-list:observation-draft:inspect -- /absolute/private/music-list-observation-draft.json
@@ -104,6 +105,13 @@ visible-list slots. A slot can contain a separator, clipped row, or overlay;
 downstream recognition keeps such content unknown instead of assuming every
 slot is a title. OCR `--output` is create-only and retains the diagnostic JSON
 for later replay without repeating inference.
+
+`recognition:integrated-context:crop` keeps the established canonical layout and its historical
+crop artifacts unchanged. A separately versioned layout binds the existing result artist ROI and,
+for a stable music-select frame, the independently measured central artist, selected chart context,
+and fixed active right-list title row. The create-only manifest reuses the canonical extraction,
+normalizer, frame, and base-layout evidence. These crops are observation material; their presence
+does not accept an OCR value, chart, song, threshold, or capture profile.
 
 The provisional candidate export is fixed to the independently catalogued
 single-play HYPER charts whose INFINITAS status is confirmed present. It excludes

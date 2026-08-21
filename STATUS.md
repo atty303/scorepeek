@@ -187,6 +187,12 @@ is outside this checkpoint.
   digest-bound private manifest. The offline OCR consumer requires the expected
   crop-manifest digest and registered normalizer digest, and cannot accept a
   bare observed or canonical PPM directly.
+- A separately versioned integrated-context crop layout that leaves the canonical layout and its
+  historical crop artifacts unchanged. It binds the existing result artist ROI plus independently
+  measured music-select artist, selected-chart, and fixed active-row title ROIs. The create-only
+  exporter accepts only a validated canonical extraction and classified result or music-select
+  frame, then publishes field, pixel, file, frame, normalizer, base-layout, and context-layout
+  evidence without accepting any recognized value.
 - A music-select spike measured from the same canonical profile. Its independent
   cyan-header and green-level-column predicate classifies the two retained
   representative frames fail closed, then exports one selected-title crop and
@@ -316,8 +322,8 @@ is outside this checkpoint.
 ## Verified in this checkpoint
 
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
-  The current workspace run covered 91 `scorepeek` library tests, 13 binary tests, 55 offline
-  corpus tests, 66 offline Python OCR tests, and the recording-dataset E2E gate.
+  The current workspace run covered 96 `scorepeek` library tests, 13 binary tests, 55 offline
+  corpus tests, 75 offline Python OCR tests, and the recording-dataset E2E gate.
 - The prior session's 3,061 provisional private labels and bound crops were recovered from its
   temporary tree into an operator-owned stable private-artifact root, with all crop paths and
   complete file/pixel SHA-256 evidence revalidated after relocation. The resulting song-disjoint
@@ -616,6 +622,16 @@ is outside this checkpoint.
   clipped first characters, separators, appended UI text, Japanese glyph
   substitutions, and low confidence. These are diagnostic observations, not
   accepted labels or calibrated recognition.
+- Independent visual review of those same frames labelled the central artist, selected difficulty
+  and level, and active right-list title as `Yuta Imai` / HYPER 10 / `ABSOLUTE EVIL` and
+  `BEMANI Sound Team "HuΣeR x Yvya" feat.紫村 花澄` / HYPER 7 / `ANEMONE`. The separately
+  versioned context layout produced private manifests
+  `2c6e7382dbbbf4995eeb006efd2195044385a131599fb0b611408879bef2e793` and
+  `d5967a8ec98847e114a8f41aa94ff7332e5417572deea11dd254de7c99a7747a` with complete
+  artist, combined chart-context, and active-title crops. Result PTS 190000 produced artist-only
+  manifest `cc2e2184c1cddaf91b44fbeef4538cfa92e6e0badfdbf8f90872e7b83333e17a`. The active
+  title file hashes exactly match the already retained generic list-slot evidence; these three
+  temporary manifests remain outside the repository and are measurement evidence only.
 - The same recording supplied `ABSOLUTE EVIL` in a result at source PTS 190000 and in right-list
   slot 10 at PTS 110000. The intact `BSOLUTE EVIL` suffix required translation only, not scaling;
   a neutral foreground-mask comparison measured intersection-over-union 0.9561805101373446. This
@@ -1100,16 +1116,18 @@ for result detection or result-only fields.
 
 Timeline development will use a small set of scenario recordings rather than require a large prepared
 dataset. Ordinary live sessions must produce bounded local, replayable evidence independently of
-recognition success so missed result episodes remain observable. The exact ROI additions, state machine,
-telemetry schema/cadence/limits, and target validation remain unimplemented and unverified.
+recognition success so missed result episodes remain observable. The state machine, telemetry
+schema/cadence/limits, and target validation remain unimplemented and unverified.
 
 ## Next executable task
 
-Implement the smallest integrated-context observation slice for the selected small model. First measure
-and version result artist plus the music-select central artist/selected chart context and active
-right-list title; do not change canonical ROI coordinates until those observations are independently
-labelled. Then define the minimal replayable `play_attempt` scenario and bounded diagnostic contract
-before implementing the state machine. Preserve the current public event API boundary.
+Continue the smallest integrated-context observation slice with the selected small model. Run the
+registered native-dynamic observer over the versioned result/music-select artist and active-title
+crops, and define fail-closed chart-context evidence without treating the combined selected-chart crop
+as accepted difficulty or level. Keep observations separate from decisions and retain the two visually
+reviewed frames as measurement evidence, not threshold or accuracy evidence. Then define the minimal
+replayable `play_attempt` scenario and bounded diagnostic contract before implementing the state
+machine. Preserve the current public event API boundary.
 
 Do not continue the exhaustive official-model comparison, custom training/export, mapped initializer,
 one-character router, per-song alias, or other OCR-only deep dive. Reopen one only after integrated

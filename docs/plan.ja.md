@@ -11,7 +11,8 @@
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
 - M4 offline canonical/recognition spike: 着手（OBS/vkcapture実録画からnormalizer、共通result/music-select
   layout、fail-closed screen判定、result title cropのRust前処理/Paddle/公式ONNX CTC parity、
-  music-selectの選択中titleおよび可視list row crop、active catalog trie診断まで）
+  music-selectの選択中titleおよび可視list row crop、result artistとmusic-select artist/chart/active-rowの
+  versioned context crop、active catalog trie診断まで）
 - 公式ONNX recognition model比較とPP-OCRv6 small native-dynamic選定: 完了
 - accepted field認識、play-attempt、live replay telemetry、live capture、event daemon: 未着手
 - scorepeek-owned OCR学習/export: smallをartist/chart context/play-attemptと統合した後の凍結残差が

@@ -51,6 +51,7 @@ const MAX_NORMALIZER_BYTES: u64 = 64 * 1024;
 const PPM_HEADER: &[u8] = b"P6\n1920 1080\n255\n";
 const CANONICAL_FILE_BYTES: u64 = CANONICAL_BYTES as u64 + PPM_HEADER.len() as u64;
 const LAYOUT_BYTES: &[u8] = include_bytes!("canonical-layout-v1.json");
+const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v1.json");
 
 #[derive(Debug)]
 pub enum RecognitionError {
@@ -464,7 +465,7 @@ struct ResultPresencePredicate {
     red_pixels_min: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScreenClass {
     Result,
@@ -554,6 +555,106 @@ pub struct MusicSelectCropExportSummary {
     pub output: PathBuf,
     pub manifest_sha256: String,
     pub list_slot_count: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct IntegratedContextLayout {
+    schema: String,
+    canonical_frame_contract_id: String,
+    canonical_layout_sha256: String,
+    result: ResultContextLayout,
+    music_select: MusicSelectContextLayout,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct ResultContextLayout {
+    artist: Roi,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct MusicSelectContextLayout {
+    artist: Roi,
+    selected_chart: Roi,
+    active_list_title: Roi,
+}
+
+impl IntegratedContextLayout {
+    fn load() -> Result<Self, RecognitionError> {
+        let layout: Self = serde_json::from_slice(INTEGRATED_CONTEXT_LAYOUT_BYTES)?;
+        let canonical = CanonicalLayout::load()?;
+        if layout.schema != "scorepeek-integrated-context-layout-v1"
+            || layout.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID
+            || layout.canonical_layout_sha256 != CanonicalLayout::sha256()
+            || layout.result.artist != canonical.result.artist
+            || layout.music_select.active_list_title
+                != canonical
+                    .music_select
+                    .list_titles
+                    .rois()
+                    .nth(10)
+                    .ok_or(RecognitionError::InvalidCanonicalLayout)?
+        {
+            return Err(RecognitionError::InvalidCanonicalLayout);
+        }
+        for roi in [
+            layout.result.artist,
+            layout.music_select.artist,
+            layout.music_select.selected_chart,
+            layout.music_select.active_list_title,
+        ] {
+            roi.validate(CANONICAL_WIDTH, CANONICAL_HEIGHT)?;
+        }
+        Ok(layout)
+    }
+
+    fn sha256() -> String {
+        encode_sha256(INTEGRATED_CONTEXT_LAYOUT_BYTES)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntegratedContextField {
+    ResultArtist,
+    MusicSelectArtist,
+    MusicSelectSelectedChart,
+    MusicSelectActiveListTitle,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntegratedContextCropEvidence {
+    pub field: IntegratedContextField,
+    pub filename: String,
+    pub roi: Roi,
+    pub pixel_sha256: String,
+    pub file_sha256: String,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntegratedContextCropArtifact {
+    pub schema: String,
+    pub frame_id: String,
+    pub frame_extraction_sha256: String,
+    pub canonical_frame_sha256: String,
+    pub normalizer_artifact_sha256: String,
+    pub canonical_layout_sha256: String,
+    pub integrated_context_layout_sha256: String,
+    pub screen: ScreenClass,
+    pub crops: Vec<IntegratedContextCropEvidence>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct IntegratedContextCropExportSummary {
+    pub schema: String,
+    pub output: PathBuf,
+    pub manifest_sha256: String,
+    pub screen: ScreenClass,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -693,16 +794,15 @@ pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, Recognitio
             maximum > 130 && maximum - minimum > 60
         })
         .fold(0_u32, |count, _| count + 1);
-    let screen = if warm >= layout.result.presence.warm_pixels_min
-        && red >= layout.result.presence.red_pixels_min
-    {
-        ScreenClass::Result
-    } else if cyan_header_pixels >= layout.music_select.presence.cyan_header_pixels_min
-        && colored_level_pixels >= layout.music_select.presence.colored_level_pixels_min
-    {
-        ScreenClass::MusicSelect
-    } else {
-        ScreenClass::Unknown
+    let result_present = warm >= layout.result.presence.warm_pixels_min
+        && red >= layout.result.presence.red_pixels_min;
+    let music_select_present = cyan_header_pixels
+        >= layout.music_select.presence.cyan_header_pixels_min
+        && colored_level_pixels >= layout.music_select.presence.colored_level_pixels_min;
+    let screen = match (result_present, music_select_present) {
+        (true, false) => ScreenClass::Result,
+        (false, true) => ScreenClass::MusicSelect,
+        (false, false) | (true, true) => ScreenClass::Unknown,
     };
     Ok(RecognitionSnapshot {
         schema: "scorepeek-recognition-spike-v3".to_owned(),
@@ -879,6 +979,90 @@ pub fn export_music_select_crops(
     })
 }
 
+/// Exports only the independently measured fields needed by the first integrated-context slice.
+///
+/// The context layout is versioned separately so adding these observations does not invalidate the
+/// existing result-title and music-list diagnostic artifacts. The output directory must not exist;
+/// `manifest.json` is written last.
+///
+/// # Errors
+/// Returns an error for an unknown screen, invalid evidence or layout, or output I/O failure.
+pub fn export_integrated_context_crops(
+    frame: &CanonicalFrame,
+    frame_id: &str,
+    output: impl AsRef<Path>,
+) -> Result<IntegratedContextCropExportSummary, RecognitionError> {
+    if frame_id.is_empty() || frame_id.len() > 256 || frame_id.chars().any(char::is_control) {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
+    let snapshot = inspect(frame)?;
+    let layout = IntegratedContextLayout::load()?;
+    let selections: &[(IntegratedContextField, &str, Roi)] = match snapshot.screen {
+        ScreenClass::Result => &[(
+            IntegratedContextField::ResultArtist,
+            "result-artist.ppm",
+            layout.result.artist,
+        )],
+        ScreenClass::MusicSelect => &[
+            (
+                IntegratedContextField::MusicSelectArtist,
+                "music-select-artist.ppm",
+                layout.music_select.artist,
+            ),
+            (
+                IntegratedContextField::MusicSelectSelectedChart,
+                "music-select-selected-chart.ppm",
+                layout.music_select.selected_chart,
+            ),
+            (
+                IntegratedContextField::MusicSelectActiveListTitle,
+                "music-select-active-list-title.ppm",
+                layout.music_select.active_list_title,
+            ),
+        ],
+        ScreenClass::Unknown => return Err(RecognitionError::InvalidCanonicalFrame),
+    };
+    let output = output.as_ref();
+    fs::create_dir(output)?;
+    let mut crops = Vec::with_capacity(selections.len());
+    for (field, filename, roi) in selections {
+        let pixels = frame.crop(*roi)?;
+        let header = format!("P6\n{} {}\n255\n", roi.width, roi.height);
+        let mut bytes = Vec::with_capacity(header.len() + pixels.len());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(&pixels);
+        write_private_file(&output.join(filename), &bytes)?;
+        crops.push(IntegratedContextCropEvidence {
+            field: *field,
+            filename: (*filename).to_owned(),
+            roi: *roi,
+            pixel_sha256: encode_sha256(&pixels),
+            file_sha256: encode_sha256(&bytes),
+            bytes: bytes.len() as u64,
+        });
+    }
+    let screen = snapshot.screen;
+    let artifact = IntegratedContextCropArtifact {
+        schema: "scorepeek-private-integrated-context-crops-v1".to_owned(),
+        frame_id: frame_id.to_owned(),
+        frame_extraction_sha256: snapshot.frame_extraction_sha256,
+        canonical_frame_sha256: snapshot.canonical_frame_sha256,
+        normalizer_artifact_sha256: snapshot.normalizer_artifact_sha256,
+        canonical_layout_sha256: snapshot.canonical_layout_sha256,
+        integrated_context_layout_sha256: IntegratedContextLayout::sha256(),
+        screen,
+        crops,
+    };
+    let manifest = canonical_evidence_json(&artifact)?;
+    write_private_file(&output.join("manifest.json"), &manifest)?;
+    Ok(IntegratedContextCropExportSummary {
+        schema: "scorepeek-integrated-context-crop-export-summary-v1".to_owned(),
+        output: output.to_path_buf(),
+        manifest_sha256: encode_sha256(&manifest),
+        screen,
+    })
+}
+
 pub(super) fn read_title_crop_artifact(
     directory: &Path,
     expected_manifest_sha256: &str,
@@ -1050,6 +1234,24 @@ mod tests {
 
         let empty = test_frame(vec![0_u8; CANONICAL_BYTES]);
         assert_eq!(inspect(&empty).unwrap().screen, ScreenClass::Unknown);
+
+        let mut ambiguous = frame.pixels.to_vec();
+        for index in 0..layout.music_select.presence.cyan_header_pixels_min as usize {
+            let x = index % 600;
+            let y = index / 600;
+            ambiguous[(y * CANONICAL_WIDTH as usize + x) * 3..][..3]
+                .copy_from_slice(&[20, 160, 220]);
+        }
+        for index in 0..layout.music_select.presence.colored_level_pixels_min as usize {
+            let x = 1_320 + index % 30;
+            let y = index / 30;
+            ambiguous[(y * CANONICAL_WIDTH as usize + x) * 3..][..3]
+                .copy_from_slice(&[20, 180, 40]);
+        }
+        assert_eq!(
+            inspect(&test_frame(ambiguous)).unwrap().screen,
+            ScreenClass::Unknown
+        );
     }
 
     #[test]
@@ -1096,6 +1298,110 @@ mod tests {
             export_music_select_crops(
                 &test_frame(vec![0; CANONICAL_BYTES]),
                 "empty",
+                directory.path().join("unknown")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn integrated_context_crops_keep_the_base_layout_stable() {
+        let canonical = CanonicalLayout::load().unwrap();
+        let context = IntegratedContextLayout::load().unwrap();
+        assert_eq!(context.result.artist, canonical.result.artist);
+        assert_eq!(
+            context.music_select.active_list_title,
+            canonical.music_select.list_titles.rois().nth(10).unwrap()
+        );
+
+        let mut music_select_pixels = vec![0_u8; CANONICAL_BYTES];
+        for index in 0..canonical.music_select.presence.cyan_header_pixels_min as usize {
+            let x = canonical.music_select.header.x as usize
+                + index % canonical.music_select.header.width as usize;
+            let y = canonical.music_select.header.y as usize
+                + index / canonical.music_select.header.width as usize;
+            music_select_pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3]
+                .copy_from_slice(&[20, 160, 220]);
+        }
+        for index in 0..canonical.music_select.presence.colored_level_pixels_min as usize {
+            let x = canonical.music_select.level_column.x as usize
+                + index % canonical.music_select.level_column.width as usize;
+            let y = canonical.music_select.level_column.y as usize
+                + index / canonical.music_select.level_column.width as usize;
+            music_select_pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3]
+                .copy_from_slice(&[20, 180, 40]);
+        }
+        let directory = tempdir().unwrap();
+        let music_output = directory.path().join("music-context");
+        let music_summary = export_integrated_context_crops(
+            &test_frame(music_select_pixels),
+            "music-001",
+            &music_output,
+        )
+        .unwrap();
+        let music_manifest = fs::read(music_output.join("manifest.json")).unwrap();
+        let music_artifact: IntegratedContextCropArtifact =
+            serde_json::from_slice(&music_manifest).unwrap();
+        assert_eq!(music_summary.screen, ScreenClass::MusicSelect);
+        assert_eq!(
+            music_summary.manifest_sha256,
+            encode_sha256(&music_manifest)
+        );
+        assert_eq!(music_artifact.screen, ScreenClass::MusicSelect);
+        assert_eq!(music_artifact.crops.len(), 3);
+        assert_eq!(
+            music_artifact.crops[0].field,
+            IntegratedContextField::MusicSelectArtist
+        );
+        assert_eq!(
+            music_artifact.crops[1].field,
+            IntegratedContextField::MusicSelectSelectedChart
+        );
+        assert_eq!(
+            music_artifact.crops[2].field,
+            IntegratedContextField::MusicSelectActiveListTitle
+        );
+
+        let mut result_pixels = vec![0_u8; CANONICAL_BYTES];
+        for index in 0..canonical.result.presence.warm_pixels_min as usize {
+            let x =
+                canonical.result.header.x as usize + index % canonical.result.header.width as usize;
+            let y =
+                canonical.result.header.y as usize + index / canonical.result.header.width as usize;
+            result_pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3]
+                .copy_from_slice(&[140, 100, 60]);
+        }
+        for index in 0..canonical.result.presence.red_pixels_min as usize {
+            let x =
+                canonical.result.header.x as usize + index % canonical.result.header.width as usize;
+            let y = canonical.result.header.y as usize + canonical.result.header.height as usize
+                - 1
+                - index / canonical.result.header.width as usize;
+            result_pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3]
+                .copy_from_slice(&[90, 20, 20]);
+        }
+        let result_output = directory.path().join("result-context");
+        let result_summary = export_integrated_context_crops(
+            &test_frame(result_pixels),
+            "result-001",
+            &result_output,
+        )
+        .unwrap();
+        let result_manifest = fs::read(result_output.join("manifest.json")).unwrap();
+        let result_artifact: IntegratedContextCropArtifact =
+            serde_json::from_slice(&result_manifest).unwrap();
+        assert_eq!(result_summary.screen, ScreenClass::Result);
+        assert_eq!(result_artifact.crops.len(), 1);
+        assert_eq!(
+            result_artifact.crops[0].field,
+            IntegratedContextField::ResultArtist
+        );
+        assert_eq!(result_artifact.crops[0].roi, canonical.result.artist);
+
+        assert!(
+            export_integrated_context_crops(
+                &test_frame(vec![0; CANONICAL_BYTES]),
+                "unknown",
                 directory.path().join("unknown")
             )
             .is_err()

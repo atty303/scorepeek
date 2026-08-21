@@ -205,6 +205,14 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- recognition music-select-crop "$@"
 '''
 
+[tasks."recognition:integrated-context:crop"]
+description = "Export independently measured result or music-select context crops"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- recognition integrated-context-crop "$@"
+'''
+
 [tasks."recognition:title:spike"]
 description = "Resolve diagnostic open-text OCR to one exact catalog candidate"
 run = '''
