@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{Read as _, Write as _};
 use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
-use std::path::Path;
+use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,7 @@ use crate::diagnostic_recording::{
     MANIFEST_RESERVE_BYTES, MAX_DEGRADATIONS_PER_RUN, MAX_FACT_BYTES, MAX_FACTS_PER_RUN,
     MAX_FRAMES_PER_RUN, NORMAL_RETENTION_HOURS, PRIORITY_RETENTION_HOURS,
 };
+use crate::publish_private_file;
 const MAX_RUNS: usize = 8_192;
 const MAX_FILES_PER_RUN: usize = 50_000;
 const MAX_START_BYTES: u64 = 64 * 1024;
@@ -22,6 +23,10 @@ const STORE_LOCK_FILENAME: &str = ".scorepeek-diagnostic-store.lock";
 const DELETE_STAGING_PREFIX: &str = ".scorepeek-diagnostic-delete-";
 const DELETE_MARKER_FILENAME: &str = ".scorepeek-diagnostic-delete-owner-v1";
 const DELETE_MARKER_STAGING_FILENAME: &str = ".scorepeek-diagnostic-delete-owner-staging-v1";
+const FREEZE_FILENAME: &str = ".scorepeek-diagnostic-freeze-v1.json";
+const FREEZE_STAGING_FILENAME: &str = ".scorepeek-diagnostic-freeze-staging-v1.json";
+const MAX_CONTROL_BYTES: u64 = 16 * 1024;
+const EXPORT_MANIFEST_FILENAME: &str = "export.json";
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -35,6 +40,54 @@ struct DeleteMarkerDocument {
 #[serde(deny_unknown_fields)]
 struct DeleteMarkerFile {
     filename: String,
+    bytes: u64,
+}
+
+#[derive(Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct FreezeDocument {
+    schema: String,
+    run_id: String,
+    run_sha256: String,
+    manifest_sha256: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DiagnosticControlOutcome {
+    schema: &'static str,
+    operation: &'static str,
+    run_id: String,
+    run_sha256: String,
+    manifest_sha256: Option<String>,
+    frozen: bool,
+    managed_bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DiagnosticExportOutcome {
+    schema: &'static str,
+    operation: &'static str,
+    run_id: String,
+    run_sha256: String,
+    manifest_sha256: String,
+    file_count: usize,
+    exported_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct ExportManifestDocument {
+    schema: &'static str,
+    run_id: String,
+    run_sha256: String,
+    manifest_sha256: String,
+    files: Vec<ExportFileDocument>,
+    artifact_bytes: u64,
+}
+
+#[derive(Serialize)]
+struct ExportFileDocument {
+    filename: String,
+    sha256: String,
     bytes: u64,
 }
 
@@ -69,6 +122,7 @@ pub(crate) struct DiagnosticRunSummary {
     manifest_sha256: Option<String>,
     status: Option<DiagnosticRunStatus>,
     completeness: DiagnosticCompleteness,
+    frozen: bool,
     pub(crate) priority: bool,
     pub(crate) managed_bytes: u64,
     #[serde(skip)]
@@ -254,9 +308,286 @@ pub fn diagnostic_store_status(root: &Path) -> Result<DiagnosticStoreStatus, Str
 /// Returns a value-free error when the root or any managed run is invalid or changes while read.
 pub fn diagnostic_run_list(root: &Path) -> Result<DiagnosticRunList, String> {
     Ok(DiagnosticRunList {
-        schema: "scorepeek-diagnostic-run-list-v1",
+        schema: "scorepeek-diagnostic-run-list-v2",
         runs: inspect_store(root)?,
     })
+}
+
+/// Freezes one digest-confirmed run into priority retention.
+///
+/// # Errors
+/// Returns a value-free control error when the store, confirmation, or publication is invalid.
+pub fn diagnostic_freeze(
+    root: &Path,
+    run_id: &str,
+    run_sha256: &str,
+    manifest_sha256: Option<&str>,
+) -> Result<DiagnosticControlOutcome, String> {
+    let _lease = DiagnosticStoreLease::acquire_control(root).map_err(control_error)?;
+    let run = find_confirmed_run(root, run_id, run_sha256, manifest_sha256)?;
+    if !run.frozen {
+        publish_freeze(root, &run).map_err(control_error)?;
+    }
+    let frozen = find_confirmed_run(root, run_id, run_sha256, manifest_sha256)?;
+    if !frozen.frozen {
+        return Err(control_error(DiagnosticErrorType::StoreUnavailable));
+    }
+    Ok(control_outcome("freeze", &frozen))
+}
+
+/// Deletes one digest-confirmed run under the store writer lease.
+///
+/// # Errors
+/// Returns a value-free control error when the store, confirmation, or deletion is invalid.
+pub fn diagnostic_delete(
+    root: &Path,
+    run_id: &str,
+    run_sha256: &str,
+    manifest_sha256: Option<&str>,
+) -> Result<DiagnosticControlOutcome, String> {
+    let _lease = DiagnosticStoreLease::acquire_control(root).map_err(control_error)?;
+    let run = find_confirmed_run(root, run_id, run_sha256, manifest_sha256)?;
+    let outcome = control_outcome("delete", &run);
+    delete_run(root, &run).map_err(control_error)?;
+    if root.join(run_id).symlink_metadata().is_ok() {
+        return Err(control_error(DiagnosticErrorType::StoreUnavailable));
+    }
+    Ok(outcome)
+}
+
+/// Exports one complete digest-confirmed run into a new local directory.
+///
+/// # Errors
+/// Returns a value-free control error when verification, creation, copy, or durability fails.
+pub fn diagnostic_export(
+    root: &Path,
+    run_id: &str,
+    run_sha256: &str,
+    manifest_sha256: &str,
+    destination: &Path,
+) -> Result<DiagnosticExportOutcome, String> {
+    let _lease = DiagnosticStoreLease::acquire_control(root).map_err(control_error)?;
+    let run = find_confirmed_run(root, run_id, run_sha256, Some(manifest_sha256))?;
+    let destination = resolve_export_destination(root, destination)
+        .ok_or_else(|| "diagnostic export request is invalid".to_owned())?;
+    if run.completeness != DiagnosticCompleteness::Complete || run.manifest_sha256.is_none() {
+        return Err("diagnostic export request is invalid".to_owned());
+    }
+    export_complete_run(root, &run, &destination)
+}
+
+fn resolve_export_destination(root: &Path, destination: &Path) -> Option<PathBuf> {
+    if !destination.is_absolute()
+        || destination.file_name().is_none()
+        || destination.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+        || destination.symlink_metadata().is_ok()
+    {
+        return None;
+    }
+    let parent = destination.parent()?;
+    let parent_metadata = parent.symlink_metadata().ok()?;
+    if !parent_metadata.is_dir() || parent_metadata.file_type().is_symlink() {
+        return None;
+    }
+    let canonical_root = root.canonicalize().ok()?;
+    let canonical_parent = parent.canonicalize().ok()?;
+    let resolved = canonical_parent.join(destination.file_name()?);
+    (!resolved.starts_with(canonical_root)).then_some(resolved)
+}
+
+fn export_complete_run(
+    root: &Path,
+    run: &DiagnosticRunSummary,
+    destination: &Path,
+) -> Result<DiagnosticExportOutcome, String> {
+    let source = root.join(&run.run_id);
+    let current = inspect_run(&source, &run.run_id)?;
+    if !same_run_summary(run, &current) {
+        return Err("diagnostic export source changed".to_owned());
+    }
+    let manifest_bytes = read_bounded_regular(&source.join("manifest.json"), MAX_MANIFEST_BYTES)?;
+    let manifest: RunManifestDocument =
+        serde_json::from_slice(&manifest_bytes).map_err(|_| invalid_store())?;
+    let mut expected = BTreeMap::from([
+        ("run.json".to_owned(), run.run_sha256.clone()),
+        (
+            "manifest.json".to_owned(),
+            run.manifest_sha256.clone().ok_or_else(invalid_store)?,
+        ),
+    ]);
+    for frame in &manifest.frames {
+        expected.insert(frame.filename.clone(), frame.file_sha256.clone());
+    }
+    for fact in &manifest.facts {
+        expected.insert(fact.filename.clone(), fact.file_sha256.clone());
+    }
+
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700);
+    builder
+        .create(destination)
+        .map_err(|_| "diagnostic export destination creation failed".to_owned())?;
+    File::open(destination.parent().ok_or_else(invalid_store)?)
+        .and_then(|parent| parent.sync_all())
+        .map_err(|_| "diagnostic export destination creation failed".to_owned())?;
+
+    let files = run_files(&source)?;
+    let mut exported = Vec::with_capacity(files.len());
+    let mut artifact_bytes = 0_u64;
+    for (filename, bytes) in files {
+        let digest =
+            copy_verified_file(&source.join(&filename), &destination.join(&filename), bytes)?;
+        if expected
+            .get(&filename)
+            .is_some_and(|expected| expected != &digest)
+            || (filename != FREEZE_FILENAME && !expected.contains_key(&filename))
+        {
+            return Err("diagnostic export source digest failed".to_owned());
+        }
+        artifact_bytes = artifact_bytes
+            .checked_add(bytes)
+            .ok_or_else(invalid_store)?;
+        exported.push(ExportFileDocument {
+            filename,
+            sha256: digest,
+            bytes,
+        });
+    }
+    let document = ExportManifestDocument {
+        schema: "scorepeek-diagnostic-local-export-v1",
+        run_id: run.run_id.clone(),
+        run_sha256: run.run_sha256.clone(),
+        manifest_sha256: run.manifest_sha256.clone().ok_or_else(invalid_store)?,
+        files: exported,
+        artifact_bytes,
+    };
+    let export_bytes = canonical_json(&document)?;
+    let exported_bytes = artifact_bytes
+        .checked_add(export_bytes.len() as u64)
+        .ok_or_else(invalid_store)?;
+    let file_count = document
+        .files
+        .len()
+        .checked_add(1)
+        .ok_or_else(invalid_store)?;
+    File::open(destination)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| "diagnostic export durability failed".to_owned())?;
+    publish_private_file(&destination.join(EXPORT_MANIFEST_FILENAME), &export_bytes)
+        .map_err(|_| "diagnostic export manifest publication failed".to_owned())?;
+    Ok(DiagnosticExportOutcome {
+        schema: "scorepeek-diagnostic-export-outcome-v1",
+        operation: "export",
+        run_id: run.run_id.clone(),
+        run_sha256: run.run_sha256.clone(),
+        manifest_sha256: run.manifest_sha256.clone().ok_or_else(invalid_store)?,
+        file_count,
+        exported_bytes,
+    })
+}
+
+fn copy_verified_file(
+    source: &Path,
+    destination: &Path,
+    expected_bytes: u64,
+) -> Result<String, String> {
+    let before = source.symlink_metadata().map_err(|_| invalid_store())?;
+    if !before.is_file() || before.file_type().is_symlink() || before.len() != expected_bytes {
+        return Err(invalid_store());
+    }
+    let mut input = File::open(source).map_err(|_| invalid_store())?;
+    if !same_file(&before, &input.metadata().map_err(|_| invalid_store())?) {
+        return Err(invalid_store());
+    }
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(destination)
+        .map_err(|_| "diagnostic export file publication failed".to_owned())?;
+    let mut hasher = Sha256::new();
+    let mut copied = 0_u64;
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        let read = input.read(&mut buffer).map_err(|_| invalid_store())?;
+        if read == 0 {
+            break;
+        }
+        copied = copied.checked_add(read as u64).ok_or_else(invalid_store)?;
+        if copied > expected_bytes {
+            return Err(invalid_store());
+        }
+        hasher.update(&buffer[..read]);
+        output
+            .write_all(&buffer[..read])
+            .map_err(|_| "diagnostic export file publication failed".to_owned())?;
+    }
+    if copied != expected_bytes
+        || !same_file(&before, &input.metadata().map_err(|_| invalid_store())?)
+    {
+        return Err(invalid_store());
+    }
+    output
+        .sync_all()
+        .map_err(|_| "diagnostic export file publication failed".to_owned())?;
+    Ok(encode_sha256_digest(hasher.finalize()))
+}
+
+fn control_outcome(
+    operation: &'static str,
+    run: &DiagnosticRunSummary,
+) -> DiagnosticControlOutcome {
+    DiagnosticControlOutcome {
+        schema: "scorepeek-diagnostic-control-outcome-v1",
+        operation,
+        run_id: run.run_id.clone(),
+        run_sha256: run.run_sha256.clone(),
+        manifest_sha256: run.manifest_sha256.clone(),
+        frozen: run.frozen,
+        managed_bytes: run.managed_bytes,
+    }
+}
+
+fn find_confirmed_run(
+    root: &Path,
+    run_id: &str,
+    run_sha256: &str,
+    manifest_sha256: Option<&str>,
+) -> Result<DiagnosticRunSummary, String> {
+    if !valid_run_id(run_id)
+        || !valid_sha256(run_sha256)
+        || manifest_sha256.is_some_and(|digest| !valid_sha256(digest))
+    {
+        return Err("diagnostic control confirmation is invalid".to_owned());
+    }
+    let run = inspect_store(root)?
+        .into_iter()
+        .find(|run| run.run_id == run_id)
+        .ok_or_else(|| "diagnostic control target was not found".to_owned())?;
+    if run.run_sha256 != run_sha256 || run.manifest_sha256.as_deref() != manifest_sha256 {
+        return Err("diagnostic control digest confirmation failed".to_owned());
+    }
+    Ok(run)
+}
+
+fn control_error(error: DiagnosticErrorType) -> String {
+    format!(
+        "diagnostic control failed: {}",
+        diagnostic_error_name(error)
+    )
+}
+
+fn diagnostic_error_name(error: DiagnosticErrorType) -> &'static str {
+    match error {
+        DiagnosticErrorType::WorkerUnavailable => "worker_unavailable",
+        DiagnosticErrorType::CapacityExceeded => "capacity_exceeded",
+        _ => "store_unavailable",
+    }
 }
 
 pub(crate) fn inspect_store(root: &Path) -> Result<Vec<DiagnosticRunSummary>, String> {
@@ -321,6 +652,14 @@ fn inspect_store_with(
 }
 
 pub(crate) fn inspect_run(directory: &Path, run_id: &str) -> Result<DiagnosticRunSummary, String> {
+    inspect_run_with_freeze_staging(directory, run_id, false)
+}
+
+fn inspect_run_with_freeze_staging(
+    directory: &Path,
+    run_id: &str,
+    allow_freeze_staging: bool,
+) -> Result<DiagnosticRunSummary, String> {
     let before = directory_identity(directory)?;
     let start_bytes = read_bounded_regular(&directory.join("run.json"), MAX_START_BYTES)?;
     let start: RunStartDocument =
@@ -333,7 +672,11 @@ pub(crate) fn inspect_run(directory: &Path, run_id: &str) -> Result<DiagnosticRu
         return Err(invalid_store());
     }
     let run_sha256 = encode_sha256(&start_bytes);
-    let files = run_files(directory)?;
+    let mut files = run_files(directory)?;
+    files.remove(FREEZE_FILENAME);
+    if files.remove(FREEZE_STAGING_FILENAME).is_some() && !allow_freeze_staging {
+        return Err(invalid_store());
+    }
     let managed_bytes = files.values().try_fold(0_u64, |total, bytes| {
         total.checked_add(*bytes).ok_or_else(invalid_store)
     })?;
@@ -341,7 +684,7 @@ pub(crate) fn inspect_run(directory: &Path, run_id: &str) -> Result<DiagnosticRu
         return Err(invalid_store());
     }
     let manifest_path = directory.join("manifest.json");
-    let summary = match manifest_path.symlink_metadata() {
+    let mut summary = match manifest_path.symlink_metadata() {
         Ok(_) => {
             let manifest_bytes = read_bounded_regular(&manifest_path, MAX_MANIFEST_BYTES)?;
             let manifest: RunManifestDocument =
@@ -365,6 +708,7 @@ pub(crate) fn inspect_run(directory: &Path, run_id: &str) -> Result<DiagnosticRu
                 manifest_sha256: Some(encode_sha256(&manifest_bytes)),
                 status: Some(manifest.status),
                 completeness: manifest.completeness,
+                frozen: false,
                 priority,
                 managed_bytes,
                 retention_time: manifest_path
@@ -381,6 +725,7 @@ pub(crate) fn inspect_run(directory: &Path, run_id: &str) -> Result<DiagnosticRu
                 manifest_sha256: None,
                 status: None,
                 completeness: DiagnosticCompleteness::Partial,
+                frozen: false,
                 priority: true,
                 managed_bytes,
                 retention_time: directory
@@ -391,10 +736,40 @@ pub(crate) fn inspect_run(directory: &Path, run_id: &str) -> Result<DiagnosticRu
         }
         Err(_) => return Err(invalid_store()),
     };
+    if let Some(retention_time) = inspect_freeze(directory, &summary)? {
+        summary.frozen = true;
+        summary.priority = true;
+        summary.retention_time = retention_time;
+    }
     if before != directory_identity(directory)? {
         return Err(invalid_store());
     }
     Ok(summary)
+}
+
+fn inspect_freeze(
+    directory: &Path,
+    run: &DiagnosticRunSummary,
+) -> Result<Option<SystemTime>, String> {
+    let path = directory.join(FREEZE_FILENAME);
+    match path.symlink_metadata() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(invalid_store()),
+        Ok(metadata) => {
+            let bytes = read_bounded_regular(&path, MAX_CONTROL_BYTES)?;
+            let document: FreezeDocument =
+                serde_json::from_slice(&bytes).map_err(|_| invalid_store())?;
+            if document.schema != "scorepeek-diagnostic-freeze-v1"
+                || document.run_id != run.run_id
+                || document.run_sha256 != run.run_sha256
+                || document.manifest_sha256 != run.manifest_sha256
+                || canonical_json(&document)? != bytes
+            {
+                return Err(invalid_store());
+            }
+            metadata.modified().map(Some).map_err(|_| invalid_store())
+        }
+    }
 }
 
 impl DiagnosticStoreLease {
@@ -409,6 +784,55 @@ impl DiagnosticStoreLease {
         required_bytes: u64,
     ) -> Result<Self, DiagnosticErrorType> {
         Self::acquire_at_for_run(root, required_bytes, SystemTime::now(), Some(run_id))
+    }
+
+    fn acquire_control(root: &Path) -> Result<Self, DiagnosticErrorType> {
+        let root_lock = open_lock_directory(root)?;
+        match root_lock.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(DiagnosticErrorType::WorkerUnavailable);
+            }
+            Err(std::fs::TryLockError::Error(_)) => {
+                return Err(DiagnosticErrorType::StoreUnavailable);
+            }
+        }
+        let canonical_root = canonical_locked_root(root, &root_lock)?;
+        let (anchor_path, anchor_lock) = open_store_anchor(&canonical_root, true)?
+            .ok_or(DiagnosticErrorType::StoreUnavailable)?;
+        match anchor_lock.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(DiagnosticErrorType::WorkerUnavailable);
+            }
+            Err(std::fs::TryLockError::Error(_)) => {
+                return Err(DiagnosticErrorType::StoreUnavailable);
+            }
+        }
+        validate_locked_root(root, &canonical_root, &root_lock)?;
+        let root_inode = metadata_inode(
+            &root_lock
+                .metadata()
+                .map_err(|_| DiagnosticErrorType::StoreUnavailable)?,
+        );
+        ensure_store_lock_marker(&canonical_root)?;
+        recover_delete_staging(&canonical_root)?;
+        recover_freeze_staging(&canonical_root)?;
+        let runs =
+            inspect_store(&canonical_root).map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+        let managed_bytes = runs
+            .iter()
+            .try_fold(0_u64, |total, run| total.checked_add(run.managed_bytes))
+            .ok_or(DiagnosticErrorType::StoreUnavailable)?;
+        Ok(Self {
+            root: canonical_root,
+            root_inode,
+            anchor_path,
+            _anchor_lock: anchor_lock,
+            _root_lock: root_lock,
+            managed_bytes,
+            normal_candidates: Vec::new(),
+        })
     }
 
     #[cfg(test)]
@@ -436,8 +860,9 @@ impl DiagnosticStoreLease {
                 return Err(DiagnosticErrorType::StoreUnavailable);
             }
         }
-        let (anchor_path, anchor_lock) =
-            open_store_anchor(root, true)?.ok_or(DiagnosticErrorType::StoreUnavailable)?;
+        let canonical_root = canonical_locked_root(root, &root_lock)?;
+        let (anchor_path, anchor_lock) = open_store_anchor(&canonical_root, true)?
+            .ok_or(DiagnosticErrorType::StoreUnavailable)?;
         match anchor_lock.try_lock() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
@@ -447,23 +872,17 @@ impl DiagnosticStoreLease {
                 return Err(DiagnosticErrorType::StoreUnavailable);
             }
         }
+        validate_locked_root(root, &canonical_root, &root_lock)?;
         let root_inode = metadata_inode(
-            &root
-                .symlink_metadata()
+            &root_lock
+                .metadata()
                 .map_err(|_| DiagnosticErrorType::StoreUnavailable)?,
         );
-        if root_inode
-            != metadata_inode(
-                &root_lock
-                    .metadata()
-                    .map_err(|_| DiagnosticErrorType::StoreUnavailable)?,
-            )
-        {
-            return Err(DiagnosticErrorType::StoreUnavailable);
-        }
-        ensure_store_lock_marker(root)?;
-        recover_delete_staging(root)?;
-        let mut runs = inspect_store(root).map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+        ensure_store_lock_marker(&canonical_root)?;
+        recover_delete_staging(&canonical_root)?;
+        recover_freeze_staging(&canonical_root)?;
+        let mut runs =
+            inspect_store(&canonical_root).map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
         if new_run_id.is_some_and(|run_id| runs.iter().any(|run| run.run_id == run_id)) {
             return Err(DiagnosticErrorType::StoreUnavailable);
         }
@@ -488,7 +907,7 @@ impl DiagnosticStoreLease {
                 .duration_since(run.retention_time)
                 .is_ok_and(|age| age >= Duration::from_secs(u64::from(retention_hours) * 3_600));
             if expired {
-                delete_run(root, &run)?;
+                delete_run(&canonical_root, &run)?;
                 managed_bytes = managed_bytes
                     .checked_sub(run.managed_bytes)
                     .ok_or(DiagnosticErrorType::StoreUnavailable)?;
@@ -497,7 +916,7 @@ impl DiagnosticStoreLease {
             }
         }
         let mut lease = Self {
-            root: root.to_owned(),
+            root: canonical_root,
             root_inode,
             anchor_path,
             _anchor_lock: anchor_lock,
@@ -572,8 +991,11 @@ fn diagnostic_writer_activity(root: &Path) -> Result<(bool, Option<(File, File)>
         Err(std::fs::TryLockError::WouldBlock) => return Ok((true, None)),
         Err(std::fs::TryLockError::Error(_)) => return Err(invalid_store()),
     }
-    let Some((_, anchor_lock)) = open_store_anchor(root, false).map_err(|_| invalid_store())?
+    let canonical_root = canonical_locked_root(root, &root_lock).map_err(|_| invalid_store())?;
+    let Some((_, anchor_lock)) =
+        open_store_anchor(&canonical_root, false).map_err(|_| invalid_store())?
     else {
+        validate_locked_root(root, &canonical_root, &root_lock).map_err(|_| invalid_store())?;
         return Ok((
             false,
             Some((
@@ -583,10 +1005,47 @@ fn diagnostic_writer_activity(root: &Path) -> Result<(bool, Option<(File, File)>
         ));
     };
     match anchor_lock.try_lock_shared() {
-        Ok(()) => Ok((false, Some((root_lock, anchor_lock)))),
+        Ok(()) => {
+            validate_locked_root(root, &canonical_root, &root_lock).map_err(|_| invalid_store())?;
+            Ok((false, Some((root_lock, anchor_lock))))
+        }
         Err(std::fs::TryLockError::WouldBlock) => Ok((true, None)),
         Err(std::fs::TryLockError::Error(_)) => Err(invalid_store()),
     }
+}
+
+fn canonical_locked_root(root: &Path, root_lock: &File) -> Result<PathBuf, DiagnosticErrorType> {
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+    validate_locked_root(root, &canonical_root, root_lock)?;
+    Ok(canonical_root)
+}
+
+fn validate_locked_root(
+    root: &Path,
+    canonical_root: &Path,
+    root_lock: &File,
+) -> Result<(), DiagnosticErrorType> {
+    let raw = root
+        .symlink_metadata()
+        .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+    let canonical = canonical_root
+        .symlink_metadata()
+        .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+    let opened = root_lock
+        .metadata()
+        .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+    if !raw.is_dir()
+        || raw.file_type().is_symlink()
+        || !canonical.is_dir()
+        || canonical.file_type().is_symlink()
+        || !same_inode(&raw, &opened)
+        || !same_inode(&canonical, &opened)
+    {
+        return Err(DiagnosticErrorType::StoreUnavailable);
+    }
+    Ok(())
 }
 
 fn open_store_anchor(
@@ -694,6 +1153,118 @@ fn open_lock_directory(path: &Path) -> Result<File, DiagnosticErrorType> {
     Ok(file)
 }
 
+fn recover_freeze_staging(root: &Path) -> Result<(), DiagnosticErrorType> {
+    for entry in fs::read_dir(root).map_err(|_| DiagnosticErrorType::StoreUnavailable)? {
+        let entry = entry.map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+        let metadata = entry
+            .path()
+            .symlink_metadata()
+            .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+        let Some(run_id) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+            continue;
+        };
+        if !valid_run_id(&run_id) || !metadata.is_dir() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        let staging = entry.path().join(FREEZE_STAGING_FILENAME);
+        if staging.symlink_metadata().is_ok() {
+            complete_freeze_publication(&entry.path(), &run_id)?;
+        }
+    }
+    Ok(())
+}
+
+fn publish_freeze(root: &Path, run: &DiagnosticRunSummary) -> Result<(), DiagnosticErrorType> {
+    let directory = root.join(&run.run_id);
+    let document = FreezeDocument {
+        schema: "scorepeek-diagnostic-freeze-v1".to_owned(),
+        run_id: run.run_id.clone(),
+        run_sha256: run.run_sha256.clone(),
+        manifest_sha256: run.manifest_sha256.clone(),
+    };
+    let bytes = canonical_json(&document).map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+    let staging_path = directory.join(FREEZE_STAGING_FILENAME);
+    let mut staging = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&staging_path)
+        .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+    staging
+        .write_all(&bytes)
+        .and_then(|()| staging.sync_all())
+        .and_then(|()| File::open(&directory)?.sync_all())
+        .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+    complete_freeze_publication(&directory, &run.run_id)
+}
+
+fn complete_freeze_publication(directory: &Path, run_id: &str) -> Result<(), DiagnosticErrorType> {
+    let staging_path = directory.join(FREEZE_STAGING_FILENAME);
+    let final_path = directory.join(FREEZE_FILENAME);
+    let Ok(staging) = read_freeze_document(&staging_path, run_id) else {
+        match final_path.symlink_metadata() {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let staging_metadata = staging_path
+                    .symlink_metadata()
+                    .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+                if !staging_metadata.is_file() || staging_metadata.file_type().is_symlink() {
+                    return Err(DiagnosticErrorType::StoreUnavailable);
+                }
+                fs::remove_file(&staging_path)
+                    .and_then(|()| File::open(directory)?.sync_all())
+                    .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+                return Ok(());
+            }
+            _ => return Err(DiagnosticErrorType::StoreUnavailable),
+        }
+    };
+    let run = inspect_run_with_freeze_staging(directory, run_id, true)
+        .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+    if staging.run_sha256 != run.run_sha256 || staging.manifest_sha256 != run.manifest_sha256 {
+        return Err(DiagnosticErrorType::StoreUnavailable);
+    }
+    match final_path.symlink_metadata() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::hard_link(&staging_path, &final_path)
+                .and_then(|()| File::open(directory)?.sync_all())
+                .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+        }
+        Ok(final_metadata) => {
+            let staging_metadata = staging_path
+                .symlink_metadata()
+                .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+            if !same_inode(&final_metadata, &staging_metadata)
+                || read_freeze_document(&final_path, run_id)? != staging
+            {
+                return Err(DiagnosticErrorType::StoreUnavailable);
+            }
+        }
+        Err(_) => return Err(DiagnosticErrorType::StoreUnavailable),
+    }
+    fs::remove_file(&staging_path)
+        .and_then(|()| File::open(directory)?.sync_all())
+        .map_err(|_| DiagnosticErrorType::StoreUnavailable)
+}
+
+fn read_freeze_document(path: &Path, run_id: &str) -> Result<FreezeDocument, DiagnosticErrorType> {
+    let bytes = read_bounded_regular(path, MAX_CONTROL_BYTES)
+        .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+    let document: FreezeDocument =
+        serde_json::from_slice(&bytes).map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+    if document.schema != "scorepeek-diagnostic-freeze-v1"
+        || document.run_id != run_id
+        || !valid_sha256(&document.run_sha256)
+        || document
+            .manifest_sha256
+            .as_deref()
+            .is_some_and(|digest| !valid_sha256(digest))
+        || canonical_json(&document).map_err(|_| DiagnosticErrorType::StoreUnavailable)? != bytes
+    {
+        return Err(DiagnosticErrorType::StoreUnavailable);
+    }
+    Ok(document)
+}
+
 fn recover_delete_staging(root: &Path) -> Result<(), DiagnosticErrorType> {
     let mut recovered = 0_usize;
     for entry in fs::read_dir(root).map_err(|_| DiagnosticErrorType::StoreUnavailable)? {
@@ -773,6 +1344,7 @@ fn same_run_summary(left: &DiagnosticRunSummary, right: &DiagnosticRunSummary) -
         && left.manifest_sha256 == right.manifest_sha256
         && left.status == right.status
         && left.completeness == right.completeness
+        && left.frozen == right.frozen
         && left.priority == right.priority
         && left.managed_bytes == right.managed_bytes
         && left.retention_time == right.retention_time
@@ -1324,8 +1896,12 @@ fn valid_semver_identifiers(value: &str, reject_numeric_leading_zero: bool) -> b
 }
 
 fn encode_sha256(bytes: &[u8]) -> String {
+    encode_sha256_digest(Sha256::digest(bytes))
+}
+
+fn encode_sha256_digest(digest: impl IntoIterator<Item = u8>) -> String {
     let mut encoded = String::with_capacity(64);
-    for byte in Sha256::digest(bytes) {
+    for byte in digest {
         use std::fmt::Write as _;
         write!(encoded, "{byte:02x}").expect("writing to String cannot fail");
     }
@@ -1346,8 +1922,9 @@ fn invalid_store() -> String {
 mod tests {
     use super::*;
     use crate::diagnostic_recording::{
-        DiagnosticBinding, DiagnosticCompleteness, DiagnosticPolicy, DiagnosticRecorder,
-        DiagnosticReplayBinding, DiagnosticResource, DiagnosticRunDescriptor, DiagnosticRunStatus,
+        CANONICAL_BYTES, DiagnosticBinding, DiagnosticCompleteness, DiagnosticFrameInput,
+        DiagnosticPolicy, DiagnosticRecorder, DiagnosticReplayBinding, DiagnosticResource,
+        DiagnosticRunDescriptor, DiagnosticRunStatus,
     };
 
     fn descriptor(run_id: &str) -> DiagnosticRunDescriptor {
@@ -1646,6 +2223,46 @@ mod tests {
         drop(lease);
         fs::remove_dir(root.path()).unwrap();
         fs::rename(moved, root.path()).unwrap();
+    }
+
+    #[test]
+    fn canonical_parent_anchor_blocks_dotdot_alias_after_root_rebinding() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("store");
+        let alias_parent = base.path().join("alias-parent");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&alias_parent).unwrap();
+        let alias = alias_parent.join("..").join("store");
+        let moved = base.path().join("moved-store");
+
+        let lease = DiagnosticStoreLease::acquire(&alias, 0).unwrap();
+        fs::rename(&root, &moved).unwrap();
+        fs::create_dir(&root).unwrap();
+        assert_eq!(
+            DiagnosticStoreLease::acquire(&root, 0).err(),
+            Some(DiagnosticErrorType::WorkerUnavailable)
+        );
+        drop(lease);
+    }
+
+    #[test]
+    fn canonical_parent_anchor_blocks_intermediate_symlink_alias_after_root_rebinding() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("store");
+        fs::create_dir(&root).unwrap();
+        let parent_link = base.path().join("parent-link");
+        std::os::unix::fs::symlink(base.path(), &parent_link).unwrap();
+        let alias = parent_link.join("store");
+        let moved = base.path().join("moved-store");
+
+        let lease = DiagnosticStoreLease::acquire(&alias, 0).unwrap();
+        fs::rename(&root, &moved).unwrap();
+        fs::create_dir(&root).unwrap();
+        assert_eq!(
+            DiagnosticStoreLease::acquire(&root, 0).err(),
+            Some(DiagnosticErrorType::WorkerUnavailable)
+        );
+        drop(lease);
     }
 
     #[test]
@@ -1987,5 +2604,310 @@ mod tests {
         let status = diagnostic_store_status(root.path()).unwrap();
         assert_eq!(status.managed_bytes, DEFAULT_AGGREGATE_BYTES);
         assert_eq!(status.priority_count, 1);
+    }
+
+    #[test]
+    fn freeze_is_digest_confirmed_idempotent_and_priority() {
+        let root = tempfile::tempdir().unwrap();
+        let recorder = DiagnosticRecorder::start(
+            root.path(),
+            &descriptor("freeze-run"),
+            DiagnosticPolicy::default(),
+        );
+        let _ = recorder.finish(DiagnosticRunStatus::Success, 1_000);
+        let run = inspect_store(root.path()).unwrap().remove(0);
+        assert!(!run.priority);
+        assert!(!run.frozen);
+
+        assert!(
+            diagnostic_freeze(
+                root.path(),
+                "freeze-run",
+                &"0".repeat(64),
+                run.manifest_sha256.as_deref(),
+            )
+            .is_err()
+        );
+        assert!(
+            !root
+                .path()
+                .join("freeze-run")
+                .join(FREEZE_FILENAME)
+                .exists()
+        );
+
+        let first = diagnostic_freeze(
+            root.path(),
+            "freeze-run",
+            &run.run_sha256,
+            run.manifest_sha256.as_deref(),
+        )
+        .unwrap();
+        let second = diagnostic_freeze(
+            root.path(),
+            "freeze-run",
+            &run.run_sha256,
+            run.manifest_sha256.as_deref(),
+        )
+        .unwrap();
+        assert!(first.frozen && second.frozen);
+        let frozen = inspect_store(root.path()).unwrap().remove(0);
+        assert!(frozen.frozen);
+        assert!(frozen.priority);
+        assert_eq!(frozen.managed_bytes, run.managed_bytes);
+    }
+
+    #[test]
+    fn delete_requires_exact_current_digests() {
+        let root = tempfile::tempdir().unwrap();
+        let recorder = DiagnosticRecorder::start(
+            root.path(),
+            &descriptor("delete-run"),
+            DiagnosticPolicy::default(),
+        );
+        let _ = recorder.finish(DiagnosticRunStatus::Success, 1_000);
+        let run = inspect_store(root.path()).unwrap().remove(0);
+        assert!(diagnostic_delete(root.path(), "delete-run", &run.run_sha256, None,).is_err());
+        assert!(root.path().join("delete-run").exists());
+
+        let outcome = diagnostic_delete(
+            root.path(),
+            "delete-run",
+            &run.run_sha256,
+            run.manifest_sha256.as_deref(),
+        )
+        .unwrap();
+        assert_eq!(outcome.operation, "delete");
+        assert!(!root.path().join("delete-run").exists());
+    }
+
+    #[test]
+    fn partial_run_uses_explicit_no_manifest_confirmation() {
+        let root = tempfile::tempdir().unwrap();
+        let recorder = DiagnosticRecorder::start(
+            root.path(),
+            &descriptor("partial-control"),
+            DiagnosticPolicy::default(),
+        );
+        drop(recorder);
+        let run = inspect_store(root.path()).unwrap().remove(0);
+        assert!(run.manifest_sha256.is_none());
+        let frozen =
+            diagnostic_freeze(root.path(), "partial-control", &run.run_sha256, None).unwrap();
+        assert!(frozen.frozen);
+        diagnostic_delete(root.path(), "partial-control", &run.run_sha256, None).unwrap();
+        assert!(!root.path().join("partial-control").exists());
+    }
+
+    #[test]
+    fn export_is_complete_verified_and_create_only() {
+        let root = tempfile::tempdir().unwrap();
+        let export_parent = tempfile::tempdir().unwrap();
+        let mut recorder = DiagnosticRecorder::start(
+            root.path(),
+            &descriptor("export-run"),
+            DiagnosticPolicy::default(),
+        );
+        let pixels = vec![7; CANONICAL_BYTES];
+        assert!(matches!(
+            recorder.record_frame(DiagnosticFrameInput {
+                sequence: 1,
+                monotonic_start_ms: 0,
+                monotonic_end_ms: 16,
+                pixels: &pixels,
+            }),
+            crate::diagnostic_recording::DiagnosticRecordOutcome::Recorded
+        ));
+        let _ = recorder.finish(DiagnosticRunStatus::Success, 1_000);
+        let run = inspect_store(root.path()).unwrap().remove(0);
+        let destination = export_parent.path().join("exported-run");
+        let outcome = diagnostic_export(
+            root.path(),
+            "export-run",
+            &run.run_sha256,
+            run.manifest_sha256.as_deref().unwrap(),
+            &destination,
+        )
+        .unwrap();
+        assert_eq!(outcome.operation, "export");
+        assert!(destination.join(EXPORT_MANIFEST_FILENAME).is_file());
+        assert!(destination.join("run.json").is_file());
+        assert!(destination.join("manifest.json").is_file());
+        assert!(
+            diagnostic_export(
+                root.path(),
+                "export-run",
+                &run.run_sha256,
+                run.manifest_sha256.as_deref().unwrap(),
+                &destination,
+            )
+            .is_err()
+        );
+
+        let frame = root
+            .path()
+            .join("export-run/frame-00000000000000000001.qoi");
+        let mut corrupted = fs::read(&frame).unwrap();
+        let last = corrupted.len() - 1;
+        corrupted[last] ^= 1;
+        fs::write(&frame, corrupted).unwrap();
+        assert!(
+            diagnostic_export(
+                root.path(),
+                "export-run",
+                &run.run_sha256,
+                run.manifest_sha256.as_deref().unwrap(),
+                &export_parent.path().join("corrupt-export"),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn export_rejects_a_manifest_bearing_partial_run_before_claiming_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let export_parent = tempfile::tempdir().unwrap();
+        let mut recorder = DiagnosticRecorder::start(
+            root.path(),
+            &descriptor("partial-export-run"),
+            DiagnosticPolicy::default(),
+        );
+        let pixels = vec![7; CANONICAL_BYTES];
+        let _ = recorder.record_frame(DiagnosticFrameInput {
+            sequence: 1,
+            monotonic_start_ms: 0,
+            monotonic_end_ms: 16,
+            pixels: &pixels,
+        });
+        let _ = recorder.record_frame(DiagnosticFrameInput {
+            sequence: 3,
+            monotonic_start_ms: 32,
+            monotonic_end_ms: 48,
+            pixels: &pixels,
+        });
+        let outcome = recorder.finish(DiagnosticRunStatus::Success, 1_000);
+        assert_eq!(outcome.completeness, Some(DiagnosticCompleteness::Partial));
+        let run = inspect_store(root.path()).unwrap().remove(0);
+        assert!(run.manifest_sha256.is_some());
+        let destination = export_parent.path().join("partial-export");
+        assert!(
+            diagnostic_export(
+                root.path(),
+                "partial-export-run",
+                &run.run_sha256,
+                run.manifest_sha256.as_deref().unwrap(),
+                &destination,
+            )
+            .is_err()
+        );
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn export_rejects_destinations_resolving_inside_store() {
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("store");
+        fs::create_dir(&root).unwrap();
+        let recorder = DiagnosticRecorder::start(
+            &root,
+            &descriptor("inside-export-run"),
+            DiagnosticPolicy::default(),
+        );
+        let _ = recorder.finish(DiagnosticRunStatus::Success, 1_000);
+        let run = inspect_store(&root).unwrap().remove(0);
+        let manifest_sha256 = run.manifest_sha256.as_deref().unwrap();
+
+        let alias_parent = base.path().join("alias-parent");
+        fs::create_dir(&alias_parent).unwrap();
+        let root_alias = alias_parent.join("..").join("store");
+        let direct_destination = root.join("direct-inside-export");
+        assert!(
+            diagnostic_export(
+                &root_alias,
+                "inside-export-run",
+                &run.run_sha256,
+                manifest_sha256,
+                &direct_destination,
+            )
+            .is_err()
+        );
+        assert!(!direct_destination.exists());
+
+        let nested = root.join("nested");
+        fs::create_dir(&nested).unwrap();
+        let store_link = base.path().join("store-link");
+        std::os::unix::fs::symlink(&root, &store_link).unwrap();
+        let symlink_destination = store_link.join("nested/symlink-inside-export");
+        assert!(
+            diagnostic_export(
+                &root,
+                "inside-export-run",
+                &run.run_sha256,
+                manifest_sha256,
+                &symlink_destination,
+            )
+            .is_err()
+        );
+        assert!(!nested.join("symlink-inside-export").exists());
+    }
+
+    #[test]
+    fn next_writer_recovers_interrupted_freeze_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let recorder = DiagnosticRecorder::start(
+            root.path(),
+            &descriptor("recover-freeze"),
+            DiagnosticPolicy::default(),
+        );
+        let _ = recorder.finish(DiagnosticRunStatus::Success, 1_000);
+        let run = inspect_store(root.path()).unwrap().remove(0);
+        let document = FreezeDocument {
+            schema: "scorepeek-diagnostic-freeze-v1".to_owned(),
+            run_id: run.run_id.clone(),
+            run_sha256: run.run_sha256.clone(),
+            manifest_sha256: run.manifest_sha256.clone(),
+        };
+        fs::write(
+            root.path()
+                .join("recover-freeze")
+                .join(FREEZE_STAGING_FILENAME),
+            canonical_json(&document).unwrap(),
+        )
+        .unwrap();
+
+        let lease = DiagnosticStoreLease::acquire_control(root.path()).unwrap();
+        let frozen = inspect_store(root.path()).unwrap().remove(0);
+        assert!(frozen.frozen);
+        drop(lease);
+    }
+
+    #[test]
+    fn freeze_recovery_preserves_an_unowned_staging_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let recorder = DiagnosticRecorder::start(
+            root.path(),
+            &descriptor("freeze-symlink-run"),
+            DiagnosticPolicy::default(),
+        );
+        let _ = recorder.finish(DiagnosticRunStatus::Success, 1_000);
+        let run = inspect_store(root.path()).unwrap().remove(0);
+        let external = tempfile::NamedTempFile::new().unwrap();
+        let staging = root
+            .path()
+            .join("freeze-symlink-run")
+            .join(FREEZE_STAGING_FILENAME);
+        std::os::unix::fs::symlink(external.path(), &staging).unwrap();
+
+        assert!(
+            diagnostic_freeze(
+                root.path(),
+                "freeze-symlink-run",
+                &run.run_sha256,
+                run.manifest_sha256.as_deref(),
+            )
+            .is_err()
+        );
+        assert!(staging.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(external.path().is_file());
     }
 }

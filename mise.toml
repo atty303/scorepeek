@@ -213,6 +213,30 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- diagnostic list "$@"
 '''
 
+[tasks."diagnostic:freeze"]
+description = "Freeze one digest-confirmed diagnostic run"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- diagnostic freeze "$@"
+'''
+
+[tasks."diagnostic:delete"]
+description = "Delete one digest-confirmed diagnostic run"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- diagnostic delete "$@"
+'''
+
+[tasks."diagnostic:export"]
+description = "Create one verified local diagnostic export"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- diagnostic export "$@"
+'''
+
 [tasks."recognition:crop"]
 description = "Export shared-layout crops from one validated canonical result frame"
 run = '''

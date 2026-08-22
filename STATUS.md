@@ -226,8 +226,8 @@ is outside this checkpoint.
   directory during the complete store snapshot fail closed. Producer package version remains
   resource identity rather than a schema-compatibility gate. Status schema v2 additionally reports
   whether a cross-process exclusive writer lease is active. The application locks the store-root
-  directory inode and a path-derived zero-byte ownership anchor in its stable parent for the whole
-  run; the zero-byte root marker is only an inventory sentinel, so rebinding the root or marker
+  directory inode and a canonical-root-path-derived zero-byte ownership anchor in its stable parent for the whole
+  run; requested and canonical paths are revalidated against the locked inode, and the zero-byte root marker is only an inventory sentinel, so rebinding the root or marker
   does not change the cooperative scorepeek lease identity. The lease is advisory and does not
   defend against a same-UID process deliberately replacing both root and parent anchor. It removes
   expired normal/priority runs
@@ -244,6 +244,16 @@ is outside this checkpoint.
   non-cooperative same-UID pathname race after the final identity check is outside the
   operator-trusted artifact boundary. The inventory
   does not rehash every artifact.
+- Digest-confirmed diagnostic controls now freeze complete or partial runs, explicitly delete them,
+  and create verified local exports. Freeze is idempotent, stores a canonical in-run marker, makes
+  the run priority for seven days from marker publication, and recovers its fixed publication
+  staging on the next writer/control while preserving non-regular or symlinked reserved staging as
+  invalid state. Delete requires the exact current optional manifest digest
+  (`none` for a partial run) and reuses rename-first crash recovery. Export accepts complete runs
+  only, rehashes all manifest-bound files, creates an absolute nonexistent destination outside the
+  canonical store after resolving the existing destination parent, and atomically publishes
+  `export.json` as the last fallible commit point. A failed export leaves an observable incomplete claimed
+  destination and never overwrites or guesses cleanup ownership. Remote export remains disabled.
 - A music-select spike measured from the same canonical profile. Its independent
   cyan-header and green-level-column predicate classifies the two retained
   representative frames fail closed, then exports one selected-title crop and
@@ -373,7 +383,7 @@ is outside this checkpoint.
 ## Verified in this checkpoint
 
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
-  The current workspace run covered 104 `scorepeek` library tests, 65 binary tests, 55 offline
+  The current workspace run covered 104 `scorepeek` library tests, 75 binary tests, 55 offline
   corpus tests, 75 offline Python OCR tests, and the recording-dataset E2E gate.
 - The corrected integrated-context observer ran over both visually reviewed music-select frames and the
   retained PTS-190000 result frame with model SHA-256
@@ -1219,9 +1229,9 @@ strict create-only replay control digest-binds its request and canonical extract
 extraction PTS/decode order, and traverses the same worker without recognition triggers. Only a
 complete manifest-bearing replay exits successfully. Read-only status/list controls now recover a
 strict start-only run as priority partial evidence and fail the whole inspection on invalid or
-changing managed state. Cross-process active-run ownership and crash-safe aggregate retention are
-now implemented at diagnostic run start and exact artifact reservation. Freeze/delete/local-export
-controls, live integration, and target performance remain unimplemented and unverified.
+changing managed state. Cross-process active-run ownership, crash-safe aggregate retention,
+digest-confirmed freeze/delete, and verified create-only local export are now implemented. Live
+integration and target performance remain unimplemented and unverified.
 
 The retained ordinary-session recording has now been inspected over source PTS 0 through 458,300
 ms. Its immutable media probe contains 27,499 contiguous decode indexes, strictly increasing PTS,
@@ -1277,11 +1287,10 @@ verification or an applied-retention claim.
 
 ## Next executable task
 
-Implement operator freeze, digest-confirmed explicit delete, and create-only local export on top of
-the strict inventory and exclusive store lease. Fault-inject control digest mismatch, destination
-collision, deletion/publication interruption, and local-export capacity while retaining the existing
-retention, write, finalize, opt-out, flush-timeout, worker-loss, and partial-run recovery coverage.
-Keep the synchronous writer off the live
+Integrate the bounded diagnostic worker with the live canonical-frame producer without moving
+encoding or filesystem I/O onto capture/recognition. Exercise queue saturation, worker loss,
+generation rollover, target-host lifecycle, and performance while retaining the existing control,
+retention, write, finalize, opt-out, flush-timeout, and partial-run recovery coverage. Keep the synchronous writer off the live
 recognition path until queue conformance and target-host performance are verified. Do not mark the
 provisional 1,000-ms cadence as a result-miss denominator until a minimum result dwell is calibrated
 from multiple representative recordings. Keep the inventory separate from `SongContext`; do not add

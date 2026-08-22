@@ -1,22 +1,24 @@
 # Diagnostic store controls
 
-`scorepeek diagnostic status` and `scorepeek diagnostic list` are read-only
-application controls over one existing diagnostic-run root. They do not run
-recognition, infer an INFINITAS session, freeze or explicitly delete a run, or
-export pixels. Retention itself is application-owned and runs automatically
-under the store writer lease before and during a new diagnostic run.
+Diagnostic controls operate on one existing diagnostic-run root. They do not
+run recognition or infer an INFINITAS session. Retention is application-owned
+and runs automatically under the store writer lease before and during a new
+diagnostic run.
 
 ```text
 mise run diagnostic:status -- --root /absolute/existing/diagnostic-root
 mise run diagnostic:list -- --root /absolute/existing/diagnostic-root
+mise run diagnostic:freeze -- --root /absolute/existing/diagnostic-root --run-id RUN_ID --run-sha256 RUN_SHA256 --manifest-sha256 MANIFEST_SHA256_OR_NONE
+mise run diagnostic:delete -- --root /absolute/existing/diagnostic-root --run-id RUN_ID --run-sha256 RUN_SHA256 --manifest-sha256 MANIFEST_SHA256_OR_NONE
+mise run diagnostic:export -- --root /absolute/existing/diagnostic-root --run-id RUN_ID --run-sha256 RUN_SHA256 --manifest-sha256 MANIFEST_SHA256 --destination /absolute/nonexistent-directory
 ```
 
 `status` schema v2 reports the fixed local policy, whether an exclusive writer
 lease is currently held, actual managed bytes, remaining bytes
 under the 8-GiB aggregate budget, and aggregate completeness/priority counts.
-`list` reports only opaque run IDs, the exact `run.json` SHA-256, an optional
+`list` schema v2 reports only opaque run IDs, the exact `run.json` SHA-256, an optional
 completion-manifest SHA-256, terminal status/completeness, priority, and managed
-bytes. It does not expose paths, pixels, OCR text, song/player values, replay
+bytes, including whether priority came from an operator freeze. It does not expose paths, pixels, OCR text, song/player values, replay
 request fields, or recognition bindings.
 
 A canonical `run.json` without `manifest.json` is listed as `partial`, with no
@@ -35,12 +37,14 @@ compatibility.
 
 One durable zero-byte inventory marker is the only non-run store-root entry
 accepted by the inventory. The writer locks both the store-root directory inode
-and one path-derived, zero-byte ownership anchor in its stable parent for the
+and one canonical-root-path-derived, zero-byte ownership anchor in its stable parent for the
 entire run; status takes the same locks in shared mode while taking an idle
 snapshot. A legacy root without the parent anchor remains read-only under its
 root lock, while the first writer durably creates the anchor. The root marker is
-an inventory sentinel, not the lease identity. Scorepeek processes derive and
-honor the same parent anchor, so cooperative cross-process writers serialize
+an inventory sentinel, not the lease identity. Scorepeek resolves aliases and
+intermediate symlinks and revalidates both the requested path and canonical root
+against the locked inode before and after anchor acquisition. Scorepeek processes
+therefore derive and honor the same parent anchor, so cooperative cross-process writers serialize
 even if the root pathname is rebound while a writer holds the old root inode.
 This prevents scorepeek retention from deleting an active scorepeek run. The
 lease is advisory; deliberate same-UID replacement of both the root and its
@@ -81,6 +85,29 @@ remaining capacity as healthy state. The controls
 do not rehash every QOI/fact artifact; strict replay or a future explicit verify
 control remains the integrity boundary for artifact contents.
 
-Operator freeze, digest-confirmed explicit delete, and create-only local export
-remain subsequent controls. Full artifact rehash also remains an explicit
-verify/replay responsibility.
+`freeze` and `delete` require the current run digest and exact manifest digest.
+For a partial run with no manifest the explicit manifest confirmation value is
+`none`; supplying `none` for a complete run or a digest for a partial run fails
+without mutation. Freeze is idempotent and publishes a canonical marker inside
+the run. It changes retention priority and restarts the seven-day priority age
+at marker publication without changing artifact byte accounting. A fixed
+freeze-publication staging name makes interruption recoverable by the next
+writer or mutating control. Only a regular non-symlink staging file can be
+discarded as an incomplete owned publication; other reserved entries are
+preserved and fail closed. Delete uses the same rename-first recovery path as
+retention and removes frozen metadata with the run.
+
+Local export accepts complete runs only. It takes the store lease, revalidates
+the supplied digests, rehashes every manifest-bound artifact, independently
+hashes the optional validated freeze marker, copies regular files with
+create-only mode, and publishes canonical
+`export.json` as the last fallible commit point, after artifact and directory
+durability preparation, through the same atomic create-only publication primitive used
+for private manifests. The destination must be an absolute nonexistent directory
+whose resolved existing parent is outside the canonical store root; lexical aliases
+and intermediate symlinks cannot route it back into the store. Remote export remains disabled. A failure can leave the
+claimed destination as an explicitly incomplete export without `export.json`;
+scorepeek never overwrites or silently cleans that destination, so the operator
+must select a new destination or remove the incomplete one explicitly. Export
+JSON results expose only opaque identities, digests, counts, and bytes—not the
+destination path or artifact contents.

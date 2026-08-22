@@ -144,22 +144,99 @@ fn try_program_information(args: &[OsString]) -> Option<Result<(), String>> {
 }
 
 fn try_diagnostic_control(args: &[OsString]) -> Option<Result<(), String>> {
-    let [diagnostic, command, root_flag, root] = args else {
-        return None;
-    };
-    if diagnostic != "diagnostic" || root_flag != "--root" {
-        return None;
-    }
-    let root = Path::new(root);
-    match command.to_str() {
-        Some("status") => Some(print_diagnostic_summary(
-            diagnostic_control::diagnostic_store_status(root),
-        )),
-        Some("list") => Some(print_diagnostic_summary(
-            diagnostic_control::diagnostic_run_list(root),
-        )),
+    match args {
+        [diagnostic, command, root_flag, root]
+            if diagnostic == "diagnostic" && root_flag == "--root" =>
+        {
+            match command.to_str() {
+                Some("status") => Some(print_diagnostic_summary(
+                    diagnostic_control::diagnostic_store_status(Path::new(root)),
+                )),
+                Some("list") => Some(print_diagnostic_summary(
+                    diagnostic_control::diagnostic_run_list(Path::new(root)),
+                )),
+                _ => None,
+            }
+        }
+        [
+            diagnostic,
+            command,
+            root_flag,
+            root,
+            run_id_flag,
+            run_id,
+            run_digest_flag,
+            run_digest,
+            manifest_flag,
+            manifest_digest,
+        ] if diagnostic == "diagnostic"
+            && (command == "freeze" || command == "delete")
+            && root_flag == "--root"
+            && run_id_flag == "--run-id"
+            && run_digest_flag == "--run-sha256"
+            && manifest_flag == "--manifest-sha256" =>
+        {
+            Some((|| {
+                let run_id = utf8_control_value(run_id, "run ID")?;
+                let run_digest = utf8_control_value(run_digest, "run digest")?;
+                let manifest_digest = utf8_control_value(manifest_digest, "manifest digest")?;
+                let manifest_digest = (manifest_digest != "none").then_some(manifest_digest);
+                if command == "freeze" {
+                    print_diagnostic_summary(diagnostic_control::diagnostic_freeze(
+                        Path::new(root),
+                        run_id,
+                        run_digest,
+                        manifest_digest,
+                    ))
+                } else {
+                    print_diagnostic_summary(diagnostic_control::diagnostic_delete(
+                        Path::new(root),
+                        run_id,
+                        run_digest,
+                        manifest_digest,
+                    ))
+                }
+            })())
+        }
+        [
+            diagnostic,
+            export,
+            root_flag,
+            root,
+            run_id_flag,
+            run_id,
+            run_digest_flag,
+            run_digest,
+            manifest_flag,
+            manifest_digest,
+            destination_flag,
+            destination,
+        ] if diagnostic == "diagnostic"
+            && export == "export"
+            && root_flag == "--root"
+            && run_id_flag == "--run-id"
+            && run_digest_flag == "--run-sha256"
+            && manifest_flag == "--manifest-sha256"
+            && destination_flag == "--destination" =>
+        {
+            Some((|| {
+                print_diagnostic_summary(diagnostic_control::diagnostic_export(
+                    Path::new(root),
+                    utf8_control_value(run_id, "run ID")?,
+                    utf8_control_value(run_digest, "run digest")?,
+                    utf8_control_value(manifest_digest, "manifest digest")?,
+                    Path::new(destination),
+                ))
+            })())
+        }
         _ => None,
     }
+}
+
+fn utf8_control_value<'a>(value: &'a OsStr, label: &str) -> Result<&'a str, String> {
+    value
+        .to_str()
+        .ok_or_else(|| format!("diagnostic control {label} must be UTF-8"))
 }
 
 fn print_diagnostic_summary<T: Serialize>(summary: Result<T, String>) -> Result<(), String> {
@@ -1024,7 +1101,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --model-id MODEL_ID --bundle DIRECTORY --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
+        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --model-id MODEL_ID --bundle DIRECTORY --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
         env!("CARGO_PKG_VERSION")
     );
 }

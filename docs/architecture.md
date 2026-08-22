@@ -209,7 +209,7 @@ symlinks, typed manifest or exact file-set drift, per-run or aggregate capacity
 overflow, and concurrent mutation of any directory in the store snapshot.
 
 The application holds exclusive locks on the store-root directory inode and a
-path-derived zero-byte ownership anchor in its stable parent for a whole
+canonical-root-path-derived zero-byte ownership anchor in its stable parent for a whole
 diagnostic run; the durable zero-byte root marker is only an inventory sentinel
 and is not the lease identity. This is an advisory cooperative-writer contract,
 not a defense against deliberate same-UID replacement of both root and anchor.
@@ -224,9 +224,15 @@ scorepeek-owned marker that binds the run ID and exact pre-delete file
 inventory. Marker publication itself uses a fixed recoverable staging state.
 Recovery accepts only a remaining subset of that inventory, and
 orders payload/marker unlink with directory fsyncs before the final root fsync,
-so a crash after partial cleanup resumes on the next writer. Freeze,
-digest-confirmed explicit delete, and create-only local export remain later
-controls.
+so a crash after partial cleanup resumes on the next writer. Digest-confirmed
+freeze publishes an in-run priority marker and preserves non-regular or symlinked
+reserved staging as invalid state; explicit delete reuses the same
+rename-first deletion state machine. Complete-run local export rehashes every
+manifest-bound artifact, copies into an absolute create-only directory, and
+publishes `export.json` as the last fallible commit point with atomic create-only publication. It resolves the
+existing destination parent and canonical store root before creation, so aliases or
+intermediate symlinks cannot route an export back into the managed store. Export failure leaves an observable incomplete
+destination rather than overwriting or guessing cleanup ownership.
 Observed pathname identity drift fails closed; adversarial replacement after a
 final identity check is outside the operator-trusted private-artifact boundary.
 
