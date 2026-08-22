@@ -8,6 +8,9 @@
 - M1.1 catalog contractとlocal federation core: 完了
 - M1.2 live acquisitionとsync orchestration: manual/scheduled syncまで完了
 - M2 observed-profile private corpus、synthetic renderer、label/replay tooling: 完了
+- M3 common PipeWire receiverとGamescope observed-frame profile: 着手（default remoteのbounded
+  registry round tripとexact Gamescope `Video/Source` discovery probeまで。source lease、stream
+  negotiation、frame reception、capture profile/normalizer、Bazzite gateは未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
 - M4 offline canonical/recognition spike: 着手（OBS/vkcapture実録画からnormalizer、共通result/music-select
   layout、fail-closed screen判定、result title cropのRust前処理/Paddle/公式ONNX CTC parity、
@@ -18,7 +21,8 @@
   scenario、application-owned QOI diagnostic run writer、bounded worker、strict canonical replay、read-only
   status/list control、cross-process active ownership、crash-safe aggregate retention、digest-confirmed
   freeze/delete、verified create-only local export、canonical producerからworkerへのnon-blocking live
-  handoffまで。capture adapter、DomainNormalizer、target-host性能、accepted field認識、event daemonは未着手）
+  handoffまで。Gamescope exact source discovery以外のcapture adapter、DomainNormalizer、target-host性能、
+  accepted field認識、event daemonは未着手）
 - scorepeek-owned OCR学習/export: smallをartist/chart context/selection song contextと統合した後の凍結残差が
   missing OCR signalに帰属し、別経路が安全に解消できる場合だけ再検討
 - Bazzite実機検証とprivate corpus収集: 着手（OBS/vkcapture実録画1本のcopyless isolated

@@ -91,6 +91,16 @@ is outside this checkpoint.
   development host. The native gate fixes an exact shared-libclang/resource-header pair and runs an
   SDK-linked probe against the default host PipeWire runtime; this is build evidence only, not
   target-host or capture support evidence.
+- A bounded, fail-closed Gamescope source discovery probe against the default PipeWire remote. It
+  initializes the process-wide PipeWire client, completes one initial registry round trip, tracks
+  candidate removal and replacement through that barrier, and admits exactly one current Node whose `node.name` is
+  `gamescope` and `media.class` is `Video/Source`, and distinguishes remote, registry, timeout,
+  capacity, unavailable, ambiguous, and receiver failures without fallback. Its host-provided
+  diagnostic sink receives only bounded operation timing, counts, source kind, stable error type,
+  and the selected numeric node ID; arbitrary properties and PipeWire error messages do not cross
+  that boundary. Asynchronous core transport errors, registry-proxy errors, and local receiver
+  errors retain distinct stable types and operation ownership. The probe does not claim or retain a source lease, capture profile, stream,
+  `ObservedFrame`, or supported route.
 - Destructive v2 private-corpus ingest/source/replay contracts. Every observed
   source binds only an opaque capture profile. Replay binds its normalizer,
   canonical frame contract, and shared canonical layout separately without
@@ -393,8 +403,14 @@ is outside this checkpoint.
 ## Verified in this checkpoint
 
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
-  The current workspace run covered 104 `scorepeek` library tests, 80 binary tests, 55 offline
+  The current workspace run covered 111 `scorepeek` library tests, 80 binary tests, 55 offline
   corpus tests, 75 offline Python OCR tests, and the recording-dataset E2E gate.
+- The Gamescope discovery contract has deterministic tests for exact selection, zero/multiple
+  candidate rejection, removal before the initial barrier, remove-and-replace, partial-count
+  timeout reporting, and synchronous/asynchronous operation-owned failure classification. A
+  development-host compile verifies the pinned PipeWire API surface. No live Gamescope source was
+  acquired in this checkpoint, so these are contract/build results rather than target-host capture
+  evidence.
 - The corrected integrated-context observer ran over both visually reviewed music-select frames and the
   retained PTS-190000 result frame with model SHA-256
   `5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634`. It observed music-select
@@ -798,6 +814,10 @@ is outside this checkpoint.
 
 ## Unverified and target-only boundaries
 
+- The Gamescope probe has not been exercised against a live Gamescope node. It releases the default
+  remote and registry after discovery and therefore does not establish the lifetime-bound source
+  lease, source-removal observation, stream/caps/memory negotiation, frame reception, bounded
+  latest-frame behavior, opaque profile identity, normalizer, or diagnostic-run persistence.
 - The first real normalizer, canonical-frame production, shared result ROIs,
   result-screen predicate, and PP-OCRv6 field recognition are only an offline
   single-recording spike. The
@@ -1312,8 +1332,8 @@ verification or an applied-retention claim.
 
 ## Next executable task
 
-Implement the common receiver and Gamescope-only source provider vertical spike using the accepted
-PipeWire build boundary. Bind its `ObservedFrame` output through a versioned DomainNormalizer
+Turn the exact Gamescope discovery result into a lifetime-bound provider lease, then implement the
+common receiver using the accepted PipeWire build boundary. Bind its `ObservedFrame` output through a versioned DomainNormalizer
 to the application live handoff on Bazzite without moving encoding or filesystem I/O onto
 capture/recognition. Instrument source acquisition, registry discovery, negotiation, first frame,
 steady reception, source loss, and shutdown as one bounded diagnostic run without recording pixels
