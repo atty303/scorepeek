@@ -127,6 +127,17 @@ is outside this checkpoint.
   diagnostic-run writer before a truthful profile/normalizer binding exists. The receiver requests
   60/1 through the PipeWire `video.framerate` stream property while separately retaining Gamescope's
   negotiated producer-format rate, which is unspecified 0/1 rather than a profile identity.
+  `mise run capture:gamescope:calibration:sample` adds one bounded private calibration-artifact
+  boundary. It validates an absolute create-only output and operator-declared nested size, refresh,
+  scaler, and filter before capture; retains exactly one raw BGRx frame; completes receiver and
+  provider shutdown; then hashes, serializes, writes, and fsyncs outside callbacks. The canonical
+  manifest binds the exact observed contract, memory type, stride, receiver sequence, monotonic
+  receive time, frame digest, bounded typed capture facts, and declared scaling evidence without a
+  profile or normalizer ID. Publication uses restrictive creation modes, writes the ownership marker
+  and frame before the manifest, recovers only an owned manifest-less output with no unknown entries,
+  and never replaces a complete or foreign directory. Its JSON result exposes only status, stable
+  capture/publication error types, artifact digests, and pixel-free typed facts; filesystem paths,
+  pixels, OS error strings, command lines, and arbitrary properties remain absent.
 - Destructive v2 private-corpus ingest/source/replay contracts. Every observed
   source binds only an opaque capture profile. Replay binds its normalizer,
   canonical frame contract, and shared canonical layout separately without
@@ -1404,10 +1415,28 @@ both maximum and final. This establishes short receiver lifecycle behavior for t
 session, not Gamescope source recreation, long-soak convergence, content geometry, semantic
 recognition, a calibrated profile, or support.
 
-Next, obtain explicit approval before persisting any private calibration frame. Then capture a
-minimal immutable sample from the same observed contract outside the PipeWire callback, register its
-provenance without deriving profile identity from caps, and independently measure the transform from
-2556x1428 observed pixels to the existing RGB8 1920x1080 canonical layout. Re-exercise the gate while
+The operator clarified that 2556x1428 is an environment-specific Gamescope post-scale output, not
+INFINITAS native geometry. The game is configured for nested 1920x1080 at 120 Hz; no scaling shortcut
+was used, the observed appearance remained linear, and future experimental launches will explicitly
+set `-F linear`. The eventual play machine is expected to output 4K and may use FSR or another filter,
+but it is not available during development. Therefore the current exact 2556x1428/auto/linear
+contract may become a development-machine profile after its own calibration and gates; a 4K,
+FSR/NIS, Reshade, HDR, or otherwise changed observed domain remains a separate uncalibrated profile.
+This follows the existing opaque-profile decisions and does not make the current route a pixel
+reference.
+
+The create-only calibration command was implemented and its strict configuration, no-clobber,
+regular-file-bound owned-incomplete recovery, unknown/symlink preservation, atomic manifest-last
+publication, and cleanup at every injected publication checkpoint pass deterministic tests. Its first live invocation occurred
+after the operator-started Gamescope process had exited: registry discovery found zero candidates and
+returned typed `source_unavailable` before creating the requested temporary artifact. This is
+external source-state evidence, not a calibration artifact or a capture implementation failure.
+
+Next, rerun the calibration command after Gamescope is started with the declared configuration.
+Verify the raw-frame and manifest digests, then independently measure the Gamescope content viewport
+and deterministic linear transform from the environment-specific 2556x1428 observed pixels to the
+existing RGB8 1920x1080 canonical layout without deriving profile identity from dimensions or filter
+metadata alone. Re-exercise the gate while
 OBS/obs-vkcapture runs independently. Record stream loss distinct from selected-node loss, PipeWire
 daemon disconnect, source recreation, long-run FD/thread/RSS behavior, CPU/memory/copy cost, frame
 age, game p99 frametime, and OBS render/encode lag, then run the planned

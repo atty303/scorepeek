@@ -15,7 +15,10 @@
   source loss、250 ms consumer pressure下のlatest-frame overwrite、receiver-first shutdown、100回の
   source acquire/start/stopを確認済み。operatorがINFINITASを起動したGamescope sessionでも、pixelを
   保持しないgateにより2556x1428 BGRx MemFd、約60 fps、consumer pressure、100回のreceiver lifecycleを
-  確認済み。ただしgate自体は表示contentを識別しない。OBS/obs-vkcapture並行、soak/performance、capture
+  確認済み。ただしgate自体は表示contentを識別しない。operatorによるとこのsessionはnative
+  1920x1080をGamescopeのdefault linear filterとauto scalerで環境固有の2556x1428へscaleしたものであり、
+  次回から`-F linear`を明示する。実験機のexact post-scale contractを独立profileへ校正して開発を進め、
+  将来の4KまたはFSR等は別profileとして扱う。OBS/obs-vkcapture並行、soak/performance、capture
   profile/normalizerは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
 - M4 offline canonical/recognition spike: 着手（OBS/vkcapture実録画からnormalizer、共通result/music-select

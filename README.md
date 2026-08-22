@@ -89,6 +89,7 @@ mise run doctor
 mise run capture:gamescope:test:live -- --duration-ms 3000
 mise run capture:gamescope:test:live -- --duration-ms 3000 --consume-interval-ms 250
 mise run capture:gamescope:test:lifecycle -- --duration-ms 100 --runs 100 --consume-interval-ms 0
+mise run capture:gamescope:calibration:sample -- --output /absolute/private/sample --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear
 mise run catalog:sync
 mise run corpus:recording:import -- --store /absolute/private/store --capture-context /absolute/private/capture-context.json /absolute/recordings/complete-run.mkv
 mise run corpus:dataset:seal -- --store /absolute/private/store calibration-001
@@ -150,6 +151,19 @@ snapshots before, after warmup, at the observed maximum, and after the final
 run. The resource values are observations rather than a calibrated RSS leak
 threshold. Both gates are uncalibrated: they neither write pixels nor create a
 capture profile, normalizer, canonical diagnostic run, or support claim.
+
+`capture:gamescope:calibration:sample` captures exactly one owned raw BGRx
+frame after first-frame reception and receiver-before-provider shutdown. The
+absolute create-only output directory contains the private pixels and a
+canonical manifest binding their SHA-256 to the exact observed contract,
+bounded capture facts, and an explicitly operator-declared Gamescope nested
+size, refresh, scaler, and filter. Filesystem access, hashing, serialization,
+and fsync occur only after callback-driven capture has stopped. An incomplete
+scorepeek-owned directory can be recovered, while a complete, foreign, or
+unknown output is never replaced. The completion manifest is atomically
+published from an fsync-complete private staging file. The artifact remains explicitly
+uncalibrated: declared scaling configuration and negotiated caps do not assign
+a capture profile or authorize recognition.
 
 `scorepeek catalog sync` acquires the catalog writer lock, resolves Tachi's
 `main` branch to an exact Git commit, serially fetches the three IIDX seed JSON
