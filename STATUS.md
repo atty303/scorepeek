@@ -1432,11 +1432,27 @@ after the operator-started Gamescope process had exited: registry discovery foun
 returned typed `source_unavailable` before creating the requested temporary artifact. This is
 external source-state evidence, not a calibration artifact or a capture implementation failure.
 
-Next, rerun the calibration command after Gamescope is started with the declared configuration.
-Verify the raw-frame and manifest digests, then independently measure the Gamescope content viewport
-and deterministic linear transform from the environment-specific 2556x1428 observed pixels to the
-existing RGB8 1920x1080 canonical layout without deriving profile identity from dimensions or filter
-metadata alone. Re-exercise the gate while
+A subsequent controlled calibration used an independently generated RGB24 1920x1080 pattern with
+distinct full-frame edge markers and four interior corner markers. Gamescope
+3.16.19-128-g7282613+ ran with explicit `-w 1920 -h 1080 -r 120 -S auto -F linear`; the exact source
+was captured successfully as 2556x1428 BGRx MemFd with 10,224-byte stride, one received frame, and
+successful receiver-before-provider shutdown. The raw frame SHA-256 is
+`edde99f2e8743cb924de84e9cc722bcf1b51a2e7afd36febf4e3dd3b40e227f6`, and its manifest SHA-256 is
+`09f72835bcb4749df0060453f9d3d663a81e5d4e6f4bf4f3535e65b05ed875d2`. Rehashing both artifacts
+matched the report. At the output midline, fully black pixels occupied x=0 through 7 and x=2547
+through 2555, while the left/right edge markers began in the linear transition at x=8 and x=2546.
+The top and bottom markers reached y=0 and y=1427. This matches aspect-preserving vertical fit:
+scale 1428/1080 = 119/90, scaled content width 2538 2/3, and symmetric ideal horizontal offset
+8 2/3 pixels. The measurement uses known markers rather than assuming anything about game-edge
+colors. Thus `auto` did not stretch all 2556 columns on this exact route; it produced a narrow
+pillarbox. This is calibration geometry evidence, not yet an immutable profile/normalizer binding,
+semantic recognition evidence, or support.
+
+Next, encode and independently verify the exact fractional-offset linear inverse transform from this
+2556x1428 development-machine route to the existing RGB8 1920x1080 canonical layout, using the
+known pattern as the first oracle and without runtime black-bar detection. Bind it only to an explicit
+opaque profile containing this Gamescope version/backend/configuration and observed contract; do not
+derive profile identity from dimensions or filter metadata alone. Re-exercise the gate while
 OBS/obs-vkcapture runs independently. Record stream loss distinct from selected-node loss, PipeWire
 daemon disconnect, source recreation, long-run FD/thread/RSS behavior, CPU/memory/copy cost, frame
 age, game p99 frametime, and OBS render/encode lag, then run the planned
