@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 encoding_rs.workspace = true
 ort.workspace = true
+pipewire.workspace = true
 qoi.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

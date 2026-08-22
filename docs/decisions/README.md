@@ -52,6 +52,10 @@ authoritative.
   defers Portal to a later provider without automatic fallback, and supersedes ADR 0009 and ADR 0013
   only for treating a future OBS path as an eligible scorepeek capture profile. ADR 0013's existing
   offline OBS/vkcapture recording profile remains valid.
+- [ADR 0028: Build PipeWire against a mise-pinned SDK](0028-build-pipewire-against-a-mise-pinned-sdk.md)
+  fixes the Linux x86-64 host-native Cargo boundary: mise provides the checksum-pinned PipeWire SDK
+  and native pkgconf executable, while `cc`, libclang with matching resource headers, and the
+  PipeWire runtime remain explicit host prerequisites. Python, containers, and Zig are not added.
 
 ## Historical
 

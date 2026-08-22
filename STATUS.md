@@ -81,6 +81,16 @@ is outside this checkpoint.
   1920x1080 logical game canvas with one shared canonical layout, and
   field-specific OCR preprocessing. Capture routes are independently gated
   peers; none is a pixel correctness reference or owns the game layout.
+- An accepted Linux x86-64 host-native PipeWire build boundary. The runtime now depends on the safe
+  `pipewire` 0.10 series, resolved exactly in `Cargo.lock`. Mise installs a checksum-pinned
+  libpipewire/libspa 1.6.8 SDK and native pkgconf 3.0.1 executable without invoking Python, and an
+  isolated wrapper prevents ambient pkg-config development paths from entering the build. The host
+  supplies `cc`, a shared libclang with matching Clang resource headers, and its normal PipeWire
+  runtime. Zig, Podman, Distrobox, the operator's personal distrobox image, and host pkg-config are
+  not build prerequisites. `mise run native:verify` and a locked scorepeek build pass on the
+  development host. The native gate fixes an exact shared-libclang/resource-header pair and runs an
+  SDK-linked probe against the default host PipeWire runtime; this is build evidence only, not
+  target-host or capture support evidence.
 - Destructive v2 private-corpus ingest/source/replay contracts. Every observed
   source binds only an opaque capture profile. Replay binds its normalizer,
   canonical frame contract, and shared canonical layout separately without
@@ -1302,9 +1312,8 @@ verification or an applied-retention claim.
 
 ## Next executable task
 
-After explicit dependency approval, add the safe `pipewire` 0.10 binding and a reproducible
-`libpipewire-0.3` development environment, then implement the common receiver and Gamescope-only
-source provider vertical spike. Bind its `ObservedFrame` output through a versioned DomainNormalizer
+Implement the common receiver and Gamescope-only source provider vertical spike using the accepted
+PipeWire build boundary. Bind its `ObservedFrame` output through a versioned DomainNormalizer
 to the application live handoff on Bazzite without moving encoding or filesystem I/O onto
 capture/recognition. Instrument source acquisition, registry discovery, negotiation, first frame,
 steady reception, source loss, and shutdown as one bounded diagnostic run without recording pixels

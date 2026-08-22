@@ -372,6 +372,13 @@ NV12、別color profileへ黙ってfallbackしない。
 新規runtime、training、parser、capture dependencyは、version、license、代替案、bundle/host影響を
 一括提示して承認を得た後にだけ追加する。
 
+最初のPipeWire build bootstrapはLinux x86-64を対象に、safe `pipewire` 0.10 seriesを使う。
+miseはchecksum固定したlibpipewire/libspa 1.6.8 SDKとnative pkgconf 3.0.1 executableを供給し、
+Pythonを実行しない。通常のCargo edit/check/test loopはhost nativeのまま維持し、hostには`cc`、
+shared libclangと同majorのClang resource headers、および実行時PipeWire libraryだけを要求する。
+Zig、Podman、Distrobox、個人用distrobox imageおよびhost `pkg-config`はbuild prerequisiteにしない。
+このbootstrapの成功はGamescope capture profileのsupport evidenceには数えない。
+
 ## Verificationとrelease gate
 
 ### Catalog

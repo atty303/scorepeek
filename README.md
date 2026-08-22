@@ -71,11 +71,19 @@ See [the current committed checkpoint](STATUS.md),
 
 Install [mise](https://mise.jdx.dev/), then use the repository entry points:
 
+The Linux x86-64 PipeWire build additionally expects a host `cc`, a shared
+libclang with matching Clang resource headers, and the PipeWire runtime
+library. Mise supplies the checksum-pinned development SDK and native pkgconf;
+Python, Zig, Podman, Distrobox, and host pkg-config are not required for this
+path. `mise run native:verify` reports the exact detected boundary and executes
+a minimal SDK-linked probe against the default host PipeWire runtime.
+
 ```text
 mise trust
 mise install
 mise run check
 mise run fix
+mise run native:verify
 mise run test
 mise run doctor
 mise run catalog:sync
