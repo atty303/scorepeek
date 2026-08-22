@@ -200,15 +200,35 @@ infer a session timeline.
 
 The first read-only application controls inspect an existing diagnostic root
 through a shared strict inventory. `status` exposes fixed retention policy and
-bounded aggregate byte/completeness counts; `list` exposes only opaque run
+the current exclusive-writer state plus bounded aggregate byte/completeness
+counts; `list` exposes only opaque run
 identity, start/manifest digests, terminal state, priority, and managed bytes.
 A valid start document without a completion manifest remains observable as
 priority partial evidence. Inspection fails closed on unmanaged entries,
 symlinks, typed manifest or exact file-set drift, per-run or aggregate capacity
 overflow, and concurrent mutation of any directory in the store snapshot.
-It does not yet apply retention or decide whether a partial run is live versus
-crash-left; active ownership, freeze, digest-confirmed delete, and create-only
-local export remain later application controls.
+
+The application holds exclusive locks on the store-root directory inode and a
+path-derived zero-byte ownership anchor in its stable parent for a whole
+diagnostic run; the durable zero-byte root marker is only an inventory sentinel
+and is not the lease identity. This is an advisory cooperative-writer contract,
+not a defense against deliberate same-UID replacement of both root and anchor.
+Under that lease, retention removes expired runs and then the
+oldest non-priority normal runs only as exact new publications require space;
+it proves the publication can fit after all eligible reclamation before the
+first capacity deletion, and rolls back uncommitted byte reservations.
+an active or unexpired priority run is never removed. Completed-run age uses
+manifest publication time, while a crash-left partial uses its directory-entry
+publication time. Deletion is rename-first and recoverable through a durable
+scorepeek-owned marker that binds the run ID and exact pre-delete file
+inventory. Marker publication itself uses a fixed recoverable staging state.
+Recovery accepts only a remaining subset of that inventory, and
+orders payload/marker unlink with directory fsyncs before the final root fsync,
+so a crash after partial cleanup resumes on the next writer. Freeze,
+digest-confirmed explicit delete, and create-only local export remain later
+controls.
+Observed pathname identity drift fails closed; adversarial replacement after a
+final identity check is outside the operator-trusted private-artifact boundary.
 
 ### Event API
 

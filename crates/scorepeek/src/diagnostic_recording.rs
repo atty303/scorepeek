@@ -1,4 +1,4 @@
-use std::fs::{DirBuilder, File};
+use std::fs::{self, DirBuilder, File};
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::diagnostic_control::DiagnosticStoreLease;
 use crate::publish_private_file;
 
 pub const DEFAULT_SAMPLE_INTERVAL_MS: u64 = 1_000;
@@ -16,7 +17,7 @@ pub const PRIORITY_RETENTION_HOURS: u32 = 7 * 24;
 const CANONICAL_WIDTH: u32 = 1_920;
 const CANONICAL_HEIGHT: u32 = 1_080;
 pub(crate) const CANONICAL_BYTES: usize = CANONICAL_WIDTH as usize * CANONICAL_HEIGHT as usize * 3;
-const MANIFEST_RESERVE_BYTES: u64 = 1024 * 1024;
+pub(crate) const MANIFEST_RESERVE_BYTES: u64 = 1024 * 1024;
 pub(crate) const MAX_FRAMES_PER_RUN: usize = 8_192;
 pub(crate) const MAX_FACTS_PER_RUN: usize = 32_768;
 pub(crate) const MAX_FACT_BYTES: usize = 64 * 1024;
@@ -284,6 +285,7 @@ pub struct DiagnosticDegradation {
 
 pub struct ActiveDiagnosticRecorder {
     directory: PathBuf,
+    store_lease: DiagnosticStoreLease,
     policy: DiagnosticPolicy,
     frames: Vec<DiagnosticFrameArtifact>,
     facts: Vec<DiagnosticFactArtifact>,
@@ -427,19 +429,6 @@ impl DiagnosticRecorder {
             }
         };
         let _ = root_metadata;
-        let directory = root.join(&descriptor.run_id);
-        let mut builder = DirBuilder::new();
-        builder.mode(0o700);
-        if builder.create(&directory).is_err() {
-            return Self::Degraded(DiagnosticDegradation {
-                error_type: DiagnosticErrorType::StoreUnavailable,
-            });
-        }
-        if File::open(root).and_then(|root| root.sync_all()).is_err() {
-            return Self::Degraded(DiagnosticDegradation {
-                error_type: DiagnosticErrorType::StoreUnavailable,
-            });
-        }
         let start = DiagnosticRunStart {
             schema: "scorepeek-private-diagnostic-run-start-v1",
             run_id: &descriptor.run_id,
@@ -453,13 +442,41 @@ impl DiagnosticRecorder {
                 error_type: DiagnosticErrorType::InvalidConfiguration,
             });
         };
+        let store_lease = match DiagnosticStoreLease::acquire_for_run(
+            root,
+            &descriptor.run_id,
+            start_bytes.len() as u64,
+        ) {
+            Ok(lease) => lease,
+            Err(error_type) => {
+                return Self::Degraded(DiagnosticDegradation { error_type });
+            }
+        };
+        let directory = root.join(&descriptor.run_id);
+        let mut builder = DirBuilder::new();
+        builder.mode(0o700);
+        if builder.create(&directory).is_err() {
+            return Self::Degraded(DiagnosticDegradation {
+                error_type: DiagnosticErrorType::StoreUnavailable,
+            });
+        }
+        if File::open(root).and_then(|root| root.sync_all()).is_err() {
+            let _ = fs::remove_dir(&directory);
+            let _ = File::open(root).and_then(|root| root.sync_all());
+            return Self::Degraded(DiagnosticDegradation {
+                error_type: DiagnosticErrorType::StoreUnavailable,
+            });
+        }
         if publish_private_file(&directory.join("run.json"), &start_bytes).is_err() {
+            let _ = fs::remove_dir(&directory);
+            let _ = File::open(root).and_then(|root| root.sync_all());
             return Self::Degraded(DiagnosticDegradation {
                 error_type: DiagnosticErrorType::WriteFailed,
             });
         }
         Self::Active(Box::new(ActiveDiagnosticRecorder {
             directory,
+            store_lease,
             policy,
             frames: Vec::new(),
             facts: Vec::new(),
@@ -643,8 +660,11 @@ impl ActiveDiagnosticRecorder {
         {
             return self.drop(DiagnosticErrorType::CapacityExceeded, frame.sequence);
         }
+        if let Err(error_type) = self.store_lease.reserve(encoded_bytes) {
+            return self.drop(error_type, frame.sequence);
+        }
         let filename = format!("frame-{:020}.qoi", frame.sequence);
-        if publish_private_file(&self.directory.join(&filename), &encoded).is_err() {
+        if !self.publish_reserved(&filename, &encoded) {
             return self.drop(DiagnosticErrorType::WriteFailed, frame.sequence);
         }
         if self.last_recorded_monotonic_ms.is_some() {
@@ -712,9 +732,12 @@ impl ActiveDiagnosticRecorder {
         {
             return self.drop(DiagnosticErrorType::CapacityExceeded, fact.sequence);
         }
+        if let Err(error_type) = self.store_lease.reserve(bytes.len() as u64) {
+            return self.drop(error_type, fact.sequence);
+        }
         let index = self.facts.len() as u64;
         let filename = format!("fact-{index:020}.json");
-        if publish_private_file(&self.directory.join(&filename), &bytes).is_err() {
+        if !self.publish_reserved(&filename, &bytes) {
             return self.drop(DiagnosticErrorType::WriteFailed, fact.sequence);
         }
         self.bytes += bytes.len() as u64;
@@ -791,12 +814,21 @@ impl ActiveDiagnosticRecorder {
                 manifest_sha256: None,
             };
         }
+        if let Err(error_type) = self.store_lease.reserve(manifest_bytes) {
+            self.mark_drop_for_sequence(error_type, None);
+            return DiagnosticFinishOutcome {
+                completeness: Some(DiagnosticCompleteness::Partial),
+                error_type: Some(error_type),
+                manifest_sha256: None,
+            };
+        }
         if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            self.store_lease.release(manifest_bytes);
             return cancelled_finish();
         }
         // Publication is the final commit point. The helper removes a linked output again
         // if its containing-directory fsync fails, so no fallible finalize step follows it.
-        if publish_private_file(&self.directory.join("manifest.json"), &bytes).is_err() {
+        if !self.publish_reserved("manifest.json", &bytes) {
             return DiagnosticFinishOutcome {
                 completeness: Some(DiagnosticCompleteness::Partial),
                 error_type: Some(DiagnosticErrorType::FinalizeFailed),
@@ -807,6 +839,15 @@ impl ActiveDiagnosticRecorder {
             completeness: Some(completeness),
             error_type: self.last_error_type,
             manifest_sha256: Some(encode_sha256(&bytes)),
+        }
+    }
+
+    fn publish_reserved(&mut self, filename: &str, bytes: &[u8]) -> bool {
+        if publish_private_file(&self.directory.join(filename), bytes).is_ok() {
+            true
+        } else {
+            self.store_lease.release(bytes.len() as u64);
+            false
         }
     }
 
