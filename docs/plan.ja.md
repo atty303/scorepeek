@@ -10,8 +10,8 @@
 - M2 observed-profile private corpus、synthetic renderer、label/replay tooling: 完了
 - M3 common PipeWire receiverとGamescope observed-frame profile: 着手（default remoteのbounded
   registry round trip、exact Gamescope `Video/Source` discovery、選択nodeとdefault remoteを保持する
-  未校正lifetime leaseまで。stream negotiation、frame reception、capture profile/normalizer、Bazzite
-  gateは未着手）
+  未校正lifetime lease、およびBGRxだけを提示する未校正receiverの最小vertical sliceまで。実callbackでの
+  negotiation/frame reception、capture profile/normalizer、Bazzite gateは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
 - M4 offline canonical/recognition spike: 着手（OBS/vkcapture実録画からnormalizer、共通result/music-select
   layout、fail-closed screen判定、result title cropのRust前処理/Paddle/公式ONNX CTC parity、
@@ -364,7 +364,8 @@ NV12、別color profileへ黙ってfallbackしない。
 5. **M4 bootstrap**: 利用可能なlossless recordingへ最初のversion固定normalizerを与え、その出力だけから
    game共通canonical frame/layout、screen判定、OCR preprocessor/parityのoffline spikeを進める。
 6. **M3**: source acquisitionを共通PipeWire receiverから分離し、Gamescope providerだけを最初の
-   `ObservedFrame` vertical spikeとして実装する。BazziteでOBS/obs-vkcapture同時稼働時の実observed
+   未校正receiver/calibration spikeとして実装する。明示的なimmutable profile bindingを確立した後だけ
+   `ObservedFrame`へ進む。BazziteでOBS/obs-vkcapture同時稼働時の実observed
    contract、lifecycle、latest-frame behavior、性能および校正corpusを確立する。Portalとregistered
    custom providerはこのspike後へ延期し、M4 bootstrapのlayoutは移動しない。
 7. **M4 completion**: peer profileごとのnormalizerとshared alignmentを検証し、選定済みPP-OCRv6 smallの

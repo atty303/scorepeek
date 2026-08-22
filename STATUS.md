@@ -103,9 +103,18 @@ is outside this checkpoint.
   context, loop, and listeners now form an explicitly uncalibrated lifetime lease under ADR 0029.
   Polling the lease latches selected-node removal without switching even when the same numeric ID is
   reused, and preserves bounded transport failure origin; explicit shutdown releases provider-owned
-  state and emits one bounded typed fact. The
-  lease intentionally has no capture-profile ID and cannot produce a stream, `ObservedFrame`, or
-  supported route.
+  state and emits one bounded typed fact. A common receiver now consumes that lease in explicitly
+  uncalibrated diagnostic/calibration mode. It offers only raw BGRx with conversion and reconnection
+  disabled, validates a single mapped plane under 7680x4320 and 128 MiB, and retains one owned latest
+  frame with receiver-owned sequence and monotonic receive timing. Caps, memory-type, and stride drift,
+  malformed or over-capacity frames, negotiation/first-frame timeout, stream loss, callback drain
+  overflow, and receiver shutdown are typed and fail closed. Callback work is limited to bounded
+  state changes and the pixel copy required before PipeWire requeues its buffer; diagnostics and
+  blocking filesystem or encoding work stay outside callbacks. Negotiation, first-frame, steady
+  reception, and shutdown facts expose only typed contract/counter/timing metadata and never pixels
+  or arbitrary properties. Receiver teardown precedes provider shutdown. The returned frame remains
+  explicitly uncalibrated: it has no profile/normalizer binding, is not an `ObservedFrame`, and cannot
+  enter recognition or establish a supported route.
 - Destructive v2 private-corpus ingest/source/replay contracts. Every observed
   source binds only an opaque capture profile. Replay binds its normalizer,
   canonical frame contract, and shared canonical layout separately without
@@ -408,13 +417,15 @@ is outside this checkpoint.
 ## Verified in this checkpoint
 
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
-  The current workspace run covered 116 `scorepeek` library tests, 80 binary tests, 55 offline
+  The current workspace run covered 125 `scorepeek` library tests, 80 binary tests, 55 offline
   corpus tests, 75 offline Python OCR tests, and the recording-dataset E2E gate.
-- The Gamescope discovery contract has deterministic tests for exact selection, zero/multiple
+- The Gamescope discovery and receiver contracts have deterministic tests for exact selection, zero/multiple
   candidate rejection, removal before the initial barrier, remove-and-replace, partial-count
   timeout reporting, synchronous/asynchronous operation-owned failure classification, selected-node
   lifetime binding without replacement including same-ID reuse, transport-error precedence and
-  bounded origin retention, and explicit typed shutdown. A
+  bounded origin retention, explicit typed shutdown, latest-frame replacement, receiver sequence and
+  monotonic gap ownership, caps/memory/stride drift, malformed-frame rejection, and pixel-free debug
+  output. A
   development-host compile verifies the pinned PipeWire API surface. No live Gamescope source was
   acquired in this checkpoint, so these are contract/build results rather than target-host capture
   evidence.
@@ -821,10 +832,10 @@ is outside this checkpoint.
 
 ## Unverified and target-only boundaries
 
-- The Gamescope provider has not been exercised against a live Gamescope node. Its lifetime-bound
+- The Gamescope provider and receiver have not been exercised against a live Gamescope node. Their lifetime-bound
   default-remote lease and selected-node removal classification are covered by deterministic contract
-  tests, but callback order, daemon-disconnect classification, resource release, stream/caps/memory
-  negotiation, frame reception, bounded latest-frame behavior, opaque profile identity, normalizer,
+  tests, but real callback order, daemon-disconnect classification, resource release, negotiated caps/memory,
+  frame reception, bounded latest-frame behavior and copy cost, opaque profile identity, normalizer,
   and diagnostic-run persistence remain unobserved.
 - The first real normalizer, canonical-frame production, shared result ROIs,
   result-screen predicate, and PP-OCRv6 field recognition are only an offline
@@ -1340,12 +1351,13 @@ verification or an applied-retention claim.
 
 ## Next executable task
 
-Implement the common receiver over the uncalibrated Gamescope provider lease using the accepted
-PipeWire build boundary. Keep stream/caps/memory negotiation, stream loss, receiver shutdown,
-bounded latest-frame ownership, sequence, and monotonic timing in the receiver. Keep selected-node
-or remote loss and provider shutdown in the provider lease, and shut the receiver down first.
-Do not expose `ObservedFrame` until an explicit opaque capture profile is calibrated and bound; never
-derive that identity from negotiated caps. Then bind its `ObservedFrame` output through a versioned DomainNormalizer
+Exercise the uncalibrated Gamescope provider and common BGRx receiver on Bazzite. Record the actual
+negotiated caps/memory, callback ordering, first/steady frames, latest-frame overwrite behavior,
+selected-node and stream loss, daemon disconnect, receiver-first shutdown, resource release, and
+CPU/memory/copy performance while OBS/obs-vkcapture runs independently. Use that bounded evidence to
+register an explicit immutable opaque capture-profile/observed-contract/normalizer binding; never
+derive identity from negotiated caps. Only then let a newly acquired matching calibrated lease emit
+`ObservedFrame` and bind it through the versioned DomainNormalizer
 to the application live handoff on Bazzite without moving encoding or filesystem I/O onto
 capture/recognition. Instrument source acquisition, registry discovery, negotiation, first frame,
 steady reception, source loss, and shutdown as one bounded diagnostic run without recording pixels

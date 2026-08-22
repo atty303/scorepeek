@@ -8,6 +8,13 @@ use pipewire as pw;
 use pw::spa::utils::result::AsyncSeq;
 use serde::Serialize;
 
+mod receiver;
+
+pub use receiver::{
+    UncalibratedFrame, UncalibratedMemoryType, UncalibratedPipeWireReceiver,
+    UncalibratedVideoContract, start_uncalibrated_gamescope_receiver,
+};
+
 const MAX_REGISTRY_GLOBALS: u32 = 4_096;
 const ITERATION_SLICE: Duration = Duration::from_millis(25);
 
@@ -23,6 +30,10 @@ pub enum CaptureDiagnosticOperation {
     SourceAcquisition,
     RegistryDiscovery,
     SourceLifetime,
+    StreamNegotiation,
+    FirstFrame,
+    SteadyReception,
+    ReceiverShutdown,
     Shutdown,
 }
 
@@ -44,6 +55,12 @@ pub enum CaptureErrorType {
     SourceUnavailable,
     SourceAmbiguous,
     SourceLost,
+    NegotiationTimedOut,
+    FirstFrameTimedOut,
+    UnsupportedFormat,
+    UnsupportedMemoryType,
+    FrameMalformed,
+    StreamLost,
     ReceiverFailed,
 }
 
@@ -63,6 +80,37 @@ pub enum CaptureDiagnosticDetail {
         source: CaptureSourceKind,
         selected_node_id: u32,
         failure_origin: CaptureDiagnosticOperation,
+    },
+    StreamNegotiation {
+        format: &'static str,
+        width: u32,
+        height: u32,
+        framerate_num: u32,
+        framerate_denom: u32,
+        maximum_framerate_num: u32,
+        maximum_framerate_denom: u32,
+        pixel_aspect_num: u32,
+        pixel_aspect_denom: u32,
+        chroma_site: u32,
+        color_range: u32,
+        color_matrix: u32,
+        transfer_function: u32,
+        color_primaries: u32,
+    },
+    FirstFrame {
+        memory_type: &'static str,
+        stride: u32,
+        byte_count: u32,
+    },
+    SteadyReception {
+        received_frames: u64,
+        overwritten_frames: u64,
+        last_sequence: Option<u64>,
+        maximum_gap_ns: u64,
+    },
+    ReceiverShutdown {
+        received_frames: u64,
+        overwritten_frames: u64,
     },
     Shutdown {
         source: CaptureSourceKind,
@@ -249,6 +297,12 @@ impl fmt::Display for CaptureError {
             CaptureErrorType::SourceUnavailable => "Gamescope PipeWire source is unavailable",
             CaptureErrorType::SourceAmbiguous => "Gamescope PipeWire source is ambiguous",
             CaptureErrorType::SourceLost => "Gamescope PipeWire source was lost",
+            CaptureErrorType::NegotiationTimedOut => "PipeWire stream negotiation timed out",
+            CaptureErrorType::FirstFrameTimedOut => "PipeWire first frame timed out",
+            CaptureErrorType::UnsupportedFormat => "PipeWire stream format is unsupported",
+            CaptureErrorType::UnsupportedMemoryType => "PipeWire stream memory type is unsupported",
+            CaptureErrorType::FrameMalformed => "PipeWire frame is malformed",
+            CaptureErrorType::StreamLost => "PipeWire stream was lost",
             CaptureErrorType::ReceiverFailed => "PipeWire receiver failed",
         })
     }
@@ -320,7 +374,7 @@ struct DefaultRemoteRuntime {
     _registry_listener: pw::registry::Listener,
     _core_listener: pw::core::Listener,
     _registry: pw::registry::RegistryRc,
-    _core: pw::core::CoreRc,
+    core: pw::core::CoreRc,
     _context: pw::context::ContextRc,
     main_loop: pw::main_loop::MainLoopRc,
     state: Rc<RefCell<RegistryState>>,
@@ -621,7 +675,7 @@ fn acquire_default_remote(
             _registry_listener: registry_listener,
             _core_listener: core_listener,
             _registry: registry,
-            _core: core,
+            core,
             _context: context,
             main_loop,
             state,
