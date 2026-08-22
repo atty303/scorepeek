@@ -1191,8 +1191,7 @@ strict create-only replay control digest-binds its request and canonical extract
 extraction PTS/decode order, and traverses the same worker without recognition triggers. Only a
 complete manifest-bearing replay exits successfully. The aggregate retention manager,
 status/list/freeze/delete/local-export
-controls, accepted ordinary-session sparse canonical extraction and complete replay, live integration,
-and target performance remain unimplemented and unverified.
+controls, live integration, and target performance remain unimplemented and unverified.
 
 The retained ordinary-session recording has now been inspected over source PTS 0 through 458,300
 ms. Its immutable media probe contains 27,499 contiguous decode indexes, strictly increasing PTS,
@@ -1222,11 +1221,25 @@ string, or player data is committed. The committed value-free
 preserve, same-song reselection, contextual result resolution without result consumption, and
 session-end clear without adding mode, attempt, or retry counters.
 
+The accepted ordinary-session recording now has a strict 459-frame canonical extraction at exact
+1,000-ms source-PTS intervals from 0 through 458,000 ms, with the explicit run boundary retained
+through 458,300 ms. The extraction manifest SHA-256 is
+`72f5bc58e38ee71fbf7250a45f774dd935e054a3354ea3ec6821ebdf2f97d212`; it binds normalizer
+SHA-256 `0441099011fdd09d372d6c9b5e18d6c4f2da2809a653e01f8ccb55756d8658cf` and
+2,855,347,200 canonical RGB bytes. Digest-bound replay request SHA-256
+`e857823f37989dd5526b3bf8eca4f4a780c208f2338b2030b149848f29fa524a` traversed the same bounded
+application worker without recognition triggers. All 459 offered frames were enqueued and the
+create-only run completed successfully with manifest SHA-256
+`e84f0295179c337b570e0c02b475d9f0e199a08f8ef15719a58c104be80a68ba`, zero drops, zero
+degradations, zero fact records, a measured maximum observation gap of 1,000 ms, and 732,173,009
+artifact bytes. Result-miss denominator eligibility remains false. This development-host replay
+establishes complete strict evidence traversal for the retained recording; it does not establish
+live non-interference, target-host performance, result recall, cadence calibration, or capture
+profile support.
+
 ## Next executable task
 
-Create the strict sparse canonical extraction for the accepted ordinary-session recording and replay
-its complete 0–458,300 ms boundary through the implemented worker/driver without recognition triggers.
-Then add aggregate retention/status/list/freeze/delete/local-export controls and fault-inject capacity,
+Add aggregate retention/status/list/freeze/delete/local-export controls and fault-inject capacity,
 write, finalize, opt-out, flush-timeout, worker-loss, and partial-run recovery. Keep the synchronous writer off the live
 recognition path until queue conformance and target-host performance are verified. Do not mark the
 provisional 1,000-ms cadence as a result-miss denominator until a minimum result dwell is calibrated
