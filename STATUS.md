@@ -117,10 +117,16 @@ is outside this checkpoint.
   enter recognition or establish a supported route. The application now exposes
   `mise run capture:gamescope:test:live -- --duration-ms N` as a 1-to-60,000-ms ephemeral gate. Its
   capacity-32 in-memory sink emits one versioned JSON report with only typed facts and aggregate
-  consumed-frame/sequence counts; it never persists frames or enters the canonical diagnostic-run
-  writer before a truthful profile/normalizer binding exists. The receiver requests 60/1 through the
-  PipeWire `video.framerate` stream property while separately retaining Gamescope's negotiated
-  producer-format rate, which is unspecified 0/1 rather than a profile identity.
+  consumed-frame/sequence counts. An optional bounded consumer interval exercises latest-frame
+  replacement outside the callback. A second
+  `mise run capture:gamescope:test:lifecycle -- --duration-ms N --runs R --consume-interval-ms N`
+  gate repeats 2 through 100 complete acquire/receiver/receiver-before-provider shutdown lifecycles,
+  summarizes each run without retaining pixels, and samples process FD/thread/RSS before, after
+  warmup, at the maximum, and after the final run. Resource snapshots are bounded observations, not
+  a calibrated RSS acceptance threshold. Neither gate persists frames or enters the canonical
+  diagnostic-run writer before a truthful profile/normalizer binding exists. The receiver requests
+  60/1 through the PipeWire `video.framerate` stream property while separately retaining Gamescope's
+  negotiated producer-format rate, which is unspecified 0/1 rather than a profile identity.
 - Destructive v2 private-corpus ingest/source/replay contracts. Every observed
   source binds only an opaque capture profile. Replay binds its normalizer,
   canonical frame contract, and shared canonical layout separately without
@@ -423,7 +429,7 @@ is outside this checkpoint.
 ## Verified in this checkpoint
 
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
-  The current workspace run covered 125 `scorepeek` library tests, 80 binary tests, 55 offline
+  The current workspace run covered 126 `scorepeek` library tests, 87 binary tests, 55 offline
   corpus tests, 75 offline Python OCR tests, and the recording-dataset E2E gate.
 - The Gamescope discovery and receiver contracts have deterministic tests for exact selection, zero/multiple
   candidate rejection, removal before the initial barrier, remove-and-replace, partial-count
@@ -432,9 +438,9 @@ is outside this checkpoint.
   bounded origin retention, explicit typed shutdown, latest-frame replacement, receiver sequence and
   monotonic gap ownership, caps/memory/stride drift, malformed-frame rejection, and pixel-free debug
   output. A
-  development-host compile verifies the pinned PipeWire API surface. No live Gamescope source was
-  acquired in this checkpoint, so these are contract/build results rather than target-host capture
-  evidence.
+  development-host compile verifies the pinned PipeWire API surface. The target-only lifecycle gate
+  additionally bounds duration, consumer interval, and run count; unit coverage fixes typed summary
+  extraction, error precedence, diagnostic capacity, and Linux process-resource sampling.
 - The corrected integrated-context observer ran over both visually reviewed music-select frames and the
   retained PTS-190000 result frame with model SHA-256
   `5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634`. It observed music-select
@@ -838,11 +844,11 @@ is outside this checkpoint.
 
 ## Unverified and target-only boundaries
 
-- The Gamescope provider and receiver have not been exercised against a live Gamescope node. Their lifetime-bound
-  default-remote lease and selected-node removal classification are covered by deterministic contract
-  tests, but real callback order, daemon-disconnect classification, resource release, negotiated caps/memory,
-  frame reception, bounded latest-frame behavior and copy cost, opaque profile identity, normalizer,
-  and diagnostic-run persistence remain unobserved.
+- The Gamescope provider and receiver have been exercised against a temporary headless Gamescope/vkcube
+  node, but not against INFINITAS or concurrently with OBS/obs-vkcapture. Daemon-disconnect and
+  stream-loss classification distinct from selected-node loss, long-soak release, calibrated RSS
+  convergence, copy/CPU/GPU/power cost, frame age, game p99 frametime, OBS lag, opaque profile identity,
+  normalizer, semantic recognition, and canonical diagnostic-run persistence remain unverified.
 - The first real normalizer, canonical-frame production, shared result ROIs,
   result-screen predicate, and PP-OCRv6 field recognition are only an offline
   single-recording spike. The
@@ -1357,20 +1363,30 @@ verification or an applied-retention claim.
 
 ## Next executable task
 
-The bounded gate was exercised on Bazzite 44 with a temporary headless Gamescope 3.16.19 and vkcube,
-not INFINITAS or OBS. One 1280x720 run requested 60/1 and completed 3,000 ms of reception with 182
-consumed BGRx MemFd frames, receiver sequences 1 through 182, zero latest-frame overwrites, first
-frame at 43 ms, a 17,335,466-ns maximum receive gap, no dropped diagnostic facts, and successful
-receiver-before-provider shutdown. A separate source-loss injection consumed 284 frames before the
-selected node disappeared at 4,771 ms, returned typed `source_lost` without reacquisition or fallback,
-and again completed both shutdown operations. These are synthetic lifecycle/transport observations;
-they do not establish INFINITAS geometry, a calibrated capture profile, recognition semantics,
-long-run resource release, target performance, or support.
+The bounded gates were exercised on Bazzite 44 with a temporary headless Gamescope 3.16.19 and
+vkcube, not INFINITAS or OBS. The earlier 1280x720 run requested 60/1 and completed 3,000 ms with 182
+consumed BGRx MemFd frames. Under a 250-ms consumer interval, three 1,000-ms lifecycles each received
+61 frames, consumed 5, overwrote 56, and observed a maximum receive gap between 16,850,223 and
+16,934,420 ns; every negotiation, first-frame, receiver shutdown, and provider shutdown phase
+succeeded with no dropped facts. Thus this environment delivered the requested approximately 60-fps
+cadence even though the producer-format caps continued to report an unspecified 0/1 rate.
+
+A separate 100-lifecycle gate used 100 ms per run. All 100 acquire/start/receiver-before-provider
+shutdown cycles succeeded; 99 runs received 7 frames and one received 6, with no overwrites at the
+zero consumer interval and no dropped facts. Open FDs were 4 before, after warmup, at maximum, and
+after the final run. Threads were 1 before/after warmup/final with a transient maximum of 2. RSS was
+11,522,048 bytes before, 17,018,880 after warmup, and 17,518,592 at both maximum and final. This is a
+bounded process-level observation, not proof of zero RSS leak or the planned soak/performance gate.
+The earlier source-loss injection consumed 284 frames before the selected node disappeared at
+4,771 ms, returned typed `source_lost` without reacquisition or fallback, and completed both shutdown
+operations. These synthetic lifecycle/transport observations do not establish INFINITAS geometry, a
+calibrated capture profile, recognition semantics, long-run resource release, target performance, or
+support.
 
 Next, exercise the same gate against INFINITAS while OBS/obs-vkcapture runs independently. Record
-latest-frame overwrite behavior under consumer pressure, stream loss distinct from selected-node
-loss, PipeWire daemon disconnect, repeated start/stop and source recreation, FD/thread/RSS release,
-CPU/memory/copy cost, frame age, game p99 frametime, and OBS render/encode lag, then run the planned
+stream loss distinct from selected-node loss, PipeWire daemon disconnect, source recreation,
+long-run FD/thread/RSS behavior, CPU/memory/copy cost, frame age, game p99 frametime, and OBS
+render/encode lag, then run the planned
 15-minute repetitions and 30-minute soak. Use that bounded evidence to
 register an explicit immutable opaque capture-profile/observed-contract/normalizer binding; never
 derive identity from negotiated caps. Only then let a newly acquired matching calibrated lease emit

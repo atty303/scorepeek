@@ -99,6 +99,14 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- capture gamescope-live-gate "$@"
 '''
 
+[tasks."capture:gamescope:test:lifecycle"]
+description = "Repeat the bounded uncalibrated Gamescope receiver lifecycle gate"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- capture gamescope-lifecycle-gate "$@"
+'''
+
 [tasks."native:verify"]
 description = "Verify the pinned PipeWire SDK and host native build prerequisites"
 run = "scripts/verify-pipewire-build-environment.bash"

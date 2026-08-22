@@ -133,23 +133,90 @@ fn run(args: &[OsString]) -> Result<(), String> {
 }
 
 fn try_capture_live_gate(args: &[OsString]) -> Option<Result<(), String>> {
-    let [capture, command, duration_flag, duration] = args else {
-        return None;
-    };
-    (capture == "capture" && command == "gamescope-live-gate" && duration_flag == "--duration-ms")
-        .then(|| {
-            let duration_ms = capture_live::parse_duration_ms(duration)?;
-            let report = capture_live::run_gamescope_live_gate(duration_ms);
-            println!(
-                "{}",
-                serde_json::to_string(&report)
-                    .map_err(|_| "capture live gate report serialization failed".to_owned())?
-            );
-            report
-                .succeeded()
-                .then_some(())
-                .ok_or_else(|| "Gamescope live capture gate failed".to_owned())
-        })
+    match args {
+        [capture, command, duration_flag, duration]
+            if capture == "capture"
+                && command == "gamescope-live-gate"
+                && duration_flag == "--duration-ms" =>
+        {
+            Some((|| {
+                let duration_ms = capture_live::parse_duration_ms(duration)?;
+                let report = capture_live::run_gamescope_live_gate(duration_ms);
+                print_capture_gate_report(&report)
+            })())
+        }
+        [
+            capture,
+            command,
+            duration_flag,
+            duration,
+            interval_flag,
+            interval,
+        ] if capture == "capture"
+            && command == "gamescope-live-gate"
+            && duration_flag == "--duration-ms"
+            && interval_flag == "--consume-interval-ms" =>
+        {
+            Some((|| {
+                let duration_ms = capture_live::parse_duration_ms(duration)?;
+                let consumer_interval_ms = capture_live::parse_consumer_interval_ms(interval)?;
+                let report = capture_live::run_gamescope_live_gate_with_interval(
+                    duration_ms,
+                    consumer_interval_ms,
+                );
+                print_capture_gate_report(&report)
+            })())
+        }
+        [
+            capture,
+            command,
+            duration_flag,
+            duration,
+            runs_flag,
+            runs,
+            interval_flag,
+            interval,
+        ] if capture == "capture"
+            && command == "gamescope-lifecycle-gate"
+            && duration_flag == "--duration-ms"
+            && runs_flag == "--runs"
+            && interval_flag == "--consume-interval-ms" =>
+        {
+            Some((|| {
+                let duration_ms = capture_live::parse_duration_ms(duration)?;
+                let runs = capture_live::parse_lifecycle_runs(runs)?;
+                let consumer_interval_ms = capture_live::parse_consumer_interval_ms(interval)?;
+                let report = capture_live::run_gamescope_lifecycle_gate(
+                    duration_ms,
+                    runs,
+                    consumer_interval_ms,
+                );
+                println!(
+                    "{}",
+                    serde_json::to_string(&report).map_err(|_| {
+                        "Gamescope lifecycle gate report serialization failed".to_owned()
+                    })?
+                );
+                report
+                    .succeeded()
+                    .then_some(())
+                    .ok_or_else(|| "Gamescope lifecycle capture gate failed".to_owned())
+            })())
+        }
+        _ => None,
+    }
+}
+
+fn print_capture_gate_report(report: &capture_live::GamescopeLiveGateReport) -> Result<(), String> {
+    println!(
+        "{}",
+        serde_json::to_string(&report)
+            .map_err(|_| "capture live gate report serialization failed".to_owned())?
+    );
+    report
+        .succeeded()
+        .then_some(())
+        .ok_or_else(|| "Gamescope live capture gate failed".to_owned())
 }
 
 fn try_program_information(args: &[OsString]) -> Option<Result<(), String>> {
@@ -1124,7 +1191,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --model-id MODEL_ID --bundle DIRECTORY --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
+        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --model-id MODEL_ID --bundle DIRECTORY --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
         env!("CARGO_PKG_VERSION")
     );
 }

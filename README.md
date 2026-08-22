@@ -87,6 +87,8 @@ mise run native:verify
 mise run test
 mise run doctor
 mise run capture:gamescope:test:live -- --duration-ms 3000
+mise run capture:gamescope:test:live -- --duration-ms 3000 --consume-interval-ms 250
+mise run capture:gamescope:test:lifecycle -- --duration-ms 100 --runs 100 --consume-interval-ms 0
 mise run catalog:sync
 mise run corpus:recording:import -- --store /absolute/private/store --capture-context /absolute/private/capture-context.json /absolute/recordings/complete-run.mkv
 mise run corpus:dataset:seal -- --store /absolute/private/store calibration-001
@@ -134,10 +136,20 @@ state remain unavailable until an exact, secret-safe probe contract exists.
 
 `capture:gamescope:test:live` is a target-only, ephemeral diagnostic gate for an
 already running exact Gamescope `Video/Source`. It accepts only a bounded
-1-to-60,000-ms duration, requests 60/1 capture through PipeWire, and emits one
-versioned JSON report containing typed lifecycle facts and aggregate frame
-counts. It neither writes pixels nor creates a capture profile, normalizer,
-canonical diagnostic run, or support claim.
+1-to-60,000-ms duration and an optional 0-to-60,000-ms consumer interval,
+requests 60/1 capture through PipeWire, and emits one versioned JSON report
+containing typed lifecycle facts and aggregate frame counts. A nonzero consumer
+interval exercises bounded latest-frame replacement without moving sleeps,
+filesystem access, encoding, or diagnostic serialization into the PipeWire
+callback.
+
+`capture:gamescope:test:lifecycle` repeats the same acquire, receiver, and
+receiver-before-provider shutdown path from 2 through 100 times. Its bounded
+JSON report summarizes each run and process FD, thread, and resident-byte
+snapshots before, after warmup, at the observed maximum, and after the final
+run. The resource values are observations rather than a calibrated RSS leak
+threshold. Both gates are uncalibrated: they neither write pixels nor create a
+capture profile, normalizer, canonical diagnostic run, or support claim.
 
 `scorepeek catalog sync` acquires the catalog writer lock, resolves Tachi's
 `main` branch to an exact Git commit, serially fetches the three IIDX seed JSON
