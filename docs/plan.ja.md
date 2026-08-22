@@ -3,7 +3,7 @@
 ## 状態
 
 - 初回決定日: 2026-08-15
-- 最終更新日: 2026-08-21
+- 最終更新日: 2026-08-22
 - repository bootstrapとtarget inventory probe: 完了
 - M1.1 catalog contractとlocal federation core: 完了
 - M1.2 live acquisitionとsync orchestration: manual/scheduled syncまで完了
@@ -14,7 +14,9 @@
   music-selectの選択中titleおよび可視list row crop、result artistとmusic-select artist/chart/active-rowの
   versioned context crop、active catalog trie診断まで）
 - 公式ONNX recognition model比較とPP-OCRv6 small native-dynamic選定: 完了
-- accepted field認識、selection song context統合、live replay telemetry、live capture、event daemon: 未着手
+- selection song contextとlive replay telemetry storage: 着手（最小context reducer、operator確認済み
+  scenario、application-owned QOI diagnostic run writerまで。bounded queue、retention control、live
+  capture、accepted field認識、event daemonは未着手）
 - scorepeek-owned OCR学習/export: smallをartist/chart context/selection song contextと統合した後の凍結残差が
   missing OCR signalに帰属し、別経路が安全に解消できる場合だけ再検討
 - Bazzite実機検証とprivate corpus収集: 着手（OBS/vkcapture実録画1本のcopyless isolated

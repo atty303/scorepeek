@@ -41,6 +41,9 @@ authoritative.
   supersedes ADR 0023's `play_attempt` and full-session state inference while retaining its
   screen-context and recognition-independent recording rationale, and supersedes ADR 0022 only for
   naming play-attempt transitions as the contextual integration gate.
+- [ADR 0025: Record bounded application-owned live diagnostic runs](0025-record-bounded-live-diagnostic-runs.md)
+  fixes the diagnostic run, storage, completeness, retention, privacy, and non-interference contract
+  that ADR 0023 deferred while keeping ADR 0024's minimal recognition state.
 
 ## Historical
 

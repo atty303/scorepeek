@@ -206,6 +206,16 @@ is outside this checkpoint.
   decoder; its file and pixel evidence remain explicitly `unknown: observer_not_implemented`,
   without difficulty or level values. Stdout contains only the artifact digest and aggregate
   state, not observed text.
+- An application-owned bounded diagnostic-run storage writer independent of recognition success.
+  ADR 0025 fixes one run to one capture-generation binding, provisional 1,000-ms sampling, an
+  8-GiB aggregate/default per-run ceiling, 24-hour normal and seven-day priority retention policy,
+  lossless QOI canonical frames, strict bounded operation/fact records, and manifest-last
+  `complete | partial | dropped` publication. `run.json` without a completion manifest remains
+  observable partial evidence. Sequence/timing regressions, capacity, encode, write, and finalize
+  failures downgrade recording without replacing recognition results. Result-miss denominator
+  eligibility remains false until a multi-recording minimum dwell is calibrated and exceeds the
+  measured maximum run gap. The approved `qoi` 0.4.1 dependency and normal `bytemuck` dependency
+  enter only the Rust game-session application; no FFmpeg child process is added.
 - A music-select spike measured from the same canonical profile. Its independent
   cyan-header and green-level-column predicate classifies the two retained
   representative frames fail closed, then exports one selected-title crop and
@@ -335,7 +345,7 @@ is outside this checkpoint.
 ## Verified in this checkpoint
 
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
-  The current workspace run covered 104 `scorepeek` library tests, 13 binary tests, 55 offline
+  The current workspace run covered 104 `scorepeek` library tests, 29 binary tests, 55 offline
   corpus tests, 75 offline Python OCR tests, and the recording-dataset E2E gate.
 - The corrected integrated-context observer ran over both visually reviewed music-select frames and the
   retained PTS-190000 result frame with model SHA-256
@@ -1165,8 +1175,16 @@ create a play counter.
 
 Recognition-independent bounded local diagnostics remain required so missed result evidence does not
 disappear when screen detection, OCR, or event emission misses. That application-owned recording,
-retention, completeness, target cadence, result-denominator logic, and public event path remain
-unimplemented and unverified; they do not expand `SongContext` into a session state machine.
+retention, completeness, target cadence, result-denominator logic, and public event path do not
+expand `SongContext` into a session state machine. The strict synchronous storage writer and its
+provisional policy are implemented. Its completion manifest digest-binds the run start and artifacts,
+measures leading/adjacent/trailing coverage gaps through an explicit end boundary, retains bounded
+reason-bearing missing ranges with explicit truncation and reason counts, reports exact artifact,
+manifest, and total bytes, enforces operation/detail, operation/error, timeout, and decision
+consistency, and cannot enable
+the result-miss denominator without a future immutable calibration artifact. The non-blocking worker queue, aggregate retention manager,
+operator controls, replay driver, live integration, and target performance remain unimplemented and
+unverified.
 
 The retained ordinary-session recording has now been inspected over source PTS 0 through 458,300
 ms. Its immutable media probe contains 27,499 contiguous decode indexes, strictly increasing PTS,
@@ -1198,12 +1216,15 @@ session-end clear without adding mode, attempt, or retry counters.
 
 ## Next executable task
 
-Define the smallest application-owned, recognition-trigger-independent bounded diagnostic run needed to replay
-canonical evidence, sequence/timing, binding changes, context observations, decisions, outcomes, and
-recording completeness. Keep this recording inventory separate from `SongContext`; do not add mode,
-attempt, play-count, retry-count, or full-session state, infer a reset from recognition failure, or
-claim target cadence or support from one recording. Treat the corrected active-row ROI as measurement
-evidence only; do not derive an alias or recognition threshold from these two frames.
+Add the bounded non-blocking application queue and a create-only replay driver that feeds the accepted
+ordinary-session canonical evidence through the same diagnostic writer without recognition triggers.
+Then add aggregate retention/status/list/freeze/delete/local-export controls and fault-inject queue,
+capacity, write, finalize, opt-out, and partial-run recovery. Keep the synchronous writer off the live
+recognition path until queue conformance and target-host performance are verified. Do not mark the
+provisional 1,000-ms cadence as a result-miss denominator until a minimum result dwell is calibrated
+from multiple representative recordings. Keep the inventory separate from `SongContext`; do not add
+mode, attempt, play-count, retry-count, or full-session state, infer reset from recognition failure,
+or claim capture support from development-host replay.
 
 Do not continue the exhaustive official-model comparison, custom training/export, mapped initializer,
 one-character router, per-song alias, or other OCR-only deep dive. Reopen one only after integrated

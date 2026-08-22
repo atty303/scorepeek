@@ -165,10 +165,22 @@ material even though it is not a runtime state machine. Bounded local live
 diagnostics are sampled independently of recognition success and preserve
 replayable canonical evidence, sequence/timing, transitions, immutable
 bindings, decisions/outcomes, and completeness. This makes missed detections
-observable after the fact. A `complete` interval has a maximum observation gap
-below the calibrated minimum result dwell; gaps and drops downgrade
-completeness and cannot prove result absence. Diagnostic failure cannot affect recognition or
+observable after the fact. The manifest measures leading, adjacent, and
+trailing unobserved intervals over an explicit run boundary; gaps and drops
+downgrade completeness and cannot prove result absence. Denominator eligibility
+remains false until a separate immutable multi-recording calibration artifact
+exists and binds an accepted minimum result dwell. Diagnostic failure cannot affect recognition or
 event delivery, and remote export is disabled without opt-in.
+
+ADR 0025 fixes one diagnostic run to one immutable capture-generation binding.
+The provisional sampler policy is 1 Hz with an 8 GiB aggregate local budget;
+it is not result-denominator evidence until minimum result dwell is calibrated
+and the measured run gap satisfies that bound. Lossless QOI canonical frames,
+semantically consistent operation-scoped typed fact documents, a digest-bound
+start document, bounded reason-bearing missing ranges with explicit truncation,
+and a manifest-last completion record with exact storage byte accounting
+form the private replay surface. The application owns queueing, retention,
+health, deletion, and export; none belongs to `SongContext`.
 
 ### Event API
 

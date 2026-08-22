@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 encoding_rs.workspace = true
 ort.workspace = true
+qoi.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true

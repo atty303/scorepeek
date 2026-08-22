@@ -1,3 +1,4 @@
+pub mod diagnostic_recording;
 mod inventory;
 
 use std::env;
