@@ -22,6 +22,8 @@ pub enum CaptureSourceKind {
 pub enum CaptureDiagnosticOperation {
     SourceAcquisition,
     RegistryDiscovery,
+    SourceLifetime,
+    Shutdown,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -41,6 +43,7 @@ pub enum CaptureErrorType {
     RegistryLimitExceeded,
     SourceUnavailable,
     SourceAmbiguous,
+    SourceLost,
     ReceiverFailed,
 }
 
@@ -55,6 +58,14 @@ pub enum CaptureDiagnosticDetail {
     RegistryDiscovery {
         global_count: u32,
         candidate_count: u32,
+    },
+    SourceLifetime {
+        source: CaptureSourceKind,
+        selected_node_id: u32,
+        failure_origin: CaptureDiagnosticOperation,
+    },
+    Shutdown {
+        source: CaptureSourceKind,
     },
 }
 
@@ -85,6 +96,120 @@ impl CaptureDiagnosticSink for () {
 pub struct GamescopeSourceProbe {
     pub node_id: u32,
     pub registry_global_count: u32,
+}
+
+/// A default-remote Gamescope source whose lifetime remains bound to the selected node.
+///
+/// This lease is deliberately uncalibrated: it contains no capture-profile identifier and cannot
+/// produce an `ObservedFrame`. A later calibration boundary must bind an opaque profile explicitly;
+/// negotiated caps are not profile identity.
+pub struct UncalibratedGamescopeSourceLease {
+    runtime: Option<DefaultRemoteRuntime>,
+    node_id: u32,
+    registry_global_count: u32,
+    started: Instant,
+    next_diagnostic_sequence: u64,
+    terminal_recorded: bool,
+}
+
+impl fmt::Debug for UncalibratedGamescopeSourceLease {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UncalibratedGamescopeSourceLease")
+            .field("node_id", &self.node_id)
+            .field("registry_global_count", &self.registry_global_count)
+            .field("is_active", &self.runtime.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl UncalibratedGamescopeSourceLease {
+    #[must_use]
+    pub const fn node_id(&self) -> u32 {
+        self.node_id
+    }
+
+    #[must_use]
+    pub const fn registry_global_count(&self) -> u32 {
+        self.registry_global_count
+    }
+
+    /// Advances the default-remote event loop for at most `timeout` and checks that the selected
+    /// node still exists.
+    ///
+    /// # Errors
+    /// Returns `SourceLost` after removal of the selected node, or the stable transport error owned
+    /// by the provider lifetime operation. A replacement node is never selected implicitly.
+    pub fn poll(
+        &mut self,
+        timeout: Duration,
+        sink: &mut impl CaptureDiagnosticSink,
+    ) -> Result<(), CaptureError> {
+        let Some(runtime) = self.runtime.as_ref() else {
+            return Err(CaptureError::without_source(CaptureErrorType::SourceLost));
+        };
+
+        if runtime
+            .main_loop
+            .loop_()
+            .iterate(pw::loop_::Timeout::Finite(timeout.min(ITERATION_SLICE)))
+            < 0
+        {
+            runtime.terminal_error.set(Some(TerminalError {
+                error_type: CaptureErrorType::ReceiverFailed,
+                operation: CaptureDiagnosticOperation::SourceLifetime,
+            }));
+        }
+
+        let terminal = lease_terminal_error(
+            &runtime.state.borrow(),
+            runtime.terminal_error.get(),
+            runtime.selected_removed.get(),
+            self.node_id,
+        );
+        let Some(terminal) = terminal else {
+            return Ok(());
+        };
+
+        if !self.terminal_recorded {
+            sink.record(lifetime_fact(
+                self.next_diagnostic_sequence,
+                elapsed_ms(self.started),
+                self.node_id,
+                terminal.operation,
+                CaptureDiagnosticStatus::Error,
+                Some(terminal.error_type),
+            ));
+            self.next_diagnostic_sequence = self.next_diagnostic_sequence.saturating_add(1);
+            self.terminal_recorded = true;
+        }
+        Err(CaptureError::without_source(terminal.error_type))
+    }
+
+    /// Releases the provider-owned registry, remote, context, and loop in deterministic order.
+    pub fn shutdown(mut self, sink: &mut impl CaptureDiagnosticSink) {
+        self.runtime.take();
+        sink.record(shutdown_fact(
+            self.next_diagnostic_sequence,
+            elapsed_ms(self.started),
+        ));
+    }
+}
+
+fn lease_terminal_error(
+    state: &RegistryState,
+    transport_error: Option<TerminalError>,
+    selected_removed: bool,
+    selected_node_id: u32,
+) -> Option<TerminalError> {
+    transport_error.or_else(|| {
+        (selected_removed || !state.candidate_ids.contains(&selected_node_id)).then_some(
+            TerminalError {
+                error_type: CaptureErrorType::SourceLost,
+                operation: CaptureDiagnosticOperation::SourceLifetime,
+            },
+        )
+    })
 }
 
 #[derive(Debug)]
@@ -123,6 +248,7 @@ impl fmt::Display for CaptureError {
             CaptureErrorType::RegistryLimitExceeded => "PipeWire registry exceeded the probe limit",
             CaptureErrorType::SourceUnavailable => "Gamescope PipeWire source is unavailable",
             CaptureErrorType::SourceAmbiguous => "Gamescope PipeWire source is ambiguous",
+            CaptureErrorType::SourceLost => "Gamescope PipeWire source was lost",
             CaptureErrorType::ReceiverFailed => "PipeWire receiver failed",
         })
     }
@@ -184,11 +310,23 @@ struct RegistryFailure {
     operation: CaptureDiagnosticOperation,
 }
 
+#[cfg(test)]
 trait RegistryBackend {
     fn discover(&self, timeout: Duration) -> Result<RegistrySnapshot, RegistryFailure>;
 }
 
-struct DefaultRemoteRegistry;
+struct DefaultRemoteRuntime {
+    // Listeners must be dropped before the proxies that own their hooks.
+    _registry_listener: pw::registry::Listener,
+    _core_listener: pw::core::Listener,
+    _registry: pw::registry::RegistryRc,
+    _core: pw::core::CoreRc,
+    _context: pw::context::ContextRc,
+    main_loop: pw::main_loop::MainLoopRc,
+    state: Rc<RefCell<RegistryState>>,
+    terminal_error: Rc<Cell<Option<TerminalError>>>,
+    selected_removed: Rc<Cell<bool>>,
+}
 
 /// Discovers exactly one Gamescope video source on the default `PipeWire` remote.
 ///
@@ -205,9 +343,114 @@ pub fn probe_gamescope_source(
     timeout: Duration,
     sink: &mut impl CaptureDiagnosticSink,
 ) -> Result<GamescopeSourceProbe, CaptureError> {
-    probe_gamescope_source_with(&DefaultRemoteRegistry, timeout, sink)
+    let lease = acquire_gamescope_source(timeout, sink)?;
+    let probe = GamescopeSourceProbe {
+        node_id: lease.node_id(),
+        registry_global_count: lease.registry_global_count(),
+    };
+    lease.shutdown(sink);
+    Ok(probe)
 }
 
+/// Acquires exactly one Gamescope video source and retains its default-remote lifetime.
+///
+/// The returned lease is intentionally uncalibrated and therefore is not a capture profile or a
+/// supported source. Callers must poll it while in use and explicitly shut it down to record the
+/// provider lifecycle in the host-owned diagnostic run.
+///
+/// # Errors
+/// Returns a typed error under the same fail-closed discovery contract as
+/// [`probe_gamescope_source`].
+pub fn acquire_gamescope_source(
+    timeout: Duration,
+    sink: &mut impl CaptureDiagnosticSink,
+) -> Result<UncalibratedGamescopeSourceLease, CaptureError> {
+    let started = Instant::now();
+    let (runtime, snapshot) = match acquire_default_remote(timeout) {
+        Ok(value) => value,
+        Err(failure) => {
+            record_discovery_failure(started, &failure, sink);
+            return Err(failure.error);
+        }
+    };
+    sink.record(registry_fact(
+        1,
+        0,
+        elapsed_ms(started),
+        snapshot,
+        CaptureDiagnosticStatus::Success,
+        None,
+    ));
+    let selected = match select_gamescope_source(snapshot) {
+        Ok(node_id) => node_id,
+        Err(error) => {
+            sink.record(acquisition_fact(
+                2,
+                0,
+                elapsed_ms(started),
+                snapshot,
+                CaptureDiagnosticStatus::Error,
+                Some(error.error_type),
+                None,
+            ));
+            return Err(error);
+        }
+    };
+    sink.record(acquisition_fact(
+        2,
+        0,
+        elapsed_ms(started),
+        snapshot,
+        CaptureDiagnosticStatus::Success,
+        None,
+        Some(selected),
+    ));
+    Ok(UncalibratedGamescopeSourceLease {
+        runtime: Some(runtime),
+        node_id: selected,
+        registry_global_count: snapshot.global_count,
+        started,
+        next_diagnostic_sequence: 3,
+        terminal_recorded: false,
+    })
+}
+
+fn record_discovery_failure(
+    started: Instant,
+    failure: &RegistryFailure,
+    sink: &mut impl CaptureDiagnosticSink,
+) {
+    let status = if failure.error.error_type == CaptureErrorType::RegistryTimedOut {
+        CaptureDiagnosticStatus::Timeout
+    } else {
+        CaptureDiagnosticStatus::Error
+    };
+    let acquisition_sequence = if failure.operation == CaptureDiagnosticOperation::RegistryDiscovery
+    {
+        sink.record(registry_fact(
+            1,
+            0,
+            elapsed_ms(started),
+            failure.snapshot,
+            status,
+            Some(failure.error.error_type),
+        ));
+        2
+    } else {
+        1
+    };
+    sink.record(acquisition_fact(
+        acquisition_sequence,
+        0,
+        elapsed_ms(started),
+        failure.snapshot,
+        CaptureDiagnosticStatus::Error,
+        Some(failure.error.error_type),
+        None,
+    ));
+}
+
+#[cfg(test)]
 fn probe_gamescope_source_with(
     backend: &impl RegistryBackend,
     timeout: Duration,
@@ -302,13 +545,9 @@ fn select_gamescope_source(snapshot: RegistrySnapshot) -> Result<u32, CaptureErr
     }
 }
 
-impl RegistryBackend for DefaultRemoteRegistry {
-    fn discover(&self, timeout: Duration) -> Result<RegistrySnapshot, RegistryFailure> {
-        discover_default_remote(timeout)
-    }
-}
-
-fn discover_default_remote(timeout: Duration) -> Result<RegistrySnapshot, RegistryFailure> {
+fn acquire_default_remote(
+    timeout: Duration,
+) -> Result<(DefaultRemoteRuntime, RegistrySnapshot), RegistryFailure> {
     pw::init();
     let main_loop = pw::main_loop::MainLoopRc::new(None).map_err(|error| RegistryFailure {
         error: CaptureError::with_source(CaptureErrorType::ReceiverFailed, error),
@@ -334,44 +573,23 @@ fn discover_default_remote(timeout: Duration) -> Result<RegistrySnapshot, Regist
 
     let state = Rc::new(RefCell::new(RegistryState::default()));
     let terminal_error = Rc::new(Cell::new(None));
+    let selected_node_id = Rc::new(Cell::new(None::<u32>));
+    let selected_removed = Rc::new(Cell::new(false));
     let complete = Rc::new(Cell::new(false));
     let pending = Rc::new(Cell::new(None::<AsyncSeq>));
 
-    let callback_state = Rc::clone(&state);
-    let callback_error = Rc::clone(&terminal_error);
-    let _registry_listener = registry
-        .add_listener_local()
-        .global(move |global| {
-            let mut state = callback_state.borrow_mut();
-            if !state.observe_global() {
-                callback_error.set(Some(TerminalError {
-                    error_type: CaptureErrorType::RegistryLimitExceeded,
-                    operation: CaptureDiagnosticOperation::RegistryDiscovery,
-                }));
-                return;
-            }
-            if global.type_ != pw::types::ObjectType::Node {
-                return;
-            }
-            let Some(properties) = global.props.as_ref() else {
-                return;
-            };
-            if properties.get(*pw::keys::NODE_NAME) == Some("gamescope")
-                && properties.get(*pw::keys::MEDIA_CLASS) == Some("Video/Source")
-            {
-                state.add_candidate(global.id);
-            }
-        })
-        .global_remove({
-            let callback_state = Rc::clone(&state);
-            move |global_id| callback_state.borrow_mut().remove_global(global_id)
-        })
-        .register();
+    let registry_listener = register_registry_listener(
+        &registry,
+        Rc::clone(&state),
+        Rc::clone(&terminal_error),
+        Rc::clone(&selected_node_id),
+        Rc::clone(&selected_removed),
+    );
 
     let callback_complete = Rc::clone(&complete);
     let callback_pending = Rc::clone(&pending);
     let callback_error = Rc::clone(&terminal_error);
-    let _core_listener = core
+    let core_listener = core
         .add_listener_local()
         .done(move |id, sequence| {
             if id == pw::core::PW_ID_CORE && callback_pending.get() == Some(sequence) {
@@ -390,7 +608,70 @@ fn discover_default_remote(timeout: Duration) -> Result<RegistrySnapshot, Regist
     })?;
     pending.set(Some(sync));
 
-    complete_initial_registry_roundtrip(&main_loop, &state, &terminal_error, &complete, timeout)
+    let snapshot = complete_initial_registry_roundtrip(
+        &main_loop,
+        &state,
+        &terminal_error,
+        &complete,
+        timeout,
+    )?;
+    selected_node_id.set(snapshot.first_candidate);
+    Ok((
+        DefaultRemoteRuntime {
+            _registry_listener: registry_listener,
+            _core_listener: core_listener,
+            _registry: registry,
+            _core: core,
+            _context: context,
+            main_loop,
+            state,
+            terminal_error,
+            selected_removed,
+        },
+        snapshot,
+    ))
+}
+
+fn register_registry_listener(
+    registry: &pw::registry::RegistryRc,
+    state: Rc<RefCell<RegistryState>>,
+    terminal_error: Rc<Cell<Option<TerminalError>>>,
+    selected_node_id: Rc<Cell<Option<u32>>>,
+    selected_removed: Rc<Cell<bool>>,
+) -> pw::registry::Listener {
+    let global_state = Rc::clone(&state);
+    registry
+        .add_listener_local()
+        .global(move |global| {
+            let mut state = global_state.borrow_mut();
+            if !state.observe_global() {
+                terminal_error.set(Some(TerminalError {
+                    error_type: CaptureErrorType::RegistryLimitExceeded,
+                    operation: CaptureDiagnosticOperation::RegistryDiscovery,
+                }));
+                return;
+            }
+            if global.type_ != pw::types::ObjectType::Node {
+                return;
+            }
+            let Some(properties) = global.props.as_ref() else {
+                return;
+            };
+            if properties.get(*pw::keys::NODE_NAME) == Some("gamescope")
+                && properties.get(*pw::keys::MEDIA_CLASS) == Some("Video/Source")
+            {
+                state.add_candidate(global.id);
+            }
+        })
+        .global_remove({
+            move |global_id| {
+                if selected_node_id.get() == Some(global_id) {
+                    selected_removed.set(true);
+                }
+                state.borrow_mut().remove_global(global_id);
+            }
+        })
+        .register()
 }
 
 fn complete_initial_registry_roundtrip(
@@ -513,6 +794,43 @@ fn acquisition_fact(
             source: CaptureSourceKind::GamescopeDefaultRemote,
             candidate_count: snapshot.candidate_count,
             selected_node_id,
+        },
+    }
+}
+
+fn lifetime_fact(
+    sequence: u64,
+    monotonic_end_ms: u64,
+    selected_node_id: u32,
+    failure_origin: CaptureDiagnosticOperation,
+    status: CaptureDiagnosticStatus,
+    error_type: Option<CaptureErrorType>,
+) -> CaptureDiagnosticFact {
+    CaptureDiagnosticFact {
+        sequence,
+        monotonic_start_ms: 0,
+        monotonic_end_ms,
+        operation: CaptureDiagnosticOperation::SourceLifetime,
+        status,
+        error_type,
+        detail: CaptureDiagnosticDetail::SourceLifetime {
+            source: CaptureSourceKind::GamescopeDefaultRemote,
+            selected_node_id,
+            failure_origin,
+        },
+    }
+}
+
+fn shutdown_fact(sequence: u64, monotonic_end_ms: u64) -> CaptureDiagnosticFact {
+    CaptureDiagnosticFact {
+        sequence,
+        monotonic_start_ms: monotonic_end_ms,
+        monotonic_end_ms,
+        operation: CaptureDiagnosticOperation::Shutdown,
+        status: CaptureDiagnosticStatus::Success,
+        error_type: None,
+        detail: CaptureDiagnosticDetail::Shutdown {
+            source: CaptureSourceKind::GamescopeDefaultRemote,
         },
     }
 }
@@ -683,6 +1001,101 @@ mod tests {
         assert_eq!(state.snapshot.global_count, 2);
         assert_eq!(state.snapshot.candidate_count, 1);
         assert_eq!(state.snapshot.first_candidate, Some(20));
+    }
+
+    #[test]
+    fn lease_is_bound_to_the_selected_node_without_replacement() {
+        let mut state = RegistryState::default();
+        state.add_candidate(10);
+
+        assert_eq!(lease_terminal_error(&state, None, false, 10), None);
+
+        state.remove_global(10);
+        state.add_candidate(20);
+
+        assert_eq!(
+            lease_terminal_error(&state, None, false, 10),
+            Some(TerminalError {
+                error_type: CaptureErrorType::SourceLost,
+                operation: CaptureDiagnosticOperation::SourceLifetime,
+            })
+        );
+    }
+
+    #[test]
+    fn same_numeric_id_replacement_cannot_revive_a_removed_lease() {
+        let mut state = RegistryState::default();
+        state.add_candidate(10);
+
+        state.remove_global(10);
+        state.add_candidate(10);
+
+        assert_eq!(
+            lease_terminal_error(&state, None, true, 10),
+            Some(TerminalError {
+                error_type: CaptureErrorType::SourceLost,
+                operation: CaptureDiagnosticOperation::SourceLifetime,
+            })
+        );
+    }
+
+    #[test]
+    fn transport_failure_precedes_source_removal_classification() {
+        let state = RegistryState::default();
+        let transport_error = TerminalError {
+            error_type: CaptureErrorType::RemoteConnectionFailed,
+            operation: CaptureDiagnosticOperation::SourceAcquisition,
+        };
+
+        assert_eq!(
+            lease_terminal_error(&state, Some(transport_error), false, 10),
+            Some(transport_error)
+        );
+    }
+
+    #[test]
+    fn lifetime_fact_retains_the_terminal_failure_origin() {
+        assert_eq!(
+            lifetime_fact(
+                3,
+                12,
+                10,
+                CaptureDiagnosticOperation::SourceAcquisition,
+                CaptureDiagnosticStatus::Error,
+                Some(CaptureErrorType::RemoteConnectionFailed),
+            ),
+            CaptureDiagnosticFact {
+                sequence: 3,
+                monotonic_start_ms: 0,
+                monotonic_end_ms: 12,
+                operation: CaptureDiagnosticOperation::SourceLifetime,
+                status: CaptureDiagnosticStatus::Error,
+                error_type: Some(CaptureErrorType::RemoteConnectionFailed),
+                detail: CaptureDiagnosticDetail::SourceLifetime {
+                    source: CaptureSourceKind::GamescopeDefaultRemote,
+                    selected_node_id: 10,
+                    failure_origin: CaptureDiagnosticOperation::SourceAcquisition,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn explicit_shutdown_is_a_bounded_typed_fact() {
+        assert_eq!(
+            shutdown_fact(3, 12),
+            CaptureDiagnosticFact {
+                sequence: 3,
+                monotonic_start_ms: 12,
+                monotonic_end_ms: 12,
+                operation: CaptureDiagnosticOperation::Shutdown,
+                status: CaptureDiagnosticStatus::Success,
+                error_type: None,
+                detail: CaptureDiagnosticDetail::Shutdown {
+                    source: CaptureSourceKind::GamescopeDefaultRemote,
+                },
+            }
+        );
     }
 
     #[test]

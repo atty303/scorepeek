@@ -9,8 +9,9 @@
 - M1.2 live acquisitionとsync orchestration: manual/scheduled syncまで完了
 - M2 observed-profile private corpus、synthetic renderer、label/replay tooling: 完了
 - M3 common PipeWire receiverとGamescope observed-frame profile: 着手（default remoteのbounded
-  registry round tripとexact Gamescope `Video/Source` discovery probeまで。source lease、stream
-  negotiation、frame reception、capture profile/normalizer、Bazzite gateは未着手）
+  registry round trip、exact Gamescope `Video/Source` discovery、選択nodeとdefault remoteを保持する
+  未校正lifetime leaseまで。stream negotiation、frame reception、capture profile/normalizer、Bazzite
+  gateは未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
 - M4 offline canonical/recognition spike: 着手（OBS/vkcapture実録画からnormalizer、共通result/music-select
   layout、fail-closed screen判定、result title cropのRust前処理/Paddle/公式ONNX CTC parity、
@@ -329,10 +330,13 @@ pipeline内部のlayerはruntime contractに
 含めないが、再現や診断に有用な環境情報はsecret-safeなprovenanceとして保持できる。
 
 PipeWire routeはsource acquisitionとframe receptionを分離する。source providerはdefault remoteまたは
-owned remote FD、exact nodeまたはdeterministic selector、opaque capture profileおよびsourceを維持する
-lifetime guardを一つのleaseとして取得する。共通receiverはstream/caps/buffer negotiation、boundedな
-latest-frame受信、sequence/timingおよびsource lossを所有して`ObservedFrame`を生成する。providerは
-normalization、recognitionまたは別providerへのfallbackを行わない。
+owned remote FD、exact nodeまたはdeterministic selector、およびsourceを維持するlifetime guardを一つの
+未校正leaseとして取得する。providerはselected node/remote lossとprovider shutdownを所有する。共通
+receiverはstream/caps/buffer negotiation、boundedなlatest-frame受信、sequence/timing、stream lossおよび
+receiver shutdownを所有する。未校正leaseを使うdiagnostic/calibration modeは`ObservedFrame`を生成しない。
+独立に登録したimmutableなprofile/observed-contract/normalizer bindingが一致する新しいleaseだけを校正済み
+leaseへでき、そのreceiverだけがopaque capture profileを持つ`ObservedFrame`を生成する。capsだけから
+profile IDを導出しない。providerはnormalization、recognitionまたは別providerへのfallbackを行わない。
 
 ### Candidates
 

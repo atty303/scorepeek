@@ -56,6 +56,10 @@ authoritative.
   fixes the Linux x86-64 host-native Cargo boundary: mise provides the checksum-pinned PipeWire SDK
   and native pkgconf executable, while `cc`, libclang with matching resource headers, and the
   PipeWire runtime remain explicit host prerequisites. Python, containers, and Zig are not added.
+- [ADR 0029: Bind capture profiles after source acquisition](0029-bind-capture-profiles-after-source-acquisition.md)
+  supersedes ADR 0027 only for its profile-bearing initial lease and combined lifecycle ownership.
+  Providers first return an uncalibrated lifetime lease; only an explicit immutable calibration
+  binding lets the receiver emit profile-bearing `ObservedFrame` values.
 
 ## Historical
 
