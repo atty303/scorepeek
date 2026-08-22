@@ -17,7 +17,8 @@
 - selection song contextとlive replay telemetry storage: 着手（最小context reducer、operator確認済み
   scenario、application-owned QOI diagnostic run writer、bounded worker、strict canonical replay、read-only
   status/list control、cross-process active ownership、crash-safe aggregate retention、digest-confirmed
-  freeze/delete、verified create-only local exportまで。live capture、accepted field認識、event daemonは未着手）
+  freeze/delete、verified create-only local export、canonical producerからworkerへのnon-blocking live
+  handoffまで。capture adapter、DomainNormalizer、target-host性能、accepted field認識、event daemonは未着手）
 - scorepeek-owned OCR学習/export: smallをartist/chart context/selection song contextと統合した後の凍結残差が
   missing OCR signalに帰属し、別経路が安全に解消できる場合だけ再検討
 - Bazzite実機検証とprivate corpus収集: 着手（OBS/vkcapture実録画1本のcopyless isolated

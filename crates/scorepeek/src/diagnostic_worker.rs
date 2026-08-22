@@ -26,7 +26,7 @@ pub struct DiagnosticOwnedFrame {
     pub sequence: u64,
     pub monotonic_start_ms: u64,
     pub monotonic_end_ms: u64,
-    pub pixels: Box<[u8]>,
+    pub pixels: Arc<[u8]>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -103,6 +103,40 @@ impl DiagnosticWorkerHandle {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn start_for_test(
+        root: &std::path::Path,
+        descriptor: DiagnosticRunDescriptor,
+        policy: DiagnosticPolicy,
+        capacity: usize,
+    ) -> Self {
+        Self::start_inner(
+            root.to_owned(),
+            descriptor,
+            policy,
+            capacity,
+            None,
+            DiagnosticWorkerHooks::default(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_with_supervisor_for_test(
+        root: &std::path::Path,
+        descriptor: DiagnosticRunDescriptor,
+        policy: DiagnosticPolicy,
+        supervisor: &Mutex<Weak<()>>,
+    ) -> Self {
+        Self::start_inner(
+            root.to_owned(),
+            descriptor,
+            policy,
+            DEFAULT_DIAGNOSTIC_QUEUE_CAPACITY,
+            Some(supervisor),
+            DiagnosticWorkerHooks::default(),
+        )
+    }
+
     fn start_inner(
         root: std::path::PathBuf,
         descriptor: DiagnosticRunDescriptor,
@@ -145,17 +179,24 @@ impl DiagnosticWorkerHandle {
         let worker = thread::Builder::new()
             .name("scorepeek-diagnostic-writer".to_owned())
             .spawn(move || {
+                let mut supervisor_token = supervisor_token;
                 if let Some(gate) = hooks.start_gate {
                     gate.wait();
                 }
-                run_worker(&receiver, &root, &descriptor, policy, &worker_cancellation);
+                run_worker(
+                    &receiver,
+                    &root,
+                    &descriptor,
+                    policy,
+                    &worker_cancellation,
+                    &mut supervisor_token,
+                );
                 if let Some(gate) = hooks.exit_gate {
                     gate.wait();
                 }
                 if let Some(finished) = hooks.finished {
                     finished.store(true, Ordering::Release);
                 }
-                drop(supervisor_token);
             });
         match worker {
             Ok(worker) => Self::with_state(
@@ -468,6 +509,7 @@ fn run_worker(
     descriptor: &DiagnosticRunDescriptor,
     policy: DiagnosticPolicy,
     cancellation: &AtomicBool,
+    supervisor_token: &mut Option<Arc<()>>,
 ) {
     let mut recorder = DiagnosticRecorder::start(root, descriptor, policy);
     while let Ok(message) = receiver.recv() {
@@ -497,6 +539,9 @@ fn run_worker(
                     last_error_type,
                 );
                 let outcome = recorder.finish_cancellable(status, monotonic_end_ms, cancellation);
+                if !cancellation.load(Ordering::Acquire) {
+                    drop(supervisor_token.take());
+                }
                 let _ = response.send(outcome);
                 return;
             }
@@ -575,7 +620,7 @@ mod tests {
             sequence,
             monotonic_start_ms: time,
             monotonic_end_ms: time + 16,
-            pixels: vec![u8::try_from(sequence).unwrap(); 1_920 * 1_080 * 3].into_boxed_slice(),
+            pixels: Arc::from(vec![u8::try_from(sequence).unwrap(); 1_920 * 1_080 * 3]),
         }
     }
 
@@ -727,34 +772,45 @@ mod tests {
     #[test]
     fn flush_timeout_cancels_before_worker_finalization() {
         let root = tempfile::tempdir().unwrap();
-        let gate = Arc::new(Barrier::new(2));
+        let start_gate = Arc::new(Barrier::new(2));
+        let exit_gate = Arc::new(Barrier::new(2));
         let finished = Arc::new(AtomicBool::new(false));
+        let supervisor = Mutex::new(Weak::new());
         let worker = DiagnosticWorkerHandle::start_inner(
             root.path().to_owned(),
             descriptor("flush-timeout-run"),
             DiagnosticPolicy::default(),
             1,
-            None,
+            Some(&supervisor),
             DiagnosticWorkerHooks {
-                start_gate: Some(Arc::clone(&gate)),
+                start_gate: Some(Arc::clone(&start_gate)),
+                exit_gate: Some(Arc::clone(&exit_gate)),
                 finished: Some(Arc::clone(&finished)),
-                ..DiagnosticWorkerHooks::default()
             },
         );
         let outcome = worker.finish(DiagnosticRunStatus::Success, 0, Duration::from_millis(1));
         assert_eq!(outcome.error_type, Some(DiagnosticErrorType::FlushTimeout));
-        gate.wait();
+        assert!(acquire_worker_token(&supervisor).is_none());
+        start_gate.wait();
+        let run_file = root.path().join("flush-timeout-run/run.json");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !run_file.is_file() && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert!(run_file.is_file());
+        assert!(acquire_worker_token(&supervisor).is_none());
+        exit_gate.wait();
         let deadline = Instant::now() + Duration::from_secs(1);
         while !finished.load(Ordering::Acquire) && Instant::now() < deadline {
             thread::yield_now();
         }
         assert!(finished.load(Ordering::Acquire));
-        assert!(root.path().join("flush-timeout-run/run.json").is_file());
+        assert!(acquire_worker_token(&supervisor).is_some());
         assert!(!root.path().join("flush-timeout-run/manifest.json").exists());
     }
 
     #[test]
-    fn finish_does_not_join_after_the_bounded_response() {
+    fn completed_worker_releases_supervisor_before_the_bounded_response() {
         let root = tempfile::tempdir().unwrap();
         let exit_gate = Arc::new(Barrier::new(2));
         let finished = Arc::new(AtomicBool::new(false));
@@ -774,20 +830,14 @@ mod tests {
         let outcome = worker.finish(DiagnosticRunStatus::Success, 0, Duration::from_secs(1));
         assert_eq!(outcome.completeness, Some(DiagnosticCompleteness::Complete));
         assert!(!finished.load(Ordering::Acquire));
-        assert!(acquire_worker_token(&supervisor).is_none());
+        let next_token = acquire_worker_token(&supervisor);
+        assert!(next_token.is_some());
         exit_gate.wait();
         let deadline = Instant::now() + Duration::from_secs(1);
         while !finished.load(Ordering::Acquire) && Instant::now() < deadline {
             thread::yield_now();
         }
         assert!(finished.load(Ordering::Acquire));
-        let deadline = Instant::now() + Duration::from_secs(1);
-        let mut next_token = None;
-        while next_token.is_none() && Instant::now() < deadline {
-            next_token = acquire_worker_token(&supervisor);
-            thread::yield_now();
-        }
-        assert!(next_token.is_some());
     }
 
     #[test]
@@ -806,7 +856,7 @@ mod tests {
             DiagnosticEnqueueOutcome::Enqueued
         );
         let mut rejected = frame(2, 500);
-        rejected.pixels = Box::new([]);
+        rejected.pixels = Arc::from([]);
         assert_eq!(
             worker.try_record_frame(rejected),
             DiagnosticEnqueueOutcome::Rejected

@@ -198,6 +198,16 @@ not simulate a live drop. Replay timing is the extraction's exact source PTS,
 not a caller-authored timeline. This replay is recognition-free and does not
 infer a session timeline.
 
+The application live handoff now accepts only fixed-size canonical RGB8 frames
+with one capture-generation/profile/normalizer binding. Immutable pixels use
+shared ownership so the producer can offer diagnostic evidence before recognition
+without a second RGB allocation; the worker still owns QOI and filesystem work.
+The offer is non-blocking. Binding drift is rejected from the old run and recorded
+as diagnostic-only degradation, and generation rollover uses a new run rather than
+mixing evidence. Opt-out and worker loss preserve the caller's result. This is the
+producer/worker integration boundary, not an implemented capture adapter,
+DomainNormalizer, supported profile, or target-host performance claim.
+
 The first read-only application controls inspect an existing diagnostic root
 through a shared strict inventory. `status` exposes fixed retention policy and
 the current exclusive-writer state plus bounded aggregate byte/completeness

@@ -383,7 +383,7 @@ is outside this checkpoint.
 ## Verified in this checkpoint
 
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
-  The current workspace run covered 104 `scorepeek` library tests, 75 binary tests, 55 offline
+  The current workspace run covered 104 `scorepeek` library tests, 80 binary tests, 55 offline
   corpus tests, 75 offline Python OCR tests, and the recording-dataset E2E gate.
 - The corrected integrated-context observer ran over both visually reviewed music-select frames and the
   retained PTS-190000 result frame with model SHA-256
@@ -1231,7 +1231,12 @@ complete manifest-bearing replay exits successfully. Read-only status/list contr
 strict start-only run as priority partial evidence and fail the whole inspection on invalid or
 changing managed state. Cross-process active-run ownership, crash-safe aggregate retention,
 digest-confirmed freeze/delete, and verified create-only local export are now implemented. Live
-integration and target performance remain unimplemented and unverified.
+canonical frames now cross an application-owned non-blocking bridge into the same worker before
+recognition outcomes are known. Immutable RGB ownership is shared without a second pixel allocation;
+generation/profile/normalizer drift is rejected from the old run as diagnostic-only degradation,
+generation rollover creates a separate run, and opt-out or worker loss preserves the caller result.
+The capture adapter, DomainNormalizer, target-host lifecycle/performance, and accepted recognition
+path remain unimplemented and unverified.
 
 The retained ordinary-session recording has now been inspected over source PTS 0 through 458,300
 ms. Its immutable media probe contains 27,499 contiguous decode indexes, strictly increasing PTS,
@@ -1287,11 +1292,13 @@ verification or an applied-retention claim.
 
 ## Next executable task
 
-Integrate the bounded diagnostic worker with the live canonical-frame producer without moving
-encoding or filesystem I/O onto capture/recognition. Exercise queue saturation, worker loss,
-generation rollover, target-host lifecycle, and performance while retaining the existing control,
-retention, write, finalize, opt-out, flush-timeout, and partial-run recovery coverage. Keep the synchronous writer off the live
-recognition path until queue conformance and target-host performance are verified. Do not mark the
+Bind the application live handoff to the first real capture adapter and versioned DomainNormalizer
+vertical spike on Bazzite without moving encoding or filesystem I/O onto capture/recognition.
+Re-exercise queue saturation, worker loss, generation rollover, target-host lifecycle, and performance
+with real canonical production while retaining the existing control, retention, write, finalize,
+opt-out, flush-timeout, and partial-run recovery coverage. Keep the synchronous writer off the live
+recognition path and do not declare a supported capture profile until queue conformance and
+target-host performance are verified. Do not mark the
 provisional 1,000-ms cadence as a result-miss denominator until a minimum result dwell is calibrated
 from multiple representative recordings. Keep the inventory separate from `SongContext`; do not add
 mode, attempt, play-count, retry-count, or full-session state, infer reset from recognition failure,

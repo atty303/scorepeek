@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -124,7 +125,7 @@ pub fn replay_diagnostic_run(
                 sequence: requested.sequence,
                 monotonic_start_ms: requested.monotonic_start_ms,
                 monotonic_end_ms: requested.monotonic_end_ms,
-                pixels: frame.pixels().to_vec().into_boxed_slice(),
+                pixels: Arc::from(frame.into_pixels()),
             },
             Instant::now() + DEFAULT_DIAGNOSTIC_FLUSH_TIMEOUT,
         );

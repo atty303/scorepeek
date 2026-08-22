@@ -1,4 +1,5 @@
 pub mod diagnostic_control;
+pub mod diagnostic_live;
 pub mod diagnostic_recording;
 pub mod diagnostic_replay;
 pub mod diagnostic_worker;

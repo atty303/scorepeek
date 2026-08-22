@@ -182,6 +182,11 @@ impl CanonicalFrame {
     }
 
     #[must_use]
+    pub fn into_pixels(self) -> Box<[u8]> {
+        self.pixels
+    }
+
+    #[must_use]
     pub fn capture_profile_id(&self) -> &str {
         &self.capture_profile_id
     }
