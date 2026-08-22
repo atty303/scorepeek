@@ -148,6 +148,19 @@ is outside this checkpoint.
   profile assignment, filesystem I/O, or diagnostic recording. It is reusable by explicitly
   configured advanced profiles, but scorepeek does not promise automatic calibration or first-class
   gates for every fit/fill/stretch/filter/window combination.
+  The versioned `scorepeek-gamescope-profile-binding-v1` contract now defines the immutable runtime
+  admission artifact without registering a real profile. A canonical JSON document of at most 64
+  KiB is selected by an independently supplied SHA-256 and contains one calibration-evidence digest,
+  exact default-remote Gamescope source, bounded environment/version/backend identifiers, complete
+  nested size/refresh/scaler/filter configuration, and the full observed BGRx video/memory/stride
+  contract. The opaque capture-profile ID is the SHA-256 of that canonical profile subdocument, not
+  negotiated caps; the normalizer subdocument must repeat that exact profile digest and bind the fixed
+  canonical frame contract, registered fractional-linear implementation, and validated rational
+  geometry. The whole binding digest is the normalizer-artifact identity. Parsing and exact observed
+  contract comparison are pure, typed, bounded, and filesystem-free. Unknown fields, non-canonical
+  encoding, digest or profile substitution, unsupported schemas, over-capacity contracts, and geometry
+  mismatch fail closed. No development-machine binding artifact, calibrated lease, `ObservedFrame`,
+  recognition handoff, or support claim exists yet.
 - Destructive v2 private-corpus ingest/source/replay contracts. Every observed
   source binds only an opaque capture profile. Replay binds its normalizer,
   canonical frame contract, and shared canonical layout separately without
@@ -1471,17 +1484,23 @@ two-level color shift. This validates the explicit geometry and sampling phase w
 equality a canonical correctness requirement. The temporary private-sample test was removed after
 the run; no pixels or environment path entered the repository.
 
-Next, define and independently review the immutable artifact that binds this explicit geometry to an
-opaque development-machine profile, the exact Gamescope version/backend/configuration, and observed
-video contract. Advanced operators may supply separately calibrated fractional geometry, but the
-runtime will not measure borders, infer geometry, generate profiles, or fall back automatically.
-Only a newly acquired lease matching the registered binding may emit `ObservedFrame`; dimensions or
-filter metadata alone never establish identity. Re-exercise the gate while
+The immutable binding contract is now defined and independently validates the profile, calibration
+evidence, exact Gamescope version/backend/configuration, observed video/memory/stride contract, and
+fractional normalizer without registering a real profile. Next, capture or otherwise establish the
+missing exact backend provenance for a controlled sample, then author and independently review one
+development-machine binding artifact outside the repository's captured-frame boundary. Add explicit
+session provenance to a newly acquired lease and require both that provenance and the receiver's full
+negotiated contract to match the selected immutable binding before any profile-bearing frame type can
+exist. Record binding acceptance or its stable rejection category in the host-owned bounded capture
+diagnostic run; do not record artifact bodies, environment strings, pixels, or arbitrary properties.
+Advanced operators may supply separately calibrated fractional geometry, but the runtime will not
+measure borders, infer geometry, generate profiles, or fall back automatically. Dimensions or filter
+metadata alone never establish identity. Re-exercise the gate while
 OBS/obs-vkcapture runs independently. Record stream loss distinct from selected-node loss, PipeWire
 daemon disconnect, source recreation, long-run FD/thread/RSS behavior, CPU/memory/copy cost, frame
 age, game p99 frametime, and OBS render/encode lag, then run the planned
 15-minute repetitions and 30-minute soak. Use that bounded evidence to
-register an explicit immutable opaque capture-profile/observed-contract/normalizer binding; never
+retain an explicit immutable opaque capture-profile/observed-contract/normalizer binding; never
 derive identity from negotiated caps. Only then let a newly acquired matching calibrated lease emit
 `ObservedFrame` and bind it through the versioned DomainNormalizer
 to the application live handoff on Bazzite without moving encoding or filesystem I/O onto

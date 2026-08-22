@@ -10,7 +10,7 @@ use pw::spa;
 use pw::spa::buffer::{ChunkFlags, DataType};
 use pw::spa::param::video::{VideoFormat, VideoInfoRaw, VideoInterlaceMode};
 use pw::spa::pod::{Pod, Value};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{
     CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
@@ -25,7 +25,8 @@ const MAX_BUFFERS_PER_CALLBACK: usize = 64;
 const REQUESTED_FRAMERATE_NUM: u32 = 60;
 const REQUESTED_FRAMERATE_DENOM: u32 = 1;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct UncalibratedVideoContract {
     pub width: u32,
     pub height: u32,
@@ -42,7 +43,7 @@ pub struct UncalibratedVideoContract {
     pub color_primaries: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UncalibratedMemoryType {
     MemoryPointer,

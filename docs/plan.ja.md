@@ -24,7 +24,10 @@
   exact rational source rectangleとhalf-pixel/Q11 linear samplingでRGB8 1920x1080へ戻すpure Rust stageを
   実装し、既知patternとprivate live sampleでgeometryを検証済み。非標準windowのfractional geometryもadvancedな
   明示設定として利用可能にするが、自動測定、自動profile生成、組合せごとのfirst-class gateは提供しない。
-  version/backend/configuration/observed contractへのopaque profile binding、OBS/obs-vkcapture並行、
+  calibration evidence、exact Gamescope version/backend/configuration、full BGRx video/memory/stride
+  contract、opaque profile digest、fractional normalizerを一体でfail-closed検証する64 KiB以下のcanonical
+  immutable binding contractまで実装済み。ただし実在development-machine artifactの登録、lease/session
+  provenance照合、`ObservedFrame`生成は未着手。OBS/obs-vkcapture並行、
   soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
 - M4 offline canonical/recognition spike: 着手（OBS/vkcapture実録画からnormalizer、共通result/music-select

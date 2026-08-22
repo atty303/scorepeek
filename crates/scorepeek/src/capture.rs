@@ -8,9 +8,13 @@ use pipewire as pw;
 use pw::spa::utils::result::AsyncSeq;
 use serde::Serialize;
 
+mod binding;
 mod normalizer;
 mod receiver;
 
+pub use binding::{
+    GamescopeProfileBinding, GamescopeProfileBindingError, ObservedContractMismatch,
+};
 pub use normalizer::{
     FractionalLinearGeometry, FractionalRectangle, RationalCoordinate, UnboundCanonicalFrame,
     UnboundNormalizationError,
