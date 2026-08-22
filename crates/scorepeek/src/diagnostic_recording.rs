@@ -1,6 +1,7 @@
 use std::fs::{DirBuilder, File};
 use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -14,7 +15,7 @@ pub const PRIORITY_RETENTION_HOURS: u32 = 7 * 24;
 
 const CANONICAL_WIDTH: u32 = 1_920;
 const CANONICAL_HEIGHT: u32 = 1_080;
-const CANONICAL_BYTES: usize = CANONICAL_WIDTH as usize * CANONICAL_HEIGHT as usize * 3;
+pub(crate) const CANONICAL_BYTES: usize = CANONICAL_WIDTH as usize * CANONICAL_HEIGHT as usize * 3;
 const MANIFEST_RESERVE_BYTES: u64 = 1024 * 1024;
 const MAX_FRAMES_PER_RUN: usize = 8_192;
 const MAX_FACTS_PER_RUN: usize = 32_768;
@@ -52,10 +53,13 @@ pub enum DiagnosticErrorType {
     EncodeFailed,
     WriteFailed,
     FinalizeFailed,
+    QueueFull,
+    WorkerUnavailable,
+    FlushTimeout,
 }
 
 impl DiagnosticErrorType {
-    const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 14] = [
         Self::InvalidConfiguration,
         Self::StoreUnavailable,
         Self::SequenceNonmonotonic,
@@ -67,10 +71,13 @@ impl DiagnosticErrorType {
         Self::EncodeFailed,
         Self::WriteFailed,
         Self::FinalizeFailed,
+        Self::QueueFull,
+        Self::WorkerUnavailable,
+        Self::FlushTimeout,
     ];
-    const COUNT: usize = Self::ALL.len();
+    pub(crate) const COUNT: usize = Self::ALL.len();
 
-    const fn index(self) -> usize {
+    pub(crate) const fn index(self) -> usize {
         self as usize
     }
 }
@@ -81,6 +88,11 @@ pub enum DiagnosticRecordOutcome {
     SkippedCadence,
     Disabled,
     Dropped(DiagnosticErrorType),
+}
+
+pub enum DiagnosticExternalDegradation {
+    Drop(DiagnosticErrorType, u64),
+    SequenceGap(u64, u64),
 }
 
 #[derive(Clone, Debug)]
@@ -116,6 +128,13 @@ pub struct DiagnosticBinding {
     pub catalog_sha256: String,
     pub model_sha256: String,
     pub runtime_sha256: String,
+    pub replay: Option<DiagnosticReplayBinding>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DiagnosticReplayBinding {
+    pub request_sha256: String,
+    pub extraction_sha256: String,
 }
 
 #[derive(Clone, Debug)]
@@ -471,7 +490,18 @@ impl DiagnosticRecorder {
         match self {
             Self::Disabled => DiagnosticRecordOutcome::Disabled,
             Self::Degraded(degradation) => DiagnosticRecordOutcome::Dropped(degradation.error_type),
-            Self::Active(recorder) => recorder.record_frame(frame),
+            Self::Active(recorder) => recorder.record_frame(frame, true),
+        }
+    }
+
+    pub fn record_sampled_frame(
+        &mut self,
+        frame: DiagnosticFrameInput<'_>,
+    ) -> DiagnosticRecordOutcome {
+        match self {
+            Self::Disabled => DiagnosticRecordOutcome::Disabled,
+            Self::Degraded(degradation) => DiagnosticRecordOutcome::Dropped(degradation.error_type),
+            Self::Active(recorder) => recorder.record_frame(frame, false),
         }
     }
 
@@ -480,6 +510,33 @@ impl DiagnosticRecorder {
             Self::Disabled => DiagnosticRecordOutcome::Disabled,
             Self::Degraded(degradation) => DiagnosticRecordOutcome::Dropped(degradation.error_type),
             Self::Active(recorder) => recorder.record_fact(fact),
+        }
+    }
+
+    pub fn record_external_degradations(
+        &mut self,
+        degradations: &[DiagnosticExternalDegradation],
+        unbound_drops: &[(DiagnosticErrorType, u64, u64)],
+        last_error_type: Option<DiagnosticErrorType>,
+    ) {
+        let Self::Active(recorder) = self else {
+            return;
+        };
+        for degradation in degradations {
+            match *degradation {
+                DiagnosticExternalDegradation::Drop(error_type, sequence) => {
+                    recorder.mark_drop_for_sequence(error_type, Some(sequence));
+                }
+                DiagnosticExternalDegradation::SequenceGap(first, last) => {
+                    recorder.mark_sequence_gap(first, last);
+                }
+            }
+        }
+        for &(reason, count, omitted_entries) in unbound_drops {
+            recorder.mark_unbound_drops(reason, count, omitted_entries);
+        }
+        if let Some(error_type) = last_error_type {
+            recorder.last_error_type = Some(error_type);
         }
     }
 
@@ -500,13 +557,39 @@ impl DiagnosticRecorder {
                 error_type: Some(degradation.error_type),
                 manifest_sha256: None,
             },
-            Self::Active(recorder) => recorder.finish(status, monotonic_end_ms),
+            Self::Active(recorder) => recorder.finish(status, monotonic_end_ms, None),
+        }
+    }
+
+    #[must_use]
+    pub fn finish_cancellable(
+        self,
+        status: DiagnosticRunStatus,
+        monotonic_end_ms: u64,
+        cancellation: &AtomicBool,
+    ) -> DiagnosticFinishOutcome {
+        match self {
+            Self::Disabled => DiagnosticFinishOutcome {
+                completeness: None,
+                error_type: None,
+                manifest_sha256: None,
+            },
+            Self::Degraded(degradation) => DiagnosticFinishOutcome {
+                completeness: Some(DiagnosticCompleteness::Dropped),
+                error_type: Some(degradation.error_type),
+                manifest_sha256: None,
+            },
+            Self::Active(recorder) => recorder.finish(status, monotonic_end_ms, Some(cancellation)),
         }
     }
 }
 
 impl ActiveDiagnosticRecorder {
-    fn record_frame(&mut self, frame: DiagnosticFrameInput<'_>) -> DiagnosticRecordOutcome {
+    fn record_frame(
+        &mut self,
+        frame: DiagnosticFrameInput<'_>,
+        detect_sequence_gaps: bool,
+    ) -> DiagnosticRecordOutcome {
         if frame.pixels.len() != CANONICAL_BYTES
             || frame.monotonic_end_ms < frame.monotonic_start_ms
             || frame.monotonic_start_ms < self.run_monotonic_start_ms
@@ -519,9 +602,10 @@ impl ActiveDiagnosticRecorder {
         {
             return self.drop(DiagnosticErrorType::SequenceNonmonotonic, frame.sequence);
         }
-        if self
-            .last_offered_sequence
-            .is_some_and(|previous| frame.sequence > previous + 1)
+        if detect_sequence_gaps
+            && self
+                .last_offered_sequence
+                .is_some_and(|previous| frame.sequence > previous + 1)
         {
             let previous = self.last_offered_sequence.expect("checked as present");
             self.mark_sequence_gap(previous + 1, frame.sequence - 1);
@@ -652,7 +736,11 @@ impl ActiveDiagnosticRecorder {
         mut self,
         status: DiagnosticRunStatus,
         monotonic_end_ms: u64,
+        cancellation: Option<&AtomicBool>,
     ) -> DiagnosticFinishOutcome {
+        if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return cancelled_finish();
+        }
         if monotonic_end_ms < self.run_monotonic_start_ms
             || self
                 .maximum_artifact_end_ms
@@ -702,6 +790,9 @@ impl ActiveDiagnosticRecorder {
                 error_type: Some(DiagnosticErrorType::FinalizeFailed),
                 manifest_sha256: None,
             };
+        }
+        if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return cancelled_finish();
         }
         // Publication is the final commit point. The helper removes a linked output again
         // if its containing-directory fsync fails, so no fallible finalize step follows it.
@@ -808,6 +899,24 @@ impl ActiveDiagnosticRecorder {
         }
     }
 
+    fn mark_unbound_drops(
+        &mut self,
+        error_type: DiagnosticErrorType,
+        count: u64,
+        omitted_entries: u64,
+    ) {
+        if count == 0 {
+            return;
+        }
+        self.dropped_count = self.dropped_count.saturating_add(count);
+        self.last_error_type = Some(error_type);
+        self.degradation_reason_counts[error_type.index()] =
+            self.degradation_reason_counts[error_type.index()].saturating_add(count);
+        self.degradation_entries_dropped = self
+            .degradation_entries_dropped
+            .saturating_add(omitted_entries);
+    }
+
     fn drop(
         &mut self,
         error_type: DiagnosticErrorType,
@@ -815,6 +924,14 @@ impl ActiveDiagnosticRecorder {
     ) -> DiagnosticRecordOutcome {
         self.mark_drop_for_sequence(error_type, Some(affected_sequence));
         DiagnosticRecordOutcome::Dropped(error_type)
+    }
+}
+
+fn cancelled_finish() -> DiagnosticFinishOutcome {
+    DiagnosticFinishOutcome {
+        completeness: Some(DiagnosticCompleteness::Partial),
+        error_type: Some(DiagnosticErrorType::FlushTimeout),
+        manifest_sha256: None,
     }
 }
 
@@ -858,6 +975,9 @@ fn valid_descriptor(descriptor: &DiagnosticRunDescriptor) -> bool {
         ]
         .into_iter()
         .all(|value| valid_sha256(value))
+        && descriptor.binding.replay.as_ref().is_none_or(|replay| {
+            valid_sha256(&replay.request_sha256) && valid_sha256(&replay.extraction_sha256)
+        })
 }
 
 fn valid_fact(fact: &DiagnosticFact) -> bool {
@@ -1046,6 +1166,7 @@ mod tests {
                 catalog_sha256: "5".repeat(64),
                 model_sha256: "6".repeat(64),
                 runtime_sha256: "7".repeat(64),
+                replay: None,
             },
         }
     }

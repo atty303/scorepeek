@@ -1,4 +1,6 @@
 pub mod diagnostic_recording;
+pub mod diagnostic_replay;
+pub mod diagnostic_worker;
 mod inventory;
 
 use std::env;
@@ -30,7 +32,8 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &[OsString]) -> Result<(), String> {
-    if let Some(result) = try_doctor(args)
+    if let Some(result) = try_diagnostic_replay(args)
+        .or_else(|| try_doctor(args))
         .or_else(|| try_provisional_title_candidates(args))
         .or_else(|| try_integrated_context_crop(args))
         .or_else(|| try_integrated_context_observe(args))
@@ -129,6 +132,47 @@ fn run(args: &[OsString]) -> Result<(), String> {
         }
         _ => Err("usage: scorepeek --help".to_owned()),
     }
+}
+
+fn try_diagnostic_replay(args: &[OsString]) -> Option<Result<(), String>> {
+    let [
+        diagnostic,
+        replay,
+        request_flag,
+        request,
+        digest_flag,
+        digest,
+        extraction_flag,
+        extraction,
+        output_flag,
+        output,
+    ] = args
+    else {
+        return None;
+    };
+    (diagnostic == "diagnostic"
+        && replay == "replay"
+        && request_flag == "--request"
+        && digest_flag == "--request-sha256"
+        && extraction_flag == "--extraction"
+        && output_flag == "--output-root")
+        .then(|| {
+            let digest = digest
+                .to_str()
+                .ok_or_else(|| "diagnostic replay request digest must be UTF-8".to_owned())?;
+            let summary = diagnostic_replay::replay_diagnostic_run(
+                Path::new(request),
+                digest,
+                Path::new(extraction),
+                Path::new(output),
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string(&summary)
+                    .map_err(|_| "diagnostic replay summary serialization failed".to_owned())?
+            );
+            Ok(())
+        })
 }
 
 fn try_doctor(args: &[OsString]) -> Option<Result<(), String>> {
@@ -942,7 +986,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --model-id MODEL_ID --bundle DIRECTORY --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
+        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek catalog sync\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --model-id MODEL_ID --bundle DIRECTORY --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
         env!("CARGO_PKG_VERSION")
     );
 }

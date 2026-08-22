@@ -1182,9 +1182,17 @@ measures leading/adjacent/trailing coverage gaps through an explicit end boundar
 reason-bearing missing ranges with explicit truncation and reason counts, reports exact artifact,
 manifest, and total bytes, enforces operation/detail, operation/error, timeout, and decision
 consistency, and cannot enable
-the result-miss denominator without a future immutable calibration artifact. The non-blocking worker queue, aggregate retention manager,
-operator controls, replay driver, live integration, and target performance remain unimplemented and
-unverified.
+the result-miss denominator without a future immutable calibration artifact. An application-owned
+single-producer worker now keeps QOI/filesystem work behind a capacity-two non-blocking live offer,
+accounts for true capture gaps before cadence, retains bounded queue-drop evidence, limits caller
+finish waiting to five seconds, and bounds a residual worker to one. Timeout is explicitly
+non-terminal because an in-flight filesystem publication may complete later. A
+strict create-only replay control digest-binds its request and canonical extraction, requires exact
+extraction PTS/decode order, and traverses the same worker without recognition triggers. Only a
+complete manifest-bearing replay exits successfully. The aggregate retention manager,
+status/list/freeze/delete/local-export
+controls, accepted ordinary-session sparse canonical extraction and complete replay, live integration,
+and target performance remain unimplemented and unverified.
 
 The retained ordinary-session recording has now been inspected over source PTS 0 through 458,300
 ms. Its immutable media probe contains 27,499 contiguous decode indexes, strictly increasing PTS,
@@ -1216,10 +1224,10 @@ session-end clear without adding mode, attempt, or retry counters.
 
 ## Next executable task
 
-Add the bounded non-blocking application queue and a create-only replay driver that feeds the accepted
-ordinary-session canonical evidence through the same diagnostic writer without recognition triggers.
-Then add aggregate retention/status/list/freeze/delete/local-export controls and fault-inject queue,
-capacity, write, finalize, opt-out, and partial-run recovery. Keep the synchronous writer off the live
+Create the strict sparse canonical extraction for the accepted ordinary-session recording and replay
+its complete 0–458,300 ms boundary through the implemented worker/driver without recognition triggers.
+Then add aggregate retention/status/list/freeze/delete/local-export controls and fault-inject capacity,
+write, finalize, opt-out, flush-timeout, worker-loss, and partial-run recovery. Keep the synchronous writer off the live
 recognition path until queue conformance and target-host performance are verified. Do not mark the
 provisional 1,000-ms cadence as a result-miss denominator until a minimum result dwell is calibrated
 from multiple representative recordings. Keep the inventory separate from `SongContext`; do not add

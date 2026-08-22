@@ -182,6 +182,22 @@ and a manifest-last completion record with exact storage byte accounting
 form the private replay surface. The application owns queueing, retention,
 health, deletion, and export; none belongs to `SongContext`.
 
+ADR 0026 places the synchronous writer behind an application-owned,
+single-producer bounded worker. Live offers transfer owned canonical frames with
+the 1 Hz cadence gate applied before non-blocking `try_send`; a dense capture
+stream therefore does not fill the queue with frames the writer would skip.
+The producer, rather than the sampled writer, accounts for true capture sequence
+gaps. Queue full and worker loss degrade only the diagnostic run. Caller waiting
+for completion is bounded to five seconds, and a single-worker supervisor bounds
+a residual blocked thread. Timeout is not terminal: a worker already in
+filesystem publication may still produce the authoritative manifest later. The
+strict offline replay control
+uses the same queue and writer, digest-binds its request and canonical
+extraction, and may wait only within that bound so offline producer speed does
+not simulate a live drop. Replay timing is the extraction's exact source PTS,
+not a caller-authored timeline. This replay is recognition-free and does not
+infer a session timeline.
+
 ### Event API
 
 The first public interface is a same-user Unix socket at

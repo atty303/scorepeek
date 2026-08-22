@@ -44,6 +44,9 @@ authoritative.
 - [ADR 0025: Record bounded application-owned live diagnostic runs](0025-record-bounded-live-diagnostic-runs.md)
   fixes the diagnostic run, storage, completeness, retention, privacy, and non-interference contract
   that ADR 0023 deferred while keeping ADR 0024's minimal recognition state.
+- [ADR 0026: Isolate diagnostic I/O behind a bounded application worker](0026-isolate-diagnostic-io-behind-a-bounded-worker.md)
+  fixes queue ownership, producer-side cadence, non-blocking live offers, bounded flush, and strict
+  canonical replay.
 
 ## Historical
 

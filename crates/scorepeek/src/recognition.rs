@@ -107,6 +107,9 @@ impl From<OnnxParityError> for RecognitionError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CanonicalFrame {
     pixels: Box<[u8]>,
+    source_pts_ms: i64,
+    decode_index: u64,
+    capture_profile_id: String,
     normalizer_artifact_sha256: String,
     frame_extraction_sha256: String,
 }
@@ -165,6 +168,9 @@ impl CanonicalFrame {
         }
         Ok(Self {
             pixels: pixels.into(),
+            source_pts_ms: frame.source_pts,
+            decode_index: frame.decode_index,
+            capture_profile_id: manifest.capture_profile_id,
             normalizer_artifact_sha256: manifest.normalizer_artifact_sha256,
             frame_extraction_sha256: expected_extraction_sha256.to_owned(),
         })
@@ -173,6 +179,31 @@ impl CanonicalFrame {
     #[must_use]
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
+    }
+
+    #[must_use]
+    pub fn capture_profile_id(&self) -> &str {
+        &self.capture_profile_id
+    }
+
+    #[must_use]
+    pub fn source_pts_ms(&self) -> i64 {
+        self.source_pts_ms
+    }
+
+    #[must_use]
+    pub fn decode_index(&self) -> u64 {
+        self.decode_index
+    }
+
+    #[must_use]
+    pub fn normalizer_artifact_sha256(&self) -> &str {
+        &self.normalizer_artifact_sha256
+    }
+
+    #[must_use]
+    pub fn frame_extraction_sha256(&self) -> &str {
+        &self.frame_extraction_sha256
     }
 
     /// Copies one layout-bound RGB8 crop in row-major order.
@@ -1497,6 +1528,9 @@ mod tests {
     fn test_frame(pixels: Vec<u8>) -> CanonicalFrame {
         CanonicalFrame {
             pixels: pixels.into(),
+            source_pts_ms: 0,
+            decode_index: 0,
+            capture_profile_id: "0".repeat(64),
             normalizer_artifact_sha256: "1".repeat(64),
             frame_extraction_sha256: "2".repeat(64),
         }

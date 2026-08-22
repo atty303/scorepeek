@@ -189,6 +189,14 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- recognition inspect "$@"
 '''
 
+[tasks."diagnostic:replay"]
+description = "Replay strict canonical evidence through the bounded diagnostic worker"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- diagnostic replay "$@"
+'''
+
 [tasks."recognition:crop"]
 description = "Export shared-layout crops from one validated canonical result frame"
 run = '''
