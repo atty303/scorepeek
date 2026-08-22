@@ -7,15 +7,16 @@ sequence and release gates are authoritative in [the implementation plan](plan.j
 
 ```mermaid
 flowchart LR
-  P["Wayland Portal profile"] --> CA["Selected capture adapter"]
-  G["Gamescope direct profile"] --> CA
-  O["Conditional OBS profile"] --> CA
-  CA --> OF["ObservedFrame\nopaque capture profile"]
+  G["Gamescope provider\nfirst spike"] --> SA["PipeWire source lease"]
+  P["Portal provider\ndeferred"] --> SA
+  CP["Registered custom provider\ndeferred"] --> SA
+  SA --> PR["Common PipeWire receiver"]
+  PR --> OF["ObservedFrame\nopaque capture profile"]
   OF --> DN["Versioned domain normalizer"]
   DN --> CF["CanonicalFrame\nRGB8 1920x1080"]
   CL["Canonical layout\nshared game coordinates"] --> CF
   T["Tachi"] --> AD["Source adapters"]
-  X["Textage"] --> AD
+  TX["Textage"] --> AD
   D["INFINITAS roster signal"] --> AD
   AD --> FC["Federated catalog snapshot"]
   CF --> RE["Rust field recognizers"]
@@ -37,6 +38,15 @@ flowchart LR
 
 ### Frame source
 
+PipeWire source acquisition is separate from frame reception. A selected
+provider acquires a lifetime-bound source lease containing its remote, exact
+node or deterministic selector, capture profile, and provider-owned lifetime
+guard. The common receiver owns stream negotiation, bounded latest-frame
+handling, sequence/timing, and source-loss notification. Gamescope against the
+default PipeWire remote is the first provider. Portal later supplies a
+session-scoped remote FD and node ID through the same boundary; registered
+custom providers may follow. No provider silently falls back to another.
+
 Every backend produces an owned `ObservedFrame` containing its exact input
 contract, capture generation, sequence number, monotonic timing, and immutable
 opaque capture profile identifier. A versioned domain normalizer maps that
@@ -53,10 +63,12 @@ Deterministic geometry, color, and filtering are preferred. A learned residual
 adapter must be justified by measured recognition evidence, remain bounded and
 deterministic, and never act as a generative text restorer.
 
-Portal, Gamescope direct PipeWire, and an eligible OBS path are peer candidates
-selected by independent semantic, lifecycle, and target performance gates.
-Each candidate has a distinct capture profile and normalizer but does not own a
-layout. A running session never silently switches profiles or mixes generations.
+Portal, Gamescope direct PipeWire, and any later eligible route remain peer
+profiles selected by independent semantic, lifecycle, and target performance
+gates. Sharing a PipeWire receiver does not make their observed pixels or
+lifecycles equivalent. Each candidate has a distinct capture profile and
+normalizer but does not own a layout. A running session never silently switches
+providers or profiles, and reacquisition starts a new capture generation.
 
 ### Layout
 

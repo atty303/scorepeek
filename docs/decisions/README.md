@@ -47,6 +47,11 @@ authoritative.
 - [ADR 0026: Isolate diagnostic I/O behind a bounded application worker](0026-isolate-diagnostic-io-behind-a-bounded-worker.md)
   fixes queue ownership, producer-side cadence, non-blocking live offers, bounded flush, and strict
   canonical replay.
+- [ADR 0027: Acquire PipeWire sources behind a common receiver](0027-acquire-pipewire-sources-behind-a-common-receiver.md)
+  fixes the source-provider/receiver boundary, selects Gamescope as the first direct PipeWire spike,
+  defers Portal to a later provider without automatic fallback, and supersedes ADR 0009 and ADR 0013
+  only for treating a future OBS path as an eligible scorepeek capture profile. ADR 0013's existing
+  offline OBS/vkcapture recording profile remains valid.
 
 ## Historical
 

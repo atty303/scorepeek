@@ -318,18 +318,25 @@ last-known-goodへrollback可能な場合だけ昇格する。model bundleは一
 
 ### Support model
 
-capture route間にpixel correctnessの序列を置かない。Portal、Gamescope directおよび条件を満たす
-OBS routeはpeer candidateであり、それぞれのopaque capture profile、normalizer artifact、
+capture route間にpixel correctnessの序列を置かない。Gamescope direct、後続Portalおよびregistered
+custom PipeWire sourceはpeer candidateであり、それぞれのopaque capture profile、normalizer artifact、
 recognition thresholdおよびsemantic replay gateを独立に持つが、game共通のcanonical layoutを共有する。
 pipeline内部のlayerはruntime contractに
 含めないが、再現や診断に有用な環境情報はsecret-safeなprovenanceとして保持できる。
 
+PipeWire routeはsource acquisitionとframe receptionを分離する。source providerはdefault remoteまたは
+owned remote FD、exact nodeまたはdeterministic selector、opaque capture profileおよびsourceを維持する
+lifetime guardを一つのleaseとして取得する。共通receiverはstream/caps/buffer negotiation、boundedな
+latest-frame受信、sequence/timingおよびsource lossを所有して`ObservedFrame`を生成する。providerは
+normalization、recognitionまたは別providerへのfallbackを行わない。
+
 ### Candidates
 
-- Wayland ScreenCast Portal + PipeWire: compositor-managed sourceを取得できるcandidate。
-- Gamescope direct PipeWire: output-sized streamを取得できる低copy candidate。ただしcapture repaintと
-  通常表示のpixel equalityは仮定しない。
-- OBS/vkcapture reuse: 実際のobserved contractを独立profileとして検証できる場合のcandidate。
+- Gamescope direct PipeWire: default remote上のoutput-sized nodeを取得する最初の低copy spike。
+  ただしcapture repaintと通常表示のpixel equalityは仮定しない。
+- Wayland ScreenCast Portal + PipeWire: session-scoped remote FDとnode IDを取得する後続provider。
+- registered custom PipeWire source: 明示したsourceを取得する後続provider。未知profileはprobe診断に限定する。
+- OBS/vkcapture: scorepeek sourceにはせず、OBS配信の独立した通常並行workloadとする。
 - OBS WebSocket PNG: source/geometry確認用diagnosticに限定し、production backendにしない。
 
 backendは各profileのBazzite semantic/lifecycle/performance gate後にdefaultを選ぶ。session中の
@@ -348,11 +355,13 @@ NV12、別color profileへ黙ってfallbackしない。
    CLIを実装する。
 5. **M4 bootstrap**: 利用可能なlossless recordingへ最初のversion固定normalizerを与え、その出力だけから
    game共通canonical frame/layout、screen判定、OCR preprocessor/parityのoffline spikeを進める。
-6. **M3**: PortalとGamescope directのObservedFrame adapterをvertical spikeとして実装し、Bazziteで
-   両routeの実observed contractと校正corpusを確立する。M4 bootstrapのlayoutは移動しない。
+6. **M3**: source acquisitionを共通PipeWire receiverから分離し、Gamescope providerだけを最初の
+   `ObservedFrame` vertical spikeとして実装する。BazziteでOBS/obs-vkcapture同時稼働時の実observed
+   contract、lifecycle、latest-frame behavior、性能および校正corpusを確立する。Portalとregistered
+   custom providerはこのspike後へ延期し、M4 bootstrapのlayoutは移動しない。
 7. **M4 completion**: peer profileごとのnormalizerとshared alignmentを検証し、選定済みPP-OCRv6 smallの
    Rust parity gateを完了する。custom fine-tune/exportは統合context後のmissing OCR signalが実測された場合だけ追加する。
-8. **M5**: 条件付きOBS candidateを含むsupported profileのlifecycle/performanceを比較し、defaultを選ぶ。
+8. **M5**: gateを通ったsupported PipeWire profileのlifecycle/performanceを比較し、defaultを選ぶ。
 9. **M6**: screen、savable、title/artist/chart contextのfield recognizer、full-catalog screen-local song
    resolver、digits、cross-field validationの順で追加する。
 10. **M7**: 少数scenario replayから最小selection song contextとrecognition-trigger非依存のbounded
@@ -401,7 +410,8 @@ NV12、別color profileへ黙ってfallbackしない。
 
 ### Bazzite capture
 
-Portal、Gamescope direct、条件を満たすOBS routeを各15分x3回と30分soakで独立に検証する。
+最初にGamescope directを15分x3回と30分soakで検証する。Portalまたはregistered custom sourceを
+後からsupported candidateへ追加する場合は、同じgateを各routeで独立に実行する。
 
 - game共通layoutに対する各profileのcanonical geometry/crop alignment: 許容範囲内
 - complete labelに対するsemantic recognition output: 一致

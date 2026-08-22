@@ -1238,6 +1238,16 @@ generation rollover creates a separate run, and opt-out or worker loss preserves
 The capture adapter, DomainNormalizer, target-host lifecycle/performance, and accepted recognition
 path remain unimplemented and unverified.
 
+ADR 0027 now fixes the next live-capture boundary. A source provider acquires a lifetime-bound
+PipeWire remote/node/profile lease, while one common receiver owns stream negotiation, bounded
+latest-frame reception, sequence/timing, and source-loss notification. The first and only provider
+in the vertical spike is Gamescope on the default PipeWire remote. Portal and registered custom
+providers are deferred; no acquisition or stream failure may switch provider implicitly. OBS uses
+obs-vkcapture independently as the normal concurrent streaming workload and is not a scorepeek
+source or synchronization clock. A later OBS-source proposal must supersede ADR 0027. This is an
+accepted implementation direction, not an implemented receiver, acquired source, calibrated
+profile, or live performance result.
+
 The retained ordinary-session recording has now been inspected over source PTS 0 through 458,300
 ms. Its immutable media probe contains 27,499 contiguous decode indexes, strictly increasing PTS,
 and a maximum adjacent delta of 17 ms, so its packet index exposes no coverage gap. Five-second
@@ -1292,8 +1302,13 @@ verification or an applied-retention claim.
 
 ## Next executable task
 
-Bind the application live handoff to the first real capture adapter and versioned DomainNormalizer
-vertical spike on Bazzite without moving encoding or filesystem I/O onto capture/recognition.
+After explicit dependency approval, add the safe `pipewire` 0.10 binding and a reproducible
+`libpipewire-0.3` development environment, then implement the common receiver and Gamescope-only
+source provider vertical spike. Bind its `ObservedFrame` output through a versioned DomainNormalizer
+to the application live handoff on Bazzite without moving encoding or filesystem I/O onto
+capture/recognition. Instrument source acquisition, registry discovery, negotiation, first frame,
+steady reception, source loss, and shutdown as one bounded diagnostic run without recording pixels
+or arbitrary node properties.
 Re-exercise queue saturation, worker loss, generation rollover, target-host lifecycle, and performance
 with real canonical production while retaining the existing control, retention, write, finalize,
 opt-out, flush-timeout, and partial-run recovery coverage. Keep the synchronous writer off the live
@@ -1336,10 +1351,9 @@ tune recognition thresholds from the current two recordings, promote diagnostic 
 accepted recognition, recognize bare PPM or `ObservedFrame`, auto-download a runtime model, or
 treat the OBS profile, current ROIs, confidence, timing, or diagnostic thresholds as supported.
 
-S3 replication and another profile are intentionally deferred. When capture
-work resumes, start **M3** with narrow Portal and Gamescope direct observed
-profiles and calibrate each normalizer to the existing canonical layout without
-moving route-independent ROIs.
+S3 replication, Portal, registered custom sources, and another scorepeek profile are intentionally
+deferred. Start **M3** with the Gamescope provider behind the common PipeWire receiver and calibrate
+its normalizer to the existing canonical layout without moving route-independent ROIs.
 
 ## Stable milestone map
 
@@ -1350,7 +1364,7 @@ moving route-independent ROIs.
 | M1.1 | Catalog contract and local federation core | complete |
 | M1.2 | Live acquisition and sync orchestration | complete |
 | M2 | Observed-profile private corpus, synthetic renderer, and replay tooling | complete |
-| M3 | Portal/Gamescope observed-frame profiles and calibration corpus | pending |
+| M3 | Common PipeWire receiver, Gamescope observed-frame profile, and calibration corpus | pending |
 | M4 | Shared canonical layout, domain normalization, official recognizer selection, and parity; custom training/export only if justified | in progress |
 | M5 | Supported capture-profile evaluation and default selection | pending |
 | M6 | Fail-closed title/artist/chart recognition, screen-local song resolution, and cross-field validation | pending |
