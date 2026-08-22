@@ -114,7 +114,13 @@ is outside this checkpoint.
   reception, and shutdown facts expose only typed contract/counter/timing metadata and never pixels
   or arbitrary properties. Receiver teardown precedes provider shutdown. The returned frame remains
   explicitly uncalibrated: it has no profile/normalizer binding, is not an `ObservedFrame`, and cannot
-  enter recognition or establish a supported route.
+  enter recognition or establish a supported route. The application now exposes
+  `mise run capture:gamescope:test:live -- --duration-ms N` as a 1-to-60,000-ms ephemeral gate. Its
+  capacity-32 in-memory sink emits one versioned JSON report with only typed facts and aggregate
+  consumed-frame/sequence counts; it never persists frames or enters the canonical diagnostic-run
+  writer before a truthful profile/normalizer binding exists. The receiver requests 60/1 through the
+  PipeWire `video.framerate` stream property while separately retaining Gamescope's negotiated
+  producer-format rate, which is unspecified 0/1 rather than a profile identity.
 - Destructive v2 private-corpus ingest/source/replay contracts. Every observed
   source binds only an opaque capture profile. Replay binds its normalizer,
   canonical frame contract, and shared canonical layout separately without
@@ -1351,10 +1357,21 @@ verification or an applied-retention claim.
 
 ## Next executable task
 
-Exercise the uncalibrated Gamescope provider and common BGRx receiver on Bazzite. Record the actual
-negotiated caps/memory, callback ordering, first/steady frames, latest-frame overwrite behavior,
-selected-node and stream loss, daemon disconnect, receiver-first shutdown, resource release, and
-CPU/memory/copy performance while OBS/obs-vkcapture runs independently. Use that bounded evidence to
+The bounded gate was exercised on Bazzite 44 with a temporary headless Gamescope 3.16.19 and vkcube,
+not INFINITAS or OBS. One 1280x720 run requested 60/1 and completed 3,000 ms of reception with 182
+consumed BGRx MemFd frames, receiver sequences 1 through 182, zero latest-frame overwrites, first
+frame at 43 ms, a 17,335,466-ns maximum receive gap, no dropped diagnostic facts, and successful
+receiver-before-provider shutdown. A separate source-loss injection consumed 284 frames before the
+selected node disappeared at 4,771 ms, returned typed `source_lost` without reacquisition or fallback,
+and again completed both shutdown operations. These are synthetic lifecycle/transport observations;
+they do not establish INFINITAS geometry, a calibrated capture profile, recognition semantics,
+long-run resource release, target performance, or support.
+
+Next, exercise the same gate against INFINITAS while OBS/obs-vkcapture runs independently. Record
+latest-frame overwrite behavior under consumer pressure, stream loss distinct from selected-node
+loss, PipeWire daemon disconnect, repeated start/stop and source recreation, FD/thread/RSS release,
+CPU/memory/copy cost, frame age, game p99 frametime, and OBS render/encode lag, then run the planned
+15-minute repetitions and 30-minute soak. Use that bounded evidence to
 register an explicit immutable opaque capture-profile/observed-contract/normalizer binding; never
 derive identity from negotiated caps. Only then let a newly acquired matching calibrated lease emit
 `ObservedFrame` and bind it through the versioned DomainNormalizer

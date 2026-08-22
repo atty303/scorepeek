@@ -22,6 +22,8 @@ const MAX_WIDTH: u32 = 7_680;
 const MAX_HEIGHT: u32 = 4_320;
 const MAX_FRAME_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BUFFERS_PER_CALLBACK: usize = 64;
+const REQUESTED_FRAMERATE_NUM: u32 = 60;
+const REQUESTED_FRAMERATE_DENOM: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct UncalibratedVideoContract {
@@ -194,7 +196,6 @@ impl ReceiverState {
             || size.height == 0
             || size.width > MAX_WIDTH
             || size.height > MAX_HEIGHT
-            || framerate.num == 0
             || framerate.denom == 0
             || !info.flags().is_empty()
             || info.modifier() != 0
@@ -468,6 +469,8 @@ impl UncalibratedPipeWireReceiver {
                 None,
                 CaptureDiagnosticDetail::StreamNegotiation {
                     format: "bgrx",
+                    requested_framerate_num: REQUESTED_FRAMERATE_NUM,
+                    requested_framerate_denom: REQUESTED_FRAMERATE_DENOM,
                     width: contract.width,
                     height: contract.height,
                     framerate_num: contract.framerate_num,
@@ -514,6 +517,8 @@ impl UncalibratedPipeWireReceiver {
             CaptureDiagnosticOperation::StreamNegotiation => {
                 CaptureDiagnosticDetail::StreamNegotiation {
                     format: "bgrx",
+                    requested_framerate_num: REQUESTED_FRAMERATE_NUM,
+                    requested_framerate_denom: REQUESTED_FRAMERATE_DENOM,
                     width: 0,
                     height: 0,
                     framerate_num: 0,
@@ -671,6 +676,7 @@ pub fn start_uncalibrated_gamescope_receiver(
             *pw::keys::MEDIA_TYPE => "Video",
             *pw::keys::MEDIA_CATEGORY => "Capture",
             *pw::keys::MEDIA_ROLE => "Screen",
+            *pw::keys::VIDEO_RATE => "60/1",
         },
     ) {
         Ok(stream) => stream,
@@ -788,6 +794,8 @@ fn fail_before_receiver(
         error_type: Some(error.error_type()),
         detail: CaptureDiagnosticDetail::StreamNegotiation {
             format: "bgrx",
+            requested_framerate_num: REQUESTED_FRAMERATE_NUM,
+            requested_framerate_denom: REQUESTED_FRAMERATE_DENOM,
             width: 0,
             height: 0,
             framerate_num: 0,
@@ -971,7 +979,10 @@ fn format_offer() -> Result<Vec<u8>, spa::pod::serialize::GenError> {
             Choice,
             Range,
             Fraction,
-            spa::utils::Fraction { num: 60, denom: 1 },
+            spa::utils::Fraction {
+                num: REQUESTED_FRAMERATE_NUM,
+                denom: REQUESTED_FRAMERATE_DENOM
+            },
             spa::utils::Fraction { num: 0, denom: 1 },
             spa::utils::Fraction { num: 240, denom: 1 }
         ),
@@ -1004,6 +1015,18 @@ mod tests {
         let info = video_info();
         state.negotiate(info);
         state
+    }
+
+    #[test]
+    fn unspecified_producer_framerate_is_preserved() {
+        let mut state = ReceiverState::new();
+        let mut info = video_info();
+        info.set_framerate(spa::utils::Fraction { num: 0, denom: 1 });
+
+        state.negotiate(info);
+
+        assert_eq!(state.terminal, None);
+        assert_eq!(state.contract.expect("contract").framerate_num, 0);
     }
 
     #[test]

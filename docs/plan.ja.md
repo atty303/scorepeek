@@ -10,8 +10,10 @@
 - M2 observed-profile private corpus、synthetic renderer、label/replay tooling: 完了
 - M3 common PipeWire receiverとGamescope observed-frame profile: 着手（default remoteのbounded
   registry round trip、exact Gamescope `Video/Source` discovery、選択nodeとdefault remoteを保持する
-  未校正lifetime lease、およびBGRxだけを提示する未校正receiverの最小vertical sliceまで。実callbackでの
-  negotiation/frame reception、capture profile/normalizer、Bazzite gateは未検証・未着手）
+  未校正lifetime lease、BGRxだけを提示する未校正receiver、およびbounded live gateまで。Bazzite上の
+  headless Gamescope/vkcubeで60/1要求、実callbackでのnegotiation/frame reception、source loss、
+  receiver-first shutdownを確認済み。INFINITAS、OBS/obs-vkcapture並行、soak/performance、capture
+  profile/normalizerは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
 - M4 offline canonical/recognition spike: 着手（OBS/vkcapture実録画からnormalizer、共通result/music-select
   layout、fail-closed screen判定、result title cropのRust前処理/Paddle/公式ONNX CTC parity、

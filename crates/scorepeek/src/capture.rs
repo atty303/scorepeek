@@ -83,6 +83,8 @@ pub enum CaptureDiagnosticDetail {
     },
     StreamNegotiation {
         format: &'static str,
+        requested_framerate_num: u32,
+        requested_framerate_denom: u32,
         width: u32,
         height: u32,
         framerate_num: u32,

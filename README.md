@@ -86,6 +86,7 @@ mise run fix
 mise run native:verify
 mise run test
 mise run doctor
+mise run capture:gamescope:test:live -- --duration-ms 3000
 mise run catalog:sync
 mise run corpus:recording:import -- --store /absolute/private/store --capture-context /absolute/private/capture-context.json /absolute/recordings/complete-run.mkv
 mise run corpus:dataset:seal -- --store /absolute/private/store calibration-001
@@ -130,6 +131,13 @@ Gamescope, and GPU verification remains in explicit target-only tasks.
 and allowlisted parsers. Missing target tools are reported as `unavailable`;
 command stderr is never included. Running Gamescope flags and authenticated OBS
 state remain unavailable until an exact, secret-safe probe contract exists.
+
+`capture:gamescope:test:live` is a target-only, ephemeral diagnostic gate for an
+already running exact Gamescope `Video/Source`. It accepts only a bounded
+1-to-60,000-ms duration, requests 60/1 capture through PipeWire, and emits one
+versioned JSON report containing typed lifecycle facts and aggregate frame
+counts. It neither writes pixels nor creates a capture profile, normalizer,
+canonical diagnostic run, or support claim.
 
 `scorepeek catalog sync` acquires the catalog writer lock, resolves Tachi's
 `main` branch to an exact Git commit, serially fetches the three IIDX seed JSON
