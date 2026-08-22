@@ -138,6 +138,16 @@ is outside this checkpoint.
   and never replaces a complete or foreign directory. Its JSON result exposes only status, stable
   capture/publication error types, artifact digests, and pixel-free typed facts; filesystem paths,
   pixels, OS error strings, command lines, and arbitrary properties remain absent.
+  A pure `FractionalLinearGeometry` calibration stage now represents explicit non-negative rational
+  source rectangles and maps matching uncalibrated BGRx frames into unbound RGB8 1920x1080
+  candidates with the registered OpenCV-compatible half-pixel/Q11 linear sampling rule. Geometry,
+  observed dimensions, stride, and exact frame length are validated before allocation; invalid or
+  mismatched inputs fail with stable typed errors. The output retains receiver sequence and monotonic
+  timing, omits pixels from `Debug`, and remains structurally distinct from recognition's
+  profile-bound `CanonicalFrame`. The stage performs no border detection, automatic measurement,
+  profile assignment, filesystem I/O, or diagnostic recording. It is reusable by explicitly
+  configured advanced profiles, but scorepeek does not promise automatic calibration or first-class
+  gates for every fit/fill/stretch/filter/window combination.
 - Destructive v2 private-corpus ingest/source/replay contracts. Every observed
   source binds only an opaque capture profile. Replay binds its normalizer,
   canonical frame contract, and shared canonical layout separately without
@@ -1448,11 +1458,25 @@ colors. Thus `auto` did not stretch all 2556 columns on this exact route; it pro
 pillarbox. This is calibration geometry evidence, not yet an immutable profile/normalizer binding,
 semantic recognition evidence, or support.
 
-Next, encode and independently verify the exact fractional-offset linear inverse transform from this
-2556x1428 development-machine route to the existing RGB8 1920x1080 canonical layout, using the
-known pattern as the first oracle and without runtime black-bar detection. Bind it only to an explicit
-opaque profile containing this Gamescope version/backend/configuration and observed contract; do not
-derive profile identity from dimensions or filter metadata alone. Re-exercise the gate while
+The exact transform is now encoded as source x=26/3, y=0, width=7616/3, height=1428 with an explicit
+half-pixel linear sampling phase. Deterministic tests cover rational bounds, the exact first/last
+horizontal and vertical weights, full-frame BGRx-to-RGB conversion with padded stride, contract and
+length mismatch, and pixel-free debug output. A temporary live spike applied the same Rust code to
+the retained raw calibration frame and produced an unbound RGB8 1920x1080 candidate with pixel
+SHA-256 `f1d240f8788598fc882c4b1379483c5745f07cfb1ca29dc51f2cb711d092dcf3`. Independent OpenCV
+comparison against the original known pattern measured mean absolute channel error
+0.20451597865226337 out of 255, maximum edge error 170, and 14,633 changed pixels out of 2,073,600;
+the differences are concentrated at linearly resampled edges and include the observed one- or
+two-level color shift. This validates the explicit geometry and sampling phase without making pixel
+equality a canonical correctness requirement. The temporary private-sample test was removed after
+the run; no pixels or environment path entered the repository.
+
+Next, define and independently review the immutable artifact that binds this explicit geometry to an
+opaque development-machine profile, the exact Gamescope version/backend/configuration, and observed
+video contract. Advanced operators may supply separately calibrated fractional geometry, but the
+runtime will not measure borders, infer geometry, generate profiles, or fall back automatically.
+Only a newly acquired lease matching the registered binding may emit `ObservedFrame`; dimensions or
+filter metadata alone never establish identity. Re-exercise the gate while
 OBS/obs-vkcapture runs independently. Record stream loss distinct from selected-node loss, PipeWire
 daemon disconnect, source recreation, long-run FD/thread/RSS behavior, CPU/memory/copy cost, frame
 age, game p99 frametime, and OBS render/encode lag, then run the planned

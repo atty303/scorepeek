@@ -8,8 +8,13 @@ use pipewire as pw;
 use pw::spa::utils::result::AsyncSeq;
 use serde::Serialize;
 
+mod normalizer;
 mod receiver;
 
+pub use normalizer::{
+    FractionalLinearGeometry, FractionalRectangle, RationalCoordinate, UnboundCanonicalFrame,
+    UnboundNormalizationError,
+};
 pub use receiver::{
     UncalibratedFrame, UncalibratedMemoryType, UncalibratedPipeWireReceiver,
     UncalibratedVideoContract, start_uncalibrated_gamescope_receiver,

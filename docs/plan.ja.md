@@ -21,8 +21,11 @@
   将来の4KまたはFSR等は別profileとして扱う。既知の四辺markerを持つ1920x1080 patternを
   `-S auto -F linear`で実測した結果、2556x1428では上下を全て使い、左右にideal 8 2/3 pixelずつの
   narrow pillarboxを置くaspect-preserving fitだった。runtimeの黒帯検出は使わず、このfractional geometryを
-  version/backend/configurationへ束縛したnormalizerとして独立検証する。OBS/obs-vkcapture並行、soak/performance、capture
-  profile/normalizerは未検証・未着手）
+  exact rational source rectangleとhalf-pixel/Q11 linear samplingでRGB8 1920x1080へ戻すpure Rust stageを
+  実装し、既知patternとprivate live sampleでgeometryを検証済み。非標準windowのfractional geometryもadvancedな
+  明示設定として利用可能にするが、自動測定、自動profile生成、組合せごとのfirst-class gateは提供しない。
+  version/backend/configuration/observed contractへのopaque profile binding、OBS/obs-vkcapture並行、
+  soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
 - M4 offline canonical/recognition spike: 着手（OBS/vkcapture実録画からnormalizer、共通result/music-select
   layout、fail-closed screen判定、result title cropのRust前処理/Paddle/公式ONNX CTC parity、

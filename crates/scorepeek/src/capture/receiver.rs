@@ -117,6 +117,24 @@ impl UncalibratedFrame {
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
+
+    #[cfg(test)]
+    pub(super) fn for_normalizer_test(
+        contract: UncalibratedVideoContract,
+        stride: u32,
+        sequence: u64,
+        received_monotonic_ns: u64,
+        bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            contract,
+            memory_type: UncalibratedMemoryType::MemoryFileDescriptor,
+            stride,
+            sequence,
+            received_monotonic_ns,
+            bytes,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
