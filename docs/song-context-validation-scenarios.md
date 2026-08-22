@@ -11,6 +11,7 @@ recognition behavior.
 ```text
 launch
   -> title
+  -> play side / play style / player entry
   -> mode selection
   -> standard
        -> music selection
@@ -32,6 +33,10 @@ Standard mode also permits two retry shapes:
 Neither retry shape requires live play-count or attempt inference. Confirmed
 non-state scenes, unrecognized frames, gameplay, retries, and result replay
 preserve the last stable selection context. A new stable selection replaces it.
+Being in a music-selection scene does not imply that a song title is visible:
+option settings and other overlays may obscure it. An overlay or unreadable
+selection preserves the last stable context; only a newly recognized stable
+selection replaces it.
 
 ## Dan course flow
 
@@ -82,7 +87,7 @@ rather than frame-exact.
 | Source PTS | Recording observation | Song-context projection |
 | --- | --- | --- |
 | 0–50 s | black, launch/loading, warning, publisher splash, then title | clear at the observed title |
-| 60–90 s | play-style, player-entry, loading, then mode selection | preserve while empty |
+| 60–90 s | play side/play style, player entry, loading, then mode selection | preserve while empty |
 | 105–115 s | stable selection for opaque song A | set A |
 | 120–145 s | transition, gameplay, failure transition, result A | preserve; resolve result against A |
 | 145–148.5 s | result A | resolve against A without consuming context |
@@ -104,10 +109,11 @@ play, a return to title after selection, or abrupt termination. Those
 operator-supplied cases remain required validation material but are not
 recording-derived facts.
 
-The provisional private replay label is bound to the immutable recording,
-probe, and capture profile and is marked
-`agent_observed_pending_operator_review`. Its SHA-256 is
-`cc2dd0a95d2874e9c775311af156aa14ff9da995b71f0fcab3dbdc401970a7e1`.
+The private replay label is bound to the immutable recording, probe, and
+capture profile. The operator accepted the composition with the terminology
+and overlay notes above. The accepted label revision is marked
+`operator_reviewed_accepted_with_notes`; its SHA-256 is
+`ce91baafb3051fe3ae2f549692b216ece0bc87943da7b84240111343ea842140`.
 The committed value-free projection is
 `crates/scorepeek/src/song-context-conformance-v1.json`; it contains opaque song
 tokens and no recording identity, timestamp, path, player data, or game string.

@@ -1171,7 +1171,8 @@ unimplemented and unverified; they do not expand `SongContext` into a session st
 The retained ordinary-session recording has now been inspected over source PTS 0 through 458,300
 ms. Its immutable media probe contains 27,499 contiguous decode indexes, strictly increasing PTS,
 and a maximum adjacent delta of 17 ms, so its packet index exposes no coverage gap. Five-second
-visual sampling observed launch/title, play-style and mode selection, two stable song selections,
+visual sampling observed launch/title, play side/play style and player entry, mode selection, two
+stable song selections,
 three gameplay/result pairs, settings and menu overlays, and normal game termination. Additional
 250-ms sampling from 145,000 through 190,000 ms found a short same-song selection between the first
 result and the next gameplay; this recording therefore does not establish direct result-to-gameplay
@@ -1181,9 +1182,15 @@ dan play, return to title after selection, and abrupt termination were not obser
 operator-supplied validation cases rather than recording-derived facts. Sampling brackets scene
 boundaries rather than establishing frame-exact transitions.
 
+The operator accepted this composition with two clarifications: the pre-mode sequence is play
+side/play style and player entry, and option settings or other overlays can obscure the song title
+while the game remains in music selection. Therefore a music-selection scene alone does not replace
+song context; an unreadable or overlaid selection preserves it until a new stable selection is
+recognized.
+
 The immutable recording/probe/profile-bound private label is marked
-`agent_observed_pending_operator_review` at SHA-256
-`cc2dd0a95d2874e9c775311af156aa14ff9da995b71f0fcab3dbdc401970a7e1`; no private path, frame, song
+`operator_reviewed_accepted_with_notes` at SHA-256
+`ce91baafb3051fe3ae2f549692b216ece0bc87943da7b84240111343ea842140`; no private path, frame, song
 string, or player data is committed. The committed value-free
 `scorepeek-song-context-conformance-v1` scenario uses opaque song tokens and verifies set,
 preserve, same-song reselection, contextual result resolution without result consumption, and
@@ -1191,10 +1198,7 @@ session-end clear without adding mode, attempt, or retry counters.
 
 ## Next executable task
 
-Obtain operator review of the reported ordinary-session composition and correct the private label if
-the recording omits or misclassifies an operator-known scene. Do not treat
-`agent_observed_pending_operator_review` as accepted replay truth. After confirmation, define the
-smallest application-owned, recognition-trigger-independent bounded diagnostic run needed to replay
+Define the smallest application-owned, recognition-trigger-independent bounded diagnostic run needed to replay
 canonical evidence, sequence/timing, binding changes, context observations, decisions, outcomes, and
 recording completeness. Keep this recording inventory separate from `SongContext`; do not add mode,
 attempt, play-count, retry-count, or full-session state, infer a reset from recognition failure, or
