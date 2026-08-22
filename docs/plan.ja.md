@@ -3,7 +3,7 @@
 ## 状態
 
 - 初回決定日: 2026-08-15
-- 最終更新日: 2026-08-22
+- 最終更新日: 2026-08-23
 - repository bootstrapとtarget inventory probe: 完了
 - M1.1 catalog contractとlocal federation core: 完了
 - M1.2 live acquisitionとsync orchestration: manual/scheduled syncまで完了
@@ -13,7 +13,9 @@
   未校正lifetime lease、BGRxだけを提示する未校正receiver、およびbounded live/lifecycle gateまで。
   Bazzite上のheadless Gamescope/vkcubeで60/1要求、実callbackでのnegotiation/frame reception、
   source loss、250 ms consumer pressure下のlatest-frame overwrite、receiver-first shutdown、100回の
-  source acquire/start/stopを確認済み。INFINITAS、OBS/obs-vkcapture並行、soak/performance、capture
+  source acquire/start/stopを確認済み。operatorがINFINITASを起動したGamescope sessionでも、pixelを
+  保持しないgateにより2556x1428 BGRx MemFd、約60 fps、consumer pressure、100回のreceiver lifecycleを
+  確認済み。ただしgate自体は表示contentを識別しない。OBS/obs-vkcapture並行、soak/performance、capture
   profile/normalizerは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
 - M4 offline canonical/recognition spike: 着手（OBS/vkcapture実録画からnormalizer、共通result/music-select

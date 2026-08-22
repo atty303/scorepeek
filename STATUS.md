@@ -844,11 +844,13 @@ is outside this checkpoint.
 
 ## Unverified and target-only boundaries
 
-- The Gamescope provider and receiver have been exercised against a temporary headless Gamescope/vkcube
-  node, but not against INFINITAS or concurrently with OBS/obs-vkcapture. Daemon-disconnect and
-  stream-loss classification distinct from selected-node loss, long-soak release, calibrated RSS
-  convergence, copy/CPU/GPU/power cost, frame age, game p99 frametime, OBS lag, opaque profile identity,
-  normalizer, semantic recognition, and canonical diagnostic-run persistence remain unverified.
+- The Gamescope provider and receiver have been exercised against both a temporary headless
+  Gamescope/vkcube node and a Gamescope node while the operator reported INFINITAS running. Because
+  the pixel-free gate does not identify displayed content, INFINITAS content and geometry remain
+  unverified. Concurrent OBS/obs-vkcapture, daemon-disconnect and stream-loss classification distinct
+  from selected-node loss, source recreation, long-soak release, calibrated RSS convergence,
+  copy/CPU/GPU/power cost, frame age, game p99 frametime, OBS lag, opaque profile identity, normalizer,
+  semantic recognition, and canonical diagnostic-run persistence also remain unverified.
 - The first real normalizer, canonical-frame production, shared result ROIs,
   result-screen predicate, and PP-OCRv6 field recognition are only an offline
   single-recording spike. The
@@ -1363,7 +1365,7 @@ verification or an applied-retention claim.
 
 ## Next executable task
 
-The bounded gates were exercised on Bazzite 44 with a temporary headless Gamescope 3.16.19 and
+The bounded gates were first exercised on Bazzite 44 with a temporary headless Gamescope 3.16.19 and
 vkcube, not INFINITAS or OBS. The earlier 1280x720 run requested 60/1 and completed 3,000 ms with 182
 consumed BGRx MemFd frames. Under a 250-ms consumer interval, three 1,000-ms lifecycles each received
 61 frames, consumed 5, overwrote 56, and observed a maximum receive gap between 16,850,223 and
@@ -1383,10 +1385,32 @@ operations. These synthetic lifecycle/transport observations do not establish IN
 calibrated capture profile, recognition semantics, long-run resource release, target performance, or
 support.
 
-Next, exercise the same gate against INFINITAS while OBS/obs-vkcapture runs independently. Record
-stream loss distinct from selected-node loss, PipeWire daemon disconnect, source recreation,
-long-run FD/thread/RSS behavior, CPU/memory/copy cost, frame age, game p99 frametime, and OBS
-render/encode lag, then run the planned
+The operator subsequently started INFINITAS inside Gamescope and kept that session running while the
+same pixel-free gates executed. The gate identifies the exact Gamescope node, not its displayed
+application, so INFINITAS remains operator context rather than content-derived evidence. One
+3,000-ms baseline selected a single node and negotiated 2556x1428 BGRx MemFd with 10,224-byte stride
+and 14,599,872 bytes per frame. It consumed 181 frames with receiver sequences 1 through 181, zero
+overwrites, first frame at 40 ms, an 18,496,308-ns maximum receive gap, successful
+receiver-before-provider shutdown, and zero dropped facts. The producer-format rate remained
+unspecified 0/1 while the separately requested 60/1 cadence was observed.
+
+Three 1,000-ms lifecycles under a 250-ms consumer interval each received 61 frames, consumed 5, and
+overwrote 56. Their maximum gaps ranged from 17,137,716 through 17,475,338 ns, and every negotiation,
+first-frame, receiver-shutdown, and provider-shutdown phase succeeded. A separate 100-lifecycle gate
+used 100 ms per run; all 100 runs received and consumed 7 frames with no overwrite or dropped fact,
+and all four phases succeeded. Open FDs and threads were 4 and 1 before, after warmup, at maximum,
+and after the final run. RSS was 11,522,048 bytes before, 16,797,696 after warmup, and 17,297,408 at
+both maximum and final. This establishes short receiver lifecycle behavior for the operator-started
+session, not Gamescope source recreation, long-soak convergence, content geometry, semantic
+recognition, a calibrated profile, or support.
+
+Next, obtain explicit approval before persisting any private calibration frame. Then capture a
+minimal immutable sample from the same observed contract outside the PipeWire callback, register its
+provenance without deriving profile identity from caps, and independently measure the transform from
+2556x1428 observed pixels to the existing RGB8 1920x1080 canonical layout. Re-exercise the gate while
+OBS/obs-vkcapture runs independently. Record stream loss distinct from selected-node loss, PipeWire
+daemon disconnect, source recreation, long-run FD/thread/RSS behavior, CPU/memory/copy cost, frame
+age, game p99 frametime, and OBS render/encode lag, then run the planned
 15-minute repetitions and 30-minute soak. Use that bounded evidence to
 register an explicit immutable opaque capture-profile/observed-contract/normalizer binding; never
 derive identity from negotiated caps. Only then let a newly acquired matching calibrated lease emit
