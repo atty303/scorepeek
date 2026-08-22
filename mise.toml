@@ -197,6 +197,22 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- diagnostic replay "$@"
 '''
 
+[tasks."diagnostic:status"]
+description = "Inspect bounded aggregate diagnostic-store status"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- diagnostic status "$@"
+'''
+
+[tasks."diagnostic:list"]
+description = "List value-free diagnostic-run identities and terminal state"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- diagnostic list "$@"
+'''
+
 [tasks."recognition:crop"]
 description = "Export shared-layout crops from one validated canonical result frame"
 run = '''

@@ -15,8 +15,8 @@
   versioned context crop、active catalog trie診断まで）
 - 公式ONNX recognition model比較とPP-OCRv6 small native-dynamic選定: 完了
 - selection song contextとlive replay telemetry storage: 着手（最小context reducer、operator確認済み
-  scenario、application-owned QOI diagnostic run writer、bounded workerとstrict canonical replay controlまで。retention control、live
-  capture、accepted field認識、event daemonは未着手）
+  scenario、application-owned QOI diagnostic run writer、bounded worker、strict canonical replay、read-only
+  status/list controlまで。retention mutation、live capture、accepted field認識、event daemonは未着手）
 - scorepeek-owned OCR学習/export: smallをartist/chart context/selection song contextと統合した後の凍結残差が
   missing OCR signalに帰属し、別経路が安全に解消できる場合だけ再検討
 - Bazzite実機検証とprivate corpus収集: 着手（OBS/vkcapture実録画1本のcopyless isolated

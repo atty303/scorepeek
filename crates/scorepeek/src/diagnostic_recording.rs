@@ -17,12 +17,12 @@ const CANONICAL_WIDTH: u32 = 1_920;
 const CANONICAL_HEIGHT: u32 = 1_080;
 pub(crate) const CANONICAL_BYTES: usize = CANONICAL_WIDTH as usize * CANONICAL_HEIGHT as usize * 3;
 const MANIFEST_RESERVE_BYTES: u64 = 1024 * 1024;
-const MAX_FRAMES_PER_RUN: usize = 8_192;
-const MAX_FACTS_PER_RUN: usize = 32_768;
-const MAX_FACT_BYTES: usize = 64 * 1024;
-const MAX_DEGRADATIONS_PER_RUN: usize = 4_096;
+pub(crate) const MAX_FRAMES_PER_RUN: usize = 8_192;
+pub(crate) const MAX_FACTS_PER_RUN: usize = 32_768;
+pub(crate) const MAX_FACT_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_DEGRADATIONS_PER_RUN: usize = 4_096;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticRunStatus {
     Success,
@@ -31,7 +31,7 @@ pub enum DiagnosticRunStatus {
     Timeout,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticCompleteness {
     Complete,
@@ -39,7 +39,7 @@ pub enum DiagnosticCompleteness {
     Dropped,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticErrorType {
     InvalidConfiguration,

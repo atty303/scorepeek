@@ -198,6 +198,18 @@ not simulate a live drop. Replay timing is the extraction's exact source PTS,
 not a caller-authored timeline. This replay is recognition-free and does not
 infer a session timeline.
 
+The first read-only application controls inspect an existing diagnostic root
+through a shared strict inventory. `status` exposes fixed retention policy and
+bounded aggregate byte/completeness counts; `list` exposes only opaque run
+identity, start/manifest digests, terminal state, priority, and managed bytes.
+A valid start document without a completion manifest remains observable as
+priority partial evidence. Inspection fails closed on unmanaged entries,
+symlinks, typed manifest or exact file-set drift, per-run or aggregate capacity
+overflow, and concurrent mutation of any directory in the store snapshot.
+It does not yet apply retention or decide whether a partial run is live versus
+crash-left; active ownership, freeze, digest-confirmed delete, and create-only
+local export remain later application controls.
+
 ### Event API
 
 The first public interface is a same-user Unix socket at
