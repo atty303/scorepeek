@@ -272,6 +272,15 @@ binds recording/extraction/layout/resource provenance, ordered result windows, e
 header and panel boundaries rather than the variable result background. This replay gate grants no
 accepted field, song, event, live-profile support, or performance authority.
 
+ADR 0038 adds result-screen song authority after that shared candidate path. The pure resolver uses
+the unique minimum title edit-distance candidate, requires title distance at most one, normalized
+title similarity at least `6/7`, a title edit margin of at least two, and selected-candidate artist
+similarity at least `2/5`. Artist evidence corroborates the title-selected song and is not added to
+title distance. Every rejected condition is a typed unknown. Recording profile v2 binds an exact
+expected song ID per episode and requires two exact song decisions plus two exact `CLEAR TYPE`
+observations. The create-only local artifact retains the exact OCR, catalog strings, complete
+candidate metrics, decision/reason, and expected values; it does not duplicate pixels.
+
 ADR 0033 joins that observer and the diagnostic-backed recognition session under one application
 owner created from the same immutable descriptor. Resource loading completes before the recognition
 run opens. Each frame reports screen inspection, non-blocking field submission, and diagnostic

@@ -89,6 +89,10 @@ authoritative.
   evidence retains bounded OCR strings, exact catalog display/comparison strings, song IDs,
   complete candidate metrics, decisions, reasons, and expected-versus-observed values; compact
   command output remains a separate contract.
+- [ADR 0038: Resolve result songs from retained simulation evidence](0038-resolve-result-songs-from-retained-simulation-evidence.md)
+  fixes the first fail-closed result-song resolver from retained OCR/candidate evidence, binds
+  expected song IDs in recording profile v2, and requires exact song plus `CLEAR TYPE` agreement
+  before a simulation episode passes.
 
 ## Historical
 

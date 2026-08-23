@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
+use std::sync::Arc;
 
 use crate::catalog::{Catalog, DisplayVariantKind, ScorepeekSongId};
+use serde::Serialize;
 
 use super::title::{
     DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, exact_comparison_key, folded_comparison_key,
@@ -11,26 +13,26 @@ use super::{
     MusicSelectScreenFieldObservations, ResultScreenFieldObservations, ScreenFieldObservations,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct CatalogNormalizedSimilarity {
     pub matching_units: usize,
     pub compared_units: usize,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct CatalogTextCandidateScore {
     pub minimum_edit_distance: usize,
     pub maximum_normalized_similarity: CatalogNormalizedSimilarity,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ResultSongCandidateObservation {
     pub song_id: ScorepeekSongId,
     pub title: CatalogTextCandidateScore,
     pub artist: CatalogTextCandidateScore,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct MusicSelectSongCandidateObservation {
     pub song_id: ScorepeekSongId,
     pub central_title: CatalogTextCandidateScore,
@@ -42,10 +44,12 @@ pub struct MusicSelectSongCandidateObservation {
 pub enum ScreenCatalogCandidateObservations {
     Result {
         comparison_key_id: &'static str,
+        catalog: Arc<CatalogCandidateEvidenceTable>,
         candidates: Vec<ResultSongCandidateObservation>,
     },
     MusicSelect {
         comparison_key_id: &'static str,
+        catalog: Arc<CatalogCandidateEvidenceTable>,
         candidates: Vec<MusicSelectSongCandidateObservation>,
     },
 }
@@ -70,12 +74,40 @@ impl ScreenCatalogCandidateObservations {
             Self::MusicSelect { candidates, .. } => candidates.len(),
         }
     }
+
+    #[must_use]
+    pub fn catalog_evidence(&self) -> &CatalogCandidateEvidenceTable {
+        match self {
+            Self::Result { catalog, .. } | Self::MusicSelect { catalog, .. } => catalog,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CatalogCandidateTextEvidence {
+    pub display: Vec<String>,
+    pub exact: Vec<String>,
+    pub folded: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CatalogCandidateSongEvidence {
+    pub song_id: ScorepeekSongId,
+    pub title: CatalogCandidateTextEvidence,
+    pub artist: CatalogCandidateTextEvidence,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CatalogCandidateEvidenceTable {
+    pub comparison_key_id: &'static str,
+    pub songs: Vec<CatalogCandidateSongEvidence>,
 }
 
 #[derive(Clone, Debug)]
 struct TextCandidateDomain {
     raw_and_exact: Vec<Vec<char>>,
     folded: Vec<Vec<char>>,
+    evidence: CatalogCandidateTextEvidence,
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +137,7 @@ impl Error for CatalogCandidateDomainError {}
 #[derive(Clone, Debug)]
 pub struct CatalogCandidateDomain {
     songs: Vec<SongCandidateDomain>,
+    evidence: Arc<CatalogCandidateEvidenceTable>,
 }
 
 impl CatalogCandidateDomain {
@@ -138,7 +171,19 @@ impl CatalogCandidateDomain {
                 })
             })
             .collect();
-        Ok(Self { songs: songs? })
+        let songs = songs?;
+        let evidence = Arc::new(CatalogCandidateEvidenceTable {
+            comparison_key_id: DIAGNOSTIC_TITLE_COMPARISON_KEY_ID,
+            songs: songs
+                .iter()
+                .map(|song| CatalogCandidateSongEvidence {
+                    song_id: song.song_id,
+                    title: song.title.evidence.clone(),
+                    artist: song.artist.evidence.clone(),
+                })
+                .collect(),
+        });
+        Ok(Self { songs, evidence })
     }
 
     /// Scores every song independently for each observed text field.
@@ -175,6 +220,7 @@ impl CatalogCandidateDomain {
             .collect();
         ScreenCatalogCandidateObservations::Result {
             comparison_key_id: DIAGNOSTIC_TITLE_COMPARISON_KEY_ID,
+            catalog: Arc::clone(&self.evidence),
             candidates,
         }
     }
@@ -198,6 +244,7 @@ impl CatalogCandidateDomain {
             .collect();
         ScreenCatalogCandidateObservations::MusicSelect {
             comparison_key_id: DIAGNOSTIC_TITLE_COMPARISON_KEY_ID,
+            catalog: Arc::clone(&self.evidence),
             candidates,
         }
     }
@@ -227,12 +274,13 @@ fn text_candidate_domains<'a, T: Copy + Ord>(
                 .insert(*song_id);
         }
     }
-    let mut raw_and_exact = BTreeMap::<T, BTreeSet<String>>::new();
+    let mut display = BTreeMap::<T, BTreeSet<String>>::new();
+    let mut exact_values = BTreeMap::<T, BTreeSet<String>>::new();
     let mut folded = BTreeMap::<T, BTreeSet<String>>::new();
     for (song_id, raw, exact, folded_key) in variants {
-        raw_and_exact.entry(song_id).or_default().insert(raw);
+        display.entry(song_id).or_default().insert(raw);
         if !exact.is_empty() {
-            raw_and_exact.entry(song_id).or_default().insert(exact);
+            exact_values.entry(song_id).or_default().insert(exact);
         }
         if folded_songs
             .get(&folded_key)
@@ -241,21 +289,32 @@ fn text_candidate_domains<'a, T: Copy + Ord>(
             folded.entry(song_id).or_default().insert(folded_key);
         }
     }
-    raw_and_exact
+    display
         .into_iter()
-        .map(|(song_id, raw_and_exact)| {
+        .map(|(song_id, display)| {
+            let exact = exact_values.remove(&song_id).unwrap_or_default();
             let folded = folded.remove(&song_id).unwrap_or_default();
+            let evidence = CatalogCandidateTextEvidence {
+                display: display.into_iter().collect(),
+                exact: exact.into_iter().collect(),
+                folded: folded.into_iter().collect(),
+            };
+            let raw_and_exact = evidence
+                .display
+                .iter()
+                .chain(&evidence.exact)
+                .map(|value| value.chars().collect())
+                .collect();
             (
                 song_id,
                 TextCandidateDomain {
-                    raw_and_exact: raw_and_exact
-                        .into_iter()
+                    raw_and_exact,
+                    folded: evidence
+                        .folded
+                        .iter()
                         .map(|value| value.chars().collect())
                         .collect(),
-                    folded: folded
-                        .into_iter()
-                        .map(|value| value.chars().collect())
-                        .collect(),
+                    evidence,
                 },
             )
         })
@@ -386,6 +445,22 @@ mod tests {
             .catalog
     }
 
+    #[test]
+    fn candidate_evidence_retains_exact_catalog_strings_once_per_domain() {
+        let domain = CatalogCandidateDomain::from_catalog(&catalog()).unwrap();
+        assert_eq!(domain.evidence.songs.len(), 2);
+        let cat = domain
+            .evidence
+            .songs
+            .iter()
+            .find(|song| song.title.display == ["CAT"])
+            .unwrap();
+        assert_eq!(cat.title.exact, ["CAT"]);
+        assert_eq!(cat.title.folded, ["CAT"]);
+        assert_eq!(cat.artist.display, ["ALPHA"]);
+        assert_eq!(cat.artist.exact, ["ALPHA"]);
+    }
+
     fn tachi_record(id: &str, title: &str, artist: &str) -> serde_json::Value {
         json!({
             "source_song_id": id,
@@ -499,6 +574,11 @@ mod tests {
         let width_folded = TextCandidateDomain {
             raw_and_exact: vec!["ＰＡＳＴＥＬＩＳＭ".chars().collect()],
             folded: vec!["PASTELISM".chars().collect()],
+            evidence: CatalogCandidateTextEvidence {
+                display: vec!["ＰＡＳＴＥＬＩＳＭ".to_owned()],
+                exact: Vec::new(),
+                folded: vec!["PASTELISM".to_owned()],
+            },
         };
         let score = score_text(&observation_forms("PASTELISM"), &width_folded);
         assert_eq!(score.minimum_edit_distance, 0);
@@ -525,6 +605,11 @@ mod tests {
                     "abcdefghijxxxxx".chars().collect(),
                 ],
                 folded: Vec::new(),
+                evidence: CatalogCandidateTextEvidence {
+                    display: Vec::new(),
+                    exact: Vec::new(),
+                    folded: Vec::new(),
+                },
             },
         );
         assert_eq!(independent_metrics.minimum_edit_distance, 4);

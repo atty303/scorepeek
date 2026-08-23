@@ -1,8 +1,8 @@
 use scorepeek::recognition::{
     CatalogCandidateDomain, CatalogCandidateDomainError, OnnxParityError,
-    RegisteredRecognitionResources, RegisteredResourceLoadError,
+    RegisteredRecognitionResources, RegisteredResourceLoadError, ResultSongResolution,
     ScreenCatalogCandidateObservations, ScreenFieldObservationError, ScreenFieldObservations,
-    observe_screen_fields,
+    observe_screen_fields, resolve_result_song,
 };
 use std::error::Error;
 use std::fmt;
@@ -65,6 +65,7 @@ impl RegisteredScreenFieldObserver {
 pub struct RegisteredScreenFieldObservation {
     fields: ScreenFieldObservations,
     candidates: ScreenCatalogCandidateObservations,
+    result_resolution: Option<ResultSongResolution>,
 }
 
 impl RegisteredScreenFieldObservation {
@@ -73,7 +74,22 @@ impl RegisteredScreenFieldObservation {
         fields: ScreenFieldObservations,
     ) -> Self {
         let candidates = candidate_domain.observe(&fields);
-        Self { fields, candidates }
+        let result_resolution = match (&fields, &candidates) {
+            (
+                ScreenFieldObservations::Result(fields),
+                ScreenCatalogCandidateObservations::Result { candidates, .. },
+            ) => Some(resolve_result_song(
+                &fields.title.open_text,
+                &fields.artist.open_text,
+                candidates,
+            )),
+            _ => None,
+        };
+        Self {
+            fields,
+            candidates,
+            result_resolution,
+        }
     }
 
     #[must_use]
@@ -84,6 +100,11 @@ impl RegisteredScreenFieldObservation {
     #[must_use]
     pub const fn candidates(&self) -> &ScreenCatalogCandidateObservations {
         &self.candidates
+    }
+
+    #[must_use]
+    pub const fn result_resolution(&self) -> Option<&ResultSongResolution> {
+        self.result_resolution.as_ref()
     }
 }
 
@@ -107,7 +128,7 @@ mod tests {
     use scorepeek::catalog::Catalog;
     use scorepeek::recognition::{
         DynamicTextObservation, FieldNotObserved, FieldNotObservedReason,
-        ResultScreenFieldObservations,
+        ResultScreenFieldObservations, ResultSongResolution, ResultSongUnknownReason,
     };
 
     use super::*;
@@ -148,5 +169,12 @@ mod tests {
 
         assert_eq!(output.fields(), &fields);
         assert_eq!(output.candidates().candidate_count(), 0);
+        assert!(matches!(
+            output.result_resolution(),
+            Some(ResultSongResolution::Unknown {
+                reason: ResultSongUnknownReason::NoCatalogCandidates,
+                ..
+            })
+        ));
     }
 }

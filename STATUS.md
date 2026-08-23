@@ -8,10 +8,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: the corpus recording has completed the shared field and full-catalog
-  scoring path, but its counts-only evidence does not establish recognition correctness. The next
-  boundary is a value-bearing recording recognition simulation and resolver review. Live INFINITAS
-  Gamescope work remains blocked until that boundary passes.
+- Current execution focus: the corpus recording has passed the value-bearing result-song
+  recognition simulation for all three reviewed episodes. The next boundary is a separately
+  authorized live INFINITAS Gamescope run through the same post-canonical resolver; release
+  accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
 
@@ -183,14 +183,27 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   result. Every extraction frame enters the same recognition session, crop router, registered
   worker, and full-catalog domain used after live normalization. Result presence uses the fixed
   result header and two measured panel boundaries; background palette and result artwork are not
-  predicate inputs. This simulation has no accepted field, song, event, live-support, or performance
-  authority.
+  predicate inputs. ADR 0036 itself grants no accepted field, song, event, live-support, or
+  performance authority; ADR 0038 adds the later result-song resolver only.
 - ADR 0037 supersedes the recognition-value suppression in ADR 0032, ADR 0035, and ADR 0036.
   Operator-owned local recognition artifacts must retain bounded exact OCR strings, a run-scoped
   exact catalog display/comparison string table with candidate references, song IDs, complete
   per-field candidate metrics, resolver decisions and reasons, and reviewed expected-versus-observed
   values. Compact command output and the future event API remain distinct sinks. Pixels stay in the
   bounded image store and are joined by identity rather than duplicated.
+- ADR 0038 adds the fail-closed result-song resolver
+  `scorepeek-result-song-title-primary-artist-corroborated-v1`. It requires nonempty title/artist,
+  at least two catalog candidates, selected title edit distance at most one, title similarity at
+  least `6/7`, runner-up title edit margin at least two, and selected-candidate artist similarity at
+  least `2/5`. Artist corroborates the title-selected song rather than contributing to a combined
+  rank. Every rejection is a typed unknown with candidate evidence when available.
+- Recording profile v2 requires an exact expected `ScorepeekSongId` for every episode. The
+  recognition simulation requires at least two exact expected song decisions and two exact
+  expected `CLEAR TYPE` observations per episode, rejects a different accepted song immediately,
+  and retains sequence/PTS, exact OCR, exact catalog strings, all per-field metrics,
+  decisions/reasons, and expected values in a create-only bounded local artifact. Catalog JSON is
+  capped at 16 MiB; observation NDJSON is capped at 256 MiB and 3,600 records; the manifest is
+  created last after child sync.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -298,13 +311,30 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   clear type on 22 frames. The field worker and diagnostic run both completed; the final 92-frame,
   579-fact diagnostic manifest had no drops or degradations and SHA-256
   `3e1d5b743bd66b4b08523ebb3d389406a587791500a65ada5c6bc74d4255b2b1`.
+- A development-machine value-bearing replay retained 120 field observations, the exact
+  2,548-song catalog string table, and 305,760 candidate records. It established the resolver inputs:
+  `ABSOLUTE EVIL`/`Yuta Imai` at title/artist edit zero and title margin four, and `ANEMONE` observed
+  as `ANEMON` with title edit one, `6/7` similarity, margin two, and artist similarity `20/43`.
+- The create-only profile v2 digest is
+  `45d4cbf7b976c47e04a712d2486e6bf000d50c687a7dd3b8a816697d74608d77`. The final simulation
+  inspected 459 canonical frames and completed 3/3 episodes: two `FAILED` results for
+  `6ef33da9-090a-500c-844a-8bffd14de63f` (`ABSOLUTE EVIL`) and one `CLEAR` result for
+  `5570fd25-7cb9-55b6-8f15-bcbe46de4ad6` (`ANEMONE`). It produced 22 exact song decisions, 22
+  exact clear-type matches, two typed `empty_title` transition unknowns, and no wrong acceptance.
+  The final source-matching binary had SHA-256
+  `8dd6b86a9092b03f72482b4801319f5ef224e4fa1423481a32780f34226d6152`. The complete
+  120-observation, 114,644,552-byte evidence manifest has SHA-256
+  `83841160908a7a5ea6d62741d75a653f00341753a87bc1a49c426a6fe85fa1c0`; its complete 92-frame,
+  579-fact diagnostic manifest has SHA-256
+  `d80a6db891c9a1263e8f3fcf0ce6c3ad49d7ee2afc0ed5801082e23f7ec82147`, with no drops or
+  degradations.
 
 ## Unverified boundaries
 
-- The production path has processed the private recording extraction, but the current simulation
-  discarded OCR strings and candidate values after counts. It has no reviewed expected song IDs,
-  rank/accept/unknown decision, margin policy, or value-bearing recognition artifact, so it is not
-  evidence that the three songs were recognized correctly.
+- The result-song resolver is grounded by two song identities and three result episodes from one
+  recording. It has no title-disjoint holdout, broader clear-type/background coverage, calibrated
+  false-accept denominator, or release-accuracy authority. Music-select song resolution, charts,
+  digits, temporal result-event emission, and deduplication remain unimplemented.
 - No Gamescope run has yet
   driven it with a classified admitted live frame. Recording evidence retains replay provenance and
   cannot fabricate the live generation/profile/normalizer owner. No development-machine run has
@@ -342,19 +372,15 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Add a bounded versioned operator-owned recognition artifact that retains exact OCR strings, a
-   run-scoped exact catalog display/comparison string table, every bound catalog song's per-field
-   metrics and string references, song IDs, decisions/reasons, source sequence/PTS, and reviewed
-   expected-versus-observed result values without duplicating pixels.
-2. Use those values from the private recording to define a fail-closed resolver, add reviewed
-   expected song IDs to a create-only simulation profile, and replay all three result episodes
-   through the common post-canonical production path.
-3. Independently review the complete recognition decisions. Only after all expected values pass may
-   a separately authorized live INFINITAS Gamescope run begin.
+1. Run the bounded Gamescope path against a separately authorized private INFINITAS session using
+   the exact catalog/model/runtime and admitted capture binding, with the same result resolver and
+   value-bearing local evidence enabled.
+2. Review live accepted/unknown decisions, queue/lifecycle evidence, and expected field behavior
+   before defining event authority, target-host performance acceptance, or support.
 
-Do not proceed to live INFINITAS, OCR-only tuning, automatic calibration, Portal/OBS fallback,
-soak/performance, or support claims until the recording recognition path and its value-bearing
-evidence are complete.
+Do not proceed to automatic calibration, Portal/OBS fallback, event emission, soak/performance, or
+support claims until the separately authorized live result-recognition run and its immutable
+run-lifecycle evidence are complete.
 
 ## Stable milestone map
 

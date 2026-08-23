@@ -319,6 +319,22 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- recognition recording-simulation "$@"
 '''
 
+[tasks."recognition:recording-evidence"]
+description = "Replay a bound canonical recording and retain exact recognition evidence"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- recognition recording-recognition-evidence "$@"
+'''
+
+[tasks."recognition:recording-recognition-simulation"]
+description = "Replay and require expected result-song recognition with exact retained evidence"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- recognition recording-recognition-simulation "$@"
+'''
+
 [tasks."diagnostic:replay"]
 description = "Replay strict canonical evidence through the bounded diagnostic worker"
 run = '''

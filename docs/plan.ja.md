@@ -73,6 +73,10 @@
   minimum edit distanceとinteger normalized similarityを全songについて別々に保持する。ranking、top-N truncation、field間集約、
   threshold、accepted field、song decision、selection context更新、diagnostic side effect、eventは行わない。folded observationは
   domain-unique folded candidate formとのみ比較し、search-term-only songはdropやpanicではなくtyped errorでdomain構築を停止する。
+  さらにretained recording evidenceからresult-song resolver v1を固定した。titleのunique minimum edit candidateに対し
+  edit distance 1以下、normalized similarity 6/7以上、runner-up edit margin 2以上、選択candidateのartist similarity 2/5以上を
+  exact integerで要求し、artist scoreをtitleへ加算しない。失敗はtyped unknownにする。profile v2は全episodeのexact expected song IDをbindし、
+  exact songと`CLEAR TYPE`を各2 frame以上要求する。local artifactはexact OCR/catalog strings、全candidate metrics、decision/reason、expected valuesを保持する。
   registered resourceとcandidate domainをcapture開始前にloadし、Gamescope capture loopからfield submit、inference、全song scoring、
   capture/worker/diagnosticの順序付き終了までを一つのbounded gateへ統合済み。private INFINITAS frameによる実submit、実行cost、
   queue behavior、candidate内容は未検証で、accepted resultは未実装。
@@ -449,7 +453,7 @@ NV12、別color profileへ黙ってfallbackしない。
    compact resultはtyped status、screen/worker/candidate件数、diagnostic completenessおよびartifact identityに
    限定できるが、operator-owned local recognition artifactはboundedなexact OCR文字列、run単位のexact catalog
    display/comparison string table、song ID、string reference、全candidate metric、判断と理由、expected-versus-observed値を保持する。pixelは既存のbounded image artifactをidentityで
-   参照する。ranking、acceptance、temporal stateおよびevent authorityは後続の独立contractとする。
+   参照する。result-song ranking/acceptanceはADR 0038で追加済みとし、music-select/chart、temporal stateおよびevent authorityは後続の独立contractとする。
 10. **M7**: 少数scenario replayから最小selection song contextとrecognition-trigger非依存のbounded
     live diagnosticsを検証し、その後versioned event schemaとNDJSON daemonを統合する。ゲーム全体の
     state machine、attempt、modeまたはretry回数は実装しない。

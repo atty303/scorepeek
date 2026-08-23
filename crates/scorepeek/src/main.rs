@@ -7,6 +7,7 @@ pub mod diagnostic_recording;
 pub mod diagnostic_replay;
 pub mod diagnostic_worker;
 mod inventory;
+mod recognition_artifact;
 pub mod recognition_live;
 mod recording_simulation;
 
@@ -1366,7 +1367,67 @@ fn try_doctor(args: &[OsString]) -> Option<Result<(), String>> {
 }
 
 fn try_recording_simulation(args: &[OsString]) -> Option<Result<(), String>> {
-    try_recording_simulation_profile_author(args).or_else(|| try_recording_simulation_run(args))
+    try_recording_simulation_profile_author(args)
+        .or_else(|| try_recording_recognition_evidence_run(args))
+        .or_else(|| try_recording_simulation_run(args))
+}
+
+fn try_recording_recognition_evidence_run(args: &[OsString]) -> Option<Result<(), String>> {
+    let [
+        recognition,
+        simulate,
+        profile_flag,
+        profile,
+        profile_digest_flag,
+        profile_digest,
+        extraction_flag,
+        extraction,
+        diagnostic_root_flag,
+        diagnostic_root,
+        catalog_store_flag,
+        catalog_store,
+        bundle_flag,
+        bundle,
+        run_id_flag,
+        run_id,
+        build_digest_flag,
+        build_digest,
+        recording_flag,
+        recording,
+        artifact_flag,
+        artifact,
+    ] = args
+    else {
+        return None;
+    };
+    (recognition == "recognition"
+        && (simulate == "recording-recognition-evidence"
+            || simulate == "recording-recognition-simulation")
+        && profile_flag == "--profile"
+        && profile_digest_flag == "--profile-sha256"
+        && extraction_flag == "--extraction"
+        && diagnostic_root_flag == "--diagnostic-root"
+        && catalog_store_flag == "--catalog-store"
+        && bundle_flag == "--bundle"
+        && run_id_flag == "--run-id"
+        && build_digest_flag == "--build-sha256"
+        && recording_flag == "--recording"
+        && artifact_flag == "--recognition-artifact")
+        .then(|| {
+            execute_recording_simulation(
+                profile,
+                profile_digest,
+                extraction,
+                diagnostic_root,
+                catalog_store,
+                bundle,
+                run_id,
+                build_digest,
+                recording,
+                Some(Path::new(artifact)),
+                simulate == "recording-recognition-simulation",
+            )
+        })
 }
 
 fn try_recording_simulation_profile_author(args: &[OsString]) -> Option<Result<(), String>> {
@@ -1458,29 +1519,61 @@ fn try_recording_simulation_run(args: &[OsString]) -> Option<Result<(), String>>
         && build_digest_flag == "--build-sha256"
         && recording_flag == "--recording")
         .then(|| {
-            let report = recording_simulation::run_recording_simulation(
-                recording_simulation::RecordingSimulationRunConfig {
-                    profile_path: Path::new(profile),
-                    expected_profile_sha256: &parse_cli_sha256(profile_digest, "profile SHA-256")?,
-                    extraction_directory: Path::new(extraction),
-                    diagnostic_root: Path::new(diagnostic_root),
-                    catalog_root: Path::new(catalog_store),
-                    bundle_root: Path::new(bundle),
-                    run_id: parse_diagnostic_run_id(run_id)?,
-                    build_sha256: parse_cli_sha256(build_digest, "build SHA-256")?,
-                    policy: parse_diagnostic_recording_policy(recording)?,
-                },
-            );
-            let succeeded = report.succeeded();
-            println!(
-                "{}",
-                serde_json::to_string(&report)
-                    .map_err(|_| "recording simulation report serialization failed".to_owned())?
-            );
-            succeeded
-                .then_some(())
-                .ok_or_else(|| "recording field simulation failed".to_owned())
+            execute_recording_simulation(
+                profile,
+                profile_digest,
+                extraction,
+                diagnostic_root,
+                catalog_store,
+                bundle,
+                run_id,
+                build_digest,
+                recording,
+                None,
+                false,
+            )
         })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_recording_simulation(
+    profile: &OsStr,
+    profile_digest: &OsStr,
+    extraction: &OsStr,
+    diagnostic_root: &OsStr,
+    catalog_store: &OsStr,
+    bundle: &OsStr,
+    run_id: &OsStr,
+    build_digest: &OsStr,
+    recording: &OsStr,
+    recognition_artifact_root: Option<&Path>,
+    require_song_resolution: bool,
+) -> Result<(), String> {
+    let profile_digest = parse_cli_sha256(profile_digest, "profile SHA-256")?;
+    let report = recording_simulation::run_recording_simulation(
+        recording_simulation::RecordingSimulationRunConfig {
+            profile_path: Path::new(profile),
+            expected_profile_sha256: &profile_digest,
+            extraction_directory: Path::new(extraction),
+            diagnostic_root: Path::new(diagnostic_root),
+            catalog_root: Path::new(catalog_store),
+            bundle_root: Path::new(bundle),
+            run_id: parse_diagnostic_run_id(run_id)?,
+            build_sha256: parse_cli_sha256(build_digest, "build SHA-256")?,
+            policy: parse_diagnostic_recording_policy(recording)?,
+            recognition_artifact_root,
+            require_song_resolution,
+        },
+    );
+    let succeeded = report.succeeded();
+    println!(
+        "{}",
+        serde_json::to_string(&report)
+            .map_err(|_| "recording simulation report serialization failed".to_owned())?
+    );
+    succeeded
+        .then_some(())
+        .ok_or_else(|| "recording field simulation failed".to_owned())
 }
 
 fn try_integrated_context_crop(args: &[OsString]) -> Option<Result<(), String>> {

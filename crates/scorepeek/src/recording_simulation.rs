@@ -5,8 +5,9 @@ use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::Path;
 use std::time::Duration;
 
+use scorepeek::catalog::ScorepeekSongId;
 use scorepeek::recognition::{
-    CanonicalFrame, CanonicalLayout, ScreenClass, ScreenFieldObservations,
+    CanonicalFrame, CanonicalLayout, ResultSongResolution, ScreenClass, ScreenFieldObservations,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -18,18 +19,23 @@ use crate::diagnostic_recording::{
     DiagnosticBinding, DiagnosticCompleteness, DiagnosticPolicy, DiagnosticReplayBinding,
     DiagnosticResource, DiagnosticRunDescriptor, DiagnosticRunStatus,
 };
+use crate::recognition_artifact::{RecognitionArtifactExpected, RecognitionArtifactWriter};
 use crate::recognition_live::field_observer::{
     DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT, FieldObserverFinishStatus,
 };
 use crate::recognition_live::field_session::{
     FieldObservationSession, FieldObservationSessionPoll, FieldObservationSubmission,
 };
-use crate::recognition_live::screen_field_observer::RegisteredScreenFieldObserver;
+use crate::recognition_live::screen_field_observer::{
+    RegisteredScreenFieldObservation, RegisteredScreenFieldObserver,
+};
 
 type RegisteredFieldObservationSession = FieldObservationSession<RegisteredScreenFieldObserver>;
 
-const PROFILE_SCHEMA: &str = "scorepeek-recording-field-simulation-profile-v1";
-const REPORT_SCHEMA: &str = "scorepeek-recording-field-simulation-report-v1";
+const PROFILE_SCHEMA_V1: &str = "scorepeek-recording-field-simulation-profile-v1";
+const PROFILE_SCHEMA_V2: &str = "scorepeek-recording-recognition-simulation-profile-v2";
+const REPORT_SCHEMA_V1: &str = "scorepeek-recording-field-simulation-report-v1";
+const REPORT_SCHEMA_V2: &str = "scorepeek-recording-recognition-simulation-report-v2";
 const RECORDING_SCHEMA: &str = "scorepeek-recording-v1";
 const EXTRACTION_SCHEMA: &str = "scorepeek-private-canonical-frame-extraction-v1";
 const COVERAGE_LABEL_SCHEMA: &str = "scorepeek-private-song-context-replay-label-v1";
@@ -97,6 +103,8 @@ struct ResultEpisode {
     window_start_source_pts_ms: u64,
     window_end_source_pts_ms: u64,
     expected_clear_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expected_song_id: Option<ScorepeekSongId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -117,9 +125,12 @@ pub enum RecordingSimulationErrorType {
     FieldObservationFailed,
     CandidateSetMissing,
     ClearTypeMismatch,
+    SongMismatch,
+    SongMissing,
     EpisodeMissing,
     FieldWorkerFinishFailed,
     DiagnosticFinishFailed,
+    RecognitionArtifactFailed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -156,9 +167,19 @@ pub struct RecordingSimulationReport {
     candidate_sets: usize,
     scored_candidates: u64,
     exact_clear_type_matches: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    exact_song_matches: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    accepted_song_decisions: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    unknown_song_decisions: usize,
     field_worker_status: Option<SimulationFieldWorkerStatus>,
     diagnostic_completeness: Option<DiagnosticCompleteness>,
     diagnostic_manifest_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recognition_artifact_manifest_sha256: Option<String>,
+    #[serde(skip)]
+    include_song_decisions: bool,
 }
 
 pub fn author_recording_simulation_profile(
@@ -188,6 +209,8 @@ pub struct RecordingSimulationRunConfig<'a> {
     pub run_id: String,
     pub build_sha256: String,
     pub policy: DiagnosticPolicy,
+    pub recognition_artifact_root: Option<&'a Path>,
+    pub require_song_resolution: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -195,6 +218,7 @@ struct EpisodeState {
     result_seen: bool,
     candidate_set_seen: bool,
     exact_clear_type_frames: usize,
+    exact_song_frames: usize,
 }
 
 pub fn run_recording_simulation(
@@ -202,10 +226,42 @@ pub fn run_recording_simulation(
 ) -> RecordingSimulationReport {
     let profile_digest = config.expected_profile_sha256.to_owned();
     let Ok((profile, _)) = read_profile(config.profile_path, config.expected_profile_sha256) else {
-        return error_report(profile_digest, RecordingSimulationErrorType::ProfileInvalid);
+        return error_report(
+            profile_digest,
+            RecordingSimulationErrorType::ProfileInvalid,
+            config.require_song_resolution,
+        );
     };
+    if config.require_song_resolution && !profile.is_recognition_profile() {
+        return error_report(
+            profile_digest,
+            RecordingSimulationErrorType::ProfileInvalid,
+            true,
+        );
+    }
     let Ok(selections) = load_extraction_selections(&profile, config.extraction_directory) else {
-        return error_report(profile_digest, RecordingSimulationErrorType::SourceInvalid);
+        return error_report(
+            profile_digest,
+            RecordingSimulationErrorType::SourceInvalid,
+            config.require_song_resolution,
+        );
+    };
+    let mut recognition_artifact = match config.recognition_artifact_root {
+        Some(root) => match RecognitionArtifactWriter::create(
+            root,
+            config.run_id.clone(),
+            profile_digest.clone(),
+        ) {
+            Ok(writer) => Some(writer),
+            Err(_) => {
+                return error_report(
+                    profile_digest,
+                    RecordingSimulationErrorType::RecognitionArtifactFailed,
+                    config.require_song_resolution,
+                );
+            }
+        },
+        None => None,
     };
     let descriptor = profile.descriptor(config.run_id, config.build_sha256, &profile_digest);
     let mut policy = config.policy;
@@ -221,6 +277,7 @@ pub fn run_recording_simulation(
         return error_report(
             profile_digest,
             RecordingSimulationErrorType::ResourceLoadFailed,
+            config.require_song_resolution,
         );
     };
     let mut source = RecordingCanonicalFrameSource::new(
@@ -237,8 +294,16 @@ pub fn run_recording_simulation(
         &mut session,
         &mut states,
         &mut report,
+        &mut recognition_artifact,
     );
-    finish_simulation(&profile, session, &states, report, recording_enabled)
+    finish_simulation(
+        &profile,
+        session,
+        &states,
+        report,
+        recording_enabled,
+        recognition_artifact,
+    )
 }
 
 fn process_frames(
@@ -247,6 +312,7 @@ fn process_frames(
     session: &mut RegisteredFieldObservationSession,
     states: &mut [EpisodeState],
     report: &mut RecordingSimulationReport,
+    recognition_artifact: &mut Option<RecognitionArtifactWriter>,
 ) {
     loop {
         let frame = match source.next_frame(Duration::from_millis(
@@ -291,26 +357,108 @@ fn process_frames(
                     report.error_type = Some(RecordingSimulationErrorType::FieldObservationFailed);
                     break;
                 };
-                let candidate_count = output.candidates().candidate_count();
-                if candidate_count == 0 {
-                    report.error_type = Some(RecordingSimulationErrorType::CandidateSetMissing);
+                if let Err(error_type) = process_completed_observation(
+                    profile,
+                    frame.sequence(),
+                    frame.monotonic_end_ms(),
+                    episode_index,
+                    output,
+                    states,
+                    report,
+                    recognition_artifact,
+                ) {
+                    retain_first_error(report, error_type);
                     break;
                 }
-                report.candidate_sets += 1;
-                report.scored_candidates = report
-                    .scored_candidates
-                    .saturating_add(u64::try_from(candidate_count).unwrap_or(u64::MAX));
-                if let (Some(index), ScreenFieldObservations::Result(fields)) =
-                    (episode_index, output.fields())
-                {
-                    states[index].candidate_set_seen = true;
-                    let observed = fields.clear_type.open_text.as_str();
-                    if observed == profile.episodes[index].expected_clear_type.as_str() {
-                        states[index].exact_clear_type_frames =
-                            states[index].exact_clear_type_frames.saturating_add(1);
-                    }
-                }
             }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_completed_observation(
+    profile: &RecordingSimulationProfile,
+    sequence: u64,
+    source_pts_ms: u64,
+    episode_index: Option<usize>,
+    output: &RegisteredScreenFieldObservation,
+    states: &mut [EpisodeState],
+    report: &mut RecordingSimulationReport,
+    recognition_artifact: &mut Option<RecognitionArtifactWriter>,
+) -> Result<(), RecordingSimulationErrorType> {
+    let candidate_count = output.candidates().candidate_count();
+    let result_resolution = output.result_resolution();
+    if report.include_song_decisions
+        && let Some(resolution) = result_resolution
+    {
+        match resolution {
+            ResultSongResolution::Accepted { .. } => report.accepted_song_decisions += 1,
+            ResultSongResolution::Unknown { .. } => report.unknown_song_decisions += 1,
+        }
+    }
+    let expected = episode_index.map(|index| RecognitionArtifactExpected {
+        episode_id: &profile.episodes[index].episode_id,
+        song_id: profile.episodes[index].expected_song_id,
+        clear_type: &profile.episodes[index].expected_clear_type,
+    });
+    if recognition_artifact.as_mut().is_some_and(|artifact| {
+        artifact
+            .record(
+                sequence,
+                source_pts_ms,
+                output.fields(),
+                output.candidates(),
+                result_resolution,
+                expected,
+            )
+            .is_err()
+    }) {
+        retain_first_error(
+            report,
+            RecordingSimulationErrorType::RecognitionArtifactFailed,
+        );
+        *recognition_artifact = None;
+    }
+    if candidate_count == 0 {
+        return Err(RecordingSimulationErrorType::CandidateSetMissing);
+    }
+    report.candidate_sets += 1;
+    report.scored_candidates = report
+        .scored_candidates
+        .saturating_add(u64::try_from(candidate_count).unwrap_or(u64::MAX));
+    if let (Some(index), ScreenFieldObservations::Result(fields)) = (episode_index, output.fields())
+    {
+        update_episode(
+            &profile.episodes[index],
+            &mut states[index],
+            fields.clear_type.open_text.as_str(),
+            result_resolution,
+            report,
+        );
+    }
+    Ok(())
+}
+
+fn update_episode(
+    episode: &ResultEpisode,
+    state: &mut EpisodeState,
+    observed_clear_type: &str,
+    resolution: Option<&ResultSongResolution>,
+    report: &mut RecordingSimulationReport,
+) {
+    state.candidate_set_seen = true;
+    if observed_clear_type == episode.expected_clear_type {
+        state.exact_clear_type_frames = state.exact_clear_type_frames.saturating_add(1);
+    }
+    if let Some(expected_song_id) = episode.expected_song_id
+        && let Some(observed_song_id) = resolution.and_then(ResultSongResolution::accepted_song_id)
+    {
+        if observed_song_id == expected_song_id {
+            state.exact_song_frames = state.exact_song_frames.saturating_add(1);
+        } else {
+            report
+                .error_type
+                .get_or_insert(RecordingSimulationErrorType::SongMismatch);
         }
     }
 }
@@ -321,17 +469,22 @@ fn finish_simulation(
     states: &[EpisodeState],
     mut report: RecordingSimulationReport,
     recording_enabled: bool,
+    recognition_artifact: Option<RecognitionArtifactWriter>,
 ) -> RecordingSimulationReport {
     report.exact_clear_type_matches = states
         .iter()
         .map(|state| state.exact_clear_type_frames)
         .sum();
+    report.exact_song_matches = states.iter().map(|state| state.exact_song_frames).sum();
     report.completed_episodes = states
         .iter()
-        .filter(|state| {
+        .enumerate()
+        .filter(|(index, state)| {
             state.result_seen
                 && state.candidate_set_seen
                 && state.exact_clear_type_frames >= REQUIRED_EXACT_CLEAR_TYPE_FRAMES
+                && (profile.episodes[*index].expected_song_id.is_none()
+                    || state.exact_song_frames >= REQUIRED_EXACT_CLEAR_TYPE_FRAMES)
         })
         .count();
     if report.error_type.is_none() {
@@ -342,6 +495,11 @@ fn finish_simulation(
             .any(|state| state.exact_clear_type_frames < REQUIRED_EXACT_CLEAR_TYPE_FRAMES)
         {
             report.error_type = Some(RecordingSimulationErrorType::ClearTypeMismatch);
+        } else if states.iter().enumerate().any(|(index, state)| {
+            profile.episodes[index].expected_song_id.is_some()
+                && state.exact_song_frames < REQUIRED_EXACT_CLEAR_TYPE_FRAMES
+        }) {
+            report.error_type = Some(RecordingSimulationErrorType::SongMissing);
         } else if report.completed_episodes != report.expected_episodes {
             report.error_type = Some(RecordingSimulationErrorType::CandidateSetMissing);
         }
@@ -372,6 +530,16 @@ fn finish_simulation(
         report
             .error_type
             .get_or_insert(RecordingSimulationErrorType::DiagnosticFinishFailed);
+    }
+    if let Some(artifact) = recognition_artifact {
+        match artifact.finish(report.error_type.is_none()) {
+            Ok(digest) => report.recognition_artifact_manifest_sha256 = Some(digest),
+            Err(_) => {
+                report
+                    .error_type
+                    .get_or_insert(RecordingSimulationErrorType::RecognitionArtifactFailed);
+            }
+        }
     }
     if report.error_type.is_some() {
         report.status = RecordingSimulationStatus::Error;
@@ -419,7 +587,12 @@ impl RecordingSimulationProfile {
 
     fn validate(&self) -> bool {
         let mut episode_ids = BTreeSet::new();
-        self.schema == PROFILE_SCHEMA
+        ((self.schema == PROFILE_SCHEMA_V1
+            && self
+                .episodes
+                .iter()
+                .all(|episode| episode.expected_song_id.is_none()))
+            || self.is_recognition_profile())
             && self.recording.recording_bytes > 0
             && self.canonical.frame_count > 0
             && self.canonical.frame_count <= MAX_EXTRACTION_FRAMES
@@ -467,6 +640,14 @@ impl RecordingSimulationProfile {
                 .episodes
                 .iter()
                 .any(|episode| episode.expected_clear_type != "FAILED")
+    }
+
+    fn is_recognition_profile(&self) -> bool {
+        self.schema == PROFILE_SCHEMA_V2
+            && self
+                .episodes
+                .iter()
+                .all(|episode| episode.expected_song_id.is_some())
     }
 }
 
@@ -791,8 +972,13 @@ fn validate_coverage_label_value(
 
 impl RecordingSimulationReport {
     fn started(profile: &RecordingSimulationProfile, profile_sha256: String) -> Self {
+        let include_song_decisions = profile.is_recognition_profile();
         Self {
-            schema: REPORT_SCHEMA,
+            schema: if include_song_decisions {
+                REPORT_SCHEMA_V2
+            } else {
+                REPORT_SCHEMA_V1
+            },
             status: RecordingSimulationStatus::Success,
             error_type: None,
             profile_sha256,
@@ -814,9 +1000,14 @@ impl RecordingSimulationReport {
             candidate_sets: 0,
             scored_candidates: 0,
             exact_clear_type_matches: 0,
+            exact_song_matches: 0,
+            accepted_song_decisions: 0,
+            unknown_song_decisions: 0,
             field_worker_status: None,
             diagnostic_completeness: None,
             diagnostic_manifest_sha256: None,
+            recognition_artifact_manifest_sha256: None,
+            include_song_decisions,
         }
     }
 
@@ -826,12 +1017,24 @@ impl RecordingSimulationReport {
     }
 }
 
+fn retain_first_error(
+    report: &mut RecordingSimulationReport,
+    error_type: RecordingSimulationErrorType,
+) {
+    report.error_type.get_or_insert(error_type);
+}
+
 fn error_report(
     profile_sha256: String,
     error_type: RecordingSimulationErrorType,
+    include_song_decisions: bool,
 ) -> RecordingSimulationReport {
     RecordingSimulationReport {
-        schema: REPORT_SCHEMA,
+        schema: if include_song_decisions {
+            REPORT_SCHEMA_V2
+        } else {
+            REPORT_SCHEMA_V1
+        },
         status: RecordingSimulationStatus::Error,
         error_type: Some(error_type),
         profile_sha256,
@@ -845,10 +1048,20 @@ fn error_report(
         candidate_sets: 0,
         scored_candidates: 0,
         exact_clear_type_matches: 0,
+        exact_song_matches: 0,
+        accepted_song_decisions: 0,
+        unknown_song_decisions: 0,
         field_worker_status: None,
         diagnostic_completeness: None,
         diagnostic_manifest_sha256: None,
+        recognition_artifact_manifest_sha256: None,
+        include_song_decisions,
     }
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 fn publish_create_only(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -967,7 +1180,7 @@ mod tests {
 
     fn profile() -> RecordingSimulationProfile {
         RecordingSimulationProfile {
-            schema: PROFILE_SCHEMA.to_owned(),
+            schema: PROFILE_SCHEMA_V1.to_owned(),
             recording: RecordingBinding {
                 recording_sha256: "1".repeat(64),
                 recording_bytes: 1,
@@ -1001,6 +1214,7 @@ mod tests {
                     window_start_source_pts_ms: 4_000,
                     window_end_source_pts_ms: 6_000,
                     expected_clear_type: "FAILED".to_owned(),
+                    expected_song_id: None,
                 },
                 ResultEpisode {
                     episode_id: "failed-2".to_owned(),
@@ -1008,6 +1222,7 @@ mod tests {
                     window_start_source_pts_ms: 14_000,
                     window_end_source_pts_ms: 16_000,
                     expected_clear_type: "FAILED".to_owned(),
+                    expected_song_id: None,
                 },
                 ResultEpisode {
                     episode_id: "success-1".to_owned(),
@@ -1015,6 +1230,7 @@ mod tests {
                     window_start_source_pts_ms: 24_000,
                     window_end_source_pts_ms: 26_000,
                     expected_clear_type: "CLEAR".to_owned(),
+                    expected_song_id: None,
                 },
             ],
         }
@@ -1057,6 +1273,47 @@ mod tests {
 
         profile.episodes[2].expected_clear_type = "EASY CLEAR".to_owned();
         assert!(profile.validate());
+    }
+
+    #[test]
+    fn recognition_profile_requires_an_expected_song_for_every_episode() {
+        let mut profile = profile();
+        profile.schema = PROFILE_SCHEMA_V2.to_owned();
+        for (index, episode) in profile.episodes.iter_mut().enumerate() {
+            episode.expected_song_id =
+                Some(serde_json::from_str(&format!("\"{:032x}\"", index + 1)).unwrap());
+        }
+        assert!(profile.validate());
+        assert!(profile.is_recognition_profile());
+
+        profile.episodes[1].expected_song_id = None;
+        assert!(!profile.validate());
+        assert!(!profile.is_recognition_profile());
+    }
+
+    #[test]
+    fn recognition_report_uses_v2_without_changing_the_v1_field_report() {
+        let field_profile = profile();
+        let field_report = serde_json::to_value(RecordingSimulationReport::started(
+            &field_profile,
+            "a".repeat(64),
+        ))
+        .unwrap();
+        assert_eq!(field_report["schema"], REPORT_SCHEMA_V1);
+        assert!(field_report.get("exact_song_matches").is_none());
+
+        let mut recognition_profile = field_profile;
+        recognition_profile.schema = PROFILE_SCHEMA_V2.to_owned();
+        for (index, episode) in recognition_profile.episodes.iter_mut().enumerate() {
+            episode.expected_song_id =
+                Some(serde_json::from_str(&format!("\"{:032x}\"", index + 1)).unwrap());
+        }
+        let mut recognition_report =
+            RecordingSimulationReport::started(&recognition_profile, "b".repeat(64));
+        recognition_report.exact_song_matches = 2;
+        let recognition_report = serde_json::to_value(recognition_report).unwrap();
+        assert_eq!(recognition_report["schema"], REPORT_SCHEMA_V2);
+        assert_eq!(recognition_report["exact_song_matches"], 2);
     }
 
     #[test]
@@ -1130,5 +1387,22 @@ mod tests {
         .unwrap();
         assert!(read_bounded_regular(&path, MAX_PROFILE_BYTES, "test file").is_err());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn later_candidate_failure_does_not_hide_artifact_failure() {
+        let mut report = RecordingSimulationReport::started(&profile(), "c".repeat(64));
+        retain_first_error(
+            &mut report,
+            RecordingSimulationErrorType::RecognitionArtifactFailed,
+        );
+        retain_first_error(
+            &mut report,
+            RecordingSimulationErrorType::CandidateSetMissing,
+        );
+        assert_eq!(
+            report.error_type,
+            Some(RecordingSimulationErrorType::RecognitionArtifactFailed)
+        );
     }
 }

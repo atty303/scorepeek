@@ -8,15 +8,21 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 mod catalog_candidates;
+mod result_resolver;
 mod title;
 mod title_decoder;
 mod title_onnx;
 mod title_preprocessor;
 
 pub use catalog_candidates::{
-    CatalogCandidateDomain, CatalogCandidateDomainError, CatalogNormalizedSimilarity,
+    CatalogCandidateDomain, CatalogCandidateDomainError, CatalogCandidateEvidenceTable,
+    CatalogCandidateSongEvidence, CatalogCandidateTextEvidence, CatalogNormalizedSimilarity,
     CatalogTextCandidateScore, MusicSelectSongCandidateObservation, ResultSongCandidateObservation,
     ScreenCatalogCandidateObservations,
+};
+pub use result_resolver::{
+    RESULT_SONG_RESOLVER_ID, RankedResultSongCandidate, ResultSongResolution,
+    ResultSongUnknownReason, resolve_result_song,
 };
 pub use title::{
     DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
