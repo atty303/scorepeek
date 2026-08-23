@@ -8,9 +8,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: define the first application-owned live recognition session that can
-  route supported screen observations toward existing field observers, rotate explicitly on any
-  immutable recognition binding change, and keep accepted results diagnostic-independent.
+- Current execution focus: route supported live screen observations into existing field observers
+  under the immutable application session while keeping unknown frames and diagnostic outcomes
+  outside accepted fields.
 
 ## Included deliverables
 
@@ -103,9 +103,13 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   predicate has no provenance or acceptance authority by itself.
 - The backward-compatible `gamescope-recognition-handoff-gate` keeps the earlier diagnostic-only
   command intact. It requires the descriptor's actual embedded layout digest before acquisition,
-  offers canonical evidence before inspection, and records each typed screen observation through
-  the same generation/profile/normalizer/layout-bound worker. Recording rejection, opt-out, queue
-  loss, or store failure remains separate from the screen result.
+  and now runs through an application-owned `LiveRecognitionSession`. The session validates the
+  complete immutable descriptor, offers canonical evidence before inspection, rejects mismatched
+  frames before recognition, and records each typed screen observation through the same worker.
+  Its stable identity binds capture generation, profile, normalizer, layout, catalog, model, and
+  runtime. Explicit transition records the next identity in the old run, finishes that run, and
+  only then starts the replacement session. Recording rejection, opt-out, queue loss, or store
+  failure remains separate from the screen result.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -168,12 +172,15 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   gates. These do not substitute for target-machine capture, recognition, or performance evidence.
 - Repository validation at this checkpoint includes formatting/static checks, workspace all-target
   clippy with warnings denied, Rust unit/integration tests, 75 offline OCR tests, dataset E2E, and
-  native PipeWire build verification.
+  native PipeWire build verification. Focused session tests also verify descriptor/layout rejection,
+  frame-generation rejection, diagnostic opt-out non-interference, and manifest-backed ordered
+  binding rollover.
 
 ## Unverified boundaries
 
 - No live field observer, catalog/model inference, accepted result, context reducer, or event output
-  consumes `LiveRecognitionObservation`; this checkpoint stops at the shared screen predicate.
+  consumes the session's supported screen observation; this checkpoint stops at the shared screen
+  predicate and immutable application lifetime.
   Offline `CanonicalFrame` extraction evidence still cannot fabricate the live generation/profile/
   normalizer owner or enter this live gate.
 - The bounded CLI gate is not an ordinary long-running application loop. Live queue-full or worker
@@ -186,9 +193,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - OBS/obs-vkcapture coexistence, PipeWire daemon disconnect, stream loss distinct from node loss,
   source recreation, long soak, FD/thread/RSS convergence, frame age, CPU/memory/copy/GPU/power
   cost, game p99 frametime, and OBS lag remain unverified.
-- The existing result and music-select recognition work is offline/private evidence. There is no
-  integrated live recognition, accepted field gate, event daemon, target-host performance gate, or
-  supported capture profile.
+- The existing result and music-select field recognition work is offline/private evidence. There is
+  no integrated live field observer, accepted field gate, event daemon, target-host performance
+  gate, or supported capture profile.
 - Current recordings and provisional labels do not establish title-disjoint result accuracy,
   calibrated thresholds, result dwell, miss denominator, deduplication, or release accuracy.
 - Persistent scheduler installation was verified in isolation but not applied to the operator's
@@ -208,15 +215,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Define one application-owned live recognition session that owns the immutable diagnostic
-   descriptor and finishes the current run before a capture/profile/normalizer/layout/catalog/model
-   or runtime binding changes. Do not infer a game session from this resource lifetime.
-2. Route only `result` or `music_select` observations into the existing screen-local crop/observer
+1. Route only `result` or `music_select` observations into the existing screen-local crop/observer
    APIs while preserving the live owner and binding. `unknown` must stop before OCR and accepted
    fields without suppressing independent canonical diagnostic evidence.
-3. Bind any field observation, song decision, suppression, and accepted result to that same run;
+2. Bind any field observation, song decision, suppression, and accepted result to that same run;
    diagnostic enqueue/drop/opt-out must not alter those recognition outcomes.
-4. Verify real field routing with separately authorized private INFINITAS evidence before claiming
+3. Verify real field routing with separately authorized private INFINITAS evidence before claiming
    layout, OCR, accepted-field, target-host, or support results.
 
 Do not proceed to OCR-only tuning, automatic calibration, Portal/OBS fallback, soak/performance, or

@@ -132,6 +132,31 @@ pub struct DiagnosticBinding {
     pub replay: Option<DiagnosticReplayBinding>,
 }
 
+impl DiagnosticBinding {
+    /// Returns the stable identity of the immutable inputs owned by one diagnostic run.
+    ///
+    /// Invalid bindings have no identity and are rejected before a live recognition session
+    /// starts or changes binding.
+    #[must_use]
+    pub fn identity_sha256(&self) -> Option<String> {
+        if !valid_binding(self) {
+            return None;
+        }
+        canonical_json(&DiagnosticBindingIdentity {
+            schema: "scorepeek-diagnostic-binding-identity-v1",
+            binding: self,
+        })
+        .ok()
+        .map(|bytes| encode_sha256(&bytes))
+    }
+}
+
+#[derive(Serialize)]
+struct DiagnosticBindingIdentity<'a> {
+    schema: &'static str,
+    binding: &'a DiagnosticBinding,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct DiagnosticReplayBinding {
     pub request_sha256: String,
@@ -144,6 +169,13 @@ pub struct DiagnosticRunDescriptor {
     pub monotonic_start_ms: u64,
     pub resource: DiagnosticResource,
     pub binding: DiagnosticBinding,
+}
+
+impl DiagnosticRunDescriptor {
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        valid_descriptor(self)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -1005,18 +1037,22 @@ fn valid_descriptor(descriptor: &DiagnosticRunDescriptor) -> bool {
         && descriptor.resource.program == "scorepeek"
         && descriptor.resource.version == env!("CARGO_PKG_VERSION")
         && valid_sha256(&descriptor.resource.build_sha256)
-        && descriptor.binding.capture_generation > 0
+        && valid_binding(&descriptor.binding)
+}
+
+fn valid_binding(binding: &DiagnosticBinding) -> bool {
+    binding.capture_generation > 0
         && [
-            &descriptor.binding.capture_profile_sha256,
-            &descriptor.binding.normalizer_sha256,
-            &descriptor.binding.canonical_layout_sha256,
-            &descriptor.binding.catalog_sha256,
-            &descriptor.binding.model_sha256,
-            &descriptor.binding.runtime_sha256,
+            &binding.capture_profile_sha256,
+            &binding.normalizer_sha256,
+            &binding.canonical_layout_sha256,
+            &binding.catalog_sha256,
+            &binding.model_sha256,
+            &binding.runtime_sha256,
         ]
         .into_iter()
         .all(|value| valid_sha256(value))
-        && descriptor.binding.replay.as_ref().is_none_or(|replay| {
+        && binding.replay.as_ref().is_none_or(|replay| {
             valid_sha256(&replay.request_sha256) && valid_sha256(&replay.extraction_sha256)
         })
 }

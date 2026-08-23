@@ -45,7 +45,8 @@
   diagnostic runへ保存し、generation 17のopt-outでは7 framesを正規化したまま保存を0件にした。さらに同じlive ownerを借用する
   screen predicate handoffを追加し、generation 18のunknown 13件と、独立生成した色矩形によるgeneration 20のresult 2件/
   music-select 11件を同じrunのtyped factへ記録した。generation 19のopt-outでもunknown 6件は変わらずartifactは0件だった。
-  live field observer、accepted result、binding rollover sessionは未着手。
+  completeなimmutable descriptorを所有するapplication recognition sessionも実装し、binding identity変更時は旧runへ
+  typed change factを記録してfinishした後にだけ次sessionを開始する。live field observerとaccepted resultは未着手。
   OBS/obs-vkcapture並行、
   soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了

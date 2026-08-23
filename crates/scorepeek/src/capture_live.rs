@@ -19,7 +19,7 @@ use crate::diagnostic_recording::{
     DiagnosticRunStatus,
 };
 use crate::diagnostic_worker::DiagnosticEnqueueOutcome;
-use crate::recognition_live::LiveRecognitionObservation;
+use crate::recognition_live::LiveRecognitionSession;
 use scorepeek::recognition::{CanonicalLayout, ScreenClass};
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -324,6 +324,24 @@ struct HandoffGateRun {
     recognition: RecognitionHandoffCounters,
 }
 
+enum HandoffSession {
+    Diagnostic(LiveDiagnosticBridge),
+    Recognition(LiveRecognitionSession),
+}
+
+impl HandoffSession {
+    fn finish(
+        self,
+        status: DiagnosticRunStatus,
+        monotonic_end_ms: u64,
+    ) -> crate::diagnostic_recording::DiagnosticFinishOutcome {
+        match self {
+            Self::Diagnostic(bridge) => bridge.finish(status, monotonic_end_ms),
+            Self::Recognition(session) => session.finish(status, monotonic_end_ms),
+        }
+    }
+}
+
 pub struct GamescopeDiagnosticHandoffGateConfig<'a> {
     pub binding_path: &'a std::path::Path,
     pub expected_binding_sha256: &'a str,
@@ -598,20 +616,10 @@ fn run_gamescope_handoff_gate(
 ) -> HandoffGateRun {
     let capture_generation = config.capture_generation;
     let mut recognition = RecognitionHandoffCounters::default();
-    if config.descriptor.binding.capture_generation != capture_generation.get()
-        || config.descriptor.binding.replay.is_some()
-        || (inspect_screen
-            && config.descriptor.binding.canonical_layout_sha256 != CanonicalLayout::sha256())
-    {
-        return handoff_gate_run(
-            diagnostic_handoff_report(
-                DiagnosticHandoffGateErrorType::DiagnosticConfigurationInvalid,
-                None,
-                capture_generation,
-                HandoffCounters::default(),
-                None,
-                BoundedDiagnosticSink::default(),
-            ),
+    if !valid_handoff_descriptor(&config.descriptor, capture_generation, inspect_screen) {
+        return invalid_handoff_configuration(
+            capture_generation,
+            BoundedDiagnosticSink::default(),
             recognition,
         );
     }
@@ -673,13 +681,19 @@ fn run_gamescope_handoff_gate(
             recognition,
         );
     }
-    let mut bridge =
-        LiveDiagnosticBridge::start(config.diagnostic_root, config.descriptor, config.policy)
-            .expect("live descriptor cannot contain a replay binding");
+    let Ok(mut session) = start_handoff_session(
+        config.diagnostic_root,
+        config.descriptor,
+        config.policy,
+        inspect_screen,
+    ) else {
+        let _ = lease.shutdown(&mut sink);
+        return invalid_handoff_configuration(capture_generation, sink, recognition);
+    };
     let mut counters = HandoffCounters::default();
     let mut terminal = offer_diagnostic_handoff_frames(
         &mut lease,
-        &mut bridge,
+        &mut session,
         Duration::from_millis(config.duration_ms),
         &mut counters,
         inspect_screen,
@@ -688,7 +702,7 @@ fn run_gamescope_handoff_gate(
     );
     finish_handoff_gate(
         lease,
-        bridge,
+        session,
         &mut terminal,
         capture_generation,
         counters,
@@ -697,9 +711,55 @@ fn run_gamescope_handoff_gate(
     )
 }
 
+fn valid_handoff_descriptor(
+    descriptor: &DiagnosticRunDescriptor,
+    capture_generation: CaptureGeneration,
+    inspect_screen: bool,
+) -> bool {
+    descriptor.binding.capture_generation == capture_generation.get()
+        && descriptor.binding.replay.is_none()
+        && (!inspect_screen
+            || descriptor.binding.canonical_layout_sha256 == CanonicalLayout::sha256())
+}
+
+fn start_handoff_session(
+    root: &std::path::Path,
+    descriptor: DiagnosticRunDescriptor,
+    policy: DiagnosticPolicy,
+    inspect_screen: bool,
+) -> Result<HandoffSession, ()> {
+    if inspect_screen {
+        LiveRecognitionSession::start(root, descriptor, policy)
+            .map(HandoffSession::Recognition)
+            .map_err(|_| ())
+    } else {
+        LiveDiagnosticBridge::start(root, descriptor, policy)
+            .map(HandoffSession::Diagnostic)
+            .map_err(|_| ())
+    }
+}
+
+fn invalid_handoff_configuration(
+    capture_generation: CaptureGeneration,
+    sink: BoundedDiagnosticSink,
+    recognition: RecognitionHandoffCounters,
+) -> HandoffGateRun {
+    handoff_gate_run(
+        diagnostic_handoff_report(
+            DiagnosticHandoffGateErrorType::DiagnosticConfigurationInvalid,
+            None,
+            capture_generation,
+            HandoffCounters::default(),
+            None,
+            sink,
+        ),
+        recognition,
+    )
+}
+
 fn finish_handoff_gate(
     lease: CalibratedGamescopeLease,
-    bridge: LiveDiagnosticBridge,
+    session: HandoffSession,
     terminal: &mut Option<(DiagnosticHandoffGateErrorType, Option<CaptureErrorType>)>,
     capture_generation: CaptureGeneration,
     counters: HandoffCounters,
@@ -721,7 +781,7 @@ fn finish_handoff_gate(
     } else {
         DiagnosticRunStatus::Success
     };
-    let diagnostic_outcome = bridge.finish(finish_status, finish_time);
+    let diagnostic_outcome = session.finish(finish_status, finish_time);
     let diagnostic = match *terminal {
         Some((error_type, capture_error_type)) => diagnostic_handoff_report(
             error_type,
@@ -803,7 +863,7 @@ fn start_diagnostic_handoff_capture(
 
 fn offer_diagnostic_handoff_frames(
     lease: &mut CalibratedGamescopeLease,
-    bridge: &mut LiveDiagnosticBridge,
+    session: &mut HandoffSession,
     duration: Duration,
     counters: &mut HandoffCounters,
     inspect_screen: bool,
@@ -827,27 +887,29 @@ fn offer_diagnostic_handoff_frames(
             counters.normalized_frames = counters.normalized_frames.saturating_add(1);
             counters.first_sequence.get_or_insert(live.sequence());
             counters.last_sequence = Some(live.sequence());
-            let outcome = bridge.offer(&live);
-            counters.record_offer(outcome);
             if inspect_screen {
-                let Ok(observation) = LiveRecognitionObservation::inspect(&live) else {
+                let HandoffSession::Recognition(recognition_session) = session else {
+                    unreachable!("recognition gate owns a recognition session");
+                };
+                let Ok(result) = recognition_session.inspect(&live) else {
                     recognition.recognition_failures =
                         recognition.recognition_failures.saturating_add(1);
-                    recognition
-                        .fact_outcomes
-                        .record(bridge.record_recognition_failure(&live));
                     return Some((DiagnosticHandoffGateErrorType::RecognitionFailed, None));
                 };
+                counters.record_offer(result.diagnostic_frame);
                 recognition.inspected_frames = recognition.inspected_frames.saturating_add(1);
-                let screen_counter = match observation.screen() {
+                let screen_counter = match result.observation.screen() {
                     ScreenClass::Result => &mut recognition.result_frames,
                     ScreenClass::MusicSelect => &mut recognition.music_select_frames,
                     ScreenClass::Unknown => &mut recognition.unknown_frames,
                 };
                 *screen_counter = screen_counter.saturating_add(1);
-                recognition
-                    .fact_outcomes
-                    .record(bridge.record_screen_observation(&observation));
+                recognition.fact_outcomes.record(result.diagnostic_fact);
+            } else {
+                let HandoffSession::Diagnostic(bridge) = session else {
+                    unreachable!("diagnostic gate owns a diagnostic bridge");
+                };
+                counters.record_offer(bridge.offer(&live));
             }
         }
         if started.elapsed() >= duration {

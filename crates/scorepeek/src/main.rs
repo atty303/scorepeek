@@ -6,7 +6,7 @@ pub mod diagnostic_recording;
 pub mod diagnostic_replay;
 pub mod diagnostic_worker;
 mod inventory;
-mod recognition_live;
+pub mod recognition_live;
 
 use std::env;
 use std::ffi::{OsStr, OsString};

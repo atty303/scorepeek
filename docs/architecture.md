@@ -214,11 +214,16 @@ The application live handoff now accepts only fixed-size canonical RGB8 frames
 with one capture-generation/profile/normalizer binding. Immutable pixels use
 shared ownership so the producer can offer diagnostic evidence before recognition
 without a second RGB allocation; the worker still owns QOI and filesystem work.
-The offer is non-blocking. Binding drift is rejected from the old run and recorded
-as diagnostic-only degradation, and generation rollover uses a new run rather than
-mixing evidence. Opt-out and worker loss preserve the caller's result. This is the
-producer/worker integration boundary, not an implemented capture adapter,
-DomainNormalizer, supported profile, or target-host performance claim.
+The offer is non-blocking. An application-owned live recognition session validates
+the complete immutable diagnostic descriptor and embedded layout, offers each
+matching frame to diagnostics before inspection, and rejects binding drift before
+recognition. Its stable binding identity covers generation, capture profile,
+normalizer, layout, catalog, model, and runtime inputs. Explicit rollover records
+the next identity in the old run, finishes that run, and only then creates a new
+session; this resource lifetime does not infer a game session. Diagnostic opt-out,
+queue loss, worker loss, and persistence failure preserve the caller's recognition
+observation. This is the producer/worker and screen-predicate integration boundary,
+not an accepted field observer, supported profile, or target-host performance claim.
 
 The first read-only application controls inspect an existing diagnostic root
 through a shared strict inventory. `status` exposes fixed retention policy and

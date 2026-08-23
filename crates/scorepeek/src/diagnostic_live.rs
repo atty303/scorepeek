@@ -55,6 +55,21 @@ impl LiveCanonicalFrame {
     pub(crate) const fn sequence(&self) -> u64 {
         self.sequence
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(generation: u64, sequence: u64, time: u64) -> Self {
+        Self {
+            capture_generation: generation,
+            sequence,
+            monotonic_start_ms: time,
+            monotonic_end_ms: time + 16,
+            capture_profile_sha256: "2".repeat(64),
+            normalizer_sha256: "3".repeat(64),
+            pixels: Arc::new(
+                vec![7; crate::diagnostic_recording::CANONICAL_BYTES].into_boxed_slice(),
+            ),
+        }
+    }
 }
 
 impl From<NormalizedCanonicalFrame> for LiveCanonicalFrame {
@@ -176,6 +191,26 @@ impl LiveDiagnosticBridge {
         })
     }
 
+    /// Records the explicit end of this immutable binding before the application starts another.
+    pub fn record_binding_change(
+        &mut self,
+        sequence: u64,
+        monotonic_ms: u64,
+        next_binding_sha256: String,
+    ) -> DiagnosticEnqueueOutcome {
+        self.worker.try_record_fact(DiagnosticFact {
+            sequence,
+            monotonic_start_ms: monotonic_ms,
+            monotonic_end_ms: monotonic_ms,
+            operation: DiagnosticOperation::ChangeBinding,
+            status: DiagnosticOperationStatus::Success,
+            error_type: None,
+            detail: DiagnosticDetail::BindingChange {
+                next_binding_sha256,
+            },
+        })
+    }
+
     /// Finishes the run with the fixed bounded application flush timeout.
     #[must_use]
     pub fn finish(
@@ -197,14 +232,14 @@ impl LiveDiagnosticBridge {
         }
     }
 
-    fn matches_frame(&self, frame: &LiveCanonicalFrame) -> bool {
+    pub(crate) fn matches_frame(&self, frame: &LiveCanonicalFrame) -> bool {
         frame.capture_generation == self.capture_generation
             && frame.capture_profile_sha256 == self.capture_profile_sha256
             && frame.normalizer_sha256 == self.normalizer_sha256
     }
 
     #[cfg(test)]
-    fn start_for_test(
+    pub(crate) fn start_for_test(
         root: &Path,
         descriptor: DiagnosticRunDescriptor,
         policy: DiagnosticPolicy,
@@ -216,7 +251,7 @@ impl LiveDiagnosticBridge {
     }
 
     #[cfg(test)]
-    fn start_with_supervisor_for_test(
+    pub(crate) fn start_with_supervisor_for_test(
         root: &Path,
         descriptor: DiagnosticRunDescriptor,
         policy: DiagnosticPolicy,
