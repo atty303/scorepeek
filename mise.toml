@@ -115,6 +115,22 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- capture gamescope-calibration-sample "$@"
 '''
 
+[tasks."capture:gamescope:calibration:session-sample"]
+description = "Capture one private Gamescope sample with explicit session provenance"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- capture gamescope-calibration-session-sample "$@"
+'''
+
+[tasks."capture:gamescope:binding:author"]
+description = "Author one create-only immutable Gamescope profile binding"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- capture gamescope-profile-binding-author "$@"
+'''
+
 [tasks."native:verify"]
 description = "Verify the pinned PipeWire SDK and host native build prerequisites"
 run = "scripts/verify-pipewire-build-environment.bash"

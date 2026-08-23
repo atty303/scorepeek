@@ -34,6 +34,16 @@ impl RationalCoordinate {
     const fn as_f64(self) -> f64 {
         self.numerator as f64 / self.denominator as f64
     }
+
+    #[must_use]
+    pub const fn numerator(self) -> u32 {
+        self.numerator
+    }
+
+    #[must_use]
+    pub const fn denominator(self) -> u32 {
+        self.denominator
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -58,6 +68,26 @@ impl FractionalRectangle {
             width,
             height,
         }
+    }
+
+    #[must_use]
+    pub const fn left(self) -> RationalCoordinate {
+        self.left
+    }
+
+    #[must_use]
+    pub const fn top(self) -> RationalCoordinate {
+        self.top
+    }
+
+    #[must_use]
+    pub const fn width(self) -> RationalCoordinate {
+        self.width
+    }
+
+    #[must_use]
+    pub const fn height(self) -> RationalCoordinate {
+        self.height
     }
 }
 

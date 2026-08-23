@@ -38,6 +38,36 @@ pub enum ObservedContractMismatch {
     Stride,
 }
 
+/// Trusted, operator-supplied inputs used to author one immutable Gamescope binding.
+///
+/// The calibration artifact reader owns filesystem validation. This pure boundary validates and
+/// canonicalizes only the already verified provenance, observed contract, and explicit geometry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GamescopeProfileBindingAuthoringInput {
+    pub calibration_evidence_sha256: String,
+    pub environment_id: String,
+    pub gamescope_version: String,
+    pub backend_id: String,
+    pub output_width: u32,
+    pub output_height: u32,
+    pub nested_width: u32,
+    pub nested_height: u32,
+    pub nested_refresh_hz: u32,
+    pub scaler: String,
+    pub filter: String,
+    pub observed_video_contract: UncalibratedVideoContract,
+    pub memory_type: UncalibratedMemoryType,
+    pub stride: u32,
+    pub geometry: FractionalRectangle,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthoredGamescopeProfileBinding {
+    pub bytes: Vec<u8>,
+    pub artifact_sha256: String,
+    pub capture_profile_sha256: String,
+}
+
 /// An immutable, digest-pinned Gamescope capture-profile and normalizer binding.
 ///
 /// Construction requires canonical artifact bytes and their independently selected SHA-256. The
@@ -56,6 +86,71 @@ pub struct GamescopeProfileBinding {
 }
 
 impl GamescopeProfileBinding {
+    /// Authors canonical binding bytes from separately verified calibration evidence.
+    ///
+    /// # Errors
+    /// Returns the same stable validation errors used by runtime parsing. No filesystem access or
+    /// diagnostic recording occurs here.
+    pub fn author(
+        input: GamescopeProfileBindingAuthoringInput,
+    ) -> Result<AuthoredGamescopeProfileBinding, GamescopeProfileBindingError> {
+        let scaler = parse_scaler(&input.scaler)?;
+        let filter = parse_filter(&input.filter)?;
+        let capture_profile = CaptureProfileArtifact {
+            schema: PROFILE_SCHEMA.to_owned(),
+            provider: GamescopeProviderProvenance {
+                source: ProviderSource::GamescopeDefaultRemote,
+                environment_id: input.environment_id,
+                gamescope_version: input.gamescope_version,
+                backend_id: input.backend_id,
+                scaling_configuration: ScalingConfiguration {
+                    output_width: input.output_width,
+                    output_height: input.output_height,
+                    nested_width: input.nested_width,
+                    nested_height: input.nested_height,
+                    nested_refresh_hz: input.nested_refresh_hz,
+                    scaler,
+                    filter,
+                },
+            },
+            observed: ObservedContract {
+                pixel_format: PixelFormat::Bgrx,
+                video: input.observed_video_contract,
+                memory_type: input.memory_type,
+                stride: input.stride,
+            },
+            calibration_evidence_sha256: input.calibration_evidence_sha256,
+        };
+        let capture_profile_bytes = canonical_json(&capture_profile)
+            .map_err(|_| GamescopeProfileBindingError::InvalidDocument)?;
+        let capture_profile_sha256 = sha256(&capture_profile_bytes);
+        let source = FractionalRectangleArtifact::from_rectangle(input.geometry);
+        let artifact = BindingArtifact {
+            schema: BINDING_SCHEMA.to_owned(),
+            capture_profile,
+            normalizer: NormalizerArtifact {
+                schema: NORMALIZER_SCHEMA.to_owned(),
+                capture_profile_sha256: capture_profile_sha256.clone(),
+                canonical_frame_contract_id: CANONICAL_FRAME_CONTRACT_ID.to_owned(),
+                implementation: NORMALIZER_IMPLEMENTATION.to_owned(),
+                source,
+            },
+        };
+        artifact.validate()?;
+        let bytes =
+            canonical_json(&artifact).map_err(|_| GamescopeProfileBindingError::InvalidDocument)?;
+        if bytes.len() > MAX_ARTIFACT_BYTES {
+            return Err(GamescopeProfileBindingError::ArtifactTooLarge);
+        }
+        let artifact_sha256 = sha256(&bytes);
+        Self::parse(&bytes, &artifact_sha256)?;
+        Ok(AuthoredGamescopeProfileBinding {
+            bytes,
+            artifact_sha256,
+            capture_profile_sha256,
+        })
+    }
+
     /// Parses one canonical immutable binding selected by its expected SHA-256.
     ///
     /// # Errors
@@ -174,6 +269,16 @@ impl GamescopeProfileBinding {
     pub const fn nested_refresh_hz(&self) -> u32 {
         self.scaling_configuration.nested_refresh_hz
     }
+
+    #[must_use]
+    pub const fn output_width(&self) -> u32 {
+        self.scaling_configuration.output_width
+    }
+
+    #[must_use]
+    pub const fn output_height(&self) -> u32 {
+        self.scaling_configuration.output_height
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -250,6 +355,8 @@ enum ProviderSource {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ScalingConfiguration {
+    output_width: u32,
+    output_height: u32,
     nested_width: u32,
     nested_height: u32,
     nested_refresh_hz: u32,
@@ -259,7 +366,11 @@ struct ScalingConfiguration {
 
 impl ScalingConfiguration {
     fn validate(&self) -> Result<(), GamescopeProfileBindingError> {
-        if self.nested_width == 0
+        if self.output_width == 0
+            || self.output_width > 7_680
+            || self.output_height == 0
+            || self.output_height > 4_320
+            || self.nested_width == 0
             || self.nested_width > 7_680
             || self.nested_height == 0
             || self.nested_height > 4_320
@@ -371,6 +482,15 @@ struct FractionalRectangleArtifact {
 }
 
 impl FractionalRectangleArtifact {
+    fn from_rectangle(rectangle: FractionalRectangle) -> Self {
+        Self {
+            left: RationalArtifact::from_coordinate(rectangle.left()),
+            top: RationalArtifact::from_coordinate(rectangle.top()),
+            width: RationalArtifact::from_coordinate(rectangle.width()),
+            height: RationalArtifact::from_coordinate(rectangle.height()),
+        }
+    }
+
     fn rectangle(&self) -> Result<FractionalRectangle, GamescopeProfileBindingError> {
         Ok(FractionalRectangle::new(
             self.left.coordinate()?,
@@ -389,9 +509,38 @@ struct RationalArtifact {
 }
 
 impl RationalArtifact {
+    const fn from_coordinate(coordinate: RationalCoordinate) -> Self {
+        Self {
+            numerator: coordinate.numerator(),
+            denominator: coordinate.denominator(),
+        }
+    }
+
     fn coordinate(self) -> Result<RationalCoordinate, GamescopeProfileBindingError> {
         RationalCoordinate::new(self.numerator, self.denominator)
             .map_err(|_| GamescopeProfileBindingError::InvalidNormalizer)
+    }
+}
+
+fn parse_scaler(value: &str) -> Result<GamescopeScaler, GamescopeProfileBindingError> {
+    match value {
+        "auto" => Ok(GamescopeScaler::Auto),
+        "integer" => Ok(GamescopeScaler::Integer),
+        "fit" => Ok(GamescopeScaler::Fit),
+        "fill" => Ok(GamescopeScaler::Fill),
+        "stretch" => Ok(GamescopeScaler::Stretch),
+        _ => Err(GamescopeProfileBindingError::InvalidProfile),
+    }
+}
+
+fn parse_filter(value: &str) -> Result<GamescopeFilter, GamescopeProfileBindingError> {
+    match value {
+        "linear" => Ok(GamescopeFilter::Linear),
+        "nearest" => Ok(GamescopeFilter::Nearest),
+        "fsr" => Ok(GamescopeFilter::Fsr),
+        "nis" => Ok(GamescopeFilter::Nis),
+        "pixel" => Ok(GamescopeFilter::Pixel),
+        _ => Err(GamescopeProfileBindingError::InvalidProfile),
     }
 }
 
@@ -456,6 +605,8 @@ mod tests {
                 gamescope_version: "3.16.19-128-g7282613+".to_owned(),
                 backend_id: "sdl".to_owned(),
                 scaling_configuration: ScalingConfiguration {
+                    output_width: 2_556,
+                    output_height: 1_428,
                     nested_width: 1_920,
                     nested_height: 1_080,
                     nested_refresh_hz: 120,

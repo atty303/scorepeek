@@ -159,8 +159,22 @@ is outside this checkpoint.
   geometry. The whole binding digest is the normalizer-artifact identity. Parsing and exact observed
   contract comparison are pure, typed, bounded, and filesystem-free. Unknown fields, non-canonical
   encoding, digest or profile substitution, unsupported schemas, over-capacity contracts, and geometry
-  mismatch fail closed. No development-machine binding artifact, calibrated lease, `ObservedFrame`,
-  recognition handoff, or support claim exists yet.
+  mismatch fail closed. No calibrated lease, `ObservedFrame`, recognition handoff, or support claim
+  exists yet.
+  A second create-only session-sample boundary now adds exact bounded environment, Gamescope
+  version, backend, requested output dimensions, and complete nested scaling provenance before
+  capture. It rejects negotiated output mismatch, while preserving the existing callback, shutdown,
+  private publication, and pixel-free report boundaries. The binding author independently selects a
+  complete owned sample by manifest SHA-256, rehashes its bounded raw frame, accepts only explicit
+  rational geometry, and writes one canonical no-clobber binding file. Stored diagnostic facts use
+  a strict typed schema and reject unknown fields, unknown variants, missing fields, and type drift.
+  Binding publication fsyncs a unique private sibling temporary file, creates the final name by
+  no-clobber hard link, and fsyncs the parent directory. Current-process partial writes are removed
+  only after inode identity is confirmed; a partial temporary file left by a stopped process cannot
+  block retry and is preserved, while an exact final artifact is accepted idempotently and foreign
+  or different final bytes are rejected. Its report exposes only
+  stable error categories and binding/profile digests. The earlier sample command remains available
+  for unbound calibration evidence and no existing CLI was broken.
 - Destructive v2 private-corpus ingest/source/replay contracts. Every observed
   source binds only an opaque capture profile. Replay binds its normalizer,
   canonical frame contract, and shared canonical layout separately without
@@ -462,8 +476,27 @@ is outside this checkpoint.
 
 ## Verified in this checkpoint
 
+- A controlled development-machine session ran Gamescope
+  `3.16.19-128-g7282613+` with explicit SDL backend, 2556x1428 output, 1920x1080 nested size,
+  120-Hz nested refresh, auto scaler, and linear filter. An X11 marker viewer avoided a Flatpak mpv
+  Vulkan-layer warning whose captured frame correctly exposed that the first attempted sample was a
+  warning dialog rather than the marker; that first sample and binding were rejected and deleted.
+  The accepted sample negotiated 2556x1428 BGRx MemFd with 10,224-byte stride, captured one frame,
+  and completed receiver-before-provider shutdown with no dropped facts. Its private manifest and
+  frame SHA-256 values are `faef6770fae4fa3e21ffd069cb274e45d8ae3054bc75b69038ebbef3f574c6d0`
+  and `f5a6fea1f9e2e7eec214fef75b70bef7b55f61961dd00025abc36782090e8753`.
+  Create-only authoring produced binding SHA-256
+  `aad69103654afb3773198eebcb888db04ce86834c619f8781cc2f6c28405b2b2` and capture-profile
+  SHA-256 `e0a27efb0119a8711ada7b3ddc6811fc9fb669b7d1ce7abc4cbc89562365414e`.
+  Independent OpenCV review rehashed the complete chain and applied the bound 26/3, 0, 7616/3,
+  1428 geometry to the known marker. Stable interior mean absolute channel error was 0.200/255;
+  the whole image including deliberately sharp marker edges was 2.160/255 across 44,037 changed
+  pixels. The private sample and binding are retained outside the repository with 0700 directories
+  and 0600 files. This establishes one development-machine authoring artifact, not runtime admission,
+  semantic recognition, target-machine support, or a supported profile.
+
 - `mise run check` and the complete `mise run test` entry point passed on the development host.
-  The current workspace run covered 126 `scorepeek` library tests, 87 binary tests, 55 offline
+  The current workspace run covered 136 `scorepeek` library tests, 100 binary tests, 55 offline
   corpus tests, 75 offline Python OCR tests, and the recording-dataset E2E gate.
 - The Gamescope discovery and receiver contracts have deterministic tests for exact selection, zero/multiple
   candidate rejection, removal before the initial barrier, remove-and-replace, partial-count
@@ -883,8 +916,8 @@ is outside this checkpoint.
   the pixel-free gate does not identify displayed content, INFINITAS content and geometry remain
   unverified. Concurrent OBS/obs-vkcapture, daemon-disconnect and stream-loss classification distinct
   from selected-node loss, source recreation, long-soak release, calibrated RSS convergence,
-  copy/CPU/GPU/power cost, frame age, game p99 frametime, OBS lag, opaque profile identity, normalizer,
-  semantic recognition, and canonical diagnostic-run persistence also remain unverified.
+  copy/CPU/GPU/power cost, frame age, game p99 frametime, OBS lag, calibrated lease admission,
+  `ObservedFrame`, semantic recognition, and canonical diagnostic-run persistence also remain unverified.
 - The first real normalizer, canonical-frame production, shared result ROIs,
   result-screen predicate, and PP-OCRv6 field recognition are only an offline
   single-recording spike. The
@@ -1484,15 +1517,12 @@ two-level color shift. This validates the explicit geometry and sampling phase w
 equality a canonical correctness requirement. The temporary private-sample test was removed after
 the run; no pixels or environment path entered the repository.
 
-The immutable binding contract is now defined and independently validates the profile, calibration
-evidence, exact Gamescope version/backend/configuration, observed video/memory/stride contract, and
-fractional normalizer without registering a real profile. Next, capture or otherwise establish the
-missing exact backend provenance for a controlled sample, then author and independently review one
-development-machine binding artifact outside the repository's captured-frame boundary. Add explicit
-session provenance to a newly acquired lease and require both that provenance and the receiver's full
-negotiated contract to match the selected immutable binding before any profile-bearing frame type can
-exist. Record binding acceptance or its stable rejection category in the host-owned bounded capture
-diagnostic run; do not record artifact bodies, environment strings, pixels, or arbitrary properties.
+The immutable binding contract, session-provenance sample, one controlled development-machine
+artifact, and independent marker review now exist. Next, add explicit session provenance to a newly
+acquired lease and require both that provenance and the receiver's full negotiated contract to match
+the selected immutable binding before any profile-bearing frame type can exist. Record binding
+acceptance or its stable rejection category in the host-owned bounded capture diagnostic run; do not
+record artifact bodies, environment strings, pixels, or arbitrary properties.
 Advanced operators may supply separately calibrated fractional geometry, but the runtime will not
 measure borders, infer geometry, generate profiles, or fall back automatically. Dimensions or filter
 metadata alone never establish identity. Re-exercise the gate while

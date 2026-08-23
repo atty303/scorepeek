@@ -6,14 +6,15 @@ use std::time::{Duration, Instant};
 
 use pipewire as pw;
 use pw::spa::utils::result::AsyncSeq;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 mod binding;
 mod normalizer;
 mod receiver;
 
 pub use binding::{
-    GamescopeProfileBinding, GamescopeProfileBindingError, ObservedContractMismatch,
+    AuthoredGamescopeProfileBinding, GamescopeProfileBinding,
+    GamescopeProfileBindingAuthoringInput, GamescopeProfileBindingError, ObservedContractMismatch,
 };
 pub use normalizer::{
     FractionalLinearGeometry, FractionalRectangle, RationalCoordinate, UnboundCanonicalFrame,
@@ -27,13 +28,13 @@ pub use receiver::{
 const MAX_REGISTRY_GLOBALS: u32 = 4_096;
 const ITERATION_SLICE: Duration = Duration::from_millis(25);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureSourceKind {
     GamescopeDefaultRemote,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureDiagnosticOperation {
     SourceAcquisition,
@@ -46,7 +47,7 @@ pub enum CaptureDiagnosticOperation {
     Shutdown,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureDiagnosticStatus {
     Success,
@@ -54,7 +55,7 @@ pub enum CaptureDiagnosticStatus {
     Timeout,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureErrorType {
     RemoteConnectionFailed,

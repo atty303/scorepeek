@@ -90,6 +90,8 @@ mise run capture:gamescope:test:live -- --duration-ms 3000
 mise run capture:gamescope:test:live -- --duration-ms 3000 --consume-interval-ms 250
 mise run capture:gamescope:test:lifecycle -- --duration-ms 100 --runs 100 --consume-interval-ms 0
 mise run capture:gamescope:calibration:sample -- --output /absolute/private/sample --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear
+mise run capture:gamescope:calibration:session-sample -- --output /absolute/private/session-sample --environment-id development-machine-v1 --gamescope-version 3.16.19-128-g7282613+ --backend sdl --output-width 2556 --output-height 1428 --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear
+mise run capture:gamescope:binding:author -- --calibration /absolute/private/session-sample --calibration-sha256 SHA256 --output /absolute/private/binding.json --left-numerator 26 --left-denominator 3 --top-numerator 0 --top-denominator 1 --width-numerator 7616 --width-denominator 3 --height-numerator 1428 --height-denominator 1
 mise run catalog:sync
 mise run corpus:recording:import -- --store /absolute/private/store --capture-context /absolute/private/capture-context.json /absolute/recordings/complete-run.mkv
 mise run corpus:dataset:seal -- --store /absolute/private/store calibration-001
@@ -164,6 +166,18 @@ unknown output is never replaced. The completion manifest is atomically
 published from an fsync-complete private staging file. The artifact remains explicitly
 uncalibrated: declared scaling configuration and negotiated caps do not assign
 a capture profile or authorize recognition.
+
+`capture:gamescope:calibration:session-sample` is the profile-authoring input
+gate. It additionally binds bounded exact environment, Gamescope version,
+backend, requested output dimensions, and the complete nested scaling
+configuration, and rejects the sample if negotiated dimensions differ from the
+declared output. `capture:gamescope:binding:author` independently selects that
+complete private sample by manifest SHA-256, rehashes its raw frame, accepts
+only explicit rational geometry, and publishes one create-only canonical
+binding file. Its JSON result contains only binding/profile digests and a
+stable error category; paths, provenance strings, pixels, and arbitrary
+properties are not emitted. Neither command establishes a calibrated runtime
+lease, `ObservedFrame`, recognition handoff, or supported profile.
 
 `scorepeek catalog sync` acquires the catalog writer lock, resolves Tachi's
 `main` branch to an exact Git commit, serially fetches the three IIDX seed JSON
