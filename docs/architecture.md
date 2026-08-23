@@ -271,6 +271,16 @@ failure as unbound while the diagnostic run is still open, then finalizes that r
 execution and provenance plumbing only; it does not resolve catalogs or accept fields, songs, or
 events.
 
+ADR 0034 adds a pure immutable candidate domain derived from every song in the active catalog.
+For each result title and artist, or each music-select central title, artist, and active-list title,
+it retains every song with independent minimum edit distance and exact integer maximum normalized
+similarity. Raw, exact comparison-key, and collision-safe folded forms share the registered
+comparison-key contract; folded observations compare only with domain-unique folded candidate
+forms. A search-term-only song makes domain construction fail with its typed ID rather than being
+dropped. The music-select title presentations remain separate consistency evidence, not independent
+votes. This boundary does not rank, truncate, intersect, stabilize, accept, suppress, mutate
+context, record diagnostics, or emit events.
+
 The first read-only application controls inspect an existing diagnostic root
 through a shared strict inventory. `status` exposes fixed retention policy and
 the current exclusive-writer state plus bounded aggregate byte/completeness

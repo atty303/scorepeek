@@ -67,7 +67,12 @@
   capacity 2のexact pending-sequence ledgerからabandonmentを記録し、lifecycle timeout/worker lossは架空sequenceへ結び付けずunboundにする。
   field workerから先に終了し、synthetic current-run cropでcomplete outputとvalue-free fact、opt-out時のartifact 0件、capacity loss時の
   recognition非干渉とpartial manifest、cross-run pending rejectionを検証済み。Gamescope capture loopからの実submit、catalog解決、
-  accepted resultは未着手。
+  accepted resultは未着手。さらにactive catalog全songをstable ID順に保持するpure candidate domainを追加した。resultの
+  title/artistとmusic-selectのcentral title/artist/active-list titleごとにraw/exact comparison key/domain-unique folded formを比較し、
+  minimum edit distanceとinteger normalized similarityを全songについて別々に保持する。ranking、top-N truncation、field間集約、
+  threshold、accepted field、song decision、selection context更新、diagnostic side effect、eventは行わない。Gamescope capture loopへの
+  統合と実行cost測定は未着手。folded observationはdomain-unique folded candidate formとのみ比較し、search-term-only songは
+  dropやpanicではなくtyped errorでdomain構築を停止する。
   OBS/obs-vkcapture並行、
   soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了

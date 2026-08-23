@@ -72,6 +72,9 @@ authoritative.
 - [ADR 0033: Own live field observation as one application session](0033-own-live-field-observation-as-one-application-session.md)
   joins the immutable recognition session and registered field worker under one current-run submit,
   poll, diagnostic-degradation, and ordered-finish owner without adding decision authority.
+- [ADR 0034: Score every catalog song without ranking](0034-score-every-catalog-song-without-ranking.md)
+  fixes a pure full-catalog comparison domain that preserves separate screen-local text scores for
+  every song without ranking, truncation, acceptance, temporal state, or event authority.
 
 ## Historical
 

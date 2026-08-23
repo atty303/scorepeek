@@ -383,6 +383,11 @@ impl CatalogSong {
     }
 
     #[must_use]
+    pub fn artist(&self) -> &str {
+        &self.artist
+    }
+
+    #[must_use]
     pub fn charts(&self) -> &BTreeMap<ChartKey, Chart> {
         &self.charts
     }

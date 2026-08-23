@@ -7,11 +7,17 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+mod catalog_candidates;
 mod title;
 mod title_decoder;
 mod title_onnx;
 mod title_preprocessor;
 
+pub use catalog_candidates::{
+    CatalogCandidateDomain, CatalogCandidateDomainError, CatalogNormalizedSimilarity,
+    CatalogTextCandidateScore, MusicSelectSongCandidateObservation, ResultSongCandidateObservation,
+    ScreenCatalogCandidateObservations,
+};
 pub use title::{
     DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
     DiagnosticTitleCandidate, DiagnosticTitleError, DiagnosticTitleUnknownReason,

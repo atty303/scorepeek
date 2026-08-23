@@ -8,9 +8,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: derive screen-local full-catalog candidate observations from complete
-  typed result or music-select field outputs without granting song, accepted-field, suppression, or
-  event authority prematurely.
+- Current execution focus: connect the integrated application owner to a bounded Gamescope
+  field-observation gate without exposing OCR text, catalog strings, or pixels in its public result.
 
 ## Included deliverables
 
@@ -156,6 +155,15 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   lifecycle timeout or worker loss is unbound rather than attributed to an invented frame. These
   degradations do not replace recognition. Finish closes the field worker before finalizing the
   diagnostic run.
+- ADR 0034 adds an immutable full-catalog candidate domain. It retains every active catalog song in
+  stable ID order and computes separate minimum edit distance and exact integer maximum normalized
+  similarity for each observed result title/artist or music-select central-title/artist/active-list
+  title. Raw, exact comparison-key, and domain-unique folded forms are compared without ranking,
+  truncation, intersection, threshold, accepted field, song decision, temporal state, suppression,
+  diagnostic side effect, or event authority. Folded observations compare only with admitted
+  domain-unique folded candidate forms; a search-term-only song fails domain construction with its
+  typed ID instead of panicking or disappearing. Unimplemented non-text fields remain explicit
+  inputs and do not fabricate scores.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -247,6 +255,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   while reporting `field_observer_outstanding_limit`, counts the unconsumed first result as
   `field_observation_abandoned` at its exact sequence, and finalizes as partial. Another run cannot
   consume that pending output, and a disconnected pending reports worker loss only once.
+- Focused candidate-domain tests retain every synthetic catalog song when title and artist evidence
+  conflict, preserve the two music-select title presentations as separate evidence, verify
+  collision-safe width-fold comparison including a cross-song collision, fail typed on a
+  search-term-only song, verify independent integer absolute/normalized metrics, and represent an
+  empty catalog as zero candidates without inventing an unknown-song decision.
 
 ## Unverified boundaries
 
@@ -255,6 +268,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   driven it with a real admitted frame or private INFINITAS crop set. Offline `CanonicalFrame`
   extraction evidence still cannot fabricate the live generation/profile/normalizer owner or enter
   this live gate.
+- The full-catalog candidate domain is not yet constructed by the registered worker or integrated
+  session. No development-machine or Gamescope run has measured its inference-plus-scoring cost,
+  queue behavior, or output on private INFINITAS fields.
 - The bounded CLI gate is not an ordinary long-running application loop. Live queue-full or worker
   loss was not forced on the development machine; bounded unit tests cover queue drop, worker loss,
   generation rejection, opt-out, and diagnostic non-interference. Target-host cost remains unknown.
@@ -287,11 +303,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Define screen-local full-catalog candidate observations from the complete open-text field set,
-   without choosing a song, accepting a field, suppressing an outcome, or emitting an event.
-2. Add an explicit bounded Gamescope field-observation gate using the integrated application owner,
+1. Add an explicit bounded Gamescope field-observation gate using the integrated application owner,
    without exposing OCR text or pixels in its public result.
-3. Verify that gate with separately authorized private INFINITAS
+2. Verify that gate with separately authorized private INFINITAS
    evidence before claiming layout, OCR, accepted-field, target-host, or support results.
 
 Do not proceed to OCR-only tuning, automatic calibration, Portal/OBS fallback, soak/performance, or

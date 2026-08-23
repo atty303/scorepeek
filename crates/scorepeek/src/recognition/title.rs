@@ -187,11 +187,11 @@ fn candidate_match<T: Copy + Ord>(matches: BTreeSet<T>) -> CandidateMatch<T> {
     }
 }
 
-fn exact_comparison_key(value: &str) -> String {
+pub(super) fn exact_comparison_key(value: &str) -> String {
     value.nfc().filter(|character| *character != ' ').collect()
 }
 
-fn folded_comparison_key(value: &str) -> String {
+pub(super) fn folded_comparison_key(value: &str) -> String {
     value
         .nfc()
         .filter_map(|character| match character {
