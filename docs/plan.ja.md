@@ -38,7 +38,7 @@
   実装済み。generation/profile/normalizer mixingはfail closedで、最初のnormalization success/failureだけを
   bounded typed factへ記録する。独立した2つのcontrolled marker lifetimeでgenerationを1から2へrolloverし、
   同じcanonical RGB8 digestを再現した。さらに`NormalizedCanonicalFrame`のpixel ownerを2回目のRGB copyなしで
-  application-owned `LiveCanonicalFrame`へ移し、固定cadenceのbounded diagnostic workerへofferする境界まで実装した。
+  application-owned `BoundCanonicalFrame`へ移し、固定cadenceのbounded diagnostic workerへofferする境界まで実装した。
   callerがgeneration/profile/normalizer/pixelを作れる旧public constructorは削除し、profileとnormalizer identityは選択済み
   bindingからのみ導出する。provider/receiver/frame/diagnostic runはprovider lease起点のmonotonic clockを共有し、
   receiver/provider shutdown結果を確定してからdiagnostic manifestをfinalizeする。controlled marker animationのgeneration 16では13 normalized frames中3 framesをcompleteな
@@ -48,7 +48,7 @@
   completeなimmutable descriptorを所有するapplication recognition sessionも実装し、binding identity変更時は旧runへ
   typed change factを記録してfinishした後にだけ次sessionを開始する。result/music-selectだけをoffline exportと同じ
   filesystem-free screen-local crop APIへrouteし、live frame ownerを借用したtyped RGB8 cropsを生成する境界も実装済み。
-  resultはtitle/artist/difficulty/level/notes/current score、music selectはcentral title/artist/selected chart/active-list titleを
+  resultはtitle/artist/clear type/difficulty/level/notes/current score、music selectはcentral title/artist/selected chart/active-list titleを
   必須fieldとして持ち、補助contextだけの中間shapeは残さない。未測定fieldを空のoptional cropとして表現せず、unknownも
   field inputsを生成できない。さらにcomplete descriptorから導出したrun IDと全bindingを保持し、loaderをcapture開始前に
   1回だけ呼ぶapplication-owned field-observer worker境界を実装した。capacity 2のnon-blocking queue、worker-only execution、
@@ -57,7 +57,7 @@
   PP-OCRv6-small model digest、固定CPU runtime manifest digestを照合し、catalog/dictionary/ONNX sessionをworker開始前に
   1回だけ保持するproduction resource loaderとread-only gateを実装した。gateはresourceをproduction field workerへ移し、cropを
   submitせずbounded teardownまで確認する。さらにcomplete crop setをworker thread上で登録済みruntimeへ通すproduction
-  screen-field observerを実装した。resultはtitle/artist textとdifficulty/level/notes/current scoreの明示的な未実装状態、
+  screen-field observerを実装した。resultはtitle/artist/clear type textとdifficulty/level/notes/current scoreの明示的な未実装状態、
   music-selectはcentral title/artist/active-list title textとselected chartの明示的な未実装状態を持つcompleteなscreen別型だけを
   出力し、単一field失敗もfield ID付きwhole-screen errorにする。diagnosticはscreen、固定field count、失敗field IDだけを保持し、
   OCR textやpixelsを記録せず、opt-out/rejectionは認識結果を変えない。さらに同一immutable descriptorのrecognition sessionと
@@ -75,6 +75,11 @@
   registered resourceとcandidate domainをcapture開始前にloadし、Gamescope capture loopからfield submit、inference、全song scoring、
   capture/worker/diagnosticの順序付き終了までを一つのbounded gateへ統合済み。private INFINITAS frameによる実submit、実行cost、
   queue behavior、candidate内容は未検証で、accepted resultは未実装。
+  さらにcorpus録画由来の全canonical frameをsource adapterから同じapplication sessionへ供給するrecording simulationを実装した。
+  profileはrecording/recording manifest/source manifest/probe/coverage label/extraction/normalizer/layout/catalog/model/runtime、全frame span、source pacing、diagnostic
+  sampling、coverage labelの全resultを一対一で覆うepisode windowとexact `CLEAR TYPE`をbindする。result presenceは固定headerと2本のpanel境界で判定し、可変な背景色や
+  背景絵を使わない。対象録画459 framesでは2 `FAILED`と1 `CLEAR`の3 episode、120 field observations、全song scoring、complete
+  diagnosticを同じproduction worker経路で確認済み。これはaccepted result、他clear type、別背景variant、live supportまたは性能の根拠ではない。
   OBS/obs-vkcapture並行、
   soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了

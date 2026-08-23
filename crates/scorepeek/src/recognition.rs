@@ -460,8 +460,11 @@ impl Roi {
 pub struct ResultLayout {
     presence: ResultPresencePredicate,
     pub header: Roi,
+    pub upper_panel_edge: Roi,
+    pub lower_panel_edge: Roi,
     pub title: Roi,
     pub artist: Roi,
+    pub clear_type: Roi,
     pub difficulty: Roi,
     pub level: Roi,
     pub notes: Roi,
@@ -511,7 +514,7 @@ impl RepeatedRoi {
 #[serde(deny_unknown_fields)]
 struct ResultPresencePredicate {
     warm_pixels_min: u32,
-    red_pixels_min: u32,
+    horizontal_edge_pixels_min: u32,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -573,6 +576,7 @@ pub struct ResultCropEvidence {
 pub enum ResultCropField {
     Title,
     Artist,
+    ClearType,
     Difficulty,
     Level,
     Notes,
@@ -743,6 +747,7 @@ pub struct ResultScreenRgb8Crops {
     pub canonical_layout_sha256: String,
     pub title: Rgb8Crop,
     pub artist: Rgb8Crop,
+    pub clear_type: Rgb8Crop,
     pub difficulty: Rgb8Crop,
     pub level: Rgb8Crop,
     pub notes: Rgb8Crop,
@@ -772,6 +777,7 @@ pub enum ScreenRgb8Crops {
 pub enum ScreenTextField {
     ResultTitle,
     ResultArtist,
+    ResultClearType,
     MusicSelectCentralTitle,
     MusicSelectArtist,
     MusicSelectActiveListTitle,
@@ -783,6 +789,7 @@ impl ScreenTextField {
         match self {
             Self::ResultTitle => "result_title",
             Self::ResultArtist => "result_artist",
+            Self::ResultClearType => "result_clear_type",
             Self::MusicSelectCentralTitle => "music_select_central_title",
             Self::MusicSelectArtist => "music_select_artist",
             Self::MusicSelectActiveListTitle => "music_select_active_list_title",
@@ -813,6 +820,7 @@ impl FieldNotObserved {
 pub struct ResultScreenFieldObservations {
     pub title: DynamicTextObservation,
     pub artist: DynamicTextObservation,
+    pub clear_type: DynamicTextObservation,
     pub difficulty: FieldNotObserved,
     pub level: FieldNotObserved,
     pub notes: FieldNotObserved,
@@ -847,7 +855,7 @@ impl ScreenFieldObservations {
     #[must_use]
     pub const fn diagnostic_field_counts(&self) -> (u8, u8) {
         match self {
-            Self::Result(_) => (2, 4),
+            Self::Result(_) => (3, 4),
             Self::MusicSelect(_) => (3, 1),
         }
     }
@@ -905,6 +913,7 @@ pub fn observe_screen_fields<E>(
             ScreenFieldObservations::Result(ResultScreenFieldObservations {
                 title: observe(ScreenTextField::ResultTitle, &crops.title)?,
                 artist: observe(ScreenTextField::ResultArtist, &crops.artist)?,
+                clear_type: observe(ScreenTextField::ResultClearType, &crops.clear_type)?,
                 difficulty: FieldNotObserved::OBSERVER_NOT_IMPLEMENTED,
                 level: FieldNotObserved::OBSERVER_NOT_IMPLEMENTED,
                 notes: FieldNotObserved::OBSERVER_NOT_IMPLEMENTED,
@@ -1015,8 +1024,9 @@ struct IntegratedContextDecodeRequestRow<'a> {
 pub struct ResultPresenceEvidence {
     pub warm_pixels: u32,
     pub warm_pixels_min: u32,
-    pub red_pixels: u32,
-    pub red_pixels_min: u32,
+    pub upper_panel_edge_pixels: u32,
+    pub lower_panel_edge_pixels: u32,
+    pub horizontal_edge_pixels_min: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -1054,8 +1064,11 @@ impl CanonicalLayout {
         }
         for roi in [
             layout.result.header,
+            layout.result.upper_panel_edge,
+            layout.result.lower_panel_edge,
             layout.result.title,
             layout.result.artist,
+            layout.result.clear_type,
             layout.result.difficulty,
             layout.result.level,
             layout.result.notes,
@@ -1076,9 +1089,14 @@ impl CanonicalLayout {
             .checked_mul(layout.result.header.height)
             .ok_or(RecognitionError::InvalidCanonicalLayout)?;
         if layout.result.presence.warm_pixels_min == 0
-            || layout.result.presence.red_pixels_min == 0
+            || layout.result.presence.horizontal_edge_pixels_min == 0
             || layout.result.presence.warm_pixels_min > header_pixels
-            || layout.result.presence.red_pixels_min > header_pixels
+            || layout.result.upper_panel_edge.height != 2
+            || layout.result.lower_panel_edge.height != 2
+            || layout.result.presence.horizontal_edge_pixels_min
+                > layout.result.upper_panel_edge.width
+            || layout.result.presence.horizontal_edge_pixels_min
+                > layout.result.lower_panel_edge.width
         {
             return Err(RecognitionError::InvalidCanonicalLayout);
         }
@@ -1133,7 +1151,7 @@ pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, Recognitio
 /// Applies only the embedded screen predicates to one fixed-contract canonical RGB8 slice.
 ///
 /// This pure primitive deliberately carries no capture, generation, normalizer, extraction, or
-/// model authority. Live application code must combine it with an admitted live-frame owner before
+/// model authority. Application code must combine it with a source-bound canonical owner before
 /// the result can enter a diagnostic run or later acceptance logic.
 ///
 /// # Errors
@@ -1148,16 +1166,20 @@ pub fn inspect_canonical_rgb8(
     let layout = CanonicalLayout::load()?;
     let header = crop_canonical_pixels(pixels, layout.result.header)?;
     let mut warm = 0_u32;
-    let mut red = 0_u32;
     for pixel in header.chunks_exact(3) {
         let [r, g, b] = [pixel[0], pixel[1], pixel[2]];
         if r > 100 && g > 70 && b < 170 && r >= g && g >= b {
             warm += 1;
         }
-        if r > 30 && u16::from(r) * 2 > u16::from(g) * 3 && u16::from(r) * 2 > u16::from(b) * 3 {
-            red += 1;
-        }
     }
+    let upper_panel_edge_pixels = horizontal_edge_pixels(
+        &crop_canonical_pixels(pixels, layout.result.upper_panel_edge)?,
+        layout.result.upper_panel_edge.width,
+    );
+    let lower_panel_edge_pixels = horizontal_edge_pixels(
+        &crop_canonical_pixels(pixels, layout.result.lower_panel_edge)?,
+        layout.result.lower_panel_edge.width,
+    );
     let music_header = crop_canonical_pixels(pixels, layout.music_select.header)?;
     let cyan_header_pixels = music_header
         .chunks_exact(3)
@@ -1177,7 +1199,8 @@ pub fn inspect_canonical_rgb8(
         })
         .fold(0_u32, |count, _| count + 1);
     let result_present = warm >= layout.result.presence.warm_pixels_min
-        && red >= layout.result.presence.red_pixels_min;
+        && upper_panel_edge_pixels >= layout.result.presence.horizontal_edge_pixels_min
+        && lower_panel_edge_pixels >= layout.result.presence.horizontal_edge_pixels_min;
     let music_select_present = cyan_header_pixels
         >= layout.music_select.presence.cyan_header_pixels_min
         && colored_level_pixels >= layout.music_select.presence.colored_level_pixels_min;
@@ -1191,8 +1214,9 @@ pub fn inspect_canonical_rgb8(
         result_presence: ResultPresenceEvidence {
             warm_pixels: warm,
             warm_pixels_min: layout.result.presence.warm_pixels_min,
-            red_pixels: red,
-            red_pixels_min: layout.result.presence.red_pixels_min,
+            upper_panel_edge_pixels,
+            lower_panel_edge_pixels,
+            horizontal_edge_pixels_min: layout.result.presence.horizontal_edge_pixels_min,
         },
         music_select_presence: MusicSelectPresenceEvidence {
             cyan_header_pixels,
@@ -1201,6 +1225,21 @@ pub fn inspect_canonical_rgb8(
             colored_level_pixels_min: layout.music_select.presence.colored_level_pixels_min,
         },
     })
+}
+
+fn horizontal_edge_pixels(pixels: &[u8], width: u32) -> u32 {
+    let row_bytes = width as usize * 3;
+    pixels[..row_bytes]
+        .chunks_exact(3)
+        .zip(pixels[row_bytes..].chunks_exact(3))
+        .filter(|(upper, lower)| {
+            let luma = |pixel: &[u8]| {
+                (u32::from(pixel[0]) * 77 + u32::from(pixel[1]) * 150 + u32::from(pixel[2]) * 29)
+                    / 256
+            };
+            luma(upper).abs_diff(luma(lower)) > 45
+        })
+        .fold(0, |count, _| count + 1)
 }
 
 fn crop_canonical_pixels(pixels: &[u8], roi: Roi) -> Result<Vec<u8>, RecognitionError> {
@@ -1246,6 +1285,11 @@ pub fn export_result_crops(
     let selections = [
         (ResultCropField::Title, "title.ppm", routed.title),
         (ResultCropField::Artist, "artist.ppm", routed.artist),
+        (
+            ResultCropField::ClearType,
+            "clear-type.ppm",
+            routed.clear_type,
+        ),
         (
             ResultCropField::Difficulty,
             "difficulty.ppm",
@@ -1484,6 +1528,7 @@ pub fn route_screen_rgb8_crops(
             canonical_layout_sha256: CanonicalLayout::sha256(),
             title: crop(pixels, canonical.result.title)?,
             artist: crop(pixels, context.result.artist)?,
+            clear_type: crop(pixels, canonical.result.clear_type)?,
             difficulty: crop(pixels, canonical.result.difficulty)?,
             level: crop(pixels, canonical.result.level)?,
             notes: crop(pixels, canonical.result.notes)?,
@@ -1751,6 +1796,11 @@ pub(super) fn read_title_crop_artifact(
         (ResultCropField::Title, "title.ppm", layout.result.title),
         (ResultCropField::Artist, "artist.ppm", layout.result.artist),
         (
+            ResultCropField::ClearType,
+            "clear-type.ppm",
+            layout.result.clear_type,
+        ),
+        (
             ResultCropField::Difficulty,
             "difficulty.ppm",
             layout.result.difficulty,
@@ -1850,6 +1900,25 @@ mod tests {
             capture_profile_id: "0".repeat(64),
             normalizer_artifact_sha256: "1".repeat(64),
             frame_extraction_sha256: "2".repeat(64),
+        }
+    }
+
+    fn paint_result_presence(pixels: &mut [u8], layout: &CanonicalLayout) {
+        for index in 0..layout.result.presence.warm_pixels_min as usize {
+            let x = layout.result.header.x as usize + index % layout.result.header.width as usize;
+            let y = layout.result.header.y as usize + index / layout.result.header.width as usize;
+            pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&[140, 100, 60]);
+        }
+        for edge in [
+            layout.result.upper_panel_edge,
+            layout.result.lower_panel_edge,
+        ] {
+            for x in 0..layout.result.presence.horizontal_edge_pixels_min as usize {
+                let upper = (edge.y as usize * CANONICAL_WIDTH as usize + edge.x as usize + x) * 3;
+                let lower = upper + CANONICAL_WIDTH as usize * 3;
+                pixels[upper..upper + 3].copy_from_slice(&[0, 0, 0]);
+                pixels[lower..lower + 3].copy_from_slice(&[255, 255, 255]);
+            }
         }
     }
 
@@ -1970,9 +2039,10 @@ mod tests {
         let ScreenFieldObservations::Result(result) = result else {
             panic!("result crops produced another screen output");
         };
-        assert_eq!(result_calls, 2);
+        assert_eq!(result_calls, 3);
         assert_eq!(result.title.open_text, "result-1");
         assert_eq!(result.artist.open_text, "result-2");
+        assert_eq!(result.clear_type.open_text, "result-3");
         assert_eq!(
             [
                 result.difficulty,
@@ -2035,25 +2105,13 @@ mod tests {
     fn result_presence_is_fail_closed() {
         let layout = CanonicalLayout::load().unwrap();
         let mut pixels = vec![0_u8; CANONICAL_BYTES];
-        let warm = [140, 100, 60];
-        let red = [90, 20, 20];
-        for index in 0..layout.result.presence.warm_pixels_min as usize {
-            let x = layout.result.header.x as usize + index % layout.result.header.width as usize;
-            let y = layout.result.header.y as usize + index / layout.result.header.width as usize;
-            pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&warm);
-        }
-        for index in 0..layout.result.presence.red_pixels_min as usize {
-            let x = layout.result.header.x as usize + index % layout.result.header.width as usize;
-            let y = layout.result.header.y as usize + layout.result.header.height as usize
-                - 1
-                - index / layout.result.header.width as usize;
-            pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&red);
-        }
+        paint_result_presence(&mut pixels, &layout);
         let frame = test_frame(pixels);
         let snapshot = inspect(&frame).unwrap();
         assert_eq!(snapshot.screen, ScreenClass::Result);
         assert_eq!(snapshot.result_presence.warm_pixels, 3_000);
-        assert_eq!(snapshot.result_presence.red_pixels, 12_000);
+        assert_eq!(snapshot.result_presence.upper_panel_edge_pixels, 518);
+        assert_eq!(snapshot.result_presence.lower_panel_edge_pixels, 518);
 
         let empty = test_frame(vec![0_u8; CANONICAL_BYTES]);
         assert_eq!(inspect(&empty).unwrap().screen, ScreenClass::Unknown);
@@ -2075,6 +2133,22 @@ mod tests {
             inspect(&test_frame(ambiguous)).unwrap().screen,
             ScreenClass::Unknown
         );
+    }
+
+    #[test]
+    fn result_presence_does_not_depend_on_the_background_palette() {
+        let layout = CanonicalLayout::load().unwrap();
+        for background in [[0, 0, 0], [170, 20, 20], [20, 80, 190], [220, 220, 220]] {
+            let mut pixels = Vec::with_capacity(CANONICAL_BYTES);
+            for _ in 0..CANONICAL_BYTES / 3 {
+                pixels.extend_from_slice(&background);
+            }
+            paint_result_presence(&mut pixels, &layout);
+            assert_eq!(
+                inspect(&test_frame(pixels)).unwrap().screen,
+                ScreenClass::Result
+            );
+        }
     }
 
     #[test]
@@ -2183,23 +2257,7 @@ mod tests {
         );
 
         let mut result_pixels = vec![0_u8; CANONICAL_BYTES];
-        for index in 0..canonical.result.presence.warm_pixels_min as usize {
-            let x =
-                canonical.result.header.x as usize + index % canonical.result.header.width as usize;
-            let y =
-                canonical.result.header.y as usize + index / canonical.result.header.width as usize;
-            result_pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3]
-                .copy_from_slice(&[140, 100, 60]);
-        }
-        for index in 0..canonical.result.presence.red_pixels_min as usize {
-            let x =
-                canonical.result.header.x as usize + index % canonical.result.header.width as usize;
-            let y = canonical.result.header.y as usize + canonical.result.header.height as usize
-                - 1
-                - index / canonical.result.header.width as usize;
-            result_pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3]
-                .copy_from_slice(&[90, 20, 20]);
-        }
+        paint_result_presence(&mut result_pixels, &canonical);
         let result_output = directory.path().join("result-context");
         let result_summary = export_integrated_context_crops(
             &test_frame(result_pixels),
@@ -2233,20 +2291,7 @@ mod tests {
     fn result_crops_are_layout_bound_and_digest_bound() {
         let layout = CanonicalLayout::load().unwrap();
         let mut pixels = vec![0_u8; CANONICAL_BYTES];
-        let warm = [140, 100, 60];
-        let red = [90, 20, 20];
-        for index in 0..layout.result.presence.warm_pixels_min as usize {
-            let x = layout.result.header.x as usize + index % layout.result.header.width as usize;
-            let y = layout.result.header.y as usize + index / layout.result.header.width as usize;
-            pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&warm);
-        }
-        for index in 0..layout.result.presence.red_pixels_min as usize {
-            let x = layout.result.header.x as usize + index % layout.result.header.width as usize;
-            let y = layout.result.header.y as usize + layout.result.header.height as usize
-                - 1
-                - index / layout.result.header.width as usize;
-            pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&red);
-        }
+        paint_result_presence(&mut pixels, &layout);
         let directory = tempdir().unwrap();
         let output = directory.path().join("crops");
         let summary = export_result_crops(&test_frame(pixels), "result-001", &output).unwrap();
@@ -2257,7 +2302,7 @@ mod tests {
             artifact.schema,
             "scorepeek-private-canonical-result-crops-v1"
         );
-        assert_eq!(artifact.crops.len(), 6);
+        assert_eq!(artifact.crops.len(), 7);
         assert_eq!(artifact.crops[0].field, "title");
         assert_eq!(artifact.crops[0].roi, layout.result.title);
         assert_eq!(artifact.crops[0].bytes, 600 * 100 * 3 + 15);

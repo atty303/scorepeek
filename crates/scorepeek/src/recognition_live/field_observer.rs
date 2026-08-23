@@ -10,7 +10,7 @@ use scorepeek::recognition::{
     ScreenRgb8Crops,
 };
 
-use super::LiveScreenRgb8Crops;
+use super::BoundScreenRgb8Crops;
 use crate::diagnostic_recording::DiagnosticRunDescriptor;
 
 pub const DEFAULT_FIELD_OBSERVER_QUEUE_CAPACITY: usize = 2;
@@ -81,7 +81,6 @@ impl FieldObserverSessionBinding {
 
     fn from_descriptor(descriptor: &DiagnosticRunDescriptor) -> Option<Self> {
         if !descriptor.is_valid()
-            || descriptor.binding.replay.is_some()
             || descriptor.binding.canonical_layout_sha256 != CanonicalLayout::sha256()
         {
             return None;
@@ -461,7 +460,7 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
     /// queue, or a disconnected worker.
     pub fn try_observe(
         &mut self,
-        live: LiveScreenRgb8Crops<'_>,
+        live: BoundScreenRgb8Crops<'_>,
     ) -> Result<PendingFieldObservation<O::Output>, FieldObserverOfferError> {
         let frame = live.frame;
         let binding = &self.binding;
@@ -682,9 +681,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::diagnostic_live::LiveCanonicalFrame;
+    use crate::diagnostic_live::BoundCanonicalFrame;
     use crate::diagnostic_recording::{DiagnosticPolicy, DiagnosticResource, DiagnosticRunStatus};
-    use crate::recognition_live::LiveRecognitionSession;
+    use crate::recognition_live::RecognitionSession;
 
     fn descriptor(run_id: &str, generation: u64) -> DiagnosticRunDescriptor {
         DiagnosticRunDescriptor {
@@ -708,12 +707,19 @@ mod tests {
         }
     }
 
-    fn solid_frame(color: [u8; 3], generation: u64, sequence: u64) -> LiveCanonicalFrame {
+    fn solid_frame(color: [u8; 3], generation: u64, sequence: u64) -> BoundCanonicalFrame {
         let mut pixels = Vec::with_capacity(crate::diagnostic_recording::CANONICAL_BYTES);
         for _ in 0..crate::diagnostic_recording::CANONICAL_BYTES / 3 {
             pixels.extend_from_slice(&color);
         }
-        LiveCanonicalFrame::for_test_pixels(
+        if color == [200, 100, 20] {
+            for y in [452, 656] {
+                for x in 0..518 {
+                    pixels[(y * 1920 + x) * 3..][..3].copy_from_slice(&[0, 0, 0]);
+                }
+            }
+        }
+        BoundCanonicalFrame::for_test_pixels(
             generation,
             sequence,
             sequence * 20,
@@ -764,7 +770,7 @@ mod tests {
         assert_eq!(loads.load(Ordering::Relaxed), 1);
 
         let root = tempfile::tempdir().unwrap();
-        let mut session = LiveRecognitionSession::start(
+        let mut session = RecognitionSession::start(
             root.path(),
             descriptor.clone(),
             DiagnosticPolicy {
@@ -827,7 +833,7 @@ mod tests {
             FieldObserverWorker::start_for_test(&descriptor, |_| Ok::<_, ()>(PanickingObserver), 1)
                 .unwrap();
         let root = tempfile::tempdir().unwrap();
-        let mut session = LiveRecognitionSession::start(
+        let mut session = RecognitionSession::start(
             root.path(),
             descriptor,
             DiagnosticPolicy {
@@ -883,7 +889,7 @@ mod tests {
         )
         .unwrap();
         let root = tempfile::tempdir().unwrap();
-        let mut session = LiveRecognitionSession::start(
+        let mut session = RecognitionSession::start(
             root.path(),
             run_descriptor,
             DiagnosticPolicy {
@@ -913,7 +919,7 @@ mod tests {
         let _ = session.finish(DiagnosticRunStatus::Success, 200);
 
         let other_root = tempfile::tempdir().unwrap();
-        let mut other = LiveRecognitionSession::start(
+        let mut other = RecognitionSession::start(
             other_root.path(),
             descriptor("other-field-output", 1),
             DiagnosticPolicy {
@@ -981,7 +987,7 @@ mod tests {
         )
         .unwrap();
         let root = tempfile::tempdir().unwrap();
-        let mut session = LiveRecognitionSession::start(
+        let mut session = RecognitionSession::start(
             root.path(),
             descriptor("frame-binding", 1),
             DiagnosticPolicy {
@@ -998,7 +1004,7 @@ mod tests {
         ));
 
         let second_root = tempfile::tempdir().unwrap();
-        let mut different_binding_session = LiveRecognitionSession::start(
+        let mut different_binding_session = RecognitionSession::start(
             second_root.path(),
             descriptor("worker-binding", 2),
             DiagnosticPolicy {
@@ -1074,7 +1080,7 @@ mod tests {
         )
         .unwrap();
         let root = tempfile::tempdir().unwrap();
-        let mut session = LiveRecognitionSession::start(
+        let mut session = RecognitionSession::start(
             root.path(),
             descriptor.clone(),
             DiagnosticPolicy {
@@ -1131,7 +1137,7 @@ mod tests {
             FieldObserverWorker::start_for_test(&descriptor, |_| Ok::<_, ()>(NoopObserver), 1)
                 .unwrap();
         let root = tempfile::tempdir().unwrap();
-        let mut session = LiveRecognitionSession::start(
+        let mut session = RecognitionSession::start(
             root.path(),
             descriptor,
             DiagnosticPolicy {
@@ -1361,7 +1367,7 @@ mod tests {
         )
         .unwrap();
         let root = tempfile::tempdir().unwrap();
-        let mut session = LiveRecognitionSession::start(
+        let mut session = RecognitionSession::start(
             root.path(),
             descriptor,
             DiagnosticPolicy {
@@ -1399,26 +1405,27 @@ mod tests {
     }
 
     #[test]
-    fn invalid_binding_fails_before_loading() {
+    fn replay_binding_is_accepted_but_invalid_layout_fails_before_loading() {
         let mut invalid = descriptor("invalid-observer", 1);
         invalid.binding.replay = Some(crate::diagnostic_recording::DiagnosticReplayBinding {
             request_sha256: "8".repeat(64),
             extraction_sha256: "9".repeat(64),
         });
         let loads = AtomicUsize::new(0);
-        let result = FieldObserverWorker::start_for_test(
+        let replay_worker = FieldObserverWorker::start_for_test(
             &invalid,
             |_| {
                 loads.fetch_add(1, Ordering::Relaxed);
                 Ok::<_, ()>(NoopObserver)
             },
             1,
+        )
+        .unwrap();
+        assert_eq!(loads.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            replay_worker.finish(Duration::from_secs(1)).status,
+            FieldObserverFinishStatus::Complete
         );
-        assert!(matches!(
-            result,
-            Err(FieldObserverStartError::InvalidBinding)
-        ));
-        assert_eq!(loads.load(Ordering::Relaxed), 0);
 
         let mut obsolete_layout = descriptor("obsolete-layout-observer", 1);
         obsolete_layout.binding.canonical_layout_sha256 = "a".repeat(64);
@@ -1434,6 +1441,6 @@ mod tests {
             result,
             Err(FieldObserverStartError::InvalidBinding)
         ));
-        assert_eq!(loads.load(Ordering::Relaxed), 0);
+        assert_eq!(loads.load(Ordering::Relaxed), 1);
     }
 }

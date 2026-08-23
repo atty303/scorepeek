@@ -8,8 +8,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: verify the bounded Gamescope field-observation gate with separately
-  authorized private evidence before defining any accepted-field or song-resolution policy.
+- Current execution focus: the corpus recording simulation prerequisite is complete; the next
+  boundary is a separately executed live INFINITAS Gamescope field-observation run, without yet
+  defining any accepted-field or song-resolution policy.
 
 ## Included deliverables
 
@@ -84,7 +85,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - `gamescope-canonical-frame-gate` performs bounded binding selection, acquisition, admission,
   one-frame normalization and ordered shutdown. Its result contains only identities, generation,
   source sequence, canonical RGB8 digest, and bounded capture facts; it does not retain pixels.
-- Application `LiveCanonicalFrame` values can now be created only by consuming a
+- Application `BoundCanonicalFrame` values can now be created only by consuming a
   `NormalizedCanonicalFrame`. The canonical `Box<[u8]>` is moved into an `Arc` owner without a
   second RGB copy; diagnostic queue offers clone only that owner. The old public constructor that
   accepted caller-invented generation, profile, normalizer, timing, and pixels no longer exists.
@@ -96,13 +97,13 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   run bounds share the provider-lease monotonic origin. The gate shuts down receiver/provider before
   finalizing the diagnostic run, so a teardown failure is retained as an error manifest rather than
   an immutable successful run.
-- `LiveRecognitionObservation` borrows the same `LiveCanonicalFrame` owner used by diagnostics and
+- `RecognitionObservation` borrows the same `BoundCanonicalFrame` owner used by diagnostics and
   applies the embedded result/music-select screen predicate without another full-frame RGB copy.
   It cannot detach from or invent live generation/profile/normalizer evidence. The pure RGB8
   predicate has no provenance or acceptance authority by itself.
 - The backward-compatible `gamescope-recognition-handoff-gate` keeps the earlier diagnostic-only
   command intact. It requires the descriptor's actual embedded layout digest before acquisition,
-  and now runs through an application-owned `LiveRecognitionSession`. The session validates the
+  and now runs through an application-owned `RecognitionSession`. The session validates the
   complete immutable descriptor, offers canonical evidence before inspection, rejects mismatched
   frames before recognition, and records each typed screen observation through the same worker.
   Its stable identity binds capture generation, profile, normalizer, layout, catalog, model, and
@@ -111,7 +112,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   failure remains separate from the screen result.
 - Offline crop export and the live session now share one synchronous, deterministic,
   filesystem-free RGB field-routing API with screen-specific required fields. `result` carries
-  title, artist, difficulty, level, notes, and current score; `music_select` carries central title,
+  title, artist, clear type, difficulty, level, notes, and current score; `music_select` carries central title,
   artist, selected chart, and active-list title. This removes the earlier supplemental-context-only
   live shape that omitted song title. `unknown` cannot construct field inputs. Live inputs borrow
   the admitted canonical owner and carry no OCR, song, accepted-field, or event authority. Fields
@@ -136,8 +137,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   and requires bounded teardown without submitting crops. Its JSON report contains only typed
   status and selected digests; it does not add resource bodies, paths, environment strings, or
   pixels as fields, while ordinary typed error causes remain actionable on stderr.
-- ADR 0032 adds the production screen-field observer and complete screen-specific output shapes.
-  Result observations contain title and artist text plus explicit not-implemented states for
+- ADR 0032 as narrowed by ADR 0036 adds the production screen-field observer and complete
+  screen-specific output shapes. Result observations contain title, artist, and clear-type text plus explicit not-implemented states for
   difficulty, level, notes, and current score. Music-select observations contain central title,
   artist, and active-list title text plus an explicit not-implemented selected-chart state. There
   are no title-only, artist-only, supplemental, or optional partial screen outputs. Failure of any
@@ -172,6 +173,16 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   one immutable descriptor. Success requires at least one completed candidate set. Its public JSON
   contains typed status and bounded screen/worker/candidate counts but no OCR text, catalog strings,
   song IDs, candidate scores, pixels, paths, artifact bodies, or environment/session strings.
+- ADR 0036 adds a recording canonical-source adapter beside the Gamescope adapter. A create-only
+  profile binds the original recording, recording/source manifests, probe, reviewed coverage label,
+  complete canonical extraction, normalizer/layout/resources, delivery pacing, diagnostic sampling,
+  and ordered result windows with exact expected `CLEAR TYPE` text. The extraction source manifest
+  must match the recording manifest, and profile episodes exactly cover every strictly parsed label
+  result. Every extraction frame enters the same recognition session, crop router, registered
+  worker, and full-catalog domain used after live normalization. Result presence uses the fixed
+  result header and two measured panel boundaries; background palette and result artwork are not
+  predicate inputs. This simulation has no accepted field, song, event, live-support, or performance
+  authority.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -245,8 +256,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   provenance, rejection across either run ID or immutable binding, non-blocking queue capacity,
   global accepted-but-unconsumed capacity, race-free abandoned-result accounting, supervisor
   retention through blocking observer teardown, destructor-inclusive bounded finish timeout, and
-  nonterminal timeout reporting. Replay-bound or noncurrent-layout descriptors fail before the
-  loader executes.
+  nonterminal timeout reporting. Replay-bound descriptors retain their replay identity and are
+  accepted by the common worker; noncurrent-layout descriptors fail before the loader executes.
 - Focused resource-loader tests verify the canonical runtime manifest, pre-I/O model/runtime
   mismatch, location-specific I/O source preservation, absent active catalog, active-catalog digest
   mismatch, and that the resource-owning observer type satisfies the ADR 0030 `Send` boundary.
@@ -268,13 +279,24 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   collision-safe width-fold comparison including a cross-song collision, fail typed on a
   search-term-only song, verify independent integer absolute/normalized metrics, and represent an
   empty catalog as zero candidates without inventing an unknown-song decision.
+- The development-machine recording profile remained outside the repository and was selected by
+  SHA-256 `05b3c249627fb99968c1b464f310a9d13f5c23e5a0594237ea5272af5c0f05c6`.
+  It binds the corpus recording `2026-08-17 19-25-31.mkv` by digest, its 459-frame canonical
+  extraction, the current layout and registered catalog/model/runtime, 250 ms source pacing, a
+  5,000 ms diagnostic frame cadence, and three reviewed result windows. The production field path
+  inspected all 459 frames, classified exactly 24 result frames inside those windows, completed all
+  three episodes as two exact `FAILED` and one exact `CLEAR`, submitted 120 field observations,
+  retained 120 full-catalog candidate sets and 305,760 song scores, and observed the expected exact
+  clear type on 22 frames. The field worker and diagnostic run both completed; the final 92-frame,
+  579-fact diagnostic manifest had no drops or degradations and SHA-256
+  `3e1d5b743bd66b4b08523ebb3d389406a587791500a65ada5c6bc74d4255b2b1`.
 
 ## Unverified boundaries
 
-- The production gate exists, but no Gamescope run has yet driven it with a classified admitted
-  frame or private INFINITAS crop set. Offline `CanonicalFrame` extraction evidence still cannot
-  fabricate the live generation/profile/normalizer owner or enter this gate. No development-machine
-  run has measured inference-plus-scoring cost, queue behavior, or candidate output on private
+- The production path has processed the private recording extraction, but no Gamescope run has yet
+  driven it with a classified admitted live frame. Recording evidence retains replay provenance and
+  cannot fabricate the live generation/profile/normalizer owner. No development-machine run has
+  measured live inference-plus-scoring cost, queue behavior, or candidate output on Gamescope-fed
   INFINITAS fields.
 - The bounded CLI gate is not an ordinary long-running application loop. Live queue-full or worker
   loss was not forced on the development machine; bounded unit tests cover queue drop, worker loss,
@@ -286,8 +308,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - OBS/obs-vkcapture coexistence, PipeWire daemon disconnect, stream loss distinct from node loss,
   source recreation, long soak, FD/thread/RSS convergence, frame age, CPU/memory/copy/GPU/power
   cost, game p99 frametime, and OBS lag remain unverified.
-- The existing real result and music-select recognition evidence remains offline/private. There is
-  no verified Gamescope-driven live field submission, catalog resolution, accepted field gate,
+- The real result and music-select simulation evidence remains offline/private. There is no verified
+  Gamescope-driven live field submission, catalog resolution, accepted field gate,
   event daemon, target-host performance gate, or supported capture profile.
 - Current recordings and provisional labels do not establish title-disjoint result accuracy,
   calibrated thresholds, result dwell, miss denominator, deduplication, or release accuracy.
@@ -308,9 +330,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. With explicit authority for private INFINITAS evidence, run the bounded Gamescope
-   field-observation gate against the exact active catalog/model/runtime and retain only its
-   value-free public result and bounded diagnostic run.
+1. Run the now-unblocked bounded Gamescope field-observation gate against the exact active
+   catalog/model/runtime and private INFINITAS session, retaining only its value-free public result
+   and bounded diagnostic run.
 2. Review that run before defining ranking, field acceptance, song resolution, temporal agreement,
    target-host performance, or support contracts.
 

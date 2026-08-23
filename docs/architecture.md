@@ -251,14 +251,23 @@ open-text method. The read-only resource gate transfers the loaded resources int
 field worker and requires bounded teardown without crop submission. It proves resource admission
 and worker ownership only; it is not live recognition or performance evidence.
 
-ADR 0032 supplies the production screen-field observer and exact complete output shapes. Result
-output always contains observed title and artist text together with explicit observer-not-implemented
+ADR 0032, as narrowed by ADR 0036, supplies the production screen-field observer and exact complete
+output shapes. Result output always contains observed title, artist, and `CLEAR TYPE` text together with explicit observer-not-implemented
 states for difficulty, level, notes, and current score. Music-select output always contains observed
 central-title, artist, and active-list-title text together with an explicit observer-not-implemented
 selected chart. A text-field failure returns a typed whole-screen error instead of a partial value.
 The associated diagnostic operation records only the screen, fixed observed/unimplemented counts,
 and an optional typed failed-field ID; OCR strings and pixels are not diagnostic facts. These values
 still have no catalog-candidate, song-decision, accepted-field, suppression, or event authority.
+
+ADR 0036 adds source adapters on the other side of the shared bound-canonical owner. The Gamescope
+adapter acquires and normalizes an admitted frame; the recording adapter reads a profile-bound
+canonical extraction derived from a corpus recording. Both then enter the same recognition session,
+crop router, registered worker, and candidate domain. A create-only recording simulation profile
+binds recording/extraction/layout/resource provenance, ordered result windows, exact expected
+`CLEAR TYPE` text, source pacing, and diagnostic sampling. Result presence uses the fixed result
+header and panel boundaries rather than the variable result background. This replay gate grants no
+accepted field, song, event, live-profile support, or performance authority.
 
 ADR 0033 joins that observer and the diagnostic-backed recognition session under one application
 owner created from the same immutable descriptor. Resource loading completes before the recognition

@@ -46,7 +46,7 @@ be established, the field is `unknown`.
 | difficulty and level | Always | Unique closed difficulty and complete level value consistent with the accepted catalog chart |
 | notes | Always | Complete positive integer consistent with the recognized result layout |
 | current score | Always | Complete non-negative value satisfying `score <= 2 * notes` |
-| clear, DJ level, miss | Applicable after each field's presence predicate is independently calibrated | Unique complete value; `miss <= notes` when present |
+| clear, DJ level, miss | Applicable after each field's presence predicate is independently calibrated | `clear` comes from the exact `CLEAR TYPE` field value, never the result background; each value must be unique and complete, and `miss <= notes` when present |
 | best/current/new, options, graph, play speed, dead/loveletter, rival/radar | Optional v1 capability only after its named layout and presence/absence predicates pass a dedicated release gate | Complete field-specific evidence; unsupported capability is `not_applicable`, enabled-but-unrecognized capability is `unknown` |
 
 A result event requires all mandatory rows to be `known`, `savable == true`,

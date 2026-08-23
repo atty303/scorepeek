@@ -78,6 +78,10 @@ authoritative.
 - [ADR 0035: Run bounded Gamescope field observation without publishing values](0035-run-bounded-gamescope-field-observation.md)
   connects registered inference and full-catalog scoring to one bounded admitted Gamescope run,
   with value-free public results and ordered capture, worker, and diagnostic shutdown.
+- [ADR 0036: Replay recordings through the production field path](0036-replay-recordings-through-the-production-field-path.md)
+  fixes the recording-source adapter and digest-bound simulation profile, removes result-background
+  color from the result predicate, and observes exact `CLEAR TYPE` text through the production
+  worker before any separately authorized live INFINITAS run.
 
 ## Historical
 

@@ -103,8 +103,11 @@ def load_layout_contract(
         {
             "presence",
             "header",
+            "upper_panel_edge",
+            "lower_panel_edge",
             "title",
             "artist",
+            "clear_type",
             "difficulty",
             "level",
             "notes",
@@ -115,11 +118,29 @@ def load_layout_contract(
     result_files = {
         "title": "title.ppm",
         "artist": "artist.ppm",
+        "clear_type": "clear-type.ppm",
         "difficulty": "difficulty.ppm",
         "level": "level.ppm",
         "notes": "notes.ppm",
         "current_score": "current-score.ppm",
     }
+    _exact_object(
+        result["presence"],
+        {"warm_pixels_min", "horizontal_edge_pixels_min"},
+        "result presence predicate",
+    )
+    for field in ("header", "upper_panel_edge", "lower_panel_edge"):
+        roi = _exact_object(
+            result[field], {"x", "y", "width", "height"}, f"{field} ROI"
+        )
+        if (
+            not all(isinstance(roi[key], int) and roi[key] >= 0 for key in roi)
+            or roi["width"] == 0
+            or roi["height"] == 0
+            or roi["x"] + roi["width"] > raw["width"]
+            or roi["y"] + roi["height"] > raw["height"]
+        ):
+            raise SpikeError("canonical result presence ROI is invalid")
     result_expected = {}
     for field, filename in result_files.items():
         roi = _exact_object(

@@ -7,7 +7,7 @@ use scorepeek::recognition::{
     ScreenRgb8Crops, inspect_canonical_rgb8, route_screen_rgb8_crops,
 };
 
-use crate::diagnostic_live::{LiveCanonicalFrame, LiveDiagnosticBridge, LiveDiagnosticBridgeError};
+use crate::diagnostic_live::{BoundCanonicalFrame, DiagnosticBridge};
 use crate::diagnostic_recording::{
     DiagnosticErrorType, DiagnosticFinishOutcome, DiagnosticPolicy, DiagnosticRunDescriptor,
     DiagnosticRunStatus,
@@ -28,18 +28,18 @@ pub mod screen_field_observer;
 /// The result cannot outlive or detach from the profile- and generation-bearing frame that was
 /// inspected. It carries no accepted field or event authority.
 #[derive(Debug)]
-pub struct LiveRecognitionObservation<'a> {
-    frame: &'a LiveCanonicalFrame,
+pub struct RecognitionObservation<'a> {
+    frame: &'a BoundCanonicalFrame,
     canonical_layout_sha256: String,
     predicate: ScreenPredicateObservation,
 }
 
-impl<'a> LiveRecognitionObservation<'a> {
+impl<'a> RecognitionObservation<'a> {
     /// Applies the embedded screen predicate to one admitted live canonical owner.
     ///
     /// # Errors
     /// Returns an error when the fixed canonical pixel or embedded layout contract is invalid.
-    pub fn inspect(frame: &'a LiveCanonicalFrame) -> Result<Self, RecognitionError> {
+    pub fn inspect(frame: &'a BoundCanonicalFrame) -> Result<Self, RecognitionError> {
         Ok(Self {
             frame,
             canonical_layout_sha256: CanonicalLayout::sha256(),
@@ -53,7 +53,7 @@ impl<'a> LiveRecognitionObservation<'a> {
     }
 
     #[must_use]
-    pub(crate) const fn frame(&self) -> &LiveCanonicalFrame {
+    pub(crate) const fn frame(&self) -> &BoundCanonicalFrame {
         self.frame
     }
 
@@ -64,30 +64,21 @@ impl<'a> LiveRecognitionObservation<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LiveRecognitionSessionError {
+pub enum RecognitionSessionError {
     InvalidBinding,
-    ReplayBindingNotAllowed,
     CanonicalLayoutMismatch,
     BindingUnchanged,
     FrameBindingMismatch,
     RecognitionFailed,
 }
 
-impl From<LiveDiagnosticBridgeError> for LiveRecognitionSessionError {
-    fn from(error: LiveDiagnosticBridgeError) -> Self {
-        match error {
-            LiveDiagnosticBridgeError::ReplayBindingNotAllowed => Self::ReplayBindingNotAllowed,
-        }
-    }
-}
-
 /// Recognition and diagnostic outcomes for one frame under one immutable live binding.
 ///
 /// Diagnostic queue state is reported separately and never changes the recognition observation.
 #[derive(Debug)]
-pub struct LiveRecognitionFrameResult<'a> {
-    pub observation: LiveRecognitionObservation<'a>,
-    pub field_inputs: Option<LiveScreenRgb8Crops<'a>>,
+pub struct RecognitionFrameResult<'a> {
+    pub observation: RecognitionObservation<'a>,
+    pub field_inputs: Option<BoundScreenRgb8Crops<'a>>,
     pub diagnostic_frame: DiagnosticEnqueueOutcome,
     pub diagnostic_fact: DiagnosticEnqueueOutcome,
 }
@@ -96,26 +87,26 @@ pub struct LiveRecognitionFrameResult<'a> {
 ///
 /// These crops are observer inputs only. They carry no accepted field, song, or event authority.
 #[derive(Debug)]
-pub struct LiveScreenRgb8Crops<'a> {
-    frame: &'a LiveCanonicalFrame,
-    run_binding: Arc<LiveRecognitionRunBinding>,
+pub struct BoundScreenRgb8Crops<'a> {
+    frame: &'a BoundCanonicalFrame,
+    run_binding: Arc<RecognitionRunBinding>,
     crops: ScreenRgb8Crops,
 }
 
 #[derive(Debug)]
-struct LiveRecognitionRunBinding {
+struct RecognitionRunBinding {
     run_id: String,
     binding_sha256: String,
 }
 
 /// A borrowed view of one opaque live screen-crop owner.
 #[derive(Clone, Copy, Debug)]
-pub enum LiveScreenRgb8CropsRef<'a> {
+pub enum BoundScreenRgb8CropsRef<'a> {
     Result(&'a ResultScreenRgb8Crops),
     MusicSelect(&'a MusicSelectScreenRgb8Crops),
 }
 
-impl LiveScreenRgb8Crops<'_> {
+impl BoundScreenRgb8Crops<'_> {
     #[must_use]
     pub const fn screen(&self) -> ScreenClass {
         match &self.crops {
@@ -125,23 +116,23 @@ impl LiveScreenRgb8Crops<'_> {
     }
 
     #[must_use]
-    pub const fn crops(&self) -> LiveScreenRgb8CropsRef<'_> {
+    pub const fn crops(&self) -> BoundScreenRgb8CropsRef<'_> {
         match &self.crops {
-            ScreenRgb8Crops::Result(crops) => LiveScreenRgb8CropsRef::Result(crops),
-            ScreenRgb8Crops::MusicSelect(crops) => LiveScreenRgb8CropsRef::MusicSelect(crops),
+            ScreenRgb8Crops::Result(crops) => BoundScreenRgb8CropsRef::Result(crops),
+            ScreenRgb8Crops::MusicSelect(crops) => BoundScreenRgb8CropsRef::MusicSelect(crops),
         }
     }
 
     #[must_use]
-    pub const fn frame(&self) -> &LiveCanonicalFrame {
+    pub const fn frame(&self) -> &BoundCanonicalFrame {
         self.frame
     }
 }
 
-pub struct LiveRecognitionTransition {
+pub struct RecognitionTransition {
     pub finished: DiagnosticFinishOutcome,
     pub binding_change_diagnostic: DiagnosticEnqueueOutcome,
-    pub next: LiveRecognitionSession,
+    pub next: RecognitionSession,
 }
 
 /// Application-owned recognition lifetime for one immutable diagnostic binding.
@@ -149,27 +140,27 @@ pub struct LiveRecognitionTransition {
 /// This is a resource boundary, not an inferred game session. A different capture generation or
 /// recognition input is rejected; `transition` records the explicit change, finishes the old run,
 /// and only then starts the replacement session.
-pub struct LiveRecognitionSession {
-    run_binding: Arc<LiveRecognitionRunBinding>,
-    bridge: LiveDiagnosticBridge,
+pub struct RecognitionSession {
+    run_binding: Arc<RecognitionRunBinding>,
+    bridge: DiagnosticBridge,
     last_sequence: Option<u64>,
 }
 
-impl LiveRecognitionSession {
-    /// Starts a live session only for the embedded canonical layout and a non-replay binding.
+impl RecognitionSession {
+    /// Starts a source-bound session only for the embedded canonical layout.
     ///
     /// # Errors
-    /// Returns a typed error for an invalid, replay-bound, or noncanonical descriptor.
+    /// Returns a typed error for an invalid or noncanonical descriptor.
     pub fn start(
         root: &Path,
         descriptor: DiagnosticRunDescriptor,
         policy: DiagnosticPolicy,
-    ) -> Result<Self, LiveRecognitionSessionError> {
-        let binding_sha256 = validate_live_descriptor(&descriptor)?;
+    ) -> Result<Self, RecognitionSessionError> {
+        let binding_sha256 = validate_descriptor(&descriptor)?;
         let run_id = descriptor.run_id.clone();
-        let bridge = LiveDiagnosticBridge::start(root, descriptor, policy)?;
+        let bridge = DiagnosticBridge::start(root, descriptor, policy);
         Ok(Self {
-            run_binding: Arc::new(LiveRecognitionRunBinding {
+            run_binding: Arc::new(RecognitionRunBinding {
                 run_id,
                 binding_sha256,
             }),
@@ -184,26 +175,26 @@ impl LiveRecognitionSession {
     /// Returns a typed error before acceptance when the frame binding or recognition fails.
     pub fn inspect<'a>(
         &mut self,
-        frame: &'a LiveCanonicalFrame,
-    ) -> Result<LiveRecognitionFrameResult<'a>, LiveRecognitionSessionError> {
+        frame: &'a BoundCanonicalFrame,
+    ) -> Result<RecognitionFrameResult<'a>, RecognitionSessionError> {
         if !self.bridge.matches_frame(frame) {
             let _ = self.bridge.offer(frame);
-            return Err(LiveRecognitionSessionError::FrameBindingMismatch);
+            return Err(RecognitionSessionError::FrameBindingMismatch);
         }
         let diagnostic_frame = self.bridge.offer(frame);
         self.last_sequence = Some(frame.sequence());
-        let Ok(observation) = LiveRecognitionObservation::inspect(frame) else {
+        let Ok(observation) = RecognitionObservation::inspect(frame) else {
             let _ = self.bridge.record_recognition_failure(frame);
-            return Err(LiveRecognitionSessionError::RecognitionFailed);
+            return Err(RecognitionSessionError::RecognitionFailed);
         };
         let field_inputs = match observation.screen() {
             ScreenClass::Unknown => None,
             screen @ (ScreenClass::Result | ScreenClass::MusicSelect) => {
                 let Ok(routed) = route_screen_rgb8_crops(frame.pixels(), screen) else {
                     let _ = self.bridge.record_recognition_failure(frame);
-                    return Err(LiveRecognitionSessionError::RecognitionFailed);
+                    return Err(RecognitionSessionError::RecognitionFailed);
                 };
-                Some(LiveScreenRgb8Crops {
+                Some(BoundScreenRgb8Crops {
                     frame,
                     run_binding: Arc::clone(&self.run_binding),
                     crops: routed,
@@ -211,7 +202,7 @@ impl LiveRecognitionSession {
             }
         };
         let diagnostic_fact = self.bridge.record_screen_observation(&observation);
-        Ok(LiveRecognitionFrameResult {
+        Ok(RecognitionFrameResult {
             observation,
             field_inputs,
             diagnostic_frame,
@@ -322,10 +313,10 @@ impl LiveRecognitionSession {
         next_descriptor: DiagnosticRunDescriptor,
         next_policy: DiagnosticPolicy,
         monotonic_ms: u64,
-    ) -> Result<LiveRecognitionTransition, LiveRecognitionSessionError> {
-        let next_binding_sha256 = validate_live_descriptor(&next_descriptor)?;
+    ) -> Result<RecognitionTransition, RecognitionSessionError> {
+        let next_binding_sha256 = validate_descriptor(&next_descriptor)?;
         if next_binding_sha256 == self.run_binding.binding_sha256 {
-            return Err(LiveRecognitionSessionError::BindingUnchanged);
+            return Err(RecognitionSessionError::BindingUnchanged);
         }
         let binding_change_diagnostic = self.bridge.record_binding_change(
             self.last_sequence.unwrap_or(0),
@@ -336,7 +327,7 @@ impl LiveRecognitionSession {
             .bridge
             .finish(DiagnosticRunStatus::Success, monotonic_ms);
         let next = Self::start(root, next_descriptor, next_policy)?;
-        Ok(LiveRecognitionTransition {
+        Ok(RecognitionTransition {
             finished,
             binding_change_diagnostic,
             next,
@@ -349,14 +340,13 @@ impl LiveRecognitionSession {
         descriptor: DiagnosticRunDescriptor,
         policy: DiagnosticPolicy,
         supervisor: &std::sync::Mutex<std::sync::Weak<()>>,
-    ) -> Result<Self, LiveRecognitionSessionError> {
-        let binding_sha256 = validate_live_descriptor(&descriptor)?;
+    ) -> Result<Self, RecognitionSessionError> {
+        let binding_sha256 = validate_descriptor(&descriptor)?;
         let run_id = descriptor.run_id.clone();
-        let bridge = LiveDiagnosticBridge::start_with_supervisor_for_test(
-            root, descriptor, policy, supervisor,
-        );
+        let bridge =
+            DiagnosticBridge::start_with_supervisor_for_test(root, descriptor, policy, supervisor);
         Ok(Self {
-            run_binding: Arc::new(LiveRecognitionRunBinding {
+            run_binding: Arc::new(RecognitionRunBinding {
                 run_id,
                 binding_sha256,
             }),
@@ -383,22 +373,19 @@ impl DiagnosticScreenFieldObservation for RegisteredScreenFieldObservation {
     }
 }
 
-fn validate_live_descriptor(
+fn validate_descriptor(
     descriptor: &DiagnosticRunDescriptor,
-) -> Result<String, LiveRecognitionSessionError> {
+) -> Result<String, RecognitionSessionError> {
     let binding = &descriptor.binding;
-    if binding.replay.is_some() {
-        return Err(LiveRecognitionSessionError::ReplayBindingNotAllowed);
-    }
     if binding.canonical_layout_sha256 != CanonicalLayout::sha256() {
-        return Err(LiveRecognitionSessionError::CanonicalLayoutMismatch);
+        return Err(RecognitionSessionError::CanonicalLayoutMismatch);
     }
     if !descriptor.is_valid() {
-        return Err(LiveRecognitionSessionError::InvalidBinding);
+        return Err(RecognitionSessionError::InvalidBinding);
     }
     binding
         .identity_sha256()
-        .ok_or(LiveRecognitionSessionError::InvalidBinding)
+        .ok_or(RecognitionSessionError::InvalidBinding)
 }
 
 #[cfg(test)]
@@ -434,19 +421,26 @@ mod tests {
         }
     }
 
-    fn solid_frame(color: [u8; 3], sequence: u64) -> LiveCanonicalFrame {
+    fn solid_frame(color: [u8; 3], sequence: u64) -> BoundCanonicalFrame {
         let mut pixels = Vec::with_capacity(crate::diagnostic_recording::CANONICAL_BYTES);
         for _ in 0..crate::diagnostic_recording::CANONICAL_BYTES / 3 {
             pixels.extend_from_slice(&color);
         }
-        LiveCanonicalFrame::for_test_pixels(1, sequence, 0, pixels.into_boxed_slice())
+        if color == [200, 100, 20] {
+            for y in [452, 656] {
+                for x in 0..518 {
+                    pixels[(y * 1920 + x) * 3..][..3].copy_from_slice(&[0, 0, 0]);
+                }
+            }
+        }
+        BoundCanonicalFrame::for_test_pixels(1, sequence, 0, pixels.into_boxed_slice())
     }
 
     #[test]
     fn diagnostic_opt_out_does_not_change_recognition() {
         let root = tempfile::tempdir().unwrap();
-        let frame = LiveCanonicalFrame::for_test(1, 1, 0);
-        let mut session = LiveRecognitionSession::start(
+        let frame = BoundCanonicalFrame::for_test(1, 1, 0);
+        let mut session = RecognitionSession::start(
             root.path(),
             descriptor("disabled-session", 1),
             DiagnosticPolicy {
@@ -477,17 +471,14 @@ mod tests {
         };
 
         let result_frame = solid_frame([200, 100, 20], 1);
-        let mut result_session = LiveRecognitionSession::start(
-            root.path(),
-            descriptor("result-fields", 1),
-            policy.clone(),
-        )
-        .unwrap();
+        let mut result_session =
+            RecognitionSession::start(root.path(), descriptor("result-fields", 1), policy.clone())
+                .unwrap();
         let result = result_session.inspect(&result_frame).unwrap();
         let result_fields = result.field_inputs.unwrap();
         assert_eq!(result_fields.screen(), ScreenClass::Result);
         assert!(std::ptr::eq(result_fields.frame(), &raw const result_frame));
-        let LiveScreenRgb8CropsRef::Result(crops) = result_fields.crops() else {
+        let BoundScreenRgb8CropsRef::Result(crops) = result_fields.crops() else {
             panic!("result screen routed to music-select crops");
         };
         let layout = CanonicalLayout::load().unwrap();
@@ -501,13 +492,12 @@ mod tests {
 
         let music_frame = solid_frame([0, 180, 220], 1);
         let mut music_session =
-            LiveRecognitionSession::start(root.path(), descriptor("music-fields", 1), policy)
-                .unwrap();
+            RecognitionSession::start(root.path(), descriptor("music-fields", 1), policy).unwrap();
         let music = music_session.inspect(&music_frame).unwrap();
         let music_fields = music.field_inputs.unwrap();
         assert_eq!(music_fields.screen(), ScreenClass::MusicSelect);
         assert!(std::ptr::eq(music_fields.frame(), &raw const music_frame));
-        let LiveScreenRgb8CropsRef::MusicSelect(crops) = music_fields.crops() else {
+        let BoundScreenRgb8CropsRef::MusicSelect(crops) = music_fields.crops() else {
             panic!("music-select screen routed to result crops");
         };
         assert_eq!(crops.central_title.roi, layout.music_select.selected_title);
@@ -520,7 +510,7 @@ mod tests {
     #[test]
     fn mismatched_generation_stops_before_recognition() {
         let root = tempfile::tempdir().unwrap();
-        let mut session = LiveRecognitionSession::start(
+        let mut session = RecognitionSession::start(
             root.path(),
             descriptor("mismatched-session", 1),
             DiagnosticPolicy {
@@ -530,8 +520,8 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            session.inspect(&LiveCanonicalFrame::for_test(2, 1, 0)),
-            Err(LiveRecognitionSessionError::FrameBindingMismatch)
+            session.inspect(&BoundCanonicalFrame::for_test(2, 1, 0)),
+            Err(RecognitionSessionError::FrameBindingMismatch)
         ));
     }
 
@@ -539,8 +529,8 @@ mod tests {
     fn diagnostic_sequence_rejection_does_not_change_recognition() {
         let root = tempfile::tempdir().unwrap();
         let supervisor = std::sync::Mutex::new(std::sync::Weak::new());
-        let frame = LiveCanonicalFrame::for_test(1, 1, 0);
-        let mut session = LiveRecognitionSession::start_with_supervisor_for_test(
+        let frame = BoundCanonicalFrame::for_test(1, 1, 0);
+        let mut session = RecognitionSession::start_with_supervisor_for_test(
             root.path(),
             descriptor("sequence-rejection", 1),
             DiagnosticPolicy::default(),
@@ -569,14 +559,15 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let supervisor = std::sync::Mutex::new(std::sync::Weak::new());
         let old_descriptor = descriptor("old-session", 1);
-        let mut old = LiveRecognitionSession::start_with_supervisor_for_test(
+        let mut old = RecognitionSession::start_with_supervisor_for_test(
             root.path(),
             old_descriptor,
             DiagnosticPolicy::default(),
             &supervisor,
         )
         .unwrap();
-        old.inspect(&LiveCanonicalFrame::for_test(1, 1, 0)).unwrap();
+        old.inspect(&BoundCanonicalFrame::for_test(1, 1, 0))
+            .unwrap();
         let next_descriptor = descriptor("next-session", 2);
         let expected_next_binding = next_descriptor.binding.identity_sha256().unwrap();
         let transition = old
@@ -628,7 +619,7 @@ mod tests {
     #[test]
     fn unchanged_or_noncanonical_binding_cannot_rotate() {
         let root = tempfile::tempdir().unwrap();
-        let session = LiveRecognitionSession::start(
+        let session = RecognitionSession::start(
             root.path(),
             descriptor("same-binding", 1),
             DiagnosticPolicy {
@@ -644,14 +635,14 @@ mod tests {
                 DiagnosticPolicy::default(),
                 0,
             ),
-            Err(LiveRecognitionSessionError::BindingUnchanged)
+            Err(RecognitionSessionError::BindingUnchanged)
         ));
 
         let mut invalid = descriptor("invalid-layout", 1);
         invalid.binding.canonical_layout_sha256 = "4".repeat(64);
         assert!(matches!(
-            LiveRecognitionSession::start(root.path(), invalid, DiagnosticPolicy::default()),
-            Err(LiveRecognitionSessionError::CanonicalLayoutMismatch)
+            RecognitionSession::start(root.path(), invalid, DiagnosticPolicy::default()),
+            Err(RecognitionSessionError::CanonicalLayoutMismatch)
         ));
     }
 }

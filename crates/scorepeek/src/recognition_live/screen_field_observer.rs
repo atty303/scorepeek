@@ -126,6 +126,11 @@ mod tests {
                 output_timesteps: 1,
                 open_text: "artist".to_owned(),
             },
+            clear_type: DynamicTextObservation {
+                input_width: 1,
+                output_timesteps: 1,
+                open_text: "FAILED".to_owned(),
+            },
             difficulty: FieldNotObserved {
                 reason: FieldNotObservedReason::ObserverNotImplemented,
             },

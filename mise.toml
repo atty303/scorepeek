@@ -303,6 +303,22 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- recognition field-resource-load-gate "$@"
 '''
 
+[tasks."recognition:recording-simulation-profile-author"]
+description = "Validate and create a digest-bound private recording simulation profile"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- recognition recording-simulation-profile-author "$@"
+'''
+
+[tasks."recognition:recording-simulation"]
+description = "Replay a bound canonical recording through the production field observer"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- recognition recording-simulation "$@"
+'''
+
 [tasks."diagnostic:replay"]
 description = "Replay strict canonical evidence through the bounded diagnostic worker"
 run = '''

@@ -426,6 +426,7 @@ mod tests {
         let observations = ScreenFieldObservations::Result(ResultScreenFieldObservations {
             title: text("CAT"),
             artist: text("BETA"),
+            clear_type: text("FAILED"),
             difficulty: unobserved(),
             level: unobserved(),
             notes: unobserved(),
@@ -542,6 +543,7 @@ mod tests {
         let observations = ScreenFieldObservations::Result(ResultScreenFieldObservations {
             title: text("CAT"),
             artist: text("ALPHA"),
+            clear_type: text("FAILED"),
             difficulty: unobserved(),
             level: unobserved(),
             notes: unobserved(),
@@ -587,6 +589,7 @@ mod tests {
         let observations = ScreenFieldObservations::Result(ResultScreenFieldObservations {
             title: text("Ａ"),
             artist: text("ARTIST A"),
+            clear_type: text("CLEAR"),
             difficulty: unobserved(),
             level: unobserved(),
             notes: unobserved(),

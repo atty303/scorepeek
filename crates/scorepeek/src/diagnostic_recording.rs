@@ -262,6 +262,7 @@ pub enum DiagnosticDecisionOutcome {
 pub enum DiagnosticTextField {
     ResultTitle,
     ResultArtist,
+    ResultClearType,
     MusicSelectCentralTitle,
     MusicSelectArtist,
     MusicSelectActiveListTitle,
@@ -1150,7 +1151,7 @@ fn valid_fact(fact: &DiagnosticFact) -> bool {
                     && fact.error_type.is_none()
                     && matches!(
                         (screen, observed_fields, unimplemented_fields),
-                        (DiagnosticScreen::Result, 2, 4) | (DiagnosticScreen::MusicSelection, 3, 1)
+                        (DiagnosticScreen::Result, 3, 4) | (DiagnosticScreen::MusicSelection, 3, 1)
                     )
             }
             Some(field) => {
@@ -1162,7 +1163,9 @@ fn valid_fact(fact: &DiagnosticFact) -> bool {
                         (
                             DiagnosticScreen::Result,
                             4,
-                            DiagnosticTextField::ResultTitle | DiagnosticTextField::ResultArtist
+                            DiagnosticTextField::ResultTitle
+                                | DiagnosticTextField::ResultArtist
+                                | DiagnosticTextField::ResultClearType
                         ) | (
                             DiagnosticScreen::MusicSelection,
                             1,

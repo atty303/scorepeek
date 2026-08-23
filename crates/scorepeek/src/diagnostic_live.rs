@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use scorepeek::capture::NormalizedCanonicalFrame;
 use scorepeek::recognition::{
-    ScreenClass, ScreenFieldObservationError, ScreenFieldObservations, ScreenTextField,
+    CanonicalFrame, ScreenClass, ScreenFieldObservationError, ScreenFieldObservations,
+    ScreenTextField,
 };
 
 use crate::diagnostic_recording::{
@@ -16,10 +17,10 @@ use crate::diagnostic_worker::{
     DEFAULT_DIAGNOSTIC_FLUSH_TIMEOUT, DiagnosticEnqueueOutcome, DiagnosticOwnedFrame,
     DiagnosticWorkerHandle,
 };
-use crate::recognition_live::LiveRecognitionObservation;
+use crate::recognition_live::RecognitionObservation;
 
 #[derive(Clone)]
-pub struct LiveCanonicalFrame {
+pub struct BoundCanonicalFrame {
     capture_generation: u64,
     sequence: u64,
     monotonic_start_ms: u64,
@@ -29,10 +30,10 @@ pub struct LiveCanonicalFrame {
     pixels: Arc<Box<[u8]>>,
 }
 
-impl fmt::Debug for LiveCanonicalFrame {
+impl fmt::Debug for BoundCanonicalFrame {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("LiveCanonicalFrame")
+            .debug_struct("BoundCanonicalFrame")
             .field("capture_generation", &self.capture_generation)
             .field("sequence", &self.sequence)
             .field("monotonic_start_ms", &self.monotonic_start_ms)
@@ -43,12 +44,7 @@ impl fmt::Debug for LiveCanonicalFrame {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LiveDiagnosticBridgeError {
-    ReplayBindingNotAllowed,
-}
-
-impl LiveCanonicalFrame {
+impl BoundCanonicalFrame {
     #[must_use]
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
@@ -84,6 +80,24 @@ impl LiveCanonicalFrame {
         self.monotonic_end_ms
     }
 
+    pub(crate) fn from_extraction(
+        frame: CanonicalFrame,
+        capture_generation: u64,
+        sequence: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+    ) -> Self {
+        Self {
+            capture_generation,
+            sequence,
+            monotonic_start_ms,
+            monotonic_end_ms,
+            capture_profile_sha256: frame.capture_profile_id().to_owned(),
+            normalizer_sha256: frame.normalizer_artifact_sha256().to_owned(),
+            pixels: Arc::new(frame.into_pixels()),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(generation: u64, sequence: u64, time: u64) -> Self {
         Self::for_test_pixels(
@@ -113,7 +127,7 @@ impl LiveCanonicalFrame {
     }
 }
 
-impl From<NormalizedCanonicalFrame> for LiveCanonicalFrame {
+impl From<NormalizedCanonicalFrame> for BoundCanonicalFrame {
     fn from(frame: NormalizedCanonicalFrame) -> Self {
         let received_monotonic_ms = frame.received_monotonic_ns() / 1_000_000;
         let pixel_address = frame.pixels().as_ptr();
@@ -135,7 +149,7 @@ impl From<NormalizedCanonicalFrame> for LiveCanonicalFrame {
     }
 }
 
-pub struct LiveDiagnosticBridge {
+pub struct DiagnosticBridge {
     capture_generation: u64,
     capture_profile_sha256: String,
     normalizer_sha256: String,
@@ -143,28 +157,23 @@ pub struct LiveDiagnosticBridge {
     worker: DiagnosticWorkerHandle,
 }
 
-impl LiveDiagnosticBridge {
-    /// Starts one application-owned diagnostic run for one immutable capture generation.
-    ///
-    /// # Errors
-    /// Returns an error when a replay-bound descriptor is supplied to the live path.
+impl DiagnosticBridge {
+    /// Starts one application-owned diagnostic run for one immutable source generation.
+    #[must_use]
     pub fn start(
         root: &Path,
         descriptor: DiagnosticRunDescriptor,
         policy: DiagnosticPolicy,
-    ) -> Result<Self, LiveDiagnosticBridgeError> {
-        if descriptor.binding.replay.is_some() {
-            return Err(LiveDiagnosticBridgeError::ReplayBindingNotAllowed);
-        }
+    ) -> Self {
         let worker = DiagnosticWorkerHandle::start(root, descriptor.clone(), policy);
-        Ok(Self::with_worker(descriptor, worker))
+        Self::with_worker(descriptor, worker)
     }
 
     /// Offers canonical evidence before recognition outcomes are known.
     ///
     /// The offer never waits for queue capacity or diagnostic I/O. A binding mismatch is recorded
     /// only as diagnostic degradation and cannot alter recognition or event results.
-    pub fn offer(&mut self, frame: &LiveCanonicalFrame) -> DiagnosticEnqueueOutcome {
+    pub fn offer(&mut self, frame: &BoundCanonicalFrame) -> DiagnosticEnqueueOutcome {
         if !self.matches_frame(frame) {
             self.worker
                 .record_external_error(DiagnosticErrorType::InvalidConfiguration, frame.sequence);
@@ -183,7 +192,7 @@ impl LiveDiagnosticBridge {
     /// Queueing is non-blocking and diagnostic failure does not change the recognition observation.
     pub fn record_screen_observation(
         &mut self,
-        observation: &LiveRecognitionObservation<'_>,
+        observation: &RecognitionObservation<'_>,
     ) -> DiagnosticEnqueueOutcome {
         let frame = observation.frame();
         if !self.matches_frame(frame)
@@ -212,7 +221,7 @@ impl LiveDiagnosticBridge {
     /// Records a typed screen-inspection failure without replacing its application error.
     pub fn record_recognition_failure(
         &mut self,
-        frame: &LiveCanonicalFrame,
+        frame: &BoundCanonicalFrame,
     ) -> DiagnosticEnqueueOutcome {
         if !self.matches_frame(frame) {
             self.worker
@@ -384,7 +393,7 @@ impl LiveDiagnosticBridge {
         }
     }
 
-    pub(crate) fn matches_frame(&self, frame: &LiveCanonicalFrame) -> bool {
+    pub(crate) fn matches_frame(&self, frame: &BoundCanonicalFrame) -> bool {
         frame.capture_generation == self.capture_generation
             && frame.capture_profile_sha256 == self.capture_profile_sha256
             && frame.normalizer_sha256 == self.normalizer_sha256
@@ -426,6 +435,9 @@ fn diagnostic_text_field(
     Some(match (screen, field) {
         (ScreenClass::Result, ScreenTextField::ResultTitle) => DiagnosticTextField::ResultTitle,
         (ScreenClass::Result, ScreenTextField::ResultArtist) => DiagnosticTextField::ResultArtist,
+        (ScreenClass::Result, ScreenTextField::ResultClearType) => {
+            DiagnosticTextField::ResultClearType
+        }
         (ScreenClass::MusicSelect, ScreenTextField::MusicSelectCentralTitle) => {
             DiagnosticTextField::MusicSelectCentralTitle
         }
@@ -445,7 +457,7 @@ mod tests {
     use crate::diagnostic_recording::{
         DiagnosticBinding, DiagnosticCompleteness, DiagnosticResource,
     };
-    use crate::recognition_live::LiveRecognitionObservation;
+    use crate::recognition_live::RecognitionObservation;
     use scorepeek::recognition::{
         CanonicalLayout, DynamicTextObservation, FieldNotObserved, FieldNotObservedReason,
         ResultScreenFieldObservations, ScreenClass, ScreenFieldObservationError,
@@ -475,8 +487,8 @@ mod tests {
         }
     }
 
-    fn frame(generation: u64, sequence: u64, time: u64) -> LiveCanonicalFrame {
-        LiveCanonicalFrame {
+    fn frame(generation: u64, sequence: u64, time: u64) -> BoundCanonicalFrame {
+        BoundCanonicalFrame {
             capture_generation: generation,
             sequence,
             monotonic_start_ms: time,
@@ -501,6 +513,7 @@ mod tests {
         ScreenFieldObservations::Result(ResultScreenFieldObservations {
             title: text(),
             artist: text(),
+            clear_type: text(),
             difficulty: unimplemented,
             level: unimplemented,
             notes: unimplemented,
@@ -513,7 +526,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let canonical = frame(1, 1, 0);
         let pixels = Arc::clone(&canonical.pixels);
-        let mut bridge = LiveDiagnosticBridge::start_for_test(
+        let mut bridge = DiagnosticBridge::start_for_test(
             root.path(),
             descriptor("live-run", 1),
             DiagnosticPolicy::default(),
@@ -532,9 +545,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let canonical = frame(1, 1, 17);
         let pixels = Arc::clone(&canonical.pixels);
-        let observation = LiveRecognitionObservation::inspect(&canonical).unwrap();
+        let observation = RecognitionObservation::inspect(&canonical).unwrap();
         assert_eq!(observation.screen(), ScreenClass::Unknown);
-        let mut bridge = LiveDiagnosticBridge::start_for_test(
+        let mut bridge = DiagnosticBridge::start_for_test(
             root.path(),
             descriptor("screen-observation", 1),
             DiagnosticPolicy::default(),
@@ -561,7 +574,7 @@ mod tests {
     #[test]
     fn binding_change_is_rejected_and_makes_the_old_run_partial() {
         let root = tempfile::tempdir().unwrap();
-        let mut bridge = LiveDiagnosticBridge::start_for_test(
+        let mut bridge = DiagnosticBridge::start_for_test(
             root.path(),
             descriptor("old-generation", 1),
             DiagnosticPolicy::default(),
@@ -585,10 +598,10 @@ mod tests {
     fn screen_observation_rejects_a_different_layout_binding() {
         let root = tempfile::tempdir().unwrap();
         let canonical = frame(1, 1, 17);
-        let observation = LiveRecognitionObservation::inspect(&canonical).unwrap();
+        let observation = RecognitionObservation::inspect(&canonical).unwrap();
         let mut mismatched = descriptor("layout-mismatch", 1);
         mismatched.binding.canonical_layout_sha256 = "4".repeat(64);
-        let mut bridge = LiveDiagnosticBridge::start_for_test(
+        let mut bridge = DiagnosticBridge::start_for_test(
             root.path(),
             mismatched,
             DiagnosticPolicy::default(),
@@ -610,7 +623,7 @@ mod tests {
         let supervisor = std::sync::Mutex::new(std::sync::Weak::new());
         for generation in [1, 2] {
             let run_id = format!("generation-{generation}");
-            let mut bridge = LiveDiagnosticBridge::start_with_supervisor_for_test(
+            let mut bridge = DiagnosticBridge::start_with_supervisor_for_test(
                 root.path(),
                 descriptor(&run_id, generation),
                 DiagnosticPolicy::default(),
@@ -633,8 +646,8 @@ mod tests {
     fn opt_out_preserves_live_result_and_writes_nothing() {
         let root = tempfile::tempdir().unwrap();
         let canonical = frame(1, 1, 0);
-        let observation = LiveRecognitionObservation::inspect(&canonical).unwrap();
-        let mut bridge = LiveDiagnosticBridge::start_for_test(
+        let observation = RecognitionObservation::inspect(&canonical).unwrap();
+        let mut bridge = DiagnosticBridge::start_for_test(
             root.path(),
             descriptor("disabled-live", 1),
             DiagnosticPolicy {
@@ -662,7 +675,7 @@ mod tests {
         let output = Ok::<_, ScreenFieldObservationError<&'static str>>(result_fields(
             "OCR CONTENT SENTINEL",
         ));
-        let mut bridge = LiveDiagnosticBridge::start_for_test(
+        let mut bridge = DiagnosticBridge::start_for_test(
             root.path(),
             descriptor("field-observation", 1),
             DiagnosticPolicy::default(),
@@ -689,7 +702,7 @@ mod tests {
         let fact: serde_json::Value = serde_json::from_slice(&fact_bytes).unwrap();
         assert_eq!(fact["fact"]["operation"], "observe_fields");
         assert_eq!(fact["fact"]["detail"]["kind"], "field_observation");
-        assert_eq!(fact["fact"]["detail"]["observed_fields"], 2);
+        assert_eq!(fact["fact"]["detail"]["observed_fields"], 3);
         assert_eq!(fact["fact"]["detail"]["unimplemented_fields"], 4);
         assert!(
             !String::from_utf8(fact_bytes)
@@ -701,7 +714,7 @@ mod tests {
         let disabled_output = Ok::<_, ScreenFieldObservationError<&'static str>>(result_fields(
             "OCR CONTENT SENTINEL",
         ));
-        let mut disabled = LiveDiagnosticBridge::start_for_test(
+        let mut disabled = DiagnosticBridge::start_for_test(
             disabled_root.path(),
             descriptor("field-observation-disabled", 1),
             DiagnosticPolicy {
@@ -734,7 +747,7 @@ mod tests {
             ScreenTextField::ResultArtist,
             "RUNTIME CAUSE SENTINEL",
         ));
-        let mut bridge = LiveDiagnosticBridge::start_for_test(
+        let mut bridge = DiagnosticBridge::start_for_test(
             root.path(),
             descriptor("field-observation-error", 1),
             DiagnosticPolicy::default(),
@@ -771,7 +784,7 @@ mod tests {
     #[test]
     fn worker_loss_is_diagnostic_only() {
         let root = tempfile::tempdir().unwrap();
-        let mut bridge = LiveDiagnosticBridge::start_for_test(
+        let mut bridge = DiagnosticBridge::start_for_test(
             root.path(),
             descriptor("worker-loss", 1),
             DiagnosticPolicy::default(),

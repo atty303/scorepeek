@@ -14,48 +14,47 @@ use super::screen_field_observer::{
     RegisteredScreenFieldObserver, RegisteredScreenFieldObserverLoadError,
 };
 use super::{
-    LiveRecognitionFrameResult, LiveRecognitionObservation, LiveRecognitionSession,
-    LiveRecognitionSessionError,
+    RecognitionFrameResult, RecognitionObservation, RecognitionSession, RecognitionSessionError,
 };
-use crate::diagnostic_live::LiveCanonicalFrame;
+use crate::diagnostic_live::BoundCanonicalFrame;
 use crate::diagnostic_recording::{
     DiagnosticFinishOutcome, DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus,
 };
 use crate::diagnostic_worker::DiagnosticEnqueueOutcome;
 
 #[derive(Debug)]
-pub enum LiveFieldObservationStartError<E> {
+pub enum FieldObservationStartError<E> {
     FieldObserver(FieldObserverStartError<E>),
     Recognition {
-        error: LiveRecognitionSessionError,
+        error: RecognitionSessionError,
         field_observer_finish: FieldObserverFinishOutcome,
     },
 }
 
 #[derive(Debug)]
-pub enum LiveFieldObservationSubmission<T> {
+pub enum FieldObservationSubmission<T> {
     NotApplicable,
-    Submitted(LivePendingFieldObservation<T>),
+    Submitted(PendingSessionFieldObservation<T>),
     Rejected(FieldObserverOfferError),
 }
 
 #[derive(Debug)]
-pub struct LivePendingFieldObservation<T> {
+pub struct PendingSessionFieldObservation<T> {
     pending: PendingFieldObservation<T>,
     owner: Arc<()>,
     identity: Arc<()>,
 }
 
 #[derive(Debug)]
-pub struct LiveFieldObservationFrameResult<'a, T> {
-    pub observation: LiveRecognitionObservation<'a>,
-    pub field_submission: LiveFieldObservationSubmission<T>,
+pub struct FieldObservationFrameResult<'a, T> {
+    pub observation: RecognitionObservation<'a>,
+    pub field_submission: FieldObservationSubmission<T>,
     pub diagnostic_frame: DiagnosticEnqueueOutcome,
     pub diagnostic_screen_fact: DiagnosticEnqueueOutcome,
 }
 
 #[derive(Debug)]
-pub enum LiveFieldObservationPoll<T> {
+pub enum FieldObservationSessionPoll<T> {
     Pending,
     Ready {
         observation: BoundFieldObservation<T>,
@@ -68,20 +67,20 @@ pub enum LiveFieldObservationPoll<T> {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub struct LiveFieldObservationFinishOutcome {
+pub struct FieldObservationFinishOutcome {
     pub field_observer: FieldObserverFinishOutcome,
     pub diagnostic: DiagnosticFinishOutcome,
 }
 
 /// One application owner for a live recognition run and its exact field observer.
-pub struct LiveFieldObservationSession<O: FieldObserver> {
-    recognition: LiveRecognitionSession,
+pub struct FieldObservationSession<O: FieldObserver> {
+    recognition: RecognitionSession,
     field_observer: FieldObserverWorker<O>,
     owner: Arc<()>,
     outstanding: Vec<(Arc<()>, u64)>,
 }
 
-impl<O: FieldObserver> LiveFieldObservationSession<O> {
+impl<O: FieldObserver> FieldObservationSession<O> {
     /// Loads the observer before opening the matching diagnostic-backed recognition run.
     ///
     /// # Errors
@@ -92,13 +91,13 @@ impl<O: FieldObserver> LiveFieldObservationSession<O> {
         descriptor: DiagnosticRunDescriptor,
         policy: DiagnosticPolicy,
         loader: impl FnOnce(&super::field_observer::FieldObserverSessionBinding) -> Result<O, E>,
-    ) -> Result<Self, LiveFieldObservationStartError<E>> {
+    ) -> Result<Self, FieldObservationStartError<E>> {
         let field_observer = FieldObserverWorker::start(&descriptor, loader)
-            .map_err(LiveFieldObservationStartError::FieldObserver)?;
-        let recognition = match LiveRecognitionSession::start(root, descriptor, policy) {
+            .map_err(FieldObservationStartError::FieldObserver)?;
+        let recognition = match RecognitionSession::start(root, descriptor, policy) {
             Ok(recognition) => recognition,
             Err(error) => {
-                return Err(LiveFieldObservationStartError::Recognition {
+                return Err(FieldObservationStartError::Recognition {
                     error,
                     field_observer_finish: field_observer
                         .finish(super::field_observer::DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT),
@@ -121,22 +120,22 @@ impl<O: FieldObserver> LiveFieldObservationSession<O> {
     /// Returns the recognition-session error before field submission.
     pub fn inspect<'a>(
         &mut self,
-        frame: &'a LiveCanonicalFrame,
-    ) -> Result<LiveFieldObservationFrameResult<'a, O::Output>, LiveRecognitionSessionError> {
-        let LiveRecognitionFrameResult {
+        frame: &'a BoundCanonicalFrame,
+    ) -> Result<FieldObservationFrameResult<'a, O::Output>, RecognitionSessionError> {
+        let RecognitionFrameResult {
             observation,
             field_inputs,
             diagnostic_frame,
             diagnostic_fact,
         } = self.recognition.inspect(frame)?;
         let field_submission = match field_inputs {
-            None => LiveFieldObservationSubmission::NotApplicable,
+            None => FieldObservationSubmission::NotApplicable,
             Some(inputs) => match self.field_observer.try_observe(inputs) {
                 Ok(pending) => {
                     let identity = Arc::new(());
                     self.outstanding
                         .push((Arc::clone(&identity), frame.sequence()));
-                    LiveFieldObservationSubmission::Submitted(LivePendingFieldObservation {
+                    FieldObservationSubmission::Submitted(PendingSessionFieldObservation {
                         pending,
                         owner: Arc::clone(&self.owner),
                         identity,
@@ -145,11 +144,11 @@ impl<O: FieldObserver> LiveFieldObservationSession<O> {
                 Err(error) => {
                     self.recognition
                         .record_field_observer_offer_failure(frame.sequence(), error);
-                    LiveFieldObservationSubmission::Rejected(error)
+                    FieldObservationSubmission::Rejected(error)
                 }
             },
         };
-        Ok(LiveFieldObservationFrameResult {
+        Ok(FieldObservationFrameResult {
             observation,
             field_submission,
             diagnostic_frame,
@@ -163,7 +162,7 @@ impl<O: FieldObserver> LiveFieldObservationSession<O> {
         status: DiagnosticRunStatus,
         monotonic_end_ms: u64,
         field_observer_timeout: Duration,
-    ) -> LiveFieldObservationFinishOutcome {
+    ) -> FieldObservationFinishOutcome {
         let field_observer = self.field_observer.finish(field_observer_timeout);
         for (_, sequence) in self.outstanding {
             self.recognition
@@ -172,7 +171,7 @@ impl<O: FieldObserver> LiveFieldObservationSession<O> {
         self.recognition
             .record_field_observer_finish(field_observer);
         let diagnostic = self.recognition.finish(status, monotonic_end_ms);
-        LiveFieldObservationFinishOutcome {
+        FieldObservationFinishOutcome {
             field_observer,
             diagnostic,
         }
@@ -187,7 +186,7 @@ impl<O: FieldObserver> LiveFieldObservationSession<O> {
         capture_end_ms: u64,
         elapsed_after_capture: Duration,
         field_observer_timeout: Duration,
-    ) -> LiveFieldObservationFinishOutcome {
+    ) -> FieldObservationFinishOutcome {
         let finish_started = Instant::now();
         let field_observer = self.field_observer.finish(field_observer_timeout);
         for (_, sequence) in self.outstanding {
@@ -209,7 +208,7 @@ impl<O: FieldObserver> LiveFieldObservationSession<O> {
         let diagnostic = self
             .recognition
             .finish(diagnostic_status, capture_end_ms.saturating_add(elapsed_ms));
-        LiveFieldObservationFinishOutcome {
+        FieldObservationFinishOutcome {
             field_observer,
             diagnostic,
         }
@@ -222,11 +221,11 @@ impl<O: FieldObserver> LiveFieldObservationSession<O> {
         policy: DiagnosticPolicy,
         loader: impl FnOnce(&super::field_observer::FieldObserverSessionBinding) -> Result<O, E>,
         capacity: usize,
-    ) -> Result<Self, LiveFieldObservationStartError<E>> {
+    ) -> Result<Self, FieldObservationStartError<E>> {
         let field_observer = FieldObserverWorker::start_for_test(&descriptor, loader, capacity)
-            .map_err(LiveFieldObservationStartError::FieldObserver)?;
+            .map_err(FieldObservationStartError::FieldObserver)?;
         let supervisor = std::sync::Mutex::new(std::sync::Weak::new());
-        let recognition = match LiveRecognitionSession::start_with_supervisor_for_test(
+        let recognition = match RecognitionSession::start_with_supervisor_for_test(
             root,
             descriptor,
             policy,
@@ -234,7 +233,7 @@ impl<O: FieldObserver> LiveFieldObservationSession<O> {
         ) {
             Ok(recognition) => recognition,
             Err(error) => {
-                return Err(LiveFieldObservationStartError::Recognition {
+                return Err(FieldObservationStartError::Recognition {
                     error,
                     field_observer_finish: field_observer
                         .finish(super::field_observer::DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT),
@@ -254,7 +253,7 @@ fn duration_millis_saturating(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-impl LiveFieldObservationSession<RegisteredScreenFieldObserver> {
+impl FieldObservationSession<RegisteredScreenFieldObserver> {
     /// Starts the production session with the exact registered catalog, model, and runtime.
     ///
     /// # Errors
@@ -265,7 +264,7 @@ impl LiveFieldObservationSession<RegisteredScreenFieldObserver> {
         policy: DiagnosticPolicy,
         catalog_root: &Path,
         bundle_root: &Path,
-    ) -> Result<Self, LiveFieldObservationStartError<RegisteredScreenFieldObserverLoadError>> {
+    ) -> Result<Self, FieldObservationStartError<RegisteredScreenFieldObserverLoadError>> {
         Self::start(root, descriptor, policy, |binding| {
             let resources = binding.load_registered_resources(catalog_root, bundle_root)?;
             Ok(RegisteredScreenFieldObserver::new(resources)?)
@@ -273,7 +272,7 @@ impl LiveFieldObservationSession<RegisteredScreenFieldObserver> {
     }
 }
 
-impl<O, T, E> LiveFieldObservationSession<O>
+impl<O, T, E> FieldObservationSession<O>
 where
     O: FieldObserver<Output = Result<T, ScreenFieldObservationError<E>>>,
     T: DiagnosticScreenFieldObservation + Send + 'static,
@@ -282,8 +281,8 @@ where
     #[must_use]
     pub fn poll_field_observation(
         &mut self,
-        pending: &LivePendingFieldObservation<O::Output>,
-    ) -> LiveFieldObservationPoll<O::Output> {
+        pending: &PendingSessionFieldObservation<O::Output>,
+    ) -> FieldObservationSessionPoll<O::Output> {
         self.poll_owned_field_observation(pending, None)
     }
 
@@ -291,20 +290,20 @@ where
     #[must_use]
     pub fn wait_field_observation(
         &mut self,
-        pending: &LivePendingFieldObservation<O::Output>,
+        pending: &PendingSessionFieldObservation<O::Output>,
         timeout: Duration,
-    ) -> LiveFieldObservationPoll<O::Output> {
+    ) -> FieldObservationSessionPoll<O::Output> {
         self.poll_owned_field_observation(pending, Some(timeout))
     }
 
     fn poll_owned_field_observation(
         &mut self,
-        pending: &LivePendingFieldObservation<O::Output>,
+        pending: &PendingSessionFieldObservation<O::Output>,
         timeout: Option<Duration>,
-    ) -> LiveFieldObservationPoll<O::Output> {
+    ) -> FieldObservationSessionPoll<O::Output> {
         if !Arc::ptr_eq(&pending.owner, &self.owner) {
             self.recognition.reject_pending_field_observation();
-            return LiveFieldObservationPoll::BindingMismatch;
+            return FieldObservationSessionPoll::BindingMismatch;
         }
         let Some(index) = self
             .outstanding
@@ -312,12 +311,12 @@ where
             .position(|(identity, _)| Arc::ptr_eq(identity, &pending.identity))
         else {
             return match pending.pending.poll() {
-                FieldObservationPoll::Consumed => LiveFieldObservationPoll::Consumed,
-                FieldObservationPoll::Terminal => LiveFieldObservationPoll::Terminal,
+                FieldObservationPoll::Consumed => FieldObservationSessionPoll::Consumed,
+                FieldObservationPoll::Terminal => FieldObservationSessionPoll::Terminal,
                 FieldObservationPoll::Pending
                 | FieldObservationPoll::Ready(_)
                 | FieldObservationPoll::WorkerUnavailable => {
-                    LiveFieldObservationPoll::BindingMismatch
+                    FieldObservationSessionPoll::BindingMismatch
                 }
             };
         };
@@ -327,27 +326,27 @@ where
             |timeout| pending.pending.wait(timeout),
         );
         match poll {
-            FieldObservationPoll::Pending => LiveFieldObservationPoll::Pending,
+            FieldObservationPoll::Pending => FieldObservationSessionPoll::Pending,
             FieldObservationPoll::Ready(observation) => {
                 self.outstanding.swap_remove(index);
                 let diagnostic_field_fact = self.recognition.record_field_observation(&observation);
-                LiveFieldObservationPoll::Ready {
+                FieldObservationSessionPoll::Ready {
                     observation,
                     diagnostic_field_fact,
                 }
             }
             FieldObservationPoll::Consumed => {
                 self.outstanding.swap_remove(index);
-                LiveFieldObservationPoll::Consumed
+                FieldObservationSessionPoll::Consumed
             }
             FieldObservationPoll::Terminal => {
                 self.outstanding.swap_remove(index);
-                LiveFieldObservationPoll::Terminal
+                FieldObservationSessionPoll::Terminal
             }
             FieldObservationPoll::WorkerUnavailable => {
                 self.outstanding.swap_remove(index);
                 self.recognition.record_field_observer_unavailable(sequence);
-                LiveFieldObservationPoll::WorkerUnavailable
+                FieldObservationSessionPoll::WorkerUnavailable
             }
         }
     }
@@ -390,12 +389,19 @@ mod tests {
         }
     }
 
-    fn solid_frame(color: [u8; 3], generation: u64, sequence: u64) -> LiveCanonicalFrame {
+    fn solid_frame(color: [u8; 3], generation: u64, sequence: u64) -> BoundCanonicalFrame {
         let mut pixels = Vec::with_capacity(crate::diagnostic_recording::CANONICAL_BYTES);
         for _ in 0..crate::diagnostic_recording::CANONICAL_BYTES / 3 {
             pixels.extend_from_slice(&color);
         }
-        LiveCanonicalFrame::for_test_pixels(
+        if color == [200, 100, 20] {
+            for y in [452, 656] {
+                for x in 0..518 {
+                    pixels[(y * 1920 + x) * 3..][..3].copy_from_slice(&[0, 0, 0]);
+                }
+            }
+        }
+        BoundCanonicalFrame::for_test_pixels(
             generation,
             sequence,
             sequence * 20,
@@ -432,7 +438,7 @@ mod tests {
     #[test]
     fn integrated_session_submits_and_records_one_current_run_complete_output() {
         let root = tempfile::tempdir().unwrap();
-        let mut session = LiveFieldObservationSession::start_for_test(
+        let mut session = FieldObservationSession::start_for_test(
             root.path(),
             descriptor("integrated-field", 1),
             DiagnosticPolicy::default(),
@@ -443,10 +449,10 @@ mod tests {
         let frame = solid_frame([200, 100, 20], 1, 1);
         let result = session.inspect(&frame).unwrap();
         assert_eq!(result.observation.screen(), ScreenClass::Result);
-        let LiveFieldObservationSubmission::Submitted(pending) = result.field_submission else {
+        let FieldObservationSubmission::Submitted(pending) = result.field_submission else {
             panic!("result screen did not submit complete field inputs");
         };
-        let LiveFieldObservationPoll::Ready {
+        let FieldObservationSessionPoll::Ready {
             observation,
             diagnostic_field_fact,
         } = session.wait_field_observation(&pending, Duration::from_secs(1))
@@ -462,7 +468,7 @@ mod tests {
         assert_eq!(diagnostic_field_fact, DiagnosticEnqueueOutcome::Enqueued);
         assert!(matches!(
             session.poll_field_observation(&pending),
-            LiveFieldObservationPoll::Consumed
+            FieldObservationSessionPoll::Consumed
         ));
 
         let finished = session.finish(DiagnosticRunStatus::Success, 40, Duration::from_secs(1));
@@ -480,7 +486,7 @@ mod tests {
     #[test]
     fn integrated_opt_out_keeps_the_same_complete_field_output_without_artifacts() {
         let root = tempfile::tempdir().unwrap();
-        let mut session = LiveFieldObservationSession::start_for_test(
+        let mut session = FieldObservationSession::start_for_test(
             root.path(),
             descriptor("integrated-field-disabled", 1),
             DiagnosticPolicy {
@@ -493,10 +499,10 @@ mod tests {
         .unwrap();
         let frame = solid_frame([200, 100, 20], 1, 1);
         let result = session.inspect(&frame).unwrap();
-        let LiveFieldObservationSubmission::Submitted(pending) = result.field_submission else {
+        let FieldObservationSubmission::Submitted(pending) = result.field_submission else {
             panic!("result screen did not submit complete field inputs");
         };
-        let LiveFieldObservationPoll::Ready {
+        let FieldObservationSessionPoll::Ready {
             observation,
             diagnostic_field_fact,
         } = session.wait_field_observation(&pending, Duration::from_secs(1))
@@ -521,7 +527,7 @@ mod tests {
     #[test]
     fn field_capacity_loss_is_diagnostic_only_and_makes_the_run_partial() {
         let root = tempfile::tempdir().unwrap();
-        let mut session = LiveFieldObservationSession::start_for_test(
+        let mut session = FieldObservationSession::start_for_test(
             root.path(),
             descriptor("integrated-field-capacity", 1),
             DiagnosticPolicy::default(),
@@ -531,8 +537,7 @@ mod tests {
         .unwrap();
         let first = solid_frame([200, 100, 20], 1, 1);
         let first_result = session.inspect(&first).unwrap();
-        let LiveFieldObservationSubmission::Submitted(pending) = first_result.field_submission
-        else {
+        let FieldObservationSubmission::Submitted(pending) = first_result.field_submission else {
             panic!("first result was not submitted");
         };
         let second = solid_frame([200, 100, 20], 1, 2);
@@ -540,7 +545,7 @@ mod tests {
         assert_eq!(second_result.observation.screen(), ScreenClass::Result);
         assert!(matches!(
             second_result.field_submission,
-            LiveFieldObservationSubmission::Rejected(FieldObserverOfferError::OutstandingLimit)
+            FieldObservationSubmission::Rejected(FieldObserverOfferError::OutstandingLimit)
         ));
 
         let finished = session.finish(DiagnosticRunStatus::Success, 60, Duration::from_secs(1));
@@ -586,7 +591,7 @@ mod tests {
     #[test]
     fn another_run_rejects_a_pending_before_consuming_its_output() {
         let first_root = tempfile::tempdir().unwrap();
-        let mut first_session = LiveFieldObservationSession::start_for_test(
+        let mut first_session = FieldObservationSession::start_for_test(
             first_root.path(),
             descriptor("integrated-field-first", 1),
             DiagnosticPolicy::default(),
@@ -596,15 +601,14 @@ mod tests {
         .unwrap();
         let frame = solid_frame([200, 100, 20], 1, 1);
         let first_result = first_session.inspect(&frame).unwrap();
-        let LiveFieldObservationSubmission::Submitted(first_pending) =
-            first_result.field_submission
+        let FieldObservationSubmission::Submitted(first_pending) = first_result.field_submission
         else {
             panic!("first result was not submitted");
         };
         let _ = first_session.finish(DiagnosticRunStatus::Success, 40, Duration::from_secs(1));
 
         let second_root = tempfile::tempdir().unwrap();
-        let mut second_session = LiveFieldObservationSession::start_for_test(
+        let mut second_session = FieldObservationSession::start_for_test(
             second_root.path(),
             descriptor("integrated-field-second", 2),
             DiagnosticPolicy::default(),
@@ -614,7 +618,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             second_session.wait_field_observation(&first_pending, Duration::from_secs(1)),
-            LiveFieldObservationPoll::BindingMismatch
+            FieldObservationSessionPoll::BindingMismatch
         ));
         let finished =
             second_session.finish(DiagnosticRunStatus::Success, 40, Duration::from_secs(1));
@@ -627,7 +631,7 @@ mod tests {
     #[test]
     fn disconnected_pending_becomes_terminal_without_repeating_its_sequence_degradation() {
         let root = tempfile::tempdir().unwrap();
-        let mut session = LiveFieldObservationSession::start_for_test(
+        let mut session = FieldObservationSession::start_for_test(
             root.path(),
             descriptor("integrated-field-disconnected", 1),
             DiagnosticPolicy::default(),
@@ -637,21 +641,21 @@ mod tests {
         .unwrap();
         let frame = solid_frame([200, 100, 20], 1, 1);
         let result = session.inspect(&frame).unwrap();
-        let LiveFieldObservationSubmission::Submitted(pending) = result.field_submission else {
+        let FieldObservationSubmission::Submitted(pending) = result.field_submission else {
             panic!("result screen did not submit complete field inputs");
         };
 
         assert!(matches!(
             session.wait_field_observation(&pending, Duration::from_secs(1)),
-            LiveFieldObservationPoll::WorkerUnavailable
+            FieldObservationSessionPoll::WorkerUnavailable
         ));
         assert!(matches!(
             session.poll_field_observation(&pending),
-            LiveFieldObservationPoll::Terminal
+            FieldObservationSessionPoll::Terminal
         ));
         assert!(matches!(
             session.poll_field_observation(&pending),
-            LiveFieldObservationPoll::Terminal
+            FieldObservationSessionPoll::Terminal
         ));
 
         let finished = session.finish(DiagnosticRunStatus::Success, 40, Duration::from_secs(1));
