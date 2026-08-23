@@ -317,7 +317,13 @@ impl CaptureProfileArtifact {
         if !valid_sha256(&self.calibration_evidence_sha256) {
             return Err(GamescopeProfileBindingError::InvalidProfile);
         }
-        self.observed.validate()
+        self.observed.validate()?;
+        if self.provider.scaling_configuration.output_width != self.observed.video.width
+            || self.provider.scaling_configuration.output_height != self.observed.video.height
+        {
+            return Err(GamescopeProfileBindingError::InvalidProfile);
+        }
+        Ok(())
     }
 }
 
@@ -716,6 +722,24 @@ mod tests {
         assert_eq!(
             GamescopeProfileBinding::parse(&bytes, &digest).unwrap_err(),
             GamescopeProfileBindingError::InvalidNormalizer
+        );
+    }
+
+    #[test]
+    fn output_dimensions_must_match_the_observed_video_contract() {
+        let mut mismatched = artifact();
+        mismatched
+            .capture_profile
+            .provider
+            .scaling_configuration
+            .output_width += 1;
+        mismatched.normalizer.capture_profile_sha256 =
+            sha256(&canonical_json(&mismatched.capture_profile).unwrap());
+        let (bytes, digest) = encoded_artifact(&mismatched);
+
+        assert_eq!(
+            GamescopeProfileBinding::parse(&bytes, &digest).unwrap_err(),
+            GamescopeProfileBindingError::InvalidProfile
         );
     }
 
