@@ -1,8 +1,9 @@
 use std::fmt;
+use std::sync::Arc;
 
 use serde::Serialize;
 
-use super::UncalibratedFrame;
+use super::{CaptureGeneration, UncalibratedFrame};
 
 const CANONICAL_WIDTH: usize = 1_920;
 const CANONICAL_HEIGHT: usize = 1_080;
@@ -209,6 +210,91 @@ impl UnboundCanonicalFrame {
     #[must_use]
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
+    }
+
+    #[must_use]
+    pub const fn source_sequence(&self) -> u64 {
+        self.source_sequence
+    }
+
+    #[must_use]
+    pub const fn received_monotonic_ns(&self) -> u64 {
+        self.received_monotonic_ns
+    }
+
+    #[must_use]
+    pub fn into_pixels(self) -> Box<[u8]> {
+        self.pixels
+    }
+}
+
+/// Canonical RGB8 frame bound to one admitted capture generation, profile, and normalizer.
+pub struct NormalizedCanonicalFrame {
+    pixels: Box<[u8]>,
+    capture_generation: CaptureGeneration,
+    capture_profile_sha256: Arc<str>,
+    normalizer_artifact_sha256: Arc<str>,
+    source_sequence: u64,
+    received_monotonic_ns: u64,
+}
+
+impl fmt::Debug for NormalizedCanonicalFrame {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NormalizedCanonicalFrame")
+            .field("capture_generation", &self.capture_generation)
+            .field("capture_profile_sha256", &self.capture_profile_sha256)
+            .field(
+                "normalizer_artifact_sha256",
+                &self.normalizer_artifact_sha256,
+            )
+            .field("source_sequence", &self.source_sequence)
+            .field("received_monotonic_ns", &self.received_monotonic_ns)
+            .field("byte_count", &self.pixels.len())
+            .finish()
+    }
+}
+
+impl NormalizedCanonicalFrame {
+    pub(super) fn bind(
+        frame: UnboundCanonicalFrame,
+        capture_generation: CaptureGeneration,
+        capture_profile_sha256: Arc<str>,
+        normalizer_artifact_sha256: Arc<str>,
+    ) -> Self {
+        Self {
+            source_sequence: frame.source_sequence,
+            received_monotonic_ns: frame.received_monotonic_ns,
+            pixels: frame.pixels,
+            capture_generation,
+            capture_profile_sha256,
+            normalizer_artifact_sha256,
+        }
+    }
+
+    #[must_use]
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    #[must_use]
+    pub fn into_pixels(self) -> Box<[u8]> {
+        self.pixels
+    }
+
+    #[must_use]
+    pub const fn capture_generation(&self) -> CaptureGeneration {
+        self.capture_generation
+    }
+
+    #[must_use]
+    pub fn capture_profile_sha256(&self) -> &str {
+        &self.capture_profile_sha256
+    }
+
+    #[must_use]
+    pub fn normalizer_artifact_sha256(&self) -> &str {
+        &self.normalizer_artifact_sha256
     }
 
     #[must_use]

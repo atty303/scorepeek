@@ -5,11 +5,13 @@ use std::time::{Duration, Instant};
 
 use scorepeek::capture::{
     CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
-    CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureErrorType, GamescopeProfileBinding,
-    GamescopeSessionProvenance, acquire_gamescope_source, acquire_gamescope_source_for_session,
-    admit_gamescope_profile, start_uncalibrated_gamescope_receiver,
+    CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureErrorType, CaptureGeneration,
+    GamescopeProfileBinding, GamescopeSessionProvenance, acquire_gamescope_source,
+    acquire_gamescope_source_for_session, admit_gamescope_profile,
+    start_uncalibrated_gamescope_receiver,
 };
 use serde::Serialize;
+use sha2::{Digest as _, Sha256};
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 const RECEIVER_START_TIMEOUT: Duration = Duration::from_secs(2);
@@ -43,6 +45,18 @@ enum BindingAdmissionGateErrorType {
     BindingInvalid,
     CaptureFailed,
     AdmissionRejected,
+    ShutdownFailed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CanonicalFrameGateErrorType {
+    BindingUnavailable,
+    BindingInvalid,
+    CaptureFailed,
+    AdmissionRejected,
+    FrameUnavailable,
+    NormalizationFailed,
     ShutdownFailed,
 }
 
@@ -137,6 +151,21 @@ pub struct GamescopeBindingAdmissionGateReport {
     dropped_diagnostic_facts: u64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct GamescopeCanonicalFrameGateReport {
+    schema: &'static str,
+    status: LiveGateStatus,
+    error_type: Option<CanonicalFrameGateErrorType>,
+    capture_error_type: Option<CaptureErrorType>,
+    capture_generation: u64,
+    capture_profile_sha256: Option<String>,
+    normalizer_artifact_sha256: Option<String>,
+    source_sequence: Option<u64>,
+    canonical_rgb8_sha256: Option<String>,
+    diagnostic_facts: Vec<CaptureDiagnosticFact>,
+    dropped_diagnostic_facts: u64,
+}
+
 impl GamescopeLiveGateReport {
     pub const fn succeeded(&self) -> bool {
         matches!(self.status, LiveGateStatus::Success)
@@ -150,6 +179,12 @@ impl GamescopeLifecycleGateReport {
 }
 
 impl GamescopeBindingAdmissionGateReport {
+    pub const fn succeeded(&self) -> bool {
+        matches!(self.status, LiveGateStatus::Success)
+    }
+}
+
+impl GamescopeCanonicalFrameGateReport {
     pub const fn succeeded(&self) -> bool {
         matches!(self.status, LiveGateStatus::Success)
     }
@@ -224,7 +259,12 @@ pub fn run_gamescope_binding_admission_gate(
                 );
             }
         };
-    match admit_gamescope_profile(receiver, binding, &mut sink) {
+    match admit_gamescope_profile(
+        receiver,
+        binding,
+        CaptureGeneration::new(1).expect("fixed nonzero capture generation"),
+        &mut sink,
+    ) {
         Ok(lease) => {
             let digests = (
                 lease.capture_profile_sha256().to_owned(),
@@ -258,6 +298,166 @@ pub fn run_gamescope_binding_admission_gate(
             )
         }
     }
+}
+
+pub fn run_gamescope_canonical_frame_gate(
+    binding_path: &std::path::Path,
+    expected_binding_sha256: &str,
+    session: GamescopeSessionProvenance,
+    capture_generation: CaptureGeneration,
+) -> GamescopeCanonicalFrameGateReport {
+    let binding = match read_binding(binding_path, expected_binding_sha256) {
+        Ok(binding) => binding,
+        Err(BindingAdmissionGateErrorType::BindingUnavailable) => {
+            return canonical_frame_report(
+                CanonicalFrameGateErrorType::BindingUnavailable,
+                None,
+                capture_generation,
+                BoundedDiagnosticSink::default(),
+            );
+        }
+        Err(_) => {
+            return canonical_frame_report(
+                CanonicalFrameGateErrorType::BindingInvalid,
+                None,
+                capture_generation,
+                BoundedDiagnosticSink::default(),
+            );
+        }
+    };
+    let mut sink = BoundedDiagnosticSink::default();
+    let lease = match acquire_gamescope_source_for_session(DISCOVERY_TIMEOUT, session, &mut sink) {
+        Ok(lease) => lease,
+        Err(error) => {
+            return canonical_frame_report(
+                CanonicalFrameGateErrorType::CaptureFailed,
+                Some(error.error_type()),
+                capture_generation,
+                sink,
+            );
+        }
+    };
+    let receiver =
+        match start_uncalibrated_gamescope_receiver(lease, RECEIVER_START_TIMEOUT, &mut sink) {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                return canonical_frame_report(
+                    CanonicalFrameGateErrorType::CaptureFailed,
+                    Some(error.error_type()),
+                    capture_generation,
+                    sink,
+                );
+            }
+        };
+    let mut lease = match admit_gamescope_profile(receiver, binding, capture_generation, &mut sink)
+    {
+        Ok(lease) => lease,
+        Err(failure) => {
+            let error_type = failure.error_type();
+            let _ = failure.shutdown(&mut sink);
+            return canonical_frame_report(
+                CanonicalFrameGateErrorType::AdmissionRejected,
+                Some(error_type),
+                capture_generation,
+                sink,
+            );
+        }
+    };
+    let Some(observed) = lease.take_latest_observed_frame() else {
+        let _ = lease.shutdown(&mut sink);
+        return canonical_frame_report(
+            CanonicalFrameGateErrorType::FrameUnavailable,
+            None,
+            capture_generation,
+            sink,
+        );
+    };
+    let canonical = match lease.normalize_observed_frame(observed, &mut sink) {
+        Ok(frame) => frame,
+        Err(error) => {
+            let error_type = error.error_type();
+            let _ = lease.shutdown(&mut sink);
+            return canonical_frame_report(
+                CanonicalFrameGateErrorType::NormalizationFailed,
+                Some(error_type),
+                capture_generation,
+                sink,
+            );
+        }
+    };
+    let capture_profile_sha256 = canonical.capture_profile_sha256().to_owned();
+    let normalizer_artifact_sha256 = canonical.normalizer_artifact_sha256().to_owned();
+    let source_sequence = canonical.source_sequence();
+    let canonical_rgb8_sha256 = encode_sha256(canonical.pixels());
+    if let Err(error) = lease.shutdown(&mut sink) {
+        return canonical_frame_report(
+            CanonicalFrameGateErrorType::ShutdownFailed,
+            Some(error.error_type()),
+            capture_generation,
+            sink,
+        );
+    }
+    canonical_frame_success(
+        capture_generation,
+        capture_profile_sha256,
+        normalizer_artifact_sha256,
+        source_sequence,
+        canonical_rgb8_sha256,
+        sink,
+    )
+}
+
+fn canonical_frame_success(
+    capture_generation: CaptureGeneration,
+    capture_profile_sha256: String,
+    normalizer_artifact_sha256: String,
+    source_sequence: u64,
+    canonical_rgb8_sha256: String,
+    sink: BoundedDiagnosticSink,
+) -> GamescopeCanonicalFrameGateReport {
+    GamescopeCanonicalFrameGateReport {
+        schema: "scorepeek-gamescope-canonical-frame-gate-v1",
+        status: LiveGateStatus::Success,
+        error_type: None,
+        capture_error_type: None,
+        capture_generation: capture_generation.get(),
+        capture_profile_sha256: Some(capture_profile_sha256),
+        normalizer_artifact_sha256: Some(normalizer_artifact_sha256),
+        source_sequence: Some(source_sequence),
+        canonical_rgb8_sha256: Some(canonical_rgb8_sha256),
+        diagnostic_facts: sink.facts,
+        dropped_diagnostic_facts: sink.dropped,
+    }
+}
+
+fn canonical_frame_report(
+    error_type: CanonicalFrameGateErrorType,
+    capture_error_type: Option<CaptureErrorType>,
+    capture_generation: CaptureGeneration,
+    sink: BoundedDiagnosticSink,
+) -> GamescopeCanonicalFrameGateReport {
+    GamescopeCanonicalFrameGateReport {
+        schema: "scorepeek-gamescope-canonical-frame-gate-v1",
+        status: LiveGateStatus::Error,
+        error_type: Some(error_type),
+        capture_error_type,
+        capture_generation: capture_generation.get(),
+        capture_profile_sha256: None,
+        normalizer_artifact_sha256: None,
+        source_sequence: None,
+        canonical_rgb8_sha256: None,
+        diagnostic_facts: sink.facts,
+        dropped_diagnostic_facts: sink.dropped,
+    }
+}
+
+fn encode_sha256(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(64);
+    for byte in Sha256::digest(bytes) {
+        use std::fmt::Write as _;
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
 }
 
 fn read_binding(
@@ -629,9 +829,10 @@ mod tests {
 
     use scorepeek::capture::{
         CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
-        CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureErrorType, CaptureSourceKind,
-        FractionalRectangle, GamescopeProfileBinding, GamescopeProfileBindingAuthoringInput,
-        RationalCoordinate, UncalibratedMemoryType, UncalibratedVideoContract,
+        CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureErrorType, CaptureGeneration,
+        CaptureSourceKind, FractionalRectangle, GamescopeProfileBinding,
+        GamescopeProfileBindingAuthoringInput, RationalCoordinate, UncalibratedMemoryType,
+        UncalibratedVideoContract,
     };
 
     use super::{
@@ -639,7 +840,7 @@ mod tests {
         LifecyclePhaseStatus, LiveGateStatus, MAX_DIAGNOSTIC_FACTS, lifecycle_error_type,
         parse_consumer_interval_ms, parse_duration_ms, parse_lifecycle_runs,
         process_resource_snapshot, read_binding, run_gamescope_binding_admission_gate,
-        summarize_run,
+        run_gamescope_canonical_frame_gate, summarize_run,
     };
 
     #[test]
@@ -735,6 +936,37 @@ mod tests {
 
         assert!(!encoded.contains("PRIVATE"));
         assert!(encoded.contains("binding_unavailable"));
+    }
+
+    #[test]
+    fn canonical_gate_failure_report_omits_paths_and_session_values() {
+        let session = scorepeek::capture::GamescopeSessionProvenance::new(
+            scorepeek::capture::GamescopeSessionProvenanceInput {
+                environment_id: "PRIVATE-ENVIRONMENT".to_owned(),
+                gamescope_version: "PRIVATE-VERSION".to_owned(),
+                backend_id: "PRIVATE-BACKEND".to_owned(),
+                output_width: 4,
+                output_height: 2,
+                nested_width: 4,
+                nested_height: 2,
+                nested_refresh_hz: 60,
+                scaler: "auto".to_owned(),
+                filter: "linear".to_owned(),
+            },
+        )
+        .unwrap();
+        let report = run_gamescope_canonical_frame_gate(
+            std::path::Path::new("/PRIVATE/BINDING/PATH"),
+            &"f".repeat(64),
+            session,
+            CaptureGeneration::new(7).unwrap(),
+        );
+        let encoded = serde_json::to_string(&report).unwrap();
+
+        assert!(!encoded.contains("PRIVATE"));
+        assert!(encoded.contains("binding_unavailable"));
+        assert!(encoded.contains("\"capture_generation\":7"));
+        assert!(encoded.contains("\"canonical_rgb8_sha256\":null"));
     }
 
     #[test]

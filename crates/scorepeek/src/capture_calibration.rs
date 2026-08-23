@@ -242,6 +242,9 @@ enum StoredCaptureDiagnosticDetail {
         byte_count: u32,
     },
     ProfileBindingAdmission,
+    FrameNormalization {
+        source_sequence: u64,
+    },
     SteadyReception {
         received_frames: u64,
         overwritten_frames: u64,

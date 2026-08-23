@@ -19,11 +19,11 @@ pub use binding::{
     GamescopeSessionProvenanceMismatch, ObservedContractMismatch,
 };
 pub use normalizer::{
-    FractionalLinearGeometry, FractionalRectangle, RationalCoordinate, UnboundCanonicalFrame,
-    UnboundNormalizationError,
+    FractionalLinearGeometry, FractionalRectangle, NormalizedCanonicalFrame, RationalCoordinate,
+    UnboundCanonicalFrame, UnboundNormalizationError,
 };
 pub use receiver::{
-    CalibratedGamescopeLease, GamescopeLeaseAdmissionFailure, UncalibratedFrame,
+    CalibratedGamescopeLease, GamescopeLeaseAdmissionFailure, ObservedFrame, UncalibratedFrame,
     UncalibratedMemoryType, UncalibratedPipeWireReceiver, UncalibratedVideoContract,
     admit_gamescope_profile, start_uncalibrated_gamescope_receiver,
 };
@@ -46,6 +46,7 @@ pub enum CaptureDiagnosticOperation {
     StreamNegotiation,
     FirstFrame,
     ProfileBindingAdmission,
+    FrameNormalization,
     SteadyReception,
     ReceiverShutdown,
     Shutdown,
@@ -88,6 +89,11 @@ pub enum CaptureErrorType {
     ProfileVideoContractMismatch,
     ProfileMemoryTypeMismatch,
     ProfileStrideMismatch,
+    FrameLeaseMismatch,
+    FrameGenerationMismatch,
+    FrameProfileMismatch,
+    FrameNormalizerMismatch,
+    FrameNormalizationFailed,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -131,6 +137,9 @@ pub enum CaptureDiagnosticDetail {
         byte_count: u32,
     },
     ProfileBindingAdmission,
+    FrameNormalization {
+        source_sequence: u64,
+    },
     SteadyReception {
         received_frames: u64,
         overwritten_frames: u64,
@@ -164,6 +173,39 @@ pub struct CaptureDiagnosticFact {
 pub trait CaptureDiagnosticSink {
     fn record(&mut self, fact: CaptureDiagnosticFact);
 }
+
+/// Application-owned identity for one uninterrupted capture lifetime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CaptureGeneration(u64);
+
+impl CaptureGeneration {
+    /// Creates one nonzero capture generation.
+    ///
+    /// # Errors
+    /// Returns `InvalidCaptureGeneration` when the application supplies zero.
+    pub const fn new(value: u64) -> Result<Self, InvalidCaptureGeneration> {
+        if value == 0 {
+            return Err(InvalidCaptureGeneration);
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidCaptureGeneration;
+
+impl fmt::Display for InvalidCaptureGeneration {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("capture generation must be nonzero")
+    }
+}
+
+impl std::error::Error for InvalidCaptureGeneration {}
 
 impl CaptureDiagnosticSink for () {
     fn record(&mut self, _fact: CaptureDiagnosticFact) {}
@@ -371,6 +413,19 @@ impl fmt::Display for CaptureError {
             CaptureErrorType::ProfileStrideMismatch => {
                 "Gamescope profile stride does not match the receiver"
             }
+            CaptureErrorType::FrameGenerationMismatch => {
+                "observed frame belongs to another capture generation"
+            }
+            CaptureErrorType::FrameLeaseMismatch => {
+                "observed frame belongs to another admitted lease"
+            }
+            CaptureErrorType::FrameProfileMismatch => {
+                "observed frame belongs to another capture profile"
+            }
+            CaptureErrorType::FrameNormalizerMismatch => {
+                "observed frame is bound to another normalizer"
+            }
+            CaptureErrorType::FrameNormalizationFailed => "observed frame normalization failed",
         })
     }
 }
@@ -987,6 +1042,12 @@ fn elapsed_ms(started: Instant) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_generation_is_explicit_and_nonzero() {
+        assert_eq!(CaptureGeneration::new(0), Err(InvalidCaptureGeneration));
+        assert_eq!(CaptureGeneration::new(9).unwrap().get(), 9);
+    }
 
     struct FakeRegistry(Result<RegistrySnapshot, RegistryFailure>);
 

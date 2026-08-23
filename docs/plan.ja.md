@@ -33,7 +33,11 @@
   bindingの全provenance fieldとreceiverが実negotiationしたvideo/memory/stride contractが一致した場合だけ
   calibrated leaseへ昇格する境界まで実装済み。受理・拒否は値を持たないtyped factとしてbounded capture
   diagnosticへ記録し、development-machine marker sessionで一致受理とnested refresh不一致拒否を確認済み。
-  calibrated leaseからのprofile-bearing `ObservedFrame`生成は未着手。
+  calibrated leaseだけがcapture generation/profile/normalizer identity付き`ObservedFrame`を生成し、同じleaseの
+  binding-selected fractional normalizerだけがRGB8 1920x1080の`NormalizedCanonicalFrame`へ変換できる境界も
+  実装済み。generation/profile/normalizer mixingはfail closedで、最初のnormalization success/failureだけを
+  bounded typed factへ記録する。独立した2つのcontrolled marker lifetimeでgenerationを1から2へrolloverし、
+  同じcanonical RGB8 digestを再現した。application-owned live diagnostic workerおよびrecognitionへのhandoffは未着手。
   OBS/obs-vkcapture並行、
   soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了

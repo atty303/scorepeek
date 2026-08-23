@@ -139,6 +139,14 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- capture gamescope-binding-admission-gate "$@"
 '''
 
+[tasks."capture:gamescope:test:canonical-frame"]
+description = "Normalize one admitted live Gamescope frame without retaining pixels"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- capture gamescope-canonical-frame-gate "$@"
+'''
+
 [tasks."native:verify"]
 description = "Verify the pinned PipeWire SDK and host native build prerequisites"
 run = "scripts/verify-pipewire-build-environment.bash"
