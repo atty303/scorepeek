@@ -190,20 +190,6 @@ impl From<recognition::RegisteredResourceLoadErrorType> for RegisteredResourceGa
     }
 }
 
-struct RegisteredResourceGateObserver {
-    _resources: recognition::RegisteredRecognitionResources,
-}
-
-impl recognition_live::field_observer::FieldObserver for RegisteredResourceGateObserver {
-    type Output = ();
-
-    fn observe(
-        &mut self,
-        _input: &recognition_live::field_observer::FieldObserverInput,
-    ) -> Self::Output {
-    }
-}
-
 fn try_registered_resource_gate(args: &[OsString]) -> Option<Result<(), String>> {
     let [
         recognition_command,
@@ -274,9 +260,7 @@ fn registered_resource_gate(
         recognition_live::field_observer::FieldObserverWorker::start(&descriptor, |binding| {
             binding
                 .load_registered_resources(Path::new(catalog_root), Path::new(bundle_root))
-                .map(|resources| RegisteredResourceGateObserver {
-                    _resources: resources,
-                })
+                .map(recognition_live::screen_field_observer::RegisteredScreenFieldObserver::new)
         });
     match worker {
         Ok(worker) => {

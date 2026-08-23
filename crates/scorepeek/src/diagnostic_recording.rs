@@ -184,6 +184,7 @@ pub enum DiagnosticOperation {
     CaptureFrame,
     NormalizeFrame,
     InspectRecognition,
+    ObserveFields,
     ReduceSongContext,
     DeliverEvent,
     ChangeBinding,
@@ -204,6 +205,7 @@ pub enum DiagnosticFactErrorType {
     CaptureUnavailable,
     NormalizeFailed,
     RecognitionFailed,
+    FieldObservationFailed,
     SelectionConflict,
     EventDeliveryFailed,
     ConsumerUnavailable,
@@ -247,6 +249,16 @@ pub enum DiagnosticDecisionOutcome {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum DiagnosticTextField {
+    ResultTitle,
+    ResultArtist,
+    MusicSelectCentralTitle,
+    MusicSelectArtist,
+    MusicSelectActiveListTitle,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DiagnosticEventKind {
     MusicSelectDetected,
     ResultDetected,
@@ -266,6 +278,12 @@ pub enum DiagnosticDetail {
     Operation,
     ScreenObservation {
         screen: DiagnosticScreen,
+    },
+    FieldObservation {
+        screen: DiagnosticScreen,
+        observed_fields: u8,
+        unimplemented_fields: u8,
+        failed_field: Option<DiagnosticTextField>,
     },
     SongContextObservation {
         change: DiagnosticContextChange,
@@ -1070,6 +1088,9 @@ fn valid_fact(fact: &DiagnosticFact) -> bool {
             DiagnosticOperation::InspectRecognition,
             DiagnosticDetail::ScreenObservation { .. } | DiagnosticDetail::SongDecision { .. }
         ) | (
+            DiagnosticOperation::ObserveFields,
+            DiagnosticDetail::FieldObservation { .. }
+        ) | (
             DiagnosticOperation::ReduceSongContext,
             DiagnosticDetail::SongContextObservation { .. }
         ) | (
@@ -1108,6 +1129,40 @@ fn valid_fact(fact: &DiagnosticFact) -> bool {
         DiagnosticDetail::BindingChange {
             next_binding_sha256,
         } => valid_sha256(next_binding_sha256),
+        DiagnosticDetail::FieldObservation {
+            screen,
+            observed_fields,
+            unimplemented_fields,
+            failed_field,
+        } => match failed_field {
+            None => {
+                fact.status == DiagnosticOperationStatus::Success
+                    && fact.error_type.is_none()
+                    && matches!(
+                        (screen, observed_fields, unimplemented_fields),
+                        (DiagnosticScreen::Result, 2, 4) | (DiagnosticScreen::MusicSelection, 3, 1)
+                    )
+            }
+            Some(field) => {
+                fact.status == DiagnosticOperationStatus::Error
+                    && fact.error_type == Some(DiagnosticFactErrorType::FieldObservationFailed)
+                    && *observed_fields == 0
+                    && matches!(
+                        (screen, unimplemented_fields, field),
+                        (
+                            DiagnosticScreen::Result,
+                            4,
+                            DiagnosticTextField::ResultTitle | DiagnosticTextField::ResultArtist
+                        ) | (
+                            DiagnosticScreen::MusicSelection,
+                            1,
+                            DiagnosticTextField::MusicSelectCentralTitle
+                                | DiagnosticTextField::MusicSelectArtist
+                                | DiagnosticTextField::MusicSelectActiveListTitle
+                        )
+                    )
+            }
+        },
         _ => true,
     }
 }
@@ -1130,6 +1185,9 @@ fn valid_fact_status_error(fact: &DiagnosticFact) -> bool {
                 DiagnosticFactErrorType::RecognitionFailed
                     | DiagnosticFactErrorType::SelectionConflict
             ),
+            DiagnosticOperation::ObserveFields => {
+                error == DiagnosticFactErrorType::FieldObservationFailed
+            }
             DiagnosticOperation::ReduceSongContext => {
                 error == DiagnosticFactErrorType::SelectionConflict
             }

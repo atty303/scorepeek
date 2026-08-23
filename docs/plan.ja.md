@@ -56,8 +56,12 @@
   observer teardownまで保持するsingle-worker supervisor、5秒bounded finishを持つ。さらにactive catalog digest、登録済み
   PP-OCRv6-small model digest、固定CPU runtime manifest digestを照合し、catalog/dictionary/ONNX sessionをworker開始前に
   1回だけ保持するproduction resource loaderとread-only gateを実装した。gateはresourceをproduction field workerへ移し、cropを
-  submitせずbounded teardownまで確認する。bounded RGB8 cropからopen textを得るruntime methodはあるが、screen-level live
-  observer、field observation、accepted resultは未着手。
+  submitせずbounded teardownまで確認する。さらにcomplete crop setをworker thread上で登録済みruntimeへ通すproduction
+  screen-field observerを実装した。resultはtitle/artist textとdifficulty/level/notes/current scoreの明示的な未実装状態、
+  music-selectはcentral title/artist/active-list title textとselected chartの明示的な未実装状態を持つcompleteなscreen別型だけを
+  出力し、単一field失敗もfield ID付きwhole-screen errorにする。diagnosticはscreen、固定field count、失敗field IDだけを保持し、
+  OCR textやpixelsを記録せず、opt-out/rejectionは認識結果を変えない。実live frameからのfield submit、catalog解決、accepted resultは
+  未着手。
   OBS/obs-vkcapture並行、
   soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了

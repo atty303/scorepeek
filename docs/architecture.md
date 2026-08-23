@@ -233,25 +233,32 @@ are not represented by empty optionals, and the unknown branch cannot construct 
 live branch is an opaque owner retaining a borrow of the admitted frame; only the session constructs
 it, and callers can obtain only a borrowed screen-specific crop view. These values have no OCR,
 song-decision, accepted-field, or event authority. Model bundle I/O and inference therefore remain
-outside the capture handoff and require a separately owned application execution boundary before
-live field observation is implemented.
+outside the capture handoff and belong to a separately owned application execution boundary.
 
-ADR 0030 supplies that application execution boundary without yet supplying a production observer.
+ADR 0030 supplies that application execution boundary.
 One loader receives the exact immutable run binding once before capture work, then its observer is
 owned by a single bounded worker. Only opaque crops from the same run ID and full binding enter the
 capacity-two non-blocking queue. Worker results receive provenance outside the observer output;
 the same capacity also bounds accepted but unconsumed results after queue removal. Queue full,
 outstanding-result limit, worker loss, abandoned results, and bounded finish timeout remain typed.
 The single-production-worker token is retained through observer teardown. Model/catalog loading,
-inference, field schemas, decisions, and event acceptance are still separate unfinished layers.
+field schemas, catalog decisions, and event acceptance remain separate layers.
 
 ADR 0031 supplies the production resource loader for that boundary. It requires the active catalog,
 registered PP-OCRv6-small model, and fixed CPU runtime artifact to match the immutable run digests,
 then retains the catalog, dictionary, and one ONNX session. The runtime has a pure bounded-crop
-open-text method, but no screen-level observer invokes it yet. The read-only resource gate transfers
-the loaded resources into the production field worker and requires bounded teardown without crop
-submission. It proves resource admission and worker ownership only; it is not live recognition or
-performance evidence.
+open-text method. The read-only resource gate transfers the loaded resources into the production
+field worker and requires bounded teardown without crop submission. It proves resource admission
+and worker ownership only; it is not live recognition or performance evidence.
+
+ADR 0032 supplies the production screen-field observer and exact complete output shapes. Result
+output always contains observed title and artist text together with explicit observer-not-implemented
+states for difficulty, level, notes, and current score. Music-select output always contains observed
+central-title, artist, and active-list-title text together with an explicit observer-not-implemented
+selected chart. A text-field failure returns a typed whole-screen error instead of a partial value.
+The associated diagnostic operation records only the screen, fixed observed/unimplemented counts,
+and an optional typed failed-field ID; OCR strings and pixels are not diagnostic facts. These values
+still have no catalog-candidate, song-decision, accepted-field, suppression, or event authority.
 
 The first read-only application controls inspect an existing diagnostic root
 through a shared strict inventory. `status` exposes fixed retention policy and

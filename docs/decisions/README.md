@@ -66,6 +66,9 @@ authoritative.
 - [ADR 0031: Load the registered live text runtime once](0031-load-the-registered-live-text-runtime-once.md)
   binds the active catalog, PP-OCRv6-small bundle, and fixed CPU runtime manifest to one synchronous
   pre-worker loader without granting field, song, or event authority.
+- [ADR 0032: Observe complete screen field sets without acceptance](0032-observe-complete-screen-field-sets-without-acceptance.md)
+  fixes complete result/music-select worker outputs, explicit unimplemented fields, inference
+  failure ownership, and value-free application diagnostics without granting acceptance authority.
 
 ## Historical
 

@@ -627,7 +627,10 @@ mod tests {
     use std::sync::Condvar;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use scorepeek::recognition::{CanonicalLayout, ScreenRgb8Crops};
+    use scorepeek::recognition::{
+        CanonicalLayout, DynamicTextObservation, ScreenFieldObservationError,
+        ScreenFieldObservations, ScreenRgb8Crops, observe_screen_fields,
+    };
 
     use super::*;
     use crate::diagnostic_live::LiveCanonicalFrame;
@@ -756,6 +759,86 @@ mod tests {
         type Output = ();
 
         fn observe(&mut self, _input: &FieldObserverInput) {}
+    }
+
+    struct CompleteScreenObserver;
+
+    impl FieldObserver for CompleteScreenObserver {
+        type Output = Result<ScreenFieldObservations, ScreenFieldObservationError<&'static str>>;
+
+        fn observe(&mut self, input: &FieldObserverInput) -> Self::Output {
+            observe_screen_fields(input.crops(), |crop| {
+                Ok(DynamicTextObservation {
+                    input_width: crop.roi.width as usize,
+                    output_timesteps: 1,
+                    open_text: "imperfect observation".to_owned(),
+                })
+            })
+        }
+    }
+
+    #[test]
+    fn complete_screen_output_stays_bound_and_diagnostics_do_not_change_it() {
+        let run_descriptor = descriptor("complete-field-output", 1);
+        let mut worker = FieldObserverWorker::start_for_test(
+            &run_descriptor,
+            |_| Ok::<_, ()>(CompleteScreenObserver),
+            1,
+        )
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut session = LiveRecognitionSession::start(
+            root.path(),
+            run_descriptor,
+            DiagnosticPolicy {
+                enabled: false,
+                ..DiagnosticPolicy::default()
+            },
+        )
+        .unwrap();
+        let frame = solid_frame([200, 100, 20], 1, 9);
+        let live = session.inspect(&frame).unwrap().field_inputs.unwrap();
+        let pending = worker.try_observe(live).unwrap();
+        let FieldObservationPoll::Ready(observation) = pending.wait(Duration::from_secs(1)) else {
+            panic!("complete field observation did not finish");
+        };
+        assert_eq!(
+            observation.output().as_ref().unwrap().screen(),
+            ScreenClass::Result
+        );
+        assert_eq!(
+            session.record_field_observation(&observation),
+            crate::diagnostic_worker::DiagnosticEnqueueOutcome::Disabled
+        );
+        assert_eq!(
+            observation.output().as_ref().unwrap().screen(),
+            ScreenClass::Result
+        );
+        let _ = session.finish(DiagnosticRunStatus::Success, 200);
+
+        let other_root = tempfile::tempdir().unwrap();
+        let mut other = LiveRecognitionSession::start(
+            other_root.path(),
+            descriptor("other-field-output", 1),
+            DiagnosticPolicy {
+                enabled: false,
+                ..DiagnosticPolicy::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            other.record_field_observation(&observation),
+            crate::diagnostic_worker::DiagnosticEnqueueOutcome::Rejected
+        );
+        assert_eq!(
+            observation.output().as_ref().unwrap().screen(),
+            ScreenClass::Result
+        );
+        let _ = other.finish(DiagnosticRunStatus::Success, 200);
+        assert_eq!(
+            worker.finish(Duration::from_secs(1)).status,
+            FieldObserverFinishStatus::Complete
+        );
     }
 
     struct ResourceObserver {

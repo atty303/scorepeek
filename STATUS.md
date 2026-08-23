@@ -8,8 +8,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: map each complete result or music-select crop set through the retained
-  registered runtime into typed imperfect field observations, without granting song,
+- Current execution focus: connect complete typed result or music-select field observations to the
+  live application flow, then derive screen-local catalog candidates without granting song,
   accepted-field, or event authority prematurely.
 
 ## Included deliverables
@@ -128,8 +128,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   observer output. The same global capacity bounds accepted but unconsumed results after queue
   removal. Queue full, outstanding-result limit, worker loss, abandoned results, and bounded finish
   timeout remain typed; timeout does not claim the residual thread has terminated, and the
-  production-worker token remains held through observer teardown. No screen-level production
-  observer is connected yet.
+  production-worker token remains held through observer teardown.
 - ADR 0031 adds the production resource loader used by that boundary. It matches the active catalog,
   registered PP-OCRv6-small model, and fixed CPU runtime artifact to the immutable run digests,
   verifies the complete bundle, and retains the catalog, dictionary, and one ONNX session before
@@ -138,6 +137,15 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   and requires bounded teardown without submitting crops. Its JSON report contains only typed
   status and selected digests; it does not add resource bodies, paths, environment strings, or
   pixels as fields, while ordinary typed error causes remain actionable on stderr.
+- ADR 0032 adds the production screen-field observer and complete screen-specific output shapes.
+  Result observations contain title and artist text plus explicit not-implemented states for
+  difficulty, level, notes, and current score. Music-select observations contain central title,
+  artist, and active-list title text plus an explicit not-implemented selected-chart state. There
+  are no title-only, artist-only, supplemental, or optional partial screen outputs. Failure of any
+  text field returns a typed whole-screen error naming the failed field. The corresponding bounded
+  diagnostic fact records only screen, fixed field counts, and an optional typed failed-field ID;
+  OCR text, pixels, resource bodies, paths, and environment strings are not diagnostic fields, and
+  diagnostic disablement or rejection does not change the bound observation result.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -226,11 +234,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Unverified boundaries
 
-- No screen-level live observer, field observation, accepted result, context reducer, or event
-  output consumes the retained runtime or routed inputs; this checkpoint stops at exact resource
-  loading plus a one-crop open-text runtime method under the immutable application lifetime.
-  Offline `CanonicalFrame` extraction evidence still cannot fabricate the live generation/profile/
-  normalizer owner or enter this live gate.
+- The production screen-field observer is constructed from retained registered resources and can
+  map a bound complete crop set to a complete typed result or music-select observation on the
+  field-worker thread. It has not yet been driven by a real live admitted frame or private
+  INFINITAS crop set. Offline `CanonicalFrame` extraction evidence still cannot fabricate the live
+  generation/profile/normalizer owner or enter this live gate.
 - The bounded CLI gate is not an ordinary long-running application loop. Live queue-full or worker
   loss was not forced on the development machine; bounded unit tests cover queue drop, worker loss,
   generation rejection, opt-out, and diagnostic non-interference. Target-host cost remains unknown.
@@ -241,9 +249,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - OBS/obs-vkcapture coexistence, PipeWire daemon disconnect, stream loss distinct from node loss,
   source recreation, long soak, FD/thread/RSS convergence, frame age, CPU/memory/copy/GPU/power
   cost, game p99 frametime, and OBS lag remain unverified.
-- The existing result and music-select field recognition work is offline/private evidence. There is
-  no integrated live field observer, accepted field gate, event daemon, target-host performance
-  gate, or supported capture profile.
+- The existing real result and music-select recognition evidence remains offline/private. There is
+  no integrated live field submission, catalog resolution, accepted field gate, event daemon,
+  target-host performance gate, or supported capture profile.
 - Current recordings and provisional labels do not establish title-disjoint result accuracy,
   calibrated thresholds, result dwell, miss denominator, deduplication, or release accuracy.
 - Persistent scheduler installation was verified in isolation but not applied to the operator's
@@ -263,12 +271,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Define typed field-observation output for the complete result and music-select crop sets without
-   prematurely accepting songs or events. Run inference only on the field-worker thread and perform
-   no filesystem or model construction there.
-2. Bind every
-   output and later song decision, suppression, and accepted result to the same run; diagnostic
-   enqueue/drop/opt-out must not alter those recognition outcomes.
+1. Connect the registered production screen-field observer to the real live application session so
+   only current-run complete crop sets can be submitted and every output retains the same immutable
+   run binding. Keep model construction and filesystem I/O before worker startup.
+2. Define screen-local full-catalog candidate observations from the complete open-text field set,
+   without choosing a song, accepting a field, suppressing an outcome, or emitting an event.
 3. Verify real field routing and observer output with separately authorized private INFINITAS
    evidence before claiming layout, OCR, accepted-field, target-host, or support results.
 

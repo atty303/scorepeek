@@ -3,11 +3,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 use scorepeek::capture::NormalizedCanonicalFrame;
+use scorepeek::recognition::{
+    ScreenClass, ScreenFieldObservationError, ScreenFieldObservations, ScreenTextField,
+};
 
 use crate::diagnostic_recording::{
     DiagnosticDetail, DiagnosticErrorType, DiagnosticFact, DiagnosticFactErrorType,
     DiagnosticFinishOutcome, DiagnosticOperation, DiagnosticOperationStatus, DiagnosticPolicy,
-    DiagnosticRunDescriptor, DiagnosticRunStatus, DiagnosticScreen,
+    DiagnosticRunDescriptor, DiagnosticRunStatus, DiagnosticScreen, DiagnosticTextField,
 };
 use crate::diagnostic_worker::{
     DEFAULT_DIAGNOSTIC_FLUSH_TIMEOUT, DiagnosticEnqueueOutcome, DiagnosticOwnedFrame,
@@ -229,6 +232,84 @@ impl LiveDiagnosticBridge {
         })
     }
 
+    /// Records only value-free field-observer status after the bound result is available.
+    ///
+    /// Diagnostic queueing remains non-blocking and cannot replace or mutate the worker output.
+    pub fn record_field_observation<E>(
+        &mut self,
+        sequence: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+        screen: ScreenClass,
+        output: &Result<ScreenFieldObservations, ScreenFieldObservationError<E>>,
+    ) -> DiagnosticEnqueueOutcome {
+        let diagnostic_screen = match screen {
+            ScreenClass::Result => DiagnosticScreen::Result,
+            ScreenClass::MusicSelect => DiagnosticScreen::MusicSelection,
+            ScreenClass::Unknown => {
+                self.worker
+                    .record_external_error(DiagnosticErrorType::InvalidConfiguration, sequence);
+                return DiagnosticEnqueueOutcome::Rejected;
+            }
+        };
+        let (status, error_type, observed_fields, unimplemented_fields, failed_field) = match output
+        {
+            Ok(fields) if fields.screen() == screen => {
+                let (observed, unimplemented) = fields.diagnostic_field_counts();
+                (
+                    DiagnosticOperationStatus::Success,
+                    None,
+                    observed,
+                    unimplemented,
+                    None,
+                )
+            }
+            Ok(_) => {
+                self.worker
+                    .record_external_error(DiagnosticErrorType::InvalidConfiguration, sequence);
+                return DiagnosticEnqueueOutcome::Rejected;
+            }
+            Err(error) => {
+                let Some(field) = diagnostic_text_field(screen, error.field) else {
+                    self.worker
+                        .record_external_error(DiagnosticErrorType::InvalidConfiguration, sequence);
+                    return DiagnosticEnqueueOutcome::Rejected;
+                };
+                (
+                    DiagnosticOperationStatus::Error,
+                    Some(DiagnosticFactErrorType::FieldObservationFailed),
+                    0,
+                    match screen {
+                        ScreenClass::Result => 4,
+                        ScreenClass::MusicSelect => 1,
+                        ScreenClass::Unknown => unreachable!("unknown screen was rejected above"),
+                    },
+                    Some(field),
+                )
+            }
+        };
+        self.worker.try_record_fact(DiagnosticFact {
+            sequence,
+            monotonic_start_ms,
+            monotonic_end_ms,
+            operation: DiagnosticOperation::ObserveFields,
+            status,
+            error_type,
+            detail: DiagnosticDetail::FieldObservation {
+                screen: diagnostic_screen,
+                observed_fields,
+                unimplemented_fields,
+                failed_field,
+            },
+        })
+    }
+
+    pub(crate) fn reject_field_observation(&mut self, sequence: u64) -> DiagnosticEnqueueOutcome {
+        self.worker
+            .record_external_error(DiagnosticErrorType::InvalidConfiguration, sequence);
+        DiagnosticEnqueueOutcome::Rejected
+    }
+
     /// Records the explicit end of this immutable binding before the application starts another.
     pub fn record_binding_change(
         &mut self,
@@ -305,6 +386,26 @@ impl LiveDiagnosticBridge {
     }
 }
 
+fn diagnostic_text_field(
+    screen: ScreenClass,
+    field: ScreenTextField,
+) -> Option<DiagnosticTextField> {
+    Some(match (screen, field) {
+        (ScreenClass::Result, ScreenTextField::ResultTitle) => DiagnosticTextField::ResultTitle,
+        (ScreenClass::Result, ScreenTextField::ResultArtist) => DiagnosticTextField::ResultArtist,
+        (ScreenClass::MusicSelect, ScreenTextField::MusicSelectCentralTitle) => {
+            DiagnosticTextField::MusicSelectCentralTitle
+        }
+        (ScreenClass::MusicSelect, ScreenTextField::MusicSelectArtist) => {
+            DiagnosticTextField::MusicSelectArtist
+        }
+        (ScreenClass::MusicSelect, ScreenTextField::MusicSelectActiveListTitle) => {
+            DiagnosticTextField::MusicSelectActiveListTitle
+        }
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,7 +413,11 @@ mod tests {
         DiagnosticBinding, DiagnosticCompleteness, DiagnosticResource,
     };
     use crate::recognition_live::LiveRecognitionObservation;
-    use scorepeek::recognition::{CanonicalLayout, ScreenClass};
+    use scorepeek::recognition::{
+        CanonicalLayout, DynamicTextObservation, FieldNotObserved, FieldNotObservedReason,
+        ResultScreenFieldObservations, ScreenClass, ScreenFieldObservationError,
+        ScreenFieldObservations, ScreenTextField,
+    };
     use std::fs;
 
     fn descriptor(run_id: &str, generation: u64) -> DiagnosticRunDescriptor {
@@ -349,6 +454,25 @@ mod tests {
                 vec![7; crate::diagnostic_recording::CANONICAL_BYTES].into_boxed_slice(),
             ),
         }
+    }
+
+    fn result_fields(text: &str) -> ScreenFieldObservations {
+        let text = || DynamicTextObservation {
+            input_width: 320,
+            output_timesteps: 20,
+            open_text: text.to_owned(),
+        };
+        let unimplemented = FieldNotObserved {
+            reason: FieldNotObservedReason::ObserverNotImplemented,
+        };
+        ScreenFieldObservations::Result(ResultScreenFieldObservations {
+            title: text(),
+            artist: text(),
+            difficulty: unimplemented,
+            level: unimplemented,
+            notes: unimplemented,
+            current_score: unimplemented,
+        })
     }
 
     #[test]
@@ -497,6 +621,118 @@ mod tests {
             None
         );
         assert_eq!(root.path().read_dir().unwrap().count(), 0);
+    }
+
+    #[test]
+    fn field_observation_diagnostics_are_value_free_and_non_interfering() {
+        let root = tempfile::tempdir().unwrap();
+        let output = Ok::<_, ScreenFieldObservationError<&'static str>>(result_fields(
+            "OCR CONTENT SENTINEL",
+        ));
+        let mut bridge = LiveDiagnosticBridge::start_for_test(
+            root.path(),
+            descriptor("field-observation", 1),
+            DiagnosticPolicy::default(),
+            2,
+        );
+        assert_eq!(
+            bridge.record_field_observation(7, 20, 36, ScreenClass::Result, &output),
+            DiagnosticEnqueueOutcome::Enqueued
+        );
+        assert_eq!(
+            output.as_ref().unwrap().screen(),
+            ScreenClass::Result,
+            "diagnostic enqueue must not change the observer output"
+        );
+        assert_eq!(
+            bridge.finish(DiagnosticRunStatus::Success, 40).completeness,
+            Some(DiagnosticCompleteness::Complete)
+        );
+        let run = root.path().join("field-observation");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(run.join("manifest.json")).unwrap()).unwrap();
+        let filename = manifest["facts"][0]["filename"].as_str().unwrap();
+        let fact_bytes = fs::read(run.join(filename)).unwrap();
+        let fact: serde_json::Value = serde_json::from_slice(&fact_bytes).unwrap();
+        assert_eq!(fact["fact"]["operation"], "observe_fields");
+        assert_eq!(fact["fact"]["detail"]["kind"], "field_observation");
+        assert_eq!(fact["fact"]["detail"]["observed_fields"], 2);
+        assert_eq!(fact["fact"]["detail"]["unimplemented_fields"], 4);
+        assert!(
+            !String::from_utf8(fact_bytes)
+                .unwrap()
+                .contains("OCR CONTENT SENTINEL")
+        );
+
+        let disabled_root = tempfile::tempdir().unwrap();
+        let disabled_output = Ok::<_, ScreenFieldObservationError<&'static str>>(result_fields(
+            "OCR CONTENT SENTINEL",
+        ));
+        let mut disabled = LiveDiagnosticBridge::start_for_test(
+            disabled_root.path(),
+            descriptor("field-observation-disabled", 1),
+            DiagnosticPolicy {
+                enabled: false,
+                ..DiagnosticPolicy::default()
+            },
+            2,
+        );
+        assert_eq!(
+            disabled.record_field_observation(7, 20, 36, ScreenClass::Result, &disabled_output,),
+            DiagnosticEnqueueOutcome::Disabled
+        );
+        assert!(matches!(
+            disabled_output,
+            Ok(fields) if fields.screen() == ScreenClass::Result
+        ));
+        assert_eq!(
+            disabled
+                .finish(DiagnosticRunStatus::Success, 40)
+                .completeness,
+            None
+        );
+        assert_eq!(disabled_root.path().read_dir().unwrap().count(), 0);
+    }
+
+    #[test]
+    fn field_observation_failure_records_only_typed_field_and_error() {
+        let root = tempfile::tempdir().unwrap();
+        let output = Err(ScreenFieldObservationError::new(
+            ScreenTextField::ResultArtist,
+            "RUNTIME CAUSE SENTINEL",
+        ));
+        let mut bridge = LiveDiagnosticBridge::start_for_test(
+            root.path(),
+            descriptor("field-observation-error", 1),
+            DiagnosticPolicy::default(),
+            1,
+        );
+        assert_eq!(
+            bridge.record_field_observation(8, 40, 56, ScreenClass::Result, &output),
+            DiagnosticEnqueueOutcome::Enqueued
+        );
+        assert_eq!(
+            output.as_ref().unwrap_err().source_error(),
+            &"RUNTIME CAUSE SENTINEL"
+        );
+        assert_eq!(
+            bridge.finish(DiagnosticRunStatus::Success, 60).completeness,
+            Some(DiagnosticCompleteness::Complete)
+        );
+        let run = root.path().join("field-observation-error");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(run.join("manifest.json")).unwrap()).unwrap();
+        let filename = manifest["facts"][0]["filename"].as_str().unwrap();
+        let fact_bytes = fs::read(run.join(filename)).unwrap();
+        let fact: serde_json::Value = serde_json::from_slice(&fact_bytes).unwrap();
+        assert_eq!(fact["fact"]["status"], "error");
+        assert_eq!(fact["fact"]["error_type"], "field_observation_failed");
+        assert_eq!(fact["fact"]["detail"]["failed_field"], "result_artist");
+        assert!(
+            !String::from_utf8(fact_bytes)
+                .unwrap()
+                .contains("RUNTIME CAUSE SENTINEL")
+        );
     }
 
     #[test]

@@ -761,6 +761,167 @@ pub enum ScreenRgb8Crops {
     MusicSelect(MusicSelectScreenRgb8Crops),
 }
 
+/// One text field that can fail without fabricating a partial screen observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScreenTextField {
+    ResultTitle,
+    ResultArtist,
+    MusicSelectCentralTitle,
+    MusicSelectArtist,
+    MusicSelectActiveListTitle,
+}
+
+impl ScreenTextField {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ResultTitle => "result_title",
+            Self::ResultArtist => "result_artist",
+            Self::MusicSelectCentralTitle => "music_select_central_title",
+            Self::MusicSelectArtist => "music_select_artist",
+            Self::MusicSelectActiveListTitle => "music_select_active_list_title",
+        }
+    }
+}
+
+/// Why a measured crop has no registered observer output in this runtime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FieldNotObservedReason {
+    ObserverNotImplemented,
+}
+
+/// An explicit non-observation for a required screen-local field.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FieldNotObserved {
+    pub reason: FieldNotObservedReason,
+}
+
+impl FieldNotObserved {
+    const OBSERVER_NOT_IMPLEMENTED: Self = Self {
+        reason: FieldNotObservedReason::ObserverNotImplemented,
+    };
+}
+
+/// Complete result-screen field observations from the currently registered observers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResultScreenFieldObservations {
+    pub title: DynamicTextObservation,
+    pub artist: DynamicTextObservation,
+    pub difficulty: FieldNotObserved,
+    pub level: FieldNotObserved,
+    pub notes: FieldNotObserved,
+    pub current_score: FieldNotObserved,
+}
+
+/// Complete music-select field observations from the currently registered observers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MusicSelectScreenFieldObservations {
+    pub central_title: DynamicTextObservation,
+    pub artist: DynamicTextObservation,
+    pub selected_chart: FieldNotObserved,
+    pub active_list_title: DynamicTextObservation,
+}
+
+/// Complete field-observer output for exactly one classified screen.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ScreenFieldObservations {
+    Result(ResultScreenFieldObservations),
+    MusicSelect(MusicSelectScreenFieldObservations),
+}
+
+impl ScreenFieldObservations {
+    #[must_use]
+    pub const fn screen(&self) -> ScreenClass {
+        match self {
+            Self::Result(_) => ScreenClass::Result,
+            Self::MusicSelect(_) => ScreenClass::MusicSelect,
+        }
+    }
+
+    #[must_use]
+    pub const fn diagnostic_field_counts(&self) -> (u8, u8) {
+        match self {
+            Self::Result(_) => (2, 4),
+            Self::MusicSelect(_) => (3, 1),
+        }
+    }
+}
+
+/// One failed text inference with the exact screen-local field and original cause.
+#[derive(Debug)]
+pub struct ScreenFieldObservationError<E> {
+    pub field: ScreenTextField,
+    source: E,
+}
+
+impl<E> ScreenFieldObservationError<E> {
+    #[must_use]
+    pub const fn new(field: ScreenTextField, source: E) -> Self {
+        Self { field, source }
+    }
+
+    #[must_use]
+    pub const fn source_error(&self) -> &E {
+        &self.source
+    }
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for ScreenFieldObservationError<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "field observation failed for {}: {}",
+            self.field.as_str(),
+            self.source
+        )
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for ScreenFieldObservationError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// Applies one text observer to every registered text field in a complete screen crop set.
+///
+/// # Errors
+/// Returns the exact failed field and observer error without constructing a partial screen output.
+pub fn observe_screen_fields<E>(
+    crops: &ScreenRgb8Crops,
+    mut observe_text: impl FnMut(&Rgb8Crop) -> Result<DynamicTextObservation, E>,
+) -> Result<ScreenFieldObservations, ScreenFieldObservationError<E>> {
+    let mut observe = |field, crop| {
+        observe_text(crop).map_err(|source| ScreenFieldObservationError::new(field, source))
+    };
+    Ok(match crops {
+        ScreenRgb8Crops::Result(crops) => {
+            ScreenFieldObservations::Result(ResultScreenFieldObservations {
+                title: observe(ScreenTextField::ResultTitle, &crops.title)?,
+                artist: observe(ScreenTextField::ResultArtist, &crops.artist)?,
+                difficulty: FieldNotObserved::OBSERVER_NOT_IMPLEMENTED,
+                level: FieldNotObserved::OBSERVER_NOT_IMPLEMENTED,
+                notes: FieldNotObserved::OBSERVER_NOT_IMPLEMENTED,
+                current_score: FieldNotObserved::OBSERVER_NOT_IMPLEMENTED,
+            })
+        }
+        ScreenRgb8Crops::MusicSelect(crops) => {
+            ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
+                central_title: observe(
+                    ScreenTextField::MusicSelectCentralTitle,
+                    &crops.central_title,
+                )?,
+                artist: observe(ScreenTextField::MusicSelectArtist, &crops.artist)?,
+                selected_chart: FieldNotObserved::OBSERVER_NOT_IMPLEMENTED,
+                active_list_title: observe(
+                    ScreenTextField::MusicSelectActiveListTitle,
+                    &crops.active_list_title,
+                )?,
+            })
+        }
+    })
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct IntegratedContextTextObservation {
     pub field: IntegratedContextField,
@@ -1784,6 +1945,84 @@ mod tests {
                 .unwrap(),
             [1, 2, 3]
         );
+    }
+
+    #[test]
+    fn screen_field_observations_keep_complete_screen_specific_shapes() {
+        let result_crops =
+            route_screen_rgb8_crops(&vec![0; CANONICAL_BYTES], ScreenClass::Result).unwrap();
+        let mut result_calls = 0;
+        let result = observe_screen_fields(&result_crops, |crop| {
+            result_calls += 1;
+            Ok::<_, ()>(DynamicTextObservation {
+                input_width: crop.roi.width as usize,
+                output_timesteps: result_calls,
+                open_text: format!("result-{result_calls}"),
+            })
+        })
+        .unwrap();
+        let ScreenFieldObservations::Result(result) = result else {
+            panic!("result crops produced another screen output");
+        };
+        assert_eq!(result_calls, 2);
+        assert_eq!(result.title.open_text, "result-1");
+        assert_eq!(result.artist.open_text, "result-2");
+        assert_eq!(
+            [
+                result.difficulty,
+                result.level,
+                result.notes,
+                result.current_score,
+            ],
+            [FieldNotObserved::OBSERVER_NOT_IMPLEMENTED; 4]
+        );
+
+        let music_crops =
+            route_screen_rgb8_crops(&vec![0; CANONICAL_BYTES], ScreenClass::MusicSelect).unwrap();
+        let mut music_calls = 0;
+        let music = observe_screen_fields(&music_crops, |crop| {
+            music_calls += 1;
+            Ok::<_, ()>(DynamicTextObservation {
+                input_width: crop.roi.width as usize,
+                output_timesteps: music_calls,
+                open_text: format!("music-{music_calls}"),
+            })
+        })
+        .unwrap();
+        let ScreenFieldObservations::MusicSelect(music) = music else {
+            panic!("music-select crops produced another screen output");
+        };
+        assert_eq!(music_calls, 3);
+        assert_eq!(music.central_title.open_text, "music-1");
+        assert_eq!(music.artist.open_text, "music-2");
+        assert_eq!(music.active_list_title.open_text, "music-3");
+        assert_eq!(
+            music.selected_chart,
+            FieldNotObserved::OBSERVER_NOT_IMPLEMENTED
+        );
+    }
+
+    #[test]
+    fn failed_text_field_does_not_construct_a_partial_screen_observation() {
+        let crops =
+            route_screen_rgb8_crops(&vec![0; CANONICAL_BYTES], ScreenClass::Result).unwrap();
+        let mut calls = 0;
+        let error = observe_screen_fields(&crops, |_| {
+            calls += 1;
+            if calls == 2 {
+                Err("runtime-failed")
+            } else {
+                Ok(DynamicTextObservation {
+                    input_width: 1,
+                    output_timesteps: 1,
+                    open_text: "discarded".to_owned(),
+                })
+            }
+        })
+        .unwrap_err();
+        assert_eq!(calls, 2);
+        assert_eq!(error.field, ScreenTextField::ResultArtist);
+        assert_eq!(error.source_error(), &"runtime-failed");
     }
 
     #[test]

@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use scorepeek::recognition::{
     CanonicalLayout, MusicSelectScreenRgb8Crops, RecognitionError, ResultScreenRgb8Crops,
-    ScreenClass, ScreenPredicateObservation, ScreenRgb8Crops, inspect_canonical_rgb8,
-    route_screen_rgb8_crops,
+    ScreenClass, ScreenFieldObservationError, ScreenFieldObservations, ScreenPredicateObservation,
+    ScreenRgb8Crops, inspect_canonical_rgb8, route_screen_rgb8_crops,
 };
 
 use crate::diagnostic_live::{LiveCanonicalFrame, LiveDiagnosticBridge, LiveDiagnosticBridgeError};
@@ -12,8 +12,10 @@ use crate::diagnostic_recording::{
     DiagnosticFinishOutcome, DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus,
 };
 use crate::diagnostic_worker::DiagnosticEnqueueOutcome;
+use crate::recognition_live::field_observer::BoundFieldObservation;
 
 pub mod field_observer;
+pub mod screen_field_observer;
 
 /// One screen-predicate result that borrows its immutable live capture evidence.
 ///
@@ -209,6 +211,29 @@ impl LiveRecognitionSession {
             diagnostic_frame,
             diagnostic_fact,
         })
+    }
+
+    /// Records value-free diagnostics for one worker-bound field result.
+    ///
+    /// The returned diagnostic enqueue outcome is independent of and cannot mutate `observation`.
+    pub fn record_field_observation<E>(
+        &mut self,
+        observation: &BoundFieldObservation<
+            Result<ScreenFieldObservations, ScreenFieldObservationError<E>>,
+        >,
+    ) -> DiagnosticEnqueueOutcome {
+        if observation.binding().run_id() != self.run_binding.run_id
+            || observation.binding().identity_sha256() != self.run_binding.binding_sha256
+        {
+            return self.bridge.reject_field_observation(observation.sequence());
+        }
+        self.bridge.record_field_observation(
+            observation.sequence(),
+            observation.monotonic_start_ms(),
+            observation.monotonic_end_ms(),
+            observation.screen(),
+            observation.output(),
+        )
     }
 
     #[must_use]
