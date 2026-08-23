@@ -8,9 +8,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: connect capture-produced `NormalizedCanonicalFrame` values to the
-  existing application-owned live diagnostic handoff without creating a parallel constructor or
-  recognition path.
+- Current execution focus: define the first fail-closed conversion from the profile-bound live
+  canonical handoff into the existing recognition input without reintroducing an unbound public
+  constructor or coupling diagnostic recording to recognition success.
 
 ## Included deliverables
 
@@ -85,6 +85,18 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - `gamescope-canonical-frame-gate` performs bounded binding selection, acquisition, admission,
   one-frame normalization and ordered shutdown. Its result contains only identities, generation,
   source sequence, canonical RGB8 digest, and bounded capture facts; it does not retain pixels.
+- Application `LiveCanonicalFrame` values can now be created only by consuming a
+  `NormalizedCanonicalFrame`. The canonical `Box<[u8]>` is moved into an `Arc` owner without a
+  second RGB copy; diagnostic queue offers clone only that owner. The old public constructor that
+  accepted caller-invented generation, profile, normalizer, timing, and pixels no longer exists.
+- `gamescope-diagnostic-handoff-gate` binds one explicit capture generation to one application-owned
+  diagnostic descriptor, normalizes a bounded live frame sequence, offers every frame before any
+  recognition result, and reports cadence, opt-out, queue, worker, completion, and manifest outcomes
+  separately from capture facts. The gate derives capture-profile and normalizer identities from
+  the selected binding rather than CLI values. Provider, receiver, normalized frames, and diagnostic
+  run bounds share the provider-lease monotonic origin. The gate shuts down receiver/provider before
+  finalizing the diagnostic run, so a teardown failure is retained as an error manifest rather than
+  an immutable successful run.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -113,6 +125,18 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   SHA-256 `4ea79fa76f6f87b5328222db1690d6f403fc6fa652411d932aa9247e7ea0d084` with successful ordered
   shutdown and no dropped facts. Direct RGB8 conversion of the source PNG is not a compositor-path
   pixel reference and produced a different digest; it is not used as the acceptance oracle.
+- A controlled two-frame marker animation retained the known edge and center geometry while making
+  the compositor submit multiple frames. Capture generation 16 normalized sequences 1 through 13;
+  the live bridge offered all 13, admitted three at the fixed 1,000 ms cadence, and published a
+  complete three-frame diagnostic manifest with no capture-fact, queue, worker, or binding drop.
+  Its manifest SHA-256 was `1fa2e90095b793601c91e542cce9f9411a466758d160706df42f3203567b5c5a`.
+  Its first recorded frame began at 38 ms and the run ended after ordered receiver/provider shutdown
+  at 2,629 ms on the same provider-lease monotonic clock.
+- A separately acquired generation 17 normalized sequences 1 through 7 with recording disabled.
+  All seven offers returned `disabled`, no diagnostic manifest or frame was created, capture and
+  shutdown still succeeded, and the supplied diagnostic root remained empty. Synthetic catalog and
+  model fixture digests in these controlled runs identify only that no lookup or inference ran;
+  they are not catalog/model validation evidence.
 - Development-host Gamescope/vkcube gates have exercised actual negotiation/frame reception,
   selected-node loss, latest-frame overwrite under consumer pressure, receiver-before-provider
   shutdown, and 100 repeated acquire/start/stop lifecycles. A separately operator-started session
@@ -127,9 +151,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Unverified boundaries
 
-- No ordinary multi-frame live loop, `LiveCanonicalFrame`/diagnostic-worker handoff, or recognition
-  input consumes the new normalized type. Negotiated caps alone never establish profile identity,
-  and `NormalizedCanonicalFrame` cannot enter recognition as its offline `CanonicalFrame` type.
+- No recognition input consumes the profile-bound live canonical type. Negotiated caps alone never
+  establish profile identity, and neither `NormalizedCanonicalFrame` nor `LiveCanonicalFrame` can
+  enter recognition as its offline `CanonicalFrame` type.
+- The bounded CLI gate is not an ordinary long-running application loop. Live queue-full or worker
+  loss was not forced on the development machine; bounded unit tests cover queue drop, worker loss,
+  generation rejection, opt-out, and diagnostic non-interference. Target-host cost remains unknown.
 - Session provenance is explicit launcher/operator input, not an automatic observation of the
   Gamescope process. Process discovery or attestation is not implemented or claimed.
 - INFINITAS content/geometry, target play-machine output, 4K, FSR/NIS, Reshade, HDR, Portal, and OBS
@@ -159,16 +186,18 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Make the existing application-owned `LiveCanonicalFrame` accept capture-produced
-   `NormalizedCanonicalFrame` ownership directly, without a second RGB copy or a parallel public
-   constructor that can invent generation/profile/normalizer evidence.
-2. Connect that handoff to the bounded live diagnostic bridge for one explicit generation. A new
-   acquisition or binding change must finish the old run and start a separately bound run; frame
-   mixing remains diagnostic rejection and never changes capture or recognition results.
-3. Exercise a bounded multi-frame controlled marker run, generation rollover, worker opt-out/drop,
-   receiver/provider shutdown, and complete repository validation. Measure the ownership path but
-   do not claim target-host performance or support.
-4. Independently review the capture-to-application ownership transfer before adding recognition.
+1. Define one application-owned recognition handoff that consumes or shares the existing
+   profile-bound live canonical owner without a second RGB copy. Do not restore the removed public
+   evidence constructor or let offline extraction types bypass live generation/profile/normalizer
+   evidence.
+2. Bind recognition facts and accepted results to the same diagnostic run descriptor while keeping
+   diagnostic enqueue/drop/opt-out non-interfering. A capture or recognition binding change must
+   finish the old run and begin another explicitly bound run.
+3. Exercise a controlled live screen predicate before OCR or accepted fields. Keep unknown and
+   unsupported content fail closed, retain the bounded canonical evidence independently of the
+   predicate result, and do not claim INFINITAS accuracy from the marker application.
+4. Independently review the capture-to-recognition ownership and generation boundary before adding
+   title/model inference.
 
 Do not proceed to OCR-only tuning, automatic calibration, Portal/OBS fallback, soak/performance, or
 support claims until the capture-to-application ownership handoff and its bounded lifecycle evidence

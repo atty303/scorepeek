@@ -37,7 +37,12 @@
   binding-selected fractional normalizerだけがRGB8 1920x1080の`NormalizedCanonicalFrame`へ変換できる境界も
   実装済み。generation/profile/normalizer mixingはfail closedで、最初のnormalization success/failureだけを
   bounded typed factへ記録する。独立した2つのcontrolled marker lifetimeでgenerationを1から2へrolloverし、
-  同じcanonical RGB8 digestを再現した。application-owned live diagnostic workerおよびrecognitionへのhandoffは未着手。
+  同じcanonical RGB8 digestを再現した。さらに`NormalizedCanonicalFrame`のpixel ownerを2回目のRGB copyなしで
+  application-owned `LiveCanonicalFrame`へ移し、固定cadenceのbounded diagnostic workerへofferする境界まで実装した。
+  callerがgeneration/profile/normalizer/pixelを作れる旧public constructorは削除し、profileとnormalizer identityは選択済み
+  bindingからのみ導出する。provider/receiver/frame/diagnostic runはprovider lease起点のmonotonic clockを共有し、
+  receiver/provider shutdown結果を確定してからdiagnostic manifestをfinalizeする。controlled marker animationのgeneration 16では13 normalized frames中3 framesをcompleteな
+  diagnostic runへ保存し、generation 17のopt-outでは7 framesを正規化したまま保存を0件にした。recognitionへのhandoffは未着手。
   OBS/obs-vkcapture並行、
   soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
@@ -50,7 +55,8 @@
   scenario、application-owned QOI diagnostic run writer、bounded worker、strict canonical replay、read-only
   status/list control、cross-process active ownership、crash-safe aggregate retention、digest-confirmed
   freeze/delete、verified create-only local export、canonical producerからworkerへのnon-blocking live
-  handoffまで。Gamescope exact source discovery以外のcapture adapter、DomainNormalizer、target-host性能、
+  handoff、およびGamescopeのprofile-bound normalized frameから同じworkerへのownership transferまで。
+  recognition input、target-host性能、
   accepted field認識、event daemonは未着手）
 - scorepeek-owned OCR学習/export: smallをartist/chart context/selection song contextと統合した後の凍結残差が
   missing OCR signalに帰属し、別経路が安全に解消できる場合だけ再検討

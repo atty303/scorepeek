@@ -1,9 +1,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use scorepeek::capture::NormalizedCanonicalFrame;
+
 use crate::diagnostic_recording::{
-    CANONICAL_BYTES, DiagnosticErrorType, DiagnosticFinishOutcome, DiagnosticPolicy,
-    DiagnosticRunDescriptor, DiagnosticRunStatus,
+    DiagnosticErrorType, DiagnosticFinishOutcome, DiagnosticPolicy, DiagnosticRunDescriptor,
+    DiagnosticRunStatus,
 };
 use crate::diagnostic_worker::{
     DEFAULT_DIAGNOSTIC_FLUSH_TIMEOUT, DiagnosticEnqueueOutcome, DiagnosticOwnedFrame,
@@ -18,54 +20,45 @@ pub struct LiveCanonicalFrame {
     monotonic_end_ms: u64,
     capture_profile_sha256: String,
     normalizer_sha256: String,
-    pixels: Arc<[u8]>,
+    pixels: Arc<Box<[u8]>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LiveCanonicalFrameError {
-    InvalidContract,
+pub enum LiveDiagnosticBridgeError {
+    ReplayBindingNotAllowed,
 }
 
 impl LiveCanonicalFrame {
-    /// Creates the application handoff emitted by a validated live normalizer.
-    ///
-    /// This boundary does not normalize an observed frame. It accepts only already-canonical RGB8
-    /// pixels and immutable capture-generation/profile/normalizer evidence.
-    ///
-    /// # Errors
-    /// Returns an error when geometry, timing, sequence, or binding identities are invalid.
-    pub fn new(
-        capture_generation: u64,
-        sequence: u64,
-        monotonic_start_ms: u64,
-        monotonic_end_ms: u64,
-        capture_profile_sha256: String,
-        normalizer_sha256: String,
-        pixels: Arc<[u8]>,
-    ) -> Result<Self, LiveCanonicalFrameError> {
-        if capture_generation == 0
-            || sequence == 0
-            || monotonic_end_ms < monotonic_start_ms
-            || pixels.len() != CANONICAL_BYTES
-            || !valid_sha256(&capture_profile_sha256)
-            || !valid_sha256(&normalizer_sha256)
-        {
-            return Err(LiveCanonicalFrameError::InvalidContract);
-        }
-        Ok(Self {
-            capture_generation,
-            sequence,
-            monotonic_start_ms,
-            monotonic_end_ms,
-            capture_profile_sha256,
-            normalizer_sha256,
-            pixels,
-        })
-    }
-
     #[must_use]
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
+    }
+
+    #[must_use]
+    pub(crate) const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+}
+
+impl From<NormalizedCanonicalFrame> for LiveCanonicalFrame {
+    fn from(frame: NormalizedCanonicalFrame) -> Self {
+        let received_monotonic_ms = frame.received_monotonic_ns() / 1_000_000;
+        let pixel_address = frame.pixels().as_ptr();
+        let live = Self {
+            capture_generation: frame.capture_generation().get(),
+            sequence: frame.source_sequence(),
+            monotonic_start_ms: received_monotonic_ms,
+            monotonic_end_ms: received_monotonic_ms,
+            capture_profile_sha256: frame.capture_profile_sha256().to_owned(),
+            normalizer_sha256: frame.normalizer_artifact_sha256().to_owned(),
+            pixels: Arc::new(frame.into_pixels()),
+        };
+        debug_assert_eq!(
+            live.pixels.len(),
+            crate::diagnostic_recording::CANONICAL_BYTES
+        );
+        debug_assert_eq!(live.pixels.as_ptr(), pixel_address);
+        live
     }
 }
 
@@ -85,9 +78,9 @@ impl LiveDiagnosticBridge {
         root: &Path,
         descriptor: DiagnosticRunDescriptor,
         policy: DiagnosticPolicy,
-    ) -> Result<Self, LiveCanonicalFrameError> {
+    ) -> Result<Self, LiveDiagnosticBridgeError> {
         if descriptor.binding.replay.is_some() {
-            return Err(LiveCanonicalFrameError::InvalidContract);
+            return Err(LiveDiagnosticBridgeError::ReplayBindingNotAllowed);
         }
         let worker = DiagnosticWorkerHandle::start(root, descriptor.clone(), policy);
         Ok(Self::with_worker(descriptor, worker))
@@ -163,13 +156,6 @@ impl LiveDiagnosticBridge {
     }
 }
 
-fn valid_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,16 +187,17 @@ mod tests {
     }
 
     fn frame(generation: u64, sequence: u64, time: u64) -> LiveCanonicalFrame {
-        LiveCanonicalFrame::new(
-            generation,
+        LiveCanonicalFrame {
+            capture_generation: generation,
             sequence,
-            time,
-            time + 16,
-            "2".repeat(64),
-            "3".repeat(64),
-            Arc::from(vec![7; CANONICAL_BYTES]),
-        )
-        .unwrap()
+            monotonic_start_ms: time,
+            monotonic_end_ms: time + 16,
+            capture_profile_sha256: "2".repeat(64),
+            normalizer_sha256: "3".repeat(64),
+            pixels: Arc::new(
+                vec![7; crate::diagnostic_recording::CANONICAL_BYTES].into_boxed_slice(),
+            ),
+        }
     }
 
     #[test]

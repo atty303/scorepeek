@@ -38,12 +38,7 @@ fn main() -> ExitCode {
 fn run(args: &[OsString]) -> Result<(), String> {
     if let Some(result) = try_diagnostic_control(args)
         .or_else(|| try_diagnostic_replay(args))
-        .or_else(|| try_capture_canonical_frame(args))
-        .or_else(|| try_capture_binding_admission(args))
-        .or_else(|| try_capture_session_calibration(args))
-        .or_else(|| try_capture_binding_author(args))
-        .or_else(|| try_capture_calibration(args))
-        .or_else(|| try_capture_live_gate(args))
+        .or_else(|| try_capture_commands(args))
         .or_else(|| try_doctor(args))
         .or_else(|| try_provisional_title_candidates(args))
         .or_else(|| try_integrated_context_crop(args))
@@ -135,6 +130,209 @@ fn run(args: &[OsString]) -> Result<(), String> {
             diagnostic_title_spike(store, text, confidence)
         }
         _ => Err("usage: scorepeek --help".to_owned()),
+    }
+}
+
+fn try_capture_commands(args: &[OsString]) -> Option<Result<(), String>> {
+    try_capture_diagnostic_handoff(args)
+        .or_else(|| try_capture_canonical_frame(args))
+        .or_else(|| try_capture_binding_admission(args))
+        .or_else(|| try_capture_session_calibration(args))
+        .or_else(|| try_capture_binding_author(args))
+        .or_else(|| try_capture_calibration(args))
+        .or_else(|| try_capture_live_gate(args))
+}
+
+fn try_capture_diagnostic_handoff(args: &[OsString]) -> Option<Result<(), String>> {
+    let values = capture_flag_values(
+        args,
+        "gamescope-diagnostic-handoff-gate",
+        &[
+            "--binding",
+            "--binding-sha256",
+            "--capture-generation",
+            "--duration-ms",
+            "--diagnostic-root",
+            "--run-id",
+            "--build-sha256",
+            "--canonical-layout-sha256",
+            "--catalog-sha256",
+            "--model-sha256",
+            "--runtime-sha256",
+            "--recording",
+            "--environment-id",
+            "--gamescope-version",
+            "--backend",
+            "--output-width",
+            "--output-height",
+            "--nested-width",
+            "--nested-height",
+            "--nested-refresh",
+            "--scaler",
+            "--filter",
+        ],
+    )?;
+    Some(run_capture_diagnostic_handoff(&values))
+}
+
+fn capture_flag_values<'a>(
+    args: &'a [OsString],
+    command: &str,
+    flags: &[&str],
+) -> Option<Vec<&'a OsStr>> {
+    if args.first()? != "capture" || args.get(1)? != command || args.len() != 2 + flags.len() * 2 {
+        return None;
+    }
+    let mut values = Vec::with_capacity(flags.len());
+    for (pair, expected_flag) in args[2..].chunks_exact(2).zip(flags) {
+        if pair[0] != *expected_flag {
+            return None;
+        }
+        values.push(pair[1].as_os_str());
+    }
+    Some(values)
+}
+
+fn run_capture_diagnostic_handoff(values: &[&OsStr]) -> Result<(), String> {
+    let [
+        binding,
+        binding_digest,
+        generation,
+        duration,
+        diagnostic_root,
+        run_id,
+        build_digest,
+        layout_digest,
+        catalog_digest,
+        model_digest,
+        runtime_digest,
+        recording,
+        environment,
+        version,
+        backend,
+        output_width,
+        output_height,
+        width,
+        height,
+        refresh,
+        scaler,
+        filter,
+    ] = values
+    else {
+        unreachable!("capture flag parser returns the exact value count");
+    };
+    let binding_digest = parse_cli_sha256(binding_digest, "binding SHA-256")?;
+    let generation = parse_capture_generation(generation)?;
+    let duration_ms = capture_live::parse_duration_ms(duration)?;
+    let run_id = parse_diagnostic_run_id(run_id)?;
+    let policy = parse_diagnostic_recording_policy(recording)?;
+    let configuration = capture_calibration::parse_session_configuration(
+        environment,
+        version,
+        backend,
+        output_width,
+        output_height,
+        width,
+        height,
+        refresh,
+        scaler,
+        filter,
+    )?;
+    let descriptor = diagnostic_recording::DiagnosticRunDescriptor {
+        run_id,
+        monotonic_start_ms: 0,
+        resource: diagnostic_recording::DiagnosticResource {
+            program: "scorepeek",
+            version: env!("CARGO_PKG_VERSION"),
+            build_sha256: parse_cli_sha256(build_digest, "build SHA-256")?,
+        },
+        binding: diagnostic_recording::DiagnosticBinding {
+            capture_generation: generation.get(),
+            capture_profile_sha256: String::new(),
+            normalizer_sha256: String::new(),
+            canonical_layout_sha256: parse_cli_sha256(layout_digest, "canonical layout SHA-256")?,
+            catalog_sha256: parse_cli_sha256(catalog_digest, "catalog SHA-256")?,
+            model_sha256: parse_cli_sha256(model_digest, "model SHA-256")?,
+            runtime_sha256: parse_cli_sha256(runtime_digest, "runtime SHA-256")?,
+            replay: None,
+        },
+    };
+    let report = capture_live::run_gamescope_diagnostic_handoff_gate(
+        capture_live::GamescopeDiagnosticHandoffGateConfig {
+            binding_path: Path::new(binding),
+            expected_binding_sha256: &binding_digest,
+            session: configuration.capture_provenance()?,
+            capture_generation: generation,
+            descriptor,
+            policy,
+            duration_ms,
+            diagnostic_root: Path::new(diagnostic_root),
+        },
+    );
+    println!(
+        "{}",
+        serde_json::to_string(&report)
+            .map_err(|_| { "diagnostic handoff gate report serialization failed".to_owned() })?
+    );
+    report
+        .succeeded()
+        .then_some(())
+        .ok_or_else(|| "Gamescope diagnostic handoff gate failed".to_owned())
+}
+
+fn parse_cli_sha256(value: &OsStr, label: &str) -> Result<String, String> {
+    let value = value
+        .to_str()
+        .ok_or_else(|| format!("{label} must be UTF-8"))?;
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(format!("{label} must be lowercase hexadecimal"));
+    }
+    Ok(value.to_owned())
+}
+
+fn parse_capture_generation(
+    value: &OsStr,
+) -> Result<scorepeek::capture::CaptureGeneration, String> {
+    let generation = value
+        .to_str()
+        .ok_or_else(|| "capture generation must be UTF-8".to_owned())?
+        .parse::<u64>()
+        .map_err(|_| "capture generation must be an integer".to_owned())?;
+    scorepeek::capture::CaptureGeneration::new(generation)
+        .map_err(|_| "capture generation must be nonzero".to_owned())
+}
+
+fn parse_diagnostic_run_id(value: &OsStr) -> Result<String, String> {
+    let value = value
+        .to_str()
+        .ok_or_else(|| "diagnostic run ID must be UTF-8".to_owned())?;
+    if value.is_empty()
+        || value.len() > 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(
+            "diagnostic run ID must be 1-64 lowercase ASCII letters, digits, or hyphens".to_owned(),
+        );
+    }
+    Ok(value.to_owned())
+}
+
+fn parse_diagnostic_recording_policy(
+    value: &OsStr,
+) -> Result<diagnostic_recording::DiagnosticPolicy, String> {
+    match value.to_str() {
+        Some("enabled") => Ok(diagnostic_recording::DiagnosticPolicy::default()),
+        Some("disabled") => Ok(diagnostic_recording::DiagnosticPolicy {
+            enabled: false,
+            ..diagnostic_recording::DiagnosticPolicy::default()
+        }),
+        _ => Err("recording must be enabled or disabled".to_owned()),
     }
 }
 
@@ -1562,6 +1760,9 @@ fn print_usage() {
     println!(
         "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256 --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --model-id MODEL_ID --bundle DIRECTORY --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
         env!("CARGO_PKG_VERSION")
+    );
+    println!(
+        "  scorepeek capture gamescope-diagnostic-handoff-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --model-sha256 SHA256 --runtime-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER"
     );
 }
 

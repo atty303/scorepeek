@@ -147,6 +147,14 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- capture gamescope-canonical-frame-gate "$@"
 '''
 
+[tasks."capture:gamescope:test:diagnostic-handoff"]
+description = "Offer admitted canonical Gamescope frames to one bounded diagnostic run"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- capture gamescope-diagnostic-handoff-gate "$@"
+'''
+
 [tasks."native:verify"]
 description = "Verify the pinned PipeWire SDK and host native build prerequisites"
 run = "scripts/verify-pipewire-build-environment.bash"

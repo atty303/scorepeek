@@ -26,7 +26,7 @@ pub struct DiagnosticOwnedFrame {
     pub sequence: u64,
     pub monotonic_start_ms: u64,
     pub monotonic_end_ms: u64,
-    pub pixels: Arc<[u8]>,
+    pub pixels: Arc<Box<[u8]>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -620,7 +620,9 @@ mod tests {
             sequence,
             monotonic_start_ms: time,
             monotonic_end_ms: time + 16,
-            pixels: Arc::from(vec![u8::try_from(sequence).unwrap(); 1_920 * 1_080 * 3]),
+            pixels: Arc::new(
+                vec![u8::try_from(sequence).unwrap(); 1_920 * 1_080 * 3].into_boxed_slice(),
+            ),
         }
     }
 
@@ -856,7 +858,7 @@ mod tests {
             DiagnosticEnqueueOutcome::Enqueued
         );
         let mut rejected = frame(2, 500);
-        rejected.pixels = Arc::from([]);
+        rejected.pixels = Arc::new(Box::new([]));
         assert_eq!(
             worker.try_record_frame(rejected),
             DiagnosticEnqueueOutcome::Rejected

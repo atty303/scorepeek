@@ -166,9 +166,9 @@ struct ReceiverState {
 }
 
 impl ReceiverState {
-    fn new() -> Self {
+    fn new(started: Instant) -> Self {
         Self {
-            started: Instant::now(),
+            started,
             contract: None,
             memory_type: None,
             stride: None,
@@ -554,7 +554,18 @@ impl CalibratedGamescopeLease {
     /// # Errors
     /// Returns the receiver shutdown failure after all owned resources are released.
     pub fn shutdown(self, sink: &mut impl CaptureDiagnosticSink) -> Result<(), CaptureError> {
-        self.receiver.shutdown(sink)
+        self.shutdown_with_elapsed(sink).0
+    }
+
+    /// Shuts down the receiver and provider and returns the final lease-relative monotonic time.
+    pub fn shutdown_with_elapsed(
+        self,
+        sink: &mut impl CaptureDiagnosticSink,
+    ) -> (Result<(), CaptureError>, u64) {
+        let started = self.receiver.lease.as_ref().map(|lease| lease.started);
+        let result = self.receiver.shutdown(sink);
+        let elapsed = started.map_or(0, elapsed_ms);
+        (result, elapsed)
     }
 }
 
@@ -1025,10 +1036,8 @@ fn receiver_fact_bounds(
     shutdown_started_ms: Option<u64>,
     now: u64,
 ) -> (u64, u64) {
-    let contract_ms =
-        contract_received_ns.map(|value| receiver_started_ms.saturating_add(value / 1_000_000));
-    let first_ms =
-        first_received_ns.map(|value| receiver_started_ms.saturating_add(value / 1_000_000));
+    let contract_ms = contract_received_ns.map(|value| value / 1_000_000);
+    let first_ms = first_received_ns.map(|value| value / 1_000_000);
     match operation {
         CaptureDiagnosticOperation::StreamNegotiation => {
             (receiver_started_ms, contract_ms.unwrap_or(now))
@@ -1078,7 +1087,7 @@ pub fn start_uncalibrated_gamescope_receiver(
         }
     };
     let receiver_started_ms = elapsed_ms(lease.started);
-    let state = Rc::new(RefCell::new(ReceiverState::new()));
+    let state = Rc::new(RefCell::new(ReceiverState::new(lease.started)));
     let listener = match register_stream_listener(&stream, Rc::clone(&state)) {
         Ok(listener) => listener,
         Err(source) => {
@@ -1407,7 +1416,7 @@ mod tests {
     }
 
     fn negotiated_state() -> ReceiverState {
-        let mut state = ReceiverState::new();
+        let mut state = ReceiverState::new(Instant::now());
         let info = video_info();
         state.negotiate(info);
         state
@@ -1492,7 +1501,7 @@ mod tests {
 
     #[test]
     fn unspecified_producer_framerate_is_preserved() {
-        let mut state = ReceiverState::new();
+        let mut state = ReceiverState::new(Instant::now());
         let mut info = video_info();
         info.set_framerate(spa::utils::Fraction { num: 0, denom: 1 });
 
@@ -1518,7 +1527,7 @@ mod tests {
             Ok(())
         );
 
-        let mut absent = ReceiverState::new();
+        let mut absent = ReceiverState::new(Instant::now());
         assert_eq!(
             classify_profile_admission(&binding, Some(&session), &absent),
             Err(CaptureErrorType::ProfileVideoContractMismatch)
@@ -1921,7 +1930,7 @@ mod tests {
             })
         );
 
-        let mut interlaced = ReceiverState::new();
+        let mut interlaced = ReceiverState::new(Instant::now());
         let mut non_progressive = video_info();
         non_progressive.set_interlace_mode(VideoInterlaceMode::Interleaved);
         interlaced.negotiate(non_progressive);
@@ -1947,7 +1956,7 @@ mod tests {
 
     #[test]
     fn receiver_fact_bounds_retain_phase_durations() {
-        let arguments = (10, Some(2_000_000), Some(7_000_000), Some(29), 30);
+        let arguments = (10, Some(12_000_000), Some(17_000_000), Some(29), 30);
         assert_eq!(
             receiver_fact_bounds(
                 CaptureDiagnosticOperation::StreamNegotiation,

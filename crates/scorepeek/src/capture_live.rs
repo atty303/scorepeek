@@ -4,14 +4,21 @@ use std::io::Read as _;
 use std::time::{Duration, Instant};
 
 use scorepeek::capture::{
-    CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
-    CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureErrorType, CaptureGeneration,
-    GamescopeProfileBinding, GamescopeSessionProvenance, acquire_gamescope_source,
-    acquire_gamescope_source_for_session, admit_gamescope_profile,
+    CalibratedGamescopeLease, CaptureDiagnosticDetail, CaptureDiagnosticFact,
+    CaptureDiagnosticOperation, CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureErrorType,
+    CaptureGeneration, GamescopeProfileBinding, GamescopeSessionProvenance,
+    acquire_gamescope_source, acquire_gamescope_source_for_session, admit_gamescope_profile,
     start_uncalibrated_gamescope_receiver,
 };
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
+
+use crate::diagnostic_live::{LiveCanonicalFrame, LiveDiagnosticBridge};
+use crate::diagnostic_recording::{
+    DiagnosticCompleteness, DiagnosticErrorType, DiagnosticPolicy, DiagnosticRunDescriptor,
+    DiagnosticRunStatus,
+};
+use crate::diagnostic_worker::DiagnosticEnqueueOutcome;
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 const RECEIVER_START_TIMEOUT: Duration = Duration::from_secs(2);
@@ -55,6 +62,20 @@ enum CanonicalFrameGateErrorType {
     BindingInvalid,
     CaptureFailed,
     AdmissionRejected,
+    FrameUnavailable,
+    NormalizationFailed,
+    ShutdownFailed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DiagnosticHandoffGateErrorType {
+    BindingUnavailable,
+    BindingInvalid,
+    CaptureFailed,
+    AdmissionRejected,
+    DiagnosticBindingMismatch,
+    DiagnosticConfigurationInvalid,
     FrameUnavailable,
     NormalizationFailed,
     ShutdownFailed,
@@ -166,6 +187,30 @@ pub struct GamescopeCanonicalFrameGateReport {
     dropped_diagnostic_facts: u64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct GamescopeDiagnosticHandoffGateReport {
+    schema: &'static str,
+    status: LiveGateStatus,
+    error_type: Option<DiagnosticHandoffGateErrorType>,
+    capture_error_type: Option<CaptureErrorType>,
+    capture_generation: u64,
+    observed_frames: u64,
+    normalized_frames: u64,
+    first_sequence: Option<u64>,
+    last_sequence: Option<u64>,
+    enqueued_frames: u64,
+    skipped_cadence_frames: u64,
+    rejected_frames: u64,
+    disabled_frames: u64,
+    queue_full_frames: u64,
+    worker_unavailable_frames: u64,
+    diagnostic_completeness: Option<DiagnosticCompleteness>,
+    diagnostic_error_type: Option<DiagnosticErrorType>,
+    diagnostic_manifest_sha256: Option<String>,
+    capture_diagnostic_facts: Vec<CaptureDiagnosticFact>,
+    dropped_capture_diagnostic_facts: u64,
+}
+
 impl GamescopeLiveGateReport {
     pub const fn succeeded(&self) -> bool {
         matches!(self.status, LiveGateStatus::Success)
@@ -187,6 +232,51 @@ impl GamescopeBindingAdmissionGateReport {
 impl GamescopeCanonicalFrameGateReport {
     pub const fn succeeded(&self) -> bool {
         matches!(self.status, LiveGateStatus::Success)
+    }
+}
+
+impl GamescopeDiagnosticHandoffGateReport {
+    pub const fn succeeded(&self) -> bool {
+        matches!(self.status, LiveGateStatus::Success)
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct HandoffCounters {
+    observed_frames: u64,
+    normalized_frames: u64,
+    first_sequence: Option<u64>,
+    last_sequence: Option<u64>,
+    enqueued_frames: u64,
+    skipped_cadence_frames: u64,
+    rejected_frames: u64,
+    disabled_frames: u64,
+    queue_full_frames: u64,
+    worker_unavailable_frames: u64,
+}
+
+pub struct GamescopeDiagnosticHandoffGateConfig<'a> {
+    pub binding_path: &'a std::path::Path,
+    pub expected_binding_sha256: &'a str,
+    pub session: GamescopeSessionProvenance,
+    pub capture_generation: CaptureGeneration,
+    pub descriptor: DiagnosticRunDescriptor,
+    pub policy: DiagnosticPolicy,
+    pub duration_ms: u64,
+    pub diagnostic_root: &'a std::path::Path,
+}
+
+impl HandoffCounters {
+    fn record_offer(&mut self, outcome: DiagnosticEnqueueOutcome) {
+        let counter = match outcome {
+            DiagnosticEnqueueOutcome::Enqueued => &mut self.enqueued_frames,
+            DiagnosticEnqueueOutcome::SkippedCadence => &mut self.skipped_cadence_frames,
+            DiagnosticEnqueueOutcome::Rejected => &mut self.rejected_frames,
+            DiagnosticEnqueueOutcome::Disabled => &mut self.disabled_frames,
+            DiagnosticEnqueueOutcome::QueueFull => &mut self.queue_full_frames,
+            DiagnosticEnqueueOutcome::WorkerUnavailable => &mut self.worker_unavailable_frames,
+        };
+        *counter = counter.saturating_add(1);
     }
 }
 
@@ -405,6 +495,283 @@ pub fn run_gamescope_canonical_frame_gate(
         canonical_rgb8_sha256,
         sink,
     )
+}
+
+pub fn run_gamescope_diagnostic_handoff_gate(
+    mut config: GamescopeDiagnosticHandoffGateConfig<'_>,
+) -> GamescopeDiagnosticHandoffGateReport {
+    let capture_generation = config.capture_generation;
+    if config.descriptor.binding.capture_generation != capture_generation.get()
+        || config.descriptor.binding.replay.is_some()
+    {
+        return diagnostic_handoff_report(
+            DiagnosticHandoffGateErrorType::DiagnosticConfigurationInvalid,
+            None,
+            capture_generation,
+            HandoffCounters::default(),
+            None,
+            BoundedDiagnosticSink::default(),
+        );
+    }
+    let binding = match read_diagnostic_handoff_binding(
+        config.binding_path,
+        config.expected_binding_sha256,
+    ) {
+        Ok(binding) => binding,
+        Err(error_type) => {
+            return diagnostic_handoff_report(
+                error_type,
+                None,
+                capture_generation,
+                HandoffCounters::default(),
+                None,
+                BoundedDiagnosticSink::default(),
+            );
+        }
+    };
+    bind_diagnostic_descriptor(&mut config.descriptor, &binding);
+    let mut sink = BoundedDiagnosticSink::default();
+    let mut lease = match start_diagnostic_handoff_capture(
+        config.session,
+        binding,
+        capture_generation,
+        &mut sink,
+    ) {
+        Ok(lease) => lease,
+        Err((error_type, capture_error_type)) => {
+            return diagnostic_handoff_report(
+                error_type,
+                capture_error_type,
+                capture_generation,
+                HandoffCounters::default(),
+                None,
+                sink,
+            );
+        }
+    };
+    if config.descriptor.binding.capture_profile_sha256 != lease.capture_profile_sha256()
+        || config.descriptor.binding.normalizer_sha256 != lease.normalizer_artifact_sha256()
+    {
+        let _ = lease.shutdown(&mut sink);
+        return diagnostic_handoff_report(
+            DiagnosticHandoffGateErrorType::DiagnosticBindingMismatch,
+            None,
+            capture_generation,
+            HandoffCounters::default(),
+            None,
+            sink,
+        );
+    }
+    let mut bridge =
+        LiveDiagnosticBridge::start(config.diagnostic_root, config.descriptor, config.policy)
+            .expect("live descriptor cannot contain a replay binding");
+    let mut counters = HandoffCounters::default();
+    let mut terminal = offer_diagnostic_handoff_frames(
+        &mut lease,
+        &mut bridge,
+        Duration::from_millis(config.duration_ms),
+        &mut counters,
+        &mut sink,
+    );
+    if counters.normalized_frames == 0 && terminal.is_none() {
+        terminal = Some((DiagnosticHandoffGateErrorType::FrameUnavailable, None));
+    }
+    let (shutdown_result, finish_time) = lease.shutdown_with_elapsed(&mut sink);
+    if let Err(error) = shutdown_result {
+        terminal.get_or_insert((
+            DiagnosticHandoffGateErrorType::ShutdownFailed,
+            Some(error.error_type()),
+        ));
+    }
+    let finish_status = if terminal.is_some() {
+        DiagnosticRunStatus::Error
+    } else {
+        DiagnosticRunStatus::Success
+    };
+    let diagnostic_outcome = bridge.finish(finish_status, finish_time);
+    match terminal {
+        Some((error_type, capture_error_type)) => diagnostic_handoff_report(
+            error_type,
+            capture_error_type,
+            capture_generation,
+            counters,
+            Some(diagnostic_outcome),
+            sink,
+        ),
+        None => diagnostic_handoff_success(capture_generation, counters, diagnostic_outcome, sink),
+    }
+}
+
+fn read_diagnostic_handoff_binding(
+    path: &std::path::Path,
+    expected_sha256: &str,
+) -> Result<GamescopeProfileBinding, DiagnosticHandoffGateErrorType> {
+    read_binding(path, expected_sha256).map_err(|error| match error {
+        BindingAdmissionGateErrorType::BindingUnavailable => {
+            DiagnosticHandoffGateErrorType::BindingUnavailable
+        }
+        _ => DiagnosticHandoffGateErrorType::BindingInvalid,
+    })
+}
+
+fn bind_diagnostic_descriptor(
+    descriptor: &mut DiagnosticRunDescriptor,
+    binding: &GamescopeProfileBinding,
+) {
+    binding
+        .capture_profile_sha256()
+        .clone_into(&mut descriptor.binding.capture_profile_sha256);
+    binding
+        .normalizer_artifact_sha256()
+        .clone_into(&mut descriptor.binding.normalizer_sha256);
+}
+
+fn start_diagnostic_handoff_capture(
+    session: GamescopeSessionProvenance,
+    binding: GamescopeProfileBinding,
+    capture_generation: CaptureGeneration,
+    sink: &mut BoundedDiagnosticSink,
+) -> Result<CalibratedGamescopeLease, (DiagnosticHandoffGateErrorType, Option<CaptureErrorType>)> {
+    let lease = acquire_gamescope_source_for_session(DISCOVERY_TIMEOUT, session, sink).map_err(
+        |error| {
+            (
+                DiagnosticHandoffGateErrorType::CaptureFailed,
+                Some(error.error_type()),
+            )
+        },
+    )?;
+    let receiver = start_uncalibrated_gamescope_receiver(lease, RECEIVER_START_TIMEOUT, sink)
+        .map_err(|error| {
+            (
+                DiagnosticHandoffGateErrorType::CaptureFailed,
+                Some(error.error_type()),
+            )
+        })?;
+    admit_gamescope_profile(receiver, binding, capture_generation, sink).map_err(|failure| {
+        let error_type = failure.error_type();
+        let _ = failure.shutdown(sink);
+        (
+            DiagnosticHandoffGateErrorType::AdmissionRejected,
+            Some(error_type),
+        )
+    })
+}
+
+fn offer_diagnostic_handoff_frames(
+    lease: &mut CalibratedGamescopeLease,
+    bridge: &mut LiveDiagnosticBridge,
+    duration: Duration,
+    counters: &mut HandoffCounters,
+    sink: &mut BoundedDiagnosticSink,
+) -> Option<(DiagnosticHandoffGateErrorType, Option<CaptureErrorType>)> {
+    let started = Instant::now();
+    loop {
+        if let Some(observed) = lease.take_latest_observed_frame() {
+            counters.observed_frames = counters.observed_frames.saturating_add(1);
+            let normalized = match lease.normalize_observed_frame(observed, sink) {
+                Ok(normalized) => normalized,
+                Err(error) => {
+                    return Some((
+                        DiagnosticHandoffGateErrorType::NormalizationFailed,
+                        Some(error.error_type()),
+                    ));
+                }
+            };
+            let live = LiveCanonicalFrame::from(normalized);
+            counters.normalized_frames = counters.normalized_frames.saturating_add(1);
+            counters.first_sequence.get_or_insert(live.sequence());
+            counters.last_sequence = Some(live.sequence());
+            let outcome = bridge.offer(&live);
+            counters.record_offer(outcome);
+        }
+        if started.elapsed() >= duration {
+            return None;
+        }
+        let remaining = duration.saturating_sub(started.elapsed());
+        if let Err(error) = lease.poll(remaining, sink) {
+            return Some((
+                DiagnosticHandoffGateErrorType::CaptureFailed,
+                Some(error.error_type()),
+            ));
+        }
+    }
+}
+
+fn diagnostic_handoff_success(
+    capture_generation: CaptureGeneration,
+    counters: HandoffCounters,
+    diagnostic_outcome: crate::diagnostic_recording::DiagnosticFinishOutcome,
+    sink: BoundedDiagnosticSink,
+) -> GamescopeDiagnosticHandoffGateReport {
+    diagnostic_handoff_report_inner(
+        LiveGateStatus::Success,
+        None,
+        None,
+        capture_generation,
+        counters,
+        Some(diagnostic_outcome),
+        sink,
+    )
+}
+
+fn diagnostic_handoff_report(
+    error_type: DiagnosticHandoffGateErrorType,
+    capture_error_type: Option<CaptureErrorType>,
+    capture_generation: CaptureGeneration,
+    counters: HandoffCounters,
+    diagnostic_outcome: Option<crate::diagnostic_recording::DiagnosticFinishOutcome>,
+    sink: BoundedDiagnosticSink,
+) -> GamescopeDiagnosticHandoffGateReport {
+    diagnostic_handoff_report_inner(
+        LiveGateStatus::Error,
+        Some(error_type),
+        capture_error_type,
+        capture_generation,
+        counters,
+        diagnostic_outcome,
+        sink,
+    )
+}
+
+fn diagnostic_handoff_report_inner(
+    status: LiveGateStatus,
+    error_type: Option<DiagnosticHandoffGateErrorType>,
+    capture_error_type: Option<CaptureErrorType>,
+    capture_generation: CaptureGeneration,
+    counters: HandoffCounters,
+    diagnostic_outcome: Option<crate::diagnostic_recording::DiagnosticFinishOutcome>,
+    sink: BoundedDiagnosticSink,
+) -> GamescopeDiagnosticHandoffGateReport {
+    let (diagnostic_completeness, diagnostic_error_type, diagnostic_manifest_sha256) =
+        diagnostic_outcome.map_or((None, None, None), |outcome| {
+            (
+                outcome.completeness,
+                outcome.error_type,
+                outcome.manifest_sha256,
+            )
+        });
+    GamescopeDiagnosticHandoffGateReport {
+        schema: "scorepeek-gamescope-diagnostic-handoff-gate-v1",
+        status,
+        error_type,
+        capture_error_type,
+        capture_generation: capture_generation.get(),
+        observed_frames: counters.observed_frames,
+        normalized_frames: counters.normalized_frames,
+        first_sequence: counters.first_sequence,
+        last_sequence: counters.last_sequence,
+        enqueued_frames: counters.enqueued_frames,
+        skipped_cadence_frames: counters.skipped_cadence_frames,
+        rejected_frames: counters.rejected_frames,
+        disabled_frames: counters.disabled_frames,
+        queue_full_frames: counters.queue_full_frames,
+        worker_unavailable_frames: counters.worker_unavailable_frames,
+        diagnostic_completeness,
+        diagnostic_error_type,
+        diagnostic_manifest_sha256,
+        capture_diagnostic_facts: sink.facts,
+        dropped_capture_diagnostic_facts: sink.dropped,
+    }
 }
 
 fn canonical_frame_success(
@@ -836,12 +1203,34 @@ mod tests {
     };
 
     use super::{
-        BoundedDiagnosticSink, GamescopeLiveGateReport, LifecycleGateErrorType,
-        LifecyclePhaseStatus, LiveGateStatus, MAX_DIAGNOSTIC_FACTS, lifecycle_error_type,
-        parse_consumer_interval_ms, parse_duration_ms, parse_lifecycle_runs,
+        BoundedDiagnosticSink, DiagnosticPolicy, DiagnosticRunDescriptor, GamescopeLiveGateReport,
+        LifecycleGateErrorType, LifecyclePhaseStatus, LiveGateStatus, MAX_DIAGNOSTIC_FACTS,
+        lifecycle_error_type, parse_consumer_interval_ms, parse_duration_ms, parse_lifecycle_runs,
         process_resource_snapshot, read_binding, run_gamescope_binding_admission_gate,
-        run_gamescope_canonical_frame_gate, summarize_run,
+        run_gamescope_canonical_frame_gate, run_gamescope_diagnostic_handoff_gate, summarize_run,
     };
+
+    fn diagnostic_descriptor(generation: u64) -> DiagnosticRunDescriptor {
+        DiagnosticRunDescriptor {
+            run_id: "handoff-test".to_owned(),
+            monotonic_start_ms: 0,
+            resource: crate::diagnostic_recording::DiagnosticResource {
+                program: "scorepeek",
+                version: env!("CARGO_PKG_VERSION"),
+                build_sha256: "1".repeat(64),
+            },
+            binding: crate::diagnostic_recording::DiagnosticBinding {
+                capture_generation: generation,
+                capture_profile_sha256: String::new(),
+                normalizer_sha256: String::new(),
+                canonical_layout_sha256: "2".repeat(64),
+                catalog_sha256: "3".repeat(64),
+                model_sha256: "4".repeat(64),
+                runtime_sha256: "5".repeat(64),
+                replay: None,
+            },
+        }
+    }
 
     #[test]
     fn duration_is_explicitly_bounded() {
@@ -967,6 +1356,44 @@ mod tests {
         assert!(encoded.contains("binding_unavailable"));
         assert!(encoded.contains("\"capture_generation\":7"));
         assert!(encoded.contains("\"canonical_rgb8_sha256\":null"));
+    }
+
+    #[test]
+    fn diagnostic_handoff_failure_report_omits_paths_and_session_values() {
+        let session = scorepeek::capture::GamescopeSessionProvenance::new(
+            scorepeek::capture::GamescopeSessionProvenanceInput {
+                environment_id: "PRIVATE-ENVIRONMENT".to_owned(),
+                gamescope_version: "PRIVATE-VERSION".to_owned(),
+                backend_id: "PRIVATE-BACKEND".to_owned(),
+                output_width: 4,
+                output_height: 2,
+                nested_width: 4,
+                nested_height: 2,
+                nested_refresh_hz: 60,
+                scaler: "auto".to_owned(),
+                filter: "linear".to_owned(),
+            },
+        )
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let generation = CaptureGeneration::new(9).unwrap();
+        let report =
+            run_gamescope_diagnostic_handoff_gate(super::GamescopeDiagnosticHandoffGateConfig {
+                binding_path: std::path::Path::new("/PRIVATE/BINDING/PATH"),
+                expected_binding_sha256: &"f".repeat(64),
+                session,
+                capture_generation: generation,
+                descriptor: diagnostic_descriptor(generation.get()),
+                policy: DiagnosticPolicy::default(),
+                duration_ms: 1_000,
+                diagnostic_root: root.path(),
+            });
+        let encoded = serde_json::to_string(&report).unwrap();
+
+        assert!(!encoded.contains("PRIVATE"));
+        assert!(encoded.contains("binding_unavailable"));
+        assert!(encoded.contains("\"capture_generation\":9"));
+        assert_eq!(root.path().read_dir().unwrap().count(), 0);
     }
 
     #[test]
