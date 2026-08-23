@@ -713,6 +713,31 @@ pub struct IntegratedContextCropExportSummary {
     pub screen: ScreenClass,
 }
 
+/// One in-memory field crop selected by the shared integrated-context layout.
+///
+/// This pure value carries no capture provenance or accepted-field authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IntegratedContextRgbCrop {
+    pub field: IntegratedContextField,
+    pub roi: Roi,
+    pixels: Vec<u8>,
+}
+
+impl IntegratedContextRgbCrop {
+    #[must_use]
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+}
+
+/// Supported screen-local crops produced without filesystem or model I/O.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IntegratedContextRgbCrops {
+    pub screen: ScreenClass,
+    pub integrated_context_layout_sha256: String,
+    pub crops: Vec<IntegratedContextRgbCrop>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct IntegratedContextTextObservation {
     pub field: IntegratedContextField,
@@ -1172,46 +1197,23 @@ pub fn export_integrated_context_crops(
         return Err(RecognitionError::InvalidCanonicalFrame);
     }
     let snapshot = inspect(frame)?;
-    let layout = IntegratedContextLayout::load()?;
-    let selections: &[(IntegratedContextField, &str, Roi)] = match snapshot.screen {
-        ScreenClass::Result => &[(
-            IntegratedContextField::ResultArtist,
-            "result-artist.ppm",
-            layout.result.artist,
-        )],
-        ScreenClass::MusicSelect => &[
-            (
-                IntegratedContextField::MusicSelectArtist,
-                "music-select-artist.ppm",
-                layout.music_select.artist,
-            ),
-            (
-                IntegratedContextField::MusicSelectSelectedChart,
-                "music-select-selected-chart.ppm",
-                layout.music_select.selected_chart,
-            ),
-            (
-                IntegratedContextField::MusicSelectActiveListTitle,
-                "music-select-active-list-title.ppm",
-                layout.music_select.active_list_title,
-            ),
-        ],
-        ScreenClass::Unknown => return Err(RecognitionError::InvalidCanonicalFrame),
-    };
+    let routed = route_integrated_context_rgb8(frame.pixels(), snapshot.screen)?;
     let output = output.as_ref();
     fs::create_dir(output)?;
-    let mut crops = Vec::with_capacity(selections.len());
-    for (field, filename, roi) in selections {
-        let pixels = frame.crop(*roi)?;
+    let mut crops = Vec::with_capacity(routed.crops.len());
+    for crop in routed.crops {
+        let filename = integrated_context_filename(crop.field);
+        let pixels = crop.pixels;
+        let roi = crop.roi;
         let header = format!("P6\n{} {}\n255\n", roi.width, roi.height);
         let mut bytes = Vec::with_capacity(header.len() + pixels.len());
         bytes.extend_from_slice(header.as_bytes());
         bytes.extend_from_slice(&pixels);
         write_private_file(&output.join(filename), &bytes)?;
         crops.push(IntegratedContextCropEvidence {
-            field: *field,
-            filename: (*filename).to_owned(),
-            roi: *roi,
+            field: crop.field,
+            filename: filename.to_owned(),
+            roi,
             pixel_sha256: encode_sha256(&pixels),
             file_sha256: encode_sha256(&bytes),
             bytes: bytes.len() as u64,
@@ -1225,7 +1227,7 @@ pub fn export_integrated_context_crops(
         canonical_frame_sha256: snapshot.canonical_frame_sha256,
         normalizer_artifact_sha256: snapshot.normalizer_artifact_sha256,
         canonical_layout_sha256: snapshot.canonical_layout_sha256,
-        integrated_context_layout_sha256: IntegratedContextLayout::sha256(),
+        integrated_context_layout_sha256: routed.integrated_context_layout_sha256,
         screen,
         crops,
     };
@@ -1237,6 +1239,63 @@ pub fn export_integrated_context_crops(
         manifest_sha256: encode_sha256(&manifest),
         screen,
     })
+}
+
+/// Routes one already-classified canonical RGB8 frame to its measured screen-local field crops.
+///
+/// This function is synchronous, deterministic, and filesystem-free. Callers retain responsibility
+/// for binding the result to capture provenance and for preventing `Unknown` from entering field
+/// observation.
+///
+/// # Errors
+/// Returns an error for an unknown screen, invalid canonical pixels, or layout drift.
+pub fn route_integrated_context_rgb8(
+    pixels: &[u8],
+    screen: ScreenClass,
+) -> Result<IntegratedContextRgbCrops, RecognitionError> {
+    let layout = IntegratedContextLayout::load()?;
+    let selections: &[(IntegratedContextField, Roi)] = match screen {
+        ScreenClass::Result => &[(IntegratedContextField::ResultArtist, layout.result.artist)],
+        ScreenClass::MusicSelect => &[
+            (
+                IntegratedContextField::MusicSelectArtist,
+                layout.music_select.artist,
+            ),
+            (
+                IntegratedContextField::MusicSelectSelectedChart,
+                layout.music_select.selected_chart,
+            ),
+            (
+                IntegratedContextField::MusicSelectActiveListTitle,
+                layout.music_select.active_list_title,
+            ),
+        ],
+        ScreenClass::Unknown => return Err(RecognitionError::InvalidCanonicalFrame),
+    };
+    let crops = selections
+        .iter()
+        .map(|(field, roi)| {
+            Ok(IntegratedContextRgbCrop {
+                field: *field,
+                roi: *roi,
+                pixels: crop_canonical_pixels(pixels, *roi)?,
+            })
+        })
+        .collect::<Result<_, RecognitionError>>()?;
+    Ok(IntegratedContextRgbCrops {
+        screen,
+        integrated_context_layout_sha256: IntegratedContextLayout::sha256(),
+        crops,
+    })
+}
+
+const fn integrated_context_filename(field: IntegratedContextField) -> &'static str {
+    match field {
+        IntegratedContextField::ResultArtist => "result-artist.ppm",
+        IntegratedContextField::MusicSelectArtist => "music-select-artist.ppm",
+        IntegratedContextField::MusicSelectSelectedChart => "music-select-selected-chart.ppm",
+        IntegratedContextField::MusicSelectActiveListTitle => "music-select-active-list-title.ppm",
+    }
 }
 
 /// Runs the selected native dynamic recognizer over text-only integrated-context crops.

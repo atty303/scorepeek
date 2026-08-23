@@ -225,6 +225,13 @@ queue loss, worker loss, and persistence failure preserve the caller's recogniti
 observation. This is the producer/worker and screen-predicate integration boundary,
 not an accepted field observer, supported profile, or target-host performance claim.
 
+Supported live screen observations route through the same filesystem-free integrated-context crop
+function used by offline artifact export. The result and music-select branches produce only their
+measured bounded RGB field inputs and retain a borrow of the admitted live frame; the unknown branch
+cannot construct field inputs. These values have no OCR, song-decision, accepted-field, or event
+authority. Model bundle I/O and inference therefore remain outside the capture handoff and require
+a separately owned application execution boundary before live field observation is implemented.
+
 The first read-only application controls inspect an existing diagnostic root
 through a shared strict inventory. `status` exposes fixed retention policy and
 the current exclusive-writer state plus bounded aggregate byte/completeness

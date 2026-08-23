@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use scorepeek::recognition::{
-    CanonicalLayout, RecognitionError, ScreenClass, ScreenPredicateObservation,
-    inspect_canonical_rgb8,
+    CanonicalLayout, IntegratedContextRgbCrop, RecognitionError, ScreenClass,
+    ScreenPredicateObservation, inspect_canonical_rgb8, route_integrated_context_rgb8,
 };
 
 use crate::diagnostic_live::{LiveCanonicalFrame, LiveDiagnosticBridge, LiveDiagnosticBridgeError};
@@ -75,8 +75,42 @@ impl From<LiveDiagnosticBridgeError> for LiveRecognitionSessionError {
 #[derive(Debug)]
 pub struct LiveRecognitionFrameResult<'a> {
     pub observation: LiveRecognitionObservation<'a>,
+    pub field_inputs: Option<LiveSupportedFieldInputs<'a>>,
     pub diagnostic_frame: DiagnosticEnqueueOutcome,
     pub diagnostic_fact: DiagnosticEnqueueOutcome,
+}
+
+/// Screen-local field inputs that remain attached to their admitted live frame owner.
+///
+/// These crops are observer inputs only. They carry no accepted field, song, or event authority.
+#[derive(Debug)]
+pub struct LiveSupportedFieldInputs<'a> {
+    frame: &'a LiveCanonicalFrame,
+    screen: ScreenClass,
+    integrated_context_layout_sha256: String,
+    crops: Vec<IntegratedContextRgbCrop>,
+}
+
+impl LiveSupportedFieldInputs<'_> {
+    #[must_use]
+    pub const fn screen(&self) -> ScreenClass {
+        self.screen
+    }
+
+    #[must_use]
+    pub fn integrated_context_layout_sha256(&self) -> &str {
+        &self.integrated_context_layout_sha256
+    }
+
+    #[must_use]
+    pub fn crops(&self) -> &[IntegratedContextRgbCrop] {
+        &self.crops
+    }
+
+    #[must_use]
+    pub const fn frame(&self) -> &LiveCanonicalFrame {
+        self.frame
+    }
 }
 
 pub struct LiveRecognitionTransition {
@@ -133,9 +167,25 @@ impl LiveRecognitionSession {
             let _ = self.bridge.record_recognition_failure(frame);
             return Err(LiveRecognitionSessionError::RecognitionFailed);
         };
+        let field_inputs = match observation.screen() {
+            ScreenClass::Unknown => None,
+            screen @ (ScreenClass::Result | ScreenClass::MusicSelect) => {
+                let Ok(routed) = route_integrated_context_rgb8(frame.pixels(), screen) else {
+                    let _ = self.bridge.record_recognition_failure(frame);
+                    return Err(LiveRecognitionSessionError::RecognitionFailed);
+                };
+                Some(LiveSupportedFieldInputs {
+                    frame,
+                    screen: routed.screen,
+                    integrated_context_layout_sha256: routed.integrated_context_layout_sha256,
+                    crops: routed.crops,
+                })
+            }
+        };
         let diagnostic_fact = self.bridge.record_screen_observation(&observation);
         Ok(LiveRecognitionFrameResult {
             observation,
+            field_inputs,
             diagnostic_frame,
             diagnostic_fact,
         })
@@ -222,7 +272,7 @@ fn validate_live_descriptor(
 mod tests {
     use std::fs;
 
-    use scorepeek::recognition::{CanonicalLayout, ScreenClass};
+    use scorepeek::recognition::{CanonicalLayout, IntegratedContextField, ScreenClass};
 
     use super::*;
     use crate::diagnostic_recording::{
@@ -251,6 +301,14 @@ mod tests {
         }
     }
 
+    fn solid_frame(color: [u8; 3], sequence: u64) -> LiveCanonicalFrame {
+        let mut pixels = Vec::with_capacity(crate::diagnostic_recording::CANONICAL_BYTES);
+        for _ in 0..crate::diagnostic_recording::CANONICAL_BYTES / 3 {
+            pixels.extend_from_slice(&color);
+        }
+        LiveCanonicalFrame::for_test_pixels(1, sequence, 0, pixels.into_boxed_slice())
+    }
+
     #[test]
     fn diagnostic_opt_out_does_not_change_recognition() {
         let root = tempfile::tempdir().unwrap();
@@ -266,6 +324,7 @@ mod tests {
         .unwrap();
         let result = session.inspect(&frame).unwrap();
         assert_eq!(result.observation.screen(), ScreenClass::Unknown);
+        assert!(result.field_inputs.is_none());
         assert_eq!(result.diagnostic_frame, DiagnosticEnqueueOutcome::Disabled);
         assert_eq!(result.diagnostic_fact, DiagnosticEnqueueOutcome::Disabled);
         assert_eq!(
@@ -273,6 +332,53 @@ mod tests {
                 .finish(DiagnosticRunStatus::Success, 16)
                 .completeness,
             None
+        );
+    }
+
+    #[test]
+    fn supported_screens_route_only_their_measured_field_inputs() {
+        let root = tempfile::tempdir().unwrap();
+        let policy = DiagnosticPolicy {
+            enabled: false,
+            ..DiagnosticPolicy::default()
+        };
+
+        let result_frame = solid_frame([200, 100, 20], 1);
+        let mut result_session = LiveRecognitionSession::start(
+            root.path(),
+            descriptor("result-fields", 1),
+            policy.clone(),
+        )
+        .unwrap();
+        let result = result_session.inspect(&result_frame).unwrap();
+        let result_fields = result.field_inputs.unwrap();
+        assert_eq!(result_fields.screen(), ScreenClass::Result);
+        assert!(std::ptr::eq(result_fields.frame(), &raw const result_frame));
+        assert_eq!(result_fields.crops().len(), 1);
+        assert_eq!(
+            result_fields.crops()[0].field,
+            IntegratedContextField::ResultArtist
+        );
+
+        let music_frame = solid_frame([0, 180, 220], 1);
+        let mut music_session =
+            LiveRecognitionSession::start(root.path(), descriptor("music-fields", 1), policy)
+                .unwrap();
+        let music = music_session.inspect(&music_frame).unwrap();
+        let music_fields = music.field_inputs.unwrap();
+        assert_eq!(music_fields.screen(), ScreenClass::MusicSelect);
+        assert!(std::ptr::eq(music_fields.frame(), &raw const music_frame));
+        assert_eq!(
+            music_fields
+                .crops()
+                .iter()
+                .map(|crop| crop.field)
+                .collect::<Vec<_>>(),
+            vec![
+                IntegratedContextField::MusicSelectArtist,
+                IntegratedContextField::MusicSelectSelectedChart,
+                IntegratedContextField::MusicSelectActiveListTitle,
+            ]
         );
     }
 

@@ -46,7 +46,9 @@
   screen predicate handoffを追加し、generation 18のunknown 13件と、独立生成した色矩形によるgeneration 20のresult 2件/
   music-select 11件を同じrunのtyped factへ記録した。generation 19のopt-outでもunknown 6件は変わらずartifactは0件だった。
   completeなimmutable descriptorを所有するapplication recognition sessionも実装し、binding identity変更時は旧runへ
-  typed change factを記録してfinishした後にだけ次sessionを開始する。live field observerとaccepted resultは未着手。
+  typed change factを記録してfinishした後にだけ次sessionを開始する。result/music-selectだけをoffline exportと同じ
+  filesystem-free integrated-context crop APIへrouteし、live frame ownerを借用したbounded field inputsを生成する境界も実装済み。
+  unknownはfield inputsを生成できない。live model inference、field observation、accepted resultは未着手。
   OBS/obs-vkcapture並行、
   soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了

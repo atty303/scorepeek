@@ -8,9 +8,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: route supported live screen observations into existing field observers
-  under the immutable application session while keeping unknown frames and diagnostic outcomes
-  outside accepted fields.
+- Current execution focus: define the application-owned live field-observer execution boundary for
+  model/catalog inputs already fixed by the immutable session, without blocking capture or letting
+  diagnostic outcomes affect field observations.
 
 ## Included deliverables
 
@@ -110,6 +110,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   runtime. Explicit transition records the next identity in the old run, finishes that run, and
   only then starts the replacement session. Recording rejection, opt-out, queue loss, or store
   failure remains separate from the screen result.
+- Offline integrated-context export and the live session now share one synchronous, deterministic,
+  filesystem-free RGB field-routing API. Only `result` and `music_select` produce their measured
+  bounded crops; `unknown` cannot construct field inputs. Live inputs borrow the admitted canonical
+  owner and carry no OCR, song, accepted-field, or event authority. Model bundle I/O and inference
+  are not part of this checkpoint.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -175,12 +180,15 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   native PipeWire build verification. Focused session tests also verify descriptor/layout rejection,
   frame-generation rejection, diagnostic opt-out non-interference, and manifest-backed ordered
   binding rollover.
+- Focused routing tests exercise synthetic result and music-select inputs, exact screen-local field
+  sets, retained live owner identity, diagnostic opt-out, and structural unknown exclusion. Existing
+  offline integrated-context export tests pass through the same routing function.
 
 ## Unverified boundaries
 
-- No live field observer, catalog/model inference, accepted result, context reducer, or event output
-  consumes the session's supported screen observation; this checkpoint stops at the shared screen
-  predicate and immutable application lifetime.
+- No live model/catalog inference, field observation, accepted result, context reducer, or event
+  output consumes the routed inputs; this checkpoint stops at bounded screen-local RGB crops under
+  the immutable application lifetime.
   Offline `CanonicalFrame` extraction evidence still cannot fabricate the live generation/profile/
   normalizer owner or enter this live gate.
 - The bounded CLI gate is not an ordinary long-running application loop. Live queue-full or worker
@@ -215,9 +223,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Route only `result` or `music_select` observations into the existing screen-local crop/observer
-   APIs while preserving the live owner and binding. `unknown` must stop before OCR and accepted
-   fields without suppressing independent canonical diagnostic evidence.
+1. Define an application-owned field-observer execution boundary that consumes only
+   `LiveSupportedFieldInputs`, loads the descriptor-bound model/catalog inputs once per immutable
+   session, and does not perform model or filesystem I/O in the PipeWire callback.
 2. Bind any field observation, song decision, suppression, and accepted result to that same run;
    diagnostic enqueue/drop/opt-out must not alter those recognition outcomes.
 3. Verify real field routing with separately authorized private INFINITAS evidence before claiming

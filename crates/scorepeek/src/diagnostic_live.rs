@@ -58,6 +58,21 @@ impl LiveCanonicalFrame {
 
     #[cfg(test)]
     pub(crate) fn for_test(generation: u64, sequence: u64, time: u64) -> Self {
+        Self::for_test_pixels(
+            generation,
+            sequence,
+            time,
+            vec![7; crate::diagnostic_recording::CANONICAL_BYTES].into_boxed_slice(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_pixels(
+        generation: u64,
+        sequence: u64,
+        time: u64,
+        pixels: Box<[u8]>,
+    ) -> Self {
         Self {
             capture_generation: generation,
             sequence,
@@ -65,9 +80,7 @@ impl LiveCanonicalFrame {
             monotonic_end_ms: time + 16,
             capture_profile_sha256: "2".repeat(64),
             normalizer_sha256: "3".repeat(64),
-            pixels: Arc::new(
-                vec![7; crate::diagnostic_recording::CANONICAL_BYTES].into_boxed_slice(),
-            ),
+            pixels: Arc::new(pixels),
         }
     }
 }
