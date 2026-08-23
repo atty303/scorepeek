@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use super::{
     CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
     CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureError, CaptureErrorType,
-    ITERATION_SLICE, UncalibratedGamescopeSourceLease, elapsed_ms,
+    GamescopeProfileBinding, GamescopeSessionProvenance, GamescopeSessionProvenanceMismatch,
+    ITERATION_SLICE, ObservedContractMismatch, UncalibratedGamescopeSourceLease, elapsed_ms,
 };
 
 const MAX_WIDTH: u32 = 7_680;
@@ -363,6 +364,101 @@ pub struct UncalibratedPipeWireReceiver {
     terminal_recorded: Option<CaptureDiagnosticOperation>,
 }
 
+/// A live Gamescope receiver admitted by one explicit session and immutable profile binding.
+///
+/// This checkpoint deliberately exposes no frame-production method. Admission proves only the
+/// provider/receiver contract needed by the later `ObservedFrame` boundary.
+pub struct CalibratedGamescopeLease {
+    receiver: UncalibratedPipeWireReceiver,
+    binding: GamescopeProfileBinding,
+}
+
+impl fmt::Debug for CalibratedGamescopeLease {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CalibratedGamescopeLease")
+            .field(
+                "capture_profile_sha256",
+                &self.binding.capture_profile_sha256(),
+            )
+            .field(
+                "normalizer_artifact_sha256",
+                &self.binding.normalizer_artifact_sha256(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl CalibratedGamescopeLease {
+    #[must_use]
+    pub fn capture_profile_sha256(&self) -> &str {
+        self.binding.capture_profile_sha256()
+    }
+
+    #[must_use]
+    pub fn normalizer_artifact_sha256(&self) -> &str {
+        self.binding.normalizer_artifact_sha256()
+    }
+
+    /// Advances the admitted provider and receiver without exposing an unbound frame.
+    ///
+    /// # Errors
+    /// Returns the first typed provider or receiver lifetime failure.
+    pub fn poll(
+        &mut self,
+        timeout: Duration,
+        sink: &mut impl CaptureDiagnosticSink,
+    ) -> Result<(), CaptureError> {
+        self.receiver.poll(timeout, sink)
+    }
+
+    /// Shuts down the receiver before its provider lease.
+    ///
+    /// # Errors
+    /// Returns the receiver shutdown failure after all owned resources are released.
+    pub fn shutdown(self, sink: &mut impl CaptureDiagnosticSink) -> Result<(), CaptureError> {
+        self.receiver.shutdown(sink)
+    }
+}
+
+/// A rejected admission that retains ownership of the live receiver for explicit shutdown.
+pub struct GamescopeLeaseAdmissionFailure {
+    error_type: CaptureErrorType,
+    receiver: UncalibratedPipeWireReceiver,
+}
+
+impl fmt::Debug for GamescopeLeaseAdmissionFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GamescopeLeaseAdmissionFailure")
+            .field("error_type", &self.error_type)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Display for GamescopeLeaseAdmissionFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        CaptureError::without_source(self.error_type).fmt(formatter)
+    }
+}
+
+impl std::error::Error for GamescopeLeaseAdmissionFailure {}
+
+impl GamescopeLeaseAdmissionFailure {
+    #[must_use]
+    pub const fn error_type(&self) -> CaptureErrorType {
+        self.error_type
+    }
+
+    /// Releases the rejected receiver and provider in the normal order.
+    ///
+    /// # Errors
+    /// Returns a receiver shutdown failure without replacing the admission rejection category.
+    pub fn shutdown(self, sink: &mut impl CaptureDiagnosticSink) -> Result<(), CaptureError> {
+        self.receiver.shutdown(sink)
+    }
+}
+
 impl fmt::Debug for UncalibratedPipeWireReceiver {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let state = self.state.borrow();
@@ -634,6 +730,102 @@ impl UncalibratedPipeWireReceiver {
             detail,
         });
         lease.next_diagnostic_sequence = lease.next_diagnostic_sequence.saturating_add(1);
+    }
+}
+
+/// Admits a started receiver only when its explicit session and negotiated contract match.
+///
+/// Exactly one value-free admission fact is offered to the host sink. Sink absence or capacity does
+/// not change the returned result. Rejection retains the receiver for explicit ordered shutdown.
+///
+/// # Errors
+/// Returns a stable provenance or negotiated-contract mismatch category.
+pub fn admit_gamescope_profile(
+    mut receiver: UncalibratedPipeWireReceiver,
+    binding: GamescopeProfileBinding,
+    sink: &mut impl CaptureDiagnosticSink,
+) -> Result<CalibratedGamescopeLease, Box<GamescopeLeaseAdmissionFailure>> {
+    receiver.flush_observations(sink);
+    let error_type = classify_profile_admission(
+        &binding,
+        receiver
+            .lease
+            .as_ref()
+            .and_then(|lease| lease.session_provenance.as_ref()),
+        &receiver.state.borrow(),
+    )
+    .err();
+    receiver.record(
+        sink,
+        CaptureDiagnosticOperation::ProfileBindingAdmission,
+        if error_type.is_some() {
+            CaptureDiagnosticStatus::Error
+        } else {
+            CaptureDiagnosticStatus::Success
+        },
+        error_type,
+        CaptureDiagnosticDetail::ProfileBindingAdmission,
+    );
+    if let Some(error_type) = error_type {
+        return Err(Box::new(GamescopeLeaseAdmissionFailure {
+            error_type,
+            receiver,
+        }));
+    }
+    Ok(CalibratedGamescopeLease { receiver, binding })
+}
+
+fn classify_profile_admission(
+    binding: &GamescopeProfileBinding,
+    session: Option<&GamescopeSessionProvenance>,
+    state: &ReceiverState,
+) -> Result<(), CaptureErrorType> {
+    let session = session.ok_or(CaptureErrorType::ProfileSessionProvenanceMissing)?;
+    binding
+        .verify_session_provenance(session)
+        .map_err(session_mismatch_error)?;
+    let video = state
+        .contract
+        .ok_or(CaptureErrorType::ProfileVideoContractMismatch)?;
+    let memory_type = state
+        .memory_type
+        .ok_or(CaptureErrorType::ProfileMemoryTypeMismatch)?;
+    let stride = state
+        .stride
+        .ok_or(CaptureErrorType::ProfileStrideMismatch)?;
+    binding
+        .verify_observed_contract(video, memory_type, stride)
+        .map_err(observed_mismatch_error)
+}
+
+const fn session_mismatch_error(mismatch: GamescopeSessionProvenanceMismatch) -> CaptureErrorType {
+    match mismatch {
+        GamescopeSessionProvenanceMismatch::Environment => {
+            CaptureErrorType::ProfileEnvironmentMismatch
+        }
+        GamescopeSessionProvenanceMismatch::GamescopeVersion => {
+            CaptureErrorType::ProfileGamescopeVersionMismatch
+        }
+        GamescopeSessionProvenanceMismatch::Backend => CaptureErrorType::ProfileBackendMismatch,
+        GamescopeSessionProvenanceMismatch::OutputDimensions => {
+            CaptureErrorType::ProfileOutputDimensionsMismatch
+        }
+        GamescopeSessionProvenanceMismatch::NestedDimensions => {
+            CaptureErrorType::ProfileNestedDimensionsMismatch
+        }
+        GamescopeSessionProvenanceMismatch::NestedRefresh => {
+            CaptureErrorType::ProfileNestedRefreshMismatch
+        }
+        GamescopeSessionProvenanceMismatch::Scaler => CaptureErrorType::ProfileScalerMismatch,
+        GamescopeSessionProvenanceMismatch::Filter => CaptureErrorType::ProfileFilterMismatch,
+    }
+}
+
+const fn observed_mismatch_error(mismatch: ObservedContractMismatch) -> CaptureErrorType {
+    match mismatch {
+        ObservedContractMismatch::Video => CaptureErrorType::ProfileVideoContractMismatch,
+        ObservedContractMismatch::MemoryType => CaptureErrorType::ProfileMemoryTypeMismatch,
+        ObservedContractMismatch::Stride => CaptureErrorType::ProfileStrideMismatch,
     }
 }
 
@@ -1017,6 +1209,10 @@ fn format_offer() -> Result<Vec<u8>, spa::pod::serialize::GenError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::{
+        FractionalRectangle, GamescopeProfileBindingAuthoringInput,
+        GamescopeSessionProvenanceInput, RationalCoordinate,
+    };
 
     fn video_info() -> VideoInfoRaw {
         let mut info = VideoInfoRaw::new();
@@ -1036,6 +1232,83 @@ mod tests {
         state
     }
 
+    fn session_input() -> GamescopeSessionProvenanceInput {
+        GamescopeSessionProvenanceInput {
+            environment_id: "test-machine".to_owned(),
+            gamescope_version: "3.16.19".to_owned(),
+            backend_id: "sdl".to_owned(),
+            output_width: 4,
+            output_height: 2,
+            nested_width: 4,
+            nested_height: 2,
+            nested_refresh_hz: 60,
+            scaler: "auto".to_owned(),
+            filter: "linear".to_owned(),
+        }
+    }
+
+    fn profile_binding() -> GamescopeProfileBinding {
+        let authored = GamescopeProfileBinding::author(GamescopeProfileBindingAuthoringInput {
+            calibration_evidence_sha256: "1".repeat(64),
+            environment_id: "test-machine".to_owned(),
+            gamescope_version: "3.16.19".to_owned(),
+            backend_id: "sdl".to_owned(),
+            output_width: 4,
+            output_height: 2,
+            nested_width: 4,
+            nested_height: 2,
+            nested_refresh_hz: 60,
+            scaler: "auto".to_owned(),
+            filter: "linear".to_owned(),
+            observed_video_contract: negotiated_state().contract.expect("contract"),
+            memory_type: UncalibratedMemoryType::MemoryPointer,
+            stride: 16,
+            geometry: FractionalRectangle::new(
+                RationalCoordinate::new(0, 1).unwrap(),
+                RationalCoordinate::new(0, 1).unwrap(),
+                RationalCoordinate::new(4, 1).unwrap(),
+                RationalCoordinate::new(2, 1).unwrap(),
+            ),
+        })
+        .unwrap();
+        GamescopeProfileBinding::parse(&authored.bytes, &authored.artifact_sha256).unwrap()
+    }
+
+    fn receiver_for_admission(
+        session_provenance: Option<GamescopeSessionProvenance>,
+    ) -> UncalibratedPipeWireReceiver {
+        let mut state = negotiated_state();
+        state.accept_frame(UncalibratedMemoryType::MemoryPointer, 16, &[0; 32], 1);
+        UncalibratedPipeWireReceiver {
+            listener: None,
+            stream: None,
+            lease: Some(UncalibratedGamescopeSourceLease {
+                runtime: None,
+                node_id: 7,
+                registry_global_count: 1,
+                started: Instant::now(),
+                next_diagnostic_sequence: 3,
+                terminal_recorded: false,
+                session_provenance,
+            }),
+            state: Rc::new(RefCell::new(state)),
+            receiver_started_ms: 0,
+            shutdown_started_ms: None,
+            negotiation_recorded: false,
+            first_frame_recorded: false,
+            terminal_recorded: None,
+        }
+    }
+
+    #[derive(Default)]
+    struct Facts(Vec<CaptureDiagnosticFact>);
+
+    impl CaptureDiagnosticSink for Facts {
+        fn record(&mut self, fact: CaptureDiagnosticFact) {
+            self.0.push(fact);
+        }
+    }
+
     #[test]
     fn unspecified_producer_framerate_is_preserved() {
         let mut state = ReceiverState::new();
@@ -1046,6 +1319,176 @@ mod tests {
 
         assert_eq!(state.terminal, None);
         assert_eq!(state.contract.expect("contract").framerate_num, 0);
+    }
+
+    #[test]
+    fn profile_admission_requires_session_and_every_negotiated_field() {
+        let binding = profile_binding();
+        let session = GamescopeSessionProvenance::new(session_input()).unwrap();
+        let mut state = negotiated_state();
+        state.accept_frame(UncalibratedMemoryType::MemoryPointer, 16, &[0; 32], 1);
+
+        assert_eq!(
+            classify_profile_admission(&binding, None, &state),
+            Err(CaptureErrorType::ProfileSessionProvenanceMissing)
+        );
+        assert_eq!(
+            classify_profile_admission(&binding, Some(&session), &state),
+            Ok(())
+        );
+
+        let mut absent = ReceiverState::new();
+        assert_eq!(
+            classify_profile_admission(&binding, Some(&session), &absent),
+            Err(CaptureErrorType::ProfileVideoContractMismatch)
+        );
+        absent.contract = negotiated_state().contract;
+        assert_eq!(
+            classify_profile_admission(&binding, Some(&session), &absent),
+            Err(CaptureErrorType::ProfileMemoryTypeMismatch)
+        );
+        absent.memory_type = Some(UncalibratedMemoryType::MemoryPointer);
+        assert_eq!(
+            classify_profile_admission(&binding, Some(&session), &absent),
+            Err(CaptureErrorType::ProfileStrideMismatch)
+        );
+
+        let mut video_mismatch = state.contract.expect("contract");
+        video_mismatch.color_primaries = 1;
+        state.contract = Some(video_mismatch);
+        assert_eq!(
+            classify_profile_admission(&binding, Some(&session), &state),
+            Err(CaptureErrorType::ProfileVideoContractMismatch)
+        );
+        state.contract = Some(negotiated_state().contract.expect("contract"));
+        state.memory_type = Some(UncalibratedMemoryType::DmaBuf);
+        assert_eq!(
+            classify_profile_admission(&binding, Some(&session), &state),
+            Err(CaptureErrorType::ProfileMemoryTypeMismatch)
+        );
+        state.memory_type = Some(UncalibratedMemoryType::MemoryPointer);
+        state.stride = Some(20);
+        assert_eq!(
+            classify_profile_admission(&binding, Some(&session), &state),
+            Err(CaptureErrorType::ProfileStrideMismatch)
+        );
+    }
+
+    #[test]
+    fn session_rejections_map_to_value_free_capture_error_types() {
+        let binding = profile_binding();
+        let mut state = negotiated_state();
+        state.accept_frame(UncalibratedMemoryType::MemoryPointer, 16, &[0; 32], 1);
+        let cases = [
+            (
+                CaptureErrorType::ProfileEnvironmentMismatch,
+                GamescopeSessionProvenanceInput {
+                    environment_id: "other-machine".to_owned(),
+                    ..session_input()
+                },
+            ),
+            (
+                CaptureErrorType::ProfileGamescopeVersionMismatch,
+                GamescopeSessionProvenanceInput {
+                    gamescope_version: "3.16.20".to_owned(),
+                    ..session_input()
+                },
+            ),
+            (
+                CaptureErrorType::ProfileBackendMismatch,
+                GamescopeSessionProvenanceInput {
+                    backend_id: "headless".to_owned(),
+                    ..session_input()
+                },
+            ),
+            (
+                CaptureErrorType::ProfileOutputDimensionsMismatch,
+                GamescopeSessionProvenanceInput {
+                    output_width: 5,
+                    ..session_input()
+                },
+            ),
+            (
+                CaptureErrorType::ProfileNestedDimensionsMismatch,
+                GamescopeSessionProvenanceInput {
+                    nested_width: 5,
+                    ..session_input()
+                },
+            ),
+            (
+                CaptureErrorType::ProfileNestedRefreshMismatch,
+                GamescopeSessionProvenanceInput {
+                    nested_refresh_hz: 61,
+                    ..session_input()
+                },
+            ),
+            (
+                CaptureErrorType::ProfileScalerMismatch,
+                GamescopeSessionProvenanceInput {
+                    scaler: "fit".to_owned(),
+                    ..session_input()
+                },
+            ),
+            (
+                CaptureErrorType::ProfileFilterMismatch,
+                GamescopeSessionProvenanceInput {
+                    filter: "nearest".to_owned(),
+                    ..session_input()
+                },
+            ),
+        ];
+        for (expected, input) in cases {
+            let session = GamescopeSessionProvenance::new(input).unwrap();
+            assert_eq!(
+                classify_profile_admission(&binding, Some(&session), &state),
+                Err(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn admission_records_one_value_free_result_and_retains_rejected_receiver() {
+        let binding = profile_binding();
+        let session = GamescopeSessionProvenance::new(session_input()).unwrap();
+        let receiver = receiver_for_admission(Some(session));
+        let mut facts = Facts::default();
+        let admitted = admit_gamescope_profile(receiver, binding, &mut facts).unwrap();
+        assert_eq!(facts.0.len(), 3);
+        let acceptance = facts.0.last().expect("acceptance fact");
+        assert_eq!(acceptance.sequence, 5);
+        assert_eq!(
+            acceptance.operation,
+            CaptureDiagnosticOperation::ProfileBindingAdmission
+        );
+        assert_eq!(acceptance.status, CaptureDiagnosticStatus::Success);
+        assert_eq!(acceptance.error_type, None);
+        assert_eq!(
+            acceptance.detail,
+            CaptureDiagnosticDetail::ProfileBindingAdmission
+        );
+        admitted.shutdown(&mut ()).unwrap();
+
+        let receiver = receiver_for_admission(None);
+        let failure = admit_gamescope_profile(receiver, profile_binding(), &mut facts).unwrap_err();
+        assert_eq!(
+            failure.error_type(),
+            CaptureErrorType::ProfileSessionProvenanceMissing
+        );
+        let rejection = facts.0.last().expect("rejection fact");
+        assert_eq!(
+            rejection.operation,
+            CaptureDiagnosticOperation::ProfileBindingAdmission
+        );
+        assert_eq!(rejection.status, CaptureDiagnosticStatus::Error);
+        assert_eq!(
+            rejection.error_type,
+            Some(CaptureErrorType::ProfileSessionProvenanceMissing)
+        );
+        assert_eq!(
+            rejection.detail,
+            CaptureDiagnosticDetail::ProfileBindingAdmission
+        );
+        failure.shutdown(&mut ()).unwrap();
     }
 
     #[test]

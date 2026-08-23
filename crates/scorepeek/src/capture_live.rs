@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 
 use scorepeek::capture::{
     CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
-    CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureErrorType, acquire_gamescope_source,
-    start_uncalibrated_gamescope_receiver,
+    CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureErrorType, GamescopeProfileBinding,
+    GamescopeSessionProvenance, acquire_gamescope_source, acquire_gamescope_source_for_session,
+    admit_gamescope_profile, start_uncalibrated_gamescope_receiver,
 };
 use serde::Serialize;
 
@@ -18,6 +19,7 @@ const MIN_LIFECYCLE_RUNS: u32 = 2;
 const MAX_LIFECYCLE_RUNS: u32 = 100;
 const MAX_DIAGNOSTIC_FACTS: usize = 32;
 const MAX_PROC_STATUS_BYTES: u64 = 64 * 1024;
+const MAX_BINDING_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +34,16 @@ enum LifecycleGateErrorType {
     CaptureRunFailed,
     ProcessResourceUnavailable,
     ExpectedOverwriteMissing,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum BindingAdmissionGateErrorType {
+    BindingUnavailable,
+    BindingInvalid,
+    CaptureFailed,
+    AdmissionRejected,
+    ShutdownFailed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -113,6 +125,18 @@ pub struct GamescopeLifecycleGateReport {
     runs: Vec<LifecycleRunSummary>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct GamescopeBindingAdmissionGateReport {
+    schema: &'static str,
+    status: LiveGateStatus,
+    error_type: Option<BindingAdmissionGateErrorType>,
+    capture_error_type: Option<CaptureErrorType>,
+    capture_profile_sha256: Option<String>,
+    normalizer_artifact_sha256: Option<String>,
+    diagnostic_facts: Vec<CaptureDiagnosticFact>,
+    dropped_diagnostic_facts: u64,
+}
+
 impl GamescopeLiveGateReport {
     pub const fn succeeded(&self) -> bool {
         matches!(self.status, LiveGateStatus::Success)
@@ -120,6 +144,12 @@ impl GamescopeLiveGateReport {
 }
 
 impl GamescopeLifecycleGateReport {
+    pub const fn succeeded(&self) -> bool {
+        matches!(self.status, LiveGateStatus::Success)
+    }
+}
+
+impl GamescopeBindingAdmissionGateReport {
     pub const fn succeeded(&self) -> bool {
         matches!(self.status, LiveGateStatus::Success)
     }
@@ -159,6 +189,117 @@ pub fn parse_consumer_interval_ms(value: &OsStr) -> Result<u64, String> {
         ));
     }
     Ok(interval)
+}
+
+pub fn run_gamescope_binding_admission_gate(
+    binding_path: &std::path::Path,
+    expected_binding_sha256: &str,
+    session: GamescopeSessionProvenance,
+) -> GamescopeBindingAdmissionGateReport {
+    let binding = match read_binding(binding_path, expected_binding_sha256) {
+        Ok(binding) => binding,
+        Err(error_type) => {
+            return binding_admission_report(error_type, None, BoundedDiagnosticSink::default());
+        }
+    };
+    let mut sink = BoundedDiagnosticSink::default();
+    let lease = match acquire_gamescope_source_for_session(DISCOVERY_TIMEOUT, session, &mut sink) {
+        Ok(lease) => lease,
+        Err(error) => {
+            return binding_admission_report(
+                BindingAdmissionGateErrorType::CaptureFailed,
+                Some(error.error_type()),
+                sink,
+            );
+        }
+    };
+    let receiver =
+        match start_uncalibrated_gamescope_receiver(lease, RECEIVER_START_TIMEOUT, &mut sink) {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                return binding_admission_report(
+                    BindingAdmissionGateErrorType::CaptureFailed,
+                    Some(error.error_type()),
+                    sink,
+                );
+            }
+        };
+    match admit_gamescope_profile(receiver, binding, &mut sink) {
+        Ok(lease) => {
+            let digests = (
+                lease.capture_profile_sha256().to_owned(),
+                lease.normalizer_artifact_sha256().to_owned(),
+            );
+            if let Err(error) = lease.shutdown(&mut sink) {
+                return binding_admission_report(
+                    BindingAdmissionGateErrorType::ShutdownFailed,
+                    Some(error.error_type()),
+                    sink,
+                );
+            }
+            GamescopeBindingAdmissionGateReport {
+                schema: "scorepeek-gamescope-binding-admission-gate-v1",
+                status: LiveGateStatus::Success,
+                error_type: None,
+                capture_error_type: None,
+                capture_profile_sha256: Some(digests.0),
+                normalizer_artifact_sha256: Some(digests.1),
+                diagnostic_facts: sink.facts,
+                dropped_diagnostic_facts: sink.dropped,
+            }
+        }
+        Err(failure) => {
+            let error_type = failure.error_type();
+            let _ = failure.shutdown(&mut sink);
+            binding_admission_report(
+                BindingAdmissionGateErrorType::AdmissionRejected,
+                Some(error_type),
+                sink,
+            )
+        }
+    }
+}
+
+fn read_binding(
+    path: &std::path::Path,
+    expected_sha256: &str,
+) -> Result<GamescopeProfileBinding, BindingAdmissionGateErrorType> {
+    let file = File::open(path).map_err(|_| BindingAdmissionGateErrorType::BindingUnavailable)?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| BindingAdmissionGateErrorType::BindingUnavailable)?;
+    let maximum_bytes = u64::try_from(MAX_BINDING_BYTES).unwrap_or(u64::MAX);
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > maximum_bytes {
+        return Err(BindingAdmissionGateErrorType::BindingInvalid);
+    }
+    let capacity = usize::try_from(metadata.len())
+        .map_err(|_| BindingAdmissionGateErrorType::BindingInvalid)?;
+    let mut bytes = Vec::with_capacity(capacity);
+    file.take(maximum_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| BindingAdmissionGateErrorType::BindingUnavailable)?;
+    if u64::try_from(bytes.len()).ok() != Some(metadata.len()) {
+        return Err(BindingAdmissionGateErrorType::BindingInvalid);
+    }
+    GamescopeProfileBinding::parse(&bytes, expected_sha256)
+        .map_err(|_| BindingAdmissionGateErrorType::BindingInvalid)
+}
+
+fn binding_admission_report(
+    error_type: BindingAdmissionGateErrorType,
+    capture_error_type: Option<CaptureErrorType>,
+    sink: BoundedDiagnosticSink,
+) -> GamescopeBindingAdmissionGateReport {
+    GamescopeBindingAdmissionGateReport {
+        schema: "scorepeek-gamescope-binding-admission-gate-v1",
+        status: LiveGateStatus::Error,
+        error_type: Some(error_type),
+        capture_error_type,
+        capture_profile_sha256: None,
+        normalizer_artifact_sha256: None,
+        diagnostic_facts: sink.facts,
+        dropped_diagnostic_facts: sink.dropped,
+    }
 }
 
 pub fn parse_lifecycle_runs(value: &OsStr) -> Result<u32, String> {
@@ -484,17 +625,21 @@ fn report(
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
+    use std::fs;
 
     use scorepeek::capture::{
         CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
         CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureErrorType, CaptureSourceKind,
+        FractionalRectangle, GamescopeProfileBinding, GamescopeProfileBindingAuthoringInput,
+        RationalCoordinate, UncalibratedMemoryType, UncalibratedVideoContract,
     };
 
     use super::{
         BoundedDiagnosticSink, GamescopeLiveGateReport, LifecycleGateErrorType,
         LifecyclePhaseStatus, LiveGateStatus, MAX_DIAGNOSTIC_FACTS, lifecycle_error_type,
         parse_consumer_interval_ms, parse_duration_ms, parse_lifecycle_runs,
-        process_resource_snapshot, summarize_run,
+        process_resource_snapshot, read_binding, run_gamescope_binding_admission_gate,
+        summarize_run,
     };
 
     #[test]
@@ -515,6 +660,81 @@ mod tests {
         );
         assert!(parse_consumer_interval_ms(OsStr::new("60001")).is_err());
         assert!(parse_consumer_interval_ms(OsStr::new("sometimes")).is_err());
+    }
+
+    #[test]
+    fn binding_gate_reads_only_digest_selected_bounded_artifacts() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("binding.json");
+        let video = UncalibratedVideoContract {
+            width: 4,
+            height: 2,
+            framerate_num: 60,
+            framerate_denom: 1,
+            maximum_framerate_num: 0,
+            maximum_framerate_denom: 0,
+            pixel_aspect_num: 0,
+            pixel_aspect_denom: 0,
+            chroma_site: 0,
+            color_range: 0,
+            color_matrix: 0,
+            transfer_function: 0,
+            color_primaries: 0,
+        };
+        let authored = GamescopeProfileBinding::author(GamescopeProfileBindingAuthoringInput {
+            calibration_evidence_sha256: "1".repeat(64),
+            environment_id: "test-machine".to_owned(),
+            gamescope_version: "3.16.19".to_owned(),
+            backend_id: "sdl".to_owned(),
+            output_width: 4,
+            output_height: 2,
+            nested_width: 4,
+            nested_height: 2,
+            nested_refresh_hz: 60,
+            scaler: "auto".to_owned(),
+            filter: "linear".to_owned(),
+            observed_video_contract: video,
+            memory_type: UncalibratedMemoryType::MemoryPointer,
+            stride: 16,
+            geometry: FractionalRectangle::new(
+                RationalCoordinate::new(0, 1).unwrap(),
+                RationalCoordinate::new(0, 1).unwrap(),
+                RationalCoordinate::new(4, 1).unwrap(),
+                RationalCoordinate::new(2, 1).unwrap(),
+            ),
+        })
+        .unwrap();
+        fs::write(&path, &authored.bytes).unwrap();
+
+        assert!(read_binding(&path, &authored.artifact_sha256).is_ok());
+        assert!(read_binding(&path, &"f".repeat(64)).is_err());
+        fs::write(&path, vec![0; super::MAX_BINDING_BYTES + 1]).unwrap();
+        assert!(read_binding(&path, &authored.artifact_sha256).is_err());
+    }
+
+    #[test]
+    fn binding_gate_failure_report_omits_paths_and_session_values() {
+        let session = scorepeek::capture::GamescopeSessionProvenance::new(
+            scorepeek::capture::GamescopeSessionProvenanceInput {
+                environment_id: "PRIVATE-ENVIRONMENT".to_owned(),
+                gamescope_version: "PRIVATE-VERSION".to_owned(),
+                backend_id: "PRIVATE-BACKEND".to_owned(),
+                output_width: 4,
+                output_height: 2,
+                nested_width: 4,
+                nested_height: 2,
+                nested_refresh_hz: 60,
+                scaler: "auto".to_owned(),
+                filter: "linear".to_owned(),
+            },
+        )
+        .unwrap();
+        let path = std::path::Path::new("/PRIVATE/BINDING/PATH");
+        let report = run_gamescope_binding_admission_gate(path, &"f".repeat(64), session);
+        let encoded = serde_json::to_string(&report).unwrap();
+
+        assert!(!encoded.contains("PRIVATE"));
+        assert!(encoded.contains("binding_unavailable"));
     }
 
     #[test]

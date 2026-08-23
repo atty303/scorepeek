@@ -38,6 +38,68 @@ pub enum ObservedContractMismatch {
     Stride,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GamescopeSessionProvenanceMismatch {
+    Environment,
+    GamescopeVersion,
+    Backend,
+    OutputDimensions,
+    NestedDimensions,
+    NestedRefresh,
+    Scaler,
+    Filter,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GamescopeSessionProvenanceInput {
+    pub environment_id: String,
+    pub gamescope_version: String,
+    pub backend_id: String,
+    pub output_width: u32,
+    pub output_height: u32,
+    pub nested_width: u32,
+    pub nested_height: u32,
+    pub nested_refresh_hz: u32,
+    pub scaler: String,
+    pub filter: String,
+}
+
+/// Explicit operator-owned provenance for one newly acquired default-remote Gamescope session.
+///
+/// This value records the exact launch contract; it does not infer provenance from `PipeWire` caps.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GamescopeSessionProvenance {
+    provider: GamescopeProviderProvenance,
+}
+
+impl GamescopeSessionProvenance {
+    /// Validates one bounded explicit session contract.
+    ///
+    /// # Errors
+    /// Returns `InvalidProfile` for an invalid identifier, dimension, refresh, scaler, or filter.
+    pub fn new(
+        input: GamescopeSessionProvenanceInput,
+    ) -> Result<Self, GamescopeProfileBindingError> {
+        let provider = GamescopeProviderProvenance {
+            source: ProviderSource::GamescopeDefaultRemote,
+            environment_id: input.environment_id,
+            gamescope_version: input.gamescope_version,
+            backend_id: input.backend_id,
+            scaling_configuration: ScalingConfiguration {
+                output_width: input.output_width,
+                output_height: input.output_height,
+                nested_width: input.nested_width,
+                nested_height: input.nested_height,
+                nested_refresh_hz: input.nested_refresh_hz,
+                scaler: parse_scaler(&input.scaler)?,
+                filter: parse_filter(&input.filter)?,
+            },
+        };
+        provider.validate()?;
+        Ok(Self { provider })
+    }
+}
+
 /// Trusted, operator-supplied inputs used to author one immutable Gamescope binding.
 ///
 /// The calibration artifact reader owns filesystem validation. This pure boundary validates and
@@ -251,6 +313,48 @@ impl GamescopeProfileBinding {
         }
         if stride != self.observed.stride {
             return Err(ObservedContractMismatch::Stride);
+        }
+        Ok(())
+    }
+
+    /// Compares every explicit property of a newly acquired Gamescope session with this profile.
+    ///
+    /// # Errors
+    /// Returns the first stable mismatch category. `PipeWire` observations are not used to infer or
+    /// repair session provenance.
+    pub fn verify_session_provenance(
+        &self,
+        session: &GamescopeSessionProvenance,
+    ) -> Result<(), GamescopeSessionProvenanceMismatch> {
+        let expected = &self.scaling_configuration;
+        let actual = &session.provider.scaling_configuration;
+        if self.environment_id != session.provider.environment_id {
+            return Err(GamescopeSessionProvenanceMismatch::Environment);
+        }
+        if self.gamescope_version != session.provider.gamescope_version {
+            return Err(GamescopeSessionProvenanceMismatch::GamescopeVersion);
+        }
+        if self.backend_id != session.provider.backend_id {
+            return Err(GamescopeSessionProvenanceMismatch::Backend);
+        }
+        if expected.output_width != actual.output_width
+            || expected.output_height != actual.output_height
+        {
+            return Err(GamescopeSessionProvenanceMismatch::OutputDimensions);
+        }
+        if expected.nested_width != actual.nested_width
+            || expected.nested_height != actual.nested_height
+        {
+            return Err(GamescopeSessionProvenanceMismatch::NestedDimensions);
+        }
+        if expected.nested_refresh_hz != actual.nested_refresh_hz {
+            return Err(GamescopeSessionProvenanceMismatch::NestedRefresh);
+        }
+        if expected.scaler != actual.scaler {
+            return Err(GamescopeSessionProvenanceMismatch::Scaler);
+        }
+        if expected.filter != actual.filter {
+            return Err(GamescopeSessionProvenanceMismatch::Filter);
         }
         Ok(())
     }
@@ -665,6 +769,21 @@ mod tests {
         (bytes, digest)
     }
 
+    fn session_provenance() -> GamescopeSessionProvenanceInput {
+        GamescopeSessionProvenanceInput {
+            environment_id: "development-machine-v1".to_owned(),
+            gamescope_version: "3.16.19-128-g7282613+".to_owned(),
+            backend_id: "sdl".to_owned(),
+            output_width: 2_556,
+            output_height: 1_428,
+            nested_width: 1_920,
+            nested_height: 1_080,
+            nested_refresh_hz: 120,
+            scaler: "auto".to_owned(),
+            filter: "linear".to_owned(),
+        }
+    }
+
     #[test]
     fn canonical_artifact_binds_profile_normalizer_and_observed_contract() {
         let artifact = artifact();
@@ -773,5 +892,76 @@ mod tests {
             ),
             Err(ObservedContractMismatch::Stride)
         );
+    }
+
+    #[test]
+    fn every_session_provenance_field_is_exact() {
+        let (bytes, digest) = encoded_artifact(&artifact());
+        let binding = GamescopeProfileBinding::parse(&bytes, &digest).unwrap();
+        let matching = GamescopeSessionProvenance::new(session_provenance()).unwrap();
+        assert_eq!(binding.verify_session_provenance(&matching), Ok(()));
+
+        let cases = [
+            (
+                GamescopeSessionProvenanceMismatch::Environment,
+                GamescopeSessionProvenanceInput {
+                    environment_id: "other-machine".to_owned(),
+                    ..session_provenance()
+                },
+            ),
+            (
+                GamescopeSessionProvenanceMismatch::GamescopeVersion,
+                GamescopeSessionProvenanceInput {
+                    gamescope_version: "3.16.20".to_owned(),
+                    ..session_provenance()
+                },
+            ),
+            (
+                GamescopeSessionProvenanceMismatch::Backend,
+                GamescopeSessionProvenanceInput {
+                    backend_id: "wayland".to_owned(),
+                    ..session_provenance()
+                },
+            ),
+            (
+                GamescopeSessionProvenanceMismatch::OutputDimensions,
+                GamescopeSessionProvenanceInput {
+                    output_width: 2_555,
+                    ..session_provenance()
+                },
+            ),
+            (
+                GamescopeSessionProvenanceMismatch::NestedDimensions,
+                GamescopeSessionProvenanceInput {
+                    nested_height: 1_079,
+                    ..session_provenance()
+                },
+            ),
+            (
+                GamescopeSessionProvenanceMismatch::NestedRefresh,
+                GamescopeSessionProvenanceInput {
+                    nested_refresh_hz: 119,
+                    ..session_provenance()
+                },
+            ),
+            (
+                GamescopeSessionProvenanceMismatch::Scaler,
+                GamescopeSessionProvenanceInput {
+                    scaler: "fit".to_owned(),
+                    ..session_provenance()
+                },
+            ),
+            (
+                GamescopeSessionProvenanceMismatch::Filter,
+                GamescopeSessionProvenanceInput {
+                    filter: "nearest".to_owned(),
+                    ..session_provenance()
+                },
+            ),
+        ];
+        for (expected, input) in cases {
+            let actual = GamescopeSessionProvenance::new(input).unwrap();
+            assert_eq!(binding.verify_session_provenance(&actual), Err(expected));
+        }
     }
 }

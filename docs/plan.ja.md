@@ -29,7 +29,11 @@
   immutable binding contractまで実装済み。さらにexplicit SDL backend/output/nested/scaler/filterを
   保存するsession sampleを実 captureし、raw frameとmanifestを独立再hashしたcreate-only
   development-machine binding artifactをprivate local stateへ登録済み。既知markerへのOpenCV逆変換で
-  explicit geometryを再確認した。ただしlease/session provenance照合、`ObservedFrame`生成は未着手。
+  explicit geometryを再確認した。新規leaseへlauncher/operatorが明示したsession provenanceを保持し、
+  bindingの全provenance fieldとreceiverが実negotiationしたvideo/memory/stride contractが一致した場合だけ
+  calibrated leaseへ昇格する境界まで実装済み。受理・拒否は値を持たないtyped factとしてbounded capture
+  diagnosticへ記録し、development-machine marker sessionで一致受理とnested refresh不一致拒否を確認済み。
+  calibrated leaseからのprofile-bearing `ObservedFrame`生成は未着手。
   OBS/obs-vkcapture並行、
   soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了

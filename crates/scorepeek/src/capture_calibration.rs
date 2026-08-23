@@ -10,9 +10,9 @@ use std::time::SystemTime;
 use scorepeek::capture::{
     CaptureDiagnosticFact, CaptureDiagnosticOperation, CaptureDiagnosticSink,
     CaptureDiagnosticStatus, CaptureErrorType, CaptureSourceKind, FractionalRectangle,
-    GamescopeProfileBinding, GamescopeProfileBindingAuthoringInput, RationalCoordinate,
-    UncalibratedFrame, UncalibratedMemoryType, UncalibratedVideoContract, acquire_gamescope_source,
-    start_uncalibrated_gamescope_receiver,
+    GamescopeProfileBinding, GamescopeProfileBindingAuthoringInput, GamescopeSessionProvenance,
+    GamescopeSessionProvenanceInput, RationalCoordinate, UncalibratedFrame, UncalibratedMemoryType,
+    UncalibratedVideoContract, acquire_gamescope_source, start_uncalibrated_gamescope_receiver,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -76,6 +76,24 @@ pub struct GamescopeSessionConfiguration {
     output_width: u32,
     output_height: u32,
     scaling_configuration: GamescopeScalingConfiguration,
+}
+
+impl GamescopeSessionConfiguration {
+    pub fn capture_provenance(&self) -> Result<GamescopeSessionProvenance, String> {
+        GamescopeSessionProvenance::new(GamescopeSessionProvenanceInput {
+            environment_id: self.environment_id.clone(),
+            gamescope_version: self.gamescope_version.clone(),
+            backend_id: self.backend_id.clone(),
+            output_width: self.output_width,
+            output_height: self.output_height,
+            nested_width: self.scaling_configuration.nested_width,
+            nested_height: self.scaling_configuration.nested_height,
+            nested_refresh_hz: self.scaling_configuration.nested_refresh_hz,
+            scaler: scaler_name(self.scaling_configuration.scaler).to_owned(),
+            filter: filter_name(self.scaling_configuration.filter).to_owned(),
+        })
+        .map_err(|_| "Gamescope session provenance is invalid".to_owned())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -223,6 +241,7 @@ enum StoredCaptureDiagnosticDetail {
         stride: u32,
         byte_count: u32,
     },
+    ProfileBindingAdmission,
     SteadyReception {
         received_frames: u64,
         overwritten_frames: u64,

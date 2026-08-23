@@ -14,15 +14,18 @@ mod receiver;
 
 pub use binding::{
     AuthoredGamescopeProfileBinding, GamescopeProfileBinding,
-    GamescopeProfileBindingAuthoringInput, GamescopeProfileBindingError, ObservedContractMismatch,
+    GamescopeProfileBindingAuthoringInput, GamescopeProfileBindingError,
+    GamescopeSessionProvenance, GamescopeSessionProvenanceInput,
+    GamescopeSessionProvenanceMismatch, ObservedContractMismatch,
 };
 pub use normalizer::{
     FractionalLinearGeometry, FractionalRectangle, RationalCoordinate, UnboundCanonicalFrame,
     UnboundNormalizationError,
 };
 pub use receiver::{
-    UncalibratedFrame, UncalibratedMemoryType, UncalibratedPipeWireReceiver,
-    UncalibratedVideoContract, start_uncalibrated_gamescope_receiver,
+    CalibratedGamescopeLease, GamescopeLeaseAdmissionFailure, UncalibratedFrame,
+    UncalibratedMemoryType, UncalibratedPipeWireReceiver, UncalibratedVideoContract,
+    admit_gamescope_profile, start_uncalibrated_gamescope_receiver,
 };
 
 const MAX_REGISTRY_GLOBALS: u32 = 4_096;
@@ -42,6 +45,7 @@ pub enum CaptureDiagnosticOperation {
     SourceLifetime,
     StreamNegotiation,
     FirstFrame,
+    ProfileBindingAdmission,
     SteadyReception,
     ReceiverShutdown,
     Shutdown,
@@ -72,6 +76,18 @@ pub enum CaptureErrorType {
     FrameMalformed,
     StreamLost,
     ReceiverFailed,
+    ProfileSessionProvenanceMissing,
+    ProfileEnvironmentMismatch,
+    ProfileGamescopeVersionMismatch,
+    ProfileBackendMismatch,
+    ProfileOutputDimensionsMismatch,
+    ProfileNestedDimensionsMismatch,
+    ProfileNestedRefreshMismatch,
+    ProfileScalerMismatch,
+    ProfileFilterMismatch,
+    ProfileVideoContractMismatch,
+    ProfileMemoryTypeMismatch,
+    ProfileStrideMismatch,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -114,6 +130,7 @@ pub enum CaptureDiagnosticDetail {
         stride: u32,
         byte_count: u32,
     },
+    ProfileBindingAdmission,
     SteadyReception {
         received_frames: u64,
         overwritten_frames: u64,
@@ -170,6 +187,7 @@ pub struct UncalibratedGamescopeSourceLease {
     started: Instant,
     next_diagnostic_sequence: u64,
     terminal_recorded: bool,
+    session_provenance: Option<GamescopeSessionProvenance>,
 }
 
 impl fmt::Debug for UncalibratedGamescopeSourceLease {
@@ -179,6 +197,7 @@ impl fmt::Debug for UncalibratedGamescopeSourceLease {
             .field("node_id", &self.node_id)
             .field("registry_global_count", &self.registry_global_count)
             .field("is_active", &self.runtime.is_some())
+            .field("has_session_provenance", &self.session_provenance.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -316,6 +335,42 @@ impl fmt::Display for CaptureError {
             CaptureErrorType::FrameMalformed => "PipeWire frame is malformed",
             CaptureErrorType::StreamLost => "PipeWire stream was lost",
             CaptureErrorType::ReceiverFailed => "PipeWire receiver failed",
+            CaptureErrorType::ProfileSessionProvenanceMissing => {
+                "Gamescope session provenance is missing"
+            }
+            CaptureErrorType::ProfileEnvironmentMismatch => {
+                "Gamescope profile environment does not match the session"
+            }
+            CaptureErrorType::ProfileGamescopeVersionMismatch => {
+                "Gamescope profile version does not match the session"
+            }
+            CaptureErrorType::ProfileBackendMismatch => {
+                "Gamescope profile backend does not match the session"
+            }
+            CaptureErrorType::ProfileOutputDimensionsMismatch => {
+                "Gamescope profile output dimensions do not match the session"
+            }
+            CaptureErrorType::ProfileNestedDimensionsMismatch => {
+                "Gamescope profile nested dimensions do not match the session"
+            }
+            CaptureErrorType::ProfileNestedRefreshMismatch => {
+                "Gamescope profile nested refresh does not match the session"
+            }
+            CaptureErrorType::ProfileScalerMismatch => {
+                "Gamescope profile scaler does not match the session"
+            }
+            CaptureErrorType::ProfileFilterMismatch => {
+                "Gamescope profile filter does not match the session"
+            }
+            CaptureErrorType::ProfileVideoContractMismatch => {
+                "Gamescope profile video contract does not match the receiver"
+            }
+            CaptureErrorType::ProfileMemoryTypeMismatch => {
+                "Gamescope profile memory type does not match the receiver"
+            }
+            CaptureErrorType::ProfileStrideMismatch => {
+                "Gamescope profile stride does not match the receiver"
+            }
         })
     }
 }
@@ -431,6 +486,29 @@ pub fn acquire_gamescope_source(
     timeout: Duration,
     sink: &mut impl CaptureDiagnosticSink,
 ) -> Result<UncalibratedGamescopeSourceLease, CaptureError> {
+    acquire_gamescope_source_with_session(timeout, None, sink)
+}
+
+/// Acquires one Gamescope source and binds explicit launch provenance to that source lifetime.
+///
+/// The provenance remains uncalibrated until the receiver's full negotiated contract also matches
+/// an immutable profile binding.
+///
+/// # Errors
+/// Returns the same typed discovery errors as [`acquire_gamescope_source`].
+pub fn acquire_gamescope_source_for_session(
+    timeout: Duration,
+    session_provenance: GamescopeSessionProvenance,
+    sink: &mut impl CaptureDiagnosticSink,
+) -> Result<UncalibratedGamescopeSourceLease, CaptureError> {
+    acquire_gamescope_source_with_session(timeout, Some(session_provenance), sink)
+}
+
+fn acquire_gamescope_source_with_session(
+    timeout: Duration,
+    session_provenance: Option<GamescopeSessionProvenance>,
+    sink: &mut impl CaptureDiagnosticSink,
+) -> Result<UncalibratedGamescopeSourceLease, CaptureError> {
     let started = Instant::now();
     let (runtime, snapshot) = match acquire_default_remote(timeout) {
         Ok(value) => value,
@@ -478,6 +556,7 @@ pub fn acquire_gamescope_source(
         started,
         next_diagnostic_sequence: 3,
         terminal_recorded: false,
+        session_provenance,
     })
 }
 

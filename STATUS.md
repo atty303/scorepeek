@@ -8,8 +8,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: promote a newly acquired Gamescope lease only after its explicit session
-  provenance and full receiver-negotiated contract match one immutable binding.
+- Current execution focus: introduce a profile-bearing frame boundary only from an admitted
+  calibrated Gamescope lease, without exposing unnormalized frames to recognition.
 
 ## Included deliverables
 
@@ -63,6 +63,14 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   geometry. Parsing and contract comparison are pure, bounded, filesystem-free, and fail closed.
 - Binding validation requires provider output width/height to equal the observed video width/height;
   internally valid but cross-field-inconsistent artifacts are rejected as invalid profiles.
+- A new Gamescope acquisition can carry explicit launcher/operator-owned session provenance. It is
+  promoted to `CalibratedGamescopeLease` only when every provenance field and every negotiated
+  video/memory/stride field exactly match the selected immutable binding. Missing or drifting data
+  fails closed, and the rejected receiver remains explicitly shut down by its owner.
+- The bounded capture diagnostic sink receives exactly one typed, value-free admission fact. The
+  live `gamescope-binding-admission-gate` report exposes stable acceptance/rejection categories and
+  bounded capture facts, but not binding bodies, session strings, paths, pixels, arbitrary
+  PipeWire properties, or raw PipeWire errors. The calibrated type does not yet expose frames.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -80,6 +88,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   - capture profile SHA-256: `e0a27efb0119a8711ada7b3ddc6811fc9fb669b7d1ce7abc4cbc89562365414e`
 - Known edge and interior markers independently reproduced the same rational geometry and canonical
   result. The artifact and captured pixels remain in operator-owned local state, not the repository.
+- A fresh controlled marker session admitted that private binding after observing 2556x1428 BGRx
+  MemFd with 10,224-byte stride. A separately restarted session with only declared nested refresh
+  changed from 120 to 119 was rejected as `profile_nested_refresh_mismatch`; both runs recorded one
+  value-free admission fact and completed receiver/provider shutdown with no dropped facts. A
+  second capture attempted without restarting the static marker timed out before admission and is
+  not acceptance/rejection evidence.
 - Development-host Gamescope/vkcube gates have exercised actual negotiation/frame reception,
   selected-node loss, latest-frame overwrite under consumer pressure, receiver-before-provider
   shutdown, and 100 repeated acquire/start/stop lifecycles. A separately operator-started session
@@ -94,10 +108,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Unverified boundaries
 
-- No calibrated lease type, profile-bearing `ObservedFrame`, live `DomainNormalizer` handoff, or
-  recognition input exists. Negotiated caps alone never establish profile identity.
-- New-lease session provenance has not yet been compared with a binding. Binding acceptance and
-  stable rejection categories are not yet recorded in the host-owned bounded diagnostic run.
+- No profile-bearing `ObservedFrame`, live `DomainNormalizer` handoff, or recognition input exists.
+  The calibrated lease deliberately has no frame-production API; negotiated caps alone never
+  establish profile identity.
+- Session provenance is explicit launcher/operator input, not an automatic observation of the
+  Gamescope process. Process discovery or attestation is not implemented or claimed.
 - INFINITAS content/geometry, target play-machine output, 4K, FSR/NIS, Reshade, HDR, Portal, and OBS
   are separate uncalibrated domains. The development-machine profile is not a pixel reference.
 - OBS/obs-vkcapture coexistence, PipeWire daemon disconnect, stream loss distinct from node loss,
@@ -125,21 +140,17 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Define explicit bounded session provenance on a newly acquired Gamescope lease, including the
-   source identity and exact Gamescope version/backend/output/nested/scaler/filter configuration
-   required by the selected immutable binding.
-2. Add a calibrated-lease admission boundary that compares both session provenance and every full
-   receiver-negotiated video/memory/stride field with the binding. Any absence, ambiguity, drift, or
-   mismatch must fail closed; no fallback or profile inference is allowed.
-3. Record acceptance or a stable rejection category in the host-owned bounded capture diagnostic
-   run. Do not record artifact bodies, environment strings, paths, pixels, arbitrary properties, or
-   raw PipeWire error messages.
-4. Only after admission succeeds, introduce the profile-bearing frame boundary required by ADR
-   0029. Keep it structurally separate from recognition until canonical normalization and generation
-   rollover are integrated and tested.
-5. Re-run controlled marker admission/rejection, receiver/provider lifecycle, and complete repository
-   validation. Then independently review the exact artifact/provenance/contract boundary before any
-   support claim.
+1. Define the profile-bearing frame boundary required by ADR 0029 so only an admitted calibrated
+   lease can produce it. Preserve the immutable capture-profile and normalizer identities without
+   exposing an uncalibrated frame path.
+2. Apply the binding-selected domain normalizer to produce the fixed canonical RGB8 1920x1080
+   contract, with generation/profile rollover failing closed. Keep this handoff structurally
+   separate from recognition until its lifecycle and pixel contract are independently tested.
+3. Extend bounded diagnostics only with the minimum typed frame/normalization lifecycle facts needed
+   to distinguish admission, normalization, rollover, and shutdown. Do not record artifact bodies,
+   session strings, paths, pixels, arbitrary properties, or raw PipeWire errors.
+4. Re-run controlled marker canonicalization, receiver/provider lifecycle, and complete repository
+   validation, then independently review the frame ownership and profile-generation boundary.
 
 Do not proceed to OCR-only tuning, automatic calibration, Portal/OBS fallback, soak/performance, or
 support claims until this admission boundary and its evidence are complete.
