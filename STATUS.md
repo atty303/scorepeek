@@ -8,9 +8,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: define the application-owned live field-observer execution boundary for
-  model/catalog inputs already fixed by the immutable session, without blocking capture or letting
-  diagnostic outcomes affect field observations.
+- Current execution focus: load the exact registered PP-OCRv6-small runtime and active catalog once
+  through the application-owned field-observer boundary, then define typed observations without
+  granting song, accepted-field, or event authority prematurely.
 
 ## Included deliverables
 
@@ -120,6 +120,16 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   crops. The live owner is opaque: only the session can join crops to the admitted frame, and
   callers receive screen-specific borrowed views. Model bundle I/O and inference are not part of
   this checkpoint.
+- The application now has a generic field-observer execution boundary under ADR 0030. It derives
+  an immutable session binding from the complete descriptor, calls one application loader before
+  worker startup, and accepts only opaque crops carrying the same run ID and full binding. A
+  capacity-two `try_send` queue keeps observer execution off the capture loop. Worker-produced
+  results bind sequence, monotonic interval, screen, and session provenance independently of the
+  observer output. The same global capacity bounds accepted but unconsumed results after queue
+  removal. Queue full, outstanding-result limit, worker loss, abandoned results, and bounded finish
+  timeout remain typed; timeout does not claim the residual thread has terminated, and the
+  production-worker token remains held through observer teardown. No production model/catalog
+  loader or live field observer is connected yet.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -189,6 +199,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   screen-local field sets, retained live owner identity, diagnostic opt-out, and structural unknown
   exclusion. Existing offline result, music-select, and integrated-context export tests pass through
   the same routing function.
+- Focused field-worker tests verify one pre-worker loader call, worker-thread execution, result
+  provenance, rejection across either run ID or immutable binding, non-blocking queue capacity,
+  global accepted-but-unconsumed capacity, race-free abandoned-result accounting, supervisor
+  retention through blocking observer teardown, destructor-inclusive bounded finish timeout, and
+  nonterminal timeout reporting. Replay-bound or noncurrent-layout descriptors fail before the
+  loader executes.
 
 ## Unverified boundaries
 
@@ -229,13 +245,14 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Define an application-owned field-observer execution boundary that consumes only
-   `LiveScreenRgb8Crops`, loads the descriptor-bound model/catalog inputs once per immutable
-   session, and does not perform model or filesystem I/O in the PipeWire callback.
-2. Bind any field observation, song decision, suppression, and accepted result to that same run;
-   diagnostic enqueue/drop/opt-out must not alter those recognition outcomes.
-3. Verify real field routing with separately authorized private INFINITAS evidence before claiming
-   layout, OCR, accepted-field, target-host, or support results.
+1. Implement the production PP-OCRv6-small and active-catalog loader against the ADR 0030 boundary.
+   It must verify the descriptor digests once, construct and retain the registered runtime before
+   capture begins, and perform no filesystem/model work in the capture loop.
+2. Define typed field-observation output without prematurely accepting songs or events. Bind every
+   output and later song decision, suppression, and accepted result to the same run; diagnostic
+   enqueue/drop/opt-out must not alter those recognition outcomes.
+3. Verify real field routing and observer output with separately authorized private INFINITAS
+   evidence before claiming layout, OCR, accepted-field, target-host, or support results.
 
 Do not proceed to OCR-only tuning, automatic calibration, Portal/OBS fallback, soak/performance, or
 support claims until live field routing and its immutable run-lifecycle evidence are complete.

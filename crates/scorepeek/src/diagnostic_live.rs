@@ -56,6 +56,31 @@ impl LiveCanonicalFrame {
         self.sequence
     }
 
+    #[must_use]
+    pub(crate) const fn capture_generation(&self) -> u64 {
+        self.capture_generation
+    }
+
+    #[must_use]
+    pub(crate) fn capture_profile_sha256(&self) -> &str {
+        &self.capture_profile_sha256
+    }
+
+    #[must_use]
+    pub(crate) fn normalizer_sha256(&self) -> &str {
+        &self.normalizer_sha256
+    }
+
+    #[must_use]
+    pub(crate) const fn monotonic_start_ms(&self) -> u64 {
+        self.monotonic_start_ms
+    }
+
+    #[must_use]
+    pub(crate) const fn monotonic_end_ms(&self) -> u64 {
+        self.monotonic_end_ms
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(generation: u64, sequence: u64, time: u64) -> Self {
         Self::for_test_pixels(

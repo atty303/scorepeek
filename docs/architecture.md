@@ -236,6 +236,15 @@ song-decision, accepted-field, or event authority. Model bundle I/O and inferenc
 outside the capture handoff and require a separately owned application execution boundary before
 live field observation is implemented.
 
+ADR 0030 supplies that application execution boundary without yet supplying a production observer.
+One loader receives the exact immutable run binding once before capture work, then its observer is
+owned by a single bounded worker. Only opaque crops from the same run ID and full binding enter the
+capacity-two non-blocking queue. Worker results receive provenance outside the observer output;
+the same capacity also bounds accepted but unconsumed results after queue removal. Queue full,
+outstanding-result limit, worker loss, abandoned results, and bounded finish timeout remain typed.
+The single-production-worker token is retained through observer teardown. Model/catalog loading,
+inference, field schemas, decisions, and event acceptance are still separate unfinished layers.
+
 The first read-only application controls inspect an existing diagnostic root
 through a shared strict inventory. `status` exposes fixed retention policy and
 the current exclusive-writer state plus bounded aggregate byte/completeness

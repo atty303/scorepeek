@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use scorepeek::recognition::{
     CanonicalLayout, MusicSelectScreenRgb8Crops, RecognitionError, ResultScreenRgb8Crops,
@@ -11,6 +12,8 @@ use crate::diagnostic_recording::{
     DiagnosticFinishOutcome, DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus,
 };
 use crate::diagnostic_worker::DiagnosticEnqueueOutcome;
+
+pub mod field_observer;
 
 /// One screen-predicate result that borrows its immutable live capture evidence.
 ///
@@ -87,7 +90,14 @@ pub struct LiveRecognitionFrameResult<'a> {
 #[derive(Debug)]
 pub struct LiveScreenRgb8Crops<'a> {
     frame: &'a LiveCanonicalFrame,
+    run_binding: Arc<LiveRecognitionRunBinding>,
     crops: ScreenRgb8Crops,
+}
+
+#[derive(Debug)]
+struct LiveRecognitionRunBinding {
+    run_id: String,
+    binding_sha256: String,
 }
 
 /// A borrowed view of one opaque live screen-crop owner.
@@ -132,7 +142,7 @@ pub struct LiveRecognitionTransition {
 /// recognition input is rejected; `transition` records the explicit change, finishes the old run,
 /// and only then starts the replacement session.
 pub struct LiveRecognitionSession {
-    binding_sha256: String,
+    run_binding: Arc<LiveRecognitionRunBinding>,
     bridge: LiveDiagnosticBridge,
     last_sequence: Option<u64>,
 }
@@ -148,9 +158,13 @@ impl LiveRecognitionSession {
         policy: DiagnosticPolicy,
     ) -> Result<Self, LiveRecognitionSessionError> {
         let binding_sha256 = validate_live_descriptor(&descriptor)?;
+        let run_id = descriptor.run_id.clone();
         let bridge = LiveDiagnosticBridge::start(root, descriptor, policy)?;
         Ok(Self {
-            binding_sha256,
+            run_binding: Arc::new(LiveRecognitionRunBinding {
+                run_id,
+                binding_sha256,
+            }),
             bridge,
             last_sequence: None,
         })
@@ -183,6 +197,7 @@ impl LiveRecognitionSession {
                 };
                 Some(LiveScreenRgb8Crops {
                     frame,
+                    run_binding: Arc::clone(&self.run_binding),
                     crops: routed,
                 })
             }
@@ -217,7 +232,7 @@ impl LiveRecognitionSession {
         monotonic_ms: u64,
     ) -> Result<LiveRecognitionTransition, LiveRecognitionSessionError> {
         let next_binding_sha256 = validate_live_descriptor(&next_descriptor)?;
-        if next_binding_sha256 == self.binding_sha256 {
+        if next_binding_sha256 == self.run_binding.binding_sha256 {
             return Err(LiveRecognitionSessionError::BindingUnchanged);
         }
         let binding_change_diagnostic = self.bridge.record_binding_change(
@@ -244,11 +259,15 @@ impl LiveRecognitionSession {
         supervisor: &std::sync::Mutex<std::sync::Weak<()>>,
     ) -> Result<Self, LiveRecognitionSessionError> {
         let binding_sha256 = validate_live_descriptor(&descriptor)?;
+        let run_id = descriptor.run_id.clone();
         let bridge = LiveDiagnosticBridge::start_with_supervisor_for_test(
             root, descriptor, policy, supervisor,
         );
         Ok(Self {
-            binding_sha256,
+            run_binding: Arc::new(LiveRecognitionRunBinding {
+                run_id,
+                binding_sha256,
+            }),
             bridge,
             last_sequence: None,
         })

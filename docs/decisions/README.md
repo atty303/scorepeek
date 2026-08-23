@@ -60,6 +60,9 @@ authoritative.
   supersedes ADR 0027 only for its profile-bearing initial lease and combined lifecycle ownership.
   Providers first return an uncalibrated lifetime lease; only an explicit immutable calibration
   binding lets the receiver emit profile-bearing `ObservedFrame` values.
+- [ADR 0030: Isolate live field observation behind a run-bound worker](0030-isolate-live-field-observation-behind-a-run-bound-worker.md)
+  fixes the application-owned loader, queue, provenance, result, and finish boundary between live
+  screen crops and future model/catalog observers without defining accepted field values.
 
 ## Historical
 

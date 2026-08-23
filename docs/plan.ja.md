@@ -50,7 +50,11 @@
   filesystem-free screen-local crop APIへrouteし、live frame ownerを借用したtyped RGB8 cropsを生成する境界も実装済み。
   resultはtitle/artist/difficulty/level/notes/current score、music selectはcentral title/artist/selected chart/active-list titleを
   必須fieldとして持ち、補助contextだけの中間shapeは残さない。未測定fieldを空のoptional cropとして表現せず、unknownも
-  field inputsを生成できない。live model inference、field observation、accepted resultは未着手。
+  field inputsを生成できない。さらにcomplete descriptorから導出したrun IDと全bindingを保持し、loaderをcapture開始前に
+  1回だけ呼ぶapplication-owned field-observer worker境界を実装した。capacity 2のnon-blocking queue、worker-only execution、
+  queue取得後も含むaccepted-but-unconsumed resultのglobal capacity、provenance-bound result、race-free abandoned count、
+  observer teardownまで保持するsingle-worker supervisor、5秒bounded finishを持つが、production model/catalog loader、
+  live model inference、field observation、accepted resultは未着手。
   OBS/obs-vkcapture並行、
   soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
