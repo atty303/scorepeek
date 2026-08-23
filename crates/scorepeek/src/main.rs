@@ -1349,10 +1349,7 @@ fn sync_catalog() -> Result<(), String> {
 }
 
 fn catalog_sync_error(error: &CatalogSyncError) -> String {
-    format!(
-        "scorepeek catalog sync failed: {}",
-        error.redacted_message()
-    )
+    format!("scorepeek catalog sync failed: {error}")
 }
 
 fn catalog_paths(
@@ -1471,37 +1468,42 @@ mod tests {
     }
 
     #[test]
-    fn catalog_sync_errors_do_not_expose_source_values() {
+    fn catalog_sync_errors_retain_actionable_causes() {
         let adapter = catalog_sync_error(&CatalogSyncError::DqnAcquisition(
             DqnAcquisitionError::Adapter(AdapterError::DuplicateRecord(
-                "PRIVATE SOURCE SENTINEL".to_owned(),
+                "SOURCE SENTINEL".to_owned(),
             )),
         ));
-        assert!(!adapter.contains("PRIVATE SOURCE SENTINEL"));
-        assert!(adapter.contains("response validation failed"));
+        assert_eq!(
+            adapter,
+            "scorepeek catalog sync failed: dqn response validation failed: duplicate source record SOURCE SENTINEL"
+        );
 
         let tachi = catalog_sync_error(&CatalogSyncError::TachiAcquisition(
-            TachiAcquisitionError::Transport(
-                TachiResource::Songs,
-                "PRIVATE TRANSPORT SENTINEL".to_owned(),
-            ),
+            TachiAcquisitionError::Transport(TachiResource::Songs, "TRANSPORT SENTINEL".to_owned()),
         ));
-        assert!(!tachi.contains("PRIVATE TRANSPORT SENTINEL"));
-        assert!(tachi.contains("Tachi songs seed transport failed"));
+        assert_eq!(
+            tachi,
+            "scorepeek catalog sync failed: Tachi songs seed acquisition failed: TRANSPORT SENTINEL"
+        );
 
         let textage = catalog_sync_error(&CatalogSyncError::TextageAcquisition(
             TextageAcquisitionError::Transport(
                 TextageResource::Title,
-                "PRIVATE TEXTAGE SENTINEL".to_owned(),
+                "TEXTAGE SENTINEL".to_owned(),
             ),
         ));
-        assert!(!textage.contains("PRIVATE TEXTAGE SENTINEL"));
-        assert!(textage.contains("Textage title table transport failed"));
+        assert_eq!(
+            textage,
+            "scorepeek catalog sync failed: Textage title table transport failed: TEXTAGE SENTINEL"
+        );
 
         let store = catalog_sync_error(&CatalogSyncError::Store(
-            CatalogStoreError::InvalidSnapshot("PRIVATE SNAPSHOT SENTINEL".to_owned()),
+            CatalogStoreError::InvalidSnapshot("SNAPSHOT SENTINEL".to_owned()),
         ));
-        assert!(!store.contains("PRIVATE SNAPSHOT SENTINEL"));
-        assert!(store.contains("store operation failed"));
+        assert_eq!(
+            store,
+            "scorepeek catalog sync failed: invalid catalog snapshot: SNAPSHOT SENTINEL"
+        );
     }
 }
