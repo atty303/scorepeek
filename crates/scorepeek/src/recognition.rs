@@ -25,10 +25,12 @@ pub use title_decoder::{
     score_catalog_titles, title_model_export_requirements,
 };
 pub use title_onnx::{
-    DynamicOfficialOnnxDecodeSummary, ExportContractParityRequest, ExportContractParitySummary,
+    DynamicOfficialOnnxDecodeSummary, DynamicTextObservation, ExportContractParityRequest,
+    ExportContractParitySummary, LIVE_MODEL_ID, LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256,
     OfficialOnnxDecodeSummary, OnnxParityError, OnnxParitySummary, OnnxTitleDiagnosticRequest,
-    compare_export_contract, compare_paddle_onnx, decode_dynamic_official_onnx_crops,
-    decode_official_onnx_crops,
+    RegisteredDynamicTitleRuntime, RegisteredRecognitionResources, RegisteredResourceLoadError,
+    RegisteredResourceLoadErrorType, compare_export_contract, compare_paddle_onnx,
+    decode_dynamic_official_onnx_crops, decode_official_onnx_crops,
 };
 pub use title_preprocessor::{TITLE_PREPROCESSOR_ID, preprocess_title_crop};
 

@@ -8,9 +8,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: load the exact registered PP-OCRv6-small runtime and active catalog once
-  through the application-owned field-observer boundary, then define typed observations without
-  granting song, accepted-field, or event authority prematurely.
+- Current execution focus: map each complete result or music-select crop set through the retained
+  registered runtime into typed imperfect field observations, without granting song,
+  accepted-field, or event authority prematurely.
 
 ## Included deliverables
 
@@ -128,8 +128,16 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   observer output. The same global capacity bounds accepted but unconsumed results after queue
   removal. Queue full, outstanding-result limit, worker loss, abandoned results, and bounded finish
   timeout remain typed; timeout does not claim the residual thread has terminated, and the
-  production-worker token remains held through observer teardown. No production model/catalog
-  loader or live field observer is connected yet.
+  production-worker token remains held through observer teardown. No screen-level production
+  observer is connected yet.
+- ADR 0031 adds the production resource loader used by that boundary. It matches the active catalog,
+  registered PP-OCRv6-small model, and fixed CPU runtime artifact to the immutable run digests,
+  verifies the complete bundle, and retains the catalog, dictionary, and one ONNX session before
+  worker startup. The runtime exposes bounded-crop open-text observation without field or song
+  authority. The read-only load gate transfers those resources into the production field worker
+  and requires bounded teardown without submitting crops. Its JSON report contains only typed
+  status and selected digests; it does not add resource bodies, paths, environment strings, or
+  pixels as fields, while ordinary typed error causes remain actionable on stderr.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -205,12 +213,22 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   retention through blocking observer teardown, destructor-inclusive bounded finish timeout, and
   nonterminal timeout reporting. Replay-bound or noncurrent-layout descriptors fail before the
   loader executes.
+- Focused resource-loader tests verify the canonical runtime manifest, pre-I/O model/runtime
+  mismatch, location-specific I/O source preservation, absent active catalog, active-catalog digest
+  mismatch, and that the resource-owning observer type satisfies the ADR 0030 `Send` boundary.
+- On the development machine, the read-only resource gate loaded active catalog
+  `ceabe2931815c492b9eb088282ab6df55cabff2545fd9d8de3e0ae11b1b2b541`, registered model
+  `5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634`, and runtime
+  `4864f57937b6d57510e82234325f611df31521ff508767011de137bebdf531dc` into one CPU session,
+  transferred ownership to the production field worker, and completed bounded teardown with no
+  submitted crops. Changing only the runtime digest failed before resource I/O with typed
+  `runtime_binding_mismatch` and exit status 2.
 
 ## Unverified boundaries
 
-- No live model/catalog inference, field observation, accepted result, context reducer, or event
-  output consumes the routed inputs; this checkpoint stops at bounded screen-local RGB crops under
-  the immutable application lifetime.
+- No screen-level live observer, field observation, accepted result, context reducer, or event
+  output consumes the retained runtime or routed inputs; this checkpoint stops at exact resource
+  loading plus a one-crop open-text runtime method under the immutable application lifetime.
   Offline `CanonicalFrame` extraction evidence still cannot fabricate the live generation/profile/
   normalizer owner or enter this live gate.
 - The bounded CLI gate is not an ordinary long-running application loop. Live queue-full or worker
@@ -245,10 +263,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Implement the production PP-OCRv6-small and active-catalog loader against the ADR 0030 boundary.
-   It must verify the descriptor digests once, construct and retain the registered runtime before
-   capture begins, and perform no filesystem/model work in the capture loop.
-2. Define typed field-observation output without prematurely accepting songs or events. Bind every
+1. Define typed field-observation output for the complete result and music-select crop sets without
+   prematurely accepting songs or events. Run inference only on the field-worker thread and perform
+   no filesystem or model construction there.
+2. Bind every
    output and later song decision, suppression, and accepted result to the same run; diagnostic
    enqueue/drop/opt-out must not alter those recognition outcomes.
 3. Verify real field routing and observer output with separately authorized private INFINITAS

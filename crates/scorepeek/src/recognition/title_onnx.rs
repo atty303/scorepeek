@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use ort::session::Session;
+use ort::session::builder::GraphOptimizationLevel;
 use ort::value::Tensor;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -21,8 +22,8 @@ use super::title_preprocessor::{
     TITLE_INPUT_VALUES, TITLE_PREPROCESSOR_ID, preprocess_dynamic_title_image,
     preprocess_title_crop, preprocess_title_image,
 };
-use super::{RecognitionError, read_title_crop_artifact};
-use crate::catalog::Catalog;
+use super::{RecognitionError, Rgb8Crop, read_title_crop_artifact};
+use crate::catalog::{Catalog, CatalogStore, CatalogStoreError};
 
 const MODEL_MANIFEST_BYTES: &[u8] =
     include_bytes!("../../../../models/manifests/pp-ocrv6-small-rec-onnx-v1.json");
@@ -63,6 +64,13 @@ const V5_SERVER_BUNDLE_MANIFEST_BYTES: &[u8] =
     include_bytes!("../../../../models/manifests/pp-ocrv5-server-rec-onnx-bundle-v1.json");
 const V5_SERVER_BUNDLE_MANIFEST_SHA256: &str =
     "4fe22f41508ed31b86e86caa88d433a20702d0a6e95cea07bcaca577441594fe";
+const LIVE_RUNTIME_MANIFEST_BYTES: &[u8] =
+    include_bytes!("../../../../models/manifests/pp-ocrv6-small-live-runtime-v1.json");
+pub const LIVE_RUNTIME_SHA256: &str =
+    "4864f57937b6d57510e82234325f611df31521ff508767011de137bebdf531dc";
+pub const LIVE_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
+pub const LIVE_MODEL_SHA256: &str =
+    "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634";
 
 #[derive(Debug)]
 pub enum OnnxParityError {
@@ -230,6 +238,299 @@ struct DynamicBundleFile {
     source_url: String,
     sha256: String,
     bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LiveRuntimeManifest {
+    schema: String,
+    implementation_id: String,
+    ort_crate_version: String,
+    ort_api: u32,
+    execution_provider: String,
+    cpu_arena: bool,
+    intra_threads: usize,
+    inter_threads: usize,
+    parallel_execution: bool,
+    graph_optimization: String,
+    preprocessor_id: String,
+    decoder_id: String,
+    model_bundle_manifest_sha256: String,
+}
+
+impl LiveRuntimeManifest {
+    fn load_registered() -> Result<Self, OnnxParityError> {
+        if encode_sha256(LIVE_RUNTIME_MANIFEST_BYTES) != LIVE_RUNTIME_SHA256 {
+            return Err(OnnxParityError::InvalidArtifact);
+        }
+        let manifest: Self = serde_json::from_slice(LIVE_RUNTIME_MANIFEST_BYTES)?;
+        if manifest.schema != "scorepeek-field-text-runtime-v1"
+            || manifest.implementation_id != "scorepeek-pp-ocrv6-small-native-dynamic-cpu-v1"
+            || manifest.ort_crate_version != "2.0.0-rc.13"
+            || manifest.ort_api != 27
+            || manifest.execution_provider != "CPUExecutionProvider"
+            || manifest.cpu_arena
+            || manifest.intra_threads != 1
+            || manifest.inter_threads != 1
+            || manifest.parallel_execution
+            || manifest.graph_optimization != "all"
+            || manifest.preprocessor_id != DYNAMIC_TITLE_PREPROCESSOR_ID
+            || manifest.decoder_id != "scorepeek-ctc-greedy-collapse-v1"
+            || manifest.model_bundle_manifest_sha256 != SMALL_BUNDLE_MANIFEST_SHA256
+        {
+            return Err(OnnxParityError::InvalidArtifact);
+        }
+        Ok(manifest)
+    }
+}
+
+/// One open-text observation produced without granting field or song authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DynamicTextObservation {
+    pub input_width: usize,
+    pub output_timesteps: usize,
+    pub open_text: String,
+}
+
+/// The exact registered live text runtime, loaded once and owned by one observer worker.
+pub struct RegisteredDynamicTitleRuntime {
+    session: Session,
+    dictionary: Vec<String>,
+    output_classes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegisteredResourceLoadErrorType {
+    InvalidLocation,
+    ModelBindingMismatch,
+    RuntimeBindingMismatch,
+    CatalogUnavailable,
+    CatalogBindingMismatch,
+    CatalogLoadFailed,
+    ModelBundleInvalid,
+    RuntimeInitializationFailed,
+}
+
+#[derive(Debug)]
+pub enum RegisteredResourceLoadError {
+    InvalidLocation {
+        role: &'static str,
+        source: Option<std::io::Error>,
+    },
+    ModelBindingMismatch,
+    RuntimeBindingMismatch,
+    CatalogUnavailable,
+    CatalogBindingMismatch,
+    Catalog(CatalogStoreError),
+    Runtime(OnnxParityError),
+}
+
+impl RegisteredResourceLoadError {
+    #[must_use]
+    pub const fn error_type(&self) -> RegisteredResourceLoadErrorType {
+        match self {
+            Self::InvalidLocation { .. } => RegisteredResourceLoadErrorType::InvalidLocation,
+            Self::ModelBindingMismatch => RegisteredResourceLoadErrorType::ModelBindingMismatch,
+            Self::RuntimeBindingMismatch => RegisteredResourceLoadErrorType::RuntimeBindingMismatch,
+            Self::CatalogUnavailable => RegisteredResourceLoadErrorType::CatalogUnavailable,
+            Self::CatalogBindingMismatch => RegisteredResourceLoadErrorType::CatalogBindingMismatch,
+            Self::Catalog(_) => RegisteredResourceLoadErrorType::CatalogLoadFailed,
+            Self::Runtime(OnnxParityError::Ort(_)) => {
+                RegisteredResourceLoadErrorType::RuntimeInitializationFailed
+            }
+            Self::Runtime(_) => RegisteredResourceLoadErrorType::ModelBundleInvalid,
+        }
+    }
+}
+
+impl std::fmt::Display for RegisteredResourceLoadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidLocation { role, source } => {
+                if let Some(source) = source {
+                    write!(formatter, "registered {role} metadata failed: {source}")
+                } else {
+                    write!(formatter, "registered {role} must be an absolute directory")
+                }
+            }
+            Self::ModelBindingMismatch => {
+                formatter.write_str("recognition binding does not select the registered model")
+            }
+            Self::RuntimeBindingMismatch => {
+                formatter.write_str("recognition binding does not select the registered runtime")
+            }
+            Self::CatalogUnavailable => formatter.write_str("active catalog is unavailable"),
+            Self::CatalogBindingMismatch => {
+                formatter.write_str("active catalog does not match the recognition binding")
+            }
+            Self::Catalog(error) => write!(formatter, "active catalog load failed: {error}"),
+            Self::Runtime(error) => {
+                write!(formatter, "registered text runtime load failed: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RegisteredResourceLoadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidLocation {
+                source: Some(error),
+                ..
+            } => Some(error),
+            Self::Catalog(error) => Some(error),
+            Self::Runtime(error) => Some(error),
+            Self::InvalidLocation { source: None, .. }
+            | Self::ModelBindingMismatch
+            | Self::RuntimeBindingMismatch
+            | Self::CatalogUnavailable
+            | Self::CatalogBindingMismatch => None,
+        }
+    }
+}
+
+/// Exact catalog and text-runtime inputs retained for one immutable recognition run.
+pub struct RegisteredRecognitionResources {
+    catalog_digest: String,
+    catalog: Catalog,
+    title_runtime: RegisteredDynamicTitleRuntime,
+}
+
+impl RegisteredRecognitionResources {
+    /// Loads and digest-checks the active catalog and registered runtime exactly once.
+    ///
+    /// # Errors
+    /// Returns a stable typed failure for location, binding, catalog, bundle, or runtime errors.
+    /// No download, fallback, or active-state mutation is attempted.
+    pub fn load(
+        catalog_root: &Path,
+        bundle_root: &Path,
+        expected_catalog_sha256: &str,
+        expected_model_sha256: &str,
+        expected_runtime_sha256: &str,
+    ) -> Result<Self, RegisteredResourceLoadError> {
+        if expected_model_sha256 != LIVE_MODEL_SHA256 {
+            return Err(RegisteredResourceLoadError::ModelBindingMismatch);
+        }
+        if expected_runtime_sha256 != LIVE_RUNTIME_SHA256 {
+            return Err(RegisteredResourceLoadError::RuntimeBindingMismatch);
+        }
+        validate_registered_resource_directory(catalog_root, "catalog store")?;
+        validate_registered_resource_directory(bundle_root, "model bundle")?;
+        let active = CatalogStore::new(catalog_root)
+            .load_active()
+            .map_err(RegisteredResourceLoadError::Catalog)?
+            .ok_or(RegisteredResourceLoadError::CatalogUnavailable)?;
+        if active.digest != expected_catalog_sha256 {
+            return Err(RegisteredResourceLoadError::CatalogBindingMismatch);
+        }
+        let title_runtime = RegisteredDynamicTitleRuntime::load(bundle_root)
+            .map_err(RegisteredResourceLoadError::Runtime)?;
+        Ok(Self {
+            catalog_digest: active.digest,
+            catalog: active.catalog,
+            title_runtime,
+        })
+    }
+
+    #[must_use]
+    pub fn catalog_sha256(&self) -> &str {
+        &self.catalog_digest
+    }
+
+    #[must_use]
+    pub const fn catalog(&self) -> &Catalog {
+        &self.catalog
+    }
+
+    #[must_use]
+    pub const fn title_runtime(&mut self) -> &mut RegisteredDynamicTitleRuntime {
+        &mut self.title_runtime
+    }
+}
+
+fn validate_registered_resource_directory(
+    path: &Path,
+    role: &'static str,
+) -> Result<(), RegisteredResourceLoadError> {
+    if !path.is_absolute() {
+        return Err(RegisteredResourceLoadError::InvalidLocation { role, source: None });
+    }
+    let metadata =
+        path.symlink_metadata()
+            .map_err(|source| RegisteredResourceLoadError::InvalidLocation {
+                role,
+                source: Some(source),
+            })?;
+    if !metadata.is_dir() {
+        return Err(RegisteredResourceLoadError::InvalidLocation { role, source: None });
+    }
+    Ok(())
+}
+
+impl RegisteredDynamicTitleRuntime {
+    /// Verifies the complete registered PP-OCRv6-small bundle and constructs its fixed CPU session.
+    ///
+    /// # Errors
+    /// Returns an error for missing, changed, or malformed bundle bytes or runtime initialization
+    /// failure. No runtime download or fallback is attempted.
+    pub fn load(bundle: &Path) -> Result<Self, OnnxParityError> {
+        let runtime = LiveRuntimeManifest::load_registered()?;
+        let manifest = DynamicBundleManifest::load_registered(LIVE_MODEL_ID)?;
+        let model_bytes = manifest.verified_model_bytes(bundle)?;
+        let dictionary_file = manifest
+            .files
+            .iter()
+            .find(|file| file.filename == "inference.yml")
+            .ok_or(OnnxParityError::InvalidArtifact)?;
+        let dictionary = load_dictionary_contract(
+            &bundle.join("inference.yml"),
+            &dictionary_file.sha256,
+            manifest.native_contract.output_classes,
+        )?;
+        let session = Session::builder()?
+            .with_execution_providers([ort::ep::CPU::default()
+                .with_arena_allocator(runtime.cpu_arena)
+                .build()])
+            .map_err(|error| OnnxParityError::Ort(error.into()))?
+            .with_intra_threads(runtime.intra_threads)
+            .map_err(|error| OnnxParityError::Ort(error.into()))?
+            .with_inter_threads(runtime.inter_threads)
+            .map_err(|error| OnnxParityError::Ort(error.into()))?
+            .with_parallel_execution(runtime.parallel_execution)
+            .map_err(|error| OnnxParityError::Ort(error.into()))?
+            .with_optimization_level(GraphOptimizationLevel::All)
+            .map_err(|error| OnnxParityError::Ort(error.into()))?
+            .commit_from_memory(&model_bytes)?;
+        if session.inputs().len() != 1 || session.outputs().len() != 1 {
+            return Err(OnnxParityError::InvalidArtifact);
+        }
+        Ok(Self {
+            session,
+            dictionary,
+            output_classes: manifest.native_contract.output_classes,
+        })
+    }
+
+    /// Runs the already-loaded runtime against one bounded RGB8 crop.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid crop or unexpected runtime tensor contract.
+    pub fn observe_open_text(
+        &mut self,
+        crop: &Rgb8Crop,
+    ) -> Result<DynamicTextObservation, OnnxParityError> {
+        observe_dynamic_rgb8(
+            &mut self.session,
+            &self.dictionary,
+            self.output_classes,
+            crop.pixels(),
+            crop.roi.width as usize,
+            crop.roi.height as usize,
+        )
+        .map(|(observation, _)| observation)
+    }
 }
 
 type RegisteredDynamicBundle = (
@@ -989,41 +1290,18 @@ pub fn decode_dynamic_official_onnx_crops(
             return Err(OnnxParityError::InvalidArtifact);
         }
         let (source_width, source_height, pixels) = strict_p6(&crop_bytes)?;
-        let input = preprocess_dynamic_title_image(pixels, source_width, source_height)?;
-        let input_tensor_sha256 = encode_f32_sha256(&input.values);
-        let input_shape = [1, 3, DYNAMIC_TITLE_INPUT_HEIGHT, input.width];
-        let outputs = session.run(ort::inputs![Tensor::from_array((
-            input_shape,
-            input.values
-        ))?])?;
-        let (shape, probabilities) = outputs[0].try_extract_tensor::<f32>()?;
-        let [batch, timesteps, classes] = shape.as_ref() else {
-            return Err(OnnxParityError::InvalidArtifact);
-        };
-        let timesteps =
-            usize::try_from(*timesteps).map_err(|_| OnnxParityError::InvalidArtifact)?;
-        if *batch != 1
-            || timesteps == 0
-            || usize::try_from(*classes).map_err(|_| OnnxParityError::InvalidArtifact)?
-                != output_classes
-            || probabilities.len() != timesteps * output_classes
-        {
-            return Err(OnnxParityError::InvalidArtifact);
-        }
-        validate_argmax_probability_rows(probabilities, output_classes)?;
-        let (_, collapsed) = argmax_tokens(probabilities, timesteps, output_classes)?;
-        let mut text = String::new();
-        for token in collapsed {
-            text.push_str(
-                dictionary
-                    .get(usize::try_from(token).map_err(|_| OnnxParityError::InvalidArtifact)?)
-                    .ok_or(OnnxParityError::InvalidArtifact)?,
-            );
-        }
-        input_widths.push(input.width);
+        let (observation, input_tensor_sha256) = observe_dynamic_rgb8(
+            &mut session,
+            &dictionary,
+            output_classes,
+            pixels,
+            source_width,
+            source_height,
+        )?;
+        input_widths.push(observation.input_width);
         input_tensor_sha256s.push(input_tensor_sha256);
-        output_timesteps.push(timesteps);
-        decoded_text.push(text);
+        output_timesteps.push(observation.output_timesteps);
+        decoded_text.push(observation.open_text);
     }
     Ok(DynamicOfficialOnnxDecodeSummary {
         schema: "scorepeek-official-onnx-dynamic-open-text-batch-v1",
@@ -1038,6 +1316,54 @@ pub fn decode_dynamic_official_onnx_crops(
         output_timesteps,
         decoded_text,
     })
+}
+
+fn observe_dynamic_rgb8(
+    session: &mut Session,
+    dictionary: &[String],
+    output_classes: usize,
+    pixels: &[u8],
+    source_width: usize,
+    source_height: usize,
+) -> Result<(DynamicTextObservation, String), OnnxParityError> {
+    let input = preprocess_dynamic_title_image(pixels, source_width, source_height)?;
+    let input_tensor_sha256 = encode_f32_sha256(&input.values);
+    let input_shape = [1, 3, DYNAMIC_TITLE_INPUT_HEIGHT, input.width];
+    let outputs = session.run(ort::inputs![Tensor::from_array((
+        input_shape,
+        input.values
+    ))?])?;
+    let (shape, probabilities) = outputs[0].try_extract_tensor::<f32>()?;
+    let [batch, timesteps, classes] = shape.as_ref() else {
+        return Err(OnnxParityError::InvalidArtifact);
+    };
+    let timesteps = usize::try_from(*timesteps).map_err(|_| OnnxParityError::InvalidArtifact)?;
+    if *batch != 1
+        || timesteps == 0
+        || usize::try_from(*classes).map_err(|_| OnnxParityError::InvalidArtifact)?
+            != output_classes
+        || probabilities.len() != timesteps * output_classes
+    {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    validate_argmax_probability_rows(probabilities, output_classes)?;
+    let (_, collapsed) = argmax_tokens(probabilities, timesteps, output_classes)?;
+    let mut open_text = String::new();
+    for token in collapsed {
+        open_text.push_str(
+            dictionary
+                .get(usize::try_from(token).map_err(|_| OnnxParityError::InvalidArtifact)?)
+                .ok_or(OnnxParityError::InvalidArtifact)?,
+        );
+    }
+    Ok((
+        DynamicTextObservation {
+            input_width: input_shape[3],
+            output_timesteps: timesteps,
+            open_text,
+        },
+        input_tensor_sha256,
+    ))
 }
 
 fn strict_p6(bytes: &[u8]) -> Result<(usize, usize, &[u8]), OnnxParityError> {
@@ -1413,9 +1739,127 @@ fn encode_f32_sha256(values: &[f32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DynamicBundleManifest, argmax_tokens, ctc_log_probability, strict_p6,
+        DynamicBundleManifest, LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256, LiveRuntimeManifest,
+        RegisteredRecognitionResources, RegisteredResourceLoadError,
+        RegisteredResourceLoadErrorType, argmax_tokens, ctc_log_probability, strict_p6,
         valid_presentation_transform_id, validate_argmax_probability_rows,
     };
+    use crate::catalog::{Catalog, CatalogStore};
+
+    fn load_error(
+        result: Result<RegisteredRecognitionResources, RegisteredResourceLoadError>,
+    ) -> RegisteredResourceLoadError {
+        match result {
+            Ok(_) => panic!("resource load unexpectedly succeeded"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn registered_live_runtime_manifest_is_exact() {
+        let manifest = LiveRuntimeManifest::load_registered().unwrap();
+        assert_eq!(manifest.intra_threads, 1);
+        assert_eq!(manifest.inter_threads, 1);
+        assert!(!manifest.parallel_execution);
+        assert_eq!(manifest.execution_provider, "CPUExecutionProvider");
+    }
+
+    #[test]
+    fn registered_resources_reject_binding_and_catalog_failures_before_runtime_loading() {
+        let missing = tempfile::tempdir().unwrap();
+        let bundle = tempfile::tempdir().unwrap();
+        let model_mismatch = load_error(RegisteredRecognitionResources::load(
+            missing.path(),
+            bundle.path(),
+            &"1".repeat(64),
+            &"2".repeat(64),
+            LIVE_RUNTIME_SHA256,
+        ));
+        assert_eq!(
+            model_mismatch.error_type(),
+            RegisteredResourceLoadErrorType::ModelBindingMismatch
+        );
+        let runtime_mismatch = load_error(RegisteredRecognitionResources::load(
+            missing.path(),
+            bundle.path(),
+            &"1".repeat(64),
+            LIVE_MODEL_SHA256,
+            &"2".repeat(64),
+        ));
+        assert_eq!(
+            runtime_mismatch.error_type(),
+            RegisteredResourceLoadErrorType::RuntimeBindingMismatch
+        );
+        let unavailable = load_error(RegisteredRecognitionResources::load(
+            missing.path(),
+            bundle.path(),
+            &"1".repeat(64),
+            LIVE_MODEL_SHA256,
+            LIVE_RUNTIME_SHA256,
+        ));
+        assert!(matches!(
+            unavailable,
+            RegisteredResourceLoadError::CatalogUnavailable
+        ));
+
+        let catalog_root = tempfile::tempdir().unwrap();
+        let active = CatalogStore::new(catalog_root.path())
+            .begin_update()
+            .unwrap()
+            .publish(&Catalog::default())
+            .unwrap();
+        let mismatch = load_error(RegisteredRecognitionResources::load(
+            catalog_root.path(),
+            bundle.path(),
+            &"3".repeat(64),
+            LIVE_MODEL_SHA256,
+            LIVE_RUNTIME_SHA256,
+        ));
+        assert_ne!(active.digest, "3".repeat(64));
+        assert_eq!(
+            mismatch.error_type(),
+            RegisteredResourceLoadErrorType::CatalogBindingMismatch
+        );
+    }
+
+    #[test]
+    fn registered_resource_location_errors_retain_role_and_io_source() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = tempfile::tempdir().unwrap();
+        let missing_catalog = root.path().join("missing-catalog");
+        let catalog_error = load_error(RegisteredRecognitionResources::load(
+            &missing_catalog,
+            bundle.path(),
+            &"1".repeat(64),
+            LIVE_MODEL_SHA256,
+            LIVE_RUNTIME_SHA256,
+        ));
+        assert_eq!(
+            catalog_error.error_type(),
+            RegisteredResourceLoadErrorType::InvalidLocation
+        );
+        assert!(
+            catalog_error
+                .to_string()
+                .contains("catalog store metadata failed")
+        );
+        assert!(std::error::Error::source(&catalog_error).is_some());
+
+        let missing_bundle = root.path().join("missing-bundle");
+        let bundle_error = load_error(RegisteredRecognitionResources::load(
+            root.path(),
+            &missing_bundle,
+            &"1".repeat(64),
+            LIVE_MODEL_SHA256,
+            LIVE_RUNTIME_SHA256,
+        ));
+        assert!(
+            bundle_error
+                .to_string()
+                .contains("model bundle metadata failed")
+        );
+        assert!(std::error::Error::source(&bundle_error).is_some());
+    }
 
     #[test]
     fn registered_tiny_bundle_manifest_is_exact() {

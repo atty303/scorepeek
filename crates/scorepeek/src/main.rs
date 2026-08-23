@@ -44,6 +44,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
         .or_else(|| try_provisional_title_candidates(args))
         .or_else(|| try_integrated_context_crop(args))
         .or_else(|| try_integrated_context_observe(args))
+        .or_else(|| try_registered_resource_gate(args))
         .or_else(|| try_dynamic_official_onnx_decode(args))
         .or_else(|| try_official_onnx_decode(args))
         .or_else(|| try_title_model_contract_parity(args))
@@ -132,6 +133,240 @@ fn run(args: &[OsString]) -> Result<(), String> {
         }
         _ => Err("usage: scorepeek --help".to_owned()),
     }
+}
+
+#[derive(Serialize)]
+struct RegisteredResourceGateReport<'a> {
+    schema: &'static str,
+    status: &'static str,
+    error_type: Option<RegisteredResourceGateErrorType>,
+    catalog_sha256: &'a str,
+    model_sha256: &'a str,
+    runtime_sha256: &'a str,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RegisteredResourceGateErrorType {
+    InvalidBinding,
+    WorkerUnavailable,
+    FinishTimeout,
+    InvalidLocation,
+    ModelBindingMismatch,
+    RuntimeBindingMismatch,
+    CatalogUnavailable,
+    CatalogBindingMismatch,
+    CatalogLoadFailed,
+    ModelBundleInvalid,
+    RuntimeInitializationFailed,
+}
+
+impl From<recognition::RegisteredResourceLoadErrorType> for RegisteredResourceGateErrorType {
+    fn from(error: recognition::RegisteredResourceLoadErrorType) -> Self {
+        match error {
+            recognition::RegisteredResourceLoadErrorType::InvalidLocation => Self::InvalidLocation,
+            recognition::RegisteredResourceLoadErrorType::ModelBindingMismatch => {
+                Self::ModelBindingMismatch
+            }
+            recognition::RegisteredResourceLoadErrorType::RuntimeBindingMismatch => {
+                Self::RuntimeBindingMismatch
+            }
+            recognition::RegisteredResourceLoadErrorType::CatalogUnavailable => {
+                Self::CatalogUnavailable
+            }
+            recognition::RegisteredResourceLoadErrorType::CatalogBindingMismatch => {
+                Self::CatalogBindingMismatch
+            }
+            recognition::RegisteredResourceLoadErrorType::CatalogLoadFailed => {
+                Self::CatalogLoadFailed
+            }
+            recognition::RegisteredResourceLoadErrorType::ModelBundleInvalid => {
+                Self::ModelBundleInvalid
+            }
+            recognition::RegisteredResourceLoadErrorType::RuntimeInitializationFailed => {
+                Self::RuntimeInitializationFailed
+            }
+        }
+    }
+}
+
+struct RegisteredResourceGateObserver {
+    _resources: recognition::RegisteredRecognitionResources,
+}
+
+impl recognition_live::field_observer::FieldObserver for RegisteredResourceGateObserver {
+    type Output = ();
+
+    fn observe(
+        &mut self,
+        _input: &recognition_live::field_observer::FieldObserverInput,
+    ) -> Self::Output {
+    }
+}
+
+fn try_registered_resource_gate(args: &[OsString]) -> Option<Result<(), String>> {
+    let [
+        recognition_command,
+        gate,
+        catalog_flag,
+        catalog_root,
+        bundle_flag,
+        bundle_root,
+        catalog_digest_flag,
+        catalog_digest,
+        model_digest_flag,
+        model_digest,
+        runtime_digest_flag,
+        runtime_digest,
+    ] = args
+    else {
+        return None;
+    };
+    if recognition_command != "recognition"
+        || gate != "field-resource-load-gate"
+        || catalog_flag != "--catalog-store"
+        || bundle_flag != "--bundle"
+        || catalog_digest_flag != "--catalog-sha256"
+        || model_digest_flag != "--model-sha256"
+        || runtime_digest_flag != "--runtime-sha256"
+    {
+        return None;
+    }
+    Some(registered_resource_gate(
+        catalog_root,
+        bundle_root,
+        catalog_digest,
+        model_digest,
+        runtime_digest,
+    ))
+}
+
+fn registered_resource_gate(
+    catalog_root: &OsStr,
+    bundle_root: &OsStr,
+    catalog_digest: &OsStr,
+    model_digest: &OsStr,
+    runtime_digest: &OsStr,
+) -> Result<(), String> {
+    let catalog_digest = parse_cli_sha256(catalog_digest, "catalog SHA-256")?;
+    let model_digest = parse_cli_sha256(model_digest, "model SHA-256")?;
+    let runtime_digest = parse_cli_sha256(runtime_digest, "runtime SHA-256")?;
+    let descriptor = diagnostic_recording::DiagnosticRunDescriptor {
+        run_id: "field-resource-load-gate".to_owned(),
+        monotonic_start_ms: 0,
+        resource: diagnostic_recording::DiagnosticResource {
+            program: "scorepeek",
+            version: env!("CARGO_PKG_VERSION"),
+            build_sha256: "0".repeat(64),
+        },
+        binding: diagnostic_recording::DiagnosticBinding {
+            capture_generation: 1,
+            capture_profile_sha256: "0".repeat(64),
+            normalizer_sha256: "0".repeat(64),
+            canonical_layout_sha256: recognition::CanonicalLayout::sha256(),
+            catalog_sha256: catalog_digest.clone(),
+            model_sha256: model_digest.clone(),
+            runtime_sha256: runtime_digest.clone(),
+            replay: None,
+        },
+    };
+    let worker =
+        recognition_live::field_observer::FieldObserverWorker::start(&descriptor, |binding| {
+            binding
+                .load_registered_resources(Path::new(catalog_root), Path::new(bundle_root))
+                .map(|resources| RegisteredResourceGateObserver {
+                    _resources: resources,
+                })
+        });
+    match worker {
+        Ok(worker) => {
+            let outcome = worker
+                .finish(recognition_live::field_observer::DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT);
+            if outcome.status
+                != recognition_live::field_observer::FieldObserverFinishStatus::Complete
+            {
+                let error_type = match outcome.status {
+                    recognition_live::field_observer::FieldObserverFinishStatus::Timeout => {
+                        RegisteredResourceGateErrorType::FinishTimeout
+                    }
+                    recognition_live::field_observer::FieldObserverFinishStatus::WorkerUnavailable => {
+                        RegisteredResourceGateErrorType::WorkerUnavailable
+                    }
+                    recognition_live::field_observer::FieldObserverFinishStatus::Complete => {
+                        unreachable!("complete outcome was handled above")
+                    }
+                };
+                print_registered_resource_gate_report(
+                    "error",
+                    Some(error_type),
+                    &catalog_digest,
+                    &model_digest,
+                    &runtime_digest,
+                )?;
+                return Err("registered resource worker did not finish cleanly".to_owned());
+            }
+            let report = RegisteredResourceGateReport {
+                schema: "scorepeek-field-resource-load-gate-v1",
+                status: "success",
+                error_type: None,
+                catalog_sha256: &catalog_digest,
+                model_sha256: &model_digest,
+                runtime_sha256: &runtime_digest,
+            };
+            println!(
+                "{}",
+                serde_json::to_string(&report)
+                    .map_err(|_| "resource gate report serialization failed".to_owned())?
+            );
+            Ok(())
+        }
+        Err(error) => {
+            let (error_type, message) = match error {
+                recognition_live::field_observer::FieldObserverStartError::InvalidBinding => (
+                    RegisteredResourceGateErrorType::InvalidBinding,
+                    "registered resource worker binding is invalid".to_owned(),
+                ),
+                recognition_live::field_observer::FieldObserverStartError::Load(error) => {
+                    (error.error_type().into(), error.to_string())
+                }
+                recognition_live::field_observer::FieldObserverStartError::WorkerUnavailable => (
+                    RegisteredResourceGateErrorType::WorkerUnavailable,
+                    "registered resource worker is unavailable".to_owned(),
+                ),
+            };
+            print_registered_resource_gate_report(
+                "error",
+                Some(error_type),
+                &catalog_digest,
+                &model_digest,
+                &runtime_digest,
+            )?;
+            Err(message)
+        }
+    }
+}
+
+fn print_registered_resource_gate_report(
+    status: &'static str,
+    error_type: Option<RegisteredResourceGateErrorType>,
+    catalog_sha256: &str,
+    model_sha256: &str,
+    runtime_sha256: &str,
+) -> Result<(), String> {
+    let report = RegisteredResourceGateReport {
+        schema: "scorepeek-field-resource-load-gate-v1",
+        status,
+        error_type,
+        catalog_sha256,
+        model_sha256,
+        runtime_sha256,
+    };
+    println!(
+        "{}",
+        serde_json::to_string(&report)
+            .map_err(|_| "resource gate report serialization failed".to_owned())?
+    );
+    Ok(())
 }
 
 fn try_capture_commands(args: &[OsString]) -> Option<Result<(), String>> {
@@ -1790,6 +2025,9 @@ fn print_usage() {
     println!(
         "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256 --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --model-id MODEL_ID --bundle DIRECTORY --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
         env!("CARGO_PKG_VERSION")
+    );
+    println!(
+        "  scorepeek recognition field-resource-load-gate --catalog-store DIRECTORY --bundle DIRECTORY --catalog-sha256 SHA256 --model-sha256 SHA256 --runtime-sha256 SHA256"
     );
     println!(
         "  scorepeek capture gamescope-diagnostic-handoff-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --model-sha256 SHA256 --runtime-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER"

@@ -287,6 +287,14 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- recognition inspect "$@"
 '''
 
+[tasks."recognition:field-resource-load-gate"]
+description = "Load the exact registered catalog and text runtime through the field-observer worker"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- recognition field-resource-load-gate "$@"
+'''
+
 [tasks."diagnostic:replay"]
 description = "Replay strict canonical evidence through the bounded diagnostic worker"
 run = '''

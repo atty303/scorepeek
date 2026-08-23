@@ -245,6 +245,14 @@ outstanding-result limit, worker loss, abandoned results, and bounded finish tim
 The single-production-worker token is retained through observer teardown. Model/catalog loading,
 inference, field schemas, decisions, and event acceptance are still separate unfinished layers.
 
+ADR 0031 supplies the production resource loader for that boundary. It requires the active catalog,
+registered PP-OCRv6-small model, and fixed CPU runtime artifact to match the immutable run digests,
+then retains the catalog, dictionary, and one ONNX session. The runtime has a pure bounded-crop
+open-text method, but no screen-level observer invokes it yet. The read-only resource gate transfers
+the loaded resources into the production field worker and requires bounded teardown without crop
+submission. It proves resource admission and worker ownership only; it is not live recognition or
+performance evidence.
+
 The first read-only application controls inspect an existing diagnostic root
 through a shared strict inventory. `status` exposes fixed retention policy and
 the current exclusive-writer state plus bounded aggregate byte/completeness

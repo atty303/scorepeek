@@ -53,8 +53,11 @@
   field inputsを生成できない。さらにcomplete descriptorから導出したrun IDと全bindingを保持し、loaderをcapture開始前に
   1回だけ呼ぶapplication-owned field-observer worker境界を実装した。capacity 2のnon-blocking queue、worker-only execution、
   queue取得後も含むaccepted-but-unconsumed resultのglobal capacity、provenance-bound result、race-free abandoned count、
-  observer teardownまで保持するsingle-worker supervisor、5秒bounded finishを持つが、production model/catalog loader、
-  live model inference、field observation、accepted resultは未着手。
+  observer teardownまで保持するsingle-worker supervisor、5秒bounded finishを持つ。さらにactive catalog digest、登録済み
+  PP-OCRv6-small model digest、固定CPU runtime manifest digestを照合し、catalog/dictionary/ONNX sessionをworker開始前に
+  1回だけ保持するproduction resource loaderとread-only gateを実装した。gateはresourceをproduction field workerへ移し、cropを
+  submitせずbounded teardownまで確認する。bounded RGB8 cropからopen textを得るruntime methodはあるが、screen-level live
+  observer、field observation、accepted resultは未着手。
   OBS/obs-vkcapture並行、
   soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了

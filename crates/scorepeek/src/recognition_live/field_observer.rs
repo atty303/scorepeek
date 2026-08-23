@@ -1,10 +1,14 @@
+use std::path::Path;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use scorepeek::recognition::{CanonicalLayout, ScreenClass, ScreenRgb8Crops};
+use scorepeek::recognition::{
+    CanonicalLayout, RegisteredRecognitionResources, RegisteredResourceLoadError, ScreenClass,
+    ScreenRgb8Crops,
+};
 
 use super::LiveScreenRgb8Crops;
 use crate::diagnostic_recording::DiagnosticRunDescriptor;
@@ -55,6 +59,24 @@ impl FieldObserverSessionBinding {
     #[must_use]
     pub fn runtime_sha256(&self) -> &str {
         &self.runtime_sha256
+    }
+
+    /// Loads the exact active catalog and registered text runtime selected by this run.
+    ///
+    /// # Errors
+    /// Returns a typed error before worker startup for binding, catalog, bundle, or runtime failure.
+    pub fn load_registered_resources(
+        &self,
+        catalog_root: &Path,
+        bundle_root: &Path,
+    ) -> Result<RegisteredRecognitionResources, RegisteredResourceLoadError> {
+        RegisteredRecognitionResources::load(
+            catalog_root,
+            bundle_root,
+            &self.catalog_sha256,
+            &self.model_sha256,
+            &self.runtime_sha256,
+        )
     }
 
     fn from_descriptor(descriptor: &DiagnosticRunDescriptor) -> Option<Self> {
@@ -734,6 +756,40 @@ mod tests {
         type Output = ();
 
         fn observe(&mut self, _input: &FieldObserverInput) {}
+    }
+
+    struct ResourceObserver {
+        _resources: RegisteredRecognitionResources,
+    }
+
+    impl FieldObserver for ResourceObserver {
+        type Output = ();
+
+        fn observe(&mut self, _input: &FieldObserverInput) {}
+    }
+
+    #[test]
+    fn session_loader_checks_registered_resources_before_starting_worker() {
+        let descriptor = descriptor("registered-resource-loader", 1);
+        let catalog_root = tempfile::tempdir().unwrap();
+        let bundle_root = tempfile::tempdir().unwrap();
+        let result = FieldObserverWorker::start_for_test(
+            &descriptor,
+            |binding| {
+                binding
+                    .load_registered_resources(catalog_root.path(), bundle_root.path())
+                    .map(|resources| ResourceObserver {
+                        _resources: resources,
+                    })
+            },
+            1,
+        );
+        assert!(matches!(
+            result,
+            Err(FieldObserverStartError::Load(error))
+                if error.error_type()
+                    == scorepeek::recognition::RegisteredResourceLoadErrorType::ModelBindingMismatch
+        ));
     }
 
     #[test]

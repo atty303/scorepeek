@@ -63,6 +63,9 @@ authoritative.
 - [ADR 0030: Isolate live field observation behind a run-bound worker](0030-isolate-live-field-observation-behind-a-run-bound-worker.md)
   fixes the application-owned loader, queue, provenance, result, and finish boundary between live
   screen crops and future model/catalog observers without defining accepted field values.
+- [ADR 0031: Load the registered live text runtime once](0031-load-the-registered-live-text-runtime-once.md)
+  binds the active catalog, PP-OCRv6-small bundle, and fixed CPU runtime manifest to one synchronous
+  pre-worker loader without granting field, song, or event authority.
 
 ## Historical
 
