@@ -8,9 +8,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: the corpus recording simulation prerequisite is complete; the next
-  boundary is a separately executed live INFINITAS Gamescope field-observation run, without yet
-  defining any accepted-field or song-resolution policy.
+- Current execution focus: the corpus recording has completed the shared field and full-catalog
+  scoring path, but its counts-only evidence does not establish recognition correctness. The next
+  boundary is a value-bearing recording recognition simulation and resolver review. Live INFINITAS
+  Gamescope work remains blocked until that boundary passes.
 
 ## Included deliverables
 
@@ -68,7 +69,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   promoted to `CalibratedGamescopeLease` only when every provenance field and every negotiated
   video/memory/stride field exactly match the selected immutable binding. Missing or drifting data
   fails closed, and the rejected receiver remains explicitly shut down by its owner.
-- The bounded capture diagnostic sink receives exactly one typed, value-free admission fact. The
+- The bounded capture diagnostic sink receives exactly one compact typed admission fact. The
   live `gamescope-binding-admission-gate` report exposes stable acceptance/rejection categories and
   bounded capture facts, but not binding bodies, session strings, paths, pixels, arbitrary
   PipeWire properties, or raw PipeWire errors.
@@ -143,15 +144,16 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   artist, and active-list title text plus an explicit not-implemented selected-chart state. There
   are no title-only, artist-only, supplemental, or optional partial screen outputs. Failure of any
   text field returns a typed whole-screen error naming the failed field. The corresponding bounded
-  diagnostic fact records only screen, fixed field counts, and an optional typed failed-field ID;
-  OCR text, pixels, resource bodies, paths, and environment strings are not diagnostic fields, and
-  diagnostic disablement or rejection does not change the bound observation result.
+  field-count fact records screen, fixed field counts, and an optional typed failed-field ID;
+  diagnostic disablement or rejection does not change the bound observation result. ADR 0037 now
+  requires the application-owned recognition artifact to retain bounded exact OCR strings and
+  candidate evidence rather than treating this compact fact as the complete evidence surface.
 - ADR 0033 adds one application owner for the immutable recognition session and matching registered
   field worker. The exact observer loads before the diagnostic-backed recognition run opens.
   Inspection returns screen, non-blocking field-submission, and diagnostic outcomes separately;
   unknown screens do not submit. Opaque owner/pending tokens reject another run before consuming a
   result. A pending result is consumed at most once, completed output is recorded through the
-  existing value-free field fact, and completed or disconnected handles are terminal after their
+  existing compact field fact, and completed or disconnected handles are terminal after their
   first result. An exact capacity-two ledger binds abandoned results to their source sequences;
   lifecycle timeout or worker loss is unbound rather than attributed to an invented frame. These
   degradations do not replace recognition. Finish closes the field worker before finalizing the
@@ -170,9 +172,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   the complete field set and all-song evidence together without ranking or acceptance. The gate
   owns capture, normalization, classification, non-blocking field submission, selected pending
   completion, receiver/provider shutdown, field-worker finish, and diagnostic finalization under
-  one immutable descriptor. Success requires at least one completed candidate set. Its public JSON
-  contains typed status and bounded screen/worker/candidate counts but no OCR text, catalog strings,
-  song IDs, candidate scores, pixels, paths, artifact bodies, or environment/session strings.
+  one immutable descriptor. Success requires at least one completed candidate set. Its current
+  compact JSON contains typed status and bounded screen/worker/candidate counts; that output is an
+  execution-gate result, not sufficient recognition evidence.
 - ADR 0036 adds a recording canonical-source adapter beside the Gamescope adapter. A create-only
   profile binds the original recording, recording/source manifests, probe, reviewed coverage label,
   complete canonical extraction, normalizer/layout/resources, delivery pacing, diagnostic sampling,
@@ -183,6 +185,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   result header and two measured panel boundaries; background palette and result artwork are not
   predicate inputs. This simulation has no accepted field, song, event, live-support, or performance
   authority.
+- ADR 0037 supersedes the recognition-value suppression in ADR 0032, ADR 0035, and ADR 0036.
+  Operator-owned local recognition artifacts must retain bounded exact OCR strings, a run-scoped
+  exact catalog display/comparison string table with candidate references, song IDs, complete
+  per-field candidate metrics, resolver decisions and reasons, and reviewed expected-versus-observed
+  values. Compact command output and the future event API remain distinct sinks. Pixels stay in the
+  bounded image store and are joined by identity rather than duplicated.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -203,7 +211,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - A fresh controlled marker session admitted that private binding after observing 2556x1428 BGRx
   MemFd with 10,224-byte stride. A separately restarted session with only declared nested refresh
   changed from 120 to 119 was rejected as `profile_nested_refresh_mismatch`; both runs recorded one
-  value-free admission fact and completed receiver/provider shutdown with no dropped facts. A
+  compact admission fact and completed receiver/provider shutdown with no dropped facts. A
   second capture attempted without restarting the static marker timed out before admission and is
   not acceptance/rejection evidence.
 - Two independently restarted controlled marker sessions used capture generations 1 and 2. Both
@@ -269,7 +277,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   submitted crops. Changing only the runtime digest failed before resource I/O with typed
   `runtime_binding_mismatch` and exit status 2.
 - Focused integrated-session tests route one synthetic current-run result crop set through a worker,
-  retain its complete bound output, and record one value-free field fact. Recording opt-out returns
+  retain its complete bound output, and record one compact field fact. Recording opt-out returns
   the same complete output with no artifact. A capacity-one run preserves its second screen result
   while reporting `field_observer_outstanding_limit`, counts the unconsumed first result as
   `field_observation_abandoned` at its exact sequence, and finalizes as partial. Another run cannot
@@ -293,7 +301,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Unverified boundaries
 
-- The production path has processed the private recording extraction, but no Gamescope run has yet
+- The production path has processed the private recording extraction, but the current simulation
+  discarded OCR strings and candidate values after counts. It has no reviewed expected song IDs,
+  rank/accept/unknown decision, margin policy, or value-bearing recognition artifact, so it is not
+  evidence that the three songs were recognized correctly.
+- No Gamescope run has yet
   driven it with a classified admitted live frame. Recording evidence retains replay provenance and
   cannot fabricate the live generation/profile/normalizer owner. No development-machine run has
   measured live inference-plus-scoring cost, queue behavior, or candidate output on Gamescope-fed
@@ -330,14 +342,19 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Run the now-unblocked bounded Gamescope field-observation gate against the exact active
-   catalog/model/runtime and private INFINITAS session, retaining only its value-free public result
-   and bounded diagnostic run.
-2. Review that run before defining ranking, field acceptance, song resolution, temporal agreement,
-   target-host performance, or support contracts.
+1. Add a bounded versioned operator-owned recognition artifact that retains exact OCR strings, a
+   run-scoped exact catalog display/comparison string table, every bound catalog song's per-field
+   metrics and string references, song IDs, decisions/reasons, source sequence/PTS, and reviewed
+   expected-versus-observed result values without duplicating pixels.
+2. Use those values from the private recording to define a fail-closed resolver, add reviewed
+   expected song IDs to a create-only simulation profile, and replay all three result episodes
+   through the common post-canonical production path.
+3. Independently review the complete recognition decisions. Only after all expected values pass may
+   a separately authorized live INFINITAS Gamescope run begin.
 
-Do not proceed to OCR-only tuning, automatic calibration, Portal/OBS fallback, soak/performance, or
-support claims until live field routing and its immutable run-lifecycle evidence are complete.
+Do not proceed to live INFINITAS, OCR-only tuning, automatic calibration, Portal/OBS fallback,
+soak/performance, or support claims until the recording recognition path and its value-bearing
+evidence are complete.
 
 ## Stable milestone map
 

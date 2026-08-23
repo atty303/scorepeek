@@ -59,13 +59,14 @@
   submitせずbounded teardownまで確認する。さらにcomplete crop setをworker thread上で登録済みruntimeへ通すproduction
   screen-field observerを実装した。resultはtitle/artist/clear type textとdifficulty/level/notes/current scoreの明示的な未実装状態、
   music-selectはcentral title/artist/active-list title textとselected chartの明示的な未実装状態を持つcompleteなscreen別型だけを
-  出力し、単一field失敗もfield ID付きwhole-screen errorにする。diagnosticはscreen、固定field count、失敗field IDだけを保持し、
-  OCR textやpixelsを記録せず、opt-out/rejectionは認識結果を変えない。さらに同一immutable descriptorのrecognition sessionと
+  出力し、単一field失敗もfield ID付きwhole-screen errorにする。diagnosticはscreen、固定field count、失敗field IDを保持し、
+  opt-out/rejectionは認識結果を変えない。認識判断を実装する段階ではoperator-owned local artifactへboundedなexact OCR text、
+  run単位のexact catalog display/comparison string table、song ID、string reference、全candidate metric、判断と理由も保持する。さらに同一immutable descriptorのrecognition sessionと
   registered field workerを一つのapplication ownerへ統合した。
   resource load完了後にdiagnostic-backed runを開始し、screen result、non-blocking field submit、diagnostic outcomeを分離して返す。
   opaque owner/pending tokenにより別runはoutputをconsumeできず、completed/disconnected handleは一度だけterminal resultを返す。
   capacity 2のexact pending-sequence ledgerからabandonmentを記録し、lifecycle timeout/worker lossは架空sequenceへ結び付けずunboundにする。
-  field workerから先に終了し、synthetic current-run cropでcomplete outputとvalue-free fact、opt-out時のartifact 0件、capacity loss時の
+  field workerから先に終了し、synthetic current-run cropでcomplete outputとfield fact、opt-out時のartifact 0件、capacity loss時の
   recognition非干渉とpartial manifest、cross-run pending rejectionを検証済み。さらにactive catalog全songをstable ID順に保持する
   pure candidate domainを追加した。resultの
   title/artistとmusic-selectのcentral title/artist/active-list titleごとにraw/exact comparison key/domain-unique folded formを比較し、
@@ -444,10 +445,11 @@ NV12、別color profileへ黙ってfallbackしない。
 8. **M5**: gateを通ったsupported PipeWire profileのlifecycle/performanceを比較し、defaultを選ぶ。
 9. **M6**: screen、savable、title/artist/chart contextのfield recognizer、full-catalog screen-local song
    resolver、digits、cross-field validationの順で追加する。field recognizerとcandidate evidenceをlive
-   captureへ接続する最初のgateは、1つのimmutable run bindingとbounded worker lifetimeを所有し、公開結果を
-   typed status、screen/worker/candidate件数およびdiagnostic completenessに限定する。OCR文字列、song ID、
-   candidate score、pixel、artifact本文またはenvironment文字列は公開結果へ含めず、ranking、acceptance、
-   temporal stateおよびevent authorityは後続の独立contractとする。
+   captureへ接続する最初のgateは、1つのimmutable run bindingとbounded worker lifetimeを所有する。自動化向けの
+   compact resultはtyped status、screen/worker/candidate件数、diagnostic completenessおよびartifact identityに
+   限定できるが、operator-owned local recognition artifactはboundedなexact OCR文字列、run単位のexact catalog
+   display/comparison string table、song ID、string reference、全candidate metric、判断と理由、expected-versus-observed値を保持する。pixelは既存のbounded image artifactをidentityで
+   参照する。ranking、acceptance、temporal stateおよびevent authorityは後続の独立contractとする。
 10. **M7**: 少数scenario replayから最小selection song contextとrecognition-trigger非依存のbounded
     live diagnosticsを検証し、その後versioned event schemaとNDJSON daemonを統合する。ゲーム全体の
     state machine、attempt、modeまたはretry回数は実装しない。

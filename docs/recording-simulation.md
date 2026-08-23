@@ -25,5 +25,10 @@ mise run recognition:recording-simulation -- --profile /absolute/private/profile
 Success requires every canonical frame to be inspected, every submitted screen to retain a
 full-catalog candidate set, each expected result window to be detected, and its exact `CLEAR TYPE`
 value to occur on at least two frames. Diagnostic recording must finish complete when enabled.
-Counts and digests are printed, but OCR strings, pixels, recording paths, and artifact bodies are
-not included in the report.
+The current command prints counts and digests and therefore proves field-path execution rather than
+song-recognition correctness. ADR 0037 supersedes that counts-only evidence boundary for the next
+recognition checkpoint: the operator-owned local artifact must retain bounded exact OCR strings, a
+run-scoped exact catalog display/comparison string table, candidate string references, song IDs,
+complete candidate metrics, decisions and reasons, and reviewed expected-versus-observed values.
+Pixel data remains in the referenced bounded image artifact rather than being duplicated in the
+value record.

@@ -68,7 +68,8 @@ authoritative.
   pre-worker loader without granting field, song, or event authority.
 - [ADR 0032: Observe complete screen field sets without acceptance](0032-observe-complete-screen-field-sets-without-acceptance.md)
   fixes complete result/music-select worker outputs, explicit unimplemented fields, inference
-  failure ownership, and value-free application diagnostics without granting acceptance authority.
+  failure ownership, and the initial compact field-count fact without granting acceptance
+  authority. ADR 0037 supersedes its exclusion of recognition values from local evidence.
 - [ADR 0033: Own live field observation as one application session](0033-own-live-field-observation-as-one-application-session.md)
   joins the immutable recognition session and registered field worker under one current-run submit,
   poll, diagnostic-degradation, and ordered-finish owner without adding decision authority.
@@ -77,11 +78,17 @@ authoritative.
   every song without ranking, truncation, acceptance, temporal state, or event authority.
 - [ADR 0035: Run bounded Gamescope field observation without publishing values](0035-run-bounded-gamescope-field-observation.md)
   connects registered inference and full-catalog scoring to one bounded admitted Gamescope run,
-  with value-free public results and ordered capture, worker, and diagnostic shutdown.
+  with a compact execution result and ordered capture, worker, and diagnostic shutdown. ADR 0037
+  supersedes its discard of recognition values after counting.
 - [ADR 0036: Replay recordings through the production field path](0036-replay-recordings-through-the-production-field-path.md)
   fixes the recording-source adapter and digest-bound simulation profile, removes result-background
   color from the result predicate, and observes exact `CLEAR TYPE` text through the production
   worker before any separately authorized live INFINITAS run.
+- [ADR 0037: Retain recognition values in operator-owned diagnostics](0037-retain-recognition-values-in-operator-owned-diagnostics.md)
+  supersedes the value-suppression parts of ADR 0032, ADR 0035, and ADR 0036. Local recognition
+  evidence retains bounded OCR strings, exact catalog display/comparison strings, song IDs,
+  complete candidate metrics, decisions, reasons, and expected-versus-observed values; compact
+  command output remains a separate contract.
 
 ## Historical
 

@@ -256,9 +256,12 @@ output shapes. Result output always contains observed title, artist, and `CLEAR 
 states for difficulty, level, notes, and current score. Music-select output always contains observed
 central-title, artist, and active-list-title text together with an explicit observer-not-implemented
 selected chart. A text-field failure returns a typed whole-screen error instead of a partial value.
-The associated diagnostic operation records only the screen, fixed observed/unimplemented counts,
-and an optional typed failed-field ID; OCR strings and pixels are not diagnostic facts. These values
-still have no catalog-candidate, song-decision, accepted-field, suppression, or event authority.
+The existing field-count operation records the screen, fixed observed/unimplemented counts, and an
+optional typed failed-field ID. ADR 0037 requires the application-owned recognition artifact to
+retain bounded exact OCR strings, a run-scoped exact catalog display/comparison string table,
+candidate string references, and metrics as stages are added; this evidence still has no
+song-decision, accepted-field, suppression, or event authority by itself. Pixels remain in the
+separate bounded image store.
 
 ADR 0036 adds source adapters on the other side of the shared bound-canonical owner. The Gamescope
 adapter acquires and normalizes an admitted frame; the recording adapter reads a profile-bound
