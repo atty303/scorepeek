@@ -19,6 +19,8 @@ use crate::diagnostic_recording::{
     DiagnosticRunStatus,
 };
 use crate::diagnostic_worker::DiagnosticEnqueueOutcome;
+use crate::recognition_live::LiveRecognitionObservation;
+use scorepeek::recognition::{CanonicalLayout, ScreenClass};
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 const RECEIVER_START_TIMEOUT: Duration = Duration::from_secs(2);
@@ -78,6 +80,7 @@ enum DiagnosticHandoffGateErrorType {
     DiagnosticConfigurationInvalid,
     FrameUnavailable,
     NormalizationFailed,
+    RecognitionFailed,
     ShutdownFailed,
 }
 
@@ -211,6 +214,41 @@ pub struct GamescopeDiagnosticHandoffGateReport {
     dropped_capture_diagnostic_facts: u64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct GamescopeRecognitionHandoffGateReport {
+    schema: &'static str,
+    status: LiveGateStatus,
+    error_type: Option<DiagnosticHandoffGateErrorType>,
+    capture_error_type: Option<CaptureErrorType>,
+    capture_generation: u64,
+    observed_frames: u64,
+    normalized_frames: u64,
+    first_sequence: Option<u64>,
+    last_sequence: Option<u64>,
+    diagnostic_frame_enqueued: u64,
+    diagnostic_frame_skipped_cadence: u64,
+    diagnostic_frame_rejected: u64,
+    diagnostic_frame_disabled: u64,
+    diagnostic_frame_queue_full: u64,
+    diagnostic_frame_worker_unavailable: u64,
+    inspected_frames: u64,
+    result_frames: u64,
+    music_select_frames: u64,
+    unknown_frames: u64,
+    recognition_failures: u64,
+    diagnostic_fact_enqueued: u64,
+    diagnostic_fact_skipped_cadence: u64,
+    diagnostic_fact_rejected: u64,
+    diagnostic_fact_disabled: u64,
+    diagnostic_fact_queue_full: u64,
+    diagnostic_fact_worker_unavailable: u64,
+    diagnostic_completeness: Option<DiagnosticCompleteness>,
+    diagnostic_error_type: Option<DiagnosticErrorType>,
+    diagnostic_manifest_sha256: Option<String>,
+    capture_diagnostic_facts: Vec<CaptureDiagnosticFact>,
+    dropped_capture_diagnostic_facts: u64,
+}
+
 impl GamescopeLiveGateReport {
     pub const fn succeeded(&self) -> bool {
         matches!(self.status, LiveGateStatus::Success)
@@ -241,6 +279,12 @@ impl GamescopeDiagnosticHandoffGateReport {
     }
 }
 
+impl GamescopeRecognitionHandoffGateReport {
+    pub const fn succeeded(&self) -> bool {
+        matches!(self.status, LiveGateStatus::Success)
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct HandoffCounters {
     observed_frames: u64,
@@ -253,6 +297,31 @@ struct HandoffCounters {
     disabled_frames: u64,
     queue_full_frames: u64,
     worker_unavailable_frames: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct RecognitionHandoffCounters {
+    inspected_frames: u64,
+    result_frames: u64,
+    music_select_frames: u64,
+    unknown_frames: u64,
+    recognition_failures: u64,
+    fact_outcomes: EnqueueOutcomeCounters,
+}
+
+#[derive(Clone, Copy, Default)]
+struct EnqueueOutcomeCounters {
+    enqueued: u64,
+    skipped_cadence: u64,
+    rejected: u64,
+    disabled: u64,
+    queue_full: u64,
+    worker_unavailable: u64,
+}
+
+struct HandoffGateRun {
+    diagnostic: GamescopeDiagnosticHandoffGateReport,
+    recognition: RecognitionHandoffCounters,
 }
 
 pub struct GamescopeDiagnosticHandoffGateConfig<'a> {
@@ -275,6 +344,20 @@ impl HandoffCounters {
             DiagnosticEnqueueOutcome::Disabled => &mut self.disabled_frames,
             DiagnosticEnqueueOutcome::QueueFull => &mut self.queue_full_frames,
             DiagnosticEnqueueOutcome::WorkerUnavailable => &mut self.worker_unavailable_frames,
+        };
+        *counter = counter.saturating_add(1);
+    }
+}
+
+impl EnqueueOutcomeCounters {
+    fn record(&mut self, outcome: DiagnosticEnqueueOutcome) {
+        let counter = match outcome {
+            DiagnosticEnqueueOutcome::Enqueued => &mut self.enqueued,
+            DiagnosticEnqueueOutcome::SkippedCadence => &mut self.skipped_cadence,
+            DiagnosticEnqueueOutcome::Rejected => &mut self.rejected,
+            DiagnosticEnqueueOutcome::Disabled => &mut self.disabled,
+            DiagnosticEnqueueOutcome::QueueFull => &mut self.queue_full,
+            DiagnosticEnqueueOutcome::WorkerUnavailable => &mut self.worker_unavailable,
         };
         *counter = counter.saturating_add(1);
     }
@@ -498,19 +581,38 @@ pub fn run_gamescope_canonical_frame_gate(
 }
 
 pub fn run_gamescope_diagnostic_handoff_gate(
-    mut config: GamescopeDiagnosticHandoffGateConfig<'_>,
+    config: GamescopeDiagnosticHandoffGateConfig<'_>,
 ) -> GamescopeDiagnosticHandoffGateReport {
+    run_gamescope_handoff_gate(config, false).diagnostic
+}
+
+pub fn run_gamescope_recognition_handoff_gate(
+    config: GamescopeDiagnosticHandoffGateConfig<'_>,
+) -> GamescopeRecognitionHandoffGateReport {
+    recognition_handoff_report(run_gamescope_handoff_gate(config, true))
+}
+
+fn run_gamescope_handoff_gate(
+    mut config: GamescopeDiagnosticHandoffGateConfig<'_>,
+    inspect_screen: bool,
+) -> HandoffGateRun {
     let capture_generation = config.capture_generation;
+    let mut recognition = RecognitionHandoffCounters::default();
     if config.descriptor.binding.capture_generation != capture_generation.get()
         || config.descriptor.binding.replay.is_some()
+        || (inspect_screen
+            && config.descriptor.binding.canonical_layout_sha256 != CanonicalLayout::sha256())
     {
-        return diagnostic_handoff_report(
-            DiagnosticHandoffGateErrorType::DiagnosticConfigurationInvalid,
-            None,
-            capture_generation,
-            HandoffCounters::default(),
-            None,
-            BoundedDiagnosticSink::default(),
+        return handoff_gate_run(
+            diagnostic_handoff_report(
+                DiagnosticHandoffGateErrorType::DiagnosticConfigurationInvalid,
+                None,
+                capture_generation,
+                HandoffCounters::default(),
+                None,
+                BoundedDiagnosticSink::default(),
+            ),
+            recognition,
         );
     }
     let binding = match read_diagnostic_handoff_binding(
@@ -519,13 +621,16 @@ pub fn run_gamescope_diagnostic_handoff_gate(
     ) {
         Ok(binding) => binding,
         Err(error_type) => {
-            return diagnostic_handoff_report(
-                error_type,
-                None,
-                capture_generation,
-                HandoffCounters::default(),
-                None,
-                BoundedDiagnosticSink::default(),
+            return handoff_gate_run(
+                diagnostic_handoff_report(
+                    error_type,
+                    None,
+                    capture_generation,
+                    HandoffCounters::default(),
+                    None,
+                    BoundedDiagnosticSink::default(),
+                ),
+                recognition,
             );
         }
     };
@@ -539,13 +644,16 @@ pub fn run_gamescope_diagnostic_handoff_gate(
     ) {
         Ok(lease) => lease,
         Err((error_type, capture_error_type)) => {
-            return diagnostic_handoff_report(
-                error_type,
-                capture_error_type,
-                capture_generation,
-                HandoffCounters::default(),
-                None,
-                sink,
+            return handoff_gate_run(
+                diagnostic_handoff_report(
+                    error_type,
+                    capture_error_type,
+                    capture_generation,
+                    HandoffCounters::default(),
+                    None,
+                    sink,
+                ),
+                recognition,
             );
         }
     };
@@ -553,13 +661,16 @@ pub fn run_gamescope_diagnostic_handoff_gate(
         || config.descriptor.binding.normalizer_sha256 != lease.normalizer_artifact_sha256()
     {
         let _ = lease.shutdown(&mut sink);
-        return diagnostic_handoff_report(
-            DiagnosticHandoffGateErrorType::DiagnosticBindingMismatch,
-            None,
-            capture_generation,
-            HandoffCounters::default(),
-            None,
-            sink,
+        return handoff_gate_run(
+            diagnostic_handoff_report(
+                DiagnosticHandoffGateErrorType::DiagnosticBindingMismatch,
+                None,
+                capture_generation,
+                HandoffCounters::default(),
+                None,
+                sink,
+            ),
+            recognition,
         );
     }
     let mut bridge =
@@ -571,10 +682,32 @@ pub fn run_gamescope_diagnostic_handoff_gate(
         &mut bridge,
         Duration::from_millis(config.duration_ms),
         &mut counters,
+        inspect_screen,
+        &mut recognition,
         &mut sink,
     );
+    finish_handoff_gate(
+        lease,
+        bridge,
+        &mut terminal,
+        capture_generation,
+        counters,
+        recognition,
+        sink,
+    )
+}
+
+fn finish_handoff_gate(
+    lease: CalibratedGamescopeLease,
+    bridge: LiveDiagnosticBridge,
+    terminal: &mut Option<(DiagnosticHandoffGateErrorType, Option<CaptureErrorType>)>,
+    capture_generation: CaptureGeneration,
+    counters: HandoffCounters,
+    recognition: RecognitionHandoffCounters,
+    mut sink: BoundedDiagnosticSink,
+) -> HandoffGateRun {
     if counters.normalized_frames == 0 && terminal.is_none() {
-        terminal = Some((DiagnosticHandoffGateErrorType::FrameUnavailable, None));
+        *terminal = Some((DiagnosticHandoffGateErrorType::FrameUnavailable, None));
     }
     let (shutdown_result, finish_time) = lease.shutdown_with_elapsed(&mut sink);
     if let Err(error) = shutdown_result {
@@ -589,7 +722,7 @@ pub fn run_gamescope_diagnostic_handoff_gate(
         DiagnosticRunStatus::Success
     };
     let diagnostic_outcome = bridge.finish(finish_status, finish_time);
-    match terminal {
+    let diagnostic = match *terminal {
         Some((error_type, capture_error_type)) => diagnostic_handoff_report(
             error_type,
             capture_error_type,
@@ -599,6 +732,17 @@ pub fn run_gamescope_diagnostic_handoff_gate(
             sink,
         ),
         None => diagnostic_handoff_success(capture_generation, counters, diagnostic_outcome, sink),
+    };
+    handoff_gate_run(diagnostic, recognition)
+}
+
+fn handoff_gate_run(
+    diagnostic: GamescopeDiagnosticHandoffGateReport,
+    recognition: RecognitionHandoffCounters,
+) -> HandoffGateRun {
+    HandoffGateRun {
+        diagnostic,
+        recognition,
     }
 }
 
@@ -662,6 +806,8 @@ fn offer_diagnostic_handoff_frames(
     bridge: &mut LiveDiagnosticBridge,
     duration: Duration,
     counters: &mut HandoffCounters,
+    inspect_screen: bool,
+    recognition: &mut RecognitionHandoffCounters,
     sink: &mut BoundedDiagnosticSink,
 ) -> Option<(DiagnosticHandoffGateErrorType, Option<CaptureErrorType>)> {
     let started = Instant::now();
@@ -683,6 +829,26 @@ fn offer_diagnostic_handoff_frames(
             counters.last_sequence = Some(live.sequence());
             let outcome = bridge.offer(&live);
             counters.record_offer(outcome);
+            if inspect_screen {
+                let Ok(observation) = LiveRecognitionObservation::inspect(&live) else {
+                    recognition.recognition_failures =
+                        recognition.recognition_failures.saturating_add(1);
+                    recognition
+                        .fact_outcomes
+                        .record(bridge.record_recognition_failure(&live));
+                    return Some((DiagnosticHandoffGateErrorType::RecognitionFailed, None));
+                };
+                recognition.inspected_frames = recognition.inspected_frames.saturating_add(1);
+                let screen_counter = match observation.screen() {
+                    ScreenClass::Result => &mut recognition.result_frames,
+                    ScreenClass::MusicSelect => &mut recognition.music_select_frames,
+                    ScreenClass::Unknown => &mut recognition.unknown_frames,
+                };
+                *screen_counter = screen_counter.saturating_add(1);
+                recognition
+                    .fact_outcomes
+                    .record(bridge.record_screen_observation(&observation));
+            }
         }
         if started.elapsed() >= duration {
             return None;
@@ -771,6 +937,44 @@ fn diagnostic_handoff_report_inner(
         diagnostic_manifest_sha256,
         capture_diagnostic_facts: sink.facts,
         dropped_capture_diagnostic_facts: sink.dropped,
+    }
+}
+
+fn recognition_handoff_report(run: HandoffGateRun) -> GamescopeRecognitionHandoffGateReport {
+    let diagnostic = run.diagnostic;
+    let recognition = run.recognition;
+    GamescopeRecognitionHandoffGateReport {
+        schema: "scorepeek-gamescope-recognition-handoff-gate-v1",
+        status: diagnostic.status,
+        error_type: diagnostic.error_type,
+        capture_error_type: diagnostic.capture_error_type,
+        capture_generation: diagnostic.capture_generation,
+        observed_frames: diagnostic.observed_frames,
+        normalized_frames: diagnostic.normalized_frames,
+        first_sequence: diagnostic.first_sequence,
+        last_sequence: diagnostic.last_sequence,
+        diagnostic_frame_enqueued: diagnostic.enqueued_frames,
+        diagnostic_frame_skipped_cadence: diagnostic.skipped_cadence_frames,
+        diagnostic_frame_rejected: diagnostic.rejected_frames,
+        diagnostic_frame_disabled: diagnostic.disabled_frames,
+        diagnostic_frame_queue_full: diagnostic.queue_full_frames,
+        diagnostic_frame_worker_unavailable: diagnostic.worker_unavailable_frames,
+        inspected_frames: recognition.inspected_frames,
+        result_frames: recognition.result_frames,
+        music_select_frames: recognition.music_select_frames,
+        unknown_frames: recognition.unknown_frames,
+        recognition_failures: recognition.recognition_failures,
+        diagnostic_fact_enqueued: recognition.fact_outcomes.enqueued,
+        diagnostic_fact_skipped_cadence: recognition.fact_outcomes.skipped_cadence,
+        diagnostic_fact_rejected: recognition.fact_outcomes.rejected,
+        diagnostic_fact_disabled: recognition.fact_outcomes.disabled,
+        diagnostic_fact_queue_full: recognition.fact_outcomes.queue_full,
+        diagnostic_fact_worker_unavailable: recognition.fact_outcomes.worker_unavailable,
+        diagnostic_completeness: diagnostic.diagnostic_completeness,
+        diagnostic_error_type: diagnostic.diagnostic_error_type,
+        diagnostic_manifest_sha256: diagnostic.diagnostic_manifest_sha256,
+        capture_diagnostic_facts: diagnostic.capture_diagnostic_facts,
+        dropped_capture_diagnostic_facts: diagnostic.dropped_capture_diagnostic_facts,
     }
 }
 
@@ -1201,13 +1405,15 @@ mod tests {
         GamescopeProfileBindingAuthoringInput, RationalCoordinate, UncalibratedMemoryType,
         UncalibratedVideoContract,
     };
+    use scorepeek::recognition::CanonicalLayout;
 
     use super::{
         BoundedDiagnosticSink, DiagnosticPolicy, DiagnosticRunDescriptor, GamescopeLiveGateReport,
         LifecycleGateErrorType, LifecyclePhaseStatus, LiveGateStatus, MAX_DIAGNOSTIC_FACTS,
         lifecycle_error_type, parse_consumer_interval_ms, parse_duration_ms, parse_lifecycle_runs,
         process_resource_snapshot, read_binding, run_gamescope_binding_admission_gate,
-        run_gamescope_canonical_frame_gate, run_gamescope_diagnostic_handoff_gate, summarize_run,
+        run_gamescope_canonical_frame_gate, run_gamescope_diagnostic_handoff_gate,
+        run_gamescope_recognition_handoff_gate, summarize_run,
     };
 
     fn diagnostic_descriptor(generation: u64) -> DiagnosticRunDescriptor {
@@ -1223,7 +1429,7 @@ mod tests {
                 capture_generation: generation,
                 capture_profile_sha256: String::new(),
                 normalizer_sha256: String::new(),
-                canonical_layout_sha256: "2".repeat(64),
+                canonical_layout_sha256: CanonicalLayout::sha256(),
                 catalog_sha256: "3".repeat(64),
                 model_sha256: "4".repeat(64),
                 runtime_sha256: "5".repeat(64),
@@ -1393,6 +1599,47 @@ mod tests {
         assert!(!encoded.contains("PRIVATE"));
         assert!(encoded.contains("binding_unavailable"));
         assert!(encoded.contains("\"capture_generation\":9"));
+        assert_eq!(root.path().read_dir().unwrap().count(), 0);
+    }
+
+    #[test]
+    fn recognition_handoff_failure_is_typed_without_private_values() {
+        let session = scorepeek::capture::GamescopeSessionProvenance::new(
+            scorepeek::capture::GamescopeSessionProvenanceInput {
+                environment_id: "PRIVATE-ENVIRONMENT".to_owned(),
+                gamescope_version: "PRIVATE-VERSION".to_owned(),
+                backend_id: "PRIVATE-BACKEND".to_owned(),
+                output_width: 4,
+                output_height: 2,
+                nested_width: 4,
+                nested_height: 2,
+                nested_refresh_hz: 60,
+                scaler: "auto".to_owned(),
+                filter: "linear".to_owned(),
+            },
+        )
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let generation = CaptureGeneration::new(10).unwrap();
+        let mut descriptor = diagnostic_descriptor(generation.get());
+        descriptor.binding.canonical_layout_sha256 = "2".repeat(64);
+        let report =
+            run_gamescope_recognition_handoff_gate(super::GamescopeDiagnosticHandoffGateConfig {
+                binding_path: std::path::Path::new("/PRIVATE/BINDING/PATH"),
+                expected_binding_sha256: &"f".repeat(64),
+                session,
+                capture_generation: generation,
+                descriptor,
+                policy: DiagnosticPolicy::default(),
+                duration_ms: 1_000,
+                diagnostic_root: root.path(),
+            });
+        let encoded = serde_json::to_string(&report).unwrap();
+
+        assert!(!encoded.contains("PRIVATE"));
+        assert!(encoded.contains("diagnostic_configuration_invalid"));
+        assert!(encoded.contains("\"capture_generation\":10"));
+        assert!(encoded.contains("\"inspected_frames\":0"));
         assert_eq!(root.path().read_dir().unwrap().count(), 0);
     }
 

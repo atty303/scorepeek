@@ -8,9 +8,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: define the first fail-closed conversion from the profile-bound live
-  canonical handoff into the existing recognition input without reintroducing an unbound public
-  constructor or coupling diagnostic recording to recognition success.
+- Current execution focus: define the first application-owned live recognition session that can
+  route supported screen observations toward existing field observers, rotate explicitly on any
+  immutable recognition binding change, and keep accepted results diagnostic-independent.
 
 ## Included deliverables
 
@@ -97,6 +97,15 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   run bounds share the provider-lease monotonic origin. The gate shuts down receiver/provider before
   finalizing the diagnostic run, so a teardown failure is retained as an error manifest rather than
   an immutable successful run.
+- `LiveRecognitionObservation` borrows the same `LiveCanonicalFrame` owner used by diagnostics and
+  applies the embedded result/music-select screen predicate without another full-frame RGB copy.
+  It cannot detach from or invent live generation/profile/normalizer evidence. The pure RGB8
+  predicate has no provenance or acceptance authority by itself.
+- The backward-compatible `gamescope-recognition-handoff-gate` keeps the earlier diagnostic-only
+  command intact. It requires the descriptor's actual embedded layout digest before acquisition,
+  offers canonical evidence before inspection, and records each typed screen observation through
+  the same generation/profile/normalizer/layout-bound worker. Recording rejection, opt-out, queue
+  loss, or store failure remains separate from the screen result.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -137,6 +146,18 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   shutdown still succeeded, and the supplied diagnostic root remained empty. Synthetic catalog and
   model fixture digests in these controlled runs identify only that no lookup or inference ran;
   they are not catalog/model validation evidence.
+- Capture generation 18 ran the controlled geometry marker through the live screen predicate. All
+  13 normalized frames remained `unknown`, all 13 typed `inspect_recognition` facts entered the same
+  complete diagnostic run, and no frame/fact queue or worker drop occurred. Its manifest SHA-256
+  was `8f7608dde39c9325c75982d6c40e2a167bcc85985aed4601ae5e4e216b40baf7`.
+- Separately generated, game-asset-free color rectangles exercised both positive predicate classes
+  through Gamescope generation 20: 2 `result` and 11 `music_select` observations from 13 normalized
+  frames, with 13 matching typed facts and a complete manifest SHA-256 of
+  `354f672fe658558ca4d9b8ba3d281af4f8a9e20f5264fb97bf3a336109a69a51`.
+  These synthetic predicates prove live routing, not INFINITAS layout or recognition accuracy.
+- Generation 19 repeated the marker predicate with recording disabled: all 6 normalized frames
+  remained `unknown`, all frame and fact offers returned `disabled`, and the diagnostic root stayed
+  empty without changing the predicate result.
 - Development-host Gamescope/vkcube gates have exercised actual negotiation/frame reception,
   selected-node loss, latest-frame overwrite under consumer pressure, receiver-before-provider
   shutdown, and 100 repeated acquire/start/stop lifecycles. A separately operator-started session
@@ -151,9 +172,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Unverified boundaries
 
-- No recognition input consumes the profile-bound live canonical type. Negotiated caps alone never
-  establish profile identity, and neither `NormalizedCanonicalFrame` nor `LiveCanonicalFrame` can
-  enter recognition as its offline `CanonicalFrame` type.
+- No live field observer, catalog/model inference, accepted result, context reducer, or event output
+  consumes `LiveRecognitionObservation`; this checkpoint stops at the shared screen predicate.
+  Offline `CanonicalFrame` extraction evidence still cannot fabricate the live generation/profile/
+  normalizer owner or enter this live gate.
 - The bounded CLI gate is not an ordinary long-running application loop. Live queue-full or worker
   loss was not forced on the development machine; bounded unit tests cover queue drop, worker loss,
   generation rejection, opt-out, and diagnostic non-interference. Target-host cost remains unknown.
@@ -186,22 +208,19 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Define one application-owned recognition handoff that consumes or shares the existing
-   profile-bound live canonical owner without a second RGB copy. Do not restore the removed public
-   evidence constructor or let offline extraction types bypass live generation/profile/normalizer
-   evidence.
-2. Bind recognition facts and accepted results to the same diagnostic run descriptor while keeping
-   diagnostic enqueue/drop/opt-out non-interfering. A capture or recognition binding change must
-   finish the old run and begin another explicitly bound run.
-3. Exercise a controlled live screen predicate before OCR or accepted fields. Keep unknown and
-   unsupported content fail closed, retain the bounded canonical evidence independently of the
-   predicate result, and do not claim INFINITAS accuracy from the marker application.
-4. Independently review the capture-to-recognition ownership and generation boundary before adding
-   title/model inference.
+1. Define one application-owned live recognition session that owns the immutable diagnostic
+   descriptor and finishes the current run before a capture/profile/normalizer/layout/catalog/model
+   or runtime binding changes. Do not infer a game session from this resource lifetime.
+2. Route only `result` or `music_select` observations into the existing screen-local crop/observer
+   APIs while preserving the live owner and binding. `unknown` must stop before OCR and accepted
+   fields without suppressing independent canonical diagnostic evidence.
+3. Bind any field observation, song decision, suppression, and accepted result to that same run;
+   diagnostic enqueue/drop/opt-out must not alter those recognition outcomes.
+4. Verify real field routing with separately authorized private INFINITAS evidence before claiming
+   layout, OCR, accepted-field, target-host, or support results.
 
 Do not proceed to OCR-only tuning, automatic calibration, Portal/OBS fallback, soak/performance, or
-support claims until the capture-to-application ownership handoff and its bounded lifecycle evidence
-are complete.
+support claims until live field routing and its immutable run-lifecycle evidence are complete.
 
 ## Stable milestone map
 

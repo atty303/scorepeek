@@ -216,14 +216,7 @@ impl CanonicalFrame {
     /// # Errors
     /// Returns an error when the ROI is outside the canonical frame.
     pub fn crop(&self, roi: Roi) -> Result<Vec<u8>, RecognitionError> {
-        roi.validate(CANONICAL_WIDTH, CANONICAL_HEIGHT)?;
-        let row_bytes = roi.width as usize * 3;
-        let mut crop = Vec::with_capacity(row_bytes * roi.height as usize);
-        for y in roi.y..roi.y + roi.height {
-            let start = (y as usize * CANONICAL_WIDTH as usize + roi.x as usize) * 3;
-            crop.extend_from_slice(&self.pixels[start..start + row_bytes]);
-        }
-        Ok(crop)
+        crop_canonical_pixels(&self.pixels, roi)
     }
 }
 
@@ -528,6 +521,17 @@ pub struct RecognitionSnapshot {
     pub normalizer_artifact_sha256: String,
     pub frame_extraction_sha256: String,
     pub canonical_layout_sha256: String,
+    pub screen: ScreenClass,
+    pub result_presence: ResultPresenceEvidence,
+    pub music_select_presence: MusicSelectPresenceEvidence,
+}
+
+/// A pure canonical-RGB8 screen-predicate result without capture or extraction provenance.
+///
+/// This value is not an accepted live recognition input. The application must bind it to its
+/// profile- and generation-bearing live frame before recording or accepting the observation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ScreenPredicateObservation {
     pub screen: ScreenClass,
     pub result_presence: ResultPresenceEvidence,
     pub music_select_presence: MusicSelectPresenceEvidence,
@@ -898,8 +902,36 @@ impl CanonicalLayout {
 /// # Errors
 /// Returns an error when the committed layout or its crop is invalid.
 pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, RecognitionError> {
+    let observation = inspect_canonical_rgb8(frame.pixels())?;
+    Ok(RecognitionSnapshot {
+        schema: "scorepeek-recognition-spike-v3".to_owned(),
+        canonical_frame_sha256: encode_sha256(frame.pixels()),
+        normalizer_artifact_sha256: frame.normalizer_artifact_sha256.clone(),
+        frame_extraction_sha256: frame.frame_extraction_sha256.clone(),
+        canonical_layout_sha256: CanonicalLayout::sha256(),
+        screen: observation.screen,
+        result_presence: observation.result_presence,
+        music_select_presence: observation.music_select_presence,
+    })
+}
+
+/// Applies only the embedded screen predicates to one fixed-contract canonical RGB8 slice.
+///
+/// This pure primitive deliberately carries no capture, generation, normalizer, extraction, or
+/// model authority. Live application code must combine it with an admitted live-frame owner before
+/// the result can enter a diagnostic run or later acceptance logic.
+///
+/// # Errors
+/// Returns an error when the pixels do not satisfy the fixed canonical byte contract or the
+/// committed layout is invalid.
+pub fn inspect_canonical_rgb8(
+    pixels: &[u8],
+) -> Result<ScreenPredicateObservation, RecognitionError> {
+    if pixels.len() != CANONICAL_BYTES {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
     let layout = CanonicalLayout::load()?;
-    let header = frame.crop(layout.result.header)?;
+    let header = crop_canonical_pixels(pixels, layout.result.header)?;
     let mut warm = 0_u32;
     let mut red = 0_u32;
     for pixel in header.chunks_exact(3) {
@@ -911,7 +943,7 @@ pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, Recognitio
             red += 1;
         }
     }
-    let music_header = frame.crop(layout.music_select.header)?;
+    let music_header = crop_canonical_pixels(pixels, layout.music_select.header)?;
     let cyan_header_pixels = music_header
         .chunks_exact(3)
         .filter(|pixel| {
@@ -919,7 +951,7 @@ pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, Recognitio
             g > 120 && b > 150 && u16::from(b) * 2 > u16::from(r) * 3
         })
         .fold(0_u32, |count, _| count + 1);
-    let level_column = frame.crop(layout.music_select.level_column)?;
+    let level_column = crop_canonical_pixels(pixels, layout.music_select.level_column)?;
     let colored_level_pixels = level_column
         .chunks_exact(3)
         .filter(|pixel| {
@@ -939,12 +971,7 @@ pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, Recognitio
         (false, true) => ScreenClass::MusicSelect,
         (false, false) | (true, true) => ScreenClass::Unknown,
     };
-    Ok(RecognitionSnapshot {
-        schema: "scorepeek-recognition-spike-v3".to_owned(),
-        canonical_frame_sha256: encode_sha256(frame.pixels()),
-        normalizer_artifact_sha256: frame.normalizer_artifact_sha256.clone(),
-        frame_extraction_sha256: frame.frame_extraction_sha256.clone(),
-        canonical_layout_sha256: CanonicalLayout::sha256(),
+    Ok(ScreenPredicateObservation {
         screen,
         result_presence: ResultPresenceEvidence {
             warm_pixels: warm,
@@ -959,6 +986,20 @@ pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, Recognitio
             colored_level_pixels_min: layout.music_select.presence.colored_level_pixels_min,
         },
     })
+}
+
+fn crop_canonical_pixels(pixels: &[u8], roi: Roi) -> Result<Vec<u8>, RecognitionError> {
+    roi.validate(CANONICAL_WIDTH, CANONICAL_HEIGHT)?;
+    if pixels.len() != CANONICAL_BYTES {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
+    let row_bytes = roi.width as usize * 3;
+    let mut crop = Vec::with_capacity(row_bytes * roi.height as usize);
+    for y in roi.y..roi.y + roi.height {
+        let start = (y as usize * CANONICAL_WIDTH as usize + roi.x as usize) * 3;
+        crop.extend_from_slice(&pixels[start..start + row_bytes]);
+    }
+    Ok(crop)
 }
 
 /// Exports the fixed result-layout crops from a validated canonical frame.

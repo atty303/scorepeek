@@ -6,6 +6,7 @@ pub mod diagnostic_recording;
 pub mod diagnostic_replay;
 pub mod diagnostic_worker;
 mod inventory;
+mod recognition_live;
 
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -134,7 +135,8 @@ fn run(args: &[OsString]) -> Result<(), String> {
 }
 
 fn try_capture_commands(args: &[OsString]) -> Option<Result<(), String>> {
-    try_capture_diagnostic_handoff(args)
+    try_capture_recognition_handoff(args)
+        .or_else(|| try_capture_diagnostic_handoff(args))
         .or_else(|| try_capture_canonical_frame(args))
         .or_else(|| try_capture_binding_admission(args))
         .or_else(|| try_capture_session_calibration(args))
@@ -143,36 +145,47 @@ fn try_capture_commands(args: &[OsString]) -> Option<Result<(), String>> {
         .or_else(|| try_capture_live_gate(args))
 }
 
+const CAPTURE_HANDOFF_FLAGS: &[&str] = &[
+    "--binding",
+    "--binding-sha256",
+    "--capture-generation",
+    "--duration-ms",
+    "--diagnostic-root",
+    "--run-id",
+    "--build-sha256",
+    "--canonical-layout-sha256",
+    "--catalog-sha256",
+    "--model-sha256",
+    "--runtime-sha256",
+    "--recording",
+    "--environment-id",
+    "--gamescope-version",
+    "--backend",
+    "--output-width",
+    "--output-height",
+    "--nested-width",
+    "--nested-height",
+    "--nested-refresh",
+    "--scaler",
+    "--filter",
+];
+
+fn try_capture_recognition_handoff(args: &[OsString]) -> Option<Result<(), String>> {
+    let values = capture_flag_values(
+        args,
+        "gamescope-recognition-handoff-gate",
+        CAPTURE_HANDOFF_FLAGS,
+    )?;
+    Some(run_capture_handoff(&values, true))
+}
+
 fn try_capture_diagnostic_handoff(args: &[OsString]) -> Option<Result<(), String>> {
     let values = capture_flag_values(
         args,
         "gamescope-diagnostic-handoff-gate",
-        &[
-            "--binding",
-            "--binding-sha256",
-            "--capture-generation",
-            "--duration-ms",
-            "--diagnostic-root",
-            "--run-id",
-            "--build-sha256",
-            "--canonical-layout-sha256",
-            "--catalog-sha256",
-            "--model-sha256",
-            "--runtime-sha256",
-            "--recording",
-            "--environment-id",
-            "--gamescope-version",
-            "--backend",
-            "--output-width",
-            "--output-height",
-            "--nested-width",
-            "--nested-height",
-            "--nested-refresh",
-            "--scaler",
-            "--filter",
-        ],
+        CAPTURE_HANDOFF_FLAGS,
     )?;
-    Some(run_capture_diagnostic_handoff(&values))
+    Some(run_capture_handoff(&values, false))
 }
 
 fn capture_flag_values<'a>(
@@ -193,7 +206,7 @@ fn capture_flag_values<'a>(
     Some(values)
 }
 
-fn run_capture_diagnostic_handoff(values: &[&OsStr]) -> Result<(), String> {
+fn run_capture_handoff(values: &[&OsStr], inspect_screen: bool) -> Result<(), String> {
     let [
         binding,
         binding_digest,
@@ -257,27 +270,44 @@ fn run_capture_diagnostic_handoff(values: &[&OsStr]) -> Result<(), String> {
             replay: None,
         },
     };
-    let report = capture_live::run_gamescope_diagnostic_handoff_gate(
-        capture_live::GamescopeDiagnosticHandoffGateConfig {
-            binding_path: Path::new(binding),
-            expected_binding_sha256: &binding_digest,
-            session: configuration.capture_provenance()?,
-            capture_generation: generation,
-            descriptor,
-            policy,
-            duration_ms,
-            diagnostic_root: Path::new(diagnostic_root),
-        },
-    );
+    let config = capture_live::GamescopeDiagnosticHandoffGateConfig {
+        binding_path: Path::new(binding),
+        expected_binding_sha256: &binding_digest,
+        session: configuration.capture_provenance()?,
+        capture_generation: generation,
+        descriptor,
+        policy,
+        duration_ms,
+        diagnostic_root: Path::new(diagnostic_root),
+    };
+    if inspect_screen {
+        let report = capture_live::run_gamescope_recognition_handoff_gate(config);
+        print_capture_handoff_report(
+            &report,
+            report.succeeded(),
+            "Gamescope recognition handoff gate failed",
+        )
+    } else {
+        let report = capture_live::run_gamescope_diagnostic_handoff_gate(config);
+        print_capture_handoff_report(
+            &report,
+            report.succeeded(),
+            "Gamescope diagnostic handoff gate failed",
+        )
+    }
+}
+
+fn print_capture_handoff_report(
+    report: &impl Serialize,
+    succeeded: bool,
+    failure: &str,
+) -> Result<(), String> {
     println!(
         "{}",
-        serde_json::to_string(&report)
-            .map_err(|_| { "diagnostic handoff gate report serialization failed".to_owned() })?
+        serde_json::to_string(report)
+            .map_err(|_| "capture handoff gate report serialization failed".to_owned())?
     );
-    report
-        .succeeded()
-        .then_some(())
-        .ok_or_else(|| "Gamescope diagnostic handoff gate failed".to_owned())
+    succeeded.then_some(()).ok_or_else(|| failure.to_owned())
 }
 
 fn parse_cli_sha256(value: &OsStr, label: &str) -> Result<String, String> {
@@ -1763,6 +1793,9 @@ fn print_usage() {
     );
     println!(
         "  scorepeek capture gamescope-diagnostic-handoff-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --model-sha256 SHA256 --runtime-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER"
+    );
+    println!(
+        "  scorepeek capture gamescope-recognition-handoff-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --model-sha256 SHA256 --runtime-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER"
     );
 }
 
