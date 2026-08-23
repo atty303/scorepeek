@@ -57,10 +57,15 @@ pub enum DiagnosticErrorType {
     QueueFull,
     WorkerUnavailable,
     FlushTimeout,
+    FieldObserverOutstandingLimit,
+    FieldObserverQueueFull,
+    FieldObserverUnavailable,
+    FieldObserverFinishTimeout,
+    FieldObservationAbandoned,
 }
 
 impl DiagnosticErrorType {
-    pub(crate) const ALL: [Self; 14] = [
+    pub(crate) const ALL: [Self; 19] = [
         Self::InvalidConfiguration,
         Self::StoreUnavailable,
         Self::SequenceNonmonotonic,
@@ -75,6 +80,11 @@ impl DiagnosticErrorType {
         Self::QueueFull,
         Self::WorkerUnavailable,
         Self::FlushTimeout,
+        Self::FieldObserverOutstandingLimit,
+        Self::FieldObserverQueueFull,
+        Self::FieldObserverUnavailable,
+        Self::FieldObserverFinishTimeout,
+        Self::FieldObservationAbandoned,
     ];
     pub(crate) const COUNT: usize = Self::ALL.len();
 

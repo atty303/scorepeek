@@ -260,6 +260,17 @@ The associated diagnostic operation records only the screen, fixed observed/unim
 and an optional typed failed-field ID; OCR strings and pixels are not diagnostic facts. These values
 still have no catalog-candidate, song-decision, accepted-field, suppression, or event authority.
 
+ADR 0033 joins that observer and the diagnostic-backed recognition session under one application
+owner created from the same immutable descriptor. Resource loading completes before the recognition
+run opens. Each frame reports screen inspection, non-blocking field submission, and diagnostic
+queueing separately; unknown screens do not submit. One pending result can be consumed once, and a
+private owner token prevents another run from consuming it. Completed and disconnected channels are
+terminal after their first result. The owner retains an exact capacity-two pending-sequence ledger.
+Finish closes the field worker first, records each remaining sequence as abandoned and lifecycle
+failure as unbound while the diagnostic run is still open, then finalizes that run. This owner is
+execution and provenance plumbing only; it does not resolve catalogs or accept fields, songs, or
+events.
+
 The first read-only application controls inspect an existing diagnostic root
 through a shared strict inventory. `status` exposes fixed retention policy and
 the current exclusive-writer state plus bounded aggregate byte/completeness

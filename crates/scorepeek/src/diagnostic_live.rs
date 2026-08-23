@@ -310,6 +310,22 @@ impl LiveDiagnosticBridge {
         DiagnosticEnqueueOutcome::Rejected
     }
 
+    pub(crate) fn record_field_observer_degradation(
+        &mut self,
+        error_type: DiagnosticErrorType,
+        sequence: u64,
+    ) {
+        self.worker.record_external_error(error_type, sequence);
+    }
+
+    pub(crate) fn record_unbound_field_observer_degradation(
+        &mut self,
+        error_type: DiagnosticErrorType,
+        count: u64,
+    ) {
+        self.worker.record_external_unbound_error(error_type, count);
+    }
+
     /// Records the explicit end of this immutable binding before the application starts another.
     pub fn record_binding_change(
         &mut self,

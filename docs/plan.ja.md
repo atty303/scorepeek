@@ -61,7 +61,13 @@
   music-selectはcentral title/artist/active-list title textとselected chartの明示的な未実装状態を持つcompleteなscreen別型だけを
   出力し、単一field失敗もfield ID付きwhole-screen errorにする。diagnosticはscreen、固定field count、失敗field IDだけを保持し、
   OCR textやpixelsを記録せず、opt-out/rejectionは認識結果を変えない。実live frameからのfield submit、catalog解決、accepted resultは
-  未着手。
+  未着手だった。さらに同一immutable descriptorのrecognition sessionとregistered field workerを一つのapplication ownerへ統合した。
+  resource load完了後にdiagnostic-backed runを開始し、screen result、non-blocking field submit、diagnostic outcomeを分離して返す。
+  opaque owner/pending tokenにより別runはoutputをconsumeできず、completed/disconnected handleは一度だけterminal resultを返す。
+  capacity 2のexact pending-sequence ledgerからabandonmentを記録し、lifecycle timeout/worker lossは架空sequenceへ結び付けずunboundにする。
+  field workerから先に終了し、synthetic current-run cropでcomplete outputとvalue-free fact、opt-out時のartifact 0件、capacity loss時の
+  recognition非干渉とpartial manifest、cross-run pending rejectionを検証済み。Gamescope capture loopからの実submit、catalog解決、
+  accepted resultは未着手。
   OBS/obs-vkcapture並行、
   soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了

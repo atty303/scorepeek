@@ -220,11 +220,13 @@ impl<T> BoundFieldObservation<T> {
 pub struct PendingFieldObservation<T> {
     receiver: Receiver<BoundFieldObservation<T>>,
     delivery: PendingDelivery,
+    sequence: u64,
 }
 
 const DELIVERY_PENDING: u8 = 0;
 const DELIVERY_CONSUMED: u8 = 1;
 const DELIVERY_ABANDONED: u8 = 2;
+const DELIVERY_UNAVAILABLE: u8 = 3;
 const DELIVERY_OUTSTANDING_BITS: u32 = 8;
 const DELIVERY_OUTSTANDING_MASK: u64 = (1 << DELIVERY_OUTSTANDING_BITS) - 1;
 const DELIVERY_ABANDONED_INCREMENT: u64 = 1 << DELIVERY_OUTSTANDING_BITS;
@@ -248,6 +250,25 @@ impl PendingDelivery {
             .is_ok()
         {
             self.counts.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    fn unavailable(&self) -> bool {
+        if self
+            .state
+            .compare_exchange(
+                DELIVERY_PENDING,
+                DELIVERY_UNAVAILABLE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.counts
+                .fetch_add(DELIVERY_ABANDONED_INCREMENT - 1, Ordering::AcqRel);
+            true
+        } else {
+            false
         }
     }
 }
@@ -274,32 +295,55 @@ impl Drop for PendingDelivery {
 pub enum FieldObservationPoll<T> {
     Pending,
     Ready(BoundFieldObservation<T>),
+    Consumed,
+    Terminal,
     WorkerUnavailable,
 }
 
 impl<T> PendingFieldObservation<T> {
     #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    #[must_use]
     pub fn poll(&self) -> FieldObservationPoll<T> {
+        match self.delivery.state.load(Ordering::Acquire) {
+            DELIVERY_CONSUMED => return FieldObservationPoll::Consumed,
+            DELIVERY_UNAVAILABLE => return FieldObservationPoll::Terminal,
+            _ => {}
+        }
         match self.receiver.try_recv() {
             Ok(observation) => {
                 self.delivery.consumed();
                 FieldObservationPoll::Ready(observation)
             }
             Err(TryRecvError::Empty) => FieldObservationPoll::Pending,
-            Err(TryRecvError::Disconnected) => FieldObservationPoll::WorkerUnavailable,
+            Err(TryRecvError::Disconnected) if self.delivery.unavailable() => {
+                FieldObservationPoll::WorkerUnavailable
+            }
+            Err(TryRecvError::Disconnected) => FieldObservationPoll::Terminal,
         }
     }
 
     /// Waits only for the caller-selected bound.
     #[must_use]
     pub fn wait(&self, timeout: Duration) -> FieldObservationPoll<T> {
+        match self.delivery.state.load(Ordering::Acquire) {
+            DELIVERY_CONSUMED => return FieldObservationPoll::Consumed,
+            DELIVERY_UNAVAILABLE => return FieldObservationPoll::Terminal,
+            _ => {}
+        }
         match self.receiver.recv_timeout(timeout) {
             Ok(observation) => {
                 self.delivery.consumed();
                 FieldObservationPoll::Ready(observation)
             }
             Err(mpsc::RecvTimeoutError::Timeout) => FieldObservationPoll::Pending,
-            Err(mpsc::RecvTimeoutError::Disconnected) => FieldObservationPoll::WorkerUnavailable,
+            Err(mpsc::RecvTimeoutError::Disconnected) if self.delivery.unavailable() => {
+                FieldObservationPoll::WorkerUnavailable
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => FieldObservationPoll::Terminal,
         }
     }
 }
@@ -357,7 +401,7 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
     }
 
     #[cfg(test)]
-    fn start_for_test<E>(
+    pub(crate) fn start_for_test<E>(
         descriptor: &DiagnosticRunDescriptor,
         loader: impl FnOnce(&FieldObserverSessionBinding) -> Result<O, E>,
         capacity: usize,
@@ -463,6 +507,7 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
                         state: AtomicU8::new(DELIVERY_PENDING),
                         counts: Arc::clone(&self.delivery_counts),
                     },
+                    sequence: frame.sequence(),
                 })
             }
             Err(TrySendError::Full(_)) => {
@@ -497,13 +542,14 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
                     thread::yield_now();
                 }
                 Err(TrySendError::Full(_)) => {
+                    let abandoned = abandoned_at_finish(delivery_counts.load(Ordering::Acquire));
                     drop(sender);
                     drop(worker);
                     return FieldObserverFinishOutcome {
                         status: FieldObserverFinishStatus::Timeout,
                         submitted,
                         completed: None,
-                        abandoned: None,
+                        abandoned: Some(abandoned),
                     };
                 }
                 Err(TrySendError::Disconnected(_)) => {
@@ -513,7 +559,9 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
                         status: FieldObserverFinishStatus::WorkerUnavailable,
                         submitted,
                         completed: None,
-                        abandoned: None,
+                        abandoned: Some(abandoned_at_finish(
+                            delivery_counts.load(Ordering::Acquire),
+                        )),
                     };
                 }
             }
@@ -530,12 +578,13 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                let abandoned = abandoned_at_finish(delivery_counts.load(Ordering::Acquire));
                 drop(worker);
                 FieldObserverFinishOutcome {
                     status: FieldObserverFinishStatus::Timeout,
                     submitted,
                     completed: None,
-                    abandoned: None,
+                    abandoned: Some(abandoned),
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -544,7 +593,7 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
                     status: FieldObserverFinishStatus::WorkerUnavailable,
                     submitted,
                     completed: None,
-                    abandoned: None,
+                    abandoned: Some(abandoned_at_finish(delivery_counts.load(Ordering::Acquire))),
                 }
             }
         }
@@ -759,6 +808,53 @@ mod tests {
         type Output = ();
 
         fn observe(&mut self, _input: &FieldObserverInput) {}
+    }
+
+    struct PanickingObserver;
+
+    impl FieldObserver for PanickingObserver {
+        type Output = ();
+
+        fn observe(&mut self, _input: &FieldObserverInput) {
+            panic!("observer failed");
+        }
+    }
+
+    #[test]
+    fn disconnected_pending_is_terminal_after_one_worker_unavailable_result() {
+        let descriptor = descriptor("field-observer-disconnected", 1);
+        let mut worker =
+            FieldObserverWorker::start_for_test(&descriptor, |_| Ok::<_, ()>(PanickingObserver), 1)
+                .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut session = LiveRecognitionSession::start(
+            root.path(),
+            descriptor,
+            DiagnosticPolicy {
+                enabled: false,
+                ..DiagnosticPolicy::default()
+            },
+        )
+        .unwrap();
+        let frame = solid_frame([200, 100, 20], 1, 1);
+        let pending = worker
+            .try_observe(session.inspect(&frame).unwrap().field_inputs.unwrap())
+            .unwrap();
+        assert!(matches!(
+            pending.wait(Duration::from_secs(1)),
+            FieldObservationPoll::WorkerUnavailable
+        ));
+        assert!(matches!(pending.poll(), FieldObservationPoll::Terminal));
+        assert_eq!(
+            worker.finish(Duration::from_secs(1)),
+            FieldObserverFinishOutcome {
+                status: FieldObserverFinishStatus::WorkerUnavailable,
+                submitted: 1,
+                completed: None,
+                abandoned: Some(1),
+            }
+        );
+        let _ = session.finish(DiagnosticRunStatus::Success, 40);
     }
 
     struct CompleteScreenObserver;
@@ -1287,7 +1383,7 @@ mod tests {
                 status: FieldObserverFinishStatus::Timeout,
                 submitted: 1,
                 completed: None,
-                abandoned: None,
+                abandoned: Some(1),
             }
         );
         assert!(matches!(pending.poll(), FieldObservationPoll::Pending));

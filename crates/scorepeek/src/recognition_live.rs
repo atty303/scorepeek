@@ -9,12 +9,17 @@ use scorepeek::recognition::{
 
 use crate::diagnostic_live::{LiveCanonicalFrame, LiveDiagnosticBridge, LiveDiagnosticBridgeError};
 use crate::diagnostic_recording::{
-    DiagnosticFinishOutcome, DiagnosticPolicy, DiagnosticRunDescriptor, DiagnosticRunStatus,
+    DiagnosticErrorType, DiagnosticFinishOutcome, DiagnosticPolicy, DiagnosticRunDescriptor,
+    DiagnosticRunStatus,
 };
 use crate::diagnostic_worker::DiagnosticEnqueueOutcome;
-use crate::recognition_live::field_observer::BoundFieldObservation;
+use crate::recognition_live::field_observer::{
+    BoundFieldObservation, FieldObserverFinishOutcome, FieldObserverFinishStatus,
+    FieldObserverOfferError,
+};
 
 pub mod field_observer;
+pub mod field_session;
 pub mod screen_field_observer;
 
 /// One screen-predicate result that borrows its immutable live capture evidence.
@@ -234,6 +239,62 @@ impl LiveRecognitionSession {
             observation.screen(),
             observation.output(),
         )
+    }
+
+    pub(crate) fn record_field_observer_offer_failure(
+        &mut self,
+        sequence: u64,
+        error: FieldObserverOfferError,
+    ) {
+        let error_type = match error {
+            FieldObserverOfferError::BindingMismatch => DiagnosticErrorType::InvalidConfiguration,
+            FieldObserverOfferError::OutstandingLimit => {
+                DiagnosticErrorType::FieldObserverOutstandingLimit
+            }
+            FieldObserverOfferError::QueueFull => DiagnosticErrorType::FieldObserverQueueFull,
+            FieldObserverOfferError::WorkerUnavailable => {
+                DiagnosticErrorType::FieldObserverUnavailable
+            }
+        };
+        self.bridge
+            .record_field_observer_degradation(error_type, sequence);
+    }
+
+    pub(crate) fn record_field_observer_unavailable(&mut self, sequence: u64) {
+        self.bridge.record_field_observer_degradation(
+            DiagnosticErrorType::FieldObserverUnavailable,
+            sequence,
+        );
+    }
+
+    pub(crate) fn reject_pending_field_observation(&mut self) {
+        self.bridge.record_unbound_field_observer_degradation(
+            DiagnosticErrorType::InvalidConfiguration,
+            1,
+        );
+    }
+
+    pub(crate) fn record_abandoned_field_observation(&mut self, sequence: u64) {
+        self.bridge.record_field_observer_degradation(
+            DiagnosticErrorType::FieldObservationAbandoned,
+            sequence,
+        );
+    }
+
+    pub(crate) fn record_field_observer_finish(&mut self, outcome: FieldObserverFinishOutcome) {
+        let terminal_error = match outcome.status {
+            FieldObserverFinishStatus::Timeout => {
+                Some(DiagnosticErrorType::FieldObserverFinishTimeout)
+            }
+            FieldObserverFinishStatus::WorkerUnavailable => {
+                Some(DiagnosticErrorType::FieldObserverUnavailable)
+            }
+            FieldObserverFinishStatus::Complete => None,
+        };
+        if let Some(error_type) = terminal_error {
+            self.bridge
+                .record_unbound_field_observer_degradation(error_type, 1);
+        }
     }
 
     #[must_use]

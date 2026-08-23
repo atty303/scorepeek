@@ -259,6 +259,17 @@ impl DiagnosticWorkerHandle {
         self.record_queue_drop(error_type, sequence);
     }
 
+    pub fn record_external_unbound_error(&mut self, error_type: DiagnosticErrorType, count: u64) {
+        if count == 0 {
+            return;
+        }
+        self.last_external_error = Some(error_type);
+        self.overflow_counts[error_type.index()] =
+            self.overflow_counts[error_type.index()].saturating_add(count);
+        self.overflow_entry_counts[error_type.index()] =
+            self.overflow_entry_counts[error_type.index()].saturating_add(1);
+    }
+
     pub fn record_frame_until(
         &mut self,
         mut frame: DiagnosticOwnedFrame,

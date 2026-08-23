@@ -69,6 +69,9 @@ authoritative.
 - [ADR 0032: Observe complete screen field sets without acceptance](0032-observe-complete-screen-field-sets-without-acceptance.md)
   fixes complete result/music-select worker outputs, explicit unimplemented fields, inference
   failure ownership, and value-free application diagnostics without granting acceptance authority.
+- [ADR 0033: Own live field observation as one application session](0033-own-live-field-observation-as-one-application-session.md)
+  joins the immutable recognition session and registered field worker under one current-run submit,
+  poll, diagnostic-degradation, and ordered-finish owner without adding decision authority.
 
 ## Historical
 

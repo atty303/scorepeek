@@ -8,9 +8,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: connect complete typed result or music-select field observations to the
-  live application flow, then derive screen-local catalog candidates without granting song,
-  accepted-field, or event authority prematurely.
+- Current execution focus: derive screen-local full-catalog candidate observations from complete
+  typed result or music-select field outputs without granting song, accepted-field, suppression, or
+  event authority prematurely.
 
 ## Included deliverables
 
@@ -146,6 +146,16 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   diagnostic fact records only screen, fixed field counts, and an optional typed failed-field ID;
   OCR text, pixels, resource bodies, paths, and environment strings are not diagnostic fields, and
   diagnostic disablement or rejection does not change the bound observation result.
+- ADR 0033 adds one application owner for the immutable recognition session and matching registered
+  field worker. The exact observer loads before the diagnostic-backed recognition run opens.
+  Inspection returns screen, non-blocking field-submission, and diagnostic outcomes separately;
+  unknown screens do not submit. Opaque owner/pending tokens reject another run before consuming a
+  result. A pending result is consumed at most once, completed output is recorded through the
+  existing value-free field fact, and completed or disconnected handles are terminal after their
+  first result. An exact capacity-two ledger binds abandoned results to their source sequences;
+  lifecycle timeout or worker loss is unbound rather than attributed to an invented frame. These
+  degradations do not replace recognition. Finish closes the field worker before finalizing the
+  diagnostic run.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -231,14 +241,20 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   transferred ownership to the production field worker, and completed bounded teardown with no
   submitted crops. Changing only the runtime digest failed before resource I/O with typed
   `runtime_binding_mismatch` and exit status 2.
+- Focused integrated-session tests route one synthetic current-run result crop set through a worker,
+  retain its complete bound output, and record one value-free field fact. Recording opt-out returns
+  the same complete output with no artifact. A capacity-one run preserves its second screen result
+  while reporting `field_observer_outstanding_limit`, counts the unconsumed first result as
+  `field_observation_abandoned` at its exact sequence, and finalizes as partial. Another run cannot
+  consume that pending output, and a disconnected pending reports worker loss only once.
 
 ## Unverified boundaries
 
-- The production screen-field observer is constructed from retained registered resources and can
-  map a bound complete crop set to a complete typed result or music-select observation on the
-  field-worker thread. It has not yet been driven by a real live admitted frame or private
-  INFINITAS crop set. Offline `CanonicalFrame` extraction evidence still cannot fabricate the live
-  generation/profile/normalizer owner or enter this live gate.
+- The production integrated-session constructor binds the registered screen-field observer to the
+  matching live recognition owner, but no Gamescope capture gate or ordinary application loop has
+  driven it with a real admitted frame or private INFINITAS crop set. Offline `CanonicalFrame`
+  extraction evidence still cannot fabricate the live generation/profile/normalizer owner or enter
+  this live gate.
 - The bounded CLI gate is not an ordinary long-running application loop. Live queue-full or worker
   loss was not forced on the development machine; bounded unit tests cover queue drop, worker loss,
   generation rejection, opt-out, and diagnostic non-interference. Target-host cost remains unknown.
@@ -250,7 +266,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   source recreation, long soak, FD/thread/RSS convergence, frame age, CPU/memory/copy/GPU/power
   cost, game p99 frametime, and OBS lag remain unverified.
 - The existing real result and music-select recognition evidence remains offline/private. There is
-  no integrated live field submission, catalog resolution, accepted field gate, event daemon,
+  no Gamescope-driven live field submission, catalog resolution, accepted field gate, event daemon,
   target-host performance gate, or supported capture profile.
 - Current recordings and provisional labels do not establish title-disjoint result accuracy,
   calibrated thresholds, result dwell, miss denominator, deduplication, or release accuracy.
@@ -271,12 +287,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Connect the registered production screen-field observer to the real live application session so
-   only current-run complete crop sets can be submitted and every output retains the same immutable
-   run binding. Keep model construction and filesystem I/O before worker startup.
-2. Define screen-local full-catalog candidate observations from the complete open-text field set,
+1. Define screen-local full-catalog candidate observations from the complete open-text field set,
    without choosing a song, accepting a field, suppressing an outcome, or emitting an event.
-3. Verify real field routing and observer output with separately authorized private INFINITAS
+2. Add an explicit bounded Gamescope field-observation gate using the integrated application owner,
+   without exposing OCR text or pixels in its public result.
+3. Verify that gate with separately authorized private INFINITAS
    evidence before claiming layout, OCR, accepted-field, target-host, or support results.
 
 Do not proceed to OCR-only tuning, automatic calibration, Portal/OBS fallback, soak/performance, or
