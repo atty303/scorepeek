@@ -17,6 +17,7 @@ use crate::recognition_live::field_observer::{
     BoundFieldObservation, FieldObserverFinishOutcome, FieldObserverFinishStatus,
     FieldObserverOfferError,
 };
+use crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation;
 
 pub mod field_observer;
 pub mod field_session;
@@ -221,23 +222,28 @@ impl LiveRecognitionSession {
     /// Records value-free diagnostics for one worker-bound field result.
     ///
     /// The returned diagnostic enqueue outcome is independent of and cannot mutate `observation`.
-    pub fn record_field_observation<E>(
+    pub fn record_field_observation<T, E>(
         &mut self,
-        observation: &BoundFieldObservation<
-            Result<ScreenFieldObservations, ScreenFieldObservationError<E>>,
-        >,
-    ) -> DiagnosticEnqueueOutcome {
+        observation: &BoundFieldObservation<Result<T, ScreenFieldObservationError<E>>>,
+    ) -> DiagnosticEnqueueOutcome
+    where
+        T: DiagnosticScreenFieldObservation,
+    {
         if observation.binding().run_id() != self.run_binding.run_id
             || observation.binding().identity_sha256() != self.run_binding.binding_sha256
         {
             return self.bridge.reject_field_observation(observation.sequence());
         }
-        self.bridge.record_field_observation(
+        self.bridge.record_field_observation_summary(
             observation.sequence(),
             observation.monotonic_start_ms(),
             observation.monotonic_end_ms(),
             observation.screen(),
-            observation.output(),
+            observation
+                .output()
+                .as_ref()
+                .map(DiagnosticScreenFieldObservation::diagnostic_fields)
+                .map_err(|error| error.field),
         )
     }
 
@@ -357,6 +363,23 @@ impl LiveRecognitionSession {
             bridge,
             last_sequence: None,
         })
+    }
+}
+
+#[doc(hidden)]
+pub trait DiagnosticScreenFieldObservation {
+    fn diagnostic_fields(&self) -> &ScreenFieldObservations;
+}
+
+impl DiagnosticScreenFieldObservation for ScreenFieldObservations {
+    fn diagnostic_fields(&self) -> &ScreenFieldObservations {
+        self
+    }
+}
+
+impl DiagnosticScreenFieldObservation for RegisteredScreenFieldObservation {
+    fn diagnostic_fields(&self) -> &ScreenFieldObservations {
+        self.fields()
     }
 }
 

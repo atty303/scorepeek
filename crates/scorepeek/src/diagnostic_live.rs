@@ -243,6 +243,23 @@ impl LiveDiagnosticBridge {
         screen: ScreenClass,
         output: &Result<ScreenFieldObservations, ScreenFieldObservationError<E>>,
     ) -> DiagnosticEnqueueOutcome {
+        self.record_field_observation_summary(
+            sequence,
+            monotonic_start_ms,
+            monotonic_end_ms,
+            screen,
+            output.as_ref().map_err(|error| error.field),
+        )
+    }
+
+    pub(crate) fn record_field_observation_summary(
+        &mut self,
+        sequence: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+        screen: ScreenClass,
+        output: Result<&ScreenFieldObservations, ScreenTextField>,
+    ) -> DiagnosticEnqueueOutcome {
         let diagnostic_screen = match screen {
             ScreenClass::Result => DiagnosticScreen::Result,
             ScreenClass::MusicSelect => DiagnosticScreen::MusicSelection,
@@ -269,8 +286,8 @@ impl LiveDiagnosticBridge {
                     .record_external_error(DiagnosticErrorType::InvalidConfiguration, sequence);
                 return DiagnosticEnqueueOutcome::Rejected;
             }
-            Err(error) => {
-                let Some(field) = diagnostic_text_field(screen, error.field) else {
+            Err(failed_field) => {
+                let Some(field) = diagnostic_text_field(screen, failed_field) else {
                     self.worker
                         .record_external_error(DiagnosticErrorType::InvalidConfiguration, sequence);
                     return DiagnosticEnqueueOutcome::Rejected;

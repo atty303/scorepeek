@@ -8,8 +8,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: connect the integrated application owner to a bounded Gamescope
-  field-observation gate without exposing OCR text, catalog strings, or pixels in its public result.
+- Current execution focus: verify the bounded Gamescope field-observation gate with separately
+  authorized private evidence before defining any accepted-field or song-resolution policy.
 
 ## Included deliverables
 
@@ -164,6 +164,14 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   domain-unique folded candidate forms; a search-term-only song fails domain construction with its
   typed ID instead of panicking or disappearing. Unimplemented non-text fields remain explicit
   inputs and do not fabricate scores.
+- ADR 0035 connects that domain to the registered production observer and a bounded Gamescope gate.
+  The observer constructs the domain once from the already admitted active catalog, then returns
+  the complete field set and all-song evidence together without ranking or acceptance. The gate
+  owns capture, normalization, classification, non-blocking field submission, selected pending
+  completion, receiver/provider shutdown, field-worker finish, and diagnostic finalization under
+  one immutable descriptor. Success requires at least one completed candidate set. Its public JSON
+  contains typed status and bounded screen/worker/candidate counts but no OCR text, catalog strings,
+  song IDs, candidate scores, pixels, paths, artifact bodies, or environment/session strings.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -263,14 +271,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Unverified boundaries
 
-- The production integrated-session constructor binds the registered screen-field observer to the
-  matching live recognition owner, but no Gamescope capture gate or ordinary application loop has
-  driven it with a real admitted frame or private INFINITAS crop set. Offline `CanonicalFrame`
-  extraction evidence still cannot fabricate the live generation/profile/normalizer owner or enter
-  this live gate.
-- The full-catalog candidate domain is not yet constructed by the registered worker or integrated
-  session. No development-machine or Gamescope run has measured its inference-plus-scoring cost,
-  queue behavior, or output on private INFINITAS fields.
+- The production gate exists, but no Gamescope run has yet driven it with a classified admitted
+  frame or private INFINITAS crop set. Offline `CanonicalFrame` extraction evidence still cannot
+  fabricate the live generation/profile/normalizer owner or enter this gate. No development-machine
+  run has measured inference-plus-scoring cost, queue behavior, or candidate output on private
+  INFINITAS fields.
 - The bounded CLI gate is not an ordinary long-running application loop. Live queue-full or worker
   loss was not forced on the development machine; bounded unit tests cover queue drop, worker loss,
   generation rejection, opt-out, and diagnostic non-interference. Target-host cost remains unknown.
@@ -282,8 +287,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   source recreation, long soak, FD/thread/RSS convergence, frame age, CPU/memory/copy/GPU/power
   cost, game p99 frametime, and OBS lag remain unverified.
 - The existing real result and music-select recognition evidence remains offline/private. There is
-  no Gamescope-driven live field submission, catalog resolution, accepted field gate, event daemon,
-  target-host performance gate, or supported capture profile.
+  no verified Gamescope-driven live field submission, catalog resolution, accepted field gate,
+  event daemon, target-host performance gate, or supported capture profile.
 - Current recordings and provisional labels do not establish title-disjoint result accuracy,
   calibrated thresholds, result dwell, miss denominator, deduplication, or release accuracy.
 - Persistent scheduler installation was verified in isolation but not applied to the operator's
@@ -303,10 +308,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Add an explicit bounded Gamescope field-observation gate using the integrated application owner,
-   without exposing OCR text or pixels in its public result.
-2. Verify that gate with separately authorized private INFINITAS
-   evidence before claiming layout, OCR, accepted-field, target-host, or support results.
+1. With explicit authority for private INFINITAS evidence, run the bounded Gamescope
+   field-observation gate against the exact active catalog/model/runtime and retain only its
+   value-free public result and bounded diagnostic run.
+2. Review that run before defining ranking, field acceptance, song resolution, temporal agreement,
+   target-host performance, or support contracts.
 
 Do not proceed to OCR-only tuning, automatic calibration, Portal/OBS fallback, soak/performance, or
 support claims until live field routing and its immutable run-lifecycle evidence are complete.

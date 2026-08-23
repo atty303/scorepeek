@@ -1,16 +1,18 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
-use scorepeek::recognition::{
-    RegisteredResourceLoadError, ScreenFieldObservationError, ScreenFieldObservations,
-};
+use scorepeek::recognition::ScreenFieldObservationError;
 
+use super::DiagnosticScreenFieldObservation;
 use super::field_observer::{
     BoundFieldObservation, FieldObservationPoll, FieldObserver, FieldObserverFinishOutcome,
     FieldObserverOfferError, FieldObserverStartError, FieldObserverWorker, PendingFieldObservation,
 };
-use super::screen_field_observer::RegisteredScreenFieldObserver;
+use super::screen_field_observer::{
+    RegisteredScreenFieldObserver, RegisteredScreenFieldObserverLoadError,
+};
 use super::{
     LiveRecognitionFrameResult, LiveRecognitionObservation, LiveRecognitionSession,
     LiveRecognitionSessionError,
@@ -176,6 +178,43 @@ impl<O: FieldObserver> LiveFieldObservationSession<O> {
         }
     }
 
+    /// Finishes after capture teardown while extending the shared monotonic run bound through the
+    /// field-worker shutdown performed by this call.
+    #[must_use]
+    pub fn finish_after_capture(
+        mut self,
+        status: DiagnosticRunStatus,
+        capture_end_ms: u64,
+        elapsed_after_capture: Duration,
+        field_observer_timeout: Duration,
+    ) -> LiveFieldObservationFinishOutcome {
+        let finish_started = Instant::now();
+        let field_observer = self.field_observer.finish(field_observer_timeout);
+        for (_, sequence) in self.outstanding {
+            self.recognition
+                .record_abandoned_field_observation(sequence);
+        }
+        self.recognition
+            .record_field_observer_finish(field_observer);
+        let elapsed_ms = duration_millis_saturating(
+            elapsed_after_capture.saturating_add(finish_started.elapsed()),
+        );
+        let diagnostic_status = if field_observer.status
+            == super::field_observer::FieldObserverFinishStatus::Complete
+        {
+            status
+        } else {
+            DiagnosticRunStatus::Error
+        };
+        let diagnostic = self
+            .recognition
+            .finish(diagnostic_status, capture_end_ms.saturating_add(elapsed_ms));
+        LiveFieldObservationFinishOutcome {
+            field_observer,
+            diagnostic,
+        }
+    }
+
     #[cfg(test)]
     fn start_for_test<E>(
         root: &Path,
@@ -211,6 +250,10 @@ impl<O: FieldObserver> LiveFieldObservationSession<O> {
     }
 }
 
+fn duration_millis_saturating(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
 impl LiveFieldObservationSession<RegisteredScreenFieldObserver> {
     /// Starts the production session with the exact registered catalog, model, and runtime.
     ///
@@ -222,18 +265,18 @@ impl LiveFieldObservationSession<RegisteredScreenFieldObserver> {
         policy: DiagnosticPolicy,
         catalog_root: &Path,
         bundle_root: &Path,
-    ) -> Result<Self, LiveFieldObservationStartError<RegisteredResourceLoadError>> {
+    ) -> Result<Self, LiveFieldObservationStartError<RegisteredScreenFieldObserverLoadError>> {
         Self::start(root, descriptor, policy, |binding| {
-            binding
-                .load_registered_resources(catalog_root, bundle_root)
-                .map(RegisteredScreenFieldObserver::new)
+            let resources = binding.load_registered_resources(catalog_root, bundle_root)?;
+            Ok(RegisteredScreenFieldObserver::new(resources)?)
         })
     }
 }
 
-impl<O, E> LiveFieldObservationSession<O>
+impl<O, T, E> LiveFieldObservationSession<O>
 where
-    O: FieldObserver<Output = Result<ScreenFieldObservations, ScreenFieldObservationError<E>>>,
+    O: FieldObserver<Output = Result<T, ScreenFieldObservationError<E>>>,
+    T: DiagnosticScreenFieldObservation + Send + 'static,
     E: Send + 'static,
 {
     #[must_use]

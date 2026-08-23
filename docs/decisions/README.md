@@ -75,6 +75,9 @@ authoritative.
 - [ADR 0034: Score every catalog song without ranking](0034-score-every-catalog-song-without-ranking.md)
   fixes a pure full-catalog comparison domain that preserves separate screen-local text scores for
   every song without ranking, truncation, acceptance, temporal state, or event authority.
+- [ADR 0035: Run bounded Gamescope field observation without publishing values](0035-run-bounded-gamescope-field-observation.md)
+  connects registered inference and full-catalog scoring to one bounded admitted Gamescope run,
+  with value-free public results and ordered capture, worker, and diagnostic shutdown.
 
 ## Historical
 

@@ -161,6 +161,20 @@ enum RegisteredResourceGateErrorType {
     RuntimeInitializationFailed,
 }
 
+struct RegisteredResourceOwner {
+    _resources: recognition::RegisteredRecognitionResources,
+}
+
+impl recognition_live::field_observer::FieldObserver for RegisteredResourceOwner {
+    type Output = ();
+
+    fn observe(
+        &mut self,
+        _input: &recognition_live::field_observer::FieldObserverInput,
+    ) -> Self::Output {
+    }
+}
+
 impl From<recognition::RegisteredResourceLoadErrorType> for RegisteredResourceGateErrorType {
     fn from(error: recognition::RegisteredResourceLoadErrorType) -> Self {
         match error {
@@ -260,7 +274,9 @@ fn registered_resource_gate(
         recognition_live::field_observer::FieldObserverWorker::start(&descriptor, |binding| {
             binding
                 .load_registered_resources(Path::new(catalog_root), Path::new(bundle_root))
-                .map(recognition_live::screen_field_observer::RegisteredScreenFieldObserver::new)
+                .map(|resources| RegisteredResourceOwner {
+                    _resources: resources,
+                })
         });
     match worker {
         Ok(worker) => {
@@ -305,19 +321,7 @@ fn registered_resource_gate(
             Ok(())
         }
         Err(error) => {
-            let (error_type, message) = match error {
-                recognition_live::field_observer::FieldObserverStartError::InvalidBinding => (
-                    RegisteredResourceGateErrorType::InvalidBinding,
-                    "registered resource worker binding is invalid".to_owned(),
-                ),
-                recognition_live::field_observer::FieldObserverStartError::Load(error) => {
-                    (error.error_type().into(), error.to_string())
-                }
-                recognition_live::field_observer::FieldObserverStartError::WorkerUnavailable => (
-                    RegisteredResourceGateErrorType::WorkerUnavailable,
-                    "registered resource worker is unavailable".to_owned(),
-                ),
-            };
+            let (error_type, message) = registered_resource_start_error(error);
             print_registered_resource_gate_report(
                 "error",
                 Some(error_type),
@@ -327,6 +331,25 @@ fn registered_resource_gate(
             )?;
             Err(message)
         }
+    }
+}
+
+fn registered_resource_start_error(
+    error: recognition_live::field_observer::FieldObserverStartError<
+        recognition::RegisteredResourceLoadError,
+    >,
+) -> (RegisteredResourceGateErrorType, String) {
+    use recognition_live::field_observer::FieldObserverStartError;
+    match error {
+        FieldObserverStartError::InvalidBinding => (
+            RegisteredResourceGateErrorType::InvalidBinding,
+            "registered resource worker binding is invalid".to_owned(),
+        ),
+        FieldObserverStartError::Load(error) => (error.error_type().into(), error.to_string()),
+        FieldObserverStartError::WorkerUnavailable => (
+            RegisteredResourceGateErrorType::WorkerUnavailable,
+            "registered resource worker is unavailable".to_owned(),
+        ),
     }
 }
 
@@ -354,7 +377,8 @@ fn print_registered_resource_gate_report(
 }
 
 fn try_capture_commands(args: &[OsString]) -> Option<Result<(), String>> {
-    try_capture_recognition_handoff(args)
+    try_capture_field_observation(args)
+        .or_else(|| try_capture_recognition_handoff(args))
         .or_else(|| try_capture_diagnostic_handoff(args))
         .or_else(|| try_capture_canonical_frame(args))
         .or_else(|| try_capture_binding_admission(args))
@@ -388,6 +412,42 @@ const CAPTURE_HANDOFF_FLAGS: &[&str] = &[
     "--scaler",
     "--filter",
 ];
+
+const CAPTURE_FIELD_OBSERVATION_FLAGS: &[&str] = &[
+    "--binding",
+    "--binding-sha256",
+    "--capture-generation",
+    "--duration-ms",
+    "--diagnostic-root",
+    "--catalog-store",
+    "--bundle",
+    "--run-id",
+    "--build-sha256",
+    "--canonical-layout-sha256",
+    "--catalog-sha256",
+    "--model-sha256",
+    "--runtime-sha256",
+    "--recording",
+    "--environment-id",
+    "--gamescope-version",
+    "--backend",
+    "--output-width",
+    "--output-height",
+    "--nested-width",
+    "--nested-height",
+    "--nested-refresh",
+    "--scaler",
+    "--filter",
+];
+
+fn try_capture_field_observation(args: &[OsString]) -> Option<Result<(), String>> {
+    let values = capture_flag_values(
+        args,
+        "gamescope-field-observation-gate",
+        CAPTURE_FIELD_OBSERVATION_FLAGS,
+    )?;
+    Some(run_capture_field_observation(&values))
+}
 
 fn try_capture_recognition_handoff(args: &[OsString]) -> Option<Result<(), String>> {
     let values = capture_flag_values(
@@ -514,6 +574,102 @@ fn run_capture_handoff(values: &[&OsStr], inspect_screen: bool) -> Result<(), St
             "Gamescope diagnostic handoff gate failed",
         )
     }
+}
+
+fn run_capture_field_observation(values: &[&OsStr]) -> Result<(), String> {
+    let [
+        binding,
+        binding_digest,
+        generation,
+        duration,
+        diagnostic_root,
+        catalog_root,
+        bundle_root,
+        run_id,
+        build_digest,
+        layout_digest,
+        catalog_digest,
+        model_digest,
+        runtime_digest,
+        recording,
+        environment,
+        version,
+        backend,
+        output_width,
+        output_height,
+        width,
+        height,
+        refresh,
+        scaler,
+        filter,
+    ] = values
+    else {
+        unreachable!("capture flag parser returns the exact value count");
+    };
+    let binding_digest = parse_cli_sha256(binding_digest, "binding SHA-256")?;
+    let generation = parse_capture_generation(generation)?;
+    let duration_ms = capture_live::parse_duration_ms(duration)?;
+    let run_id = parse_diagnostic_run_id(run_id)?;
+    let policy = parse_diagnostic_recording_policy(recording)?;
+    let configuration = capture_calibration::parse_session_configuration(
+        environment,
+        version,
+        backend,
+        output_width,
+        output_height,
+        width,
+        height,
+        refresh,
+        scaler,
+        filter,
+    )?;
+    let descriptor = diagnostic_recording::DiagnosticRunDescriptor {
+        run_id,
+        monotonic_start_ms: 0,
+        resource: diagnostic_recording::DiagnosticResource {
+            program: "scorepeek",
+            version: env!("CARGO_PKG_VERSION"),
+            build_sha256: parse_cli_sha256(build_digest, "build SHA-256")?,
+        },
+        binding: diagnostic_recording::DiagnosticBinding {
+            capture_generation: generation.get(),
+            capture_profile_sha256: String::new(),
+            normalizer_sha256: String::new(),
+            canonical_layout_sha256: parse_cli_sha256(layout_digest, "canonical layout SHA-256")?,
+            catalog_sha256: parse_cli_sha256(catalog_digest, "catalog SHA-256")?,
+            model_sha256: parse_cli_sha256(model_digest, "model SHA-256")?,
+            runtime_sha256: parse_cli_sha256(runtime_digest, "runtime SHA-256")?,
+            replay: None,
+        },
+    };
+    let handoff = capture_live::GamescopeDiagnosticHandoffGateConfig {
+        binding_path: Path::new(binding),
+        expected_binding_sha256: &binding_digest,
+        session: configuration.capture_provenance()?,
+        capture_generation: generation,
+        descriptor,
+        policy,
+        duration_ms,
+        diagnostic_root: Path::new(diagnostic_root),
+    };
+    let report = capture_live::run_gamescope_field_observation_gate(
+        capture_live::GamescopeFieldObservationGateConfig {
+            handoff,
+            catalog_root: Path::new(catalog_root),
+            bundle_root: Path::new(bundle_root),
+        },
+    );
+    println!(
+        "{}",
+        serde_json::to_string(&report)
+            .map_err(|_| "capture handoff gate report serialization failed".to_owned())?
+    );
+    report.succeeded().then_some(()).ok_or_else(|| {
+        report
+            .failure_detail()
+            .unwrap_or("Gamescope field observation gate failed")
+            .to_owned()
+    })
 }
 
 fn print_capture_handoff_report(
@@ -2018,6 +2174,9 @@ fn print_usage() {
     );
     println!(
         "  scorepeek capture gamescope-recognition-handoff-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --model-sha256 SHA256 --runtime-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER"
+    );
+    println!(
+        "  scorepeek capture gamescope-field-observation-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --catalog-store DIRECTORY --bundle DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --model-sha256 SHA256 --runtime-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER"
     );
 }
 

@@ -60,19 +60,21 @@
   screen-field observerを実装した。resultはtitle/artist textとdifficulty/level/notes/current scoreの明示的な未実装状態、
   music-selectはcentral title/artist/active-list title textとselected chartの明示的な未実装状態を持つcompleteなscreen別型だけを
   出力し、単一field失敗もfield ID付きwhole-screen errorにする。diagnosticはscreen、固定field count、失敗field IDだけを保持し、
-  OCR textやpixelsを記録せず、opt-out/rejectionは認識結果を変えない。実live frameからのfield submit、catalog解決、accepted resultは
-  未着手だった。さらに同一immutable descriptorのrecognition sessionとregistered field workerを一つのapplication ownerへ統合した。
+  OCR textやpixelsを記録せず、opt-out/rejectionは認識結果を変えない。さらに同一immutable descriptorのrecognition sessionと
+  registered field workerを一つのapplication ownerへ統合した。
   resource load完了後にdiagnostic-backed runを開始し、screen result、non-blocking field submit、diagnostic outcomeを分離して返す。
   opaque owner/pending tokenにより別runはoutputをconsumeできず、completed/disconnected handleは一度だけterminal resultを返す。
   capacity 2のexact pending-sequence ledgerからabandonmentを記録し、lifecycle timeout/worker lossは架空sequenceへ結び付けずunboundにする。
   field workerから先に終了し、synthetic current-run cropでcomplete outputとvalue-free fact、opt-out時のartifact 0件、capacity loss時の
-  recognition非干渉とpartial manifest、cross-run pending rejectionを検証済み。Gamescope capture loopからの実submit、catalog解決、
-  accepted resultは未着手。さらにactive catalog全songをstable ID順に保持するpure candidate domainを追加した。resultの
+  recognition非干渉とpartial manifest、cross-run pending rejectionを検証済み。さらにactive catalog全songをstable ID順に保持する
+  pure candidate domainを追加した。resultの
   title/artistとmusic-selectのcentral title/artist/active-list titleごとにraw/exact comparison key/domain-unique folded formを比較し、
   minimum edit distanceとinteger normalized similarityを全songについて別々に保持する。ranking、top-N truncation、field間集約、
-  threshold、accepted field、song decision、selection context更新、diagnostic side effect、eventは行わない。Gamescope capture loopへの
-  統合と実行cost測定は未着手。folded observationはdomain-unique folded candidate formとのみ比較し、search-term-only songは
-  dropやpanicではなくtyped errorでdomain構築を停止する。
+  threshold、accepted field、song decision、selection context更新、diagnostic side effect、eventは行わない。folded observationは
+  domain-unique folded candidate formとのみ比較し、search-term-only songはdropやpanicではなくtyped errorでdomain構築を停止する。
+  registered resourceとcandidate domainをcapture開始前にloadし、Gamescope capture loopからfield submit、inference、全song scoring、
+  capture/worker/diagnosticの順序付き終了までを一つのbounded gateへ統合済み。private INFINITAS frameによる実submit、実行cost、
+  queue behavior、candidate内容は未検証で、accepted resultは未実装。
   OBS/obs-vkcapture並行、
   soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
@@ -436,7 +438,11 @@ NV12、別color profileへ黙ってfallbackしない。
    Rust parity gateを完了する。custom fine-tune/exportは統合context後のmissing OCR signalが実測された場合だけ追加する。
 8. **M5**: gateを通ったsupported PipeWire profileのlifecycle/performanceを比較し、defaultを選ぶ。
 9. **M6**: screen、savable、title/artist/chart contextのfield recognizer、full-catalog screen-local song
-   resolver、digits、cross-field validationの順で追加する。
+   resolver、digits、cross-field validationの順で追加する。field recognizerとcandidate evidenceをlive
+   captureへ接続する最初のgateは、1つのimmutable run bindingとbounded worker lifetimeを所有し、公開結果を
+   typed status、screen/worker/candidate件数およびdiagnostic completenessに限定する。OCR文字列、song ID、
+   candidate score、pixel、artifact本文またはenvironment文字列は公開結果へ含めず、ranking、acceptance、
+   temporal stateおよびevent authorityは後続の独立contractとする。
 10. **M7**: 少数scenario replayから最小selection song contextとrecognition-trigger非依存のbounded
     live diagnosticsを検証し、その後versioned event schemaとNDJSON daemonを統合する。ゲーム全体の
     state machine、attempt、modeまたはretry回数は実装しない。

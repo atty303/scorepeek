@@ -20,7 +20,21 @@ use crate::diagnostic_recording::{
 };
 use crate::diagnostic_worker::DiagnosticEnqueueOutcome;
 use crate::recognition_live::LiveRecognitionSession;
-use scorepeek::recognition::{CanonicalLayout, ScreenClass};
+use crate::recognition_live::field_observer::{
+    DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT, FieldObserverFinishStatus, FieldObserverOfferError,
+};
+use crate::recognition_live::field_session::{
+    LiveFieldObservationPoll, LiveFieldObservationSession, LiveFieldObservationStartError,
+    LiveFieldObservationSubmission, LivePendingFieldObservation,
+};
+use crate::recognition_live::screen_field_observer::{
+    RegisteredScreenFieldObservation, RegisteredScreenFieldObserver,
+    RegisteredScreenFieldObserverLoadError,
+};
+use scorepeek::recognition::{
+    CanonicalLayout, OnnxParityError, RegisteredResourceLoadErrorType, ScreenClass,
+    ScreenFieldObservationError,
+};
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 const RECEIVER_START_TIMEOUT: Duration = Duration::from_secs(2);
@@ -82,6 +96,34 @@ enum DiagnosticHandoffGateErrorType {
     NormalizationFailed,
     RecognitionFailed,
     ShutdownFailed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum FieldObservationGateErrorType {
+    BindingUnavailable,
+    BindingInvalid,
+    CaptureFailed,
+    AdmissionRejected,
+    DiagnosticBindingMismatch,
+    DiagnosticConfigurationInvalid,
+    InvalidResourceLocation,
+    ModelBindingMismatch,
+    RuntimeBindingMismatch,
+    CatalogUnavailable,
+    CatalogBindingMismatch,
+    CatalogLoadFailed,
+    ModelBundleInvalid,
+    RuntimeInitializationFailed,
+    CandidateDomainInvalid,
+    FieldObserverUnavailable,
+    FrameUnavailable,
+    NormalizationFailed,
+    RecognitionFailed,
+    FieldObservationFailed,
+    FieldObservationUnavailable,
+    ShutdownFailed,
+    FieldObserverFinishFailed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -249,6 +291,47 @@ pub struct GamescopeRecognitionHandoffGateReport {
     dropped_capture_diagnostic_facts: u64,
 }
 
+#[derive(Debug, Serialize)]
+pub struct GamescopeFieldObservationGateReport {
+    schema: &'static str,
+    status: LiveGateStatus,
+    error_type: Option<FieldObservationGateErrorType>,
+    capture_error_type: Option<CaptureErrorType>,
+    capture_generation: u64,
+    observed_frames: u64,
+    normalized_frames: u64,
+    inspected_frames: u64,
+    result_frames: u64,
+    music_select_frames: u64,
+    unknown_frames: u64,
+    field_not_applicable: u64,
+    field_submitted: u64,
+    field_rejected: u64,
+    field_ready_success: u64,
+    field_ready_failure: u64,
+    candidate_sets: u64,
+    scored_candidates: u64,
+    field_worker_status: Option<FieldWorkerStatus>,
+    field_worker_submitted: Option<u64>,
+    field_worker_completed: Option<u64>,
+    field_worker_abandoned: Option<u64>,
+    diagnostic_completeness: Option<DiagnosticCompleteness>,
+    diagnostic_error_type: Option<DiagnosticErrorType>,
+    diagnostic_manifest_sha256: Option<String>,
+    capture_diagnostic_facts: Vec<CaptureDiagnosticFact>,
+    dropped_capture_diagnostic_facts: u64,
+    #[serde(skip)]
+    failure_detail: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum FieldWorkerStatus {
+    Complete,
+    Timeout,
+    WorkerUnavailable,
+}
+
 impl GamescopeLiveGateReport {
     pub const fn succeeded(&self) -> bool {
         matches!(self.status, LiveGateStatus::Success)
@@ -285,6 +368,16 @@ impl GamescopeRecognitionHandoffGateReport {
     }
 }
 
+impl GamescopeFieldObservationGateReport {
+    pub const fn succeeded(&self) -> bool {
+        matches!(self.status, LiveGateStatus::Success)
+    }
+
+    pub fn failure_detail(&self) -> Option<&str> {
+        self.failure_detail.as_deref()
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct HandoffCounters {
     observed_frames: u64,
@@ -307,6 +400,23 @@ struct RecognitionHandoffCounters {
     unknown_frames: u64,
     recognition_failures: u64,
     fact_outcomes: EnqueueOutcomeCounters,
+}
+
+#[derive(Clone, Copy, Default)]
+struct FieldObservationCounters {
+    observed_frames: u64,
+    normalized_frames: u64,
+    inspected_frames: u64,
+    result_frames: u64,
+    music_select_frames: u64,
+    unknown_frames: u64,
+    field_not_applicable: u64,
+    field_submitted: u64,
+    field_rejected: u64,
+    field_ready_success: u64,
+    field_ready_failure: u64,
+    candidate_sets: u64,
+    scored_candidates: u64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -353,6 +463,12 @@ pub struct GamescopeDiagnosticHandoffGateConfig<'a> {
     pub diagnostic_root: &'a std::path::Path,
 }
 
+pub struct GamescopeFieldObservationGateConfig<'a> {
+    pub handoff: GamescopeDiagnosticHandoffGateConfig<'a>,
+    pub catalog_root: &'a std::path::Path,
+    pub bundle_root: &'a std::path::Path,
+}
+
 impl HandoffCounters {
     fn record_offer(&mut self, outcome: DiagnosticEnqueueOutcome) {
         let counter = match outcome {
@@ -381,7 +497,7 @@ impl EnqueueOutcomeCounters {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct BoundedDiagnosticSink {
     facts: Vec<CaptureDiagnosticFact>,
     dropped: u64,
@@ -608,6 +724,544 @@ pub fn run_gamescope_recognition_handoff_gate(
     config: GamescopeDiagnosticHandoffGateConfig<'_>,
 ) -> GamescopeRecognitionHandoffGateReport {
     recognition_handoff_report(run_gamescope_handoff_gate(config, true))
+}
+
+type RegisteredFieldOutput =
+    Result<RegisteredScreenFieldObservation, ScreenFieldObservationError<OnnxParityError>>;
+
+pub fn run_gamescope_field_observation_gate(
+    config: GamescopeFieldObservationGateConfig<'_>,
+) -> GamescopeFieldObservationGateReport {
+    let capture_generation = config.handoff.capture_generation;
+    let duration = Duration::from_millis(config.handoff.duration_ms);
+    let StartedFieldObservationGate {
+        mut lease,
+        mut session,
+        mut sink,
+    } = match start_field_observation_gate(config) {
+        Ok(started) => started,
+        Err(report) => return *report,
+    };
+
+    let mut counters = FieldObservationCounters::default();
+    let mut pending = Vec::<LivePendingFieldObservation<RegisteredFieldOutput>>::new();
+    let mut terminal = offer_field_observation_frames(
+        &mut lease,
+        &mut session,
+        duration,
+        &mut pending,
+        &mut counters,
+        &mut sink,
+    );
+    if counters.normalized_frames == 0 && terminal.is_none() {
+        terminal = Some((FieldObservationGateErrorType::FrameUnavailable, None));
+    }
+    let (shutdown, finish_time) = lease.shutdown_with_elapsed(&mut sink);
+    let post_capture_started = Instant::now();
+    if let Err(error) = shutdown {
+        terminal.get_or_insert((
+            FieldObservationGateErrorType::ShutdownFailed,
+            Some(error.error_type()),
+        ));
+    }
+    if terminal.is_none() {
+        terminal = wait_field_observations(&mut session, &mut pending, &mut counters);
+    }
+    if counters.candidate_sets == 0 && terminal.is_none() {
+        terminal = Some((
+            FieldObservationGateErrorType::FieldObservationUnavailable,
+            None,
+        ));
+    }
+    let finish_status = if terminal.is_none() {
+        DiagnosticRunStatus::Success
+    } else {
+        DiagnosticRunStatus::Error
+    };
+    let outcome = session.finish_after_capture(
+        finish_status,
+        finish_time,
+        post_capture_started.elapsed(),
+        DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT,
+    );
+    if outcome.field_observer.status != FieldObserverFinishStatus::Complete {
+        terminal.get_or_insert((
+            FieldObservationGateErrorType::FieldObserverFinishFailed,
+            None,
+        ));
+    }
+    let (error_type, capture_error_type) = terminal.unzip();
+    field_observation_report(
+        error_type,
+        capture_error_type.flatten(),
+        capture_generation,
+        counters,
+        Some(outcome.field_observer),
+        Some(outcome.diagnostic),
+        sink,
+    )
+}
+
+struct StartedFieldObservationGate {
+    lease: CalibratedGamescopeLease,
+    session: LiveFieldObservationSession<RegisteredScreenFieldObserver>,
+    sink: BoundedDiagnosticSink,
+}
+
+fn start_field_observation_gate(
+    mut config: GamescopeFieldObservationGateConfig<'_>,
+) -> Result<StartedFieldObservationGate, Box<GamescopeFieldObservationGateReport>> {
+    let capture_generation = config.handoff.capture_generation;
+    let sink = BoundedDiagnosticSink::default();
+    if !valid_handoff_descriptor(&config.handoff.descriptor, capture_generation, true) {
+        return Err(Box::new(empty_field_observation_report(
+            FieldObservationGateErrorType::DiagnosticConfigurationInvalid,
+            None,
+            capture_generation,
+            None,
+            sink,
+        )));
+    }
+    let binding = read_diagnostic_handoff_binding(
+        config.handoff.binding_path,
+        config.handoff.expected_binding_sha256,
+    )
+    .map_err(|error| {
+        let error = match error {
+            DiagnosticHandoffGateErrorType::BindingUnavailable => {
+                FieldObservationGateErrorType::BindingUnavailable
+            }
+            _ => FieldObservationGateErrorType::BindingInvalid,
+        };
+        Box::new(empty_field_observation_report(
+            error,
+            None,
+            capture_generation,
+            None,
+            sink.clone(),
+        ))
+    })?;
+    bind_diagnostic_descriptor(&mut config.handoff.descriptor, &binding);
+    let expected_profile = config
+        .handoff
+        .descriptor
+        .binding
+        .capture_profile_sha256
+        .clone();
+    let expected_normalizer = config.handoff.descriptor.binding.normalizer_sha256.clone();
+    let session = match LiveFieldObservationSession::start_registered(
+        config.handoff.diagnostic_root,
+        config.handoff.descriptor,
+        config.handoff.policy,
+        config.catalog_root,
+        config.bundle_root,
+    ) {
+        Ok(session) => session,
+        Err(error) => {
+            let (error_type, field_finish, detail) = field_start_error(error);
+            let mut report = empty_field_observation_report(
+                error_type,
+                None,
+                capture_generation,
+                field_finish,
+                sink,
+            );
+            report.failure_detail = detail;
+            return Err(Box::new(report));
+        }
+    };
+    start_capture_after_field_session(
+        config.handoff.session,
+        binding,
+        capture_generation,
+        &expected_profile,
+        &expected_normalizer,
+        session,
+        sink,
+    )
+}
+
+fn start_capture_after_field_session(
+    provenance: GamescopeSessionProvenance,
+    binding: GamescopeProfileBinding,
+    capture_generation: CaptureGeneration,
+    expected_profile: &str,
+    expected_normalizer: &str,
+    session: LiveFieldObservationSession<RegisteredScreenFieldObserver>,
+    mut sink: BoundedDiagnosticSink,
+) -> Result<StartedFieldObservationGate, Box<GamescopeFieldObservationGateReport>> {
+    let lease = match start_diagnostic_handoff_capture(
+        provenance,
+        binding,
+        capture_generation,
+        &mut sink,
+    ) {
+        Ok(lease) => lease,
+        Err((error, capture_error)) => {
+            let error = match error {
+                DiagnosticHandoffGateErrorType::AdmissionRejected => {
+                    FieldObservationGateErrorType::AdmissionRejected
+                }
+                _ => FieldObservationGateErrorType::CaptureFailed,
+            };
+            let finish_time = sink
+                .facts
+                .iter()
+                .map(|fact| fact.monotonic_end_ms)
+                .max()
+                .unwrap_or(0);
+            let outcome = session.finish_after_capture(
+                DiagnosticRunStatus::Error,
+                finish_time,
+                Duration::ZERO,
+                DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT,
+            );
+            return Err(Box::new(field_observation_report(
+                Some(error),
+                capture_error,
+                capture_generation,
+                FieldObservationCounters::default(),
+                Some(outcome.field_observer),
+                Some(outcome.diagnostic),
+                sink,
+            )));
+        }
+    };
+    if expected_profile != lease.capture_profile_sha256()
+        || expected_normalizer != lease.normalizer_artifact_sha256()
+    {
+        let (shutdown, finish_time) = lease.shutdown_with_elapsed(&mut sink);
+        let capture_error = shutdown.err().map(|error| error.error_type());
+        let outcome = session.finish_after_capture(
+            DiagnosticRunStatus::Error,
+            finish_time,
+            Duration::ZERO,
+            DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT,
+        );
+        return Err(Box::new(field_observation_report(
+            Some(FieldObservationGateErrorType::DiagnosticBindingMismatch),
+            capture_error,
+            capture_generation,
+            FieldObservationCounters::default(),
+            Some(outcome.field_observer),
+            Some(outcome.diagnostic),
+            sink,
+        )));
+    }
+    Ok(StartedFieldObservationGate {
+        lease,
+        session,
+        sink,
+    })
+}
+
+fn empty_field_observation_report(
+    error_type: FieldObservationGateErrorType,
+    capture_error_type: Option<CaptureErrorType>,
+    capture_generation: CaptureGeneration,
+    field_observer: Option<crate::recognition_live::field_observer::FieldObserverFinishOutcome>,
+    sink: BoundedDiagnosticSink,
+) -> GamescopeFieldObservationGateReport {
+    field_observation_report(
+        Some(error_type),
+        capture_error_type,
+        capture_generation,
+        FieldObservationCounters::default(),
+        field_observer,
+        None,
+        sink,
+    )
+}
+
+fn field_start_error(
+    error: LiveFieldObservationStartError<RegisteredScreenFieldObserverLoadError>,
+) -> (
+    FieldObservationGateErrorType,
+    Option<crate::recognition_live::field_observer::FieldObserverFinishOutcome>,
+    Option<String>,
+) {
+    use crate::recognition_live::field_observer::FieldObserverStartError;
+    match error {
+        LiveFieldObservationStartError::FieldObserver(error) => match error {
+            FieldObserverStartError::InvalidBinding => (
+                FieldObservationGateErrorType::DiagnosticConfigurationInvalid,
+                None,
+                None,
+            ),
+            FieldObserverStartError::Load(RegisteredScreenFieldObserverLoadError::Resources(
+                error,
+            )) => (
+                field_resource_error(error.error_type()),
+                None,
+                Some(error.to_string()),
+            ),
+            FieldObserverStartError::Load(
+                RegisteredScreenFieldObserverLoadError::CandidateDomain(error),
+            ) => (
+                FieldObservationGateErrorType::CandidateDomainInvalid,
+                None,
+                Some(format!(
+                    "catalog candidate domain is invalid for song {}: {error}",
+                    error.song_id.as_uuid()
+                )),
+            ),
+            FieldObserverStartError::WorkerUnavailable => (
+                FieldObservationGateErrorType::FieldObserverUnavailable,
+                None,
+                None,
+            ),
+        },
+        LiveFieldObservationStartError::Recognition {
+            field_observer_finish,
+            ..
+        } => (
+            FieldObservationGateErrorType::DiagnosticConfigurationInvalid,
+            Some(field_observer_finish),
+            None,
+        ),
+    }
+}
+
+const fn field_resource_error(
+    error: RegisteredResourceLoadErrorType,
+) -> FieldObservationGateErrorType {
+    match error {
+        RegisteredResourceLoadErrorType::InvalidLocation => {
+            FieldObservationGateErrorType::InvalidResourceLocation
+        }
+        RegisteredResourceLoadErrorType::ModelBindingMismatch => {
+            FieldObservationGateErrorType::ModelBindingMismatch
+        }
+        RegisteredResourceLoadErrorType::RuntimeBindingMismatch => {
+            FieldObservationGateErrorType::RuntimeBindingMismatch
+        }
+        RegisteredResourceLoadErrorType::CatalogUnavailable => {
+            FieldObservationGateErrorType::CatalogUnavailable
+        }
+        RegisteredResourceLoadErrorType::CatalogBindingMismatch => {
+            FieldObservationGateErrorType::CatalogBindingMismatch
+        }
+        RegisteredResourceLoadErrorType::CatalogLoadFailed => {
+            FieldObservationGateErrorType::CatalogLoadFailed
+        }
+        RegisteredResourceLoadErrorType::ModelBundleInvalid => {
+            FieldObservationGateErrorType::ModelBundleInvalid
+        }
+        RegisteredResourceLoadErrorType::RuntimeInitializationFailed => {
+            FieldObservationGateErrorType::RuntimeInitializationFailed
+        }
+    }
+}
+
+fn offer_field_observation_frames(
+    lease: &mut CalibratedGamescopeLease,
+    session: &mut LiveFieldObservationSession<RegisteredScreenFieldObserver>,
+    duration: Duration,
+    pending: &mut Vec<LivePendingFieldObservation<RegisteredFieldOutput>>,
+    counters: &mut FieldObservationCounters,
+    sink: &mut BoundedDiagnosticSink,
+) -> Option<(FieldObservationGateErrorType, Option<CaptureErrorType>)> {
+    let started = Instant::now();
+    loop {
+        if let Some(observed) = lease.take_latest_observed_frame() {
+            counters.observed_frames = counters.observed_frames.saturating_add(1);
+            let normalized = match lease.normalize_observed_frame(observed, sink) {
+                Ok(normalized) => normalized,
+                Err(error) => {
+                    return Some((
+                        FieldObservationGateErrorType::NormalizationFailed,
+                        Some(error.error_type()),
+                    ));
+                }
+            };
+            counters.normalized_frames = counters.normalized_frames.saturating_add(1);
+            let live = LiveCanonicalFrame::from(normalized);
+            let Ok(result) = session.inspect(&live) else {
+                return Some((FieldObservationGateErrorType::RecognitionFailed, None));
+            };
+            counters.inspected_frames = counters.inspected_frames.saturating_add(1);
+            let screen_counter = match result.observation.screen() {
+                ScreenClass::Result => &mut counters.result_frames,
+                ScreenClass::MusicSelect => &mut counters.music_select_frames,
+                ScreenClass::Unknown => &mut counters.unknown_frames,
+            };
+            *screen_counter = screen_counter.saturating_add(1);
+            match result.field_submission {
+                LiveFieldObservationSubmission::NotApplicable => {
+                    counters.field_not_applicable = counters.field_not_applicable.saturating_add(1);
+                }
+                LiveFieldObservationSubmission::Submitted(observation) => {
+                    counters.field_submitted = counters.field_submitted.saturating_add(1);
+                    pending.push(observation);
+                }
+                LiveFieldObservationSubmission::Rejected(error) => {
+                    counters.field_rejected = counters.field_rejected.saturating_add(1);
+                    if matches!(
+                        error,
+                        FieldObserverOfferError::BindingMismatch
+                            | FieldObserverOfferError::WorkerUnavailable
+                    ) {
+                        return Some((
+                            FieldObservationGateErrorType::FieldObserverUnavailable,
+                            None,
+                        ));
+                    }
+                }
+            }
+            if let Some(error) = poll_field_observations(session, pending, counters, None) {
+                return Some((error, None));
+            }
+        }
+        if started.elapsed() >= duration {
+            return None;
+        }
+        let remaining = duration.saturating_sub(started.elapsed());
+        if let Err(error) = lease.poll(remaining, sink) {
+            return Some((
+                FieldObservationGateErrorType::CaptureFailed,
+                Some(error.error_type()),
+            ));
+        }
+    }
+}
+
+fn wait_field_observations(
+    session: &mut LiveFieldObservationSession<RegisteredScreenFieldObserver>,
+    pending: &mut Vec<LivePendingFieldObservation<RegisteredFieldOutput>>,
+    counters: &mut FieldObservationCounters,
+) -> Option<(FieldObservationGateErrorType, Option<CaptureErrorType>)> {
+    let started = Instant::now();
+    while !pending.is_empty() {
+        let remaining = DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        if let Some(error) = poll_field_observations(session, pending, counters, Some(remaining)) {
+            return Some((error, None));
+        }
+    }
+    None
+}
+
+fn poll_field_observations(
+    session: &mut LiveFieldObservationSession<RegisteredScreenFieldObserver>,
+    pending: &mut Vec<LivePendingFieldObservation<RegisteredFieldOutput>>,
+    counters: &mut FieldObservationCounters,
+    wait: Option<Duration>,
+) -> Option<FieldObservationGateErrorType> {
+    let mut index = 0;
+    while index < pending.len() {
+        let poll = match wait {
+            Some(timeout) => session.wait_field_observation(&pending[index], timeout),
+            None => session.poll_field_observation(&pending[index]),
+        };
+        match poll {
+            LiveFieldObservationPoll::Pending => {
+                if wait.is_some() {
+                    return None;
+                }
+                index += 1;
+            }
+            LiveFieldObservationPoll::Ready { observation, .. } => {
+                pending.swap_remove(index);
+                if let Ok(output) = observation.output() {
+                    counters.field_ready_success = counters.field_ready_success.saturating_add(1);
+                    counters.candidate_sets = counters.candidate_sets.saturating_add(1);
+                    counters.scored_candidates = counters.scored_candidates.saturating_add(
+                        u64::try_from(output.candidates().candidate_count()).unwrap_or(u64::MAX),
+                    );
+                } else {
+                    counters.field_ready_failure = counters.field_ready_failure.saturating_add(1);
+                    return Some(FieldObservationGateErrorType::FieldObservationFailed);
+                }
+                if wait.is_some() {
+                    return None;
+                }
+            }
+            LiveFieldObservationPoll::Consumed
+            | LiveFieldObservationPoll::BindingMismatch
+            | LiveFieldObservationPoll::Terminal => {
+                pending.swap_remove(index);
+                return Some(FieldObservationGateErrorType::DiagnosticConfigurationInvalid);
+            }
+            LiveFieldObservationPoll::WorkerUnavailable => {
+                pending.swap_remove(index);
+                return Some(FieldObservationGateErrorType::FieldObserverUnavailable);
+            }
+        }
+    }
+    None
+}
+
+fn field_observation_report(
+    error_type: Option<FieldObservationGateErrorType>,
+    capture_error_type: Option<CaptureErrorType>,
+    capture_generation: CaptureGeneration,
+    counters: FieldObservationCounters,
+    field_observer: Option<crate::recognition_live::field_observer::FieldObserverFinishOutcome>,
+    diagnostic: Option<crate::diagnostic_recording::DiagnosticFinishOutcome>,
+    sink: BoundedDiagnosticSink,
+) -> GamescopeFieldObservationGateReport {
+    let (
+        field_worker_status,
+        field_worker_submitted,
+        field_worker_completed,
+        field_worker_abandoned,
+    ) = field_observer.map_or((None, None, None, None), |outcome| {
+        let status = match outcome.status {
+            FieldObserverFinishStatus::Complete => FieldWorkerStatus::Complete,
+            FieldObserverFinishStatus::Timeout => FieldWorkerStatus::Timeout,
+            FieldObserverFinishStatus::WorkerUnavailable => FieldWorkerStatus::WorkerUnavailable,
+        };
+        (
+            Some(status),
+            Some(outcome.submitted),
+            outcome.completed,
+            outcome.abandoned,
+        )
+    });
+    let (diagnostic_completeness, diagnostic_error_type, diagnostic_manifest_sha256) = diagnostic
+        .map_or((None, None, None), |outcome| {
+            (
+                outcome.completeness,
+                outcome.error_type,
+                outcome.manifest_sha256,
+            )
+        });
+    GamescopeFieldObservationGateReport {
+        schema: "scorepeek-gamescope-field-observation-gate-v1",
+        status: if error_type.is_some() {
+            LiveGateStatus::Error
+        } else {
+            LiveGateStatus::Success
+        },
+        error_type,
+        capture_error_type,
+        capture_generation: capture_generation.get(),
+        observed_frames: counters.observed_frames,
+        normalized_frames: counters.normalized_frames,
+        inspected_frames: counters.inspected_frames,
+        result_frames: counters.result_frames,
+        music_select_frames: counters.music_select_frames,
+        unknown_frames: counters.unknown_frames,
+        field_not_applicable: counters.field_not_applicable,
+        field_submitted: counters.field_submitted,
+        field_rejected: counters.field_rejected,
+        field_ready_success: counters.field_ready_success,
+        field_ready_failure: counters.field_ready_failure,
+        candidate_sets: counters.candidate_sets,
+        scored_candidates: counters.scored_candidates,
+        field_worker_status,
+        field_worker_submitted,
+        field_worker_completed,
+        field_worker_abandoned,
+        diagnostic_completeness,
+        diagnostic_error_type,
+        diagnostic_manifest_sha256,
+        capture_diagnostic_facts: sink.facts,
+        dropped_capture_diagnostic_facts: sink.dropped,
+        failure_detail: None,
+    }
 }
 
 fn run_gamescope_handoff_gate(
@@ -1467,15 +2121,19 @@ mod tests {
         GamescopeProfileBindingAuthoringInput, RationalCoordinate, UncalibratedMemoryType,
         UncalibratedVideoContract,
     };
-    use scorepeek::recognition::CanonicalLayout;
+    use scorepeek::recognition::{
+        CanonicalLayout, RegisteredResourceLoadError, RegisteredResourceLoadErrorType,
+    };
 
     use super::{
-        BoundedDiagnosticSink, DiagnosticPolicy, DiagnosticRunDescriptor, GamescopeLiveGateReport,
-        LifecycleGateErrorType, LifecyclePhaseStatus, LiveGateStatus, MAX_DIAGNOSTIC_FACTS,
-        lifecycle_error_type, parse_consumer_interval_ms, parse_duration_ms, parse_lifecycle_runs,
-        process_resource_snapshot, read_binding, run_gamescope_binding_admission_gate,
-        run_gamescope_canonical_frame_gate, run_gamescope_diagnostic_handoff_gate,
-        run_gamescope_recognition_handoff_gate, summarize_run,
+        BoundedDiagnosticSink, DiagnosticPolicy, DiagnosticRunDescriptor, FieldObservationCounters,
+        FieldObservationGateErrorType, GamescopeLiveGateReport, LifecycleGateErrorType,
+        LifecyclePhaseStatus, LiveGateStatus, MAX_DIAGNOSTIC_FACTS, field_observation_report,
+        field_resource_error, field_start_error, lifecycle_error_type, parse_consumer_interval_ms,
+        parse_duration_ms, parse_lifecycle_runs, process_resource_snapshot, read_binding,
+        run_gamescope_binding_admission_gate, run_gamescope_canonical_frame_gate,
+        run_gamescope_diagnostic_handoff_gate, run_gamescope_recognition_handoff_gate,
+        summarize_run,
     };
 
     fn diagnostic_descriptor(generation: u64) -> DiagnosticRunDescriptor {
@@ -1872,5 +2530,72 @@ mod tests {
         }
         assert_eq!(sink.facts.len(), MAX_DIAGNOSTIC_FACTS);
         assert_eq!(sink.dropped, 1);
+    }
+
+    #[test]
+    fn field_observation_report_exposes_only_value_free_outcomes() {
+        let mut report = field_observation_report(
+            None,
+            None,
+            CaptureGeneration::new(7).unwrap(),
+            FieldObservationCounters {
+                observed_frames: 3,
+                normalized_frames: 3,
+                inspected_frames: 3,
+                result_frames: 1,
+                music_select_frames: 1,
+                unknown_frames: 1,
+                field_not_applicable: 1,
+                field_submitted: 2,
+                field_ready_success: 2,
+                candidate_sets: 2,
+                scored_candidates: 10,
+                ..FieldObservationCounters::default()
+            },
+            None,
+            None,
+            BoundedDiagnosticSink::default(),
+        );
+        report.failure_detail = Some("operator-only resource cause".to_owned());
+        let encoded = serde_json::to_string(&report).unwrap();
+
+        assert!(encoded.contains("\"candidate_sets\":2"));
+        assert!(encoded.contains("\"scored_candidates\":10"));
+        for forbidden in ["open_text", "song_id", "pixels", "environment_id"] {
+            assert!(!encoded.contains(forbidden));
+        }
+        assert!(!encoded.contains("operator-only resource cause"));
+    }
+
+    #[test]
+    fn field_gate_keeps_registered_resource_failures_actionable() {
+        assert_eq!(
+            field_resource_error(RegisteredResourceLoadErrorType::CatalogBindingMismatch),
+            FieldObservationGateErrorType::CatalogBindingMismatch
+        );
+        assert_eq!(
+            field_resource_error(RegisteredResourceLoadErrorType::RuntimeInitializationFailed),
+            FieldObservationGateErrorType::RuntimeInitializationFailed
+        );
+        let (error_type, finish, detail) = field_start_error(
+            crate::recognition_live::field_session::LiveFieldObservationStartError::FieldObserver(
+                crate::recognition_live::field_observer::FieldObserverStartError::Load(
+                    crate::recognition_live::screen_field_observer::RegisteredScreenFieldObserverLoadError::Resources(
+                        RegisteredResourceLoadError::InvalidLocation {
+                            role: "model bundle",
+                            source: Some(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+                        },
+                    ),
+                ),
+            ),
+        );
+        assert_eq!(
+            error_type,
+            FieldObservationGateErrorType::InvalidResourceLocation
+        );
+        assert!(finish.is_none());
+        let detail = detail.unwrap();
+        assert!(detail.contains("model bundle"));
+        assert!(detail.contains("permission denied"));
     }
 }
