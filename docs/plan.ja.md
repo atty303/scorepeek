@@ -47,8 +47,10 @@
   music-select 11件を同じrunのtyped factへ記録した。generation 19のopt-outでもunknown 6件は変わらずartifactは0件だった。
   completeなimmutable descriptorを所有するapplication recognition sessionも実装し、binding identity変更時は旧runへ
   typed change factを記録してfinishした後にだけ次sessionを開始する。result/music-selectだけをoffline exportと同じ
-  filesystem-free integrated-context crop APIへrouteし、live frame ownerを借用したbounded field inputsを生成する境界も実装済み。
-  unknownはfield inputsを生成できない。live model inference、field observation、accepted resultは未着手。
+  filesystem-free screen-local crop APIへrouteし、live frame ownerを借用したtyped RGB8 cropsを生成する境界も実装済み。
+  resultはtitle/artist/difficulty/level/notes/current score、music selectはcentral title/artist/selected chart/active-list titleを
+  必須fieldとして持ち、補助contextだけの中間shapeは残さない。未測定fieldを空のoptional cropとして表現せず、unknownも
+  field inputsを生成できない。live model inference、field observation、accepted resultは未着手。
   OBS/obs-vkcapture並行、
   soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了

@@ -713,29 +713,50 @@ pub struct IntegratedContextCropExportSummary {
     pub screen: ScreenClass,
 }
 
-/// One in-memory field crop selected by the shared integrated-context layout.
+/// One in-memory RGB8 crop from the scorepeek-owned canonical layouts.
 ///
 /// This pure value carries no capture provenance or accepted-field authority.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IntegratedContextRgbCrop {
-    pub field: IntegratedContextField,
+pub struct Rgb8Crop {
     pub roi: Roi,
     pixels: Vec<u8>,
 }
 
-impl IntegratedContextRgbCrop {
+impl Rgb8Crop {
     #[must_use]
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
 }
 
-/// Supported screen-local crops produced without filesystem or model I/O.
+/// Every currently measured result-screen field crop.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IntegratedContextRgbCrops {
-    pub screen: ScreenClass,
+pub struct ResultScreenRgb8Crops {
+    pub canonical_layout_sha256: String,
+    pub title: Rgb8Crop,
+    pub artist: Rgb8Crop,
+    pub difficulty: Rgb8Crop,
+    pub level: Rgb8Crop,
+    pub notes: Rgb8Crop,
+    pub current_score: Rgb8Crop,
+}
+
+/// Every currently measured music-select field crop used by one selection observation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MusicSelectScreenRgb8Crops {
+    pub canonical_layout_sha256: String,
     pub integrated_context_layout_sha256: String,
-    pub crops: Vec<IntegratedContextRgbCrop>,
+    pub central_title: Rgb8Crop,
+    pub artist: Rgb8Crop,
+    pub selected_chart: Rgb8Crop,
+    pub active_list_title: Rgb8Crop,
+}
+
+/// Measured field crops for exactly one classified screen.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ScreenRgb8Crops {
+    Result(ResultScreenRgb8Crops),
+    MusicSelect(MusicSelectScreenRgb8Crops),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1049,26 +1070,30 @@ pub fn export_result_crops(
     let output = output.as_ref();
     fs::create_dir(output)?;
 
-    let layout = CanonicalLayout::load()?;
+    let ScreenRgb8Crops::Result(routed) = route_screen_rgb8_crops(frame.pixels(), snapshot.screen)?
+    else {
+        return Err(RecognitionError::NotResultScreen);
+    };
     let selections = [
-        (ResultCropField::Title, "title.ppm", layout.result.title),
-        (ResultCropField::Artist, "artist.ppm", layout.result.artist),
+        (ResultCropField::Title, "title.ppm", routed.title),
+        (ResultCropField::Artist, "artist.ppm", routed.artist),
         (
             ResultCropField::Difficulty,
             "difficulty.ppm",
-            layout.result.difficulty,
+            routed.difficulty,
         ),
-        (ResultCropField::Level, "level.ppm", layout.result.level),
-        (ResultCropField::Notes, "notes.ppm", layout.result.notes),
+        (ResultCropField::Level, "level.ppm", routed.level),
+        (ResultCropField::Notes, "notes.ppm", routed.notes),
         (
             ResultCropField::CurrentScore,
             "current-score.ppm",
-            layout.result.current_score,
+            routed.current_score,
         ),
     ];
     let mut crops = Vec::with_capacity(selections.len());
-    for (field, filename, roi) in selections {
-        let pixels = frame.crop(roi)?;
+    for (field, filename, crop) in selections {
+        let roi = crop.roi;
+        let pixels = crop.pixels;
         let header = format!("P6\n{} {}\n255\n", roi.width, roi.height);
         let mut bytes = Vec::with_capacity(header.len() + pixels.len());
         bytes.extend_from_slice(header.as_bytes());
@@ -1123,30 +1148,32 @@ pub fn export_music_select_crops(
     let output = output.as_ref();
     fs::create_dir(output)?;
 
+    let ScreenRgb8Crops::MusicSelect(routed) =
+        route_screen_rgb8_crops(frame.pixels(), snapshot.screen)?
+    else {
+        return Err(RecognitionError::NotMusicSelectScreen);
+    };
     let layout = CanonicalLayout::load()?;
     let mut selections = Vec::with_capacity(layout.music_select.list_titles.slots as usize + 1);
     selections.push((
         "selected_title".to_owned(),
         "selected-title.ppm".to_owned(),
-        layout.music_select.selected_title,
+        routed.central_title,
     ));
-    selections.extend(
-        layout
-            .music_select
-            .list_titles
-            .rois()
-            .enumerate()
-            .map(|(slot, roi)| {
-                (
-                    format!("list_title_{slot:02}"),
-                    format!("list-title-{slot:02}.ppm"),
-                    roi,
-                )
-            }),
-    );
+    for (slot, roi) in layout.music_select.list_titles.rois().enumerate() {
+        selections.push((
+            format!("list_title_{slot:02}"),
+            format!("list-title-{slot:02}.ppm"),
+            Rgb8Crop {
+                roi,
+                pixels: crop_canonical_pixels(frame.pixels(), roi)?,
+            },
+        ));
+    }
     let mut crops = Vec::with_capacity(selections.len());
-    for (field, filename, roi) in selections {
-        let pixels = frame.crop(roi)?;
+    for (field, filename, crop) in selections {
+        let roi = crop.roi;
+        let pixels = crop.pixels;
         let header = format!("P6\n{} {}\n255\n", roi.width, roi.height);
         let mut bytes = Vec::with_capacity(header.len() + pixels.len());
         bytes.extend_from_slice(header.as_bytes());
@@ -1197,12 +1224,32 @@ pub fn export_integrated_context_crops(
         return Err(RecognitionError::InvalidCanonicalFrame);
     }
     let snapshot = inspect(frame)?;
-    let routed = route_integrated_context_rgb8(frame.pixels(), snapshot.screen)?;
+    let routed = route_screen_rgb8_crops(frame.pixels(), snapshot.screen)?;
     let output = output.as_ref();
     fs::create_dir(output)?;
-    let mut crops = Vec::with_capacity(routed.crops.len());
-    for crop in routed.crops {
-        let filename = integrated_context_filename(crop.field);
+    let (integrated_context_layout_sha256, selections) = match routed {
+        ScreenRgb8Crops::Result(crops) => (
+            IntegratedContextLayout::sha256(),
+            vec![(IntegratedContextField::ResultArtist, crops.artist)],
+        ),
+        ScreenRgb8Crops::MusicSelect(crops) => (
+            crops.integrated_context_layout_sha256,
+            vec![
+                (IntegratedContextField::MusicSelectArtist, crops.artist),
+                (
+                    IntegratedContextField::MusicSelectSelectedChart,
+                    crops.selected_chart,
+                ),
+                (
+                    IntegratedContextField::MusicSelectActiveListTitle,
+                    crops.active_list_title,
+                ),
+            ],
+        ),
+    };
+    let mut crops = Vec::with_capacity(selections.len());
+    for (field, crop) in selections {
+        let filename = integrated_context_filename(field);
         let pixels = crop.pixels;
         let roi = crop.roi;
         let header = format!("P6\n{} {}\n255\n", roi.width, roi.height);
@@ -1211,7 +1258,7 @@ pub fn export_integrated_context_crops(
         bytes.extend_from_slice(&pixels);
         write_private_file(&output.join(filename), &bytes)?;
         crops.push(IntegratedContextCropEvidence {
-            field: crop.field,
+            field,
             filename: filename.to_owned(),
             roi,
             pixel_sha256: encode_sha256(&pixels),
@@ -1227,7 +1274,7 @@ pub fn export_integrated_context_crops(
         canonical_frame_sha256: snapshot.canonical_frame_sha256,
         normalizer_artifact_sha256: snapshot.normalizer_artifact_sha256,
         canonical_layout_sha256: snapshot.canonical_layout_sha256,
-        integrated_context_layout_sha256: routed.integrated_context_layout_sha256,
+        integrated_context_layout_sha256,
         screen,
         crops,
     };
@@ -1241,7 +1288,8 @@ pub fn export_integrated_context_crops(
     })
 }
 
-/// Routes one already-classified canonical RGB8 frame to its measured screen-local field crops.
+/// Routes one already-classified canonical RGB8 frame to all currently measured field crops for
+/// that screen.
 ///
 /// This function is synchronous, deterministic, and filesystem-free. Callers retain responsibility
 /// for binding the result to capture provenance and for preventing `Unknown` from entering field
@@ -1249,44 +1297,39 @@ pub fn export_integrated_context_crops(
 ///
 /// # Errors
 /// Returns an error for an unknown screen, invalid canonical pixels, or layout drift.
-pub fn route_integrated_context_rgb8(
+pub fn route_screen_rgb8_crops(
     pixels: &[u8],
     screen: ScreenClass,
-) -> Result<IntegratedContextRgbCrops, RecognitionError> {
-    let layout = IntegratedContextLayout::load()?;
-    let selections: &[(IntegratedContextField, Roi)] = match screen {
-        ScreenClass::Result => &[(IntegratedContextField::ResultArtist, layout.result.artist)],
-        ScreenClass::MusicSelect => &[
-            (
-                IntegratedContextField::MusicSelectArtist,
-                layout.music_select.artist,
-            ),
-            (
-                IntegratedContextField::MusicSelectSelectedChart,
-                layout.music_select.selected_chart,
-            ),
-            (
-                IntegratedContextField::MusicSelectActiveListTitle,
-                layout.music_select.active_list_title,
-            ),
-        ],
-        ScreenClass::Unknown => return Err(RecognitionError::InvalidCanonicalFrame),
-    };
-    let crops = selections
-        .iter()
-        .map(|(field, roi)| {
-            Ok(IntegratedContextRgbCrop {
-                field: *field,
-                roi: *roi,
-                pixels: crop_canonical_pixels(pixels, *roi)?,
-            })
+) -> Result<ScreenRgb8Crops, RecognitionError> {
+    fn crop(pixels: &[u8], roi: Roi) -> Result<Rgb8Crop, RecognitionError> {
+        Ok(Rgb8Crop {
+            roi,
+            pixels: crop_canonical_pixels(pixels, roi)?,
         })
-        .collect::<Result<_, RecognitionError>>()?;
-    Ok(IntegratedContextRgbCrops {
-        screen,
-        integrated_context_layout_sha256: IntegratedContextLayout::sha256(),
-        crops,
-    })
+    }
+
+    let canonical = CanonicalLayout::load()?;
+    let context = IntegratedContextLayout::load()?;
+    match screen {
+        ScreenClass::Result => Ok(ScreenRgb8Crops::Result(ResultScreenRgb8Crops {
+            canonical_layout_sha256: CanonicalLayout::sha256(),
+            title: crop(pixels, canonical.result.title)?,
+            artist: crop(pixels, context.result.artist)?,
+            difficulty: crop(pixels, canonical.result.difficulty)?,
+            level: crop(pixels, canonical.result.level)?,
+            notes: crop(pixels, canonical.result.notes)?,
+            current_score: crop(pixels, canonical.result.current_score)?,
+        })),
+        ScreenClass::MusicSelect => Ok(ScreenRgb8Crops::MusicSelect(MusicSelectScreenRgb8Crops {
+            canonical_layout_sha256: CanonicalLayout::sha256(),
+            integrated_context_layout_sha256: IntegratedContextLayout::sha256(),
+            central_title: crop(pixels, canonical.music_select.selected_title)?,
+            artist: crop(pixels, context.music_select.artist)?,
+            selected_chart: crop(pixels, context.music_select.selected_chart)?,
+            active_list_title: crop(pixels, context.music_select.active_list_title)?,
+        })),
+        ScreenClass::Unknown => Err(RecognitionError::InvalidCanonicalFrame),
+    }
 }
 
 const fn integrated_context_filename(field: IntegratedContextField) -> &'static str {

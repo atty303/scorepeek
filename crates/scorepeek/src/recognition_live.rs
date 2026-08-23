@@ -1,8 +1,9 @@
 use std::path::Path;
 
 use scorepeek::recognition::{
-    CanonicalLayout, IntegratedContextRgbCrop, RecognitionError, ScreenClass,
-    ScreenPredicateObservation, inspect_canonical_rgb8, route_integrated_context_rgb8,
+    CanonicalLayout, MusicSelectScreenRgb8Crops, RecognitionError, ResultScreenRgb8Crops,
+    ScreenClass, ScreenPredicateObservation, ScreenRgb8Crops, inspect_canonical_rgb8,
+    route_screen_rgb8_crops,
 };
 
 use crate::diagnostic_live::{LiveCanonicalFrame, LiveDiagnosticBridge, LiveDiagnosticBridgeError};
@@ -75,7 +76,7 @@ impl From<LiveDiagnosticBridgeError> for LiveRecognitionSessionError {
 #[derive(Debug)]
 pub struct LiveRecognitionFrameResult<'a> {
     pub observation: LiveRecognitionObservation<'a>,
-    pub field_inputs: Option<LiveSupportedFieldInputs<'a>>,
+    pub field_inputs: Option<LiveScreenRgb8Crops<'a>>,
     pub diagnostic_frame: DiagnosticEnqueueOutcome,
     pub diagnostic_fact: DiagnosticEnqueueOutcome,
 }
@@ -84,27 +85,33 @@ pub struct LiveRecognitionFrameResult<'a> {
 ///
 /// These crops are observer inputs only. They carry no accepted field, song, or event authority.
 #[derive(Debug)]
-pub struct LiveSupportedFieldInputs<'a> {
+pub struct LiveScreenRgb8Crops<'a> {
     frame: &'a LiveCanonicalFrame,
-    screen: ScreenClass,
-    integrated_context_layout_sha256: String,
-    crops: Vec<IntegratedContextRgbCrop>,
+    crops: ScreenRgb8Crops,
 }
 
-impl LiveSupportedFieldInputs<'_> {
+/// A borrowed view of one opaque live screen-crop owner.
+#[derive(Clone, Copy, Debug)]
+pub enum LiveScreenRgb8CropsRef<'a> {
+    Result(&'a ResultScreenRgb8Crops),
+    MusicSelect(&'a MusicSelectScreenRgb8Crops),
+}
+
+impl LiveScreenRgb8Crops<'_> {
     #[must_use]
     pub const fn screen(&self) -> ScreenClass {
-        self.screen
+        match &self.crops {
+            ScreenRgb8Crops::Result(_) => ScreenClass::Result,
+            ScreenRgb8Crops::MusicSelect(_) => ScreenClass::MusicSelect,
+        }
     }
 
     #[must_use]
-    pub fn integrated_context_layout_sha256(&self) -> &str {
-        &self.integrated_context_layout_sha256
-    }
-
-    #[must_use]
-    pub fn crops(&self) -> &[IntegratedContextRgbCrop] {
-        &self.crops
+    pub const fn crops(&self) -> LiveScreenRgb8CropsRef<'_> {
+        match &self.crops {
+            ScreenRgb8Crops::Result(crops) => LiveScreenRgb8CropsRef::Result(crops),
+            ScreenRgb8Crops::MusicSelect(crops) => LiveScreenRgb8CropsRef::MusicSelect(crops),
+        }
     }
 
     #[must_use]
@@ -170,15 +177,13 @@ impl LiveRecognitionSession {
         let field_inputs = match observation.screen() {
             ScreenClass::Unknown => None,
             screen @ (ScreenClass::Result | ScreenClass::MusicSelect) => {
-                let Ok(routed) = route_integrated_context_rgb8(frame.pixels(), screen) else {
+                let Ok(routed) = route_screen_rgb8_crops(frame.pixels(), screen) else {
                     let _ = self.bridge.record_recognition_failure(frame);
                     return Err(LiveRecognitionSessionError::RecognitionFailed);
                 };
-                Some(LiveSupportedFieldInputs {
+                Some(LiveScreenRgb8Crops {
                     frame,
-                    screen: routed.screen,
-                    integrated_context_layout_sha256: routed.integrated_context_layout_sha256,
-                    crops: routed.crops,
+                    crops: routed,
                 })
             }
         };
@@ -272,7 +277,7 @@ fn validate_live_descriptor(
 mod tests {
     use std::fs;
 
-    use scorepeek::recognition::{CanonicalLayout, IntegratedContextField, ScreenClass};
+    use scorepeek::recognition::{CanonicalLayout, ScreenClass};
 
     use super::*;
     use crate::diagnostic_recording::{
@@ -354,11 +359,17 @@ mod tests {
         let result_fields = result.field_inputs.unwrap();
         assert_eq!(result_fields.screen(), ScreenClass::Result);
         assert!(std::ptr::eq(result_fields.frame(), &raw const result_frame));
-        assert_eq!(result_fields.crops().len(), 1);
-        assert_eq!(
-            result_fields.crops()[0].field,
-            IntegratedContextField::ResultArtist
-        );
+        let LiveScreenRgb8CropsRef::Result(crops) = result_fields.crops() else {
+            panic!("result screen routed to music-select crops");
+        };
+        let layout = CanonicalLayout::load().unwrap();
+        assert_eq!(crops.title.roi, layout.result.title);
+        assert_eq!(crops.artist.roi, layout.result.artist);
+        assert_eq!(crops.difficulty.roi, layout.result.difficulty);
+        assert_eq!(crops.level.roi, layout.result.level);
+        assert_eq!(crops.notes.roi, layout.result.notes);
+        assert_eq!(crops.current_score.roi, layout.result.current_score);
+        assert_eq!(crops.title.pixels()[..3], [200, 100, 20]);
 
         let music_frame = solid_frame([0, 180, 220], 1);
         let mut music_session =
@@ -368,18 +379,14 @@ mod tests {
         let music_fields = music.field_inputs.unwrap();
         assert_eq!(music_fields.screen(), ScreenClass::MusicSelect);
         assert!(std::ptr::eq(music_fields.frame(), &raw const music_frame));
-        assert_eq!(
-            music_fields
-                .crops()
-                .iter()
-                .map(|crop| crop.field)
-                .collect::<Vec<_>>(),
-            vec![
-                IntegratedContextField::MusicSelectArtist,
-                IntegratedContextField::MusicSelectSelectedChart,
-                IntegratedContextField::MusicSelectActiveListTitle,
-            ]
-        );
+        let LiveScreenRgb8CropsRef::MusicSelect(crops) = music_fields.crops() else {
+            panic!("music-select screen routed to result crops");
+        };
+        assert_eq!(crops.central_title.roi, layout.music_select.selected_title);
+        assert_eq!(crops.central_title.pixels()[..3], [0, 180, 220]);
+        assert!(!crops.artist.pixels().is_empty());
+        assert!(!crops.selected_chart.pixels().is_empty());
+        assert!(!crops.active_list_title.pixels().is_empty());
     }
 
     #[test]

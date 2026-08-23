@@ -110,11 +110,16 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   runtime. Explicit transition records the next identity in the old run, finishes that run, and
   only then starts the replacement session. Recording rejection, opt-out, queue loss, or store
   failure remains separate from the screen result.
-- Offline integrated-context export and the live session now share one synchronous, deterministic,
-  filesystem-free RGB field-routing API. Only `result` and `music_select` produce their measured
-  bounded crops; `unknown` cannot construct field inputs. Live inputs borrow the admitted canonical
-  owner and carry no OCR, song, accepted-field, or event authority. Model bundle I/O and inference
-  are not part of this checkpoint.
+- Offline crop export and the live session now share one synchronous, deterministic,
+  filesystem-free RGB field-routing API with screen-specific required fields. `result` carries
+  title, artist, difficulty, level, notes, and current score; `music_select` carries central title,
+  artist, selected chart, and active-list title. This removes the earlier supplemental-context-only
+  live shape that omitted song title. `unknown` cannot construct field inputs. Live inputs borrow
+  the admitted canonical owner and carry no OCR, song, accepted-field, or event authority. Fields
+  whose layouts are not yet measured, including play mode, are not represented as empty optional
+  crops. The live owner is opaque: only the session can join crops to the admitted frame, and
+  callers receive screen-specific borrowed views. Model bundle I/O and inference are not part of
+  this checkpoint.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -180,9 +185,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   native PipeWire build verification. Focused session tests also verify descriptor/layout rejection,
   frame-generation rejection, diagnostic opt-out non-interference, and manifest-backed ordered
   binding rollover.
-- Focused routing tests exercise synthetic result and music-select inputs, exact screen-local field
-  sets, retained live owner identity, diagnostic opt-out, and structural unknown exclusion. Existing
-  offline integrated-context export tests pass through the same routing function.
+- Focused routing tests exercise synthetic result and music-select inputs, title-bearing exact
+  screen-local field sets, retained live owner identity, diagnostic opt-out, and structural unknown
+  exclusion. Existing offline result, music-select, and integrated-context export tests pass through
+  the same routing function.
 
 ## Unverified boundaries
 
@@ -224,7 +230,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 ## Next executable task
 
 1. Define an application-owned field-observer execution boundary that consumes only
-   `LiveSupportedFieldInputs`, loads the descriptor-bound model/catalog inputs once per immutable
+   `LiveScreenRgb8Crops`, loads the descriptor-bound model/catalog inputs once per immutable
    session, and does not perform model or filesystem I/O in the PipeWire callback.
 2. Bind any field observation, song decision, suppression, and accepted result to that same run;
    diagnostic enqueue/drop/opt-out must not alter those recognition outcomes.
