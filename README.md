@@ -93,6 +93,7 @@ mise run capture:gamescope:calibration:sample -- --output /absolute/private/samp
 mise run capture:gamescope:calibration:session-sample -- --output /absolute/private/session-sample --environment-id development-machine-v1 --gamescope-version 3.16.19-128-g7282613+ --backend wayland --output-width 2556 --output-height 1428 --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear
 mise run capture:gamescope:binding:author -- --calibration /absolute/private/session-sample --calibration-sha256 SHA256 --output /absolute/private/binding.json --left-numerator 26 --left-denominator 3 --top-numerator 0 --top-denominator 1 --width-numerator 7616 --width-denominator 3 --height-numerator 1428 --height-denominator 1
 mise run capture:gamescope:test:result-recognition -- --binding /absolute/private/binding.json --binding-sha256 SHA256 --capture-generation 1 --duration-ms 30000 --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --bundle /absolute/private/model-bundle --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --canonical-layout-sha256 LAYOUT_SHA256 --catalog-sha256 CATALOG_SHA256 --model-sha256 MODEL_SHA256 --runtime-sha256 RUNTIME_SHA256 --recording enabled --environment-id development-machine-v1 --gamescope-version 3.16.19-128-g7282613+ --backend wayland --output-width 2556 --output-height 1428 --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear --recognition-artifact /absolute/private/new-recognition-evidence
+mise run run:gamescope -- --binding /absolute/private/binding.json --binding-sha256 SHA256 --capture-generation 1 --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --bundle /absolute/private/model-bundle --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --canonical-layout-sha256 LAYOUT_SHA256 --catalog-sha256 CATALOG_SHA256 --model-sha256 MODEL_SHA256 --runtime-sha256 RUNTIME_SHA256 --recording enabled --environment-id development-machine-v1 --gamescope-version 3.16.19-128-g7282613+ --backend wayland --output-width 2556 --output-height 1428 --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear --recognition-artifact /absolute/private/new-recognition-evidence
 mise run catalog:sync
 mise run corpus:recording:import -- --store /absolute/private/store --capture-context /absolute/private/capture-context.json /absolute/recordings/complete-run.mkv
 mise run corpus:dataset:seal -- --store /absolute/private/store calibration-001
@@ -128,6 +129,12 @@ mise run corpus:synthetic:render -- --output /absolute/new/output-directory /abs
 mise run corpus:replay:validate -- --store /absolute/private/store /absolute/replay-suite.json
 mise run catalog:schedule:systemd:verify
 ```
+
+`run:gamescope` keeps one admitted provider connected. Enter the exact line `stop` on its stdin to
+request ordered scorepeek shutdown; the control path does not signal Gamescope, INFINITAS, or the
+process group. Stdout is bounded NDJSON with exact OCR and typed result-song decisions. Full
+candidate evidence stays in the create-only private recognition artifact, while predicate counts
+and sampled pixels stay in the private diagnostic root.
 
 `check` is non-mutating, `fix` applies supported formatting fixes, and `test`
 contains every reproducible repository check. Live Bazzite, Portal, OBS,

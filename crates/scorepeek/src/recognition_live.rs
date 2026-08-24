@@ -61,6 +61,10 @@ impl<'a> RecognitionObservation<'a> {
     pub(crate) fn canonical_layout_sha256(&self) -> &str {
         &self.canonical_layout_sha256
     }
+
+    pub(crate) const fn predicate(&self) -> &ScreenPredicateObservation {
+        &self.predicate
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

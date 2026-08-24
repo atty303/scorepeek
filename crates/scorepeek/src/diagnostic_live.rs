@@ -207,6 +207,7 @@ impl DiagnosticBridge {
             scorepeek::recognition::ScreenClass::MusicSelect => DiagnosticScreen::MusicSelection,
             scorepeek::recognition::ScreenClass::Unknown => DiagnosticScreen::Unknown,
         };
+        let predicate = observation.predicate();
         self.worker.try_record_fact(DiagnosticFact {
             sequence: frame.sequence,
             monotonic_start_ms: frame.monotonic_start_ms,
@@ -214,7 +215,26 @@ impl DiagnosticBridge {
             operation: DiagnosticOperation::InspectRecognition,
             status: DiagnosticOperationStatus::Success,
             error_type: None,
-            detail: DiagnosticDetail::ScreenObservation { screen },
+            detail: DiagnosticDetail::ScreenPredicateObservation {
+                screen,
+                result_warm_pixels: predicate.result_presence.warm_pixels,
+                result_warm_pixels_min: predicate.result_presence.warm_pixels_min,
+                result_upper_panel_edge_pixels: predicate.result_presence.upper_panel_edge_pixels,
+                result_lower_panel_edge_pixels: predicate.result_presence.lower_panel_edge_pixels,
+                result_horizontal_edge_pixels_min: predicate
+                    .result_presence
+                    .horizontal_edge_pixels_min,
+                music_select_cyan_header_pixels: predicate.music_select_presence.cyan_header_pixels,
+                music_select_cyan_header_pixels_min: predicate
+                    .music_select_presence
+                    .cyan_header_pixels_min,
+                music_select_colored_level_pixels: predicate
+                    .music_select_presence
+                    .colored_level_pixels,
+                music_select_colored_level_pixels_min: predicate
+                    .music_select_presence
+                    .colored_level_pixels_min,
+            },
         })
     }
 
@@ -569,6 +589,28 @@ mod tests {
         .unwrap();
         assert_eq!(manifest["frames"].as_array().unwrap().len(), 1);
         assert_eq!(manifest["facts"].as_array().unwrap().len(), 1);
+        let fact: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                root.path()
+                    .join("screen-observation/fact-00000000000000000000.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            fact["fact"]["detail"]["kind"],
+            "screen_predicate_observation"
+        );
+        assert_eq!(fact["fact"]["detail"]["screen"], "unknown");
+        assert_eq!(fact["fact"]["detail"]["result_warm_pixels_min"], 3_000);
+        assert_eq!(
+            fact["fact"]["detail"]["result_horizontal_edge_pixels_min"],
+            518
+        );
+        assert_eq!(
+            fact["fact"]["detail"]["music_select_cyan_header_pixels_min"],
+            7_000
+        );
     }
 
     #[test]

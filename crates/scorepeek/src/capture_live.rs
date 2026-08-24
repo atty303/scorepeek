@@ -1,6 +1,7 @@
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::Read as _;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use scorepeek::capture::{
@@ -50,6 +51,7 @@ const MAX_LIFECYCLE_RUNS: u32 = 100;
 const MAX_DIAGNOSTIC_FACTS: usize = 32;
 const MAX_PROC_STATUS_BYTES: u64 = 64 * 1024;
 const MAX_BINDING_BYTES: usize = 64 * 1024;
+const LIVE_SESSION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -131,7 +133,33 @@ enum FieldObservationGateErrorType {
     RecognitionArtifactIncomplete,
     ShutdownFailed,
     FieldObserverFinishFailed,
+    ResultOutputFailed,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveSessionStopReason {
+    RequestedSignal,
+    TerminalFailure,
+}
+
+#[derive(Clone, Copy)]
+pub enum GamescopeLiveSessionEvent<'a> {
+    Started {
+        capture_generation: u64,
+        capture_profile_sha256: &'a str,
+        normalizer_artifact_sha256: &'a str,
+    },
+    Observation {
+        sequence: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+        output: &'a RegisteredScreenFieldObservation,
+    },
+}
+
+type LiveEventEmitter<'e> =
+    dyn for<'a> FnMut(GamescopeLiveSessionEvent<'a>) -> Result<(), String> + 'e;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 struct ProcessResourceSnapshot {
@@ -339,6 +367,8 @@ pub struct GamescopeFieldObservationGateReport {
     diagnostic_manifest_sha256: Option<String>,
     capture_diagnostic_facts: Vec<CaptureDiagnosticFact>,
     dropped_capture_diagnostic_facts: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_stop_reason: Option<LiveSessionStopReason>,
     #[serde(skip)]
     failure_detail: Option<String>,
 }
@@ -846,6 +876,112 @@ pub fn run_gamescope_field_observation_gate(
     )
 }
 
+pub fn run_gamescope_live_session(
+    config: GamescopeFieldObservationGateConfig<'_>,
+    stop: &AtomicBool,
+    emit: &mut LiveEventEmitter<'_>,
+) -> GamescopeFieldObservationGateReport {
+    let capture_generation = config.handoff.capture_generation;
+    let StartedFieldObservationGate {
+        mut lease,
+        mut session,
+        mut artifact_worker,
+        mut sink,
+    } = match start_field_observation_gate(config) {
+        Ok(started) => started,
+        Err(mut report) => {
+            report.schema = "scorepeek-gamescope-live-session-v1";
+            report.session_stop_reason = Some(LiveSessionStopReason::TerminalFailure);
+            return *report;
+        }
+    };
+
+    let mut terminal = emit(GamescopeLiveSessionEvent::Started {
+        capture_generation: capture_generation.get(),
+        capture_profile_sha256: lease.capture_profile_sha256(),
+        normalizer_artifact_sha256: lease.normalizer_artifact_sha256(),
+    })
+    .err()
+    .map(|_| (FieldObservationGateErrorType::ResultOutputFailed, None));
+    let mut counters = FieldObservationCounters::default();
+    let mut pending = Vec::<PendingSessionFieldObservation<RegisteredFieldOutput>>::new();
+    if terminal.is_none() {
+        terminal = offer_live_field_observation_frames(
+            &mut lease,
+            &mut session,
+            stop,
+            &mut pending,
+            &mut counters,
+            &mut artifact_worker,
+            &mut sink,
+            emit,
+        );
+    }
+    let (shutdown, finish_time) = lease.shutdown_with_elapsed(&mut sink);
+    let post_capture_started = Instant::now();
+    if let Err(error) = shutdown {
+        terminal.get_or_insert((
+            FieldObservationGateErrorType::ShutdownFailed,
+            Some(error.error_type()),
+        ));
+    }
+    if !matches!(
+        terminal,
+        Some((FieldObservationGateErrorType::ResultOutputFailed, _))
+    ) {
+        let drain_error = wait_live_field_observations(
+            &mut session,
+            &mut pending,
+            &mut counters,
+            &mut artifact_worker,
+            emit,
+        );
+        if let Some(error) = drain_error {
+            terminal.get_or_insert(error);
+        }
+    }
+    let finish_status = if terminal.is_none() {
+        DiagnosticRunStatus::Success
+    } else {
+        DiagnosticRunStatus::Error
+    };
+    let outcome = session.finish_after_capture(
+        finish_status,
+        finish_time,
+        post_capture_started.elapsed(),
+        DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT,
+    );
+    if outcome.field_observer.status != FieldObserverFinishStatus::Complete {
+        terminal.get_or_insert((
+            FieldObservationGateErrorType::FieldObserverFinishFailed,
+            None,
+        ));
+    }
+    let artifact_outcome = artifact_worker.map(|worker| worker.finish(terminal.is_none()));
+    let stop_reason = if terminal.is_none() {
+        LiveSessionStopReason::RequestedSignal
+    } else {
+        LiveSessionStopReason::TerminalFailure
+    };
+    let (error_type, capture_error_type) = terminal.unzip();
+    let mut report = field_observation_report(
+        error_type,
+        capture_error_type.flatten(),
+        capture_generation,
+        counters,
+        FieldObservationFinishOutcomes {
+            field_observer: Some(outcome.field_observer),
+            diagnostic: Some(outcome.diagnostic),
+            recognition_artifact: artifact_outcome,
+            artifact_requested: true,
+        },
+        sink,
+    );
+    report.schema = "scorepeek-gamescope-live-session-v1";
+    report.session_stop_reason = Some(stop_reason);
+    report
+}
+
 struct StartedFieldObservationGate {
     lease: CalibratedGamescopeLease,
     session: FieldObservationSession<RegisteredScreenFieldObserver>,
@@ -920,7 +1056,10 @@ fn start_field_observation_gate(
             return Err(Box::new(report));
         }
     };
-    let mut started = start_capture_after_field_session(
+    let artifact_worker = config.recognition_artifact_root.map(|root| {
+        RecognitionArtifactWorker::start(root.to_owned(), artifact_run_id, expected_profile.clone())
+    });
+    start_capture_after_field_session(
         config.handoff.session,
         binding,
         capture_generation,
@@ -930,12 +1069,9 @@ fn start_field_observation_gate(
             artifact_requested,
         },
         session,
+        artifact_worker,
         sink,
-    )?;
-    started.artifact_worker = config.recognition_artifact_root.map(|root| {
-        RecognitionArtifactWorker::start(root.to_owned(), artifact_run_id, expected_profile)
-    });
-    Ok(started)
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -951,6 +1087,7 @@ fn start_capture_after_field_session(
     capture_generation: CaptureGeneration,
     expected: FieldCaptureExpectation<'_>,
     session: FieldObservationSession<RegisteredScreenFieldObserver>,
+    artifact_worker: Option<RecognitionArtifactWorker>,
     mut sink: BoundedDiagnosticSink,
 ) -> Result<StartedFieldObservationGate, Box<GamescopeFieldObservationGateReport>> {
     let lease = match start_diagnostic_handoff_capture(
@@ -979,6 +1116,7 @@ fn start_capture_after_field_session(
                 Duration::ZERO,
                 DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT,
             );
+            let artifact_outcome = artifact_worker.map(|worker| worker.finish(false));
             return Err(Box::new(field_observation_report(
                 Some(error),
                 capture_error,
@@ -987,7 +1125,7 @@ fn start_capture_after_field_session(
                 FieldObservationFinishOutcomes {
                     field_observer: Some(outcome.field_observer),
                     diagnostic: Some(outcome.diagnostic),
-                    recognition_artifact: None,
+                    recognition_artifact: artifact_outcome,
                     artifact_requested: expected.artifact_requested,
                 },
                 sink,
@@ -1005,6 +1143,7 @@ fn start_capture_after_field_session(
             Duration::ZERO,
             DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT,
         );
+        let artifact_outcome = artifact_worker.map(|worker| worker.finish(false));
         return Err(Box::new(field_observation_report(
             Some(FieldObservationGateErrorType::DiagnosticBindingMismatch),
             capture_error,
@@ -1013,7 +1152,7 @@ fn start_capture_after_field_session(
             FieldObservationFinishOutcomes {
                 field_observer: Some(outcome.field_observer),
                 diagnostic: Some(outcome.diagnostic),
-                recognition_artifact: None,
+                recognition_artifact: artifact_outcome,
                 artifact_requested: expected.artifact_requested,
             },
             sink,
@@ -1022,7 +1161,7 @@ fn start_capture_after_field_session(
     Ok(StartedFieldObservationGate {
         lease,
         session,
-        artifact_worker: None,
+        artifact_worker,
         sink,
     })
 }
@@ -1187,9 +1326,14 @@ fn offer_field_observation_frames(
                     }
                 }
             }
-            if let Some(error) =
-                poll_field_observations(session, pending, source.counters, artifact_worker, None)
-            {
+            if let Some(error) = poll_field_observations(
+                session,
+                pending,
+                source.counters,
+                artifact_worker,
+                None,
+                None,
+            ) {
                 return Some((error, None));
             }
         }
@@ -1197,6 +1341,78 @@ fn offer_field_observation_frames(
             return None;
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn offer_live_field_observation_frames(
+    lease: &mut CalibratedGamescopeLease,
+    session: &mut FieldObservationSession<RegisteredScreenFieldObserver>,
+    stop: &AtomicBool,
+    pending: &mut Vec<PendingSessionFieldObservation<RegisteredFieldOutput>>,
+    counters: &mut FieldObservationCounters,
+    artifact_worker: &mut Option<RecognitionArtifactWorker>,
+    sink: &mut BoundedDiagnosticSink,
+    emit: &mut LiveEventEmitter<'_>,
+) -> Option<(FieldObservationGateErrorType, Option<CaptureErrorType>)> {
+    let mut source = GamescopeCanonicalFrameSource {
+        lease,
+        counters,
+        sink,
+    };
+    while !stop.load(Ordering::Acquire) {
+        let frame = match source.next_frame(LIVE_SESSION_POLL_INTERVAL) {
+            Ok(frame) => frame,
+            Err(error) => return Some(error),
+        };
+        if let Some(frame) = frame {
+            let Ok(result) = session.inspect(&frame) else {
+                return Some((FieldObservationGateErrorType::RecognitionFailed, None));
+            };
+            source.counters.inspected_frames = source.counters.inspected_frames.saturating_add(1);
+            let screen_counter = match result.observation.screen() {
+                ScreenClass::Result => &mut source.counters.result_frames,
+                ScreenClass::MusicSelect => &mut source.counters.music_select_frames,
+                ScreenClass::Unknown => &mut source.counters.unknown_frames,
+            };
+            *screen_counter = screen_counter.saturating_add(1);
+            match result.field_submission {
+                FieldObservationSubmission::NotApplicable => {
+                    source.counters.field_not_applicable =
+                        source.counters.field_not_applicable.saturating_add(1);
+                }
+                FieldObservationSubmission::Submitted(observation) => {
+                    source.counters.field_submitted =
+                        source.counters.field_submitted.saturating_add(1);
+                    pending.push(observation);
+                }
+                FieldObservationSubmission::Rejected(error) => {
+                    source.counters.field_rejected =
+                        source.counters.field_rejected.saturating_add(1);
+                    if matches!(
+                        error,
+                        FieldObserverOfferError::BindingMismatch
+                            | FieldObserverOfferError::WorkerUnavailable
+                    ) {
+                        return Some((
+                            FieldObservationGateErrorType::FieldObserverUnavailable,
+                            None,
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(error) = poll_field_observations(
+            session,
+            pending,
+            source.counters,
+            artifact_worker,
+            None,
+            Some(emit),
+        ) {
+            return Some((error, None));
+        }
+    }
+    None
 }
 
 struct GamescopeCanonicalFrameSource<'a> {
@@ -1248,9 +1464,14 @@ fn wait_field_observations(
         if remaining.is_zero() {
             break;
         }
-        if let Some(error) =
-            poll_field_observations(session, pending, counters, artifact_worker, Some(remaining))
-        {
+        if let Some(error) = poll_field_observations(
+            session,
+            pending,
+            counters,
+            artifact_worker,
+            Some(remaining),
+            None,
+        ) {
             return Some((error, None));
         }
     }
@@ -1263,6 +1484,7 @@ fn poll_field_observations(
     counters: &mut FieldObservationCounters,
     artifact_worker: &mut Option<RecognitionArtifactWorker>,
     wait: Option<Duration>,
+    mut emit: Option<&mut LiveEventEmitter<'_>>,
 ) -> Option<FieldObservationGateErrorType> {
     let mut index = 0;
     while index < pending.len() {
@@ -1294,6 +1516,17 @@ fn poll_field_observations(
                     ) {
                         counters.result_observations =
                             counters.result_observations.saturating_add(1);
+                    }
+                    if let Some(emit) = emit.as_deref_mut()
+                        && emit(GamescopeLiveSessionEvent::Observation {
+                            sequence,
+                            monotonic_start_ms,
+                            monotonic_end_ms,
+                            output: &output,
+                        })
+                        .is_err()
+                    {
+                        return Some(FieldObservationGateErrorType::ResultOutputFailed);
                     }
                     if let Some(worker) = artifact_worker {
                         let counter = match worker.try_record(
@@ -1332,6 +1565,33 @@ fn poll_field_observations(
                 pending.swap_remove(index);
                 return Some(FieldObservationGateErrorType::FieldObserverUnavailable);
             }
+        }
+    }
+    None
+}
+
+fn wait_live_field_observations(
+    session: &mut FieldObservationSession<RegisteredScreenFieldObserver>,
+    pending: &mut Vec<PendingSessionFieldObservation<RegisteredFieldOutput>>,
+    counters: &mut FieldObservationCounters,
+    artifact_worker: &mut Option<RecognitionArtifactWorker>,
+    emit: &mut LiveEventEmitter<'_>,
+) -> Option<(FieldObservationGateErrorType, Option<CaptureErrorType>)> {
+    let started = Instant::now();
+    while !pending.is_empty() {
+        let remaining = DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+        if let Some(error) = poll_field_observations(
+            session,
+            pending,
+            counters,
+            artifact_worker,
+            Some(remaining),
+            Some(emit),
+        ) {
+            return Some((error, None));
         }
     }
     None
@@ -1466,6 +1726,7 @@ fn field_observation_report(
         diagnostic_manifest_sha256,
         capture_diagnostic_facts: sink.facts,
         dropped_capture_diagnostic_facts: sink.dropped,
+        session_stop_reason: None,
         failure_detail: None,
     }
 }

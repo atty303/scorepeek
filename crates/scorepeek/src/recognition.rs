@@ -57,6 +57,8 @@ const NORMALIZER_IMPLEMENTATION: &str = "ffmpeg-swscale-bt709-limited-to-rgb24-v
 const NORMALIZER_FILTER: &str = "scale=1920:1080:flags=bitexact:in_color_matrix=bt709:out_color_matrix=bt709:in_range=tv:out_range=pc,format=rgb24";
 const CALIBRATED_CAPTURE_PROFILE_SHA256: &str =
     "d5809dc9b2acc19837260053f4df59a454c9178ae2ac6a0602982effc9da4704";
+const CALIBRATED_GAMESCOPE_VKCAPTURE_PROFILE_SHA256: &str =
+    "f5f0c5a86b5edba6a8fd014ad85b3873be8f745c0b531d2b5b77f203770b046a";
 const CALIBRATED_FFMPEG_SHA256: &str =
     "9eac5b2b5076db5ff853a6fa0dcd6b8de7d0cac8481eadda6c47cd935825f1ee";
 const FFMPEG_VERSION: &str = "8.1.2";
@@ -67,6 +69,13 @@ const CANONICAL_FILE_BYTES: u64 = CANONICAL_BYTES as u64 + PPM_HEADER.len() as u
 const LAYOUT_BYTES: &[u8] = include_bytes!("canonical-layout-v1.json");
 const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v2.json");
 const INTEGRATED_CONTEXT_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
+
+fn calibrated_capture_profile(profile: &str) -> bool {
+    matches!(
+        profile,
+        CALIBRATED_CAPTURE_PROFILE_SHA256 | CALIBRATED_GAMESCOPE_VKCAPTURE_PROFILE_SHA256
+    )
+}
 
 #[derive(Debug)]
 pub enum RecognitionError {
@@ -324,7 +333,7 @@ impl CanonicalExtractionEvidence {
             || normalizer.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID
             || normalizer.implementation != NORMALIZER_IMPLEMENTATION
             || normalizer.filter != NORMALIZER_FILTER
-            || normalizer.capture_profile_id != CALIBRATED_CAPTURE_PROFILE_SHA256
+            || !calibrated_capture_profile(&normalizer.capture_profile_id)
             || normalizer.ffmpeg_sha256 != CALIBRATED_FFMPEG_SHA256
             || !normalizer.observed.is_supported()
             || normalizer.observed.source_time_base != self.source_time_base
@@ -2443,14 +2452,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn canonical_frame_accepts_only_registered_calibrated_profiles() {
+        assert!(calibrated_capture_profile(
+            CALIBRATED_CAPTURE_PROFILE_SHA256
+        ));
+        assert!(calibrated_capture_profile(
+            CALIBRATED_GAMESCOPE_VKCAPTURE_PROFILE_SHA256
+        ));
+        assert!(!calibrated_capture_profile(&"e".repeat(64)));
+    }
+
     fn write_unsupported_profile_evidence(
+        directory: &Path,
+        normalizer: DomainNormalizerEvidence,
+        manifest: CanonicalExtractionEvidence,
+    ) -> String {
+        write_profile_evidence(directory, normalizer, manifest, &"e".repeat(64))
+    }
+
+    fn write_profile_evidence(
         directory: &Path,
         mut normalizer: DomainNormalizerEvidence,
         mut manifest: CanonicalExtractionEvidence,
+        capture_profile_id: &str,
     ) -> String {
-        normalizer.capture_profile_id = "e".repeat(64);
+        normalizer.capture_profile_id = capture_profile_id.to_owned();
         let normalizer_bytes = canonical_evidence_json(&normalizer).unwrap();
-        manifest.capture_profile_id = "e".repeat(64);
+        manifest.capture_profile_id = capture_profile_id.to_owned();
         manifest.normalizer_artifact_sha256 = encode_sha256(&normalizer_bytes);
         let manifest_bytes = canonical_evidence_json(&manifest).unwrap();
         let manifest_sha256 = encode_sha256(&manifest_bytes);

@@ -347,14 +347,22 @@ impl RecognitionArtifactWorker {
             None
         };
         let (sender, receiver) = mpsc::sync_channel(capacity);
+        let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
         let worker = thread::Builder::new()
             .name("scorepeek-recognition-artifact-writer".to_owned())
             .spawn(move || {
-                run_live_writer(&receiver, &root, run_id, profile_sha256, supervisor_token);
+                run_live_writer(
+                    &receiver,
+                    &root,
+                    run_id,
+                    profile_sha256,
+                    supervisor_token,
+                    &startup_sender,
+                );
             });
-        Self {
-            sender: worker.ok().map(|_| sender),
-        }
+        let sender = worker.ok().map(|_| sender);
+        let _ = startup_receiver.recv_timeout(LIVE_FINISH_TIMEOUT);
+        Self { sender }
     }
 
     pub fn try_record(
@@ -433,9 +441,11 @@ fn run_live_writer(
     run_id: String,
     profile_sha256: String,
     mut supervisor_token: Option<Arc<()>>,
+    startup: &SyncSender<bool>,
 ) {
     let mut writer = RecognitionArtifactWriter::create(root, run_id, profile_sha256);
     let mut write_failed = writer.is_err();
+    let _ = startup.send(!write_failed);
     while let Ok(message) = receiver.recv() {
         match message {
             LiveWriterMessage::Record(record) => {

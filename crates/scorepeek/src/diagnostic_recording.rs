@@ -290,6 +290,18 @@ pub enum DiagnosticDetail {
     ScreenObservation {
         screen: DiagnosticScreen,
     },
+    ScreenPredicateObservation {
+        screen: DiagnosticScreen,
+        result_warm_pixels: u32,
+        result_warm_pixels_min: u32,
+        result_upper_panel_edge_pixels: u32,
+        result_lower_panel_edge_pixels: u32,
+        result_horizontal_edge_pixels_min: u32,
+        music_select_cyan_header_pixels: u32,
+        music_select_cyan_header_pixels_min: u32,
+        music_select_colored_level_pixels: u32,
+        music_select_colored_level_pixels_min: u32,
+    },
     FieldObservation {
         screen: DiagnosticScreen,
         observed_fields: u8,
@@ -1097,7 +1109,9 @@ fn valid_fact(fact: &DiagnosticFact) -> bool {
             DiagnosticDetail::Operation
         ) | (
             DiagnosticOperation::InspectRecognition,
-            DiagnosticDetail::ScreenObservation { .. } | DiagnosticDetail::SongDecision { .. }
+            DiagnosticDetail::ScreenObservation { .. }
+                | DiagnosticDetail::ScreenPredicateObservation { .. }
+                | DiagnosticDetail::SongDecision { .. }
         ) | (
             DiagnosticOperation::ObserveFields,
             DiagnosticDetail::FieldObservation { .. }

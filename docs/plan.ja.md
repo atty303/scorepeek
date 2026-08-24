@@ -84,6 +84,8 @@
   Gamescope liveでは同じserializerをcapture loop外のcapacity 2 workerで使用し、live monotonic intervalをrecording PTSと区別する。
   新しいvalue-evidence gateは1件以上のcompleted result resolution、全completed observationのenqueue、manifest完了を要求し、
   compact outputはartifact status/count/digestだけを持つ。timeout workerが実際に終了するまではprocess-wide supervisorが次runを拒否する。
+  通常運用は別のforeground sessionとして同じproviderとpost-canonical経路を継続利用し、exact stdin `stop` control、
+  exact-value NDJSON、create-only recognition artifact、unknownを含むnumeric screen-predicate diagnosticを持つ。
   registered resourceとcandidate domainをcapture開始前にloadし、Gamescope capture loopからfield submit、inference、全song scoring、
   capture/worker/diagnosticの順序付き終了までを一つのbounded gateへ統合済み。private INFINITAS frameによる実submit、実行cost、
   queue behavior、candidate内容は未検証で、accepted resultは未実装。

@@ -9,12 +9,13 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
 - Current execution focus: the corpus recording has passed the value-bearing result-song
-  recognition simulation for all three reviewed episodes, and the live path now has a bounded
-  value-bearing artifact worker. A Wayland-backend development-machine binding has been
-  independently reproduced and admitted from a controlled marker session. The next boundary is the
-  authorized live INFINITAS result-recognition gate using that Wayland binding. Release accuracy,
-  event authority, target-host
-  performance, and support remain later gates.
+  recognition simulation for all three reviewed episodes, and a normal foreground Gamescope
+  session now reuses that post-canonical path. One Wayland INFINITAS session admitted the calibrated
+  binding and produced live music-select observations, but produced no result observation for its
+  one played result. A distinct Gamescope-vkCapture/OBS recording profile reproduces that result
+  offline and narrows the miss to the direct-live screen-predicate boundary. The next boundary is a
+  second normal session with complete predicate diagnostics, not a validation-only live gate.
+  Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
 
@@ -219,6 +220,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   but the timed-out run stays failed. The existing counts gate retains its v1 report and the new
   command uses a distinct v1 schema. Compact JSON links by status/count/digest rather than duplicating its
   OCR, song IDs, catalog strings, candidate metrics, or decisions.
+- ADR 0040 adds `scorepeek run gamescope`, which owns one admitted provider until the exact stdin
+  control line `stop` or a typed terminal failure. It emits exact bounded field/resolver NDJSON,
+  preflights an enabled private diagnostic root, records full numeric screen-predicate evidence for
+  unknown as well as recognized screens, and finalizes the existing field, diagnostic, and
+  recognition-artifact workers in order. Its control path does not signal Gamescope, INFINITAS, or
+  the process group.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -247,6 +254,22 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   no dropped diagnostic facts. The animation phase can differ from the retained calibration frame,
   so the independent retained-frame marker comparison, not digest equality across phases, is the
   pixel oracle.
+- An ordinary generation-24 Wayland session admitted the same private binding and retained 263
+  exact live field observations. Every retained observation was `music_select`; the largest
+  observation gap ran from 171,486 ms to 311,216 ms across gameplay and the result, and no live
+  `result` observation was produced before music-select observations resumed. The run therefore did
+  not pass live recognition. Its configured diagnostic root was absent and the recorder degraded
+  to `store_unavailable`; abrupt Ctrl+C did not finalize a terminal report or manifest and is not a
+  valid shutdown result.
+- `2026-08-24 14-54-57.mkv` is registered outside the repository under distinct
+  Gamescope-vkCapture/OBS capture profile
+  `f5f0c5a86b5edba6a8fd014ad85b3873be8f745c0b531d2b5b77f203770b046a` and canonical normalizer
+  `75cb7c90e8fc8e430b8f3d2f33f77208971556987bc7d82066a351c3aa4d4e09`. Its 346-frame one-second
+  extraction classified exactly five result frames at PTS 291,000 through 295,000 ms. Their warm
+  minimum was 3,360 and both panel-edge counts were 522; among non-result frames with a passing warm
+  count, the largest minimum of the two edge counts was 35. The reviewed result is `FAILED` for
+  `airflow -dreaming of the sky- Game Edition` by `ウッチーズ`, song ID
+  `5ce4a9b5-6d3c-575a-8f9e-7646ce8c18b1`.
 - The SDL marker artifacts remain valid controlled evidence for their own explicitly bound backend,
   but they are not the live INFINITAS binding and cannot admit a Wayland session.
 - A fresh controlled marker session admitted that private binding after observing 2556x1428 BGRx
@@ -381,9 +404,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - OBS/obs-vkcapture coexistence, PipeWire daemon disconnect, stream loss distinct from node loss,
   source recreation, long soak, FD/thread/RSS convergence, frame age, CPU/memory/copy/GPU/power
   cost, game p99 frametime, and OBS lag remain unverified.
-- The real result and music-select simulation evidence remains offline/private. There is no verified
-  Gamescope-driven live field submission, catalog resolution, accepted field gate,
-  event daemon, target-host performance gate, or supported capture profile.
+- Gamescope-driven music-select field submission is verified, but direct-live result routing,
+  result OCR/resolution, graceful stdin-requested shutdown, queue/artifact completion, accepted
+  field gate, event daemon, target-host performance gate, and supported capture profile remain
+  unverified. The direct-live result miss is localized before OCR, but the failing live predicate
+  component was not retained by the incomplete run. Changing the canonical layout threshold would
+  change its digest and remains a separate migration decision after measured live evidence.
 - Current recordings and provisional labels do not establish title-disjoint result accuracy,
   calibrated thresholds, result dwell, miss denominator, deduplication, or release accuracy.
 - Persistent scheduler installation was verified in isolation but not applied to the operator's
@@ -403,14 +429,18 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Run `gamescope-result-recognition-gate` against the authorized private INFINITAS Wayland session
-   using the admitted Wayland binding and the exact catalog/model/runtime, with value-bearing local
-   evidence.
-2. Review exact live OCR/song decisions, queue/artifact/lifecycle evidence, and field behavior
-   before defining event authority, target-host performance acceptance, or support.
+1. Run the normal `scorepeek run gamescope` session against a user-started private INFINITAS
+   Wayland session with a fresh diagnostic root and recognition artifact, then stop scorepeek only
+   through its exact stdin `stop` control line.
+2. Inspect the retained numeric predicate values for the live result and compare them with the
+   distinct Gamescope-vkCapture holdout before deciding whether a versioned canonical-layout
+   threshold migration is justified.
+3. Require exact live result title, artist, `CLEAR TYPE`, song decision, queue/artifact completion,
+   and ordered capture teardown before defining event authority, target-host performance
+   acceptance, or support.
 
 Do not proceed to automatic calibration, Portal/OBS fallback, event emission, soak/performance, or
-support claims until the separately authorized live result-recognition run and its immutable
+support claims until the normal live recognition session and its immutable
 run-lifecycle evidence are complete.
 
 ## Stable milestone map

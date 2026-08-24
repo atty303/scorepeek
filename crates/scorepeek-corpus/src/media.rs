@@ -19,6 +19,8 @@ const CANONICAL_NORMALIZER_IMPLEMENTATION: &str = "ffmpeg-swscale-bt709-limited-
 const CANONICAL_NORMALIZER_FILTER: &str = "scale=1920:1080:flags=bitexact:in_color_matrix=bt709:out_color_matrix=bt709:in_range=tv:out_range=pc,format=rgb24";
 const CALIBRATED_CAPTURE_PROFILE_SHA256: &str =
     "d5809dc9b2acc19837260053f4df59a454c9178ae2ac6a0602982effc9da4704";
+const CALIBRATED_GAMESCOPE_VKCAPTURE_PROFILE_SHA256: &str =
+    "f5f0c5a86b5edba6a8fd014ad85b3873be8f745c0b531d2b5b77f203770b046a";
 const CALIBRATED_FFMPEG_SHA256: &str =
     "9eac5b2b5076db5ff853a6fa0dcd6b8de7d0cac8481eadda6c47cd935825f1ee";
 const FFMPEG_VERSION: &str = "8.1.2";
@@ -879,8 +881,10 @@ impl DomainNormalizerArtifact {
         )?;
         validate_sha256(&self.ffmpeg_sha256, "ffmpeg_sha256", ErrorContext::Replay)?;
         self.observed.validate()?;
-        if self.capture_profile_id != CALIBRATED_CAPTURE_PROFILE_SHA256
-            || self.ffmpeg_sha256 != CALIBRATED_FFMPEG_SHA256
+        if !matches!(
+            self.capture_profile_id.as_str(),
+            CALIBRATED_CAPTURE_PROFILE_SHA256 | CALIBRATED_GAMESCOPE_VKCAPTURE_PROFILE_SHA256
+        ) || self.ffmpeg_sha256 != CALIBRATED_FFMPEG_SHA256
             || self.observed.input_format != INPUT_FORMAT
             || self.observed.codec_name != "ffv1"
             || self.observed.pixel_format != "yuv420p"
@@ -2242,6 +2246,9 @@ mod tests {
         probe.observed.color_space = Some("bt709".to_owned());
         probe.observed.color_transfer = Some("bt709".to_owned());
         probe.observed.color_primaries = Some("bt709".to_owned());
+        assert!(DomainNormalizerArtifact::for_probe(&probe).is_ok());
+
+        probe.capture_profile_id = CALIBRATED_GAMESCOPE_VKCAPTURE_PROFILE_SHA256.to_owned();
         assert!(DomainNormalizerArtifact::for_probe(&probe).is_ok());
 
         probe.capture_profile_id = "e".repeat(64);

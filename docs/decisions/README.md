@@ -97,6 +97,13 @@ authoritative.
   adds a capacity-two writer for exact live field/resolver evidence, distinguishes live monotonic
   intervals from recording PTS, and makes complete no-drop artifact persistence part of the new
   value-evidence gate without blocking or changing recognition.
+- [ADR 0040: Run a foreground live recognition session](0040-run-a-foreground-live-recognition-session.md)
+  adds the ordinary one-provider foreground runtime, continuous exact-value NDJSON observations,
+  stdin-control-driven ordered shutdown, and non-interfering diagnostic/artifact degradation without
+  granting accepted event authority.
+- [ADR 0041: Register Gamescope-vkCapture recordings as a separate profile](0041-register-gamescope-vkcapture-recordings-as-a-separate-profile.md)
+  binds the Gamescope-vkCapture/OBS route to its own provenance and canonical normalizer while
+  retaining the three-episode requirement for complete recording simulation.
 
 ## Historical
 

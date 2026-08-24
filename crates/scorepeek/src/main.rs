@@ -7,6 +7,7 @@ pub mod diagnostic_recording;
 pub mod diagnostic_replay;
 pub mod diagnostic_worker;
 mod inventory;
+mod live_control;
 mod recognition_artifact;
 pub mod recognition_live;
 mod recording_simulation;
@@ -14,8 +15,8 @@ mod recording_simulation;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
-use std::fs::{self, DirBuilder, OpenOptions};
-use std::io::Write as _;
+use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::io::{self, BufWriter, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -43,6 +44,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
     if let Some(result) = try_diagnostic_control(args)
         .or_else(|| try_diagnostic_replay(args))
         .or_else(|| try_recording_simulation(args))
+        .or_else(|| try_live_session(args))
         .or_else(|| try_capture_commands(args))
         .or_else(|| try_doctor(args))
         .or_else(|| try_provisional_title_candidates(args))
@@ -473,6 +475,38 @@ const CAPTURE_RESULT_RECOGNITION_FLAGS: &[&str] = &[
     "--recognition-artifact",
 ];
 
+const LIVE_SESSION_FLAGS: &[&str] = &[
+    "--binding",
+    "--binding-sha256",
+    "--capture-generation",
+    "--diagnostic-root",
+    "--catalog-store",
+    "--bundle",
+    "--run-id",
+    "--build-sha256",
+    "--canonical-layout-sha256",
+    "--catalog-sha256",
+    "--model-sha256",
+    "--runtime-sha256",
+    "--recording",
+    "--environment-id",
+    "--gamescope-version",
+    "--backend",
+    "--output-width",
+    "--output-height",
+    "--nested-width",
+    "--nested-height",
+    "--nested-refresh",
+    "--scaler",
+    "--filter",
+    "--recognition-artifact",
+];
+
+fn try_live_session(args: &[OsString]) -> Option<Result<(), String>> {
+    let values = command_flag_values(args, "run", "gamescope", LIVE_SESSION_FLAGS)?;
+    Some(run_live_session(&values))
+}
+
 fn try_capture_result_recognition(args: &[OsString]) -> Option<Result<(), String>> {
     let values = capture_flag_values(
         args,
@@ -520,7 +554,16 @@ fn capture_flag_values<'a>(
     command: &str,
     flags: &[&str],
 ) -> Option<Vec<&'a OsStr>> {
-    if args.first()? != "capture" || args.get(1)? != command || args.len() != 2 + flags.len() * 2 {
+    command_flag_values(args, "capture", command, flags)
+}
+
+fn command_flag_values<'a>(
+    args: &'a [OsString],
+    namespace: &str,
+    command: &str,
+    flags: &[&str],
+) -> Option<Vec<&'a OsStr>> {
+    if args.first()? != namespace || args.get(1)? != command || args.len() != 2 + flags.len() * 2 {
         return None;
     }
     let mut values = Vec::with_capacity(flags.len());
@@ -531,6 +574,231 @@ fn capture_flag_values<'a>(
         values.push(pair[1].as_os_str());
     }
     Some(values)
+}
+
+fn run_live_session(values: &[&OsStr]) -> Result<(), String> {
+    let [
+        binding,
+        binding_digest,
+        generation,
+        diagnostic_root,
+        catalog_root,
+        bundle_root,
+        run_id,
+        build_digest,
+        layout_digest,
+        catalog_digest,
+        model_digest,
+        runtime_digest,
+        recording,
+        environment,
+        version,
+        backend,
+        output_width,
+        output_height,
+        width,
+        height,
+        refresh,
+        scaler,
+        filter,
+        recognition_artifact_root,
+    ] = values
+    else {
+        unreachable!("live session flag parser returns the exact value count");
+    };
+    let binding_digest = parse_cli_sha256(binding_digest, "binding SHA-256")?;
+    let generation = parse_capture_generation(generation)?;
+    let configuration = capture_calibration::parse_session_configuration(
+        environment,
+        version,
+        backend,
+        output_width,
+        output_height,
+        width,
+        height,
+        refresh,
+        scaler,
+        filter,
+    )?;
+    let descriptor = diagnostic_recording::DiagnosticRunDescriptor {
+        run_id: parse_diagnostic_run_id(run_id)?,
+        monotonic_start_ms: 0,
+        resource: diagnostic_recording::DiagnosticResource {
+            program: "scorepeek",
+            version: env!("CARGO_PKG_VERSION"),
+            build_sha256: parse_cli_sha256(build_digest, "build SHA-256")?,
+        },
+        binding: diagnostic_recording::DiagnosticBinding {
+            capture_generation: generation.get(),
+            capture_profile_sha256: String::new(),
+            normalizer_sha256: String::new(),
+            canonical_layout_sha256: parse_cli_sha256(layout_digest, "canonical layout SHA-256")?,
+            catalog_sha256: parse_cli_sha256(catalog_digest, "catalog SHA-256")?,
+            model_sha256: parse_cli_sha256(model_digest, "model SHA-256")?,
+            runtime_sha256: parse_cli_sha256(runtime_digest, "runtime SHA-256")?,
+            replay: None,
+        },
+    };
+    let policy = parse_diagnostic_recording_policy(recording)?;
+    let diagnostic_preflight = prepare_live_diagnostic_root(Path::new(diagnostic_root), &policy);
+    let monitor = live_control::InputStopMonitor::start()?;
+    let stop = monitor.stop_token();
+    let stdout = io::stdout();
+    let mut output = BufWriter::new(stdout.lock());
+    write_ndjson(&mut output, &diagnostic_preflight)?;
+    let report = capture_live::run_gamescope_live_session(
+        capture_live::GamescopeFieldObservationGateConfig {
+            handoff: capture_live::GamescopeDiagnosticHandoffGateConfig {
+                binding_path: Path::new(binding),
+                expected_binding_sha256: &binding_digest,
+                session: configuration.capture_provenance()?,
+                capture_generation: generation,
+                descriptor,
+                policy,
+                duration_ms: 0,
+                diagnostic_root: Path::new(diagnostic_root),
+            },
+            catalog_root: Path::new(catalog_root),
+            bundle_root: Path::new(bundle_root),
+            recognition_artifact_root: Some(Path::new(recognition_artifact_root)),
+        },
+        &stop,
+        &mut |event| write_live_session_event(&mut output, event),
+    );
+    write_ndjson(&mut output, &report)?;
+    report.succeeded().then_some(()).ok_or_else(|| {
+        report
+            .failure_detail()
+            .unwrap_or("Gamescope live recognition session failed")
+            .to_owned()
+    })
+}
+
+#[derive(Serialize)]
+struct LiveDiagnosticPreflight<'a> {
+    schema: &'static str,
+    event: &'static str,
+    status: &'static str,
+    root: &'a Path,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_type: Option<&'static str>,
+}
+
+fn prepare_live_diagnostic_root<'a>(
+    root: &'a Path,
+    policy: &diagnostic_recording::DiagnosticPolicy,
+) -> LiveDiagnosticPreflight<'a> {
+    let ready = if policy.enabled {
+        Some(prepare_private_directory(root))
+    } else {
+        None
+    };
+    let (status, error_type) = match ready {
+        None => ("disabled", None),
+        Some(true) => ("ready", None),
+        Some(false) => ("degraded", Some("store_unavailable")),
+    };
+    LiveDiagnosticPreflight {
+        schema: "scorepeek-live-session-event-v1",
+        event: "diagnostic_status",
+        status,
+        root,
+        error_type,
+    }
+}
+
+fn prepare_private_directory(path: &Path) -> bool {
+    match path.symlink_metadata() {
+        Ok(metadata) => path.is_absolute() && metadata.is_dir() && !metadata.is_symlink(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound && path.is_absolute() => {
+            let Some(parent) = path.parent() else {
+                return false;
+            };
+            let mut builder = DirBuilder::new();
+            builder.mode(0o700);
+            builder.create(path).is_ok()
+                && File::open(parent)
+                    .and_then(|directory| directory.sync_all())
+                    .is_ok()
+        }
+        Err(_) => false,
+    }
+}
+
+fn write_live_session_event(
+    output: &mut impl io::Write,
+    event: capture_live::GamescopeLiveSessionEvent<'_>,
+) -> Result<(), String> {
+    let value = match event {
+        capture_live::GamescopeLiveSessionEvent::Started {
+            capture_generation,
+            capture_profile_sha256,
+            normalizer_artifact_sha256,
+        } => serde_json::json!({
+            "schema": "scorepeek-live-session-event-v1",
+            "event": "session_started",
+            "capture_generation": capture_generation,
+            "capture_profile_sha256": capture_profile_sha256,
+            "normalizer_artifact_sha256": normalizer_artifact_sha256,
+        }),
+        capture_live::GamescopeLiveSessionEvent::Observation {
+            sequence,
+            monotonic_start_ms,
+            monotonic_end_ms,
+            output: observation,
+        } => {
+            let (screen, fields) = match observation.fields() {
+                scorepeek::recognition::ScreenFieldObservations::Result(fields) => (
+                    "result",
+                    serde_json::json!({
+                        "title": fields.title.open_text,
+                        "artist": fields.artist.open_text,
+                        "clear_type": fields.clear_type.open_text,
+                        "difficulty": not_observed_field(),
+                        "level": not_observed_field(),
+                        "notes": not_observed_field(),
+                        "current_score": not_observed_field(),
+                    }),
+                ),
+                scorepeek::recognition::ScreenFieldObservations::MusicSelect(fields) => (
+                    "music_select",
+                    serde_json::json!({
+                        "central_title": fields.central_title.open_text,
+                        "artist": fields.artist.open_text,
+                        "selected_chart": not_observed_field(),
+                        "active_list_title": fields.active_list_title.open_text,
+                    }),
+                ),
+            };
+            serde_json::json!({
+                "schema": "scorepeek-live-session-event-v1",
+                "event": "field_observation",
+                "sequence": sequence,
+                "monotonic_start_ms": monotonic_start_ms,
+                "monotonic_end_ms": monotonic_end_ms,
+                "screen": screen,
+                "fields": fields,
+                "result_song_resolution": observation.result_resolution(),
+            })
+        }
+    };
+    write_ndjson(output, &value)
+}
+
+fn not_observed_field() -> serde_json::Value {
+    serde_json::json!({
+        "status": "not_observed",
+        "reason": "observer_not_implemented",
+    })
+}
+
+fn write_ndjson(output: &mut impl io::Write, value: &impl Serialize) -> Result<(), String> {
+    serde_json::to_writer(&mut *output, value)
+        .map_err(|error| format!("live result serialization failed: {error}"))?;
+    output
+        .write_all(b"\n")
+        .and_then(|()| output.flush())
+        .map_err(|error| format!("live result output failed: {error}"))
 }
 
 fn run_capture_handoff(values: &[&OsStr], inspect_screen: bool) -> Result<(), String> {
@@ -2443,17 +2711,27 @@ fn print_usage() {
     println!(
         "  scorepeek capture gamescope-result-recognition-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --catalog-store DIRECTORY --bundle DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --model-sha256 SHA256 --runtime-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER --recognition-artifact DIRECTORY"
     );
+    println!(
+        "  scorepeek run gamescope --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --diagnostic-root DIRECTORY --catalog-store DIRECTORY --bundle DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --model-sha256 SHA256 --runtime-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER --recognition-artifact DIRECTORY"
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        PrivatePublicationPoint, catalog_paths, catalog_sync_error, publish_private_file,
-        publish_private_file_with,
+        LIVE_SESSION_FLAGS, PrivatePublicationPoint, catalog_paths, catalog_sync_error,
+        command_flag_values, prepare_live_diagnostic_root, publish_private_file,
+        publish_private_file_with, write_live_session_event,
     };
+    use crate::capture_live::GamescopeLiveSessionEvent;
+    use crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation;
     use scorepeek::catalog::{
-        AdapterError, CatalogStoreError, CatalogSyncError, DqnAcquisitionError,
+        AdapterError, Catalog, CatalogStoreError, CatalogSyncError, DqnAcquisitionError,
         TachiAcquisitionError, TachiResource, TextageAcquisitionError, TextageResource,
+    };
+    use scorepeek::recognition::{
+        CatalogCandidateDomain, DynamicTextObservation, FieldNotObserved, FieldNotObservedReason,
+        ResultScreenFieldObservations, ScreenFieldObservations,
     };
     use std::ffi::OsStr;
     use std::fs;
@@ -2556,5 +2834,88 @@ mod tests {
             store,
             "scorepeek catalog sync failed: invalid catalog snapshot: SNAPSHOT SENTINEL"
         );
+    }
+
+    #[test]
+    fn live_session_command_requires_the_exact_ordered_contract() {
+        let mut args = vec!["run".into(), "gamescope".into()];
+        for (index, flag) in LIVE_SESSION_FLAGS.iter().enumerate() {
+            args.push((*flag).into());
+            args.push(format!("value-{index}").into());
+        }
+        let values = command_flag_values(&args, "run", "gamescope", LIVE_SESSION_FLAGS).unwrap();
+        assert_eq!(values.len(), LIVE_SESSION_FLAGS.len());
+        assert_eq!(values[0], OsStr::new("value-0"));
+
+        args[0] = "capture".into();
+        assert!(command_flag_values(&args, "run", "gamescope", LIVE_SESSION_FLAGS).is_none());
+        args[0] = "run".into();
+        args.pop();
+        assert!(command_flag_values(&args, "run", "gamescope", LIVE_SESSION_FLAGS).is_none());
+    }
+
+    #[test]
+    fn live_session_prepares_an_absent_private_diagnostic_root() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("diagnostics");
+        let preflight = prepare_live_diagnostic_root(
+            &root,
+            &crate::diagnostic_recording::DiagnosticPolicy::default(),
+        );
+        assert_eq!(preflight.status, "ready");
+        assert_eq!(preflight.error_type, None);
+        assert!(root.is_dir());
+    }
+
+    #[test]
+    fn live_result_output_retains_exact_ocr_and_typed_resolution() {
+        let domain = CatalogCandidateDomain::from_catalog(&Catalog::default()).unwrap();
+        let output = RegisteredScreenFieldObservation::from_fields(
+            &domain,
+            ScreenFieldObservations::Result(ResultScreenFieldObservations {
+                title: text("TITLE EXACT"),
+                artist: text("ARTIST EXACT"),
+                clear_type: text("FAILED"),
+                difficulty: not_observed(),
+                level: not_observed(),
+                notes: not_observed(),
+                current_score: not_observed(),
+            }),
+        );
+        let mut bytes = Vec::new();
+        write_live_session_event(
+            &mut bytes,
+            GamescopeLiveSessionEvent::Observation {
+                sequence: 42,
+                monotonic_start_ms: 100,
+                monotonic_end_ms: 125,
+                output: &output,
+            },
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["event"], "field_observation");
+        assert_eq!(value["sequence"], 42);
+        assert_eq!(value["fields"]["title"], "TITLE EXACT");
+        assert_eq!(value["fields"]["artist"], "ARTIST EXACT");
+        assert_eq!(value["fields"]["clear_type"], "FAILED");
+        assert_eq!(
+            value["result_song_resolution"]["reason"],
+            "no_catalog_candidates"
+        );
+    }
+
+    fn text(value: &str) -> DynamicTextObservation {
+        DynamicTextObservation {
+            input_width: 1,
+            output_timesteps: 1,
+            open_text: value.to_owned(),
+        }
+    }
+
+    const fn not_observed() -> FieldNotObserved {
+        FieldNotObserved {
+            reason: FieldNotObservedReason::ObserverNotImplemented,
+        }
     }
 }
