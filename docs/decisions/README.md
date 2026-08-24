@@ -93,6 +93,10 @@ authoritative.
   fixes the first fail-closed result-song resolver from retained OCR/candidate evidence, binds
   expected song IDs in recording profile v2, and requires exact song plus `CLEAR TYPE` agreement
   before a simulation episode passes.
+- [ADR 0039: Record live recognition evidence off the capture loop](0039-record-live-recognition-evidence-off-capture-loop.md)
+  adds a capacity-two writer for exact live field/resolver evidence, distinguishes live monotonic
+  intervals from recording PTS, and makes complete no-drop artifact persistence part of the new
+  value-evidence gate without blocking or changing recognition.
 
 ## Historical
 

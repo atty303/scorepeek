@@ -77,6 +77,9 @@
   edit distance 1以下、normalized similarity 6/7以上、runner-up edit margin 2以上、選択candidateのartist similarity 2/5以上を
   exact integerで要求し、artist scoreをtitleへ加算しない。失敗はtyped unknownにする。profile v2は全episodeのexact expected song IDをbindし、
   exact songと`CLEAR TYPE`を各2 frame以上要求する。local artifactはexact OCR/catalog strings、全candidate metrics、decision/reason、expected valuesを保持する。
+  Gamescope liveでは同じserializerをcapture loop外のcapacity 2 workerで使用し、live monotonic intervalをrecording PTSと区別する。
+  新しいvalue-evidence gateは1件以上のcompleted result resolution、全completed observationのenqueue、manifest完了を要求し、
+  compact outputはartifact status/count/digestだけを持つ。timeout workerが実際に終了するまではprocess-wide supervisorが次runを拒否する。
   registered resourceとcandidate domainをcapture開始前にloadし、Gamescope capture loopからfield submit、inference、全song scoring、
   capture/worker/diagnosticの順序付き終了までを一つのbounded gateへ統合済み。private INFINITAS frameによる実submit、実行cost、
   queue behavior、candidate内容は未検証で、accepted resultは未実装。

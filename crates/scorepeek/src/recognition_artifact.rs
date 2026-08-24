@@ -2,6 +2,11 @@ use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{BufWriter, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::thread;
+use std::time::Duration;
+use std::time::Instant;
 
 use scorepeek::catalog::ScorepeekSongId;
 use scorepeek::recognition::{
@@ -12,7 +17,7 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 const CATALOG_SCHEMA: &str = "scorepeek-recognition-catalog-evidence-v1";
-const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v1";
+const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v2";
 const MANIFEST_SCHEMA: &str = "scorepeek-recognition-evidence-manifest-v1";
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 256 * 1024 * 1024;
@@ -41,12 +46,24 @@ struct StoredCatalog<'a> {
 struct StoredObservation<'a> {
     schema: &'static str,
     sequence: u64,
-    source_pts_ms: u64,
+    timing: RecognitionArtifactTiming,
     fields: StoredFields<'a>,
     candidates: StoredCandidates<'a>,
     decision: StoredDecision<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expected: Option<RecognitionArtifactExpected<'a>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum RecognitionArtifactTiming {
+    Recording {
+        source_pts_ms: u64,
+    },
+    Live {
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+    },
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -153,7 +170,7 @@ impl RecognitionArtifactWriter {
     pub fn record(
         &mut self,
         sequence: u64,
-        source_pts_ms: u64,
+        timing: RecognitionArtifactTiming,
         fields: &ScreenFieldObservations,
         candidates: &ScreenCatalogCandidateObservations,
         result_resolution: Option<&ResultSongResolution>,
@@ -175,7 +192,7 @@ impl RecognitionArtifactWriter {
         let stored = StoredObservation {
             schema: OBSERVATION_SCHEMA,
             sequence,
-            source_pts_ms,
+            timing,
             fields: StoredFields::from(fields),
             candidates: StoredCandidates::from(candidates),
             decision,
@@ -252,6 +269,245 @@ impl RecognitionArtifactWriter {
         self.catalog_sha256 = Some(digest);
         Ok(())
     }
+}
+
+const LIVE_QUEUE_CAPACITY: usize = 2;
+pub const LIVE_FINISH_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecognitionArtifactEnqueueOutcome {
+    Enqueued,
+    QueueFull,
+    WorkerUnavailable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecognitionArtifactFinishStatus {
+    Complete,
+    WriteFailed,
+    Timeout,
+    WorkerUnavailable,
+}
+
+#[derive(Debug)]
+pub struct RecognitionArtifactFinishOutcome {
+    pub status: RecognitionArtifactFinishStatus,
+    pub manifest_sha256: Option<String>,
+}
+
+struct LiveRecord {
+    sequence: u64,
+    monotonic_start_ms: u64,
+    monotonic_end_ms: u64,
+    observation: crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+}
+
+enum LiveWriterMessage {
+    Record(Box<LiveRecord>),
+    Finish {
+        succeeded: bool,
+        response: SyncSender<RecognitionArtifactFinishOutcome>,
+    },
+}
+
+pub struct RecognitionArtifactWorker {
+    sender: Option<SyncSender<LiveWriterMessage>>,
+}
+
+impl RecognitionArtifactWorker {
+    #[must_use]
+    pub fn start(root: PathBuf, run_id: String, profile_sha256: String) -> Self {
+        Self::start_inner(
+            root,
+            run_id,
+            profile_sha256,
+            LIVE_QUEUE_CAPACITY,
+            Some(production_supervisor()),
+        )
+    }
+
+    fn start_inner(
+        root: PathBuf,
+        run_id: String,
+        profile_sha256: String,
+        capacity: usize,
+        supervisor: Option<&Mutex<Weak<()>>>,
+    ) -> Self {
+        if capacity == 0 {
+            return Self { sender: None };
+        }
+        let supervisor_token = if let Some(supervisor) = supervisor {
+            let Some(token) = acquire_worker_token(supervisor) else {
+                return Self { sender: None };
+            };
+            Some(token)
+        } else {
+            None
+        };
+        let (sender, receiver) = mpsc::sync_channel(capacity);
+        let worker = thread::Builder::new()
+            .name("scorepeek-recognition-artifact-writer".to_owned())
+            .spawn(move || {
+                run_live_writer(&receiver, &root, run_id, profile_sha256, supervisor_token);
+            });
+        Self {
+            sender: worker.ok().map(|_| sender),
+        }
+    }
+
+    pub fn try_record(
+        &mut self,
+        sequence: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+        observation: crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+    ) -> RecognitionArtifactEnqueueOutcome {
+        let Some(sender) = &self.sender else {
+            return RecognitionArtifactEnqueueOutcome::WorkerUnavailable;
+        };
+        match sender.try_send(LiveWriterMessage::Record(Box::new(LiveRecord {
+            sequence,
+            monotonic_start_ms,
+            monotonic_end_ms,
+            observation,
+        }))) {
+            Ok(()) => RecognitionArtifactEnqueueOutcome::Enqueued,
+            Err(TrySendError::Full(_)) => RecognitionArtifactEnqueueOutcome::QueueFull,
+            Err(TrySendError::Disconnected(_)) => {
+                self.sender = None;
+                RecognitionArtifactEnqueueOutcome::WorkerUnavailable
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn finish(mut self, succeeded: bool) -> RecognitionArtifactFinishOutcome {
+        let Some(sender) = self.sender.take() else {
+            return unavailable_finish();
+        };
+        let (response_sender, response_receiver) = mpsc::sync_channel(1);
+        let deadline = Instant::now() + LIVE_FINISH_TIMEOUT;
+        let mut message = LiveWriterMessage::Finish {
+            succeeded,
+            response: response_sender,
+        };
+        loop {
+            match sender.try_send(message) {
+                Ok(()) => break,
+                Err(TrySendError::Full(returned)) => {
+                    if Instant::now() >= deadline {
+                        return RecognitionArtifactFinishOutcome {
+                            status: RecognitionArtifactFinishStatus::Timeout,
+                            manifest_sha256: None,
+                        };
+                    }
+                    message = returned;
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(TrySendError::Disconnected(_)) => return unavailable_finish(),
+            }
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        response_receiver.recv_timeout(remaining).map_or(
+            RecognitionArtifactFinishOutcome {
+                status: RecognitionArtifactFinishStatus::Timeout,
+                manifest_sha256: None,
+            },
+            |outcome| outcome,
+        )
+    }
+}
+
+fn unavailable_finish() -> RecognitionArtifactFinishOutcome {
+    RecognitionArtifactFinishOutcome {
+        status: RecognitionArtifactFinishStatus::WorkerUnavailable,
+        manifest_sha256: None,
+    }
+}
+
+fn run_live_writer(
+    receiver: &Receiver<LiveWriterMessage>,
+    root: &Path,
+    run_id: String,
+    profile_sha256: String,
+    mut supervisor_token: Option<Arc<()>>,
+) {
+    let mut writer = RecognitionArtifactWriter::create(root, run_id, profile_sha256);
+    let mut write_failed = writer.is_err();
+    while let Ok(message) = receiver.recv() {
+        match message {
+            LiveWriterMessage::Record(record) => {
+                if write_failed {
+                    continue;
+                }
+                let output = &record.observation;
+                if writer
+                    .as_mut()
+                    .expect("successful writer remains available")
+                    .record(
+                        record.sequence,
+                        RecognitionArtifactTiming::Live {
+                            monotonic_start_ms: record.monotonic_start_ms,
+                            monotonic_end_ms: record.monotonic_end_ms,
+                        },
+                        output.fields(),
+                        output.candidates(),
+                        output.result_resolution(),
+                        None,
+                    )
+                    .is_err()
+                {
+                    write_failed = true;
+                }
+            }
+            LiveWriterMessage::Finish {
+                succeeded,
+                response,
+            } => {
+                let outcome = if write_failed {
+                    drop(writer);
+                    RecognitionArtifactFinishOutcome {
+                        status: RecognitionArtifactFinishStatus::WriteFailed,
+                        manifest_sha256: None,
+                    }
+                } else {
+                    match writer
+                        .expect("successful writer remains available")
+                        .finish(succeeded)
+                    {
+                        Ok(digest) => RecognitionArtifactFinishOutcome {
+                            status: RecognitionArtifactFinishStatus::Complete,
+                            manifest_sha256: Some(digest),
+                        },
+                        Err(_) => RecognitionArtifactFinishOutcome {
+                            status: RecognitionArtifactFinishStatus::WriteFailed,
+                            manifest_sha256: None,
+                        },
+                    }
+                };
+                drop(supervisor_token.take());
+                let _ = response.send(outcome);
+                return;
+            }
+        }
+    }
+}
+
+fn production_supervisor() -> &'static Mutex<Weak<()>> {
+    static SUPERVISOR: OnceLock<Mutex<Weak<()>>> = OnceLock::new();
+    SUPERVISOR.get_or_init(|| Mutex::new(Weak::new()))
+}
+
+fn acquire_worker_token(supervisor: &Mutex<Weak<()>>) -> Option<Arc<()>> {
+    let mut current = supervisor.lock().ok()?;
+    if current.upgrade().is_some() {
+        return None;
+    }
+    let token = Arc::new(());
+    *current = Arc::downgrade(&token);
+    Some(token)
 }
 
 impl<'a> From<&'a ScreenFieldObservations> for StoredFields<'a> {
@@ -351,9 +607,9 @@ mod tests {
     use std::sync::Arc;
 
     use scorepeek::recognition::{
-        CatalogCandidateEvidenceTable, DynamicTextObservation, FieldNotObserved,
-        FieldNotObservedReason, RESULT_SONG_RESOLVER_ID, ResultScreenFieldObservations,
-        ResultSongResolution, ResultSongUnknownReason,
+        CatalogCandidateDomain, CatalogCandidateEvidenceTable, DynamicTextObservation,
+        FieldNotObserved, FieldNotObservedReason, RESULT_SONG_RESOLVER_ID,
+        ResultScreenFieldObservations, ResultSongResolution, ResultSongUnknownReason,
     };
 
     use super::*;
@@ -424,7 +680,9 @@ mod tests {
         writer
             .record(
                 7,
-                140_000,
+                RecognitionArtifactTiming::Recording {
+                    source_pts_ms: 140_000,
+                },
                 &result_fields(),
                 &empty_candidates(),
                 Some(&ResultSongResolution::Unknown {
@@ -484,7 +742,9 @@ mod tests {
         writer
             .record(
                 8,
-                141_000,
+                RecognitionArtifactTiming::Recording {
+                    source_pts_ms: 141_000,
+                },
                 &result_fields(),
                 &empty_catalog_candidates(),
                 Some(&ResultSongResolution::Unknown {
@@ -515,5 +775,134 @@ mod tests {
         assert!(manifest.contains("\"status\":\"error\""));
         assert!(manifest.contains("\"catalog_entries\":0"));
         assert!(manifest.contains("\"observation_count\":1"));
+    }
+
+    #[test]
+    fn live_worker_retains_exact_values_with_live_timing() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("live");
+        let domain =
+            CatalogCandidateDomain::from_catalog(&scorepeek::catalog::Catalog::default()).unwrap();
+        let observation = crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation::from_fields(
+            &domain,
+            result_fields(),
+        );
+        let mut worker = RecognitionArtifactWorker::start_inner(
+            root.clone(),
+            "live-001".to_owned(),
+            "c".repeat(64),
+            LIVE_QUEUE_CAPACITY,
+            None,
+        );
+
+        assert_eq!(
+            worker.try_record(9, 1_000, 1_017, observation),
+            RecognitionArtifactEnqueueOutcome::Enqueued
+        );
+        let outcome = worker.finish(true);
+
+        assert_eq!(outcome.status, RecognitionArtifactFinishStatus::Complete);
+        assert_eq!(outcome.manifest_sha256.unwrap().len(), 64);
+        let stored = fs::read_to_string(root.join("observations.ndjson")).unwrap();
+        assert!(stored.contains("scorepeek-recognition-observation-v2"));
+        assert!(stored.contains("\"source\":\"live\""));
+        assert!(stored.contains("\"monotonic_start_ms\":1000"));
+        assert!(stored.contains("\"monotonic_end_ms\":1017"));
+        assert!(stored.contains("ABSOLUTE EVIL"));
+        assert!(stored.contains("Yuta Imai"));
+        assert!(stored.contains("FAILED"));
+    }
+
+    #[test]
+    fn unavailable_live_worker_is_typed() {
+        let parent = tempfile::tempdir().unwrap();
+        let mut worker = RecognitionArtifactWorker::start_inner(
+            parent.path().join("live"),
+            "live-002".to_owned(),
+            "d".repeat(64),
+            0,
+            None,
+        );
+        let domain =
+            CatalogCandidateDomain::from_catalog(&scorepeek::catalog::Catalog::default()).unwrap();
+        let observation = crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation::from_fields(
+            &domain,
+            result_fields(),
+        );
+
+        assert_eq!(
+            worker.try_record(1, 1, 2, observation),
+            RecognitionArtifactEnqueueOutcome::WorkerUnavailable
+        );
+        assert_eq!(
+            worker.finish(false).status,
+            RecognitionArtifactFinishStatus::WorkerUnavailable
+        );
+    }
+
+    #[test]
+    fn live_worker_queue_full_is_typed_without_blocking() {
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        let mut worker = RecognitionArtifactWorker {
+            sender: Some(sender),
+        };
+        let domain =
+            CatalogCandidateDomain::from_catalog(&scorepeek::catalog::Catalog::default()).unwrap();
+        let observation = || {
+            crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation::from_fields(
+                &domain,
+                result_fields(),
+            )
+        };
+
+        assert_eq!(
+            worker.try_record(1, 1, 2, observation()),
+            RecognitionArtifactEnqueueOutcome::Enqueued
+        );
+        assert_eq!(
+            worker.try_record(2, 2, 3, observation()),
+            RecognitionArtifactEnqueueOutcome::QueueFull
+        );
+    }
+
+    #[test]
+    fn live_worker_supervisor_rejects_overlap_until_the_writer_exits() {
+        let parent = tempfile::tempdir().unwrap();
+        let supervisor = Mutex::new(Weak::new());
+        let first = RecognitionArtifactWorker::start_inner(
+            parent.path().join("first"),
+            "first".to_owned(),
+            "a".repeat(64),
+            1,
+            Some(&supervisor),
+        );
+        let overlapping = RecognitionArtifactWorker::start_inner(
+            parent.path().join("overlapping"),
+            "overlapping".to_owned(),
+            "b".repeat(64),
+            1,
+            Some(&supervisor),
+        );
+
+        assert_eq!(
+            overlapping.finish(false).status,
+            RecognitionArtifactFinishStatus::WorkerUnavailable
+        );
+        assert_eq!(
+            first.finish(false).status,
+            RecognitionArtifactFinishStatus::WriteFailed
+        );
+
+        let after_exit = RecognitionArtifactWorker::start_inner(
+            parent.path().join("after-exit"),
+            "after-exit".to_owned(),
+            "c".repeat(64),
+            1,
+            Some(&supervisor),
+        );
+        assert_eq!(
+            after_exit.finish(false).status,
+            RecognitionArtifactFinishStatus::WriteFailed
+        );
     }
 }

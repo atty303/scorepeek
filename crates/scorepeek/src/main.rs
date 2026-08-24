@@ -381,7 +381,8 @@ fn print_registered_resource_gate_report(
 }
 
 fn try_capture_commands(args: &[OsString]) -> Option<Result<(), String>> {
-    try_capture_field_observation(args)
+    try_capture_result_recognition(args)
+        .or_else(|| try_capture_field_observation(args))
         .or_else(|| try_capture_recognition_handoff(args))
         .or_else(|| try_capture_diagnostic_handoff(args))
         .or_else(|| try_capture_canonical_frame(args))
@@ -444,13 +445,56 @@ const CAPTURE_FIELD_OBSERVATION_FLAGS: &[&str] = &[
     "--filter",
 ];
 
+const CAPTURE_RESULT_RECOGNITION_FLAGS: &[&str] = &[
+    "--binding",
+    "--binding-sha256",
+    "--capture-generation",
+    "--duration-ms",
+    "--diagnostic-root",
+    "--catalog-store",
+    "--bundle",
+    "--run-id",
+    "--build-sha256",
+    "--canonical-layout-sha256",
+    "--catalog-sha256",
+    "--model-sha256",
+    "--runtime-sha256",
+    "--recording",
+    "--environment-id",
+    "--gamescope-version",
+    "--backend",
+    "--output-width",
+    "--output-height",
+    "--nested-width",
+    "--nested-height",
+    "--nested-refresh",
+    "--scaler",
+    "--filter",
+    "--recognition-artifact",
+];
+
+fn try_capture_result_recognition(args: &[OsString]) -> Option<Result<(), String>> {
+    let values = capture_flag_values(
+        args,
+        "gamescope-result-recognition-gate",
+        CAPTURE_RESULT_RECOGNITION_FLAGS,
+    )?;
+    let (artifact, common) = values
+        .split_last()
+        .expect("result recognition flags are non-empty");
+    Some(run_capture_field_observation(
+        common,
+        Some(Path::new(artifact)),
+    ))
+}
+
 fn try_capture_field_observation(args: &[OsString]) -> Option<Result<(), String>> {
     let values = capture_flag_values(
         args,
         "gamescope-field-observation-gate",
         CAPTURE_FIELD_OBSERVATION_FLAGS,
     )?;
-    Some(run_capture_field_observation(&values))
+    Some(run_capture_field_observation(&values, None))
 }
 
 fn try_capture_recognition_handoff(args: &[OsString]) -> Option<Result<(), String>> {
@@ -580,7 +624,10 @@ fn run_capture_handoff(values: &[&OsStr], inspect_screen: bool) -> Result<(), St
     }
 }
 
-fn run_capture_field_observation(values: &[&OsStr]) -> Result<(), String> {
+fn run_capture_field_observation(
+    values: &[&OsStr],
+    recognition_artifact_root: Option<&Path>,
+) -> Result<(), String> {
     let [
         binding,
         binding_digest,
@@ -661,6 +708,7 @@ fn run_capture_field_observation(values: &[&OsStr]) -> Result<(), String> {
             handoff,
             catalog_root: Path::new(catalog_root),
             bundle_root: Path::new(bundle_root),
+            recognition_artifact_root,
         },
     );
     println!(
@@ -671,7 +719,7 @@ fn run_capture_field_observation(values: &[&OsStr]) -> Result<(), String> {
     report.succeeded().then_some(()).ok_or_else(|| {
         report
             .failure_detail()
-            .unwrap_or("Gamescope field observation gate failed")
+            .unwrap_or("Gamescope field observation or recognition artifact gate failed")
             .to_owned()
     })
 }
@@ -2391,6 +2439,9 @@ fn print_usage() {
     );
     println!(
         "  scorepeek capture gamescope-field-observation-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --catalog-store DIRECTORY --bundle DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --model-sha256 SHA256 --runtime-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER"
+    );
+    println!(
+        "  scorepeek capture gamescope-result-recognition-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --catalog-store DIRECTORY --bundle DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --model-sha256 SHA256 --runtime-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER --recognition-artifact DIRECTORY"
     );
 }
 

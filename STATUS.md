@@ -9,9 +9,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
 - Current execution focus: the corpus recording has passed the value-bearing result-song
-  recognition simulation for all three reviewed episodes. The next boundary is a separately
-  authorized live INFINITAS Gamescope run through the same post-canonical resolver; release
-  accuracy, event authority, target-host performance, and support remain later gates.
+  recognition simulation for all three reviewed episodes, and the live path now has a bounded
+  value-bearing artifact worker. A replacement development-machine binding has been independently
+  reproduced and admitted from a controlled marker session. The next boundary is the authorized
+  live INFINITAS result-recognition gate. Release accuracy, event authority, target-host
+  performance, and support remain later gates.
 
 ## Included deliverables
 
@@ -204,6 +206,18 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   decisions/reasons, and expected values in a create-only bounded local artifact. Catalog JSON is
   capped at 16 MiB; observation NDJSON is capped at 256 MiB and 3,600 records; the manifest is
   created last after child sync.
+- ADR 0039 adds `gamescope-result-recognition-gate` without removing the existing counts-oriented
+  field gate. Completed registered observations move through a capacity-two non-blocking worker to
+  the same exact-value serializer used by recording simulation. Observation schema v2 distinguishes
+  recording source PTS from the live bound monotonic start/end interval. Queue full, worker loss,
+  write failure, and five-second finish timeout are typed and cannot replace recognition. The new
+  command passes only when at least one completed result resolution exists, every completed
+  observation was enqueued, and a complete create-only manifest was produced. Its top-level status
+  agrees with the CLI exit on artifact failure. A process-wide supervisor rejects another writer
+  until a timed-out worker actually exits; that worker may finish an already-started publication,
+  but the timed-out run stays failed. The existing counts gate retains its v1 report and the new
+  command uses a distinct v1 schema. Compact JSON links by status/count/digest rather than duplicating its
+  OCR, song IDs, catalog strings, candidate metrics, or decisions.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -215,12 +229,23 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   2556x1428, nested 1920x1080 at 120 Hz, scaler `auto`, and filter `linear` with an independently
   generated marker application.
 - The retained private development-machine sample was independently rehashed and reviewed:
-  - manifest SHA-256: `faef6770fae4fa3e21ffd069cb274e45d8ae3054bc75b69038ebbef3f574c6d0`
-  - raw frame SHA-256: `f5a6fea1f9e2e7eec214fef75b70bef7b55f61961dd00025abc36782090e8753`
-  - binding artifact SHA-256: `aad69103654afb3773198eebcb888db04ce86834c619f8781cc2f6c28405b2b2`
-  - capture profile SHA-256: `e0a27efb0119a8711ada7b3ddc6811fc9fb669b7d1ce7abc4cbc89562365414e`
-- Known edge and interior markers independently reproduced the same rational geometry and canonical
-  result. The artifact and captured pixels remain in operator-owned local state, not the repository.
+  - manifest SHA-256: `3eeedc672350fccee919ea61548d27231dc6229bf7747f87cbc65c5ba1f806dd`
+  - raw frame SHA-256: `a9798ac8abdf03edeb28355a1d60d26ef2f79734767d27b316862e0ea2f57639`
+  - binding artifact SHA-256: `9ac166d5bda568475ba39a7507ded0cf27ab86f42a343cc7af840611ff889b21`
+  - capture profile SHA-256: `57009bc7acd7beedfa0a7731aed16392e246554623b0453b4f0b408cc7932fd4`
+- An independent implementation of the registered half-pixel/Q11 normalizer reproduced canonical
+  RGB8 SHA-256 `ad52c2d25cc997ed5fc82251bab56b78a8e632c4e02b3b11f93f27b1259a9d1e`
+  from the retained raw marker frame. Against the independently generated source marker it had
+  mean absolute error `0.235762`, with 2,059,655 of 2,073,600 RGB pixels exactly equal; known
+  top-left, bottom-left, and center markers were exact. The artifact and captured pixels remain in
+  operator-owned local state, not the repository.
+- A fresh controlled marker session admitted the replacement private binding after observing
+  2556x1428 BGRx MemFd with 10,224-byte stride. A separately restarted session admitted the same
+  profile under capture generation 22 and normalized source sequence 1 to canonical RGB8 SHA-256
+  `074a3d849fdc2d09455a4c37f8a210d72b83f73ac2871f2f76e689b3a06bb427`, with ordered shutdown and
+  no dropped diagnostic facts. The animation phase can differ from the retained calibration frame,
+  so the independent retained-frame marker comparison, not digest equality across phases, is the
+  pixel oracle.
 - A fresh controlled marker session admitted that private binding after observing 2556x1428 BGRx
   MemFd with 10,224-byte stride. A separately restarted session with only declared nested refresh
   changed from 120 to 119 was rejected as `profile_nested_refresh_mismatch`; both runs recorded one
@@ -265,7 +290,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   official-model execution, and native PipeWire build have each passed their dedicated development
   gates. These do not substitute for target-machine capture, recognition, or performance evidence.
 - Repository validation at this checkpoint includes formatting/static checks, workspace all-target
-  clippy with warnings denied, Rust unit/integration tests, 75 offline OCR tests, dataset E2E, and
+  clippy with warnings denied, 160 library tests, 151 binary tests, 55 corpus tests, 75 offline OCR
+  tests, dataset E2E, and
   native PipeWire build verification. Focused session tests also verify descriptor/layout rejection,
   frame-generation rejection, diagnostic opt-out non-interference, and manifest-backed ordered
   binding rollover.
@@ -343,6 +369,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - The bounded CLI gate is not an ordinary long-running application loop. Live queue-full or worker
   loss was not forced on the development machine; bounded unit tests cover queue drop, worker loss,
   generation rejection, opt-out, and diagnostic non-interference. Target-host cost remains unknown.
+- The live recognition-artifact worker is covered by exact-value/timing, create-only, unavailable,
+  compact-link, clippy, and workspace tests, but has not yet been exercised with Gamescope frames.
 - Session provenance is explicit launcher/operator input, not an automatic observation of the
   Gamescope process. Process discovery or attestation is not implemented or claimed.
 - INFINITAS content/geometry, target play-machine output, 4K, FSR/NIS, Reshade, HDR, Portal, and OBS
@@ -372,10 +400,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Run the bounded Gamescope path against a separately authorized private INFINITAS session using
-   the exact catalog/model/runtime and admitted capture binding, with the same result resolver and
-   value-bearing local evidence enabled.
-2. Review live accepted/unknown decisions, queue/lifecycle evidence, and expected field behavior
+1. Run `gamescope-result-recognition-gate` against the authorized private INFINITAS session using
+   that admitted binding and the exact catalog/model/runtime, with value-bearing local evidence.
+2. Review exact live OCR/song decisions, queue/artifact/lifecycle evidence, and field behavior
    before defining event authority, target-host performance acceptance, or support.
 
 Do not proceed to automatic calibration, Portal/OBS fallback, event emission, soak/performance, or

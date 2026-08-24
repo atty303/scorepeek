@@ -19,7 +19,9 @@ use crate::diagnostic_recording::{
     DiagnosticBinding, DiagnosticCompleteness, DiagnosticPolicy, DiagnosticReplayBinding,
     DiagnosticResource, DiagnosticRunDescriptor, DiagnosticRunStatus,
 };
-use crate::recognition_artifact::{RecognitionArtifactExpected, RecognitionArtifactWriter};
+use crate::recognition_artifact::{
+    RecognitionArtifactExpected, RecognitionArtifactTiming, RecognitionArtifactWriter,
+};
 use crate::recognition_live::field_observer::{
     DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT, FieldObserverFinishStatus,
 };
@@ -405,7 +407,7 @@ fn process_completed_observation(
         artifact
             .record(
                 sequence,
-                source_pts_ms,
+                RecognitionArtifactTiming::Recording { source_pts_ms },
                 output.fields(),
                 output.candidates(),
                 result_resolution,

@@ -69,7 +69,7 @@ pub struct RegisteredScreenFieldObservation {
 }
 
 impl RegisteredScreenFieldObservation {
-    fn from_fields(
+    pub(crate) fn from_fields(
         candidate_domain: &CatalogCandidateDomain,
         fields: ScreenFieldObservations,
     ) -> Self {

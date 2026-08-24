@@ -281,6 +281,20 @@ expected song ID per episode and requires two exact song decisions plus two exac
 observations. The create-only local artifact retains the exact OCR, catalog strings, complete
 candidate metrics, decision/reason, and expected values; it does not duplicate pixels.
 
+ADR 0039 connects that same value-bearing serializer to live Gamescope results without putting
+filesystem I/O on the capture loop. A capacity-two worker receives completed registered
+observations non-blockingly and writes the create-only catalog, observation stream, and final
+manifest. Observation schema v2 tags recording PTS separately from live bound monotonic start/end
+times. Queue full, worker loss, write failure, and finish timeout remain typed artifact degradation;
+they cannot replace recognition. The live value-evidence command passes only when every completed
+observation was enqueued, at least one completed result resolution exists, and the manifest
+completed. Its top-level status and exit agree on artifact failure. A process-wide supervisor
+rejects a second writer until a timed-out predecessor actually exits; that predecessor may finish
+an already-started publication, but its run remains failed. The older counts gate retains its v1
+schema, while the new value-evidence gate has a distinct v1 schema. Compact command JSON contains
+counts, status, and digest, while the local artifact retains the exact OCR, song IDs, catalog
+strings, candidate metrics, and resolver decisions.
+
 ADR 0033 joins that observer and the diagnostic-backed recognition session under one application
 owner created from the same immutable descriptor. Resource loading completes before the recognition
 run opens. Each frame reports screen inspection, non-blocking field submission, and diagnostic
