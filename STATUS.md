@@ -10,9 +10,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - M4 offline canonical-frame and recognition spike: **in progress**.
 - Current execution focus: the corpus recording has passed the value-bearing result-song
   recognition simulation for all three reviewed episodes, and the live path now has a bounded
-  value-bearing artifact worker. A replacement development-machine binding has been independently
-  reproduced and admitted from a controlled marker session. The next boundary is the authorized
-  live INFINITAS result-recognition gate. Release accuracy, event authority, target-host
+  value-bearing artifact worker. A Wayland-backend development-machine binding has been
+  independently reproduced and admitted from a controlled marker session. The next boundary is the
+  authorized live INFINITAS result-recognition gate using that Wayland binding. Release accuracy,
+  event authority, target-host
   performance, and support remain later gates.
 
 ## Included deliverables
@@ -225,14 +226,14 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Verified checkpoint evidence
 
-- Controlled Gamescope `3.16.19-128-g7282613+` session used explicit SDL backend, output
+- Controlled Gamescope `3.16.19-128-g7282613+` session used explicit Wayland backend, output
   2556x1428, nested 1920x1080 at 120 Hz, scaler `auto`, and filter `linear` with an independently
   generated marker application.
 - The retained private development-machine sample was independently rehashed and reviewed:
-  - manifest SHA-256: `3eeedc672350fccee919ea61548d27231dc6229bf7747f87cbc65c5ba1f806dd`
+  - manifest SHA-256: `93fe9c0e80c545c585c60901ff776bd06d652bd0422385cd75c68757d11811f5`
   - raw frame SHA-256: `a9798ac8abdf03edeb28355a1d60d26ef2f79734767d27b316862e0ea2f57639`
-  - binding artifact SHA-256: `9ac166d5bda568475ba39a7507ded0cf27ab86f42a343cc7af840611ff889b21`
-  - capture profile SHA-256: `57009bc7acd7beedfa0a7731aed16392e246554623b0453b4f0b408cc7932fd4`
+  - binding artifact SHA-256: `c971ec19e1ed281a40ca43f0b5652f68b8d4eb7284f5725599a9920cc51c2a4a`
+  - capture profile SHA-256: `6f01cfb3a5fe93f4cefde21ed0f358ca73db8c14d0e615de07ef1711bc4e38d6`
 - An independent implementation of the registered half-pixel/Q11 normalizer reproduced canonical
   RGB8 SHA-256 `ad52c2d25cc997ed5fc82251bab56b78a8e632c4e02b3b11f93f27b1259a9d1e`
   from the retained raw marker frame. Against the independently generated source marker it had
@@ -241,11 +242,13 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   operator-owned local state, not the repository.
 - A fresh controlled marker session admitted the replacement private binding after observing
   2556x1428 BGRx MemFd with 10,224-byte stride. A separately restarted session admitted the same
-  profile under capture generation 22 and normalized source sequence 1 to canonical RGB8 SHA-256
+  profile under capture generation 23 and normalized source sequence 1 to canonical RGB8 SHA-256
   `074a3d849fdc2d09455a4c37f8a210d72b83f73ac2871f2f76e689b3a06bb427`, with ordered shutdown and
   no dropped diagnostic facts. The animation phase can differ from the retained calibration frame,
   so the independent retained-frame marker comparison, not digest equality across phases, is the
   pixel oracle.
+- The SDL marker artifacts remain valid controlled evidence for their own explicitly bound backend,
+  but they are not the live INFINITAS binding and cannot admit a Wayland session.
 - A fresh controlled marker session admitted that private binding after observing 2556x1428 BGRx
   MemFd with 10,224-byte stride. A separately restarted session with only declared nested refresh
   changed from 120 to 119 was rejected as `profile_nested_refresh_mismatch`; both runs recorded one
@@ -400,8 +403,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Run `gamescope-result-recognition-gate` against the authorized private INFINITAS session using
-   that admitted binding and the exact catalog/model/runtime, with value-bearing local evidence.
+1. Run `gamescope-result-recognition-gate` against the authorized private INFINITAS Wayland session
+   using the admitted Wayland binding and the exact catalog/model/runtime, with value-bearing local
+   evidence.
 2. Review exact live OCR/song decisions, queue/artifact/lifecycle evidence, and field behavior
    before defining event authority, target-host performance acceptance, or support.
 

@@ -26,18 +26,22 @@
   明示設定として利用可能にするが、自動測定、自動profile生成、組合せごとのfirst-class gateは提供しない。
   calibration evidence、exact Gamescope version/backend/configuration、full BGRx video/memory/stride
   contract、opaque profile digest、fractional normalizerを一体でfail-closed検証する64 KiB以下のcanonical
-  immutable binding contractまで実装済み。さらにexplicit SDL backend/output/nested/scaler/filterを
-  保存するsession sampleを実 captureし、raw frameとmanifestを独立再hashしたcreate-only
-  development-machine binding artifactをprivate local stateへ登録済み。既知markerへのOpenCV逆変換で
-  explicit geometryを再確認した。新規leaseへlauncher/operatorが明示したsession provenanceを保持し、
+  immutable binding contractまで実装済み。さらにlive INFINITAS用のexplicit Wayland
+  backend/output/nested/scaler/filterを保存するsession sampleを実captureし、raw frameとmanifestを独立再hashした
+  create-only development-machine binding artifactをprivate local stateへ登録済み。独立したhalf-pixel/Q11
+  normalizerで既知marker geometryを再確認し、fresh Wayland sessionでbinding一致を受理した後、別のfresh
+  Wayland sessionのgeneration 23で同じbindingからcanonical frameを生成した。以前のSDL marker artifactは
+  そのbackend固有のcontrolled evidenceとして残すが、Wayland sessionのbindingまたは検証根拠には使用しない。
+  新規leaseへlauncher/operatorが明示したsession provenanceを保持し、
   bindingの全provenance fieldとreceiverが実negotiationしたvideo/memory/stride contractが一致した場合だけ
   calibrated leaseへ昇格する境界まで実装済み。受理・拒否は値を持たないtyped factとしてbounded capture
-  diagnosticへ記録し、development-machine marker sessionで一致受理とnested refresh不一致拒否を確認済み。
+  diagnosticへ記録する。nested refresh不一致拒否は以前のSDL固有profileで確認済みであり、Wayland profileでは
+  exact一致の受理だけを確認済み。
   calibrated leaseだけがcapture generation/profile/normalizer identity付き`ObservedFrame`を生成し、同じleaseの
   binding-selected fractional normalizerだけがRGB8 1920x1080の`NormalizedCanonicalFrame`へ変換できる境界も
   実装済み。generation/profile/normalizer mixingはfail closedで、最初のnormalization success/failureだけを
-  bounded typed factへ記録する。独立した2つのcontrolled marker lifetimeでgenerationを1から2へrolloverし、
-  同じcanonical RGB8 digestを再現した。さらに`NormalizedCanonicalFrame`のpixel ownerを2回目のRGB copyなしで
+  bounded typed factへ記録する。generation 1から2へのrolloverと同じcanonical RGB8 digestの再現も以前のSDL固有
+  profileの証拠であり、Wayland profileのgeneration 23とは別に扱う。さらに`NormalizedCanonicalFrame`のpixel ownerを2回目のRGB copyなしで
   application-owned `BoundCanonicalFrame`へ移し、固定cadenceのbounded diagnostic workerへofferする境界まで実装した。
   callerがgeneration/profile/normalizer/pixelを作れる旧public constructorは削除し、profileとnormalizer identityは選択済み
   bindingからのみ導出する。provider/receiver/frame/diagnostic runはprovider lease起点のmonotonic clockを共有し、
