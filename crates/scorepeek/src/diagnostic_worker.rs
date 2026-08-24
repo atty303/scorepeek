@@ -7,8 +7,9 @@ use std::time::{Duration, Instant};
 use crate::diagnostic_recording::{
     CANONICAL_BYTES, DiagnosticErrorType, DiagnosticExternalDegradation, DiagnosticFact,
     DiagnosticFinishOutcome, DiagnosticFrameInput, DiagnosticPolicy, DiagnosticRecorder,
-    DiagnosticRunDescriptor, DiagnosticRunStatus,
+    DiagnosticRunDescriptor, DiagnosticRunStatus, DiagnosticSourceFrameInput,
 };
+use scorepeek::capture::{UncalibratedMemoryType, UncalibratedVideoContract};
 
 pub const DEFAULT_DIAGNOSTIC_QUEUE_CAPACITY: usize = 2;
 pub const DEFAULT_DIAGNOSTIC_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -27,6 +28,16 @@ pub struct DiagnosticOwnedFrame {
     pub monotonic_start_ms: u64,
     pub monotonic_end_ms: u64,
     pub pixels: Arc<Box<[u8]>>,
+    pub source: Option<DiagnosticOwnedSourceFrame>,
+}
+
+#[derive(Debug)]
+pub struct DiagnosticOwnedSourceFrame {
+    pub contract: UncalibratedVideoContract,
+    pub memory_type: UncalibratedMemoryType,
+    pub stride: u32,
+    pub received_monotonic_ns: u64,
+    pub bytes: Arc<Box<[u8]>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,6 +52,7 @@ pub enum DiagnosticEnqueueOutcome {
 
 enum DiagnosticWorkerMessage {
     Frame(DiagnosticOwnedFrame),
+    Frames(Vec<DiagnosticOwnedFrame>),
     Fact(DiagnosticFact),
     Finish {
         status: DiagnosticRunStatus,
@@ -250,6 +262,48 @@ impl DiagnosticWorkerHandle {
         self.try_send(DiagnosticWorkerMessage::Frame(frame), sequence)
     }
 
+    pub fn observe_frame(&mut self, frame: &DiagnosticOwnedFrame) -> DiagnosticEnqueueOutcome {
+        if !matches!(self.state, DiagnosticWorkerState::Active { .. }) {
+            return self.inactive_outcome();
+        }
+        if self.validate_frame_offer(frame) {
+            DiagnosticEnqueueOutcome::SkippedCadence
+        } else {
+            DiagnosticEnqueueOutcome::Rejected
+        }
+    }
+
+    pub fn try_record_observed_frames(
+        &mut self,
+        frames: Vec<DiagnosticOwnedFrame>,
+    ) -> DiagnosticEnqueueOutcome {
+        if frames.is_empty() {
+            return DiagnosticEnqueueOutcome::SkippedCadence;
+        }
+        let valid = frames.windows(2).all(|pair| {
+            pair[0].sequence < pair[1].sequence
+                && pair[0].monotonic_start_ms < pair[1].monotonic_start_ms
+        }) && frames.iter().all(|frame| {
+            frame.pixels.len() == CANONICAL_BYTES
+                && frame.monotonic_end_ms >= frame.monotonic_start_ms
+                && frame.monotonic_start_ms >= self.run_monotonic_start_ms
+                && self
+                    .last_offered_sequence
+                    .is_some_and(|offered| frame.sequence <= offered)
+        });
+        if !valid {
+            for frame in &frames {
+                self.record_queue_drop(DiagnosticErrorType::InvalidConfiguration, frame.sequence);
+            }
+            return DiagnosticEnqueueOutcome::Rejected;
+        }
+        let sequences = frames
+            .iter()
+            .map(|frame| frame.sequence)
+            .collect::<Vec<_>>();
+        self.try_send_batch(DiagnosticWorkerMessage::Frames(frames), &sequences)
+    }
+
     pub fn try_record_fact(&mut self, fact: DiagnosticFact) -> DiagnosticEnqueueOutcome {
         let sequence = fact.sequence;
         self.try_send(DiagnosticWorkerMessage::Fact(fact), sequence)
@@ -373,6 +427,31 @@ impl DiagnosticWorkerHandle {
             }
             Err(TrySendError::Disconnected(_)) => {
                 self.record_queue_drop(DiagnosticErrorType::WorkerUnavailable, sequence);
+                DiagnosticEnqueueOutcome::WorkerUnavailable
+            }
+        }
+    }
+
+    fn try_send_batch(
+        &mut self,
+        message: DiagnosticWorkerMessage,
+        sequences: &[u64],
+    ) -> DiagnosticEnqueueOutcome {
+        let DiagnosticWorkerState::Active { sender, .. } = &self.state else {
+            return self.inactive_outcome();
+        };
+        match sender.try_send(message) {
+            Ok(()) => DiagnosticEnqueueOutcome::Enqueued,
+            Err(TrySendError::Full(_)) => {
+                for &sequence in sequences {
+                    self.record_queue_drop(DiagnosticErrorType::QueueFull, sequence);
+                }
+                DiagnosticEnqueueOutcome::QueueFull
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                for &sequence in sequences {
+                    self.record_queue_drop(DiagnosticErrorType::WorkerUnavailable, sequence);
+                }
                 DiagnosticEnqueueOutcome::WorkerUnavailable
             }
         }
@@ -531,7 +610,19 @@ fn run_worker(
                     monotonic_start_ms: frame.monotonic_start_ms,
                     monotonic_end_ms: frame.monotonic_end_ms,
                     pixels: &frame.pixels,
+                    source: source_input(frame.source.as_ref()),
                 });
+            }
+            DiagnosticWorkerMessage::Frames(frames) => {
+                for frame in frames {
+                    let _ = recorder.record_sampled_frame(DiagnosticFrameInput {
+                        sequence: frame.sequence,
+                        monotonic_start_ms: frame.monotonic_start_ms,
+                        monotonic_end_ms: frame.monotonic_end_ms,
+                        pixels: &frame.pixels,
+                        source: source_input(frame.source.as_ref()),
+                    });
+                }
             }
             DiagnosticWorkerMessage::Fact(fact) => {
                 let _ = recorder.record_fact(&fact);
@@ -558,6 +649,18 @@ fn run_worker(
             }
         }
     }
+}
+
+fn source_input(
+    source: Option<&DiagnosticOwnedSourceFrame>,
+) -> Option<DiagnosticSourceFrameInput<'_>> {
+    source.map(|source| DiagnosticSourceFrameInput {
+        contract: source.contract,
+        memory_type: source.memory_type,
+        stride: source.stride,
+        received_monotonic_ns: source.received_monotonic_ns,
+        bytes: &source.bytes,
+    })
 }
 
 fn production_supervisor() -> &'static Mutex<Weak<()>> {
@@ -634,6 +737,7 @@ mod tests {
             pixels: Arc::new(
                 vec![u8::try_from(sequence).unwrap(); 1_920 * 1_080 * 3].into_boxed_slice(),
             ),
+            source: None,
         }
     }
 
@@ -675,6 +779,55 @@ mod tests {
         .unwrap();
         assert_eq!(manifest["last_error_type"], "queue_full");
         assert_eq!(manifest["degradations"][0]["affected_sequence"], 3);
+    }
+
+    #[test]
+    fn rejected_frame_batch_records_every_selected_sequence() {
+        let root = tempfile::tempdir().unwrap();
+        let gate = Arc::new(Barrier::new(2));
+        let mut worker = DiagnosticWorkerHandle::start_inner(
+            root.path().to_owned(),
+            descriptor("batch-queue-drop-run"),
+            DiagnosticPolicy::default(),
+            1,
+            None,
+            DiagnosticWorkerHooks {
+                start_gate: Some(Arc::clone(&gate)),
+                ..DiagnosticWorkerHooks::default()
+            },
+        );
+        assert_eq!(
+            worker.try_record_frame(frame(1, 0)),
+            DiagnosticEnqueueOutcome::Enqueued
+        );
+        let frames = (2..=4)
+            .map(|sequence| frame(sequence, (sequence - 1) * 1_000))
+            .collect::<Vec<_>>();
+        for frame in &frames {
+            assert_eq!(
+                worker.observe_frame(frame),
+                DiagnosticEnqueueOutcome::SkippedCadence
+            );
+        }
+        assert_eq!(
+            worker.try_record_observed_frames(frames),
+            DiagnosticEnqueueOutcome::QueueFull
+        );
+        gate.wait();
+        let outcome = worker.finish(DiagnosticRunStatus::Success, 3_016, Duration::from_secs(5));
+        assert_eq!(outcome.completeness, Some(DiagnosticCompleteness::Partial));
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(root.path().join("batch-queue-drop-run/manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["dropped_count"], 3);
+        let sequences = manifest["degradations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["affected_sequence"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(sequences, vec![2, 3, 4]);
     }
 
     #[test]

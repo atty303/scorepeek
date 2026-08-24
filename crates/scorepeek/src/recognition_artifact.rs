@@ -17,8 +17,8 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 const CATALOG_SCHEMA: &str = "scorepeek-recognition-catalog-evidence-v1";
-const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v2";
-const MANIFEST_SCHEMA: &str = "scorepeek-recognition-evidence-manifest-v1";
+const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v3";
+const MANIFEST_SCHEMA: &str = "scorepeek-recognition-evidence-manifest-v2";
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_OBSERVATIONS: usize = 3_600;
@@ -33,6 +33,7 @@ pub struct RecognitionArtifactWriter {
     catalog_entries: usize,
     profile_sha256: String,
     run_id: String,
+    retention: RecognitionArtifactRetention,
 }
 
 #[derive(Serialize)]
@@ -48,7 +49,7 @@ struct StoredObservation<'a> {
     sequence: u64,
     timing: RecognitionArtifactTiming,
     fields: StoredFields<'a>,
-    candidates: StoredCandidates<'a>,
+    candidates: StoredCandidates,
     decision: StoredDecision<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expected: Option<RecognitionArtifactExpected<'a>>,
@@ -111,16 +112,18 @@ struct StoredText<'a> {
     open_text: &'a str,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(tag = "screen", rename_all = "snake_case")]
-enum StoredCandidates<'a> {
+enum StoredCandidates {
     Result {
         comparison_key_id: &'static str,
-        candidates: &'a [scorepeek::recognition::ResultSongCandidateObservation],
+        candidate_order: &'static str,
+        candidates: Vec<[usize; 6]>,
     },
     MusicSelect {
         comparison_key_id: &'static str,
-        candidates: &'a [scorepeek::recognition::MusicSelectSongCandidateObservation],
+        candidate_order: &'static str,
+        candidates: Vec<[usize; 9]>,
     },
 }
 
@@ -133,12 +136,35 @@ struct StoredManifest<'a> {
     catalog_sha256: &'a str,
     catalog_entries: usize,
     observations_sha256: String,
-    observation_count: usize,
+    retention: RecognitionArtifactRetention,
+    input_observation_count: usize,
+    retained_observation_count: usize,
     observation_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecognitionArtifactRetention {
+    Complete,
+    ForegroundCompactedV1,
 }
 
 impl RecognitionArtifactWriter {
     pub fn create(root: &Path, run_id: String, profile_sha256: String) -> Result<Self, String> {
+        Self::create_with_retention(
+            root,
+            run_id,
+            profile_sha256,
+            RecognitionArtifactRetention::Complete,
+        )
+    }
+
+    fn create_with_retention(
+        root: &Path,
+        run_id: String,
+        profile_sha256: String,
+        retention: RecognitionArtifactRetention,
+    ) -> Result<Self, String> {
         let parent = root
             .parent()
             .ok_or_else(|| "recognition artifact root has no parent".to_owned())?;
@@ -164,6 +190,7 @@ impl RecognitionArtifactWriter {
             catalog_entries: 0,
             profile_sha256,
             run_id,
+            retention,
         })
     }
 
@@ -194,7 +221,7 @@ impl RecognitionArtifactWriter {
             sequence,
             timing,
             fields: StoredFields::from(fields),
-            candidates: StoredCandidates::from(candidates),
+            candidates: StoredCandidates::try_from(candidates)?,
             decision,
             expected,
         };
@@ -217,7 +244,19 @@ impl RecognitionArtifactWriter {
         Ok(())
     }
 
-    pub fn finish(mut self, succeeded: bool) -> Result<String, String> {
+    pub fn finish(self, succeeded: bool) -> Result<String, String> {
+        let input_observation_count = self.observation_count;
+        self.finish_with_input_count(succeeded, input_observation_count)
+    }
+
+    fn finish_with_input_count(
+        mut self,
+        succeeded: bool,
+        input_observation_count: usize,
+    ) -> Result<String, String> {
+        if input_observation_count < self.observation_count {
+            return Err("recognition artifact input count is invalid".to_owned());
+        }
         let catalog_sha256 = self
             .catalog_sha256
             .as_deref()
@@ -237,7 +276,9 @@ impl RecognitionArtifactWriter {
             catalog_sha256,
             catalog_entries: self.catalog_entries,
             observations_sha256: hex_digest(self.observation_hasher.finalize()),
-            observation_count: self.observation_count,
+            retention: self.retention,
+            input_observation_count,
+            retained_observation_count: self.observation_count,
             observation_bytes: self.observation_bytes,
         };
         let bytes = serde_json::to_vec(&manifest)
@@ -295,6 +336,8 @@ pub enum RecognitionArtifactFinishStatus {
 pub struct RecognitionArtifactFinishOutcome {
     pub status: RecognitionArtifactFinishStatus,
     pub manifest_sha256: Option<String>,
+    pub input_observations: usize,
+    pub retained_observations: usize,
 }
 
 struct LiveRecord {
@@ -328,12 +371,42 @@ impl RecognitionArtifactWorker {
         )
     }
 
+    #[must_use]
+    pub fn start_foreground(root: PathBuf, run_id: String, profile_sha256: String) -> Self {
+        Self::start_inner_with_retention(
+            root,
+            run_id,
+            profile_sha256,
+            LIVE_QUEUE_CAPACITY,
+            Some(production_supervisor()),
+            RecognitionArtifactRetention::ForegroundCompactedV1,
+        )
+    }
+
     fn start_inner(
         root: PathBuf,
         run_id: String,
         profile_sha256: String,
         capacity: usize,
         supervisor: Option<&Mutex<Weak<()>>>,
+    ) -> Self {
+        Self::start_inner_with_retention(
+            root,
+            run_id,
+            profile_sha256,
+            capacity,
+            supervisor,
+            RecognitionArtifactRetention::Complete,
+        )
+    }
+
+    fn start_inner_with_retention(
+        root: PathBuf,
+        run_id: String,
+        profile_sha256: String,
+        capacity: usize,
+        supervisor: Option<&Mutex<Weak<()>>>,
+        retention: RecognitionArtifactRetention,
     ) -> Self {
         if capacity == 0 {
             return Self { sender: None };
@@ -358,6 +431,7 @@ impl RecognitionArtifactWorker {
                     profile_sha256,
                     supervisor_token,
                     &startup_sender,
+                    retention,
                 );
             });
         let sender = worker.ok().map(|_| sender);
@@ -409,6 +483,8 @@ impl RecognitionArtifactWorker {
                         return RecognitionArtifactFinishOutcome {
                             status: RecognitionArtifactFinishStatus::Timeout,
                             manifest_sha256: None,
+                            input_observations: 0,
+                            retained_observations: 0,
                         };
                     }
                     message = returned;
@@ -422,6 +498,8 @@ impl RecognitionArtifactWorker {
             RecognitionArtifactFinishOutcome {
                 status: RecognitionArtifactFinishStatus::Timeout,
                 manifest_sha256: None,
+                input_observations: 0,
+                retained_observations: 0,
             },
             |outcome| outcome,
         )
@@ -432,9 +510,12 @@ fn unavailable_finish() -> RecognitionArtifactFinishOutcome {
     RecognitionArtifactFinishOutcome {
         status: RecognitionArtifactFinishStatus::WorkerUnavailable,
         manifest_sha256: None,
+        input_observations: 0,
+        retained_observations: 0,
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_live_writer(
     receiver: &Receiver<LiveWriterMessage>,
     root: &Path,
@@ -442,58 +523,140 @@ fn run_live_writer(
     profile_sha256: String,
     mut supervisor_token: Option<Arc<()>>,
     startup: &SyncSender<bool>,
+    retention: RecognitionArtifactRetention,
 ) {
-    let mut writer = RecognitionArtifactWriter::create(root, run_id, profile_sha256);
+    const FOREGROUND_MUSIC_SELECT_INTERVAL_MS: u64 = 5 * 60 * 1_000;
+    const FOREGROUND_RESULT_INTERVAL_MAX_MS: u64 = 30_000;
+
+    let mut writer =
+        RecognitionArtifactWriter::create_with_retention(root, run_id, profile_sha256, retention);
     let mut write_failed = writer.is_err();
+    let mut input_observations = 0_usize;
+    let mut retained_observations = 0_usize;
+    let mut pending_result: Option<Box<LiveRecord>> = None;
+    let mut last_music_select_ms: Option<u64> = None;
     let _ = startup.send(!write_failed);
     while let Ok(message) = receiver.recv() {
         match message {
             LiveWriterMessage::Record(record) => {
+                input_observations = input_observations.saturating_add(1);
                 if write_failed {
                     continue;
                 }
-                let output = &record.observation;
-                if writer
-                    .as_mut()
-                    .expect("successful writer remains available")
-                    .record(
-                        record.sequence,
-                        RecognitionArtifactTiming::Live {
-                            monotonic_start_ms: record.monotonic_start_ms,
-                            monotonic_end_ms: record.monotonic_end_ms,
-                        },
-                        output.fields(),
-                        output.candidates(),
-                        output.result_resolution(),
-                        None,
-                    )
-                    .is_err()
-                {
-                    write_failed = true;
+                match retention {
+                    RecognitionArtifactRetention::Complete => {
+                        if record_live(writer.as_mut().expect("writer is available"), &record)
+                            .is_err()
+                        {
+                            write_failed = true;
+                        } else {
+                            retained_observations = retained_observations.saturating_add(1);
+                        }
+                    }
+                    RecognitionArtifactRetention::ForegroundCompactedV1 => {
+                        if matches!(
+                            record.observation.fields(),
+                            ScreenFieldObservations::Result(_)
+                        ) {
+                            let new_interval = pending_result.as_ref().is_some_and(|pending| {
+                                record
+                                    .monotonic_start_ms
+                                    .saturating_sub(pending.monotonic_start_ms)
+                                    > FOREGROUND_RESULT_INTERVAL_MAX_MS
+                            });
+                            if new_interval {
+                                let previous = pending_result.take().expect("checked as present");
+                                if record_live(
+                                    writer.as_mut().expect("writer is available"),
+                                    &previous,
+                                )
+                                .is_err()
+                                {
+                                    write_failed = true;
+                                    continue;
+                                }
+                                retained_observations = retained_observations.saturating_add(1);
+                            }
+                            let replace = pending_result.as_ref().is_none_or(|pending| {
+                                result_record_priority(&record) >= result_record_priority(pending)
+                            });
+                            if replace {
+                                pending_result = Some(record);
+                            }
+                        } else {
+                            let after_result = if let Some(result) = pending_result.take() {
+                                if record_live(
+                                    writer.as_mut().expect("writer is available"),
+                                    &result,
+                                )
+                                .is_err()
+                                {
+                                    write_failed = true;
+                                    false
+                                } else {
+                                    retained_observations = retained_observations.saturating_add(1);
+                                    true
+                                }
+                            } else {
+                                false
+                            };
+                            let due = last_music_select_ms.is_none_or(|previous| {
+                                record.monotonic_start_ms.saturating_sub(previous)
+                                    >= FOREGROUND_MUSIC_SELECT_INTERVAL_MS
+                            });
+                            if !write_failed && (after_result || due) {
+                                if record_live(
+                                    writer.as_mut().expect("writer is available"),
+                                    &record,
+                                )
+                                .is_err()
+                                {
+                                    write_failed = true;
+                                } else {
+                                    retained_observations = retained_observations.saturating_add(1);
+                                    last_music_select_ms = Some(record.monotonic_start_ms);
+                                }
+                            }
+                        }
+                    }
                 }
             }
             LiveWriterMessage::Finish {
                 succeeded,
                 response,
             } => {
+                if !write_failed && let Some(result) = pending_result.take() {
+                    if record_live(writer.as_mut().expect("writer is available"), &result).is_err()
+                    {
+                        write_failed = true;
+                    } else {
+                        retained_observations = retained_observations.saturating_add(1);
+                    }
+                }
                 let outcome = if write_failed {
                     drop(writer);
                     RecognitionArtifactFinishOutcome {
                         status: RecognitionArtifactFinishStatus::WriteFailed,
                         manifest_sha256: None,
+                        input_observations,
+                        retained_observations,
                     }
                 } else {
                     match writer
                         .expect("successful writer remains available")
-                        .finish(succeeded)
+                        .finish_with_input_count(succeeded, input_observations)
                     {
                         Ok(digest) => RecognitionArtifactFinishOutcome {
                             status: RecognitionArtifactFinishStatus::Complete,
                             manifest_sha256: Some(digest),
+                            input_observations,
+                            retained_observations,
                         },
                         Err(_) => RecognitionArtifactFinishOutcome {
                             status: RecognitionArtifactFinishStatus::WriteFailed,
                             manifest_sha256: None,
+                            input_observations,
+                            retained_observations,
                         },
                     }
                 };
@@ -502,6 +665,28 @@ fn run_live_writer(
                 return;
             }
         }
+    }
+}
+
+fn record_live(writer: &mut RecognitionArtifactWriter, record: &LiveRecord) -> Result<(), String> {
+    let output = &record.observation;
+    writer.record(
+        record.sequence,
+        RecognitionArtifactTiming::Live {
+            monotonic_start_ms: record.monotonic_start_ms,
+            monotonic_end_ms: record.monotonic_end_ms,
+        },
+        output.fields(),
+        output.candidates(),
+        output.result_resolution(),
+        None,
+    )
+}
+
+fn result_record_priority(record: &LiveRecord) -> u8 {
+    match record.observation.result_resolution() {
+        Some(ResultSongResolution::Accepted { .. }) => 1,
+        Some(ResultSongResolution::Unknown { .. }) | None => 0,
     }
 }
 
@@ -552,26 +737,111 @@ impl<'a> From<&'a scorepeek::recognition::DynamicTextObservation> for StoredText
     }
 }
 
-impl<'a> From<&'a ScreenCatalogCandidateObservations> for StoredCandidates<'a> {
-    fn from(candidates: &'a ScreenCatalogCandidateObservations) -> Self {
+impl TryFrom<&ScreenCatalogCandidateObservations> for StoredCandidates {
+    type Error = String;
+
+    fn try_from(candidates: &ScreenCatalogCandidateObservations) -> Result<Self, Self::Error> {
         match candidates {
             ScreenCatalogCandidateObservations::Result {
                 comparison_key_id,
+                catalog,
                 candidates,
                 ..
-            } => Self::Result {
-                comparison_key_id,
-                candidates,
-            },
+            } => {
+                require_catalog_order(
+                    catalog,
+                    candidates.iter().map(|candidate| candidate.song_id),
+                )?;
+                Ok(Self::Result {
+                    comparison_key_id,
+                    candidate_order: "catalog_songs",
+                    candidates: candidates
+                        .iter()
+                        .map(|candidate| {
+                            [
+                                candidate.title.minimum_edit_distance,
+                                candidate.title.maximum_normalized_similarity.matching_units,
+                                candidate.title.maximum_normalized_similarity.compared_units,
+                                candidate.artist.minimum_edit_distance,
+                                candidate
+                                    .artist
+                                    .maximum_normalized_similarity
+                                    .matching_units,
+                                candidate
+                                    .artist
+                                    .maximum_normalized_similarity
+                                    .compared_units,
+                            ]
+                        })
+                        .collect(),
+                })
+            }
             ScreenCatalogCandidateObservations::MusicSelect {
                 comparison_key_id,
+                catalog,
                 candidates,
                 ..
-            } => Self::MusicSelect {
-                comparison_key_id,
-                candidates,
-            },
+            } => {
+                require_catalog_order(
+                    catalog,
+                    candidates.iter().map(|candidate| candidate.song_id),
+                )?;
+                Ok(Self::MusicSelect {
+                    comparison_key_id,
+                    candidate_order: "catalog_songs",
+                    candidates: candidates
+                        .iter()
+                        .map(|candidate| {
+                            [
+                                candidate.central_title.minimum_edit_distance,
+                                candidate
+                                    .central_title
+                                    .maximum_normalized_similarity
+                                    .matching_units,
+                                candidate
+                                    .central_title
+                                    .maximum_normalized_similarity
+                                    .compared_units,
+                                candidate.artist.minimum_edit_distance,
+                                candidate
+                                    .artist
+                                    .maximum_normalized_similarity
+                                    .matching_units,
+                                candidate
+                                    .artist
+                                    .maximum_normalized_similarity
+                                    .compared_units,
+                                candidate.active_list_title.minimum_edit_distance,
+                                candidate
+                                    .active_list_title
+                                    .maximum_normalized_similarity
+                                    .matching_units,
+                                candidate
+                                    .active_list_title
+                                    .maximum_normalized_similarity
+                                    .compared_units,
+                            ]
+                        })
+                        .collect(),
+                })
+            }
         }
+    }
+}
+
+fn require_catalog_order(
+    catalog: &CatalogCandidateEvidenceTable,
+    candidate_ids: impl Iterator<Item = ScorepeekSongId>,
+) -> Result<(), String> {
+    if catalog
+        .songs
+        .iter()
+        .map(|song| song.song_id)
+        .eq(candidate_ids)
+    {
+        Ok(())
+    } else {
+        Err("recognition candidate order does not match catalog evidence".to_owned())
     }
 }
 
@@ -617,9 +887,10 @@ mod tests {
     use std::sync::Arc;
 
     use scorepeek::recognition::{
-        CatalogCandidateDomain, CatalogCandidateEvidenceTable, DynamicTextObservation,
-        FieldNotObserved, FieldNotObservedReason, RESULT_SONG_RESOLVER_ID,
-        ResultScreenFieldObservations, ResultSongResolution, ResultSongUnknownReason,
+        CatalogCandidateDomain, CatalogCandidateEvidenceTable, CatalogNormalizedSimilarity,
+        CatalogTextCandidateScore, DynamicTextObservation, FieldNotObserved,
+        FieldNotObservedReason, RESULT_SONG_RESOLVER_ID, ResultScreenFieldObservations,
+        ResultSongCandidateObservation, ResultSongResolution, ResultSongUnknownReason,
     };
 
     use super::*;
@@ -665,7 +936,23 @@ mod tests {
                     },
                 }],
             }),
-            candidates: Vec::new(),
+            candidates: vec![ResultSongCandidateObservation {
+                song_id,
+                title: CatalogTextCandidateScore {
+                    minimum_edit_distance: 0,
+                    maximum_normalized_similarity: CatalogNormalizedSimilarity {
+                        matching_units: 12,
+                        compared_units: 12,
+                    },
+                },
+                artist: CatalogTextCandidateScore {
+                    minimum_edit_distance: 1,
+                    maximum_normalized_similarity: CatalogNormalizedSimilarity {
+                        matching_units: 8,
+                        compared_units: 9,
+                    },
+                },
+            }],
         }
     }
 
@@ -718,7 +1005,8 @@ mod tests {
         assert!(catalog.contains("ABSOLUTEEVIL"));
         assert!(catalog.contains("Yuta Imai"));
         let manifest = fs::read_to_string(root.join("manifest.json")).unwrap();
-        assert!(manifest.contains("\"observation_count\":1"));
+        assert!(manifest.contains("\"input_observation_count\":1"));
+        assert!(manifest.contains("\"retained_observation_count\":1"));
         assert_eq!(
             fs::metadata(root.join("catalog.json"))
                 .unwrap()
@@ -784,7 +1072,7 @@ mod tests {
         let manifest = fs::read_to_string(root.join("manifest.json")).unwrap();
         assert!(manifest.contains("\"status\":\"error\""));
         assert!(manifest.contains("\"catalog_entries\":0"));
-        assert!(manifest.contains("\"observation_count\":1"));
+        assert!(manifest.contains("\"retained_observation_count\":1"));
     }
 
     #[test]
@@ -814,13 +1102,81 @@ mod tests {
         assert_eq!(outcome.status, RecognitionArtifactFinishStatus::Complete);
         assert_eq!(outcome.manifest_sha256.unwrap().len(), 64);
         let stored = fs::read_to_string(root.join("observations.ndjson")).unwrap();
-        assert!(stored.contains("scorepeek-recognition-observation-v2"));
+        assert!(stored.contains("scorepeek-recognition-observation-v3"));
         assert!(stored.contains("\"source\":\"live\""));
         assert!(stored.contains("\"monotonic_start_ms\":1000"));
         assert!(stored.contains("\"monotonic_end_ms\":1017"));
         assert!(stored.contains("ABSOLUTE EVIL"));
         assert!(stored.contains("Yuta Imai"));
         assert!(stored.contains("FAILED"));
+    }
+
+    #[test]
+    fn foreground_worker_compacts_one_result_interval_and_reports_omissions() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("foreground");
+        let domain =
+            CatalogCandidateDomain::from_catalog(&scorepeek::catalog::Catalog::default()).unwrap();
+        let mut worker = RecognitionArtifactWorker::start_inner_with_retention(
+            root.clone(),
+            "foreground-001".to_owned(),
+            "d".repeat(64),
+            32,
+            None,
+            RecognitionArtifactRetention::ForegroundCompactedV1,
+        );
+
+        for sequence in 1..=20 {
+            let observation = crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation::from_fields(
+                &domain,
+                result_fields(),
+            );
+            assert_eq!(
+                worker.try_record(sequence, sequence * 200, sequence * 200 + 17, observation),
+                RecognitionArtifactEnqueueOutcome::Enqueued
+            );
+        }
+        let outcome = worker.finish(true);
+
+        assert_eq!(outcome.status, RecognitionArtifactFinishStatus::Complete);
+        assert_eq!(outcome.input_observations, 20);
+        assert_eq!(outcome.retained_observations, 1);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest["retention"], "foreground_compacted_v1");
+        assert_eq!(manifest["input_observation_count"], 20);
+        assert_eq!(manifest["retained_observation_count"], 1);
+    }
+
+    #[test]
+    fn foreground_worker_does_not_merge_result_intervals_across_a_long_gap() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("foreground-separated-results");
+        let mut worker = RecognitionArtifactWorker::start_inner_with_retention(
+            root.clone(),
+            "foreground-separated-results".to_owned(),
+            "f".repeat(64),
+            8,
+            None,
+            RecognitionArtifactRetention::ForegroundCompactedV1,
+        );
+        let domain =
+            CatalogCandidateDomain::from_catalog(&scorepeek::catalog::Catalog::default()).unwrap();
+        for (sequence, time) in [(1, 0), (2, 1_000), (3, 60_000), (4, 61_000)] {
+            let observation = crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation::from_fields(
+                &domain,
+                result_fields(),
+            );
+            assert_eq!(
+                worker.try_record(sequence, time, time + 17, observation),
+                RecognitionArtifactEnqueueOutcome::Enqueued
+            );
+        }
+        let outcome = worker.finish(true);
+
+        assert_eq!(outcome.status, RecognitionArtifactFinishStatus::Complete);
+        assert_eq!(outcome.input_observations, 4);
+        assert_eq!(outcome.retained_observations, 2);
     }
 
     #[test]

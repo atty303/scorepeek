@@ -390,6 +390,46 @@ pub struct ObservedFrame {
     frame_domain: Rc<()>,
 }
 
+/// Exact raw `BGRx` source bytes paired with a successfully normalized live frame.
+///
+/// The evidence remains outside recognition. It exists only so a retained diagnostic frame can
+/// replay the bound source-to-canonical transform without another game session.
+pub struct CalibratedSourceFrameEvidence {
+    frame: UncalibratedFrame,
+}
+
+impl CalibratedSourceFrameEvidence {
+    #[must_use]
+    pub const fn contract(&self) -> UncalibratedVideoContract {
+        self.frame.contract()
+    }
+
+    #[must_use]
+    pub const fn memory_type(&self) -> UncalibratedMemoryType {
+        self.frame.memory_type()
+    }
+
+    #[must_use]
+    pub const fn stride(&self) -> u32 {
+        self.frame.stride()
+    }
+
+    #[must_use]
+    pub const fn source_sequence(&self) -> u64 {
+        self.frame.sequence()
+    }
+
+    #[must_use]
+    pub const fn received_monotonic_ns(&self) -> u64 {
+        self.frame.received_monotonic_ns()
+    }
+
+    #[must_use]
+    pub fn into_bytes(self) -> Box<[u8]> {
+        self.frame.bytes.into_boxed_slice()
+    }
+}
+
 impl fmt::Debug for ObservedFrame {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -490,6 +530,36 @@ impl CalibratedGamescopeLease {
         observed: ObservedFrame,
         sink: &mut impl CaptureDiagnosticSink,
     ) -> Result<NormalizedCanonicalFrame, CaptureError> {
+        self.normalize_observed_frame_inner(observed, sink)
+            .map(|(canonical, _)| canonical)
+    }
+
+    /// Applies the immutable normalizer and returns the exact consumed source bytes as diagnostic
+    /// evidence alongside the canonical frame.
+    ///
+    /// # Errors
+    /// Returns the same typed errors as [`Self::normalize_observed_frame`].
+    pub fn normalize_observed_frame_with_source(
+        &mut self,
+        observed: ObservedFrame,
+        sink: &mut impl CaptureDiagnosticSink,
+    ) -> Result<(NormalizedCanonicalFrame, CalibratedSourceFrameEvidence), CaptureError> {
+        self.normalize_observed_frame_inner(observed, sink)
+            .map(|(canonical, observed)| {
+                (
+                    canonical,
+                    CalibratedSourceFrameEvidence {
+                        frame: observed.frame,
+                    },
+                )
+            })
+    }
+
+    fn normalize_observed_frame_inner(
+        &mut self,
+        observed: ObservedFrame,
+        sink: &mut impl CaptureDiagnosticSink,
+    ) -> Result<(NormalizedCanonicalFrame, ObservedFrame), CaptureError> {
         let started_ms = self.receiver.elapsed_ms();
         let source_sequence = observed.source_sequence();
         let result = if !Rc::ptr_eq(&observed.frame_domain, &self.frame_domain) {
@@ -504,11 +574,14 @@ impl CalibratedGamescopeLease {
             self.geometry
                 .normalize(&observed.frame)
                 .map(|frame| {
-                    NormalizedCanonicalFrame::bind(
-                        frame,
-                        self.capture_generation,
-                        observed.capture_profile_sha256,
-                        observed.normalizer_artifact_sha256,
+                    (
+                        NormalizedCanonicalFrame::bind(
+                            frame,
+                            self.capture_generation,
+                            Arc::clone(&observed.capture_profile_sha256),
+                            Arc::clone(&observed.normalizer_artifact_sha256),
+                        ),
+                        observed,
                     )
                 })
                 .map_err(|_| CaptureErrorType::FrameNormalizationFailed)
@@ -1742,9 +1815,14 @@ mod tests {
         );
         let observed = admitted.take_latest_observed_frame().unwrap();
         let fact_count = facts.0.len();
-        admitted
-            .normalize_observed_frame(observed, &mut facts)
+        let (canonical, source) = admitted
+            .normalize_observed_frame_with_source(observed, &mut facts)
             .unwrap();
+        assert_eq!(canonical.source_sequence(), 2);
+        assert_eq!(source.source_sequence(), 2);
+        assert_eq!(source.contract().width, 4);
+        assert_eq!(source.stride(), 16);
+        assert_eq!(&*source.into_bytes(), &[0; 32]);
         assert_eq!(facts.0.len(), fact_count);
         admitted.shutdown(&mut ()).unwrap();
     }

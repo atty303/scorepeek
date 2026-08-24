@@ -10,11 +10,13 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - M4 offline canonical-frame and recognition spike: **in progress**.
 - Current execution focus: the corpus recording has passed the value-bearing result-song
   recognition simulation for all three reviewed episodes, and a normal foreground Gamescope
-  session now reuses that post-canonical path. One Wayland INFINITAS session admitted the calibrated
-  binding and produced live music-select observations, but produced no result observation for its
-  one played result. A distinct Gamescope-vkCapture/OBS recording profile reproduces that result
-  offline and narrows the miss to the direct-live screen-predicate boundary. The next boundary is a
-  second normal session with complete predicate diagnostics, not a validation-only live gate.
+  session now reuses that post-canonical path. The retained Wayland result QOI proved that the two
+  result-panel edge crops were one row low; the measured coordinate correction classifies that exact
+  frame without lowering the threshold and passes the complete three-episode simulation. Foreground
+  evidence is now bounded for hours-long use and selected result frames can retain paired exact raw
+  BGRx for later transform replay. A transform comparison command and a prospective ordinary live
+  result under the corrected layout remain next boundaries; another play is not required to repair
+  the observed miss.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -43,8 +45,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   evidence isolates a residual that requires it.
 - Application-owned bounded QOI diagnostic runs with non-blocking producer handoff, a dedicated
   writer, strict replay, explicit partial/degraded coverage, crash recovery, retention, read-only
-  controls, and create-only export. Pixels and recognition facts remain separate from public result
-  surfaces.
+  controls, and create-only export. Foreground runs keep a 12-second unknown tail, result/transition
+  evidence and low-frequency baselines; only the first partial-result or a known-screen transition
+  may pair exact raw BGRx with its same-sequence canonical QOI. Pixels and recognition facts remain
+  separate from public result surfaces.
 
 ### Gamescope capture and calibration
 
@@ -226,6 +230,16 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   unknown as well as recognized screens, and finalizes the existing field, diagnostic, and
   recognition-artifact workers in order. Its control path does not signal Gamescope, INFINITAS, or
   the process group.
+- ADR 0043 makes the foreground artifact practical for multi-hour sessions. Recognition evidence
+  retains one representative result per interval, splits result observations separated by more
+  than 30 seconds even without music-select, and keeps five-minute music-select samples, with
+  compact candidate metric arrays in exact catalog order. Diagnostic QOI uses a bounded failure window;
+  paired source bytes are limited by the existing 8 GiB run/store capacity and are not recorded
+  continuously. Transient predicate cooling while the screen remains unknown does not start a new
+  raw-source interval, and a rejected rolling-tail batch accounts for every selected sequence.
+  New run-start documents use v2; exact canonical v1 documents remain readable as the former
+  complete-cadence policy, so retained evidence cannot block a new writer. Bounded gates and
+  offline simulation retain complete observations.
 - The explicit normalizer maps BGRx through source rectangle
   `x=26/3, y=0, width=7616/3, height=1428` using the registered half-pixel/Q11 linear rule into an
   unbound RGB8 1920x1080 candidate. There is no automatic measurement, border detection, profile
@@ -316,7 +330,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   official-model execution, and native PipeWire build have each passed their dedicated development
   gates. These do not substitute for target-machine capture, recognition, or performance evidence.
 - Repository validation at this checkpoint includes formatting/static checks, workspace all-target
-  clippy with warnings denied, 160 library tests, 151 binary tests, 55 corpus tests, 75 offline OCR
+  clippy with warnings denied, 161 library tests, 163 binary tests, 55 corpus tests, 75 offline OCR
   tests, dataset E2E, and
   native PipeWire build verification. Focused session tests also verify descriptor/layout rejection,
   frame-generation rejection, diagnostic opt-out non-interference, and manifest-backed ordered
@@ -352,8 +366,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   collision-safe width-fold comparison including a cross-song collision, fail typed on a
   search-term-only song, verify independent integer absolute/normalized metrics, and represent an
   empty catalog as zero candidates without inventing an unknown-song decision.
-- The development-machine recording profile remained outside the repository and was selected by
-  SHA-256 `05b3c249627fb99968c1b464f310a9d13f5c23e5a0594237ea5272af5c0f05c6`.
+- The revised development-machine recording profile remained outside the repository and was
+  selected by SHA-256 `dfcc25e8b3f8db9d5a8362a9817112e2b2dbeee14ebbef389edc79fac755ee5b`.
   It binds the corpus recording `2026-08-17 19-25-31.mkv` by digest, its 459-frame canonical
   extraction, the current layout and registered catalog/model/runtime, 250 ms source pacing, a
   5,000 ms diagnostic frame cadence, and three reviewed result windows. The production field path
@@ -362,24 +376,28 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   retained 120 full-catalog candidate sets and 305,760 song scores, and observed the expected exact
   clear type on 22 frames. The field worker and diagnostic run both completed; the final 92-frame,
   579-fact diagnostic manifest had no drops or degradations and SHA-256
-  `3e1d5b743bd66b4b08523ebb3d389406a587791500a65ada5c6bc74d4255b2b1`.
+  `59f406505e9226bf93e0f2ca9c76ac96fa9c2f30b6d1d7a8cd73c8e5f1008387`.
 - A development-machine value-bearing replay retained 120 field observations, the exact
   2,548-song catalog string table, and 305,760 candidate records. It established the resolver inputs:
   `ABSOLUTE EVIL`/`Yuta Imai` at title/artist edit zero and title margin four, and `ANEMONE` observed
   as `ANEMON` with title edit one, `6/7` similarity, margin two, and artist similarity `20/43`.
 - The create-only profile v2 digest is
-  `45d4cbf7b976c47e04a712d2486e6bf000d50c687a7dd3b8a816697d74608d77`. The final simulation
+  `dfcc25e8b3f8db9d5a8362a9817112e2b2dbeee14ebbef389edc79fac755ee5b`. The final simulation
   inspected 459 canonical frames and completed 3/3 episodes: two `FAILED` results for
   `6ef33da9-090a-500c-844a-8bffd14de63f` (`ABSOLUTE EVIL`) and one `CLEAR` result for
   `5570fd25-7cb9-55b6-8f15-bcbe46de4ad6` (`ANEMONE`). It produced 22 exact song decisions, 22
   exact clear-type matches, two typed `empty_title` transition unknowns, and no wrong acceptance.
-  The final source-matching binary had SHA-256
-  `8dd6b86a9092b03f72482b4801319f5ef224e4fa1423481a32780f34226d6152`. The complete
-  120-observation, 114,644,552-byte evidence manifest has SHA-256
-  `83841160908a7a5ea6d62741d75a653f00341753a87bc1a49c426a6fe85fa1c0`; its complete 92-frame,
+  The compact v3 observation encoding retained all 120 observations in 7,147,256 bytes rather than
+  repeating the 2,548 song IDs and field names per row. Its complete evidence manifest has SHA-256
+  `4a039335fc048e1ea4320e5dd3892a30ff555405a64796aceee7d142dc8e7e54`; its complete 92-frame,
   579-fact diagnostic manifest has SHA-256
-  `d80a6db891c9a1263e8f3fcf0ce6c3ad49d7ee2afc0ed5801082e23f7ec82147`, with no drops or
+  `59f406505e9226bf93e0f2ca9c76ac96fa9c2f30b6d1d7a8cd73c8e5f1008387`, with no drops or
   degradations.
+- Exact direct-live frame 314 has QOI SHA-256
+  `ac478bc21cdca91caa5e052200bc58406685e593e59c3b7cfb590998c66239bd` and canonical pixel
+  SHA-256 `e52c2f9466281e847b9ce46b3ac9da0e6a6bc1e150c072cc6a7b8da849372dbf`.
+  Under layout SHA-256 `26c40695fb72f3a7e495a2c4ec21326da7f84d7d7342c842e2fed1d78e1bbfea`,
+  it is `result`: warm 3,956, upper edge 521, lower edge 523, with unchanged edge minimum 518.
 
 ## Unverified boundaries
 
@@ -387,16 +405,18 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   recording. It has no title-disjoint holdout, broader clear-type/background coverage, calibrated
   false-accept denominator, or release-accuracy authority. Music-select song resolution, charts,
   digits, temporal result-event emission, and deduplication remain unimplemented.
-- No Gamescope run has yet
-  driven it with a classified admitted live frame. Recording evidence retains replay provenance and
-  cannot fabricate the live generation/profile/normalizer owner. No development-machine run has
-  measured live inference-plus-scoring cost, queue behavior, or candidate output on Gamescope-fed
-  INFINITAS fields.
+- Admitted Gamescope runs have driven classified live music-select frames and retained an exact live
+  result QOI that the corrected layout classifies as result offline. Recording evidence retains
+  replay provenance and cannot fabricate the live generation/profile/normalizer owner. No
+  development-machine run has measured live inference-plus-scoring cost, queue behavior, or
+  candidate output as a target-host performance gate.
 - The bounded CLI gate is not an ordinary long-running application loop. Live queue-full or worker
   loss was not forced on the development machine; bounded unit tests cover queue drop, worker loss,
   generation rejection, opt-out, and diagnostic non-interference. Target-host cost remains unknown.
 - The live recognition-artifact worker is covered by exact-value/timing, create-only, unavailable,
-  compact-link, clippy, and workspace tests, but has not yet been exercised with Gamescope frames.
+  compact-link, clippy, and workspace tests and the earlier complete-cadence path has retained
+  Gamescope frames. The new foreground-compacted retention has complete recording simulation and
+  unit evidence but not yet a prospective live result.
 - Session provenance is explicit launcher/operator input, not an automatic observation of the
   Gamescope process. Process discovery or attestation is not implemented or claimed.
 - INFINITAS content/geometry, target play-machine output, 4K, FSR/NIS, Reshade, HDR, Portal, and OBS
@@ -404,12 +424,13 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - OBS/obs-vkcapture coexistence, PipeWire daemon disconnect, stream loss distinct from node loss,
   source recreation, long soak, FD/thread/RSS convergence, frame age, CPU/memory/copy/GPU/power
   cost, game p99 frametime, and OBS lag remain unverified.
-- Gamescope-driven music-select field submission is verified, but direct-live result routing,
-  result OCR/resolution, graceful stdin-requested shutdown, queue/artifact completion, accepted
-  field gate, event daemon, target-host performance gate, and supported capture profile remain
-  unverified. The direct-live result miss is localized before OCR, but the failing live predicate
-  component was not retained by the incomplete run. Changing the canonical layout threshold would
-  change its digest and remains a separate migration decision after measured live evidence.
+- Gamescope-driven music-select field submission and offline replay of the exact retained live
+  result predicate are verified, but prospective direct-live result OCR/resolution, graceful
+  stdin-requested shutdown, queue/artifact completion, accepted field gate, event daemon,
+  target-host performance gate, and supported capture profile remain unverified. The corrected
+  edge coordinates did not lower the predicate threshold. The earlier run has no paired raw source,
+  so its exact source-to-canonical transform cannot be reconstructed; new foreground runs can
+  retain that pair, but the exact offline transform comparison command is not yet implemented.
 - Current recordings and provisional labels do not establish title-disjoint result accuracy,
   calibrated thresholds, result dwell, miss denominator, deduplication, or release accuracy.
 - Persistent scheduler installation was verified in isolation but not applied to the operator's
@@ -429,19 +450,19 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Run the normal `scorepeek run gamescope` session against a user-started private INFINITAS
-   Wayland session with a fresh diagnostic root and recognition artifact, then stop scorepeek only
-   through its exact stdin `stop` control line.
-2. Inspect the retained numeric predicate values for the live result and compare them with the
-   distinct Gamescope-vkCapture holdout before deciding whether a versioned canonical-layout
-   threshold migration is justified.
-3. Require exact live result title, artist, `CLEAR TYPE`, song decision, queue/artifact completion,
-   and ordered capture teardown before defining event authority, target-host performance
-   acceptance, or support.
+1. Add a bounded offline transform inspector that selects one manifest-bound raw BGRx/canonical QOI
+   pair and an expected Gamescope binding digest, reruns the registered fractional normalizer, and
+   reports exact/aggregate pixel differences without another capture session.
+2. Extend prospective retention evidence only if the bounded offline transform inspector exposes a
+   missing source contract, export, or capacity invariant; do not broaden routine raw retention.
+3. At the next naturally occurring user-started INFINITAS session, require exact live result title,
+   artist, `CLEAR TYPE`, song decision, complete diagnostic/recognition artifacts, and ordered
+   scorepeek teardown before defining event authority, target-host performance acceptance, or
+   support. Do not request another play merely to tune the repaired predicate.
 
 Do not proceed to automatic calibration, Portal/OBS fallback, event emission, soak/performance, or
-support claims until the normal live recognition session and its immutable
-run-lifecycle evidence are complete.
+support claims until transform replay and a prospective normal live recognition session have
+complete immutable evidence.
 
 ## Stable milestone map
 

@@ -104,6 +104,12 @@ authoritative.
 - [ADR 0041: Register Gamescope-vkCapture recordings as a separate profile](0041-register-gamescope-vkcapture-recordings-as-a-separate-profile.md)
   binds the Gamescope-vkCapture/OBS route to its own provenance and canonical normalizer while
   retaining the three-episode requirement for complete recording simulation.
+- [ADR 0042: Use measured result-panel edge rows](0042-use-measured-result-panel-edge-rows.md)
+  keeps the fail-closed edge threshold and corrects the two measured result-panel rows across the
+  direct Wayland frame and the independent three-episode recording profile.
+- [ADR 0043: Retain bounded foreground failure evidence](0043-retain-bounded-foreground-failure-evidence.md)
+  compacts hours-long foreground diagnostics and recognition evidence while pairing only selected
+  result-transition or partial-result canonical frames with exact raw BGRx transform evidence.
 
 ## Historical
 

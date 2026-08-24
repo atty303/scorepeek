@@ -6,19 +6,21 @@ use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use scorepeek::capture::{UncalibratedMemoryType, UncalibratedVideoContract};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::diagnostic_recording::{
-    DEFAULT_AGGREGATE_BYTES, DiagnosticCompleteness, DiagnosticErrorType, DiagnosticRunStatus,
-    MANIFEST_RESERVE_BYTES, MAX_DEGRADATIONS_PER_RUN, MAX_FACT_BYTES, MAX_FACTS_PER_RUN,
-    MAX_FRAMES_PER_RUN, NORMAL_RETENTION_HOURS, PRIORITY_RETENTION_HOURS,
+    DEFAULT_AGGREGATE_BYTES, DiagnosticCompleteness, DiagnosticErrorType, DiagnosticRetention,
+    DiagnosticRunStatus, MANIFEST_RESERVE_BYTES, MAX_DEGRADATIONS_PER_RUN, MAX_FACT_BYTES,
+    MAX_FACTS_PER_RUN, MAX_FRAMES_PER_RUN, NORMAL_RETENTION_HOURS, PRIORITY_RETENTION_HOURS,
 };
 use crate::publish_private_file;
 const MAX_RUNS: usize = 8_192;
 const MAX_FILES_PER_RUN: usize = 50_000;
 const MAX_START_BYTES: u64 = 64 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_SOURCE_FRAME_BYTES: u64 = 128 * 1024 * 1024;
 const STORE_LOCK_FILENAME: &str = ".scorepeek-diagnostic-store.lock";
 const DELETE_STAGING_PREFIX: &str = ".scorepeek-diagnostic-delete-";
 const DELETE_MARKER_FILENAME: &str = ".scorepeek-diagnostic-delete-owner-v1";
@@ -153,6 +155,17 @@ struct RunStartDocument {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+struct LegacyRunStartDocument {
+    schema: String,
+    run_id: String,
+    monotonic_start_ms: u64,
+    resource: RunResource,
+    binding: RunBinding,
+    policy: LegacyRunPolicy,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct RunResource {
     program: String,
     version: String,
@@ -182,6 +195,18 @@ struct RunReplayBinding {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RunPolicy {
+    sample_interval_ms: u64,
+    maximum_run_bytes: u64,
+    aggregate_retention_bytes: u64,
+    normal_retention_hours: u32,
+    priority_retention_hours: u32,
+    remote_export_enabled: bool,
+    retention: DiagnosticRetention,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyRunPolicy {
     sample_interval_ms: u64,
     maximum_run_bytes: u64,
     aggregate_retention_bytes: u64,
@@ -229,6 +254,21 @@ struct FrameReference {
     monotonic_end_ms: u64,
     filename: String,
     canonical_pixel_sha256: String,
+    file_sha256: String,
+    bytes: u64,
+    #[serde(default)]
+    source: Option<SourceFrameReference>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceFrameReference {
+    filename: String,
+    pixel_format: String,
+    video: UncalibratedVideoContract,
+    memory_type: UncalibratedMemoryType,
+    stride: u32,
+    received_monotonic_ns: u64,
     file_sha256: String,
     bytes: u64,
 }
@@ -422,6 +462,9 @@ fn export_complete_run(
     ]);
     for frame in &manifest.frames {
         expected.insert(frame.filename.clone(), frame.file_sha256.clone());
+        if let Some(source) = &frame.source {
+            expected.insert(source.filename.clone(), source.file_sha256.clone());
+        }
     }
     for fact in &manifest.facts {
         expected.insert(fact.filename.clone(), fact.file_sha256.clone());
@@ -662,15 +705,7 @@ fn inspect_run_with_freeze_staging(
 ) -> Result<DiagnosticRunSummary, String> {
     let before = directory_identity(directory)?;
     let start_bytes = read_bounded_regular(&directory.join("run.json"), MAX_START_BYTES)?;
-    let start: RunStartDocument =
-        serde_json::from_slice(&start_bytes).map_err(|_| invalid_store())?;
-    if start.schema != "scorepeek-private-diagnostic-run-start-v1"
-        || start.run_id != run_id
-        || !valid_start(&start)
-        || canonical_json(&start)? != start_bytes
-    {
-        return Err(invalid_store());
-    }
+    let start = parse_run_start(&start_bytes, run_id)?;
     let run_sha256 = encode_sha256(&start_bytes);
     let mut files = run_files(directory)?;
     files.remove(FREEZE_FILENAME);
@@ -1543,7 +1578,11 @@ fn validate_manifest(
     monotonic_start_ms: u64,
     files: &BTreeMap<String, u64>,
 ) -> Result<(), String> {
-    if manifest.schema != "scorepeek-private-diagnostic-run-v1"
+    if !matches!(
+        manifest.schema.as_str(),
+        "scorepeek-private-diagnostic-run-v1" | "scorepeek-private-diagnostic-run-v2"
+    ) || (manifest.schema == "scorepeek-private-diagnostic-run-v1"
+        && manifest.frames.iter().any(|frame| frame.source.is_some()))
         || manifest.start.schema != "scorepeek-private-diagnostic-artifact-v1"
         || manifest.start.filename != "run.json"
         || manifest.start.file_sha256 != run_sha256
@@ -1665,7 +1704,31 @@ fn valid_manifest_entries(
             return false;
         }
         previous_sequence = Some(frame.sequence);
-        let Some(next) = artifact_bytes.checked_add(frame.bytes) else {
+        let source_bytes = frame.source.as_ref().map_or(0, |source| source.bytes);
+        if frame.source.as_ref().is_some_and(|source| {
+            let _ = (source.memory_type, source.received_monotonic_ns);
+            let minimum_stride = source.video.width.checked_mul(4);
+            let expected_bytes =
+                u64::from(source.stride).checked_mul(u64::from(source.video.height));
+            source.filename != format!("source-{:020}.bgrx", frame.sequence)
+                || source.pixel_format != "bgrx"
+                || source.video.width == 0
+                || source.video.height == 0
+                || minimum_stride.is_none_or(|minimum| source.stride < minimum)
+                || expected_bytes != Some(source.bytes)
+                || source.bytes == 0
+                || source.bytes > MAX_SOURCE_FRAME_BYTES
+                || !valid_sha256(&source.file_sha256)
+                || expected
+                    .insert(source.filename.clone(), source.bytes)
+                    .is_some()
+        }) {
+            return false;
+        }
+        let Some(next) = artifact_bytes
+            .checked_add(frame.bytes)
+            .and_then(|bytes| bytes.checked_add(source_bytes))
+        else {
             return false;
         };
         artifact_bytes = next;
@@ -1705,6 +1768,10 @@ fn validate_partial_files(files: &BTreeMap<String, u64>, run_bytes: u64) -> Resu
         if valid_indexed_artifact_name(name, "frame-", ".qoi") {
             frame_count = frame_count.checked_add(1).ok_or_else(invalid_store)?;
             if frame_count > MAX_FRAMES_PER_RUN {
+                return Err(invalid_store());
+            }
+        } else if valid_indexed_artifact_name(name, "source-", ".bgrx") {
+            if *bytes > MAX_SOURCE_FRAME_BYTES {
                 return Err(invalid_store());
             }
         } else if valid_indexed_artifact_name(name, "fact-", ".json") {
@@ -1755,6 +1822,44 @@ fn valid_start(start: &RunStartDocument) -> bool {
         && policy.normal_retention_hours == NORMAL_RETENTION_HOURS
         && policy.priority_retention_hours == PRIORITY_RETENTION_HOURS
         && !policy.remote_export_enabled
+}
+
+fn parse_run_start(bytes: &[u8], run_id: &str) -> Result<RunStartDocument, String> {
+    if let Ok(start) = serde_json::from_slice::<RunStartDocument>(bytes)
+        && start.schema == "scorepeek-private-diagnostic-run-start-v2"
+        && start.run_id == run_id
+        && valid_start(&start)
+        && canonical_json(&start)? == bytes
+    {
+        return Ok(start);
+    }
+    let legacy: LegacyRunStartDocument =
+        serde_json::from_slice(bytes).map_err(|_| invalid_store())?;
+    if legacy.schema != "scorepeek-private-diagnostic-run-start-v1"
+        || legacy.run_id != run_id
+        || canonical_json(&legacy)? != bytes
+    {
+        return Err(invalid_store());
+    }
+    let start = RunStartDocument {
+        schema: "scorepeek-private-diagnostic-run-start-v2".to_owned(),
+        run_id: legacy.run_id,
+        monotonic_start_ms: legacy.monotonic_start_ms,
+        resource: legacy.resource,
+        binding: legacy.binding,
+        policy: RunPolicy {
+            sample_interval_ms: legacy.policy.sample_interval_ms,
+            maximum_run_bytes: legacy.policy.maximum_run_bytes,
+            aggregate_retention_bytes: legacy.policy.aggregate_retention_bytes,
+            normal_retention_hours: legacy.policy.normal_retention_hours,
+            priority_retention_hours: legacy.policy.priority_retention_hours,
+            remote_export_enabled: legacy.policy.remote_export_enabled,
+            retention: DiagnosticRetention::CompleteCadence,
+        },
+    };
+    valid_start(&start)
+        .then_some(start)
+        .ok_or_else(invalid_store)
 }
 
 fn run_files(directory: &Path) -> Result<BTreeMap<String, u64>, String> {
@@ -2098,6 +2203,52 @@ mod tests {
         let list = diagnostic_run_list(root.path()).unwrap();
         assert_eq!(list.runs.len(), 1);
         assert_eq!(list.runs[0].run_id, "older-run");
+    }
+
+    #[test]
+    fn legacy_v1_without_retention_remains_readable_and_does_not_block_a_new_run() {
+        let root = tempfile::tempdir().unwrap();
+        let legacy = DiagnosticRecorder::start(
+            root.path(),
+            &descriptor("legacy-run"),
+            DiagnosticPolicy::default(),
+        );
+        drop(legacy);
+        let start_path = root.path().join("legacy-run/run.json");
+        let start: RunStartDocument =
+            serde_json::from_slice(&fs::read(&start_path).unwrap()).unwrap();
+        let legacy_start = LegacyRunStartDocument {
+            schema: "scorepeek-private-diagnostic-run-start-v1".to_owned(),
+            run_id: start.run_id,
+            monotonic_start_ms: start.monotonic_start_ms,
+            resource: start.resource,
+            binding: start.binding,
+            policy: LegacyRunPolicy {
+                sample_interval_ms: start.policy.sample_interval_ms,
+                maximum_run_bytes: start.policy.maximum_run_bytes,
+                aggregate_retention_bytes: start.policy.aggregate_retention_bytes,
+                normal_retention_hours: start.policy.normal_retention_hours,
+                priority_retention_hours: start.policy.priority_retention_hours,
+                remote_export_enabled: start.policy.remote_export_enabled,
+            },
+        };
+        let legacy_bytes = canonical_json(&legacy_start).unwrap();
+        fs::write(&start_path, &legacy_bytes).unwrap();
+        assert!(parse_run_start(&legacy_bytes, "legacy-run").is_ok());
+
+        assert_eq!(diagnostic_run_list(root.path()).unwrap().runs.len(), 1);
+        let recorder = DiagnosticRecorder::start(
+            root.path(),
+            &descriptor("new-run"),
+            DiagnosticPolicy::default(),
+        );
+        assert_eq!(
+            recorder
+                .finish(DiagnosticRunStatus::Success, 1_000)
+                .completeness,
+            Some(DiagnosticCompleteness::Complete)
+        );
+        assert_eq!(diagnostic_run_list(root.path()).unwrap().runs.len(), 2);
     }
 
     #[test]
@@ -2715,6 +2866,7 @@ mod tests {
                 monotonic_start_ms: 0,
                 monotonic_end_ms: 16,
                 pixels: &pixels,
+                source: None,
             }),
             crate::diagnostic_recording::DiagnosticRecordOutcome::Recorded
         ));
@@ -2778,12 +2930,14 @@ mod tests {
             monotonic_start_ms: 0,
             monotonic_end_ms: 16,
             pixels: &pixels,
+            source: None,
         });
         let _ = recorder.record_frame(DiagnosticFrameInput {
             sequence: 3,
             monotonic_start_ms: 32,
             monotonic_end_ms: 48,
             pixels: &pixels,
+            source: None,
         });
         let outcome = recorder.finish(DiagnosticRunStatus::Success, 1_000);
         assert_eq!(outcome.completeness, Some(DiagnosticCompleteness::Partial));

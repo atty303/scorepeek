@@ -126,6 +126,7 @@ pub fn replay_diagnostic_run(
                 monotonic_start_ms: requested.monotonic_start_ms,
                 monotonic_end_ms: requested.monotonic_end_ms,
                 pixels: Arc::from(frame.into_pixels()),
+                source: None,
             },
             Instant::now() + DEFAULT_DIAGNOSTIC_FLUSH_TIMEOUT,
         );

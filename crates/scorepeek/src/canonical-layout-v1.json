@@ -6,8 +6,8 @@
   "result": {
     "presence": { "warm_pixels_min": 3000, "horizontal_edge_pixels_min": 518 },
     "header": { "x": 600, "y": 0, "width": 720, "height": 80 },
-    "upper_panel_edge": { "x": 0, "y": 451, "width": 560, "height": 2 },
-    "lower_panel_edge": { "x": 0, "y": 655, "width": 560, "height": 2 },
+    "upper_panel_edge": { "x": 0, "y": 450, "width": 560, "height": 2 },
+    "lower_panel_edge": { "x": 0, "y": 654, "width": 560, "height": 2 },
     "title": { "x": 660, "y": 900, "width": 600, "height": 100 },
     "artist": { "x": 850, "y": 990, "width": 220, "height": 35 },
     "clear_type": { "x": 385, "y": 400, "width": 135, "height": 55 },

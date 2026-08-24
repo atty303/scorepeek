@@ -373,7 +373,13 @@ candidate選定から凍結したaccepted holdoutへ分ける。
 retry、title復帰および終了はvalidation scenarioとして保持するが、mode、attempt、play回数またはsession
 進行をrecognition coreへ実装しない。通常live sessionではrecognition成功と独立にbounded local
 telemetryを残し、canonical evidence、sequence/timing、transition、全binding、decision/outcome/completenessを
-後からreplayできるようにする。music-list改善だけでresult改善を主張せず、凍結holdoutまたはcandidate確定後のprospectiveな通常sessionで、
+後からreplayできるようにする。数時間のsessionではunknownの固定長rolling tail、partial-result、screen transition、
+低頻度baselineを使い、canonical QOIを認識追試へ保持する。source-to-canonical transformにも疑義が残る
+partial-resultまたはtransitionの代表frameだけは、同一sequenceのexact raw BGRxとcomplete observed contractを
+canonical QOIへ対でbindする。同じunknown区間ではwarm predicateが一時的に外れてもraw sourceを再保存せず、known screenへの
+transitionでのみ次区間を開始する。raw sourceを連続保存したり、canonical QOIだけからtransform correctnessを主張したりしない。
+value-bearing recognition artifactはresult intervalごとの代表値と低頻度music-selectへcompactし、完全なoffline gateでは
+全observationを維持する。music-list改善だけでresult改善を主張せず、凍結holdoutまたはcandidate確定後のprospectiveな通常sessionで、
 screen検出、song一意決定、event emission、session処理、dedupを含むcomplete result pathを最終的に
 検証する。詳細はADR 0018に従う。
 

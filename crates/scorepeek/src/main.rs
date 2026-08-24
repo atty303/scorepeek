@@ -40,6 +40,7 @@ fn main() -> ExitCode {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn run(args: &[OsString]) -> Result<(), String> {
     if let Some(result) = try_diagnostic_control(args)
         .or_else(|| try_diagnostic_replay(args))
@@ -79,6 +80,14 @@ fn run(args: &[OsString]) -> Result<(), String> {
             && frame_flag == "--frame-id" =>
         {
             inspect_canonical_frame(extraction, digest, frame_id)
+        }
+        [recognition, inspect, frame_flag, frame, digest_flag, digest]
+            if recognition == "recognition"
+                && inspect == "inspect-diagnostic-qoi"
+                && frame_flag == "--frame"
+                && digest_flag == "--frame-sha256" =>
+        {
+            inspect_diagnostic_qoi(frame, digest)
         }
         [
             recognition,
@@ -639,7 +648,8 @@ fn run_live_session(values: &[&OsStr]) -> Result<(), String> {
             replay: None,
         },
     };
-    let policy = parse_diagnostic_recording_policy(recording)?;
+    let mut policy = parse_diagnostic_recording_policy(recording)?;
+    policy.retention = diagnostic_recording::DiagnosticRetention::ForegroundFailureWindowV1;
     let diagnostic_preflight = prepare_live_diagnostic_root(Path::new(diagnostic_root), &policy);
     let monitor = live_control::InputStopMonitor::start()?;
     let stop = monitor.stop_token();
@@ -661,6 +671,8 @@ fn run_live_session(values: &[&OsStr]) -> Result<(), String> {
             catalog_root: Path::new(catalog_root),
             bundle_root: Path::new(bundle_root),
             recognition_artifact_root: Some(Path::new(recognition_artifact_root)),
+            recognition_artifact_retention:
+                recognition_artifact::RecognitionArtifactRetention::ForegroundCompactedV1,
         },
         &stop,
         &mut |event| write_live_session_event(&mut output, event),
@@ -977,6 +989,8 @@ fn run_capture_field_observation(
             catalog_root: Path::new(catalog_root),
             bundle_root: Path::new(bundle_root),
             recognition_artifact_root,
+            recognition_artifact_retention:
+                recognition_artifact::RecognitionArtifactRetention::Complete,
         },
     );
     println!(
@@ -2196,6 +2210,45 @@ fn inspect_canonical_frame(
     Ok(())
 }
 
+fn inspect_diagnostic_qoi(frame: &OsStr, expected_sha256: &OsStr) -> Result<(), String> {
+    const MAX_DIAGNOSTIC_QOI_BYTES: u64 = 16 * 1024 * 1024;
+
+    let path = Path::new(frame);
+    let expected_sha256 = parse_cli_sha256(expected_sha256, "diagnostic QOI SHA-256")?;
+    let metadata = path
+        .symlink_metadata()
+        .map_err(|_| "diagnostic QOI is unavailable".to_owned())?;
+    if !path.is_absolute()
+        || !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > MAX_DIAGNOSTIC_QOI_BYTES
+    {
+        return Err("diagnostic QOI must be a bounded absolute regular file".to_owned());
+    }
+    let encoded = fs::read(path).map_err(|_| "diagnostic QOI read failed".to_owned())?;
+    if encode_sha256(&encoded) != expected_sha256 {
+        return Err("diagnostic QOI digest mismatch".to_owned());
+    }
+    let (header, pixels) =
+        qoi::decode_to_vec(encoded).map_err(|_| "diagnostic QOI decoding failed".to_owned())?;
+    if header.width != 1_920 || header.height != 1_080 || pixels.len() != 1_920 * 1_080 * 3 {
+        return Err("diagnostic QOI is not canonical RGB8 1920x1080".to_owned());
+    }
+    let observation =
+        recognition::inspect_canonical_rgb8(&pixels).map_err(|error| error.to_string())?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "schema": "scorepeek-diagnostic-qoi-recognition-inspection-v1",
+            "frame_sha256": expected_sha256,
+            "canonical_pixel_sha256": encode_sha256(&pixels),
+            "canonical_layout_sha256": recognition::CanonicalLayout::sha256(),
+            "observation": observation,
+        })
+    );
+    Ok(())
+}
+
 fn crop_canonical_result(
     extraction: &OsStr,
     extraction_sha256: &OsStr,
@@ -2693,7 +2746,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256 --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --model-id MODEL_ID --bundle DIRECTORY --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
+        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256 --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition inspect-diagnostic-qoi --frame FILE --frame-sha256 SHA256\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --model-id MODEL_ID --bundle DIRECTORY --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
         env!("CARGO_PKG_VERSION")
     );
     println!(

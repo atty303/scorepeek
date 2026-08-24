@@ -185,12 +185,13 @@ impl RecognitionSession {
             let _ = self.bridge.offer(frame);
             return Err(RecognitionSessionError::FrameBindingMismatch);
         }
-        let diagnostic_frame = self.bridge.offer(frame);
         self.last_sequence = Some(frame.sequence());
         let Ok(observation) = RecognitionObservation::inspect(frame) else {
+            let _ = self.bridge.offer(frame);
             let _ = self.bridge.record_recognition_failure(frame);
             return Err(RecognitionSessionError::RecognitionFailed);
         };
+        let diagnostic_frame = self.bridge.record_frame_for_observation(&observation);
         let field_inputs = match observation.screen() {
             ScreenClass::Unknown => None,
             screen @ (ScreenClass::Result | ScreenClass::MusicSelect) => {
@@ -431,7 +432,7 @@ mod tests {
             pixels.extend_from_slice(&color);
         }
         if color == [200, 100, 20] {
-            for y in [452, 656] {
+            for y in [451, 655] {
                 for x in 0..518 {
                     pixels[(y * 1920 + x) * 3..][..3].copy_from_slice(&[0, 0, 0]);
                 }

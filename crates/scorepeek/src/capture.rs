@@ -23,9 +23,9 @@ pub use normalizer::{
     UnboundCanonicalFrame, UnboundNormalizationError,
 };
 pub use receiver::{
-    CalibratedGamescopeLease, GamescopeLeaseAdmissionFailure, ObservedFrame, UncalibratedFrame,
-    UncalibratedMemoryType, UncalibratedPipeWireReceiver, UncalibratedVideoContract,
-    admit_gamescope_profile, start_uncalibrated_gamescope_receiver,
+    CalibratedGamescopeLease, CalibratedSourceFrameEvidence, GamescopeLeaseAdmissionFailure,
+    ObservedFrame, UncalibratedFrame, UncalibratedMemoryType, UncalibratedPipeWireReceiver,
+    UncalibratedVideoContract, admit_gamescope_profile, start_uncalibrated_gamescope_receiver,
 };
 
 const MAX_REGISTRY_GLOBALS: u32 = 4_096;

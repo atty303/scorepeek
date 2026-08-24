@@ -23,7 +23,7 @@ use crate::diagnostic_recording::{
 use crate::diagnostic_worker::DiagnosticEnqueueOutcome;
 use crate::recognition_artifact::{
     RecognitionArtifactEnqueueOutcome, RecognitionArtifactFinishOutcome,
-    RecognitionArtifactFinishStatus, RecognitionArtifactWorker,
+    RecognitionArtifactFinishStatus, RecognitionArtifactRetention, RecognitionArtifactWorker,
 };
 use crate::recognition_live::RecognitionSession;
 use crate::recognition_live::field_observer::{
@@ -358,6 +358,10 @@ pub struct GamescopeFieldObservationGateReport {
     recognition_artifact_status: Option<RecognitionArtifactFinishStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recognition_artifact_manifest_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recognition_artifact_input_observations: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recognition_artifact_retained_observations: Option<usize>,
     field_worker_status: Option<FieldWorkerStatus>,
     field_worker_submitted: Option<u64>,
     field_worker_completed: Option<u64>,
@@ -521,6 +525,7 @@ pub struct GamescopeFieldObservationGateConfig<'a> {
     pub catalog_root: &'a std::path::Path,
     pub bundle_root: &'a std::path::Path,
     pub recognition_artifact_root: Option<&'a std::path::Path>,
+    pub recognition_artifact_retention: RecognitionArtifactRetention,
 }
 
 impl HandoffCounters {
@@ -1056,9 +1061,23 @@ fn start_field_observation_gate(
             return Err(Box::new(report));
         }
     };
-    let artifact_worker = config.recognition_artifact_root.map(|root| {
-        RecognitionArtifactWorker::start(root.to_owned(), artifact_run_id, expected_profile.clone())
-    });
+    let artifact_worker =
+        config
+            .recognition_artifact_root
+            .map(|root| match config.recognition_artifact_retention {
+                RecognitionArtifactRetention::Complete => RecognitionArtifactWorker::start(
+                    root.to_owned(),
+                    artifact_run_id,
+                    expected_profile.clone(),
+                ),
+                RecognitionArtifactRetention::ForegroundCompactedV1 => {
+                    RecognitionArtifactWorker::start_foreground(
+                        root.to_owned(),
+                        artifact_run_id,
+                        expected_profile.clone(),
+                    )
+                }
+            });
     start_capture_after_field_session(
         config.handoff.session,
         binding,
@@ -1430,9 +1449,9 @@ impl CanonicalFrameSource for GamescopeCanonicalFrameSource<'_> {
     ) -> Result<Option<BoundCanonicalFrame>, Self::Error> {
         if let Some(observed) = self.lease.take_latest_observed_frame() {
             self.counters.observed_frames = self.counters.observed_frames.saturating_add(1);
-            let normalized = self
+            let (normalized, source) = self
                 .lease
-                .normalize_observed_frame(observed, self.sink)
+                .normalize_observed_frame_with_source(observed, self.sink)
                 .map_err(|error| {
                     (
                         FieldObservationGateErrorType::NormalizationFailed,
@@ -1440,7 +1459,9 @@ impl CanonicalFrameSource for GamescopeCanonicalFrameSource<'_> {
                     )
                 })?;
             self.counters.normalized_frames = self.counters.normalized_frames.saturating_add(1);
-            return Ok(Some(BoundCanonicalFrame::from(normalized)));
+            return Ok(Some(BoundCanonicalFrame::from_normalized_with_source(
+                normalized, source,
+            )));
         }
         self.lease.poll(maximum_wait, self.sink).map_err(|error| {
             (
@@ -1620,13 +1641,20 @@ fn recognition_artifact_error(
         Some(RecognitionArtifactFinishOutcome {
             status: RecognitionArtifactFinishStatus::Complete,
             manifest_sha256: Some(_),
+            ..
         })
     ) && counters.recognition_artifact_queue_full == 0
         && counters.recognition_artifact_worker_unavailable == 0
-        && counters.recognition_artifact_enqueued == counters.field_ready_success;
+        && counters.recognition_artifact_enqueued == counters.field_ready_success
+        && outcome.is_some_and(|outcome| {
+            outcome.input_observations == outcome.retained_observations
+                && u64::try_from(outcome.input_observations).ok()
+                    == Some(counters.recognition_artifact_enqueued)
+        });
     (!complete).then_some(FieldObservationGateErrorType::RecognitionArtifactIncomplete)
 }
 
+#[allow(clippy::too_many_lines)]
 fn field_observation_report(
     error_type: Option<FieldObservationGateErrorType>,
     capture_error_type: Option<CaptureErrorType>,
@@ -1665,10 +1693,20 @@ fn field_observation_report(
                 outcome.manifest_sha256,
             )
         });
-    let (recognition_artifact_status, recognition_artifact_manifest_sha256) = finishes
+    let (
+        recognition_artifact_status,
+        recognition_artifact_manifest_sha256,
+        recognition_artifact_input_observations,
+        recognition_artifact_retained_observations,
+    ) = finishes
         .recognition_artifact
-        .map_or((None, None), |outcome| {
-            (Some(outcome.status), outcome.manifest_sha256)
+        .map_or((None, None, None, None), |outcome| {
+            (
+                Some(outcome.status),
+                outcome.manifest_sha256,
+                Some(outcome.input_observations),
+                Some(outcome.retained_observations),
+            )
         });
     GamescopeFieldObservationGateReport {
         schema: if finishes.artifact_requested {
@@ -1716,6 +1754,14 @@ fn field_observation_report(
         recognition_artifact_manifest_sha256: finishes
             .artifact_requested
             .then_some(recognition_artifact_manifest_sha256)
+            .flatten(),
+        recognition_artifact_input_observations: finishes
+            .artifact_requested
+            .then_some(recognition_artifact_input_observations)
+            .flatten(),
+        recognition_artifact_retained_observations: finishes
+            .artifact_requested
+            .then_some(recognition_artifact_retained_observations)
             .flatten(),
         field_worker_status,
         field_worker_submitted,
@@ -1995,16 +2041,17 @@ fn offer_diagnostic_handoff_frames(
     loop {
         if let Some(observed) = lease.take_latest_observed_frame() {
             counters.observed_frames = counters.observed_frames.saturating_add(1);
-            let normalized = match lease.normalize_observed_frame(observed, sink) {
-                Ok(normalized) => normalized,
-                Err(error) => {
-                    return Some((
-                        DiagnosticHandoffGateErrorType::NormalizationFailed,
-                        Some(error.error_type()),
-                    ));
-                }
-            };
-            let live = BoundCanonicalFrame::from(normalized);
+            let (normalized, source) =
+                match lease.normalize_observed_frame_with_source(observed, sink) {
+                    Ok(pair) => pair,
+                    Err(error) => {
+                        return Some((
+                            DiagnosticHandoffGateErrorType::NormalizationFailed,
+                            Some(error.error_type()),
+                        ));
+                    }
+                };
+            let live = BoundCanonicalFrame::from_normalized_with_source(normalized, source);
             counters.normalized_frames = counters.normalized_frames.saturating_add(1);
             counters.first_sequence.get_or_insert(live.sequence());
             counters.last_sequence = Some(live.sequence());
@@ -3029,6 +3076,8 @@ mod tests {
                 recognition_artifact: Some(RecognitionArtifactFinishOutcome {
                     status: RecognitionArtifactFinishStatus::Complete,
                     manifest_sha256: Some("e".repeat(64)),
+                    input_observations: 2,
+                    retained_observations: 2,
                 }),
                 artifact_requested: true,
             },
@@ -3090,6 +3139,8 @@ mod tests {
         let complete = RecognitionArtifactFinishOutcome {
             status: RecognitionArtifactFinishStatus::Complete,
             manifest_sha256: Some("f".repeat(64)),
+            input_observations: 1,
+            retained_observations: 1,
         };
         let cases = [
             (
@@ -3103,6 +3154,8 @@ mod tests {
                 RecognitionArtifactFinishOutcome {
                     status: RecognitionArtifactFinishStatus::Complete,
                     manifest_sha256: Some("f".repeat(64)),
+                    input_observations: 1,
+                    retained_observations: 1,
                 },
             ),
             (
@@ -3115,6 +3168,8 @@ mod tests {
                 RecognitionArtifactFinishOutcome {
                     status: RecognitionArtifactFinishStatus::WriteFailed,
                     manifest_sha256: None,
+                    input_observations: 1,
+                    retained_observations: 0,
                 },
             ),
             (
@@ -3127,6 +3182,8 @@ mod tests {
                 RecognitionArtifactFinishOutcome {
                     status: RecognitionArtifactFinishStatus::Timeout,
                     manifest_sha256: None,
+                    input_observations: 1,
+                    retained_observations: 0,
                 },
             ),
         ];

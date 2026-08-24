@@ -713,7 +713,7 @@ mod tests {
             pixels.extend_from_slice(&color);
         }
         if color == [200, 100, 20] {
-            for y in [452, 656] {
+            for y in [451, 655] {
                 for x in 0..518 {
                     pixels[(y * 1920 + x) * 3..][..3].copy_from_slice(&[0, 0, 0]);
                 }

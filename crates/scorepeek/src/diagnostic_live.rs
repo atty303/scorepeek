@@ -1,8 +1,12 @@
+use std::collections::VecDeque;
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
 
-use scorepeek::capture::NormalizedCanonicalFrame;
+use scorepeek::capture::{
+    CalibratedSourceFrameEvidence, NormalizedCanonicalFrame, UncalibratedMemoryType,
+    UncalibratedVideoContract,
+};
 use scorepeek::recognition::{
     CanonicalFrame, ScreenClass, ScreenFieldObservationError, ScreenFieldObservations,
     ScreenTextField,
@@ -11,13 +15,19 @@ use scorepeek::recognition::{
 use crate::diagnostic_recording::{
     DiagnosticDetail, DiagnosticErrorType, DiagnosticFact, DiagnosticFactErrorType,
     DiagnosticFinishOutcome, DiagnosticOperation, DiagnosticOperationStatus, DiagnosticPolicy,
-    DiagnosticRunDescriptor, DiagnosticRunStatus, DiagnosticScreen, DiagnosticTextField,
+    DiagnosticRetention, DiagnosticRunDescriptor, DiagnosticRunStatus, DiagnosticScreen,
+    DiagnosticTextField,
 };
 use crate::diagnostic_worker::{
     DEFAULT_DIAGNOSTIC_FLUSH_TIMEOUT, DiagnosticEnqueueOutcome, DiagnosticOwnedFrame,
-    DiagnosticWorkerHandle,
+    DiagnosticOwnedSourceFrame, DiagnosticWorkerHandle,
 };
 use crate::recognition_live::RecognitionObservation;
+
+const FOREGROUND_RING_INTERVAL_MS: u64 = 1_000;
+const FOREGROUND_RING_FRAMES: usize = 12;
+const FOREGROUND_RESULT_INTERVAL_MS: u64 = 1_000;
+const FOREGROUND_BASELINE_INTERVAL_MS: u64 = 5 * 60 * 1_000;
 
 #[derive(Clone)]
 pub struct BoundCanonicalFrame {
@@ -28,6 +38,16 @@ pub struct BoundCanonicalFrame {
     capture_profile_sha256: String,
     normalizer_sha256: String,
     pixels: Arc<Box<[u8]>>,
+    source: Option<Arc<BoundSourceFrameEvidence>>,
+}
+
+#[derive(Debug)]
+struct BoundSourceFrameEvidence {
+    contract: UncalibratedVideoContract,
+    memory_type: UncalibratedMemoryType,
+    stride: u32,
+    received_monotonic_ns: u64,
+    bytes: Arc<Box<[u8]>>,
 }
 
 impl fmt::Debug for BoundCanonicalFrame {
@@ -95,6 +115,7 @@ impl BoundCanonicalFrame {
             capture_profile_sha256: frame.capture_profile_id().to_owned(),
             normalizer_sha256: frame.normalizer_artifact_sha256().to_owned(),
             pixels: Arc::new(frame.into_pixels()),
+            source: None,
         }
     }
 
@@ -123,6 +144,7 @@ impl BoundCanonicalFrame {
             capture_profile_sha256: "2".repeat(64),
             normalizer_sha256: "3".repeat(64),
             pixels: Arc::new(pixels),
+            source: None,
         }
     }
 }
@@ -139,6 +161,7 @@ impl From<NormalizedCanonicalFrame> for BoundCanonicalFrame {
             capture_profile_sha256: frame.capture_profile_sha256().to_owned(),
             normalizer_sha256: frame.normalizer_artifact_sha256().to_owned(),
             pixels: Arc::new(frame.into_pixels()),
+            source: None,
         };
         debug_assert_eq!(
             live.pixels.len(),
@@ -149,12 +172,47 @@ impl From<NormalizedCanonicalFrame> for BoundCanonicalFrame {
     }
 }
 
+impl BoundCanonicalFrame {
+    pub(crate) fn from_normalized_with_source(
+        frame: NormalizedCanonicalFrame,
+        source: CalibratedSourceFrameEvidence,
+    ) -> Self {
+        debug_assert_eq!(frame.source_sequence(), source.source_sequence());
+        debug_assert_eq!(
+            frame.received_monotonic_ns(),
+            source.received_monotonic_ns()
+        );
+        let contract = source.contract();
+        let memory_type = source.memory_type();
+        let stride = source.stride();
+        let received_monotonic_ns = source.received_monotonic_ns();
+        let source = Arc::new(BoundSourceFrameEvidence {
+            contract,
+            memory_type,
+            stride,
+            received_monotonic_ns,
+            bytes: Arc::new(source.into_bytes()),
+        });
+        let mut canonical = Self::from(frame);
+        canonical.source = Some(source);
+        canonical
+    }
+}
+
 pub struct DiagnosticBridge {
     capture_generation: u64,
     capture_profile_sha256: String,
     normalizer_sha256: String,
     canonical_layout_sha256: String,
     worker: DiagnosticWorkerHandle,
+    retention: DiagnosticRetention,
+    foreground_ring: VecDeque<DiagnosticOwnedFrame>,
+    foreground_last_ring_ms: Option<u64>,
+    foreground_last_recorded_ms: Option<u64>,
+    foreground_last_fact_ms: Option<u64>,
+    foreground_last_screen: Option<ScreenClass>,
+    foreground_last_fact_screen: Option<ScreenClass>,
+    foreground_partial_source_recorded: bool,
 }
 
 impl DiagnosticBridge {
@@ -165,8 +223,9 @@ impl DiagnosticBridge {
         descriptor: DiagnosticRunDescriptor,
         policy: DiagnosticPolicy,
     ) -> Self {
+        let retention = policy.retention;
         let worker = DiagnosticWorkerHandle::start(root, descriptor.clone(), policy);
-        Self::with_worker(descriptor, worker)
+        Self::with_worker(descriptor, worker, retention)
     }
 
     /// Offers canonical evidence before recognition outcomes are known.
@@ -184,7 +243,85 @@ impl DiagnosticBridge {
             monotonic_start_ms: frame.monotonic_start_ms,
             monotonic_end_ms: frame.monotonic_end_ms,
             pixels: Arc::clone(&frame.pixels),
+            source: None,
         })
+    }
+
+    pub fn record_frame_for_observation(
+        &mut self,
+        observation: &RecognitionObservation<'_>,
+    ) -> DiagnosticEnqueueOutcome {
+        if self.retention == DiagnosticRetention::CompleteCadence {
+            return self.offer(observation.frame());
+        }
+        let frame = observation.frame();
+        if !self.matches_frame(frame) {
+            self.worker
+                .record_external_error(DiagnosticErrorType::InvalidConfiguration, frame.sequence);
+            return DiagnosticEnqueueOutcome::Rejected;
+        }
+        let screen = observation.screen();
+        let predicate = observation.predicate();
+        let partial_result = screen == ScreenClass::Unknown
+            && predicate.result_presence.warm_pixels >= predicate.result_presence.warm_pixels_min;
+        if screen != ScreenClass::Unknown {
+            self.foreground_partial_source_recorded = false;
+        }
+        let include_partial_source = partial_result && !self.foreground_partial_source_recorded;
+        let owned = owned_frame(frame, include_partial_source);
+        let observed = self.worker.observe_frame(&owned);
+        if matches!(
+            observed,
+            DiagnosticEnqueueOutcome::Rejected
+                | DiagnosticEnqueueOutcome::Disabled
+                | DiagnosticEnqueueOutcome::WorkerUnavailable
+        ) {
+            return observed;
+        }
+        let ring_due = self.foreground_last_ring_ms.is_none_or(|previous| {
+            frame.monotonic_start_ms.saturating_sub(previous) >= FOREGROUND_RING_INTERVAL_MS
+        });
+        if screen == ScreenClass::Unknown && ring_due {
+            if self.foreground_ring.len() == FOREGROUND_RING_FRAMES {
+                self.foreground_ring.pop_front();
+            }
+            self.foreground_ring.push_back(owned);
+            self.foreground_last_ring_ms = Some(frame.monotonic_start_ms);
+        }
+
+        let transitioned_from_unknown = self.foreground_last_screen == Some(ScreenClass::Unknown)
+            && screen != ScreenClass::Unknown;
+        let interval = if screen == ScreenClass::Result {
+            FOREGROUND_RESULT_INTERVAL_MS
+        } else {
+            FOREGROUND_BASELINE_INTERVAL_MS
+        };
+        let known_due = screen != ScreenClass::Unknown
+            && self.foreground_last_recorded_ms.is_none_or(|previous| {
+                frame.monotonic_start_ms.saturating_sub(previous) >= interval
+            });
+        let mut retained = Vec::new();
+        if partial_result || transitioned_from_unknown {
+            retained.extend(self.foreground_ring.drain(..));
+        }
+        if screen != ScreenClass::Unknown
+            && (transitioned_from_unknown || known_due)
+            && retained
+                .last()
+                .is_none_or(|saved| saved.sequence != frame.sequence)
+        {
+            retained.push(owned_frame(frame, transitioned_from_unknown));
+        }
+        self.foreground_last_screen = Some(screen);
+        if retained.is_empty() {
+            return DiagnosticEnqueueOutcome::SkippedCadence;
+        }
+        self.foreground_last_recorded_ms = retained.last().map(|saved| saved.monotonic_start_ms);
+        let outcome = self.worker.try_record_observed_frames(retained);
+        if include_partial_source && outcome == DiagnosticEnqueueOutcome::Enqueued {
+            self.foreground_partial_source_recorded = true;
+        }
+        outcome
     }
 
     /// Records one screen-predicate result against the same immutable run and live-frame binding.
@@ -208,6 +345,22 @@ impl DiagnosticBridge {
             scorepeek::recognition::ScreenClass::Unknown => DiagnosticScreen::Unknown,
         };
         let predicate = observation.predicate();
+        if self.retention == DiagnosticRetention::ForegroundFailureWindowV1 {
+            const FACT_INTERVAL_MS: u64 = 60_000;
+            let predicate = observation.predicate();
+            let partial_result = observation.screen() == ScreenClass::Unknown
+                && predicate.result_presence.warm_pixels
+                    >= predicate.result_presence.warm_pixels_min;
+            let screen_changed = self.foreground_last_fact_screen != Some(observation.screen());
+            let due = self.foreground_last_fact_ms.is_none_or(|previous| {
+                frame.monotonic_start_ms.saturating_sub(previous) >= FACT_INTERVAL_MS
+            });
+            if !partial_result && !screen_changed && !due {
+                return DiagnosticEnqueueOutcome::SkippedCadence;
+            }
+            self.foreground_last_fact_ms = Some(frame.monotonic_start_ms);
+            self.foreground_last_fact_screen = Some(observation.screen());
+        }
         self.worker.try_record_fact(DiagnosticFact {
             sequence: frame.sequence,
             monotonic_start_ms: frame.monotonic_start_ms,
@@ -395,21 +548,39 @@ impl DiagnosticBridge {
     /// Finishes the run with the fixed bounded application flush timeout.
     #[must_use]
     pub fn finish(
-        self,
+        mut self,
         status: DiagnosticRunStatus,
         monotonic_end_ms: u64,
     ) -> DiagnosticFinishOutcome {
+        if self.retention == DiagnosticRetention::ForegroundFailureWindowV1
+            && !self.foreground_ring.is_empty()
+        {
+            let retained = self.foreground_ring.drain(..).collect();
+            let _ = self.worker.try_record_observed_frames(retained);
+        }
         self.worker
             .finish(status, monotonic_end_ms, DEFAULT_DIAGNOSTIC_FLUSH_TIMEOUT)
     }
 
-    fn with_worker(descriptor: DiagnosticRunDescriptor, worker: DiagnosticWorkerHandle) -> Self {
+    fn with_worker(
+        descriptor: DiagnosticRunDescriptor,
+        worker: DiagnosticWorkerHandle,
+        retention: DiagnosticRetention,
+    ) -> Self {
         Self {
             capture_generation: descriptor.binding.capture_generation,
             capture_profile_sha256: descriptor.binding.capture_profile_sha256,
             normalizer_sha256: descriptor.binding.normalizer_sha256,
             canonical_layout_sha256: descriptor.binding.canonical_layout_sha256,
             worker,
+            retention,
+            foreground_ring: VecDeque::new(),
+            foreground_last_ring_ms: None,
+            foreground_last_recorded_ms: None,
+            foreground_last_fact_ms: None,
+            foreground_last_screen: None,
+            foreground_last_fact_screen: None,
+            foreground_partial_source_recorded: false,
         }
     }
 
@@ -426,9 +597,10 @@ impl DiagnosticBridge {
         policy: DiagnosticPolicy,
         capacity: usize,
     ) -> Self {
+        let retention = policy.retention;
         let worker =
             DiagnosticWorkerHandle::start_for_test(root, descriptor.clone(), policy, capacity);
-        Self::with_worker(descriptor, worker)
+        Self::with_worker(descriptor, worker, retention)
     }
 
     #[cfg(test)]
@@ -438,13 +610,37 @@ impl DiagnosticBridge {
         policy: DiagnosticPolicy,
         supervisor: &std::sync::Mutex<std::sync::Weak<()>>,
     ) -> Self {
+        let retention = policy.retention;
         let worker = DiagnosticWorkerHandle::start_with_supervisor_for_test(
             root,
             descriptor.clone(),
             policy,
             supervisor,
         );
-        Self::with_worker(descriptor, worker)
+        Self::with_worker(descriptor, worker, retention)
+    }
+}
+
+fn owned_frame(frame: &BoundCanonicalFrame, include_source: bool) -> DiagnosticOwnedFrame {
+    DiagnosticOwnedFrame {
+        sequence: frame.sequence,
+        monotonic_start_ms: frame.monotonic_start_ms,
+        monotonic_end_ms: frame.monotonic_end_ms,
+        pixels: Arc::clone(&frame.pixels),
+        source: include_source
+            .then(|| {
+                frame
+                    .source
+                    .as_ref()
+                    .map(|source| DiagnosticOwnedSourceFrame {
+                        contract: source.contract,
+                        memory_type: source.memory_type,
+                        stride: source.stride,
+                        received_monotonic_ns: source.received_monotonic_ns,
+                        bytes: Arc::clone(&source.bytes),
+                    })
+            })
+            .flatten(),
     }
 }
 
@@ -518,6 +714,46 @@ mod tests {
             pixels: Arc::new(
                 vec![7; crate::diagnostic_recording::CANONICAL_BYTES].into_boxed_slice(),
             ),
+            source: None,
+        }
+    }
+
+    fn partial_result_frame(sequence: u64, time: u64) -> BoundCanonicalFrame {
+        let mut pixels = vec![0_u8; crate::diagnostic_recording::CANONICAL_BYTES];
+        for index in 0..3_000 {
+            let x = 600 + index % 720;
+            let y = index / 720;
+            pixels[(y * 1_920 + x) * 3..][..3].copy_from_slice(&[200, 100, 20]);
+        }
+        BoundCanonicalFrame {
+            capture_generation: 1,
+            sequence,
+            monotonic_start_ms: time,
+            monotonic_end_ms: time + 16,
+            capture_profile_sha256: "2".repeat(64),
+            normalizer_sha256: "3".repeat(64),
+            pixels: Arc::new(pixels.into_boxed_slice()),
+            source: Some(Arc::new(BoundSourceFrameEvidence {
+                contract: UncalibratedVideoContract {
+                    width: 4,
+                    height: 2,
+                    framerate_num: 60,
+                    framerate_denom: 1,
+                    maximum_framerate_num: 60,
+                    maximum_framerate_denom: 1,
+                    pixel_aspect_num: 1,
+                    pixel_aspect_denom: 1,
+                    chroma_site: 0,
+                    color_range: 0,
+                    color_matrix: 0,
+                    transfer_function: 0,
+                    color_primaries: 0,
+                },
+                memory_type: UncalibratedMemoryType::MemoryFileDescriptor,
+                stride: 16,
+                received_monotonic_ns: time * 1_000_000,
+                bytes: Arc::new(vec![u8::try_from(sequence).unwrap(); 32].into_boxed_slice()),
+            })),
         }
     }
 
@@ -614,6 +850,86 @@ mod tests {
     }
 
     #[test]
+    fn foreground_retention_keeps_only_the_tail_of_a_long_unknown_interval() {
+        let root = tempfile::tempdir().unwrap();
+        let policy = DiagnosticPolicy {
+            retention: DiagnosticRetention::ForegroundFailureWindowV1,
+            ..DiagnosticPolicy::default()
+        };
+        let mut bridge = DiagnosticBridge::start_for_test(
+            root.path(),
+            descriptor("foreground-tail", 1),
+            policy,
+            2,
+        );
+
+        for sequence in 1..=20 {
+            let canonical = frame(1, sequence, (sequence - 1) * 1_000);
+            let observation = RecognitionObservation::inspect(&canonical).unwrap();
+            assert_eq!(observation.screen(), ScreenClass::Unknown);
+            assert_eq!(
+                bridge.record_frame_for_observation(&observation),
+                DiagnosticEnqueueOutcome::SkippedCadence
+            );
+        }
+        let outcome = bridge.finish(DiagnosticRunStatus::Success, 20_000);
+        assert_eq!(outcome.completeness, Some(DiagnosticCompleteness::Complete));
+
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(root.path().join("foreground-tail/manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let frames = manifest["frames"].as_array().unwrap();
+        assert_eq!(frames.len(), 12);
+        assert_eq!(frames.first().unwrap()["sequence"], 9);
+        assert_eq!(frames.last().unwrap()["sequence"], 20);
+    }
+
+    #[test]
+    fn foreground_partial_interval_keeps_one_source_pair_without_repeating_raw_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let policy = DiagnosticPolicy {
+            retention: DiagnosticRetention::ForegroundFailureWindowV1,
+            ..DiagnosticPolicy::default()
+        };
+        let mut bridge = DiagnosticBridge::start_for_test(
+            root.path(),
+            descriptor("foreground-source-pair", 1),
+            policy,
+            8,
+        );
+
+        let first = partial_result_frame(1, 0);
+        let mut cool_unknown = frame(1, 2, 1_000);
+        cool_unknown.source = partial_result_frame(2, 1_000).source;
+        let second = partial_result_frame(3, 2_000);
+        for canonical in [first, cool_unknown, second] {
+            let observation = RecognitionObservation::inspect(&canonical).unwrap();
+            assert_eq!(observation.screen(), ScreenClass::Unknown);
+            let outcome = bridge.record_frame_for_observation(&observation);
+            assert!(matches!(
+                outcome,
+                DiagnosticEnqueueOutcome::Enqueued | DiagnosticEnqueueOutcome::SkippedCadence
+            ));
+        }
+        let outcome = bridge.finish(DiagnosticRunStatus::Success, 3_000);
+        assert_eq!(outcome.completeness, Some(DiagnosticCompleteness::Complete));
+
+        let directory = root.path().join("foreground-source-pair");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest["schema"], "scorepeek-private-diagnostic-run-v2");
+        assert_eq!(manifest["frames"].as_array().unwrap().len(), 3);
+        assert!(manifest["frames"][0]["source"].is_object());
+        assert!(manifest["frames"][1].get("source").is_none());
+        assert!(manifest["frames"][2].get("source").is_none());
+        assert_eq!(
+            fs::read(directory.join("source-00000000000000000001.bgrx")).unwrap(),
+            vec![1; 32]
+        );
+    }
+
+    #[test]
     fn binding_change_is_rejected_and_makes_the_old_run_partial() {
         let root = tempfile::tempdir().unwrap();
         let mut bridge = DiagnosticBridge::start_for_test(
@@ -677,7 +993,8 @@ mod tests {
             );
             assert_eq!(
                 bridge.finish(DiagnosticRunStatus::Success, 16).completeness,
-                Some(DiagnosticCompleteness::Complete)
+                Some(DiagnosticCompleteness::Complete),
+                "generation {generation} must release the diagnostic worker"
             );
         }
         assert!(root.path().join("generation-1/manifest.json").is_file());

@@ -3,6 +3,7 @@ use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use scorepeek::capture::{UncalibratedMemoryType, UncalibratedVideoContract};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -17,6 +18,7 @@ pub const PRIORITY_RETENTION_HOURS: u32 = 7 * 24;
 const CANONICAL_WIDTH: u32 = 1_920;
 const CANONICAL_HEIGHT: u32 = 1_080;
 pub(crate) const CANONICAL_BYTES: usize = CANONICAL_WIDTH as usize * CANONICAL_HEIGHT as usize * 3;
+const MAX_SOURCE_FRAME_BYTES: usize = 128 * 1024 * 1024;
 pub(crate) const MANIFEST_RESERVE_BYTES: u64 = 1024 * 1024;
 pub(crate) const MAX_FRAMES_PER_RUN: usize = 8_192;
 pub(crate) const MAX_FACTS_PER_RUN: usize = 32_768;
@@ -111,6 +113,14 @@ pub struct DiagnosticPolicy {
     pub enabled: bool,
     pub sample_interval_ms: u64,
     pub maximum_run_bytes: u64,
+    pub retention: DiagnosticRetention,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticRetention {
+    CompleteCadence,
+    ForegroundFailureWindowV1,
 }
 
 impl Default for DiagnosticPolicy {
@@ -119,6 +129,7 @@ impl Default for DiagnosticPolicy {
             enabled: true,
             sample_interval_ms: DEFAULT_SAMPLE_INTERVAL_MS,
             maximum_run_bytes: DEFAULT_AGGREGATE_BYTES,
+            retention: DiagnosticRetention::CompleteCadence,
         }
     }
 }
@@ -343,6 +354,16 @@ pub struct DiagnosticFrameInput<'a> {
     pub monotonic_start_ms: u64,
     pub monotonic_end_ms: u64,
     pub pixels: &'a [u8],
+    pub source: Option<DiagnosticSourceFrameInput<'a>>,
+}
+
+#[derive(Clone, Copy)]
+pub struct DiagnosticSourceFrameInput<'a> {
+    pub contract: UncalibratedVideoContract,
+    pub memory_type: UncalibratedMemoryType,
+    pub stride: u32,
+    pub received_monotonic_ns: u64,
+    pub bytes: &'a [u8],
 }
 
 pub enum DiagnosticRecorder {
@@ -404,6 +425,7 @@ struct DiagnosticPolicyArtifact {
     normal_retention_hours: u32,
     priority_retention_hours: u32,
     remote_export_enabled: bool,
+    retention: DiagnosticRetention,
 }
 
 #[derive(Serialize)]
@@ -465,6 +487,20 @@ struct DiagnosticFrameArtifact {
     canonical_pixel_sha256: String,
     file_sha256: String,
     bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<DiagnosticSourceFrameArtifact>,
+}
+
+#[derive(Serialize)]
+struct DiagnosticSourceFrameArtifact {
+    filename: String,
+    pixel_format: &'static str,
+    video: UncalibratedVideoContract,
+    memory_type: UncalibratedMemoryType,
+    stride: u32,
+    received_monotonic_ns: u64,
+    file_sha256: String,
+    bytes: u64,
 }
 
 #[derive(Serialize)]
@@ -503,7 +539,7 @@ impl DiagnosticRecorder {
         };
         let _ = root_metadata;
         let start = DiagnosticRunStart {
-            schema: "scorepeek-private-diagnostic-run-start-v1",
+            schema: "scorepeek-private-diagnostic-run-start-v2",
             run_id: &descriptor.run_id,
             monotonic_start_ms: descriptor.monotonic_start_ms,
             resource: &descriptor.resource,
@@ -675,6 +711,7 @@ impl DiagnosticRecorder {
 }
 
 impl ActiveDiagnosticRecorder {
+    #[allow(clippy::too_many_lines)]
     fn record_frame(
         &mut self,
         frame: DiagnosticFrameInput<'_>,
@@ -684,6 +721,19 @@ impl ActiveDiagnosticRecorder {
             || frame.monotonic_end_ms < frame.monotonic_start_ms
             || frame.monotonic_start_ms < self.run_monotonic_start_ms
         {
+            return self.drop(DiagnosticErrorType::InvalidConfiguration, frame.sequence);
+        }
+        if frame.source.is_some_and(|source| {
+            let minimum_stride = source.contract.width.checked_mul(4);
+            let expected_bytes = usize::try_from(source.stride)
+                .ok()
+                .and_then(|stride| stride.checked_mul(source.contract.height as usize));
+            source.contract.width == 0
+                || source.contract.height == 0
+                || minimum_stride.is_none_or(|minimum| source.stride < minimum)
+                || expected_bytes != Some(source.bytes.len())
+                || source.bytes.len() > MAX_SOURCE_FRAME_BYTES
+        }) {
             return self.drop(DiagnosticErrorType::InvalidConfiguration, frame.sequence);
         }
         if self
@@ -725,21 +775,45 @@ impl ActiveDiagnosticRecorder {
             return self.drop(DiagnosticErrorType::EncodeFailed, frame.sequence);
         };
         let encoded_bytes = encoded.len() as u64;
+        let source_bytes = frame.source.map_or(0, |source| source.bytes.len() as u64);
+        let reserved_bytes = encoded_bytes.saturating_add(source_bytes);
         if self
             .bytes
-            .checked_add(encoded_bytes)
+            .checked_add(reserved_bytes)
             .and_then(|bytes| bytes.checked_add(MANIFEST_RESERVE_BYTES))
             .is_none_or(|bytes| bytes > self.policy.maximum_run_bytes)
         {
             return self.drop(DiagnosticErrorType::CapacityExceeded, frame.sequence);
         }
-        if let Err(error_type) = self.store_lease.reserve(encoded_bytes) {
+        if let Err(error_type) = self.store_lease.reserve(reserved_bytes) {
             return self.drop(error_type, frame.sequence);
         }
         let filename = format!("frame-{:020}.qoi", frame.sequence);
         if !self.publish_reserved(&filename, &encoded) {
+            self.store_lease.release(source_bytes);
             return self.drop(DiagnosticErrorType::WriteFailed, frame.sequence);
         }
+        let mut source_write_failed = false;
+        let source = if let Some(source) = frame.source {
+            let filename = format!("source-{:020}.bgrx", frame.sequence);
+            if self.publish_reserved(&filename, source.bytes) {
+                Some(DiagnosticSourceFrameArtifact {
+                    filename,
+                    pixel_format: "bgrx",
+                    video: source.contract,
+                    memory_type: source.memory_type,
+                    stride: source.stride,
+                    received_monotonic_ns: source.received_monotonic_ns,
+                    file_sha256: encode_sha256(source.bytes),
+                    bytes: source_bytes,
+                })
+            } else {
+                source_write_failed = true;
+                None
+            }
+        } else {
+            None
+        };
         if self.last_recorded_monotonic_ms.is_some() {
             let previous_end = self
                 .maximum_frame_coverage_end_ms
@@ -769,7 +843,7 @@ impl ActiveDiagnosticRecorder {
                     end.max(frame.monotonic_end_ms)
                 }),
         );
-        self.bytes += encoded_bytes;
+        self.bytes += encoded_bytes + source.as_ref().map_or(0, |source| source.bytes);
         self.frames.push(DiagnosticFrameArtifact {
             sequence: frame.sequence,
             monotonic_start_ms: frame.monotonic_start_ms,
@@ -778,8 +852,13 @@ impl ActiveDiagnosticRecorder {
             canonical_pixel_sha256: encode_sha256(frame.pixels),
             file_sha256: encode_sha256(&encoded),
             bytes: encoded_bytes,
+            source,
         });
-        DiagnosticRecordOutcome::Recorded
+        if source_write_failed {
+            self.drop(DiagnosticErrorType::WriteFailed, frame.sequence)
+        } else {
+            DiagnosticRecordOutcome::Recorded
+        }
     }
 
     fn record_fact(&mut self, fact: &DiagnosticFact) -> DiagnosticRecordOutcome {
@@ -941,7 +1020,7 @@ impl ActiveDiagnosticRecorder {
         let mut total_bytes = self.bytes;
         for _ in 0..8 {
             let manifest = DiagnosticRunManifest {
-                schema: "scorepeek-private-diagnostic-run-v1",
+                schema: "scorepeek-private-diagnostic-run-v2",
                 monotonic_end_ms,
                 status,
                 completeness,
@@ -1058,6 +1137,7 @@ impl From<&DiagnosticPolicy> for DiagnosticPolicyArtifact {
             normal_retention_hours: NORMAL_RETENTION_HOURS,
             priority_retention_hours: PRIORITY_RETENTION_HOURS,
             remote_export_enabled: false,
+            retention: policy.retention,
         }
     }
 }
@@ -1285,8 +1365,10 @@ pub fn completed_run_start_is_intact(directory: &Path) -> bool {
     else {
         return false;
     };
-    if manifest.schema != "scorepeek-private-diagnostic-run-v1"
-        || manifest.start.schema != "scorepeek-private-diagnostic-artifact-v1"
+    if !matches!(
+        manifest.schema.as_str(),
+        "scorepeek-private-diagnostic-run-v1" | "scorepeek-private-diagnostic-run-v2"
+    ) || manifest.start.schema != "scorepeek-private-diagnostic-artifact-v1"
         || manifest.start.filename != "run.json"
         || !valid_sha256(&manifest.start.file_sha256)
     {
@@ -1337,12 +1419,31 @@ mod tests {
         vec![value; CANONICAL_BYTES]
     }
 
+    fn source_contract() -> UncalibratedVideoContract {
+        UncalibratedVideoContract {
+            width: 4,
+            height: 2,
+            framerate_num: 60,
+            framerate_denom: 1,
+            maximum_framerate_num: 60,
+            maximum_framerate_denom: 1,
+            pixel_aspect_num: 1,
+            pixel_aspect_denom: 1,
+            chroma_site: 0,
+            color_range: 0,
+            color_matrix: 0,
+            transfer_function: 0,
+            color_primaries: 0,
+        }
+    }
+
     fn frame(sequence: u64, time_ms: u64, pixels: &[u8]) -> DiagnosticFrameInput<'_> {
         DiagnosticFrameInput {
             sequence,
             monotonic_start_ms: time_ms,
             monotonic_end_ms: time_ms + 16,
             pixels,
+            source: None,
         }
     }
 
@@ -1370,6 +1471,57 @@ mod tests {
             None
         );
         assert_eq!(root.path().read_dir().unwrap().count(), 0);
+    }
+
+    #[test]
+    fn paired_source_bytes_are_exact_and_bound_to_the_same_frame_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let canonical = pixels(31);
+        let source = vec![17_u8; 32];
+        let mut recorder = DiagnosticRecorder::start(
+            root.path(),
+            &descriptor("paired-source-run"),
+            DiagnosticPolicy::default(),
+        );
+        let outcome = recorder.record_frame(DiagnosticFrameInput {
+            sequence: 7,
+            monotonic_start_ms: 1_000,
+            monotonic_end_ms: 1_016,
+            pixels: &canonical,
+            source: Some(DiagnosticSourceFrameInput {
+                contract: source_contract(),
+                memory_type: UncalibratedMemoryType::MemoryFileDescriptor,
+                stride: 16,
+                received_monotonic_ns: 1_000_000_000,
+                bytes: &source,
+            }),
+        });
+        assert_eq!(outcome, DiagnosticRecordOutcome::Recorded);
+        let finished = recorder.finish(DiagnosticRunStatus::Success, 2_000);
+        assert_eq!(
+            finished.completeness,
+            Some(DiagnosticCompleteness::Complete)
+        );
+
+        let directory = root.path().join("paired-source-run");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.join("manifest.json")).unwrap()).unwrap();
+        let entry = &manifest["frames"][0];
+        assert_eq!(entry["sequence"], 7);
+        assert_eq!(
+            entry["source"]["filename"],
+            "source-00000000000000000007.bgrx"
+        );
+        assert_eq!(entry["source"]["pixel_format"], "bgrx");
+        assert_eq!(entry["source"]["stride"], 16);
+        assert_eq!(entry["source"]["bytes"], 32);
+        assert_eq!(
+            fs::read(directory.join("source-00000000000000000007.bgrx")).unwrap(),
+            source
+        );
+        let runs = crate::diagnostic_control::inspect_store(root.path()).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run_id, "paired-source-run");
     }
 
     #[test]
@@ -1577,12 +1729,14 @@ mod tests {
             monotonic_start_ms: 0,
             monotonic_end_ms: 5_000,
             pixels: &input,
+            source: None,
         };
         let regressed = DiagnosticFrameInput {
             sequence: 2,
             monotonic_start_ms: 1_000,
             monotonic_end_ms: 1_016,
             pixels: &input,
+            source: None,
         };
         assert_eq!(
             regressing.record_frame(first),
