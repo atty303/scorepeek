@@ -265,6 +265,17 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   mean absolute error `0.235762`, with 2,059,655 of 2,073,600 RGB pixels exactly equal; known
   top-left, bottom-left, and center markers were exact. The artifact and captured pixels remain in
   operator-owned local state, not the repository.
+- After the operator changed the Scroll rule for the exact Gamescope title so that its content
+  surface, not only the outer window, is 1920x1080, a controlled marker session exposed matching
+  1920x1080 BGRx PipeWire caps. The retained create-only sample negotiated MemFd with 7,680-byte
+  stride, and its 8,294,400 raw bytes were byte-for-byte identical to an independent BGRx decode of
+  the known marker. The resulting identity-geometry Wayland binding remains in operator-owned local
+  state with manifest SHA-256 `9bd31b6f7b1f8096cb5f7ca8009189fd0d9c1b67aa84eaab227f3e3d05cb60f8`,
+  raw-frame SHA-256 `8fc095df3bdf69ae346546ef57a74e2110fd1bf63952ed90a6f2873cf84bb631`,
+  capture-profile SHA-256 `b96c359926d83ebed452fe5ea0b42b1a3cf5a377094913203da4f97dccd671c3`,
+  and binding SHA-256 `7d0e226d525340d719ce1d699e4c691d8ad391fa9176904736fca9f22465812a`.
+  A preceding 1916x1076 sample exposed the unintended border subtraction and was moved to the
+  recoverable desktop trash after the rule was corrected; it was not used to author a binding.
 - A fresh controlled marker session admitted the replacement private binding after observing
   2556x1428 BGRx MemFd with 10,224-byte stride. A separately restarted session admitted the same
   profile under capture generation 23 and normalized source sequence 1 to canonical RGB8 SHA-256
@@ -440,6 +451,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   unit evidence but not yet a prospective live result.
 - Session provenance is explicit launcher/operator input, not an automatic observation of the
   Gamescope process. Process discovery or attestation is not implemented or claimed.
+- The new identity-geometry 1920x1080 Wayland binding has controlled-marker evidence only. A
+  user-started INFINITAS session has not yet admitted it or demonstrated result recognition under
+  that binding.
 - INFINITAS content/geometry, target play-machine output, 4K, FSR/NIS, Reshade, HDR, Portal, and OBS
   are separate uncalibrated domains. The development-machine profile is not a pixel reference.
 - OBS/obs-vkcapture coexistence, PipeWire daemon disconnect, stream loss distinct from node loss,
@@ -476,10 +490,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    reports exact/aggregate pixel differences without another capture session.
 2. Extend prospective retention evidence only if the bounded offline transform inspector exposes a
    missing source contract, export, or capacity invariant; do not broaden routine raw retention.
-3. At the next naturally occurring user-started INFINITAS session, require exact live result title,
-   artist, `CLEAR TYPE`, song decision, complete diagnostic/recognition artifacts, and ordered
-   scorepeek teardown before defining event authority, target-host performance acceptance, or
-   support. Do not request another play merely to tune the repaired predicate.
+3. At the next naturally occurring user-started INFINITAS session, select the new identity-geometry
+   1920x1080 Wayland binding and require exact admission plus live result title, artist, `CLEAR TYPE`,
+   song decision, complete diagnostic/recognition artifacts, and ordered scorepeek teardown before
+   defining event authority, target-host performance acceptance, or support. Do not request another
+   play merely to tune the repaired predicate.
 
 Do not proceed to automatic calibration, Portal/OBS fallback, event emission, soak/performance, or
 support claims until transform replay and a prospective normal live recognition session have
