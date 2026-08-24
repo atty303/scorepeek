@@ -396,6 +396,7 @@ fn validate_descriptor(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::time::{Duration, Instant};
 
     use scorepeek::recognition::{CanonicalLayout, ScreenClass};
 
@@ -435,6 +436,14 @@ mod tests {
             for y in [451, 655] {
                 for x in 0..518 {
                     pixels[(y * 1920 + x) * 3..][..3].copy_from_slice(&[0, 0, 0]);
+                }
+            }
+        } else if color == [0, 180, 220] {
+            let label = CanonicalLayout::load().unwrap().music_select.label;
+            for y in label.y..label.y + label.height {
+                for x in label.x..label.x + label.width {
+                    pixels[(y as usize * 1920 + x as usize) * 3..][..3]
+                        .copy_from_slice(&[220, 220, 220]);
                 }
             }
         }
@@ -573,6 +582,14 @@ mod tests {
         .unwrap();
         old.inspect(&BoundCanonicalFrame::for_test(1, 1, 0))
             .unwrap();
+        let first_fact = root
+            .path()
+            .join("old-session/fact-00000000000000000000.json");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !first_fact.is_file() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(first_fact.is_file());
         let next_descriptor = descriptor("next-session", 2);
         let expected_next_binding = next_descriptor.binding.identity_sha256().unwrap();
         let transition = old

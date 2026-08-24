@@ -14,9 +14,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   result-panel edge crops were one row low; the measured coordinate correction classifies that exact
   frame without lowering the threshold and passes the complete three-episode simulation. Foreground
   evidence is now bounded for hours-long use and selected result frames can retain paired exact raw
-  BGRx for later transform replay. A transform comparison command and a prospective ordinary live
-  result under the corrected layout remain next boundaries; another play is not required to repair
-  the observed miss.
+  BGRx for later transform replay. A later foreground run exposed startup frames that satisfied the
+  two palette-wide music-select predicates. The corrected layout now additionally requires the
+  measured fixed `MUSIC SELECT` label and rejects the retained startup evidence offline. A transform
+  comparison command and a prospective ordinary live result under the corrected layout remain next
+  boundaries; another play is not required to repair either observed recognition failure.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -38,7 +40,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 ### Canonical recognition and diagnostics
 
 - Fixed contiguous RGB8 1920x1080 canonical-frame contract with one shared layout, fail-closed
-  result/music-select crops, contextual title recognition, and selection-song context.
+  result/music-select crops, contextual title recognition, and selection-song context. Music-select
+  presence requires the fixed label structure in addition to the existing header and level-column
+  palette evidence.
 - PP-OCRv6 small native-dynamic is the selected title observer. Registered model bundles,
   preprocessing, CTC decoding, exact-first comparison keys, catalog search, and private replay
   tooling are digest-bound and reproducible. Custom training/export is deferred until integrated
@@ -275,6 +279,14 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   not pass live recognition. Its configured diagnostic root was absent and the recorder degraded
   to `store_unavailable`; abrupt Ctrl+C did not finalize a terminal report or manifest and is not a
   valid shutdown result.
+- A later ordinary Wayland foreground run admitted capture generation 26 and matched the complete
+  2556x1428 BGRx MemFd/10,224-byte-stride binding before INFINITAS terminated for an unrelated
+  application failure. Before termination it received and normalized 247 frames. The operator had
+  not entered music selection, but the old two-color predicate submitted 19 false music-select
+  observations. Exact retained sequence 76 was the hexagonal startup screen: it had 12,125 cyan
+  header and 41,572 colored level-column pixels but zero bright pixels in the newly measured fixed
+  label ROI. All 45 retained canonical frames from that run are `unknown` under the revised layout;
+  their largest fixed-label count is 814 against the new 4,000 minimum.
 - `2026-08-24 14-54-57.mkv` is registered outside the repository under distinct
   Gamescope-vkCapture/OBS capture profile
   `f5f0c5a86b5edba6a8fd014ad85b3873be8f745c0b531d2b5b77f203770b046a` and canonical normalizer
@@ -393,10 +405,18 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   579-fact diagnostic manifest has SHA-256
   `59f406505e9226bf93e0f2ca9c76ac96fa9c2f30b6d1d7a8cd73c8e5f1008387`, with no drops or
   degradations.
+- Replaying the same 459 canonical frames under layout SHA-256
+  `2c9b2356be59bf86a48ebaa8878cf01206b9ea6ac18b212d973c861aed7ef6ac` left all 24 result frames
+  unchanged and retained 89 structurally anchored music-select frames. Their fixed-label counts
+  ranged from 4,660 to 5,962. The production simulation submitted 113 field frames and completed
+  all three episodes with 22 exact song decisions and 22 exact clear-type matches; field worker,
+  diagnostic manifest `c058a36f7113c0924dc607101937a96f2e4ff484db59ac7755077942ce3df3a4`,
+  and recognition artifact `474020b991302fcc03e940cadecbf4dac476f09656d196868bf8e91dfeced99e`
+  were complete.
 - Exact direct-live frame 314 has QOI SHA-256
   `ac478bc21cdca91caa5e052200bc58406685e593e59c3b7cfb590998c66239bd` and canonical pixel
   SHA-256 `e52c2f9466281e847b9ce46b3ac9da0e6a6bc1e150c072cc6a7b8da849372dbf`.
-  Under layout SHA-256 `26c40695fb72f3a7e495a2c4ec21326da7f84d7d7342c842e2fed1d78e1bbfea`,
+  Under layout SHA-256 `2c9b2356be59bf86a48ebaa8878cf01206b9ea6ac18b212d973c861aed7ef6ac`,
   it is `result`: warm 3,956, upper edge 521, lower edge 523, with unchanged edge minimum 518.
 
 ## Unverified boundaries
@@ -405,8 +425,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   recording. It has no title-disjoint holdout, broader clear-type/background coverage, calibrated
   false-accept denominator, or release-accuracy authority. Music-select song resolution, charts,
   digits, temporal result-event emission, and deduplication remain unimplemented.
-- Admitted Gamescope runs have driven classified live music-select frames and retained an exact live
-  result QOI that the corrected layout classifies as result offline. Recording evidence retains
+- Earlier admitted Gamescope runs drove the superseded two-color music-select predicate; a true
+  live music-select frame has not yet been observed under the fixed-label predicate. An exact live
+  result QOI still classifies as result offline. Recording evidence retains
   replay provenance and cannot fabricate the live generation/profile/normalizer owner. No
   development-machine run has measured live inference-plus-scoring cost, queue behavior, or
   candidate output as a target-host performance gate.
@@ -424,8 +445,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - OBS/obs-vkcapture coexistence, PipeWire daemon disconnect, stream loss distinct from node loss,
   source recreation, long soak, FD/thread/RSS convergence, frame age, CPU/memory/copy/GPU/power
   cost, game p99 frametime, and OBS lag remain unverified.
-- Gamescope-driven music-select field submission and offline replay of the exact retained live
-  result predicate are verified, but prospective direct-live result OCR/resolution, graceful
+- Offline music-select field submission and replay of the exact retained live result predicate are
+  verified, but prospective fixed-label live music-select, direct-live result OCR/resolution, graceful
   stdin-requested shutdown, queue/artifact completion, accepted field gate, event daemon,
   target-host performance gate, and supported capture profile remain unverified. The corrected
   edge coordinates did not lower the predicate threshold. The earlier run has no paired raw source,

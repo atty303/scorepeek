@@ -312,6 +312,8 @@ pub enum DiagnosticDetail {
         music_select_cyan_header_pixels_min: u32,
         music_select_colored_level_pixels: u32,
         music_select_colored_level_pixels_min: u32,
+        music_select_bright_label_pixels: u32,
+        music_select_bright_label_pixels_min: u32,
     },
     FieldObservation {
         screen: DiagnosticScreen,

@@ -491,6 +491,7 @@ pub struct ResultLayout {
 pub struct MusicSelectLayout {
     presence: MusicSelectPresencePredicate,
     pub header: Roi,
+    pub label: Roi,
     pub level_column: Roi,
     pub selected_title: Roi,
     pub list_titles: RepeatedRoi,
@@ -498,9 +499,14 @@ pub struct MusicSelectLayout {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "field names intentionally match the canonical layout contract"
+)]
 struct MusicSelectPresencePredicate {
     cyan_header_pixels_min: u32,
     colored_level_pixels_min: u32,
+    bright_label_pixels_min: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
@@ -1050,6 +1056,8 @@ pub struct MusicSelectPresenceEvidence {
     pub cyan_header_pixels_min: u32,
     pub colored_level_pixels: u32,
     pub colored_level_pixels_min: u32,
+    pub bright_label_pixels: u32,
+    pub bright_label_pixels_min: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -1089,6 +1097,7 @@ impl CanonicalLayout {
             layout.result.notes,
             layout.result.current_score,
             layout.music_select.header,
+            layout.music_select.label,
             layout.music_select.level_column,
             layout.music_select.selected_title,
         ] {
@@ -1127,12 +1136,20 @@ impl CanonicalLayout {
             .width
             .checked_mul(layout.music_select.level_column.height)
             .ok_or(RecognitionError::InvalidCanonicalLayout)?;
+        let label_pixels = layout
+            .music_select
+            .label
+            .width
+            .checked_mul(layout.music_select.label.height)
+            .ok_or(RecognitionError::InvalidCanonicalLayout)?;
         if layout.music_select.list_titles.slots == 0
             || layout.music_select.list_titles.stride_y == 0
             || layout.music_select.presence.cyan_header_pixels_min == 0
             || layout.music_select.presence.colored_level_pixels_min == 0
+            || layout.music_select.presence.bright_label_pixels_min == 0
             || layout.music_select.presence.cyan_header_pixels_min > header_pixels
             || layout.music_select.presence.colored_level_pixels_min > level_pixels
+            || layout.music_select.presence.bright_label_pixels_min > label_pixels
         {
             return Err(RecognitionError::InvalidCanonicalLayout);
         }
@@ -1213,12 +1230,18 @@ pub fn inspect_canonical_rgb8(
             maximum > 130 && maximum - minimum > 60
         })
         .fold(0_u32, |count, _| count + 1);
+    let music_label = crop_canonical_pixels(pixels, layout.music_select.label)?;
+    let bright_label_pixels = music_label
+        .chunks_exact(3)
+        .filter(|pixel| pixel[0] > 178 && pixel[1] > 178 && pixel[2] > 178)
+        .fold(0_u32, |count, _| count + 1);
     let result_present = warm >= layout.result.presence.warm_pixels_min
         && upper_panel_edge_pixels >= layout.result.presence.horizontal_edge_pixels_min
         && lower_panel_edge_pixels >= layout.result.presence.horizontal_edge_pixels_min;
     let music_select_present = cyan_header_pixels
         >= layout.music_select.presence.cyan_header_pixels_min
-        && colored_level_pixels >= layout.music_select.presence.colored_level_pixels_min;
+        && colored_level_pixels >= layout.music_select.presence.colored_level_pixels_min
+        && bright_label_pixels >= layout.music_select.presence.bright_label_pixels_min;
     let screen = match (result_present, music_select_present) {
         (true, false) => ScreenClass::Result,
         (false, true) => ScreenClass::MusicSelect,
@@ -1238,6 +1261,8 @@ pub fn inspect_canonical_rgb8(
             cyan_header_pixels_min: layout.music_select.presence.cyan_header_pixels_min,
             colored_level_pixels,
             colored_level_pixels_min: layout.music_select.presence.colored_level_pixels_min,
+            bright_label_pixels,
+            bright_label_pixels_min: layout.music_select.presence.bright_label_pixels_min,
         },
     })
 }
@@ -2144,6 +2169,14 @@ mod tests {
             ambiguous[(y * CANONICAL_WIDTH as usize + x) * 3..][..3]
                 .copy_from_slice(&[20, 180, 40]);
         }
+        for index in 0..layout.music_select.presence.bright_label_pixels_min as usize {
+            let x = layout.music_select.label.x as usize
+                + index % layout.music_select.label.width as usize;
+            let y = layout.music_select.label.y as usize
+                + index / layout.music_select.label.width as usize;
+            ambiguous[(y * CANONICAL_WIDTH as usize + x) * 3..][..3]
+                .copy_from_slice(&[220, 220, 220]);
+        }
         assert_eq!(
             inspect(&test_frame(ambiguous)).unwrap().screen,
             ScreenClass::Unknown
@@ -2184,11 +2217,23 @@ mod tests {
                 + index / layout.music_select.level_column.width as usize;
             pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&[20, 180, 40]);
         }
+        assert_eq!(
+            inspect(&test_frame(pixels.clone())).unwrap().screen,
+            ScreenClass::Unknown
+        );
+        for index in 0..layout.music_select.presence.bright_label_pixels_min as usize {
+            let x = layout.music_select.label.x as usize
+                + index % layout.music_select.label.width as usize;
+            let y = layout.music_select.label.y as usize
+                + index / layout.music_select.label.width as usize;
+            pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&[220, 220, 220]);
+        }
         let frame = test_frame(pixels);
         let snapshot = inspect(&frame).unwrap();
         assert_eq!(snapshot.screen, ScreenClass::MusicSelect);
         assert_eq!(snapshot.music_select_presence.cyan_header_pixels, 7_000);
         assert_eq!(snapshot.music_select_presence.colored_level_pixels, 1_000);
+        assert_eq!(snapshot.music_select_presence.bright_label_pixels, 4_000);
 
         let directory = tempdir().unwrap();
         let output = directory.path().join("music-select-crops");
@@ -2239,6 +2284,14 @@ mod tests {
                 + index / canonical.music_select.level_column.width as usize;
             music_select_pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3]
                 .copy_from_slice(&[20, 180, 40]);
+        }
+        for index in 0..canonical.music_select.presence.bright_label_pixels_min as usize {
+            let x = canonical.music_select.label.x as usize
+                + index % canonical.music_select.label.width as usize;
+            let y = canonical.music_select.label.y as usize
+                + index / canonical.music_select.label.width as usize;
+            music_select_pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3]
+                .copy_from_slice(&[220, 220, 220]);
         }
         let directory = tempdir().unwrap();
         let music_output = directory.path().join("music-context");

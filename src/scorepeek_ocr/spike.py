@@ -158,15 +158,26 @@ def load_layout_contract(
 
     music_select = _exact_object(
         raw["music_select"],
-        {"presence", "header", "level_column", "selected_title", "list_titles"},
+        {
+            "presence",
+            "header",
+            "label",
+            "level_column",
+            "selected_title",
+            "list_titles",
+        },
         "canonical music-select layout",
     )
     _exact_object(
         music_select["presence"],
-        {"cyan_header_pixels_min", "colored_level_pixels_min"},
+        {
+            "cyan_header_pixels_min",
+            "colored_level_pixels_min",
+            "bright_label_pixels_min",
+        },
         "music-select presence predicate",
     )
-    for field in ("header", "level_column", "selected_title"):
+    for field in ("header", "label", "level_column", "selected_title"):
         roi = _exact_object(
             music_select[field], {"x", "y", "width", "height"}, f"{field} ROI"
         )

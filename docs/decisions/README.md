@@ -110,6 +110,9 @@ authoritative.
 - [ADR 0043: Retain bounded foreground failure evidence](0043-retain-bounded-foreground-failure-evidence.md)
   compacts hours-long foreground diagnostics and recognition evidence while pairing only selected
   result-transition or partial-result canonical frames with exact raw BGRx transform evidence.
+- [ADR 0044: Require the fixed music-select label](0044-require-the-fixed-music-select-label.md)
+  adds a measured fixed-label anchor to the two aggregate color predicates so startup palette
+  animations fail closed instead of entering the music-select field path.
 
 ## Historical
 

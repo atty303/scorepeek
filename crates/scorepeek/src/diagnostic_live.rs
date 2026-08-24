@@ -387,6 +387,12 @@ impl DiagnosticBridge {
                 music_select_colored_level_pixels_min: predicate
                     .music_select_presence
                     .colored_level_pixels_min,
+                music_select_bright_label_pixels: predicate
+                    .music_select_presence
+                    .bright_label_pixels,
+                music_select_bright_label_pixels_min: predicate
+                    .music_select_presence
+                    .bright_label_pixels_min,
             },
         })
     }
@@ -846,6 +852,14 @@ mod tests {
         assert_eq!(
             fact["fact"]["detail"]["music_select_cyan_header_pixels_min"],
             7_000
+        );
+        assert_eq!(
+            fact["fact"]["detail"]["music_select_bright_label_pixels"],
+            0
+        );
+        assert_eq!(
+            fact["fact"]["detail"]["music_select_bright_label_pixels_min"],
+            4_000
         );
     }
 
