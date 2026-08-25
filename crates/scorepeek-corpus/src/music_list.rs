@@ -1634,10 +1634,10 @@ fn expected_crop(index: usize) -> Result<(String, String, CropRoi), CorpusError>
             "selected_title".to_owned(),
             "selected-title.ppm".to_owned(),
             CropRoi {
-                x: 400,
-                y: 310,
-                width: 540,
-                height: 110,
+                x: 140,
+                y: 315,
+                width: 820,
+                height: 100,
             },
         ));
     }

@@ -116,6 +116,9 @@ authoritative.
 - [ADR 0045: Use measured result text regions](0045-use-measured-result-text-regions.md)
   replaces the truncated result artist region and the low-resolution result title region from
   retained foreground evidence while keeping the OCR and acceptance contracts unchanged.
+- [ADR 0046: Resolve music selection from the active title prefix](0046-resolve-music-select-from-active-prefix.md)
+  makes the clipped one-line active list title primary song evidence, uses strong central-title and
+  artist evidence only for corroboration or tie narrowing, and rejects weighted score fusion.
 
 ## Historical
 

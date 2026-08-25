@@ -1,13 +1,13 @@
 {
   "schema": "scorepeek-integrated-context-layout-v2",
   "canonical_frame_contract_id": "scorepeek-canonical-rgb8-1920x1080-v1",
-  "canonical_layout_sha256": "316113f34b3844e2b53d010e1c529c70a9ba032d2d950b051ae5b302937119a5",
+  "canonical_layout_sha256": "6b56454a3023d6d3900682396b77f41e8919cb95c1444c83be08c48cb1dacfa4",
   "result": {
     "artist": { "x": 650, "y": 990, "width": 650, "height": 40 }
   },
   "music_select": {
     "artist": { "x": 140, "y": 410, "width": 820, "height": 55 },
     "selected_chart": { "x": 110, "y": 500, "width": 820, "height": 110 },
-    "active_list_title": { "x": 1305, "y": 520, "width": 505, "height": 45 }
+    "active_list_title": { "x": 1305, "y": 525, "width": 505, "height": 30 }
   }
 }

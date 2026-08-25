@@ -25,7 +25,7 @@
     "header": { "x": 0, "y": 0, "width": 650, "height": 130 },
     "label": { "x": 20, "y": 25, "width": 500, "height": 90 },
     "level_column": { "x": 1240, "y": 0, "width": 110, "height": 1080 },
-    "selected_title": { "x": 400, "y": 310, "width": 540, "height": 110 },
+    "selected_title": { "x": 140, "y": 315, "width": 820, "height": 100 },
     "list_titles": {
       "x": 1335,
       "y": 20,

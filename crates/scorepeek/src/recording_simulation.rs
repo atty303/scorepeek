@@ -410,7 +410,7 @@ fn process_completed_observation(
                 RecognitionArtifactTiming::Recording { source_pts_ms },
                 output.fields(),
                 output.candidates(),
-                result_resolution,
+                output.song_resolution(),
                 expected,
             )
             .is_err()

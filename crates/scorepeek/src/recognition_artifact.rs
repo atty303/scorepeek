@@ -10,14 +10,14 @@ use std::time::Instant;
 
 use scorepeek::catalog::ScorepeekSongId;
 use scorepeek::recognition::{
-    CatalogCandidateEvidenceTable, ResultSongResolution, ScreenCatalogCandidateObservations,
-    ScreenFieldObservations,
+    CatalogCandidateEvidenceTable, MusicSelectSongResolution, ResultSongResolution,
+    ScreenCatalogCandidateObservations, ScreenFieldObservations, ScreenSongResolution,
 };
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 const CATALOG_SCHEMA: &str = "scorepeek-recognition-catalog-evidence-v1";
-const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v3";
+const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v4";
 const MANIFEST_SCHEMA: &str = "scorepeek-recognition-evidence-manifest-v2";
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 256 * 1024 * 1024;
@@ -81,7 +81,7 @@ enum StoredDecision<'a> {
         resolution: &'a ResultSongResolution,
     },
     MusicSelect {
-        status: &'static str,
+        resolution: &'a MusicSelectSongResolution,
     },
 }
 
@@ -123,7 +123,7 @@ enum StoredCandidates {
     MusicSelect {
         comparison_key_id: &'static str,
         candidate_order: &'static str,
-        candidates: Vec<[usize; 9]>,
+        candidates: Vec<[usize; 12]>,
     },
 }
 
@@ -200,20 +200,21 @@ impl RecognitionArtifactWriter {
         timing: RecognitionArtifactTiming,
         fields: &ScreenFieldObservations,
         candidates: &ScreenCatalogCandidateObservations,
-        result_resolution: Option<&ResultSongResolution>,
+        song_resolution: &ScreenSongResolution,
         expected: Option<RecognitionArtifactExpected<'_>>,
     ) -> Result<(), String> {
         if self.observation_count >= MAX_OBSERVATIONS {
             return Err("recognition artifact observation capacity exceeded".to_owned());
         }
         self.ensure_catalog(candidates.catalog_evidence())?;
-        let decision = match (fields, result_resolution) {
-            (ScreenFieldObservations::Result(_), Some(resolution)) => {
+        let decision = match (fields, song_resolution) {
+            (ScreenFieldObservations::Result(_), ScreenSongResolution::Result(resolution)) => {
                 StoredDecision::Result { resolution }
             }
-            (ScreenFieldObservations::MusicSelect(_), None) => StoredDecision::MusicSelect {
-                status: "resolver_not_implemented",
-            },
+            (
+                ScreenFieldObservations::MusicSelect(_),
+                ScreenSongResolution::MusicSelect(resolution),
+            ) => StoredDecision::MusicSelect { resolution },
             _ => return Err("recognition artifact decision does not match screen".to_owned()),
         };
         let stored = StoredObservation {
@@ -678,7 +679,7 @@ fn record_live(writer: &mut RecognitionArtifactWriter, record: &LiveRecord) -> R
         },
         output.fields(),
         output.candidates(),
-        output.result_resolution(),
+        output.song_resolution(),
         None,
     )
 }
@@ -820,6 +821,15 @@ impl TryFrom<&ScreenCatalogCandidateObservations> for StoredCandidates {
                                     .active_list_title
                                     .maximum_normalized_similarity
                                     .compared_units,
+                                candidate.active_list_title_prefix.minimum_edit_distance,
+                                candidate
+                                    .active_list_title_prefix
+                                    .maximum_normalized_similarity
+                                    .matching_units,
+                                candidate
+                                    .active_list_title_prefix
+                                    .maximum_normalized_similarity
+                                    .compared_units,
                             ]
                         })
                         .collect(),
@@ -889,8 +899,9 @@ mod tests {
     use scorepeek::recognition::{
         CatalogCandidateDomain, CatalogCandidateEvidenceTable, CatalogNormalizedSimilarity,
         CatalogTextCandidateScore, DynamicTextObservation, FieldNotObserved,
-        FieldNotObservedReason, RESULT_SONG_RESOLVER_ID, ResultScreenFieldObservations,
-        ResultSongCandidateObservation, ResultSongResolution, ResultSongUnknownReason,
+        FieldNotObservedReason, MusicSelectScreenFieldObservations, RESULT_SONG_RESOLVER_ID,
+        ResultScreenFieldObservations, ResultSongCandidateObservation, ResultSongResolution,
+        ResultSongUnknownReason,
     };
 
     use super::*;
@@ -912,6 +923,22 @@ mod tests {
             level: missing,
             notes: missing,
             current_score: missing,
+        })
+    }
+
+    fn music_select_fields() -> ScreenFieldObservations {
+        let text = |value: &str| DynamicTextObservation {
+            input_width: 64,
+            output_timesteps: 12,
+            open_text: value.to_owned(),
+        };
+        ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
+            central_title: text("texture"),
+            artist: text("artist"),
+            selected_chart: FieldNotObserved {
+                reason: FieldNotObservedReason::ObserverNotImplemented,
+            },
+            active_list_title: text("VISIBLE TITLE"),
         })
     }
 
@@ -982,7 +1009,7 @@ mod tests {
                 },
                 &result_fields(),
                 &empty_candidates(),
-                Some(&ResultSongResolution::Unknown {
+                &ScreenSongResolution::Result(ResultSongResolution::Unknown {
                     resolver_id: RESULT_SONG_RESOLVER_ID,
                     reason: ResultSongUnknownReason::EmptyTitle,
                     selected: None,
@@ -1029,6 +1056,40 @@ mod tests {
     }
 
     #[test]
+    fn artifact_retains_typed_music_select_resolution() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("music-select");
+        let domain =
+            CatalogCandidateDomain::from_catalog(&scorepeek::catalog::Catalog::default()).unwrap();
+        let output = crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation::from_fields(
+            &domain,
+            music_select_fields(),
+        );
+        let mut writer =
+            RecognitionArtifactWriter::create(&root, "music-001".to_owned(), "d".repeat(64))
+                .unwrap();
+        writer
+            .record(
+                10,
+                RecognitionArtifactTiming::Live {
+                    monotonic_start_ms: 100,
+                    monotonic_end_ms: 101,
+                },
+                output.fields(),
+                output.candidates(),
+                output.song_resolution(),
+                None,
+            )
+            .unwrap();
+        writer.finish(true).unwrap();
+
+        let stored = fs::read_to_string(root.join("observations.ndjson")).unwrap();
+        assert!(stored.contains("\"screen\":\"music_select\""));
+        assert!(stored.contains("no_catalog_candidates"));
+        assert!(!stored.contains("resolver_not_implemented"));
+    }
+
+    #[test]
     fn failed_empty_catalog_run_retains_observation_and_expected_values() {
         let parent = tempfile::tempdir().unwrap();
         let root = parent.path().join("run");
@@ -1045,7 +1106,7 @@ mod tests {
                 },
                 &result_fields(),
                 &empty_catalog_candidates(),
-                Some(&ResultSongResolution::Unknown {
+                &ScreenSongResolution::Result(ResultSongResolution::Unknown {
                     resolver_id: RESULT_SONG_RESOLVER_ID,
                     reason: ResultSongUnknownReason::NoCatalogCandidates,
                     selected: None,
@@ -1102,7 +1163,7 @@ mod tests {
         assert_eq!(outcome.status, RecognitionArtifactFinishStatus::Complete);
         assert_eq!(outcome.manifest_sha256.unwrap().len(), 64);
         let stored = fs::read_to_string(root.join("observations.ndjson")).unwrap();
-        assert!(stored.contains("scorepeek-recognition-observation-v3"));
+        assert!(stored.contains("scorepeek-recognition-observation-v4"));
         assert!(stored.contains("\"source\":\"live\""));
         assert!(stored.contains("\"monotonic_start_ms\":1000"));
         assert!(stored.contains("\"monotonic_end_ms\":1017"));

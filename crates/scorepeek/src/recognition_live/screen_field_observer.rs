@@ -1,8 +1,9 @@
 use scorepeek::recognition::{
-    CatalogCandidateDomain, CatalogCandidateDomainError, OnnxParityError,
-    RegisteredRecognitionResources, RegisteredResourceLoadError, ResultSongResolution,
-    ScreenCatalogCandidateObservations, ScreenFieldObservationError, ScreenFieldObservations,
-    observe_screen_fields, resolve_result_song,
+    CatalogCandidateDomain, CatalogCandidateDomainError, MusicSelectSongResolution,
+    OnnxParityError, RegisteredRecognitionResources, RegisteredResourceLoadError,
+    ResultSongResolution, ScreenCatalogCandidateObservations, ScreenFieldObservationError,
+    ScreenFieldObservations, ScreenSongResolution, observe_screen_fields,
+    resolve_music_select_song, resolve_result_song,
 };
 use std::error::Error;
 use std::fmt;
@@ -65,7 +66,7 @@ impl RegisteredScreenFieldObserver {
 pub struct RegisteredScreenFieldObservation {
     fields: ScreenFieldObservations,
     candidates: ScreenCatalogCandidateObservations,
-    result_resolution: Option<ResultSongResolution>,
+    song_resolution: ScreenSongResolution,
 }
 
 impl RegisteredScreenFieldObservation {
@@ -74,21 +75,30 @@ impl RegisteredScreenFieldObservation {
         fields: ScreenFieldObservations,
     ) -> Self {
         let candidates = candidate_domain.observe(&fields);
-        let result_resolution = match (&fields, &candidates) {
+        let song_resolution = match (&fields, &candidates) {
             (
                 ScreenFieldObservations::Result(fields),
                 ScreenCatalogCandidateObservations::Result { candidates, .. },
-            ) => Some(resolve_result_song(
+            ) => ScreenSongResolution::Result(resolve_result_song(
                 &fields.title.open_text,
                 &fields.artist.open_text,
                 candidates,
             )),
-            _ => None,
+            (
+                ScreenFieldObservations::MusicSelect(fields),
+                ScreenCatalogCandidateObservations::MusicSelect { candidates, .. },
+            ) => ScreenSongResolution::MusicSelect(resolve_music_select_song(
+                &fields.central_title.open_text,
+                &fields.artist.open_text,
+                &fields.active_list_title.open_text,
+                candidates,
+            )),
+            _ => unreachable!("field observations and candidates share one screen"),
         };
         Self {
             fields,
             candidates,
-            result_resolution,
+            song_resolution,
         }
     }
 
@@ -104,7 +114,23 @@ impl RegisteredScreenFieldObservation {
 
     #[must_use]
     pub const fn result_resolution(&self) -> Option<&ResultSongResolution> {
-        self.result_resolution.as_ref()
+        match &self.song_resolution {
+            ScreenSongResolution::Result(resolution) => Some(resolution),
+            ScreenSongResolution::MusicSelect(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn music_select_resolution(&self) -> Option<&MusicSelectSongResolution> {
+        match &self.song_resolution {
+            ScreenSongResolution::Result(_) => None,
+            ScreenSongResolution::MusicSelect(resolution) => Some(resolution),
+        }
+    }
+
+    #[must_use]
+    pub const fn song_resolution(&self) -> &ScreenSongResolution {
+        &self.song_resolution
     }
 }
 
@@ -128,7 +154,9 @@ mod tests {
     use scorepeek::catalog::Catalog;
     use scorepeek::recognition::{
         DynamicTextObservation, FieldNotObserved, FieldNotObservedReason,
-        ResultScreenFieldObservations, ResultSongResolution, ResultSongUnknownReason,
+        MusicSelectScreenFieldObservations, MusicSelectSongResolution,
+        MusicSelectSongUnknownReason, ResultScreenFieldObservations, ResultSongResolution,
+        ResultSongUnknownReason,
     };
 
     use super::*;
@@ -173,6 +201,35 @@ mod tests {
             output.result_resolution(),
             Some(ResultSongResolution::Unknown {
                 reason: ResultSongUnknownReason::NoCatalogCandidates,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn registered_output_resolves_the_matching_music_select_screen_shape() {
+        let domain = CatalogCandidateDomain::from_catalog(&Catalog::default()).unwrap();
+        let text = |value: &str| DynamicTextObservation {
+            input_width: 1,
+            output_timesteps: 1,
+            open_text: value.to_owned(),
+        };
+        let fields = ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
+            central_title: text("texture"),
+            artist: text("artist"),
+            selected_chart: FieldNotObserved {
+                reason: FieldNotObservedReason::ObserverNotImplemented,
+            },
+            active_list_title: text("TITLE"),
+        });
+        let output = RegisteredScreenFieldObservation::from_fields(&domain, fields.clone());
+
+        assert_eq!(output.fields(), &fields);
+        assert!(output.result_resolution().is_none());
+        assert!(matches!(
+            output.music_select_resolution(),
+            Some(MusicSelectSongResolution::Unknown {
+                reason: MusicSelectSongUnknownReason::NoCatalogCandidates,
                 ..
             })
         ));

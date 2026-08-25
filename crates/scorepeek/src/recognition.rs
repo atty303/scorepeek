@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 mod catalog_candidates;
+mod music_select_resolver;
 mod result_resolver;
 mod title;
 mod title_decoder;
@@ -17,8 +18,12 @@ mod title_preprocessor;
 pub use catalog_candidates::{
     CatalogCandidateDomain, CatalogCandidateDomainError, CatalogCandidateEvidenceTable,
     CatalogCandidateSongEvidence, CatalogCandidateTextEvidence, CatalogNormalizedSimilarity,
-    CatalogTextCandidateScore, MusicSelectSongCandidateObservation, ResultSongCandidateObservation,
-    ScreenCatalogCandidateObservations,
+    CatalogPrefixCandidateScore, CatalogTextCandidateScore, MusicSelectSongCandidateObservation,
+    ResultSongCandidateObservation, ScreenCatalogCandidateObservations,
+};
+pub use music_select_resolver::{
+    MUSIC_SELECT_SONG_RESOLVER_ID, MusicSelectCorroboration, MusicSelectSongResolution,
+    MusicSelectSongUnknownReason, RankedMusicSelectSongCandidate, resolve_music_select_song,
 };
 pub use result_resolver::{
     RESULT_SONG_RESOLVER_ID, RankedResultSongCandidate, ResultSongResolution,
@@ -680,8 +685,10 @@ impl IntegratedContextLayout {
             || layout.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID
             || layout.canonical_layout_sha256 != CanonicalLayout::sha256()
             || layout.result.artist != canonical.result.artist
-            || layout.music_select.active_list_title.y != active_list_slot.y
-            || layout.music_select.active_list_title.height != active_list_slot.height
+            || layout.music_select.active_list_title.y < active_list_slot.y
+            || layout.music_select.active_list_title.y
+                + layout.music_select.active_list_title.height
+                > active_list_slot.y + active_list_slot.height
             || layout.music_select.active_list_title.x >= active_list_slot.x
             || layout.music_select.active_list_title.x + layout.music_select.active_list_title.width
                 != active_list_slot.x + active_list_slot.width
@@ -862,6 +869,13 @@ pub struct MusicSelectScreenFieldObservations {
 pub enum ScreenFieldObservations {
     Result(ResultScreenFieldObservations),
     MusicSelect(MusicSelectScreenFieldObservations),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "screen", content = "resolution", rename_all = "snake_case")]
+pub enum ScreenSongResolution {
+    Result(ResultSongResolution),
+    MusicSelect(MusicSelectSongResolution),
 }
 
 impl ScreenFieldObservations {
@@ -1998,12 +2012,18 @@ mod tests {
             context.music_select.active_list_title,
             Roi {
                 x: 1305,
-                y: 520,
+                y: 525,
                 width: 505,
-                height: 45,
+                height: 30,
             }
         );
         assert!(context.music_select.active_list_title.x < active_list_slot.x);
+        assert!(context.music_select.active_list_title.y >= active_list_slot.y);
+        assert!(
+            context.music_select.active_list_title.y
+                + context.music_select.active_list_title.height
+                <= active_list_slot.y + active_list_slot.height
+        );
         assert_eq!(
             context.music_select.active_list_title.x + context.music_select.active_list_title.width,
             active_list_slot.x + active_list_slot.width

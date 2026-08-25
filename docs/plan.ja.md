@@ -468,7 +468,8 @@ NV12、別color profileへ黙ってfallbackしない。
    compact resultはtyped status、screen/worker/candidate件数、diagnostic completenessおよびartifact identityに
    限定できるが、operator-owned local recognition artifactはboundedなexact OCR文字列、run単位のexact catalog
    display/comparison string table、song ID、string reference、全candidate metric、判断と理由、expected-versus-observed値を保持する。pixelは既存のbounded image artifactをidentityで
-   参照する。result-song ranking/acceptanceはADR 0038で追加済みとし、music-select/chart、temporal stateおよびevent authorityは後続の独立contractとする。
+   参照する。result-song ranking/acceptanceはADR 0038、screen-local music-select song resolutionは
+   ADR 0046で追加済みとし、chart、stable-selection temporal stateおよびevent authorityは後続の独立contractとする。
 10. **M7**: 少数scenario replayから最小selection song contextとrecognition-trigger非依存のbounded
     live diagnosticsを検証し、その後versioned event schemaとNDJSON daemonを統合する。ゲーム全体の
     state machine、attempt、modeまたはretry回数は実装しない。

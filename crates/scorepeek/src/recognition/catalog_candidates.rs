@@ -25,6 +25,12 @@ pub struct CatalogTextCandidateScore {
     pub maximum_normalized_similarity: CatalogNormalizedSimilarity,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct CatalogPrefixCandidateScore {
+    pub minimum_edit_distance: usize,
+    pub maximum_normalized_similarity: CatalogNormalizedSimilarity,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ResultSongCandidateObservation {
     pub song_id: ScorepeekSongId,
@@ -38,6 +44,7 @@ pub struct MusicSelectSongCandidateObservation {
     pub central_title: CatalogTextCandidateScore,
     pub artist: CatalogTextCandidateScore,
     pub active_list_title: CatalogTextCandidateScore,
+    pub active_list_title_prefix: CatalogPrefixCandidateScore,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -240,6 +247,7 @@ impl CatalogCandidateDomain {
                 central_title: score_text(&central_title, &song.title),
                 artist: score_text(&artist, &song.artist),
                 active_list_title: score_text(&active_list_title, &song.title),
+                active_list_title_prefix: score_prefix(&active_list_title, &song.title),
             })
             .collect();
         ScreenCatalogCandidateObservations::MusicSelect {
@@ -374,6 +382,49 @@ fn score_text(
         }
     }
     CatalogTextCandidateScore {
+        minimum_edit_distance,
+        maximum_normalized_similarity: maximum_normalized_similarity
+            .expect("catalog candidate sequences are non-empty"),
+    }
+}
+
+fn score_prefix(
+    observations: &ObservationForms,
+    candidates: &TextCandidateDomain,
+) -> CatalogPrefixCandidateScore {
+    let mut minimum_edit_distance = usize::MAX;
+    let mut maximum_normalized_similarity = None;
+    for (observation, candidate) in observations
+        .raw_and_exact
+        .iter()
+        .flat_map(|observation| {
+            candidates
+                .raw_and_exact
+                .iter()
+                .map(move |candidate| (observation.as_slice(), candidate.as_slice()))
+        })
+        .chain(
+            candidates
+                .folded
+                .iter()
+                .map(|candidate| (observations.folded.as_slice(), candidate.as_slice())),
+        )
+    {
+        let prefix = &candidate[..candidate.len().min(observation.len())];
+        let distance = levenshtein_distance(observation, prefix);
+        minimum_edit_distance = minimum_edit_distance.min(distance);
+        let compared_units = observation.len().max(prefix.len()).max(1);
+        let similarity = CatalogNormalizedSimilarity {
+            matching_units: compared_units - distance,
+            compared_units,
+        };
+        if maximum_normalized_similarity
+            .is_none_or(|current| similarity_is_better(similarity, current))
+        {
+            maximum_normalized_similarity = Some(similarity);
+        }
+    }
+    CatalogPrefixCandidateScore {
         minimum_edit_distance,
         maximum_normalized_similarity: maximum_normalized_similarity
             .expect("catalog candidate sequences are non-empty"),
@@ -593,6 +644,31 @@ mod tests {
         assert_eq!(levenshtein_distance(&[], &['A', 'B']), 2);
         assert_eq!(levenshtein_distance(&['A', 'B'], &['A', 'C']), 1);
         assert_eq!(levenshtein_distance(&['猫'], &['犬']), 1);
+
+        let prefix = score_prefix(
+            &observation_forms("ASIAN VIRTUAL REALITIES (MELTING TOGETHE"),
+            &TextCandidateDomain {
+                raw_and_exact: vec![
+                    "ASIAN VIRTUAL REALITIES (MELTING TOGETHER IN DAZZLING DARKNESS)"
+                        .chars()
+                        .collect(),
+                ],
+                folded: Vec::new(),
+                evidence: CatalogCandidateTextEvidence {
+                    display: Vec::new(),
+                    exact: Vec::new(),
+                    folded: Vec::new(),
+                },
+            },
+        );
+        assert_eq!(prefix.minimum_edit_distance, 0);
+        assert_eq!(
+            prefix.maximum_normalized_similarity,
+            CatalogNormalizedSimilarity {
+                matching_units: 40,
+                compared_units: 40,
+            }
+        );
 
         let independent_metrics = score_text(
             &ObservationForms {

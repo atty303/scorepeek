@@ -17,10 +17,13 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   operator-confirmed live title/artist pairs from retained QOIs and pass the complete three-episode
   recording simulation. Foreground evidence is bounded for hours-long use and selected result
   frames can retain paired exact raw BGRx for later transform replay. The layout also requires the
-  measured fixed `MUSIC SELECT` label and rejects retained startup evidence offline. A prospective
-  ordinary live run against the longest confirmed-present catalog title and artist, plus the exact
-  transform comparison command, remain next boundaries; no repeated play was needed to repair the
-  observed recognition failures.
+  measured fixed `MUSIC SELECT` label and rejects retained startup evidence offline. Retained
+  longest-title live evidence now grounds a screen-local music-select resolver: the clipped
+  one-line active row is primary prefix evidence, while the arbitrary central-title texture and
+  artist can only strongly corroborate or narrow a tie. Complete recording and active-catalog
+  replays accept the reviewed selections without weighted score fusion or threshold relaxation.
+  The exact transform comparison command remains a next boundary; no repeated play was needed to
+  repair the observed recognition failures.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -212,6 +215,14 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   least `6/7`, runner-up title edit margin at least two, and selected-candidate artist similarity at
   least `2/5`. Artist corroborates the title-selected song rather than contributing to a combined
   rank. Every rejection is a typed unknown with candidate evidence when available.
+- ADR 0046 adds the fail-closed music-select song resolver
+  `scorepeek-music-select-active-prefix-corroborated-v1`. It treats the clipped one-line active-list
+  title as primary catalog-prefix evidence, requiring at least five folded comparison-key units,
+  edit distance at most one, and similarity at least `6/7`. Central-title texture and artist observations remain
+  separate one-crop OCR evidence; only full-text matches within edit one and similarity `4/5` are
+  strong enough to conflict with a unique active candidate or intersect an active tie. Weak
+  supplemental OCR is ignored, and every empty, short, weak, conflicting, or ambiguous result is a
+  typed unknown. No weighted score is computed.
 - Recording profile v2 requires an exact expected `ScorepeekSongId` for every episode. The
   recognition simulation requires at least two exact expected song decisions and two exact
   expected `CLEAR TYPE` observations per episode, rejects a different accepted song immediately,
@@ -451,6 +462,20 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   `ca1ccebc69bb897cf23b47466aa4e1eeb95c8d1a2948b20ec1ad7d6aefa7c480` were complete. The accepted
   `ANEMONE` observations decoded its 36-unit artist exactly; `ABSOLUTE EVIL` remained accepted with
   title edit zero and artist edit one.
+- Replaying all 459 canonical frames under canonical layout SHA-256
+  `6b56454a3023d6d3900682396b77f41e8919cb95c1444c83be08c48cb1dacfa4` and recording profile
+  SHA-256 `fac16cc2a6c6ad2790ababb8c8a3d7ae990d8464156343b2642f9544d8424e11` completed all three
+  episodes. It submitted 113 field observations, retained 287,924 full-catalog candidate records,
+  and preserved the existing 22 exact result song and `CLEAR TYPE` matches. Music-select produced
+  72 accepts covering the four songs actually visible during selection and scrolling; 16 blank,
+  menu, difficulty, or garbled observations remained typed unknown. The complete 60-second-cadence
+  diagnostic manifest is `4d1c624aa0af5b75f8a0980e469d7b442d7c7240555a5ba2323aa018804ed90d`
+  and the complete recognition artifact manifest is
+  `409a9dc074fd418866c5cc3d51d8b4252aa75eb5109b1e1545cd1a3844139780`.
+- The same resolver and active 2,548-song catalog accept retained direct-live active rows
+  `MOVE! (We Keep It Movin')` and clipped `ASIAN VIRTUAL REALITIES (MELTING TOGETH` at prefix edit
+  distance zero with runner-up edit margins 15 and 25. Their imperfect central-title texture and
+  artist observations are below the strong-evidence threshold and do not participate.
 - Exact direct-live frame 314 has QOI SHA-256
   `ac478bc21cdca91caa5e052200bc58406685e593e59c3b7cfb590998c66239bd` and canonical pixel
   SHA-256 `e52c2f9466281e847b9ce46b3ac9da0e6a6bc1e150c072cc6a7b8da849372dbf`.
@@ -461,10 +486,13 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - The result-song resolver is grounded by two song identities and three result episodes from one
   recording. It has no title-disjoint holdout, broader clear-type/background coverage, calibrated
-  false-accept denominator, or release-accuracy authority. Music-select song resolution, charts,
-  digits, temporal result-event emission, and deduplication remain unimplemented.
-- A true live music-select screen has now passed the fixed-label predicate, but music-select field
-  acceptance remains unimplemented. Exact live result QOIs classify as result and reproduce their
+  false-accept denominator, or release-accuracy authority. The screen-local music-select resolver
+  is grounded by four recording-visible selections and two separate long-title live observations,
+  but stable-selection dwell, charts, digits, temporal event emission, and deduplication remain
+  unimplemented.
+- A true live music-select screen has passed the fixed-label predicate and retained values now pass
+  the screen-local song resolver, but stable-selection and event acceptance remain unimplemented.
+  Exact live result QOIs classify as result and reproduce their
   three confirmed title/artist strings under the revised regions offline. Recording evidence retains
   replay provenance and cannot fabricate the live generation/profile/normalizer owner. The partial
   live run exposed queue pressure and candidate output, but no development-machine observation is a
@@ -476,21 +504,23 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   compact-link, clippy, and workspace tests and the earlier complete-cadence path has retained
   Gamescope frames. The foreground-compacted retention has retained three live results and complete
   recording simulation, but its first three-result live run was partial under field-observer
-  backpressure. It has not yet completed a prospective run under the revised text regions.
+  backpressure. A later longest-title run completed its foreground recognition artifact under the
+  revised result text regions, but predated the current music-select crop and resolver.
 - Session provenance is explicit launcher/operator input, not an automatic observation of the
   Gamescope process. Process discovery or attestation is not implemented or claimed.
-- The identity-geometry 1920x1080 Wayland binding has controlled-marker evidence and admitted one
-  user-started INFINITAS foreground session. That run retained music-select and three result scenes,
-  but it was partial and used the superseded text regions; it is not a supported-profile gate.
+- The identity-geometry 1920x1080 Wayland binding has controlled-marker evidence and admitted
+  user-started INFINITAS foreground sessions. The first three-result run was partial and used the
+  superseded text regions; later runs do not yet constitute a supported-profile gate.
 - INFINITAS content/geometry, target play-machine output, 4K, FSR/NIS, Reshade, HDR, Portal, and OBS
   are separate uncalibrated domains. The development-machine profile is not a pixel reference.
 - OBS/obs-vkcapture coexistence, PipeWire daemon disconnect, stream loss distinct from node loss,
   source recreation, long soak, FD/thread/RSS convergence, frame age, CPU/memory/copy/GPU/power
   cost, game p99 frametime, and OBS lag remain unverified.
-- Offline music-select field submission, prospective fixed-label live music-select, three direct-live
-  result observations, and graceful stdin-requested shutdown are verified. The retained results
-  reproduce exact OCR offline under the revised regions, but a prospective revised-layout live run,
-  queue/artifact completion, accepted field gate, event daemon,
+- Offline current-layout music-select submission, prospective fixed-label live music-select, three
+  direct-live result observations, a later complete recognition artifact, and graceful
+  stdin-requested shutdown are verified. Retained longest-title values resolve under the current
+  code, but the current music-select crop and resolver have not yet run prospectively from live
+  pixels. Stable-selection acceptance, event daemon,
   target-host performance gate, and supported capture profile remain unverified. The corrected
   edge coordinates did not lower the predicate threshold. The earlier run has no paired raw source,
   so its exact source-to-canonical transform cannot be reconstructed; new foreground runs can
@@ -519,15 +549,15 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    reports exact/aggregate pixel differences without another capture session.
 2. Extend prospective retention evidence only if the bounded offline transform inspector exposes a
    missing source contract, export, or capacity invariant; do not broaden routine raw retention.
-3. At the next naturally occurring user-started INFINITAS session, select the new identity-geometry
-   1920x1080 Wayland binding and require exact admission plus live result title, artist, `CLEAR TYPE`,
-   song decision, complete diagnostic/recognition artifacts, and ordered scorepeek teardown before
-   defining event authority, target-host performance acceptance, or support. Do not request another
-   play merely to tune the repaired predicate.
+3. At the next naturally occurring user-started INFINITAS session, select the identity-geometry
+   1920x1080 Wayland binding and require exact admission plus current-layout live music-select
+   resolution, result title, artist, `CLEAR TYPE`, song decision, complete diagnostic/recognition
+   artifacts, and ordered scorepeek teardown before defining event authority, target-host
+   performance acceptance, or support. Do not request another play merely to tune recognition.
 
 Do not proceed to automatic calibration, Portal/OBS fallback, event emission, soak/performance, or
-support claims until transform replay and a prospective normal live recognition session have
-complete immutable evidence.
+support claims until transform replay and a prospective current-layout normal live recognition
+session have complete immutable evidence.
 
 ## Stable milestone map
 

@@ -791,6 +791,7 @@ fn write_live_session_event(
                 "screen": screen,
                 "fields": fields,
                 "result_song_resolution": observation.result_resolution(),
+                "music_select_song_resolution": observation.music_select_resolution(),
             })
         }
     };
