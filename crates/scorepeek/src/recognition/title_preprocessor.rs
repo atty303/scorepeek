@@ -197,7 +197,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn preprocessor_is_bgr_chw_normalized_and_right_padded() {
+    fn preprocessor_is_bgr_chw_normalized_at_full_width() {
         let roi = super::super::CanonicalLayout::load().unwrap().result.title;
         let mut rgb = vec![0_u8; roi.width as usize * roi.height as usize * 3];
         rgb.chunks_exact_mut(3)
@@ -208,8 +208,7 @@ mod tests {
         assert_eq!(tensor[0].to_bits(), (-1.0_f32).to_bits());
         assert!((tensor[plane] - (128.0 / 127.5 - 1.0)).abs() < f32::EPSILON);
         assert_eq!(tensor[plane * 2].to_bits(), 1.0_f32.to_bits());
-        assert_eq!(tensor[287].to_bits(), (-1.0_f32).to_bits());
-        assert_eq!(tensor[288].to_bits(), 0.0_f32.to_bits());
+        assert_eq!(tensor[319].to_bits(), (-1.0_f32).to_bits());
     }
 
     #[test]
@@ -226,13 +225,13 @@ mod tests {
             }
         }
         let tensor = preprocess_title_crop(&rgb, roi).unwrap();
-        let resized = resize_linear_rgb(&rgb, 600, 100, 288, 48);
-        assert_eq!(&resized[..6], &[25, 20, 13, 60, 35, 40]);
-        assert_eq!(&resized[resized.len() - 3..], &[229, 73, 159]);
+        let resized = resize_linear_rgb(&rgb, 600, 50, 320, 48);
+        assert_eq!(&resized[..6], &[8, 3, 6, 40, 17, 30]);
+        assert_eq!(&resized[resized.len() - 3..], &[76, 76, 128]);
         let bytes: Vec<_> = tensor.into_iter().flat_map(f32::to_le_bytes).collect();
         assert_eq!(
             super::super::encode_sha256(&bytes),
-            "978a4c52cb1a3644c2904f43ab5252e2fdfc76662eb9ce36ee88aed024649500"
+            "856899b96510ffc8450a78328bb2527b3cacd8c886a4c58a54f41e5ed73f867d"
         );
     }
 

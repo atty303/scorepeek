@@ -10,15 +10,17 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - M4 offline canonical-frame and recognition spike: **in progress**.
 - Current execution focus: the corpus recording has passed the value-bearing result-song
   recognition simulation for all three reviewed episodes, and a normal foreground Gamescope
-  session now reuses that post-canonical path. The retained Wayland result QOI proved that the two
-  result-panel edge crops were one row low; the measured coordinate correction classifies that exact
-  frame without lowering the threshold and passes the complete three-episode simulation. Foreground
-  evidence is now bounded for hours-long use and selected result frames can retain paired exact raw
-  BGRx for later transform replay. A later foreground run exposed startup frames that satisfied the
-  two palette-wide music-select predicates. The corrected layout now additionally requires the
-  measured fixed `MUSIC SELECT` label and rejects the retained startup evidence offline. A transform
-  comparison command and a prospective ordinary live result under the corrected layout remain next
-  boundaries; another play is not required to repair either observed recognition failure.
+  session now reuses that post-canonical path. Retained Wayland evidence repaired three independently
+  measurable layout errors without lowering thresholds or changing the OCR model: the two result
+  panel edges were one row low, the result title region contained excess blank height, and the
+  result artist region retained only its center. The revised text regions reproduce all three
+  operator-confirmed live title/artist pairs from retained QOIs and pass the complete three-episode
+  recording simulation. Foreground evidence is bounded for hours-long use and selected result
+  frames can retain paired exact raw BGRx for later transform replay. The layout also requires the
+  measured fixed `MUSIC SELECT` label and rejects retained startup evidence offline. A prospective
+  ordinary live run against the longest confirmed-present catalog title and artist, plus the exact
+  transform comparison command, remain next boundaries; no repeated play was needed to repair the
+  observed recognition failures.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -42,7 +44,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - Fixed contiguous RGB8 1920x1080 canonical-frame contract with one shared layout, fail-closed
   result/music-select crops, contextual title recognition, and selection-song context. Music-select
   presence requires the fixed label structure in addition to the existing header and level-column
-  palette evidence.
+  palette evidence. Result title and artist use measured text-tight regions; dependent context
+  layout bytes bind the same canonical layout digest.
 - PP-OCRv6 small native-dynamic is the selected title observer. Registered model bundles,
   preprocessing, CTC decoding, exact-first comparison keys, catalog search, and private replay
   tooling are digest-bound and reproducible. Custom training/export is deferred until integrated
@@ -298,6 +301,22 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   header and 41,572 colored level-column pixels but zero bright pixels in the newly measured fixed
   label ROI. All 45 retained canonical frames from that run are `unknown` under the revised layout;
   their largest fixed-label count is 814 against the new 4,000 minimum.
+- An operator-started 1920x1080 Wayland INFINITAS session admitted the identity-geometry binding as
+  capture generation 30 and shut down through the foreground stdin contract with exit status zero.
+  It normalized and inspected 1,287 frames, including 68 result and 191 structurally anchored
+  music-select frames. The recognition artifact retained 59 bounded result observations across the
+  three songs confirmed by the operator: `LIGHTNING STRIKES`, `Voo Doo Bamboleo`, and
+  `quick master (reform version)`. Its diagnostic recording was partial because 53 observations hit
+  the field-observer outstanding limit and 46 offers found the queue full; this is live
+  backpressure evidence, not a complete recognition gate.
+- Exact retained result QOIs at sequences 383, 561, and 1,187 reproduced the text-region failure
+  offline. With only the committed title region changed from `660,900,600,100` to
+  `660,950,600,50`, the registered dynamic OCR input widened from 320 to 576 and decoded all three
+  confirmed titles exactly. With only the artist region changed from `850,990,220,35` to
+  `650,990,650,40`, its input widened from 320 to 780 and decoded `BEMANI Sound Team "HuΣeR"`,
+  `SOUND HOLIC Vs. ZYTOKINE feat. CALEN`, and `youhei shimizu` exactly. Paired raw and canonical
+  evidence at sequence 1,187 decodes to byte-identical RGB24, so that retained sample does not
+  attribute the text failure to the normalizer.
 - `2026-08-24 14-54-57.mkv` is registered outside the repository under distinct
   Gamescope-vkCapture/OBS capture profile
   `f5f0c5a86b5edba6a8fd014ad85b3873be8f745c0b531d2b5b77f203770b046a` and canonical normalizer
@@ -424,6 +443,14 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   diagnostic manifest `c058a36f7113c0924dc607101937a96f2e4ff484db59ac7755077942ce3df3a4`,
   and recognition artifact `474020b991302fcc03e940cadecbf4dac476f09656d196868bf8e91dfeced99e`
   were complete.
+- Replaying all 459 canonical frames under result-text layout SHA-256
+  `316113f34b3844e2b53d010e1c529c70a9ba032d2d950b051ae5b302937119a5` again classified 24 result
+  frames and submitted 113 field frames. All three episodes completed with 22 exact song decisions
+  and 22 exact `CLEAR TYPE` matches. The field worker, diagnostic manifest
+  `46095e7c3419fb3a2b82d5a43a31333bdc56bc28d6c1df2f4c273e362400dc19`, and recognition artifact
+  `ca1ccebc69bb897cf23b47466aa4e1eeb95c8d1a2948b20ec1ad7d6aefa7c480` were complete. The accepted
+  `ANEMONE` observations decoded its 36-unit artist exactly; `ABSOLUTE EVIL` remained accepted with
+  title edit zero and artist edit one.
 - Exact direct-live frame 314 has QOI SHA-256
   `ac478bc21cdca91caa5e052200bc58406685e593e59c3b7cfb590998c66239bd` and canonical pixel
   SHA-256 `e52c2f9466281e847b9ce46b3ac9da0e6a6bc1e150c072cc6a7b8da849372dbf`.
@@ -436,32 +463,34 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   recording. It has no title-disjoint holdout, broader clear-type/background coverage, calibrated
   false-accept denominator, or release-accuracy authority. Music-select song resolution, charts,
   digits, temporal result-event emission, and deduplication remain unimplemented.
-- Earlier admitted Gamescope runs drove the superseded two-color music-select predicate; a true
-  live music-select frame has not yet been observed under the fixed-label predicate. An exact live
-  result QOI still classifies as result offline. Recording evidence retains
-  replay provenance and cannot fabricate the live generation/profile/normalizer owner. No
-  development-machine run has measured live inference-plus-scoring cost, queue behavior, or
-  candidate output as a target-host performance gate.
+- A true live music-select screen has now passed the fixed-label predicate, but music-select field
+  acceptance remains unimplemented. Exact live result QOIs classify as result and reproduce their
+  three confirmed title/artist strings under the revised regions offline. Recording evidence retains
+  replay provenance and cannot fabricate the live generation/profile/normalizer owner. The partial
+  live run exposed queue pressure and candidate output, but no development-machine observation is a
+  target-host inference-plus-scoring performance gate.
 - The bounded CLI gate is not an ordinary long-running application loop. Live queue-full or worker
   loss was not forced on the development machine; bounded unit tests cover queue drop, worker loss,
   generation rejection, opt-out, and diagnostic non-interference. Target-host cost remains unknown.
 - The live recognition-artifact worker is covered by exact-value/timing, create-only, unavailable,
   compact-link, clippy, and workspace tests and the earlier complete-cadence path has retained
-  Gamescope frames. The new foreground-compacted retention has complete recording simulation and
-  unit evidence but not yet a prospective live result.
+  Gamescope frames. The foreground-compacted retention has retained three live results and complete
+  recording simulation, but its first three-result live run was partial under field-observer
+  backpressure. It has not yet completed a prospective run under the revised text regions.
 - Session provenance is explicit launcher/operator input, not an automatic observation of the
   Gamescope process. Process discovery or attestation is not implemented or claimed.
-- The new identity-geometry 1920x1080 Wayland binding has controlled-marker evidence only. A
-  user-started INFINITAS session has not yet admitted it or demonstrated result recognition under
-  that binding.
+- The identity-geometry 1920x1080 Wayland binding has controlled-marker evidence and admitted one
+  user-started INFINITAS foreground session. That run retained music-select and three result scenes,
+  but it was partial and used the superseded text regions; it is not a supported-profile gate.
 - INFINITAS content/geometry, target play-machine output, 4K, FSR/NIS, Reshade, HDR, Portal, and OBS
   are separate uncalibrated domains. The development-machine profile is not a pixel reference.
 - OBS/obs-vkcapture coexistence, PipeWire daemon disconnect, stream loss distinct from node loss,
   source recreation, long soak, FD/thread/RSS convergence, frame age, CPU/memory/copy/GPU/power
   cost, game p99 frametime, and OBS lag remain unverified.
-- Offline music-select field submission and replay of the exact retained live result predicate are
-  verified, but prospective fixed-label live music-select, direct-live result OCR/resolution, graceful
-  stdin-requested shutdown, queue/artifact completion, accepted field gate, event daemon,
+- Offline music-select field submission, prospective fixed-label live music-select, three direct-live
+  result observations, and graceful stdin-requested shutdown are verified. The retained results
+  reproduce exact OCR offline under the revised regions, but a prospective revised-layout live run,
+  queue/artifact completion, accepted field gate, event daemon,
   target-host performance gate, and supported capture profile remain unverified. The corrected
   edge coordinates did not lower the predicate threshold. The earlier run has no paired raw source,
   so its exact source-to-canonical transform cannot be reconstructed; new foreground runs can

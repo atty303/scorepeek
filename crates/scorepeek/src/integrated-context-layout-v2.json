@@ -1,9 +1,9 @@
 {
   "schema": "scorepeek-integrated-context-layout-v2",
   "canonical_frame_contract_id": "scorepeek-canonical-rgb8-1920x1080-v1",
-  "canonical_layout_sha256": "2c9b2356be59bf86a48ebaa8878cf01206b9ea6ac18b212d973c861aed7ef6ac",
+  "canonical_layout_sha256": "316113f34b3844e2b53d010e1c529c70a9ba032d2d950b051ae5b302937119a5",
   "result": {
-    "artist": { "x": 850, "y": 990, "width": 220, "height": 35 }
+    "artist": { "x": 650, "y": 990, "width": 650, "height": 40 }
   },
   "music_select": {
     "artist": { "x": 140, "y": 410, "width": 820, "height": 55 },

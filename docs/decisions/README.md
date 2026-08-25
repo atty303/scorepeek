@@ -113,6 +113,9 @@ authoritative.
 - [ADR 0044: Require the fixed music-select label](0044-require-the-fixed-music-select-label.md)
   adds a measured fixed-label anchor to the two aggregate color predicates so startup palette
   animations fail closed instead of entering the music-select field path.
+- [ADR 0045: Use measured result text regions](0045-use-measured-result-text-regions.md)
+  replaces the truncated result artist region and the low-resolution result title region from
+  retained foreground evidence while keeping the OCR and acceptance contracts unchanged.
 
 ## Historical
 

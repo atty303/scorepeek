@@ -2035,9 +2035,18 @@ mod tests {
             layout.result.title,
             Roi {
                 x: 660,
-                y: 900,
+                y: 950,
                 width: 600,
-                height: 100
+                height: 50
+            }
+        );
+        assert_eq!(
+            layout.result.artist,
+            Roi {
+                x: 650,
+                y: 990,
+                width: 650,
+                height: 40
             }
         );
         assert_eq!(CanonicalLayout::sha256().len(), 64);
@@ -2373,7 +2382,7 @@ mod tests {
         assert_eq!(artifact.crops.len(), 7);
         assert_eq!(artifact.crops[0].field, "title");
         assert_eq!(artifact.crops[0].roi, layout.result.title);
-        assert_eq!(artifact.crops[0].bytes, 600 * 100 * 3 + 15);
+        assert_eq!(artifact.crops[0].bytes, 600 * 50 * 3 + 14);
         assert_eq!(artifact.crops[0].file_sha256.len(), 64);
         assert_eq!(artifact.crops[0].pixel_sha256.len(), 64);
         assert!(
