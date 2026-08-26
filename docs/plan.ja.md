@@ -467,7 +467,7 @@ create-onlyで発行する。これはsetup時にoperatorが要求するguided c
 自動測定、自動profile切替、threshold緩和またはfallbackではない。4K、FSR/NIS、HDR、Reshade、異なる
 Gamescope version/configはそれぞれ別profileとする。
 
-通常操作は`scorepeek run --profile NAME`とし、profile省略はenabled profileが一つだけの場合に限る。
+通常操作は`scorepeek run --profile NAME`とし、profile省略はlocal profileが一つだけの場合に限る。
 scorepeekはoperatorが起動したGamescopeへattachし、INFINITASまたは通常Gamescopeを起動、signal、終了、
 restartしない。scorepeekの停止はscorepeek-owned receiver、provider、field worker、diagnostic、artifact
 だけを順序付きで終了する。stable event authorityの完成を待たず、現在のprovisional recognitionを通常
@@ -491,8 +491,9 @@ delivery checkpointは次の順序とする。
 
 1. cargo-dist 0.32.0で`scorepeek`だけのLinux x86-64 archiveとSHA-256 checksumをlocal生成し、private
    resourceを別途転送したclean compatible Bazzite環境でrepository checkoutなしにverify/loadできることを確認する。
-2. scorepeek-owned markerをguided setupへ含め、target 4K Wayland profileをauthorして独立marker replayを通す。
-3. profile名だけのroutine run、status、ADR 0043の既存retention、既存bytesのfreeze/export、
+2. `scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...`、`scorepeek profile list`、
+   profile名だけのroutine runを実装し、target 4K Wayland profileをauthorしてmarker validationを通す。
+3. status、ADR 0043の既存retention、既存bytesのfreeze/export、
    scorepeek-only ordered teardownを通す。
 4. 既存retentionが選択したevidenceをexportし、development replay、修正、replacement
    archive/resource、target verifyまでを追加playなしで一巡させる。

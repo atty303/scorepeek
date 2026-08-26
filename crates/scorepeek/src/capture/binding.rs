@@ -7,6 +7,7 @@ use super::{
 };
 
 const BINDING_SCHEMA: &str = "scorepeek-gamescope-profile-binding-v1";
+const LOCAL_BINDING_SCHEMA: &str = "scorepeek-gamescope-profile-binding-v2";
 const PROFILE_SCHEMA: &str = "scorepeek-gamescope-capture-profile-v1";
 const NORMALIZER_SCHEMA: &str = "scorepeek-fractional-linear-normalizer-v1";
 const CANONICAL_FRAME_CONTRACT_ID: &str = "scorepeek-canonical-rgb8-1920x1080-v1";
@@ -17,6 +18,8 @@ const BGRX_BYTES_PER_PIXEL: u64 = 4;
 const MAX_TOKEN_BYTES: usize = 128;
 const MAX_WIDTH: u32 = 7_680;
 const MAX_HEIGHT: u32 = 4_320;
+const MAX_GAMESCOPE_ARGUMENTS: usize = 128;
+const MAX_GAMESCOPE_ARGUMENT_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GamescopeProfileBindingError {
@@ -145,6 +148,7 @@ pub struct GamescopeProfileBinding {
     scaling_configuration: ScalingConfiguration,
     observed: ObservedContract,
     geometry: FractionalLinearGeometry,
+    gamescope_arguments: Option<Vec<String>>,
 }
 
 impl GamescopeProfileBinding {
@@ -155,6 +159,25 @@ impl GamescopeProfileBinding {
     /// diagnostic recording occurs here.
     pub fn author(
         input: GamescopeProfileBindingAuthoringInput,
+    ) -> Result<AuthoredGamescopeProfileBinding, GamescopeProfileBindingError> {
+        Self::author_inner(input, None)
+    }
+
+    /// Authors a machine-local binding that also retains the exact Gamescope argument vector.
+    ///
+    /// # Errors
+    /// Returns the standard binding validation errors, including `InvalidProfile` when the
+    /// argument vector exceeds its bounded local configuration contract.
+    pub fn author_local(
+        input: GamescopeProfileBindingAuthoringInput,
+        gamescope_arguments: Vec<String>,
+    ) -> Result<AuthoredGamescopeProfileBinding, GamescopeProfileBindingError> {
+        Self::author_inner(input, Some(gamescope_arguments))
+    }
+
+    fn author_inner(
+        input: GamescopeProfileBindingAuthoringInput,
+        gamescope_arguments: Option<Vec<String>>,
     ) -> Result<AuthoredGamescopeProfileBinding, GamescopeProfileBindingError> {
         let scaler = parse_scaler(&input.scaler)?;
         let filter = parse_filter(&input.filter)?;
@@ -188,7 +211,11 @@ impl GamescopeProfileBinding {
         let capture_profile_sha256 = sha256(&capture_profile_bytes);
         let source = FractionalRectangleArtifact::from_rectangle(input.geometry);
         let artifact = BindingArtifact {
-            schema: BINDING_SCHEMA.to_owned(),
+            schema: if gamescope_arguments.is_some() {
+                LOCAL_BINDING_SCHEMA.to_owned()
+            } else {
+                BINDING_SCHEMA.to_owned()
+            },
             capture_profile,
             normalizer: NormalizerArtifact {
                 schema: NORMALIZER_SCHEMA.to_owned(),
@@ -197,6 +224,7 @@ impl GamescopeProfileBinding {
                 implementation: NORMALIZER_IMPLEMENTATION.to_owned(),
                 source,
             },
+            gamescope_arguments,
         };
         artifact.validate()?;
         let bytes =
@@ -262,6 +290,7 @@ impl GamescopeProfileBinding {
             scaling_configuration: artifact.capture_profile.provider.scaling_configuration,
             observed: artifact.capture_profile.observed,
             geometry,
+            gamescope_arguments: artifact.gamescope_arguments,
         })
     }
 
@@ -383,6 +412,33 @@ impl GamescopeProfileBinding {
     pub const fn output_height(&self) -> u32 {
         self.scaling_configuration.output_height
     }
+
+    #[must_use]
+    pub const fn scaler(&self) -> &'static str {
+        match self.scaling_configuration.scaler {
+            GamescopeScaler::Auto => "auto",
+            GamescopeScaler::Integer => "integer",
+            GamescopeScaler::Fit => "fit",
+            GamescopeScaler::Fill => "fill",
+            GamescopeScaler::Stretch => "stretch",
+        }
+    }
+
+    #[must_use]
+    pub const fn filter(&self) -> &'static str {
+        match self.scaling_configuration.filter {
+            GamescopeFilter::Linear => "linear",
+            GamescopeFilter::Nearest => "nearest",
+            GamescopeFilter::Fsr => "fsr",
+            GamescopeFilter::Nis => "nis",
+            GamescopeFilter::Pixel => "pixel",
+        }
+    }
+
+    #[must_use]
+    pub fn gamescope_arguments(&self) -> Option<&[String]> {
+        self.gamescope_arguments.as_deref()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -391,16 +447,35 @@ struct BindingArtifact {
     schema: String,
     capture_profile: CaptureProfileArtifact,
     normalizer: NormalizerArtifact,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gamescope_arguments: Option<Vec<String>>,
 }
 
 impl BindingArtifact {
     fn validate(&self) -> Result<(), GamescopeProfileBindingError> {
-        if self.schema != BINDING_SCHEMA {
+        if self.schema != BINDING_SCHEMA && self.schema != LOCAL_BINDING_SCHEMA {
             return Err(GamescopeProfileBindingError::UnsupportedSchema);
+        }
+        match (&*self.schema, &self.gamescope_arguments) {
+            (BINDING_SCHEMA, None) => {}
+            (LOCAL_BINDING_SCHEMA, Some(arguments)) if valid_gamescope_arguments(arguments) => {}
+            _ => return Err(GamescopeProfileBindingError::InvalidProfile),
         }
         self.capture_profile.validate()?;
         self.normalizer.validate()
     }
+}
+
+fn valid_gamescope_arguments(arguments: &[String]) -> bool {
+    arguments.len() <= MAX_GAMESCOPE_ARGUMENTS
+        && arguments
+            .iter()
+            .try_fold(0usize, |total, argument| {
+                total.checked_add(argument.len()).filter(|next| {
+                    *next <= MAX_GAMESCOPE_ARGUMENT_BYTES && !argument.as_bytes().contains(&0)
+                })
+            })
+            .is_some()
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -760,6 +835,7 @@ mod tests {
                     },
                 },
             },
+            gamescope_arguments: None,
         }
     }
 
@@ -806,6 +882,46 @@ mod tests {
                 10_224,
             ),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn local_binding_retains_exact_bounded_gamescope_arguments() {
+        let authored = GamescopeProfileBinding::author_local(
+            GamescopeProfileBindingAuthoringInput {
+                calibration_evidence_sha256: "1".repeat(64),
+                environment_id: "local".to_owned(),
+                gamescope_version: "3.16.19".to_owned(),
+                backend_id: "wayland".to_owned(),
+                output_width: 2_556,
+                output_height: 1_428,
+                nested_width: 1_920,
+                nested_height: 1_080,
+                nested_refresh_hz: 120,
+                scaler: "auto".to_owned(),
+                filter: "linear".to_owned(),
+                observed_video_contract: video_contract(),
+                memory_type: UncalibratedMemoryType::MemoryFileDescriptor,
+                stride: 10_224,
+                geometry: FractionalRectangle::new(
+                    RationalCoordinate::new(26, 3).unwrap(),
+                    RationalCoordinate::new(0, 1).unwrap(),
+                    RationalCoordinate::new(7_616, 3).unwrap(),
+                    RationalCoordinate::new(1_428, 1).unwrap(),
+                ),
+            },
+            vec![
+                "--backend".to_owned(),
+                "wayland".to_owned(),
+                "--hdr-enabled".to_owned(),
+            ],
+        )
+        .unwrap();
+        let binding =
+            GamescopeProfileBinding::parse(&authored.bytes, &authored.artifact_sha256).unwrap();
+        assert_eq!(
+            binding.gamescope_arguments().unwrap(),
+            ["--backend", "wayland", "--hdr-enabled"]
         );
     }
 

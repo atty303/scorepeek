@@ -37,6 +37,7 @@ unicode-normalization = "0.1.25"
 ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
 url = "2.5.8"
 uuid = { version = "1.24.1", features = ["serde", "v5"] }
+x11rb = { version = "0.13.2", default-features = false, features = ["image"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

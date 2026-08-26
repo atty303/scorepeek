@@ -1,3 +1,4 @@
+mod calibration_marker;
 mod canonical_source;
 mod capture_calibration;
 mod capture_live;
@@ -8,6 +9,7 @@ pub mod diagnostic_replay;
 pub mod diagnostic_worker;
 mod inventory;
 mod live_control;
+mod local_profiles;
 mod recognition_artifact;
 pub mod recognition_live;
 mod recording_simulation;
@@ -16,7 +18,7 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{self, BufWriter, Write as _};
+use std::io::{self, BufWriter, Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -81,9 +83,11 @@ fn parse_global_model_bundle(args: &[OsString]) -> Result<(Option<&Path>, &[OsSt
 
 #[allow(clippy::too_many_lines)]
 fn run_command(args: &[OsString], bundle: &Path) -> Result<(), String> {
-    if let Some(result) = try_diagnostic_control(args)
+    if let Some(result) = local_profiles::try_command(args, bundle)
+        .or_else(|| try_diagnostic_control(args))
         .or_else(|| try_diagnostic_replay(args))
         .or_else(|| try_recording_simulation(args, bundle))
+        .or_else(|| try_routine_live_session(args, bundle))
         .or_else(|| try_live_session(args, bundle))
         .or_else(|| try_capture_commands(args, bundle))
         .or_else(|| try_provisional_title_candidates(args))
@@ -528,9 +532,99 @@ const LIVE_SESSION_FLAGS: &[&str] = &[
     "--recognition-artifact",
 ];
 
+fn try_routine_live_session(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
+    let (profile, recording) = match args {
+        [run] if run == "run" => (None, "enabled"),
+        [run, no_recording] if run == "run" && no_recording == "--no-recording" => {
+            (None, "disabled")
+        }
+        [run, profile_flag, profile] if run == "run" && profile_flag == "--profile" => {
+            (Some(profile.as_os_str()), "enabled")
+        }
+        [run, profile_flag, profile, no_recording]
+            if run == "run" && profile_flag == "--profile" && no_recording == "--no-recording" =>
+        {
+            (Some(profile.as_os_str()), "disabled")
+        }
+        [run, no_recording, profile_flag, profile]
+            if run == "run" && no_recording == "--no-recording" && profile_flag == "--profile" =>
+        {
+            (Some(profile.as_os_str()), "disabled")
+        }
+        _ => return None,
+    };
+    Some(run_routine_live_session(profile, recording, bundle))
+}
+
+fn run_routine_live_session(
+    profile_name: Option<&OsStr>,
+    recording: &str,
+    bundle: &Path,
+) -> Result<(), String> {
+    let selected = local_profiles::select_for_run(profile_name)?;
+    let installed_version = local_profiles::current_gamescope_version()?;
+    if installed_version != selected.binding.gamescope_version() {
+        return Err(format!(
+            "installed Gamescope version {installed_version:?} does not match profile version {:?}; create a new profile",
+            selected.binding.gamescope_version()
+        ));
+    }
+    let (catalog_root, _) = catalog_paths(
+        env::var_os("XDG_DATA_HOME").as_deref(),
+        env::var_os("XDG_CACHE_HOME").as_deref(),
+        env::var_os("HOME").as_deref(),
+    )?;
+    let active = CatalogStore::new(&catalog_root)
+        .load_active()
+        .map_err(|error| format!("active catalog load failed: {error}"))?
+        .ok_or_else(|| {
+            format!(
+                "catalog store {} has no active catalog; transfer or sync the catalog first",
+                catalog_root.display()
+            )
+        })?;
+    let elapsed = std::time::SystemTime::UNIX_EPOCH
+        .elapsed()
+        .map_err(|_| "system clock is before the Unix epoch".to_owned())?;
+    let run_id = format!(
+        "run-{}-{}-{}",
+        elapsed.as_secs(),
+        elapsed.subsec_nanos(),
+        std::process::id()
+    );
+    let recording_enabled = recording == "enabled";
+    let state = local_profiles::state_paths(&run_id, recording_enabled)?;
+    let build_sha256 = current_executable_sha256()?;
+    let values = vec![
+        selected.path.into_os_string(),
+        selected.digest.into(),
+        "1".into(),
+        state.diagnostic_root.clone().into_os_string(),
+        catalog_root.into_os_string(),
+        run_id.into(),
+        build_sha256.into(),
+        recognition::CanonicalLayout::sha256().into(),
+        active.digest.into(),
+        recording.into(),
+        selected.binding.environment_id().into(),
+        selected.binding.gamescope_version().into(),
+        selected.binding.backend_id().into(),
+        selected.binding.output_width().to_string().into(),
+        selected.binding.output_height().to_string().into(),
+        selected.binding.nested_width().to_string().into(),
+        selected.binding.nested_height().to_string().into(),
+        selected.binding.nested_refresh_hz().to_string().into(),
+        selected.binding.scaler().into(),
+        selected.binding.filter().into(),
+        state.recognition_root.clone().into_os_string(),
+    ];
+    let references = values.iter().map(OsString::as_os_str).collect::<Vec<_>>();
+    run_live_session(&references, bundle, recording_enabled)
+}
+
 fn try_live_session(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
     let values = command_flag_values(args, "run", "gamescope", LIVE_SESSION_FLAGS)?;
-    Some(run_live_session(&values, bundle))
+    Some(run_live_session(&values, bundle, true))
 }
 
 fn try_capture_result_recognition(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
@@ -603,7 +697,11 @@ fn command_flag_values<'a>(
     Some(values)
 }
 
-fn run_live_session(values: &[&OsStr], bundle_root: &Path) -> Result<(), String> {
+fn run_live_session(
+    values: &[&OsStr],
+    bundle_root: &Path,
+    persist_recognition: bool,
+) -> Result<(), String> {
     let [
         binding,
         binding_digest,
@@ -685,7 +783,10 @@ fn run_live_session(values: &[&OsStr], bundle_root: &Path) -> Result<(), String>
             },
             catalog_root: Path::new(catalog_root),
             bundle_root,
-            recognition_artifact_root: Some(Path::new(recognition_artifact_root)),
+            recognition_artifact_root: optional_recognition_root(
+                persist_recognition,
+                Path::new(recognition_artifact_root),
+            ),
             recognition_artifact_retention:
                 recognition_artifact::RecognitionArtifactRetention::ForegroundCompactedV1,
         },
@@ -699,6 +800,32 @@ fn run_live_session(values: &[&OsStr], bundle_root: &Path) -> Result<(), String>
             .unwrap_or("Gamescope live recognition session failed")
             .to_owned()
     })
+}
+
+fn optional_recognition_root(enabled: bool, root: &Path) -> Option<&Path> {
+    enabled.then_some(root)
+}
+
+fn current_executable_sha256() -> Result<String, String> {
+    let mut file = File::open("/proc/self/exe")
+        .map_err(|error| format!("current scorepeek executable could not be opened: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 16 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("current scorepeek executable could not be read: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let digest = hasher.finalize();
+    let mut encoded = String::with_capacity(64);
+    for byte in digest {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    Ok(encoded)
 }
 
 #[derive(Serialize)]
@@ -2760,7 +2887,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256 --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition inspect-diagnostic-qoi --frame FILE --frame-sha256 SHA256\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
+        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...\n  scorepeek setup gamescope --profile NAME [--no-recording] -- GAMESCOPE_ARGS...\n  scorepeek profile list\n  scorepeek run [--profile NAME] [--no-recording]\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256 --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition inspect-diagnostic-qoi --frame FILE --frame-sha256 SHA256\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
         env!("CARGO_PKG_VERSION")
     );
     println!(
@@ -2787,8 +2914,9 @@ fn print_usage() {
 mod tests {
     use super::{
         LIVE_SESSION_FLAGS, PrivatePublicationPoint, catalog_paths, catalog_sync_error,
-        command_flag_values, prepare_live_diagnostic_root, publish_private_file,
-        publish_private_file_with, run_with_model_initializer, write_live_session_event,
+        command_flag_values, optional_recognition_root, prepare_live_diagnostic_root,
+        publish_private_file, publish_private_file_with, run_with_model_initializer,
+        write_live_session_event,
     };
     use crate::capture_live::GamescopeLiveSessionEvent;
     use crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation;
@@ -2804,6 +2932,13 @@ mod tests {
     use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn recording_opt_out_disables_the_recognition_artifact_root() {
+        let root = Path::new("/tmp/recognition");
+        assert_eq!(optional_recognition_root(false, root), None);
+        assert_eq!(optional_recognition_root(true, root), Some(root));
+    }
 
     #[test]
     fn help_version_and_doctor_skip_model_initialization() {

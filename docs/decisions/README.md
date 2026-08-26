@@ -137,6 +137,10 @@ authoritative.
   supersedes the runtime auto-download prohibition in ADR 0003/0006, the caller-supplied model
   location in ADR 0031, and ADR 0049's manual model-transfer requirement. Catalogs remain operator
   data; the fixed official small model is an automatically reacquired XDG cache.
+- [ADR 0051: Guide local Gamescope profile setup](0051-guide-local-gamescope-profile-setup.md)
+  replaces manual capture-binding transfer and routine binding/provenance arguments with a
+  scorepeek-owned marker setup, one canonical machine-local profile file, profile listing, and a
+  profile-selected ordinary run. Target-machine qualification remains separate.
 
 ## Historical
 

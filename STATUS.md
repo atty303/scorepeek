@@ -29,6 +29,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   cargo-dist Linux x86-64 archive and checksum while keeping the catalog outside the archive.
   ADR 0050 classifies the fixed Apache-2.0 PP-OCRv6-small model as a disposable XDG cache: every
   non-information CLI invocation ensures it globally, while help, version and doctor stay offline.
+  ADR 0051 adds the ordinary capture-profile surface: guided setup launches a dedicated
+  scorepeek-owned Gamescope marker, publishes one create-only machine-local canonical binding,
+  lists local profiles, and lets `scorepeek run` select a profile by name while reusing the existing
+  foreground diagnostic and provisional-recognition path. Real target calibration remains
+  unverified.
   The archive is now the first cross-machine delivery unit; an operator-owned 4K Bazzite machine
   remains the first consumer acceptance target. No target transfer or 4K profile is implemented at
   this checkpoint.
@@ -563,6 +568,17 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   size/digest checks, a writer lock, durable atomic publication and the existing 8-generation,
   192-MiB-object and 512-MiB-total limits. A completed cache avoids network; the fixed loader still
   verifies bytes when used. Catalogs remain separately managed under XDG data.
+- `scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...` authors binding v2 from a
+  deterministic RGB8 marker and production fractional normalizer, retaining the exact bounded
+  Gamescope argument vector under XDG config. `scorepeek profile list` and profile-selected
+  `scorepeek run` remove binding paths, digests and repeated provenance from ordinary operation.
+  Existing raw commands remain developer gates.
+  Each ordinary run uses a distinct create-only recognition artifact directory; `--no-recording`
+  disables both diagnostic and recognition artifact persistence. Diagnostic resource provenance
+  uses the executing binary inode's SHA-256 without changing the CLI version or archive identity.
+  One ordinary-run lock serializes admission to the XDG recognition store, which rejects a new
+  recorded run at eight generations or when its maximum reservation would exceed 1 GiB; it never
+  deletes an existing run automatically.
 
 ## Approval and authority boundaries
 
@@ -583,14 +599,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    offline cache reuse without a repository checkout, mise, Rust, or Python in the game-session
    path. This deployment, real upstream download and target-machine verification remain a separate
    operator-authority boundary.
-2. Add explicit guided Gamescope calibration around a scorepeek-owned known marker, then use it on
-   the operator's 4K Bazzite machine to author and independently verify one exact Wayland profile.
-   This target-machine mutation and deployment remain separate operator-authority boundaries.
-3. Add the profile-selected routine entrypoint using ADR 0043's existing bounded retention and
-   existing-bytes-only freeze/export surface. Keep pre-admission attempts separate from ADR 0025
-   binding-owned Diagnostic Runs, then complete one target-to-development replay/update
-   round trip during natural play. Add new tail, marker or ledger machinery only if retained target
-   evidence demonstrates a concrete gap.
+2. On the operator's 4K Bazzite machine, use guided setup to author and independently verify one
+   exact Wayland profile, then exercise the profile-selected routine entrypoint. This target-machine
+   mutation and deployment remain separate operator-authority boundaries.
+3. Use ADR 0043's existing bounded retention and existing-bytes-only freeze/export surface to
+   complete one target-to-development replay/update round trip during natural play. Add new tail,
+   marker or ledger machinery only if retained target evidence demonstrates a concrete gap.
    Scorepeek must never start, signal, terminate, or restart INFINITAS or the ordinary Gamescope
    process.
 

@@ -8,9 +8,10 @@ use std::time::Duration;
 use std::time::SystemTime;
 
 use scorepeek::capture::{
-    CaptureDiagnosticFact, CaptureDiagnosticOperation, CaptureDiagnosticSink,
-    CaptureDiagnosticStatus, CaptureErrorType, CaptureSourceKind, FractionalRectangle,
-    GamescopeProfileBinding, GamescopeProfileBindingAuthoringInput, GamescopeSessionProvenance,
+    AuthoredGamescopeProfileBinding, CaptureDiagnosticFact, CaptureDiagnosticOperation,
+    CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureErrorType, CaptureSourceKind,
+    FractionalLinearGeometry, FractionalRectangle, GamescopeProfileBinding,
+    GamescopeProfileBindingAuthoringInput, GamescopeSessionProvenance,
     GamescopeSessionProvenanceInput, RationalCoordinate, UncalibratedFrame, UncalibratedMemoryType,
     UncalibratedVideoContract, acquire_gamescope_source, start_uncalibrated_gamescope_receiver,
 };
@@ -29,6 +30,179 @@ const MANIFEST_STAGING_FILENAME: &str = ".manifest.json.staging";
 const OWNERSHIP_FILENAME: &str = ".scorepeek-uncalibrated-calibration-v1";
 const OWNERSHIP_BYTES: &[u8] = b"scorepeek-owned-uncalibrated-calibration-v1\n";
 static BINDING_STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+pub struct GuidedGamescopeProfileInput<'a> {
+    pub gamescope_arguments: Vec<String>,
+    pub gamescope_version: String,
+    pub backend_id: String,
+    pub nested_width: u32,
+    pub nested_height: u32,
+    pub nested_refresh_hz: u32,
+    pub scaler: String,
+    pub filter: String,
+    pub expected_marker_rgb8: &'a [u8],
+}
+
+pub struct GuidedGamescopeProfile {
+    pub binding: AuthoredGamescopeProfileBinding,
+    pub exact_pixel_count: u64,
+    pub mean_absolute_error: f64,
+}
+
+pub fn capture_guided_gamescope_profile(
+    input: GuidedGamescopeProfileInput<'_>,
+) -> Result<GuidedGamescopeProfile, String> {
+    let mut sink = BoundedDiagnosticSink::default();
+    let lease = acquire_gamescope_source(DISCOVERY_TIMEOUT, &mut sink).map_err(|error| {
+        format!(
+            "Gamescope source acquisition failed: {:?}",
+            error.error_type()
+        )
+    })?;
+    let mut receiver =
+        start_uncalibrated_gamescope_receiver(lease, RECEIVER_START_TIMEOUT, &mut sink)
+            .map_err(|error| format!("Gamescope receiver failed: {:?}", error.error_type()))?;
+    let frame = receiver.take_latest_frame();
+    receiver.shutdown(&mut sink).map_err(|error| {
+        format!(
+            "Gamescope receiver shutdown failed: {:?}",
+            error.error_type()
+        )
+    })?;
+    let frame = frame.ok_or_else(|| "Gamescope marker frame was unavailable".to_owned())?;
+    let contract = frame.contract();
+    let geometry = aspect_fit_geometry(contract.width, contract.height)?;
+    let normalized = FractionalLinearGeometry::new(contract.width, contract.height, geometry)
+        .map_err(|_| "Gamescope marker geometry was invalid".to_owned())?
+        .normalize(&frame)
+        .map_err(|_| "Gamescope marker normalization failed".to_owned())?;
+    let (exact_pixel_count, mean_absolute_error) =
+        validate_marker(normalized.pixels(), input.expected_marker_rgb8)?;
+    let calibration_evidence_sha256 = encode_sha256(frame.bytes());
+    let binding = GamescopeProfileBinding::author_local(
+        GamescopeProfileBindingAuthoringInput {
+            calibration_evidence_sha256,
+            environment_id: "local".to_owned(),
+            gamescope_version: input.gamescope_version,
+            backend_id: input.backend_id,
+            output_width: contract.width,
+            output_height: contract.height,
+            nested_width: input.nested_width,
+            nested_height: input.nested_height,
+            nested_refresh_hz: input.nested_refresh_hz,
+            scaler: input.scaler,
+            filter: input.filter,
+            observed_video_contract: contract,
+            memory_type: frame.memory_type(),
+            stride: frame.stride(),
+            geometry,
+        },
+        input.gamescope_arguments,
+    )
+    .map_err(|error| format!("Gamescope profile binding was invalid: {error:?}"))?;
+    Ok(GuidedGamescopeProfile {
+        binding,
+        exact_pixel_count,
+        mean_absolute_error,
+    })
+}
+
+fn aspect_fit_geometry(width: u32, height: u32) -> Result<FractionalRectangle, String> {
+    let wide = u64::from(width) * 1_080 >= u64::from(height) * 1_920;
+    let coordinate = |numerator, denominator| {
+        let divisor = greatest_common_divisor(numerator, denominator);
+        RationalCoordinate::new(numerator / divisor, denominator / divisor)
+            .map_err(|_| "Gamescope marker geometry was invalid".to_owned())
+    };
+    if wide {
+        let content_numerator = height
+            .checked_mul(1_920)
+            .ok_or_else(|| "Gamescope marker geometry overflowed".to_owned())?;
+        let outer_numerator = width
+            .checked_mul(1_080)
+            .ok_or_else(|| "Gamescope marker geometry overflowed".to_owned())?;
+        let left_numerator = outer_numerator
+            .checked_sub(content_numerator)
+            .ok_or_else(|| "Gamescope marker geometry was invalid".to_owned())?;
+        Ok(FractionalRectangle::new(
+            coordinate(left_numerator, 2_160)?,
+            coordinate(0, 1)?,
+            coordinate(content_numerator, 1_080)?,
+            coordinate(height, 1)?,
+        ))
+    } else {
+        let content_numerator = width
+            .checked_mul(1_080)
+            .ok_or_else(|| "Gamescope marker geometry overflowed".to_owned())?;
+        let outer_numerator = height
+            .checked_mul(1_920)
+            .ok_or_else(|| "Gamescope marker geometry overflowed".to_owned())?;
+        let top_numerator = outer_numerator
+            .checked_sub(content_numerator)
+            .ok_or_else(|| "Gamescope marker geometry was invalid".to_owned())?;
+        Ok(FractionalRectangle::new(
+            coordinate(0, 1)?,
+            coordinate(top_numerator, 3_840)?,
+            coordinate(width, 1)?,
+            coordinate(content_numerator, 1_920)?,
+        ))
+    }
+}
+
+fn greatest_common_divisor(mut left: u32, mut right: u32) -> u32 {
+    while right != 0 {
+        (left, right) = (right, left % right);
+    }
+    left.max(1)
+}
+
+fn validate_marker(actual: &[u8], expected: &[u8]) -> Result<(u64, f64), String> {
+    if actual.len() != expected.len() || actual.len() != 1_920 * 1_080 * 3 {
+        return Err("Gamescope marker byte length did not match".to_owned());
+    }
+    let mut exact_pixels = 0u64;
+    let mut absolute_error = 0u32;
+    for (actual_pixel, expected_pixel) in actual.chunks_exact(3).zip(expected.chunks_exact(3)) {
+        if actual_pixel == expected_pixel {
+            exact_pixels += 1;
+        }
+        for (&actual, &expected) in actual_pixel.iter().zip(expected_pixel) {
+            absolute_error += u32::from(actual.abs_diff(expected));
+        }
+    }
+    let total_pixels = 1_920u32 * 1_080;
+    let mean_absolute_error = f64::from(absolute_error) / f64::from(total_pixels * 3);
+    if exact_pixels * 100 < u64::from(total_pixels) * 99 || mean_absolute_error > 0.5 {
+        return Err(format!(
+            "Gamescope marker comparison failed: exact_pixels={exact_pixels}, mean_absolute_error={mean_absolute_error:.6}"
+        ));
+    }
+    for (left, top) in [
+        (0, 0),
+        (1_920 - 32, 0),
+        (0, 1_080 - 32),
+        (1_920 - 32, 1_080 - 32),
+        (1_920 / 2 - 16, 1_080 / 2 - 16),
+    ] as [(u32, u32); 5]
+    {
+        let mut exact = 0u32;
+        for y in top..top + 32 {
+            for x in left..left + 32 {
+                let offset =
+                    usize::try_from((y * 1_920 + x) * 3).expect("marker offset fits usize");
+                if actual[offset..offset + 3] == expected[offset..offset + 3] {
+                    exact += 1;
+                }
+            }
+        }
+        if exact < 1_024 * 99 / 100 {
+            return Err(format!(
+                "Gamescope marker fiducial at ({left},{top}) failed: exact_pixels={exact}"
+            ));
+        }
+    }
+    Ok((exact_pixels, mean_absolute_error))
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1261,10 +1435,11 @@ mod tests {
         BindingAuthorErrorType, BindingPublicationPoint, CalibrationFrameArtifact, FRAME_FILENAME,
         GamescopeCalibrationSampleManifest, GamescopeCalibrationSessionSampleManifest,
         MANIFEST_FILENAME, MANIFEST_STAGING_FILENAME, OWNERSHIP_BYTES, OWNERSHIP_FILENAME,
-        PublicationPoint, StoredCalibrationSessionManifest, author_gamescope_profile_binding_inner,
-        cleanup_binding_publication, create_binding_staging, encode_sha256,
-        parse_fractional_geometry, parse_scaling_configuration, parse_session_configuration,
-        publish_binding_with, publish_sample_with, resolve_output,
+        PublicationPoint, StoredCalibrationSessionManifest, aspect_fit_geometry,
+        author_gamescope_profile_binding_inner, cleanup_binding_publication,
+        create_binding_staging, encode_sha256, parse_fractional_geometry,
+        parse_scaling_configuration, parse_session_configuration, publish_binding_with,
+        publish_sample_with, resolve_output,
     };
 
     fn tiny_video_contract() -> UncalibratedVideoContract {
@@ -1283,6 +1458,36 @@ mod tests {
             transfer_function: 0,
             color_primaries: 0,
         }
+    }
+
+    #[test]
+    fn guided_geometry_uses_exact_aspect_fit_coordinates() {
+        let wide = aspect_fit_geometry(2_556, 1_428).unwrap();
+        assert_eq!(
+            (wide.left().numerator(), wide.left().denominator()),
+            (26, 3)
+        );
+        assert_eq!((wide.top().numerator(), wide.top().denominator()), (0, 1));
+        assert_eq!(
+            (wide.width().numerator(), wide.width().denominator()),
+            (7_616, 3)
+        );
+        assert_eq!(
+            (wide.height().numerator(), wide.height().denominator()),
+            (1_428, 1)
+        );
+
+        let tall = aspect_fit_geometry(1_920, 1_200).unwrap();
+        assert_eq!((tall.left().numerator(), tall.left().denominator()), (0, 1));
+        assert_eq!((tall.top().numerator(), tall.top().denominator()), (60, 1));
+        assert_eq!(
+            (tall.width().numerator(), tall.width().denominator()),
+            (1_920, 1)
+        );
+        assert_eq!(
+            (tall.height().numerator(), tall.height().denominator()),
+            (1_080, 1)
+        );
     }
 
     #[test]

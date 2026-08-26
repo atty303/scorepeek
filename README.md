@@ -104,6 +104,34 @@ Developers may instead provide a complete fixed small bundle with
 `scorepeek --model-bundle /absolute/directory <command...>`; scorepeek verifies the same registered
 contract and does not use the network. This is not an alternate-model selector.
 
+After transferring or synchronizing one active catalog, create a capture profile on the machine
+that will run the game. Scorepeek starts and stops a dedicated calibration Gamescope containing its
+own marker; arguments after `--` are the Gamescope settings to record for this profile:
+
+```text
+scorepeek setup gamescope --profile bazzite-4k -- -W 3840 -H 2160 -w 1920 -h 1080 -r 120 -S fit -F linear
+scorepeek profile list
+```
+
+Setup stores the profile under `$XDG_CONFIG_HOME/scorepeek/profiles` (normally
+`$HOME/.config/scorepeek/profiles`). It does not start INFINITAS and does not turn an unverified
+configuration into a supported profile. Start the ordinary Gamescope/game session with the same
+configuration, then run:
+
+```text
+scorepeek run --profile bazzite-4k
+```
+
+When exactly one profile exists, `scorepeek run` selects it automatically. Multiple profiles require
+`--profile NAME`. Recording is bounded and enabled by default; add `--no-recording` to suppress both
+diagnostic and recognition artifact persistence.
+Scorepeek rejects a profile authored with a different installed Gamescope version instead of
+silently changing capture configuration.
+
+Ordinary recognition artifacts are stored per run below `$XDG_STATE_HOME/scorepeek/recognition`.
+Scorepeek keeps this store bounded at eight generations and 1 GiB; it does not delete an old run
+automatically. At capacity, remove an old run deliberately or use `--no-recording`.
+
 ## Development
 
 Install [mise](https://mise.jdx.dev/), then use the repository entry points:
