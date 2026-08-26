@@ -27,7 +27,6 @@ from scorepeek_ocr.training_artifacts import (
     MAX_MODEL_FILE_BYTES,
     _hash_unpinned_file,
     _prepared_manifest,
-    _verify_prepared_files,
     prepared_rows,
 )
 from scorepeek_ocr.spike import _sync_directory
@@ -275,7 +274,6 @@ def initialize(
         preparation / "manifest.json", MAX_MANIFEST_BYTES, preparation_sha256
     )
     prepared = _prepared_manifest(json.loads(preparation_manifest))
-    _verify_prepared_files(preparation, prepared)
     target_dictionary = _read_regular(
         preparation / "dictionary.txt", MAX_MANIFEST_BYTES * 2, prepared["dictionary_sha256"]
     )

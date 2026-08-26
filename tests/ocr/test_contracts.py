@@ -52,6 +52,7 @@ from scorepeek_ocr.training_inputs import TrainingInputError, generate as genera
 from scorepeek_ocr.training_export import (
     TrainingExportError,
     _pilot as load_export_pilot,
+    _verify_export_inputs,
 )
 from scorepeek_ocr.training_artifacts import (
     TrainingArtifactError,
@@ -443,6 +444,27 @@ class ContractTests(unittest.TestCase):
             with self.assertRaises(TrainingExportError):
                 load_export_pilot(root, digest, prepared)
 
+    def test_training_export_verifies_only_its_direct_preparation_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            preparation = Path(temporary)
+            config = b"config\n"
+            dictionary = b"A\nB\n"
+            (preparation / "training-config.yml").write_bytes(config)
+            (preparation / "dictionary.txt").write_bytes(dictionary)
+            prepared = {
+                "derived_training_config_sha256": hashlib.sha256(config).hexdigest(),
+                "dictionary_sha256": hashlib.sha256(dictionary).hexdigest(),
+            }
+
+            _verify_export_inputs(preparation, prepared)
+
+            (preparation / "training-config.yml").write_bytes(b"Config\n")
+            with self.assertRaises(TrainingExportError):
+                _verify_export_inputs(preparation, prepared)
+            (preparation / "training-config.yml").write_bytes(config)
+            (preparation / "dictionary.txt").write_bytes(b"A\nC\n")
+            with self.assertRaises(TrainingExportError):
+                _verify_export_inputs(preparation, prepared)
 
     def test_registered_pretrained_checkpoint_and_class_mapping(self) -> None:
         source = _load_checkpoint_manifest()
@@ -731,11 +753,12 @@ class ContractTests(unittest.TestCase):
             self.assertFalse(export_record["model_shape_verified"])
 
             (output / "dictionary.txt").write_text("B\nA\nΩ\n")
-            with self.assertRaises(TrainingArtifactError):
-                record_export(
-                    output, summary["manifest_sha256"], paddle, onnx,
-                    directory / "tampered-export.json",
-                )
+            unrelated_preparation_file = directory / "selected-model-export.json"
+            record_export(
+                output, summary["manifest_sha256"], paddle, onnx,
+                unrelated_preparation_file,
+            )
+            self.assertTrue(unrelated_preparation_file.exists())
 
     def test_registered_training_source_requires_the_pinned_checkout_and_files(self) -> None:
         source = load_registered_training_source()

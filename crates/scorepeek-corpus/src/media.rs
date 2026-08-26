@@ -428,7 +428,6 @@ impl CorpusStore {
         let (source_manifest, source_manifest_sha256) = load_bound_source(self, fixture_id)?;
         let mut source = self.open_verified_source(&source_manifest.source)?;
         let observation = inspect_recording_file(&mut source)?;
-        verify_open_source(&mut source, &source_manifest.source)?;
         write_media_probe(
             fixture_id,
             source_manifest,
@@ -1029,7 +1028,6 @@ fn run_extraction(
         1024,
         TOOL_TIMEOUT,
     )?;
-    verify_open_source(&mut source, &probe.source)?;
     validate_selected_frame_pts(&execution.stderr, &request.frames)?;
 
     let mut extracted = Vec::with_capacity(request.frames.len());
@@ -1163,7 +1161,10 @@ fn load_bound_source(
             "stored source manifest is not canonical or fixture-bound",
         ));
     }
-    store.resolve_source_path(&manifest.source)?;
+    resolve_stored_source_path_unverified(
+        &store.root.join("content").join(&manifest.source.sha256),
+        &manifest.source,
+    )?;
     Ok((manifest, digest_bytes(&bytes)))
 }
 

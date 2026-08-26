@@ -22,7 +22,6 @@ from scorepeek_ocr.training_artifacts import (
     MAX_MODEL_FILE_BYTES,
     _prepared_manifest,
     _training_labels,
-    _verify_prepared_files,
     prepared_rows,
 )
 from scorepeek_ocr.training_catalog import (
@@ -156,7 +155,6 @@ def run(
             )
         )
     )
-    _verify_prepared_files(preparation, prepared)
     if prepared["training_input_sha256"] != training_input_sha256:
         raise TrainingCensusError("training input is not bound to the preparation")
     try:

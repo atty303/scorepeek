@@ -280,7 +280,8 @@ directly scoreable at each target's timestep bound. The diagnostic `〆`/`x` ali
 observations, not accepted catalog variants, runtime behavior, or calibrated thresholds.
 
 `ocr:title-model:record-export` hash-records an explicitly selected Paddle model and ONNX graph
-against one preparation after rehashing its dictionary, derived config, and all three split lists.
+against one digest-bound preparation manifest. It reads and hashes the selected model outputs it
+records, but does not rehash unrelated preparation files already accepted by their producing stage.
 The record remains provisional, non-distributable, and unaccepted for runtime. It carries the
 required output tensor contract and shape but deliberately marks the model's actual shape
 unverified; a later Python-to-Rust parity/replay gate must establish that boundary before promotion.
@@ -307,26 +308,31 @@ available versus locked/dimmed pixels and standard, INFINITAS-blue, or LEGGENDAR
 An unlock-condition bar is explicit non-title content, never a hidden title. The inspection command
 validates canonical shape, ranges, selected digests, and references. A downstream stage treats the
 scorepeek-created crop and measurement artifacts as trusted; it does not repeat full-frame/crop
-hashing or recompute L1 merely to reproduce the upstream result. Existing `verify` behavior that
-still performs those repeated reads is superseded legacy behavior under ADR 0048 and supplies no
-additional evidence. No state in this draft schema carries a catalog title or complete-title label.
+hashing or recompute L1 merely to reproduce the upstream result. The explicit observation-draft
+verify command remains available when the operator requests a complete frame/crop/L1 audit; normal
+downstream stages do not invoke it automatically. No state in this draft schema carries a catalog
+title or complete-title label.
 Locked/dimmed and non-standard color domains stay quarantined from standard-title training until a
 versioned correction is measured.
 
 The `scorepeek-private-music-list-motion-request-v1` contract binds each human-annotated adjacent
 frame pair to both complete 21-crop artifacts. It requires exactly twenty semantic row annotations
 for each frame and one explicit `stationary`, `scrolling`, or reason-bearing `unknown` motion state.
-`motion:measure` never derives that state from pixels: it records all twenty row RGB L1 sums and
-their checked aggregate, and creates a canonical
+`motion:measure` never derives that state from pixels: it reads only the twenty required row crops
+from each frame once while checking their declared digest and P6 shape, records all twenty RGB L1
+sums and their checked aggregate, and creates a canonical
 `scorepeek-private-music-list-motion-artifact-v1` without replacing an existing file. Unknown pairs
 remain measurement evidence but cannot set a stability threshold; locked/dimmed,
 INFINITAS-blue, LEGGENDARIA-purple, selected, clipped, separator, and unlock-condition annotations
 remain explicit rather than being folded into title motion. The create-only review-plan command
-consumes that selected artifact and groups only exact pixel-identical row crops. The create-only
-review-apply command accepts canonical plan-digest-bound partial human decisions and leaves omitted
-groups with their original annotations unchanged; initially these are usually unknown. Neither
-stage reconstructs or re-adjudicates the preceding scorepeek-owned artifact. It never derives labels
-from luminance, color, OCR, or motion values.
+consumes the selected artifact plus the referenced scorepeek crop manifests, and groups only rows
+with the same declared pixel digest; it does not reread crop or canonical-frame pixels. The
+create-only review-apply command accepts canonical plan-digest-bound partial human decisions,
+validates their pair/frame/slot/current-annotation occurrences against the selected artifact, and
+leaves omitted groups with their original annotations unchanged; initially these are usually
+unknown. It neither reconstructs the plan nor re-adjudicates the preceding scorepeek-owned artifact.
+The explicit motion verify command remains the opt-in full pixel and L1 audit. None of these stages
+derives labels from luminance, color, OCR, or motion values.
 
 Python 3.12.13 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
 PaddlePaddle CPU 3.3.1, Apache-2.0 `paddle2onnx` 2.1.0, and their complete
@@ -423,12 +429,16 @@ The seal command includes every currently imported recording and writes a
 canonical `scorepeek-recording-dataset-generation-v1`. Its SHA-256, rather than
 the caller's human-readable dataset ID, is the reusable identity. A generation
 binds every recording to its exact source media, source manifest, capture
-profile, media probe, and recording manifest.
+profile, media probe, and recording manifest. Sealing checks the selected manifests,
+references, object presence, and sizes without rehashing every trusted local object; the explicit
+dataset verify command performs a complete local byte audit when requested.
 
 Explicit push/pull commands synchronize a generation with private
-S3-compatible storage. Objects use content-addressed keys, the generation
-manifest is uploaded last, and every reuse, pull, and remote verification hashes
-complete bytes rather than trusting an ETag. Import never uploads. There is no
+S3-compatible storage. Objects use content-addressed keys and the generation
+manifest is uploaded last. Push hashes the bytes received in remote staging, pull hashes each
+downloaded remote object once and checks typed bindings, and remote reuse or explicit remote
+verification hashes complete remote bytes rather than trusting an ETag. Push does not first repeat
+a complete local dataset audit. Import never uploads. There is no
 mutable latest pointer or delete command.
 
 ```text

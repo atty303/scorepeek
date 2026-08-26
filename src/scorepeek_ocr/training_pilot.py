@@ -22,7 +22,6 @@ from scorepeek_ocr.training_artifacts import (
     _hash_unpinned_file,
     _prepared_manifest,
     _training_labels,
-    _verify_prepared_files,
     prepared_rows,
 )
 from scorepeek_ocr.training_catalog import (
@@ -169,7 +168,6 @@ def run(
         preparation / "manifest.json", MAX_MANIFEST_BYTES, preparation_sha256
     )
     prepared = _prepared_manifest(json.loads(prepared_data))
-    _verify_prepared_files(preparation, prepared)
     if training_input_sha256 != prepared["training_input_sha256"]:
         raise TrainingPilotError("training input is not bound to the preparation")
     training_data = _read_regular(

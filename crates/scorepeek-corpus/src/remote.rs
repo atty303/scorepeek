@@ -52,6 +52,7 @@ struct RemoteTarget {
 
 struct DownloadedObject {
     file: File,
+    sha256: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,18 +62,18 @@ enum RemotePublishDisposition {
 }
 
 impl CorpusStore {
-    /// Uploads and read-back verifies one local recording dataset generation.
+    /// Uploads one selected local recording dataset generation and verifies the remote bytes.
     ///
     /// # Errors
-    /// Returns an error if local verification fails, remote configuration is invalid, or any
+    /// Returns an error if the selected generation is invalid, remote configuration is invalid, or any
     /// remote object cannot be uploaded and verified without exposing provider response details.
     pub fn push_recording_dataset(
         &self,
         remote_config_path: impl AsRef<Path>,
         generation_sha256: &str,
     ) -> Result<DatasetRemoteSummary, CorpusError> {
-        self.verify_recording_dataset(generation_sha256)?;
-        let generation = self.load_recording_generation(generation_sha256)?;
+        let (generation, generation_bytes) =
+            self.load_recording_generation_bytes(generation_sha256)?;
         let target = load_remote(remote_config_path.as_ref())?;
         let runtime = remote_runtime()?;
         let mut transferred = 0_u64;
@@ -88,25 +89,12 @@ impl CorpusStore {
                 reused += 1;
                 continue;
             }
-            let local_file = if object.kind == dataset::DatasetObjectKind::SourceMedia {
-                self.open_verified_source(&ContentRef {
-                    sha256: object.sha256.clone(),
-                    bytes: object.bytes,
-                })?
-            } else {
-                File::open(self.dataset_object_path(object))?
-            };
-            let mut post_upload_source = if object.kind == dataset::DatasetObjectKind::SourceMedia {
-                Some(local_file.try_clone()?)
-            } else {
-                None
-            };
+            let local_file = open_local_dataset_object(self, object)?;
             let disposition = runtime.block_on(stage_and_publish_file(
                 Arc::clone(&target.store),
                 &target.staging_path(&object.sha256)?,
                 &remote_path,
                 local_file,
-                post_upload_source.take(),
                 &object.sha256,
                 object.bytes,
             ))?;
@@ -116,15 +104,6 @@ impl CorpusStore {
             }
         }
 
-        let generation_path = self
-            .root
-            .join("dataset-generations")
-            .join(format!("{generation_sha256}.json"));
-        let generation_bytes = read_bounded_regular(
-            &generation_path,
-            dataset::MAX_DATASET_DOCUMENT_BYTES,
-            ErrorContext::Request,
-        )?;
         let remote_generation_path = target.generation_path(generation_sha256)?;
         if runtime.block_on(remote_matches(
             Arc::clone(&target.store),
@@ -177,7 +156,6 @@ impl CorpusStore {
         )?;
         preflight_managed_components(&self.root)?;
         create_private_directory(&self.root)?;
-        self.verify_remote_recording_dataset(remote_config_path, generation_sha256)?;
         let target = load_remote(remote_config_path)?;
         let runtime = remote_runtime()?;
         let generation_temp = download_verified_bounded(
@@ -216,8 +194,8 @@ impl CorpusStore {
             self.publish_downloaded_object(object, &temporary)?;
             transferred += 1;
         }
+        self.validate_recording_bindings(&generation)?;
         self.publish_dataset_document("dataset-generations", generation_sha256, &generation_bytes)?;
-        self.verify_recording_dataset(generation_sha256)?;
         Ok(remote_summary(
             generation_sha256,
             &generation,
@@ -465,7 +443,7 @@ impl CorpusStore {
                 dataset::DatasetObjectKind::SourceMedia => unreachable!(),
             };
             self.publish_named_dataset_document(directory, name, &bytes)?;
-            return self.validate_dataset_object(object);
+            return Ok(());
         }
 
         let destination = self.dataset_object_path(object);
@@ -493,13 +471,30 @@ impl CorpusStore {
             .create_new(true)
             .mode(0o600)
             .open(&staged_source)?;
-        if io::copy(&mut source, &mut staged)? != object.bytes {
+        let mut copied = 0_u64;
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; 16 * 1024];
+        loop {
+            let read = source.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            copied = copied
+                .checked_add(read as u64)
+                .ok_or(CorpusError::CapacityExceeded)?;
+            if copied > object.bytes {
+                return Err(remote_error("downloaded source changed before publication"));
+            }
+            hasher.update(&buffer[..read]);
+            staged.write_all(&buffer[..read])?;
+        }
+        if copied != object.bytes {
             return Err(remote_error("downloaded source changed before publication"));
         }
         staged.flush()?;
         staged.sync_all()?;
         drop(staged);
-        if digest_regular_file(&staged_source, object.bytes)? != object.sha256 {
+        if encode_digest(hasher.finalize()) != object.sha256 {
             return Err(remote_error(
                 "downloaded source changed during publication copy",
             ));
@@ -512,7 +507,7 @@ impl CorpusStore {
         fs::rename(staging_path, destination_dir)?;
         sync_stored_source_and_parent(destination_dir, &content_dir)?;
         drop(lock);
-        self.validate_dataset_object(object)
+        Ok(())
     }
 }
 
@@ -687,6 +682,29 @@ fn remote_runtime() -> Result<tokio::runtime::Runtime, CorpusError> {
         .map_err(|_| remote_error("remote runtime could not start"))
 }
 
+fn open_local_dataset_object(
+    store: &CorpusStore,
+    object: &dataset::DatasetObject,
+) -> Result<File, CorpusError> {
+    let path = if object.kind == dataset::DatasetObjectKind::SourceMedia {
+        resolve_stored_source_path_unverified(
+            &store.root.join("content").join(&object.sha256),
+            &ContentRef {
+                sha256: object.sha256.clone(),
+                bytes: object.bytes,
+            },
+        )?
+    } else {
+        store.dataset_object_path(object)
+    };
+    let file = File::open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() != object.bytes {
+        return Err(remote_error("local dataset object size differs"));
+    }
+    Ok(file)
+}
+
 async fn upload_file(
     store: Arc<dyn ObjectStore>,
     remote_path: &ObjectPath,
@@ -712,21 +730,11 @@ async fn stage_and_publish_file(
     staging_path: &ObjectPath,
     final_path: &ObjectPath,
     source: File,
-    mut post_upload_source: Option<File>,
     expected_sha256: &str,
     expected_bytes: u64,
 ) -> Result<RemotePublishDisposition, CorpusError> {
     let operation = async {
         upload_file(Arc::clone(&store), staging_path, source).await?;
-        if let Some(source) = &mut post_upload_source {
-            verify_open_source(
-                source,
-                &ContentRef {
-                    sha256: expected_sha256.to_owned(),
-                    bytes: expected_bytes,
-                },
-            )?;
-        }
         if !remote_matches(
             Arc::clone(&store),
             staging_path,
@@ -959,7 +967,7 @@ fn download_verified(
         return Err(remote_error("remote object size differs"));
     }
     let temporary = runtime.block_on(download_to_temporary(store, &metadata, staging_root))?;
-    if digest_downloaded(&temporary, expected_bytes)? != expected_sha256 {
+    if temporary.sha256 != expected_sha256 {
         return Err(remote_error("remote object digest differs"));
     }
     Ok(temporary)
@@ -981,9 +989,8 @@ fn download_verified_bounded(
             "remote object size is outside the admitted range",
         ));
     }
-    let expected_bytes = metadata.size;
     let temporary = runtime.block_on(download_to_temporary(store, &metadata, staging_root))?;
-    if digest_downloaded(&temporary, expected_bytes)? != expected_sha256 {
+    if temporary.sha256 != expected_sha256 {
         return Err(remote_error("remote object digest differs"));
     }
     Ok(temporary)
@@ -1046,6 +1053,7 @@ async fn download_to_temporary(
     }
     let mut stream = result.into_stream();
     let mut total = 0_u64;
+    let mut hasher = Sha256::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| remote_error("remote object download failed"))?;
         total = total
@@ -1054,6 +1062,7 @@ async fn download_to_temporary(
         if total > metadata.size {
             return Err(remote_error("remote object exceeded its declared size"));
         }
+        hasher.update(&chunk);
         destination
             .write_all(&chunk)
             .await
@@ -1072,38 +1081,8 @@ async fn download_to_temporary(
         .map_err(|_| remote_error("download staging sync failed"))?;
     Ok(DownloadedObject {
         file: destination.into_std().await,
+        sha256: encode_digest(hasher.finalize()),
     })
-}
-
-fn digest_downloaded(
-    downloaded: &DownloadedObject,
-    expected_bytes: u64,
-) -> Result<String, CorpusError> {
-    let mut file = downloaded.file.try_clone()?;
-    if !file.metadata()?.is_file() || file.metadata()?.len() != expected_bytes {
-        return Err(remote_error("download staging size differs"));
-    }
-    file.seek(SeekFrom::Start(0))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 16 * 1024];
-    let mut total = 0_u64;
-    loop {
-        let count = file.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        total = total
-            .checked_add(count as u64)
-            .ok_or(CorpusError::CapacityExceeded)?;
-        if total > expected_bytes {
-            return Err(remote_error("download staging exceeded its declared size"));
-        }
-        hasher.update(&buffer[..count]);
-    }
-    if total != expected_bytes {
-        return Err(remote_error("download staging size changed"));
-    }
-    Ok(encode_digest(hasher.finalize()))
 }
 
 fn read_downloaded_bounded(
@@ -1238,7 +1217,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_reuse_hashes_complete_bytes_and_cleans_staging() {
+    fn remote_publication_verifies_complete_bytes_and_cleans_staging() {
         let temporary = tempdir().unwrap();
         let source = temporary.path().join("source");
         fs::write(&source, b"hello").unwrap();
@@ -1255,7 +1234,6 @@ mod tests {
                     &staging_path,
                     &remote_path,
                     File::open(&source).unwrap(),
-                    None,
                     &expected_sha256,
                     5,
                 ))
@@ -1273,7 +1251,6 @@ mod tests {
                     &ObjectPath::from("v1/staging/second"),
                     &remote_path,
                     File::open(&source).unwrap(),
-                    None,
                     &expected_sha256,
                     5,
                 ))
@@ -1289,7 +1266,6 @@ mod tests {
                     &failed_staging,
                     &failed_final,
                     File::open(&source).unwrap(),
-                    None,
                     &"0".repeat(64),
                     5,
                 ))

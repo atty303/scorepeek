@@ -538,10 +538,20 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - Persistent scheduler installation was verified in isolation but not applied to the operator's
   actual configuration. Real S3 credentials/provider behavior and remote bucket lifecycle remain
   untested.
-- Some existing offline corpus paths still perform the repeated post-consumption source hashing,
-  complete frame/crop rehashing, measurement recomputation, or review-plan reconstruction that ADR
-  0048 now supersedes. Those checks add no authority; simplify each path when it is next changed,
-  with the selected digest, required schema/references, and result invariants retained.
+- Offline corpus consumers now follow ADR 0048's trust boundary. Probe and extraction hash a selected
+  source once; sealing and replay-index generation do not rehash source media; remote push omits a
+  redundant complete local preflight and post-upload reread; pull hashes downloaded remote bytes and
+  then validates typed bindings. Content-store publication, remote staging/reuse, explicit verify,
+  external code/model acquisition, concurrent-writer checks, and activation contracts retain their
+  complete verification.
+- Music-list measurement reads only the required row crops once. Review planning consumes the
+  selected motion artifact and referenced crop manifests without rereading pixels, and review apply
+  checks exact artifact/plan/occurrence bindings without reconstructing the plan. Their summaries use
+  `source_artifact_bound` instead of claiming `evidence_verified`; explicit motion and observation
+  verification remain opt-in complete audits.
+- OCR training stages no longer validate every preparation file before reading their own inputs.
+  Each stage checks the selected preparation manifest and the files it actually consumes; external
+  PaddleOCR checkout and model bundle verification remains at the external-code/resource boundary.
 
 ## Approval and authority boundaries
 

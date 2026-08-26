@@ -20,7 +20,6 @@ from scorepeek_ocr.training_artifacts import (
     MAX_MODEL_FILE_BYTES,
     _hash_unpinned_file,
     _prepared_manifest,
-    _verify_prepared_files,
     prepared_rows,
 )
 from scorepeek_ocr.training_initializer import (
@@ -94,7 +93,6 @@ def generate(
         preparation / "manifest.json", MAX_MANIFEST_BYTES, preparation_sha256
     )
     prepared = _prepared_manifest(json.loads(prepared_data))
-    _verify_prepared_files(preparation, prepared)
     export_record = _export_record(model_export, export_manifest_sha256, preparation_sha256)
     if not output.is_absolute() or output.exists() or not output.parent.is_dir():
         raise ExportParityError("output must be a new absolute directory")

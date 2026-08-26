@@ -41,7 +41,6 @@ from scorepeek_ocr.training_artifacts import (
     TrainingArtifactError,
     _prepared_manifest,
     _training_labels,
-    _verify_prepared_files,
     prepared_rows,
 )
 from scorepeek_ocr.training_catalog import (
@@ -1155,7 +1154,6 @@ def _run_census(
             )
         )
     )
-    _verify_prepared_files(preparation, prepared)
     if prepared["training_input_sha256"] != training_input_sha256:
         raise OfficialCensusError("training input is not bound to the preparation")
     training_raw = json.loads(

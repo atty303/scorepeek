@@ -166,7 +166,12 @@ impl CorpusStore {
         let context: CaptureContext = serde_json::from_slice(&context_bytes)?;
         context.validate()?;
 
-        let expected_sha256 = digest_regular_file(recording_path, MAX_SOURCE_BYTES)?;
+        let mut source_file = File::open(recording_path)?;
+        let (expected_sha256, source_bytes) = digest_open_file(&mut source_file, MAX_SOURCE_BYTES)?;
+        let expected_source = ContentRef {
+            sha256: expected_sha256.clone(),
+            bytes: source_bytes,
+        };
         if let Some(summary) = self.reuse_recording_import(&expected_sha256, &context)? {
             return Ok(summary);
         }
@@ -183,10 +188,8 @@ impl CorpusStore {
 
         let (source_manifest, observation) = self.ingest_verified_recording_with(
             recording_path,
-            expected_sha256.clone(),
-            expected_sha256.clone(),
             profile_sha256.clone(),
-            &expected_sha256,
+            &expected_source,
             |staged_source| {
                 let observation = media::inspect_recording(staged_source)?;
                 if observation.observed != profile.observed {
@@ -240,7 +243,6 @@ impl CorpusStore {
         }
 
         let observation = inspect_recording(&mut source_file)?;
-        verify_open_source(&mut source_file, &source)?;
         let profile = CaptureProfile {
             schema: CAPTURE_PROFILE_SCHEMA.to_owned(),
             context,
@@ -380,24 +382,21 @@ impl CorpusStore {
             ));
         }
 
-        let mut objects = self.recording_objects(&recording, &recording_bytes)?;
-        objects.sort();
-        let generation = RecordingDatasetGeneration {
-            schema: DATASET_GENERATION_SCHEMA.to_owned(),
-            dataset_id: "recording-import-reuse".to_owned(),
-            objects,
-        };
-        generation.validate()?;
-        self.validate_recording_bindings(&generation)?;
-
-        let profile_object = required_object(
-            &generation,
-            recording_sha256,
-            DatasetObjectKind::CaptureProfile,
-        )?;
-        let profile_bytes = self.read_dataset_document(profile_object, MAX_REQUEST_BYTES)?;
+        self.recording_objects(&recording, &recording_bytes)?;
+        let profile_path = self
+            .root
+            .join("profiles")
+            .join(format!("{}.json", recording.capture_profile_sha256));
+        let profile_bytes =
+            read_bounded_regular(&profile_path, MAX_REQUEST_BYTES, ErrorContext::Request)?;
+        if digest_bytes(&profile_bytes) != recording.capture_profile_sha256 {
+            return Err(CorpusError::InvalidRequest(
+                "capture profile digest differs".to_owned(),
+            ));
+        }
         let profile: CaptureProfile = serde_json::from_slice(&profile_bytes)?;
-        if profile.context != *context {
+        profile.validate()?;
+        if canonical_json(&profile)? != profile_bytes || profile.context != *context {
             return Err(CorpusError::FixtureConflict);
         }
 
@@ -463,7 +462,6 @@ impl CorpusStore {
             objects,
         };
         generation.validate()?;
-        self.validate_recording_bindings(&generation)?;
         let bytes = canonical_json(&generation)?;
         let generation_sha256 = digest_bytes(&bytes);
         self.publish_dataset_document("dataset-generations", &generation_sha256, &bytes)?;
@@ -480,7 +478,11 @@ impl CorpusStore {
     ) -> Result<DatasetSummary, CorpusError> {
         self.validate_dataset_store(true)?;
         let generation = self.load_recording_generation(generation_sha256)?;
-        for object in &generation.objects {
+        for object in generation
+            .objects
+            .iter()
+            .filter(|object| object.kind == DatasetObjectKind::SourceMedia)
+        {
             self.validate_dataset_object(object)?;
         }
         self.validate_recording_bindings(&generation)?;
@@ -491,6 +493,14 @@ impl CorpusStore {
         &self,
         generation_sha256: &str,
     ) -> Result<RecordingDatasetGeneration, CorpusError> {
+        self.load_recording_generation_bytes(generation_sha256)
+            .map(|(generation, _)| generation)
+    }
+
+    pub(crate) fn load_recording_generation_bytes(
+        &self,
+        generation_sha256: &str,
+    ) -> Result<(RecordingDatasetGeneration, Vec<u8>), CorpusError> {
         validate_sha256(
             generation_sha256,
             "generation_sha256",
@@ -513,7 +523,7 @@ impl CorpusStore {
                 "dataset generation is not canonical".to_owned(),
             ));
         }
-        Ok(generation)
+        Ok((generation, bytes))
     }
 
     pub(crate) fn dataset_object_path(&self, object: &DatasetObject) -> PathBuf {
@@ -551,6 +561,22 @@ impl CorpusStore {
                 sha256: object.sha256.clone(),
                 bytes: object.bytes,
             });
+        }
+        Ok(self.dataset_object_path(object))
+    }
+
+    fn readable_dataset_object_path_unverified(
+        &self,
+        object: &DatasetObject,
+    ) -> Result<PathBuf, CorpusError> {
+        if object.kind == DatasetObjectKind::SourceMedia {
+            return resolve_stored_source_path_unverified(
+                &self.root.join("content").join(&object.sha256),
+                &ContentRef {
+                    sha256: object.sha256.clone(),
+                    bytes: object.bytes,
+                },
+            );
         }
         Ok(self.dataset_object_path(object))
     }
@@ -615,7 +641,7 @@ impl CorpusStore {
                     bytes: declared_bytes,
                     recording_sha256: recording.recording_sha256.clone(),
                 };
-                let path = self.readable_dataset_object_path(&object)?;
+                let path = self.readable_dataset_object_path_unverified(&object)?;
                 let metadata = path.symlink_metadata()?;
                 if !metadata.is_file() {
                     return Err(CorpusError::InvalidRequest(
@@ -623,13 +649,12 @@ impl CorpusStore {
                     ));
                 }
                 object.bytes = metadata.len();
-                self.validate_dataset_object(&object)?;
                 Ok(object)
             })
             .collect()
     }
 
-    fn validate_recording_bindings(
+    pub(crate) fn validate_recording_bindings(
         &self,
         generation: &RecordingDatasetGeneration,
     ) -> Result<(), CorpusError> {
@@ -710,12 +735,24 @@ impl CorpusStore {
         object: &DatasetObject,
         maximum: usize,
     ) -> Result<Vec<u8>, CorpusError> {
-        self.validate_dataset_object(object)?;
-        read_bounded_regular(
-            &self.dataset_object_path(object),
-            maximum,
-            ErrorContext::Request,
-        )
+        if object.kind == DatasetObjectKind::SourceMedia {
+            return Err(CorpusError::InvalidRequest(
+                "source media is not a dataset document".to_owned(),
+            ));
+        }
+        let path = self.dataset_object_path(object);
+        let parent = path.parent().ok_or_else(|| {
+            CorpusError::InvalidRequest("dataset object has no parent directory".to_owned())
+        })?;
+        validate_directory(parent, ErrorContext::Request)?;
+        validate_regular_file(&path, ErrorContext::Request)?;
+        let bytes = read_bounded_regular(&path, maximum, ErrorContext::Request)?;
+        if bytes.len() as u64 != object.bytes || digest_bytes(&bytes) != object.sha256 {
+            return Err(CorpusError::InvalidRequest(
+                "dataset document digest differs".to_owned(),
+            ));
+        }
+        Ok(bytes)
     }
 
     pub(crate) fn publish_dataset_document(

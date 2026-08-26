@@ -283,31 +283,6 @@ def _prepared_manifest(raw: dict[str, Any]) -> dict[str, Any]:
     return raw
 
 
-def _verify_prepared_files(preparation: Path, prepared: dict[str, Any]) -> None:
-    if (
-        not preparation.is_absolute()
-        or preparation.is_symlink()
-        or not preparation.is_dir()
-        or preparation.resolve() != preparation
-    ):
-        raise TrainingArtifactError("training preparation directory is invalid")
-    _read(preparation / "dictionary.txt", prepared["dictionary_sha256"], MAX_JSON_BYTES)
-    _read(
-        preparation / "training-config.yml",
-        prepared["derived_training_config_sha256"],
-        MAX_JSON_BYTES,
-    )
-    for split, digest in prepared["label_file_sha256"].items():
-        _read(
-            preparation / f"{split}.txt", digest, MAX_JSON_BYTES, allow_empty=True
-        )
-        _read(
-            preparation / f"{split}-crop-evidence.json",
-            prepared["crop_evidence_sha256"][split],
-            MAX_JSON_BYTES,
-        )
-
-
 def prepared_rows(
     preparation: Path, prepared: dict[str, Any], split: str
 ) -> list[tuple[str, str, str]]:
@@ -582,7 +557,6 @@ def record_export(
     output: Path,
 ) -> dict[str, Any]:
     prepared = _prepared_manifest(_json(preparation / "manifest.json", preparation_sha256))
-    _verify_prepared_files(preparation, prepared)
     files = {}
     for name, path in {"paddle_model": paddle_model, "onnx_model": onnx_model}.items():
         files[name] = _hash_unpinned_file(path, name)

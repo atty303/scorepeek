@@ -384,7 +384,7 @@ impl CorpusStore {
         self.validate_root()?;
         source.validate(ErrorContext::Request)?;
         let canonical_path = fs::canonicalize(source_path)?;
-        validate_external_source_file(&canonical_path, source, true)?;
+        validate_external_source_file(&canonical_path, source, false)?;
         let path = canonical_path.to_str().ok_or_else(|| {
             CorpusError::InvalidRequest("external source path must be UTF-8".to_owned())
         })?;
@@ -418,11 +418,13 @@ impl CorpusStore {
                     return Ok(resolved);
                 }
                 let (existing, existing_path) = read_external_source_locator(&destination, source)?;
-                if validate_external_source_file(&existing_path, source, true).is_ok() {
+                if existing == locator
+                    && existing_path == canonical_path
+                    && validate_external_source_file(&canonical_path, source, false).is_ok()
+                {
                     drop(lock);
-                    return Ok(existing_path);
+                    return Ok(canonical_path);
                 }
-                validate_external_source_file(&canonical_path, source, true)?;
                 replace_atomic_file(
                     &destination,
                     &destination.join(EXTERNAL_SOURCE_FILE),
@@ -430,13 +432,8 @@ impl CorpusStore {
                     SOURCE_STAGING_PREFIX,
                 )?;
                 sync_stored_source_and_parent(&destination, &content_dir)?;
-                let resolved = if existing == locator {
-                    canonical_path.clone()
-                } else {
-                    resolve_stored_source_path(&destination, source)?
-                };
                 drop(lock);
-                return Ok(resolved);
+                return Ok(canonical_path);
             }
             Ok(_) => {
                 return Err(CorpusError::InvalidRequest(
@@ -499,35 +496,28 @@ impl CorpusStore {
         request_path: impl AsRef<Path>,
     ) -> Result<SourceManifest, CorpusError> {
         let request = read_ingest_request(request_path.as_ref())?;
-        self.ingest_bound(source_path.as_ref(), request, None, |_| Ok(()))
+        self.ingest_bound(source_path.as_ref(), None, |_| Ok(request), |_| Ok(()))
             .map(|(manifest, ())| manifest)
     }
 
     fn ingest_verified_recording_with<T>(
         &self,
         source_path: &Path,
-        fixture_id: String,
-        session_id: String,
         capture_profile_id: String,
-        expected_source_sha256: &str,
+        expected_source: &ContentRef,
         inspect_staged_source: impl FnOnce(&Path) -> Result<T, CorpusError>,
     ) -> Result<(SourceManifest, T), CorpusError> {
-        let request = IngestRequest {
-            schema: INGEST_REQUEST_SCHEMA.to_owned(),
-            fixture_id,
-            session_id,
-            capture_profile_id,
-        };
-        request.validate()?;
-        validate_sha256(
-            expected_source_sha256,
-            "expected_source_sha256",
-            ErrorContext::Request,
-        )?;
         self.ingest_bound(
             source_path,
-            request,
-            Some(expected_source_sha256),
+            Some(expected_source),
+            move |source| {
+                Ok(IngestRequest {
+                    schema: INGEST_REQUEST_SCHEMA.to_owned(),
+                    fixture_id: source.sha256.clone(),
+                    session_id: source.sha256.clone(),
+                    capture_profile_id,
+                })
+            },
             inspect_staged_source,
         )
     }
@@ -535,8 +525,8 @@ impl CorpusStore {
     fn ingest_bound<T>(
         &self,
         source_path: &Path,
-        request: IngestRequest,
-        expected_source_sha256: Option<&str>,
+        expected_source: Option<&ContentRef>,
+        request_for_source: impl FnOnce(&ContentRef) -> Result<IngestRequest, CorpusError>,
         inspect_staged_source: impl FnOnce(&Path) -> Result<T, CorpusError>,
     ) -> Result<(SourceManifest, T), CorpusError> {
         self.validate_root()?;
@@ -560,12 +550,9 @@ impl CorpusStore {
             .permissions(fs::Permissions::from_mode(0o700))
             .tempdir_in(&content_dir)?;
         let staged_source = staging.path().join(SOURCE_FILE);
-        let source = copy_source(source_path, &staged_source)?;
-        if expected_source_sha256.is_some_and(|expected| expected != source.sha256) {
-            return Err(CorpusError::InvalidRequest(
-                "source changed after recording inspection".to_owned(),
-            ));
-        }
+        let source = copy_source(source_path, &staged_source, expected_source)?;
+        let request = request_for_source(&source)?;
+        request.validate()?;
         let staged_inspection = inspect_staged_source(&staged_source)?;
         File::open(&staged_source)?.sync_all()?;
         File::open(staging.path())?.sync_all()?;
@@ -779,7 +766,7 @@ impl CorpusStore {
     ///
     /// # Errors
     ///
-    /// Returns an error if the plan, stored source, frame labels, decode order, or episode
+    /// Returns an error if the plan, selected source manifest, frame labels, decode order, or episode
     /// grouping is invalid, or if bounded durable publication fails.
     pub fn generate_replay_index(
         &self,
@@ -795,12 +782,9 @@ impl CorpusStore {
         for name in ["content", "manifests", "labels"] {
             validate_directory(&self.root.join(name), ErrorContext::Replay)?;
         }
-        validate_label_store(&self.root.join("labels"))?;
-
         let manifest = load_source_manifest(self, &plan.fixture_id, &plan.source_manifest_sha256)?;
         let index = plan.into_replay_index(manifest);
         index.validate()?;
-        validate_source_binding(self, &index)?;
         for frame in &index.frames {
             validate_complete_label(self, frame)?;
         }
@@ -2097,7 +2081,14 @@ fn validate_source_file(path: &Path) -> Result<(), CorpusError> {
     Ok(())
 }
 
-fn copy_source(path: &Path, destination: &Path) -> Result<ContentRef, CorpusError> {
+fn copy_source(
+    path: &Path,
+    destination: &Path,
+    expected: Option<&ContentRef>,
+) -> Result<ContentRef, CorpusError> {
+    if let Some(expected) = expected {
+        expected.validate(ErrorContext::Request)?;
+    }
     let mut source = File::open(path)?;
     if !source.metadata()?.is_file() {
         return Err(CorpusError::InvalidRequest(
@@ -2134,10 +2125,16 @@ fn copy_source(path: &Path, destination: &Path) -> Result<ContentRef, CorpusErro
         ));
     }
     stored.flush()?;
-    Ok(ContentRef {
-        sha256: encode_digest(hasher.finalize()),
-        bytes,
-    })
+    let sha256 = encode_digest(hasher.finalize());
+    if let Some(expected) = expected {
+        if bytes != expected.bytes || sha256 != expected.sha256 {
+            return Err(CorpusError::InvalidRequest(
+                "source changed while copying into the content store".to_owned(),
+            ));
+        }
+        return Ok(expected.clone());
+    }
+    Ok(ContentRef { sha256, bytes })
 }
 
 fn ensure_capacity(content_dir: &Path, added_bytes: u64) -> Result<(), CorpusError> {
@@ -3091,7 +3088,10 @@ fn read_generation_sources(
                 "stored source manifest is not canonical or filename-bound".to_owned(),
             ));
         }
-        validate_stored_source(&content_dir.join(&manifest.source.sha256), &manifest.source)?;
+        resolve_stored_source_path_unverified(
+            &content_dir.join(&manifest.source.sha256),
+            &manifest.source,
+        )?;
         sources.push(GenerationSource {
             fixture_id: manifest.fixture_id,
             source_manifest_sha256: digest_bytes(&bytes),

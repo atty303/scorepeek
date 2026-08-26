@@ -16,11 +16,11 @@ from scorepeek_ocr.training_artifacts import (
     MAX_MODEL_FILE_BYTES,
     _hash_unpinned_file,
     _prepared_manifest,
-    _verify_prepared_files,
 )
 from scorepeek_ocr.provisional_labels import _valid_sha256
 from scorepeek_ocr.training_initializer import (
     MAX_MANIFEST_BYTES,
+    TrainingInitializerError,
     _publish,
     _read_regular,
 )
@@ -177,6 +177,22 @@ def _pilot(path: Path, expected_sha256: str, prepared: dict[str, Any]) -> dict[s
     return record
 
 
+def _verify_export_inputs(preparation: Path, prepared: dict[str, Any]) -> None:
+    try:
+        _read_regular(
+            preparation / "training-config.yml",
+            MAX_MANIFEST_BYTES,
+            prepared["derived_training_config_sha256"],
+        )
+        _read_regular(
+            preparation / "dictionary.txt",
+            MAX_MANIFEST_BYTES * 2,
+            prepared["dictionary_sha256"],
+        )
+    except (KeyError, TrainingInitializerError) as error:
+        raise TrainingExportError("training export input binding is invalid") from error
+
+
 def export(
     preparation: Path,
     preparation_sha256: str,
@@ -189,7 +205,7 @@ def export(
         preparation / "manifest.json", MAX_MANIFEST_BYTES, preparation_sha256
     )
     prepared = _prepared_manifest(json.loads(prepared_data))
-    _verify_prepared_files(preparation, prepared)
+    _verify_export_inputs(preparation, prepared)
     pilot_record = _pilot(
         pilot,
         pilot_manifest_sha256,
