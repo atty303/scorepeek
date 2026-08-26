@@ -119,6 +119,9 @@ authoritative.
 - [ADR 0046: Resolve music selection from the active title prefix](0046-resolve-music-select-from-active-prefix.md)
   makes the clipped one-line active list title primary song evidence, uses strong central-title and
   artist evidence only for corroboration or tie narrowing, and rejects weighted score fusion.
+- [ADR 0047: Operate target machines from private bundles](0047-operate-target-machines-from-private-bundles.md)
+  makes a same-operator private bundle, explicit marker calibration, ordinary profile-selected run,
+  bounded local evidence, and offline replay/update round trip the first cross-machine usage path.
 
 ## Historical
 

@@ -3,7 +3,7 @@
 ## 状態
 
 - 初回決定日: 2026-08-15
-- 最終更新日: 2026-08-23
+- 最終更新日: 2026-08-26
 - repository bootstrapとtarget inventory probe: 完了
 - M1.1 catalog contractとlocal federation core: 完了
 - M1.2 live acquisitionとsync orchestration: manual/scheduled syncまで完了
@@ -23,7 +23,9 @@
   narrow pillarboxを置くaspect-preserving fitだった。runtimeの黒帯検出は使わず、このfractional geometryを
   exact rational source rectangleとhalf-pixel/Q11 linear samplingでRGB8 1920x1080へ戻すpure Rust stageを
   実装し、既知patternとprivate live sampleでgeometryを検証済み。非標準windowのfractional geometryもadvancedな
-  明示設定として利用可能にするが、自動測定、自動profile生成、組合せごとのfirst-class gateは提供しない。
+  明示設定として利用可能にする。通常sessionの自動測定、自動profile生成および組合せごとのfirst-class gateは
+  提供しないが、ADR 0047のoperator-requested setupだけはscorepeek-owned markerからgeometryを導出して
+  machine-local profileを発行できる。
   calibration evidence、exact Gamescope version/backend/configuration、full BGRx video/memory/stride
   contract、opaque profile digest、fractional normalizerを一体でfail-closed検証する64 KiB以下のcanonical
   immutable binding contractまで実装済み。さらにlive INFINITAS用のexplicit Wayland
@@ -109,6 +111,9 @@
   handoff、およびGamescopeのprofile-bound normalized frameから同じworkerへのownership transferまで。
   recognition input、target-host性能、
   accepted field認識、event daemonは未着手）
+- 別machine常用プレイ診断ループ: 計画確定（同一operator向けprivate bundle、明示的marker
+  calibration、profile選択だけの通常起動、bounded local evidence、選択runだけの明示transfer、
+  development-machine replay、side-by-side更新とrollbackまで。4K target profileの実装・校正は未着手）
 - scorepeek-owned OCR学習/export: smallをartist/chart context/selection song contextと統合した後の凍結残差が
   missing OCR signalに帰属し、別経路が安全に解消できる場合だけ再検討
 - Bazzite実機検証とprivate corpus収集: 着手（OBS/vkcapture実録画1本のcopyless isolated
@@ -442,6 +447,71 @@ backendは各profileのBazzite semantic/lifecycle/performance gate後にdefault�
 自動fallbackと異なるprofile/normalizerのframe mixingは禁止する。候補がgateに失敗してもFHD、
 NV12、別color profileへ黙ってfallbackしない。
 
+## 別machine常用プレイ診断ループ
+
+次の実用化checkpointは、別のoperator-owned Bazzite machineを最初の利用者環境として扱う。
+一般公開releaseより先に、repository checkout、mise、RustおよびPythonをgame-session pathから外した
+private operator bundleを作り、通常プレイの副作用として診断証拠を集める。bundleはexact release
+binary、build、layout、active catalog、registered model/runtimeとdigestをbindする。target固有のcapture
+binding、frame、player data、credentialおよびmutable stateはbundleへ含めない。catalog/modelのsource
+permissionは引き続きpublic redistributionを制限するが、同一operator control domain内のprivate transferを
+secret扱いやgeneric errorで妨げない。
+
+target machineでは、scorepeek-ownedな既知の1920x1080 markerをexact Gamescope Wayland configで
+明示的に校正し、observed BGRx contractとmarker geometryが一致した場合だけmachine-local profileを
+create-onlyで発行する。これはsetup時にoperatorが要求するguided calibrationであり、通常session中の
+自動測定、自動profile切替、threshold緩和またはfallbackではない。4K、FSR/NIS、HDR、Reshade、異なる
+Gamescope version/configはそれぞれ別profileとする。
+
+通常操作は`scorepeek run --profile NAME`とし、profile省略はenabled profileが一つだけの場合に限る。
+scorepeekはoperatorが起動したGamescopeへattachし、INFINITASまたは通常Gamescopeを起動、signal、終了、
+restartしない。scorepeekの停止はscorepeek-owned receiver、provider、field worker、diagnostic、artifact
+だけを順序付きで終了する。stable event authorityの完成を待たず、現在のprovisional recognitionを通常
+経路へ流して診断改善を開始するが、accepted eventまたはsupported profileとは呼ばない。
+
+通常runのlocal recordingは既定有効、bounded、opt-out可能とし、remote送信は既定無効の明示操作とする。
+保持pixelはADR 0043のfailure-window policyから増やさない。利用者が見逃しや誤認識を確認した場合、
+foreground applicationはscreen inspection/recognitionより前に、fixed age/count/bytesのrecent canonical-owner
+memory tailと、さらに小さいsame-sequence raw BGRx owner集合を保持する。completed screen/field observationは
+存在する場合だけ同じsequenceへlinkし、tailへのpixel選択をtriggerしない。tailがresidentな間の明示的problem
+markerは指定sequence/intervalのcanonical/raw ownerをfixed-count pending-report ledgerへ即座にclaimして
+captureを待たせず返る。pending reportは対象sequenceごとにworker completion、明示queue/drop、worker terminal、
+またはbounded finalize timeoutへ到達するまでscreen/field/recognition linkを受理し、watermark確定後だけmanifestを
+finalizeする。`screen_observation_unavailable`または`field_observation_unavailable`は、その後に結果が到着しないと
+確定してからだけ使い、queue drop、worker failure、timeoutはそれぞれのtyped ownerを保持する。後からのfreezeは
+既に保存されたbytesのretention priorityだけを変更し、未保存observationを復元したとは扱わない。選択runの
+exportだけがbundle/profile identity、complete/partial status、exact OCR/catalog/song/decision、既に選択済みの
+canonical QOIとraw BGRx pairをdevelopment machineへ渡す。unrelated runは含めない。
+
+改善時はpaired raw frameをregistered normalizerで再変換してsource-to-canonicalを先に検査し、その後
+canonical frame以降をliveと同じproduction recognition codeでreplayする。修正は報告runと既存frozen
+suiteを通し、new bundleをside-by-sideでtargetへ置いてrollback可能にする。threshold、geometryまたは
+recognition修正だけを目的に追加playを要求せず、prospective confirmationは次の自然な通常playで行う。
+
+delivery checkpointは次の順序とする。
+
+1. manifest-bound raw BGRx/canonical QOI transform inspectorを実装し、現在のbounded retentionだけで
+   source-to-canonicalとrecognitionを分離診断できることを確認する。
+2. current release binary、resource、runtime prerequisiteをbindするprivate operator bundleを作り、cleanな
+   compatible Bazzite環境でrepository checkoutなしにverify/loadできることを確認する。
+3. scorepeek-owned markerをguided setupへ含め、target 4K Wayland profileをauthorして独立marker replayを通す。
+4. profile名だけのroutine run、status、pre-recognition bounded recent canonical/raw problem-report tail、
+   fixed-count pending-report ledger、explicit marker、既存bytesのfreeze/export、scorepeek-only ordered
+   teardownを通す。
+5. resident evidenceを持つseeded user-visible failureをmark/exportし、development replay、修正、replacement
+   bundle、target verify、rollbackまでを追加playなしで一巡させる。
+6. 自然な常用playからsemantic、lifecycle、frame age、queue/retention、CPU/memory/game frametimeを測定し、
+   exact 4K profileをdiagnostic useからsupportedへ昇格できるか判定する。
+
+各target invocationはまずbounded start-attempt envelopeでbundle preflight、source wait/acquisition、
+binding admissionを区別する。exact admissionがcapture generationを作った場合だけADR 0025の
+binding-owned Diagnostic Runを開始してattemptからlinkし、frame reception、normalization、screen inspection、
+field inference、song resolution、evidence persistence、ordered shutdownをstable operation/error typeで
+区別する。admission前failureを架空のcapture Diagnostic Runにしない。public recognition result、操作CLI、
+out-of-band diagnostic artifactは混在させない。recording failure、capacity、queue drop、tail evictionまたは
+flush timeoutは`partial | dropped` evidenceとして残すが、play、capture resultまたはrecognition resultを
+変更しない。
+
 ## 実装順序
 
 1. **M0**: independent design、repository bootstrap、target inventoryを確立する。
@@ -474,6 +544,10 @@ NV12、別color profileへ黙ってfallbackしない。
     live diagnosticsを検証し、その後versioned event schemaとNDJSON daemonを統合する。ゲーム全体の
     state machine、attempt、modeまたはretry回数は実装しない。
 11. **M8**: catalog update replay、full private holdout、Bazzite live flowをrelease gateへ統合する。
+
+M3/M4からM7へ進む間は、ADR 0047のcross-machine delivery checkpointを縦に通す。event authorityや
+public releaseを待ってからtarget deploymentを始めず、現在のcapture/recognition/diagnostic coreを
+private bundleとして常用し、得られた通常runをM4/M6/M7の改善入力にする。
 
 新規runtime、training、parser、capture dependencyは、version、license、代替案、bundle/host影響を
 一括提示して承認を得た後にだけ追加する。

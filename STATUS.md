@@ -24,6 +24,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   replays accept the reviewed selections without weighted score fusion or threshold relaxation.
   The exact transform comparison command remains a next boundary; no repeated play was needed to
   repair the observed recognition failures.
+  ADR 0047 now makes an operator-owned 4K Bazzite machine the first consumer acceptance target:
+  package the current core as a private verified bundle, explicitly calibrate one target profile,
+  run it during ordinary play, transfer only selected bounded evidence, replay and improve it on
+  the development machine, and return a rollback-capable bundle without requesting tuning-only
+  plays. No portable bundle or 4K target profile is implemented at this checkpoint.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -547,17 +552,26 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 1. Add a bounded offline transform inspector that selects one manifest-bound raw BGRx/canonical QOI
    pair and an expected Gamescope binding digest, reruns the registered fractional normalizer, and
    reports exact/aggregate pixel differences without another capture session.
-2. Extend prospective retention evidence only if the bounded offline transform inspector exposes a
-   missing source contract, export, or capacity invariant; do not broaden routine raw retention.
-3. At the next naturally occurring user-started INFINITAS session, select the identity-geometry
-   1920x1080 Wayland binding and require exact admission plus current-layout live music-select
-   resolution, result title, artist, `CLEAR TYPE`, song decision, complete diagnostic/recognition
-   artifacts, and ordered scorepeek teardown before defining event authority, target-host
-   performance acceptance, or support. Do not request another play merely to tune recognition.
+2. Define and implement the create-only `scorepeek-operator-bundle-v1` around a freshly built Linux
+   x86-64 release binary, immutable catalog/model/runtime resources, exact digests and sizes, and
+   explicit host prerequisites. Verify it on a clean compatible Bazzite environment without a
+   repository checkout, mise, Rust, or Python in the game-session path.
+3. Add explicit guided Gamescope calibration around a scorepeek-owned known marker, then use it on
+   the operator's 4K Bazzite machine to author and independently verify one exact Wayland profile.
+   This target-machine mutation and deployment remain separate operator-authority boundaries.
+4. Add the profile-selected routine entrypoint, a pre-recognition bounded in-memory recent
+   canonical/raw problem-report tail with optional same-sequence observation links, explicit
+   operator marker, fixed-count pending-report ledger with bounded worker-watermark finalization,
+   and existing-bytes-only freeze/export surface.
+   Keep pre-admission attempts separate from ADR 0025 binding-owned Diagnostic Runs, then complete
+   one marked target-to-development replay/update/rollback round trip during natural play.
+   Scorepeek must never start, signal, terminate, or restart INFINITAS or the ordinary Gamescope
+   process.
 
-Do not proceed to automatic calibration, Portal/OBS fallback, event emission, soak/performance, or
-support claims until transform replay and a prospective current-layout normal live recognition
-session have complete immutable evidence.
+Do not broaden routine raw retention, silently calibrate or switch profiles, request play solely to
+tune recognition, or claim event authority, target-host performance acceptance, public
+redistribution, or support before the corresponding ADR 0047 delivery checkpoint has complete
+evidence.
 
 ## Stable milestone map
 
