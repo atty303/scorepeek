@@ -22,9 +22,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   one-line active row is primary prefix evidence, while the arbitrary central-title texture and
   artist can only strongly corroborate or narrow a tie. Complete recording and active-catalog
   replays accept the reviewed selections without weighted score fusion or threshold relaxation.
-  The exact transform comparison command remains a next boundary; no repeated play was needed to
-  repair the observed recognition failures.
-  ADR 0047 now makes an operator-owned 4K Bazzite machine the first consumer acceptance target:
+  No independent transform mismatch or changed normalizer currently justifies replaying a
+  scorepeek-written raw/canonical pair through the same implementation. ADR 0048 trusts
+  operator-selected local artifacts, removes that transform-first checkpoint and duplicate
+  problem-report retention, and makes an operator-owned 4K Bazzite machine the first consumer
+  acceptance target:
   package the current core as a private verified bundle, explicitly calibrate one target profile,
   run it during ordinary play, transfer only selected bounded evidence, replay and improve it on
   the development machine, and return a rollback-capable bundle without requesting tuning-only
@@ -528,13 +530,18 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   pixels. Stable-selection acceptance, event daemon,
   target-host performance gate, and supported capture profile remain unverified. The corrected
   edge coordinates did not lower the predicate threshold. The earlier run has no paired raw source,
-  so its exact source-to-canonical transform cannot be reconstructed; new foreground runs can
-  retain that pair, but the exact offline transform comparison command is not yet implemented.
+  so its exact source-to-canonical transform cannot be reconstructed. New foreground runs can
+  retain a pair if a future observed transform mismatch or normalizer change requires comparison;
+  the absence of a transform inspector is not a current execution blocker.
 - Current recordings and provisional labels do not establish title-disjoint result accuracy,
   calibrated thresholds, result dwell, miss denominator, deduplication, or release accuracy.
 - Persistent scheduler installation was verified in isolation but not applied to the operator's
   actual configuration. Real S3 credentials/provider behavior and remote bucket lifecycle remain
   untested.
+- Some existing offline corpus paths still perform the repeated post-consumption source hashing,
+  complete frame/crop rehashing, measurement recomputation, or review-plan reconstruction that ADR
+  0048 now supersedes. Those checks add no authority; simplify each path when it is next changed,
+  with the selected digest, required schema/references, and result invariants retained.
 
 ## Approval and authority boundaries
 
@@ -549,26 +556,25 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Add a bounded offline transform inspector that selects one manifest-bound raw BGRx/canonical QOI
-   pair and an expected Gamescope binding digest, reruns the registered fractional normalizer, and
-   reports exact/aggregate pixel differences without another capture session.
-2. Define and implement the create-only `scorepeek-operator-bundle-v1` around a freshly built Linux
+1. Define and implement the create-only `scorepeek-operator-bundle-v1` around a freshly built Linux
    x86-64 release binary, immutable catalog/model/runtime resources, exact digests and sizes, and
    explicit host prerequisites. Verify it on a clean compatible Bazzite environment without a
-   repository checkout, mise, Rust, or Python in the game-session path.
-3. Add explicit guided Gamescope calibration around a scorepeek-owned known marker, then use it on
+   repository checkout, mise, Rust, or Python in the game-session path. Complete bundle verification
+   belongs to creation, transfer and activation; routine startup must not separately rehash resources
+   that the required loader reads.
+2. Add explicit guided Gamescope calibration around a scorepeek-owned known marker, then use it on
    the operator's 4K Bazzite machine to author and independently verify one exact Wayland profile.
    This target-machine mutation and deployment remain separate operator-authority boundaries.
-4. Add the profile-selected routine entrypoint, a pre-recognition bounded in-memory recent
-   canonical/raw problem-report tail with optional same-sequence observation links, explicit
-   operator marker, fixed-count pending-report ledger with bounded worker-watermark finalization,
-   and existing-bytes-only freeze/export surface.
-   Keep pre-admission attempts separate from ADR 0025 binding-owned Diagnostic Runs, then complete
-   one marked target-to-development replay/update/rollback round trip during natural play.
+3. Add the profile-selected routine entrypoint using ADR 0043's existing bounded retention and
+   existing-bytes-only freeze/export surface. Keep pre-admission attempts separate from ADR 0025
+   binding-owned Diagnostic Runs, then complete one target-to-development replay/update/rollback
+   round trip during natural play. Add new tail, marker or ledger machinery only if retained target
+   evidence demonstrates a concrete gap.
    Scorepeek must never start, signal, terminate, or restart INFINITAS or the ordinary Gamescope
    process.
 
-Do not broaden routine raw retention, silently calibrate or switch profiles, request play solely to
+Do not add transform replay without an independent oracle, broaden routine raw retention, silently
+calibrate or switch profiles, request play solely to
 tune recognition, or claim event authority, target-host performance acceptance, public
 redistribution, or support before the corresponding ADR 0047 delivery checkpoint has complete
 evidence.

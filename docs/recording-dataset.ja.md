@@ -80,17 +80,20 @@ mise run corpus:recording:import -- --store /absolute/private/store --capture-co
 ```
 
 このmodeはsource SHA-256とbytesをgeneration identityとして維持し、絶対pathだけを
-local locatorへ保存する。pathはgeneration、manifest、remote objectへ入らない。seal、verify、extract、
-replay、pushは利用時に外部fileの全byte hashを再検証する。fileが移動した場合は、同じbytesを新pathから
-再importするとlocatorだけを更新し、dataset identityは変わらない。外部fileはregular fileでなければ
-ならない。permission、ownership、ACL、read access、durabilityはoperatorが管理し、scorepeekはmodeを
-受理条件または出力保証にしない。
+local locatorへ保存する。pathはgeneration、manifest、remote objectへ入らない。seal、extract、replay、
+pushは、そのoperationがsource identityを必要とするときに選択した外部fileを一度full hashし、同じ
+open handleを処理へ渡す。明示的なverifyとremote側へ渡ったbytesは各境界でcomplete verificationを行う。
+fileが移動した場合は、同じbytesを新pathから再importするとlocatorだけを更新し、dataset identityは
+変わらない。外部fileはregular fileでなければならない。permission、ownership、ACL、read access、
+durabilityはoperatorが管理し、scorepeekはmodeを受理条件または出力保証にしない。
 
 成功時の`recording_sha256`が録画byte identityである。同じ録画とcontextの再importは
 idempotentなので、成功したか不明な場合は同じコマンドを再実行できる。copy modeの初回importは外側の
 source SHA-256を確定し、private stagingへcopyしながら同じSHA-256を再確認したうえで、そのstaging
 snapshotだけをFFV1 video packet-orderのPTS probeへ渡す。`--external`の初回importは一つのopen file
-handleをfull hashしてからcontractとpacket-orderを観測し、同じhandleの全byte SHA-256を再確認する。
+handleを一度full hashしてdeclared source identityを確認してから、その同じhandleでcontractとpacket-orderを
+観測する。concurrent writerを含まない通常operationでは、観測後に同じlocal handleをもう一度full hashしない。
+明示的なlocal verifyとremote transferは、それぞれの境界でcomplete bytesを検証する。
 成功後にだけcanonical pathとsource SHA-256をprivate locatorへbindingするため、invalid mediaは
 孤立locatorを残さない。どちらもstream contractがcapture profileと一致した場合だけsource bindingを
 公開する。完全なrecording bundleが同じsource SHA-256とcontextですでに存在する場合、
@@ -145,20 +148,24 @@ mise run corpus:music-list:observation-draft:inspect -- /absolute/private/music-
 割り当てない。同じcanonical extraction内の隣接decode index、両cropの
 file/pixel SHA-256、申告RGB L1差分合計、および比較したRGB値数を必須とする。ただしこの入口は
 artifactを読まず、L1を再計算せず、常に`evidence_verified: false`を返す。draftを校正入力として
-使ってはならない。artifact-bound検証は次の入口で両manifest、canonical frame、crop bytesを
-再hashし、cropがcanonical frameの固定ROIと一致することとRGB L1を再計算する。
+使ってはならない。次の入口は現在、両manifest、canonical frame、crop bytesを再hashし、cropが
+canonical frameの固定ROIと一致することとRGB L1を再計算するが、ADR 0048ではこのfull-readと
+再計算を未追随のlegacy behaviorとする。将来contractが校正入力として必要とするのは、選択digest、
+schema/reference、固定ROI、RGB値数と集約値の整合性であり、前段artifactの再審査ではない。
 
 ```text
 mise run corpus:music-list:observation-draft:verify -- /absolute/private/music-list-observation-draft.json
 ```
 
-`evidence_verified: true`の結果だけを使ってthresholdを固定する。1 frame/slotへの相反annotationは拒否し、`selected`、
+現行commandの`evidence_verified: true`は追加authorityではなく、上記の必要contractを満たした入力だけを
+threshold校正へ使う。1 frame/slotへの相反annotationは拒否し、`selected`、
 `clipped`、`non_title`、`unknown`は完全titleを持てない。
 
 全20 rowを一つの隣接frame pairとして測る場合は、各frameに20件ちょうどのsemantic annotationと、
 pair全体に`stationary`、`scrolling`または理由付き`unknown`を付けた
 `scorepeek-private-music-list-motion-request-v1`を用意する。測定値からmotion正解を自動推定せず、次の
-入口で両frameの全artifactを再hashして各rowと合計のRGB L1を生成する。
+入口で選択digestと必要なshape/referenceを確認し、各rowと合計のRGB L1を生成する。測定に必要な
+pixel readは行うが、同じbytesを別の完全性審査として重ねて読まない。
 
 ```text
 mise run corpus:music-list:motion:measure -- --output /absolute/private/music-list-motion-artifact.json /absolute/private/music-list-motion-request.json
@@ -170,13 +177,15 @@ mise run corpus:music-list:motion:review-apply -- --output /absolute/private/rev
 出力は`scorepeek-private-music-list-motion-artifact-v1`であり、既存fileを置換しない。`unknown` pairは
 分布観測には残せるがthresholdの正解集合へ使わない。両frameのlocked/dimmed、INFINITAS-blue、
 LEGGENDARIA-purple、selected、clipped、separator、unlock-conditionも個別に保持し、標準titleへ暗黙変換しない。
-`review-plan`はartifactを再検証し、全row occurrenceを残したまま、pixel SHA-256が完全一致するcropだけを
+`review-plan`は選択したartifactをdigest/schemaで受け取り、全row occurrenceを残したまま、pixel SHA-256が完全一致するcropだけを
 一つの目視単位へまとめる。色、明るさ、OCR結果またはmotion測定値からannotationを生成しない。
-`review-apply`はartifactからplanを再構築して完全一致を確認し、plan SHA-256へbindしたcanonicalな
+`review-apply`は選択したplan SHA-256へbindしたcanonicalな
 `scorepeek-private-music-list-motion-review-decisions-v1`だけを受け入れる。各decisionは
 `crop_pixel_sha256`とunknown以外の`annotation`を一つ持つ。未確定groupはdecisionから省略し、出力requestでは
 元のannotation（通常は理由付きunknown）のまま残す。decisionの重複、planにないhash、改変されたartifact/plan、
 既存outputは拒否する。出力requestを再度`motion measure`へ渡すことで、部分レビュー済みartifactを作成できる。
+現行`motion:verify`の全測定再計算、`review-plan`のcomplete artifact再検証、`review-apply`のplan再構築は
+未追随のlegacy behaviorであり、追加authorityを持たない。
 
 ## generationを固定して保存する
 
@@ -209,10 +218,11 @@ mise run corpus:dataset:remote-verify -- --store /absolute/private/store --remot
 remoteにはmutableな`latest`やdelete CLIを作らない。開発記録、model export record、replay suiteは
 使用した`generation_sha256`を明記する。
 
-pushするobjectはuniqueなscorepeek-owned remote staging keyへ先にuploadし、stagingの全byte hashと
-同じopen source handleのupload後hashを検証してから、content-addressed final keyへ条件付きで
-server-side publishする。final keyが競合した場合は既存全byteを再検証する。成功・失敗のどちらでも
-owned stagingを削除し、cleanupに失敗した操作は成功として扱わない。
+pushするobjectはidentity確認済みの同じopen source handleからuniqueなscorepeek-owned remote staging
+keyへuploadし、remote stagingの全byte hashを検証してから、content-addressed final keyへ条件付きで
+server-side publishする。同じlocal handleをupload後に再full-readしない。final keyが競合した場合は
+既存remote objectの全byteを再検証する。成功・失敗のどちらでもowned stagingを削除し、cleanupに
+失敗した操作は成功として扱わない。
 
 local storeとremote generationは、元録画だけでなくsource manifest、capture profile、media probe、
 recording manifestをそれぞれcanonical schemaとして再parseし、録画identity、source size、profile、

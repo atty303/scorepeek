@@ -44,9 +44,11 @@ and context is idempotent.
 `recording import` copies source bytes by default. Passing `--external` instead
 publishes a private local locator and leaves the recording at its canonical
 absolute path. The generation still binds only source SHA-256 and byte length;
-the path is never part of a manifest or remote object. Every consumer hashes
-the complete external file, and reimporting identical moved bytes updates only
-the locator.
+the path is never part of a manifest or remote object. An operation hashes the
+complete external file once when it must establish the declared source identity,
+then consumes that same opened handle without a second unconditional local read.
+Explicit verify and remote-transfer boundaries retain their complete checks.
+Reimporting identical moved bytes updates only the locator.
 
 ```text
 mise run corpus:recording:import -- --store /absolute/private/store --capture-context /absolute/private/capture-context.json /absolute/recordings/complete-run.mkv
@@ -303,27 +305,28 @@ rejects a second annotation for the same frame and slot. Stationary and scrollin
 an adjacent decode index, report an integer full-row RGB L1 measurement, and independently identify
 available versus locked/dimmed pixels and standard, INFINITAS-blue, or LEGGENDARIA-purple text.
 An unlock-condition bar is explicit non-title content, never a hidden title. The inspection command
-validates only canonical shape and ranges: it does not read extraction/crop artifacts, recompute
-L1, or return verified evidence (`evidence_verified` is always false). The verification command
-rehashes both manifests, full canonical frames, and crop bytes, confirms the fixed crop against the
-canonical frame, and recomputes L1 before returning `evidence_verified: true`. No state in this
-draft schema carries a catalog title or complete-title label. Locked/dimmed and non-standard color
-domains stay quarantined from standard-title training until a versioned correction is measured.
+validates canonical shape, ranges, selected digests, and references. A downstream stage treats the
+scorepeek-created crop and measurement artifacts as trusted; it does not repeat full-frame/crop
+hashing or recompute L1 merely to reproduce the upstream result. Existing `verify` behavior that
+still performs those repeated reads is superseded legacy behavior under ADR 0048 and supplies no
+additional evidence. No state in this draft schema carries a catalog title or complete-title label.
+Locked/dimmed and non-standard color domains stay quarantined from standard-title training until a
+versioned correction is measured.
 
 The `scorepeek-private-music-list-motion-request-v1` contract binds each human-annotated adjacent
 frame pair to both complete 21-crop artifacts. It requires exactly twenty semantic row annotations
 for each frame and one explicit `stationary`, `scrolling`, or reason-bearing `unknown` motion state.
-`motion:measure` never derives that state from pixels: it rehashes both canonical frames and every
-crop, records all twenty row RGB L1 sums and their checked aggregate, and creates a canonical
-`scorepeek-private-music-list-motion-artifact-v1` without replacing an existing file. The verify
-entry point recomputes all measurements. Unknown pairs remain measurement evidence but cannot set a
-stability threshold; locked/dimmed, INFINITAS-blue, LEGGENDARIA-purple, selected, clipped,
-separator, and unlock-condition annotations remain explicit rather than being folded into title
-motion. The create-only review-plan command re-verifies the complete artifact and groups only exact
-pixel-identical row crops. The create-only review-apply command reconstructs that plan from verified
-artifact bytes, accepts only canonical plan-digest-bound partial human decisions, and leaves omitted
-groups with their original annotations unchanged; initially these are usually unknown. It never
-derives labels from luminance, color, OCR, or motion values.
+`motion:measure` never derives that state from pixels: it records all twenty row RGB L1 sums and
+their checked aggregate, and creates a canonical
+`scorepeek-private-music-list-motion-artifact-v1` without replacing an existing file. Unknown pairs
+remain measurement evidence but cannot set a stability threshold; locked/dimmed,
+INFINITAS-blue, LEGGENDARIA-purple, selected, clipped, separator, and unlock-condition annotations
+remain explicit rather than being folded into title motion. The create-only review-plan command
+consumes that selected artifact and groups only exact pixel-identical row crops. The create-only
+review-apply command accepts canonical plan-digest-bound partial human decisions and leaves omitted
+groups with their original annotations unchanged; initially these are usually unknown. Neither
+stage reconstructs or re-adjudicates the preceding scorepeek-owned artifact. It never derives labels
+from luminance, color, OCR, or motion values.
 
 Python 3.12.13 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
 PaddlePaddle CPU 3.3.1, Apache-2.0 `paddle2onnx` 2.1.0, and their complete
@@ -606,8 +609,8 @@ opaque `episode_sha256`. The generator uses that digest as the canonical
 episode ID and rejects an episode group that reappears after a different group
 has begun. Decode indexes must still increase strictly.
 
-Generation revalidates the stored source bytes and every referenced complete
-label before publishing canonical JSON to
+Generation checks the selected source-manifest digest/schema and each referenced label's required
+schema plus exact frame, annotation, and screen-class binding before publishing canonical JSON to
 `indexes/<replay_index_sha256>.json`. Publication shares the corpus writer
 lock, uses fsync boundaries, recovers only owned index
 staging files, and is idempotent for the same bytes. The index store admits at
@@ -615,7 +618,8 @@ most 1,024 objects, 32 MiB per object, and 4 GiB total. Its aggregate-only
 summary contains the fixture ID, index digest, and frame and episode counts.
 The generated index is directly usable as one entry in a replay suite; suite
 assembly remains explicit because split-contract selection is a human dataset
-decision.
+decision. Index generation does not rehash the source media or re-adjudicate intrinsic label
+contents already accepted by label authoring.
 
 `scorepeek-private-corpus-replay-suite-v2` is the corpus-wide validation unit.
 It contains an explicit `in_profile` or `profile_disjoint` split contract and

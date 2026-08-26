@@ -113,7 +113,8 @@
   accepted field認識、event daemonは未着手）
 - 別machine常用プレイ診断ループ: 計画確定（同一operator向けprivate bundle、明示的marker
   calibration、profile選択だけの通常起動、bounded local evidence、選択runだけの明示transfer、
-  development-machine replay、side-by-side更新とrollbackまで。4K target profileの実装・校正は未着手）
+  development-machine replay、side-by-side更新とrollbackまで。ADR 0048によりtransform-firstと
+  duplicate problem-report tailを外し、4K target profileの実装・校正は未着手）
 - scorepeek-owned OCR学習/export: smallをartist/chart context/selection song contextと統合した後の凍結残差が
   missing OCR signalに帰属し、別経路が安全に解消できる場合だけ再検討
 - Bazzite実機検証とprivate corpus収集: 着手（OBS/vkcapture実録画1本のcopyless isolated
@@ -470,41 +471,36 @@ restartしない。scorepeekの停止はscorepeek-owned receiver、provider、fi
 経路へ流して診断改善を開始するが、accepted eventまたはsupported profileとは呼ばない。
 
 通常runのlocal recordingは既定有効、bounded、opt-out可能とし、remote送信は既定無効の明示操作とする。
-保持pixelはADR 0043のfailure-window policyから増やさない。利用者が見逃しや誤認識を確認した場合、
-foreground applicationはscreen inspection/recognitionより前に、fixed age/count/bytesのrecent canonical-owner
-memory tailと、さらに小さいsame-sequence raw BGRx owner集合を保持する。completed screen/field observationは
-存在する場合だけ同じsequenceへlinkし、tailへのpixel選択をtriggerしない。tailがresidentな間の明示的problem
-markerは指定sequence/intervalのcanonical/raw ownerをfixed-count pending-report ledgerへ即座にclaimして
-captureを待たせず返る。pending reportは対象sequenceごとにworker completion、明示queue/drop、worker terminal、
-またはbounded finalize timeoutへ到達するまでscreen/field/recognition linkを受理し、watermark確定後だけmanifestを
-finalizeする。`screen_observation_unavailable`または`field_observation_unavailable`は、その後に結果が到着しないと
-確定してからだけ使い、queue drop、worker failure、timeoutはそれぞれのtyped ownerを保持する。後からのfreezeは
-既に保存されたbytesのretention priorityだけを変更し、未保存observationを復元したとは扱わない。選択runの
-exportだけがbundle/profile identity、complete/partial status、exact OCR/catalog/song/decision、既に選択済みの
-canonical QOIとraw BGRx pairをdevelopment machineへ渡す。unrelated runは含めない。
+保持pixelはADR 0043のfailure-window policyから増やさない。まず既存の12-frame unknown tail、
+partial-resultおよびunknown-to-known transition retention、選択済みsame-sequence raw/canonical pairを
+targetで使用する。別のpre-recognition tail、problem-report ledgerまたはworker watermarkは、自然なtarget runで
+既存retentionが具体的な必要証拠を失った場合だけ別decisionで追加する。後からのfreezeは既に保存されたbytesの
+retention priorityだけを変更し、未保存observationを復元したとは扱わない。選択runのexportだけが
+bundle/profile identity、complete/partial status、exact OCR/catalog/song/decision、既に選択済みのcanonical
+QOIとraw BGRx pairをdevelopment machineへ渡す。unrelated runは含めない。
 
-改善時はpaired raw frameをregistered normalizerで再変換してsource-to-canonicalを先に検査し、その後
-canonical frame以降をliveと同じproduction recognition codeでreplayする。修正は報告runと既存frozen
-suiteを通し、new bundleをside-by-sideでtargetへ置いてrollback可能にする。threshold、geometryまたは
-recognition修正だけを目的に追加playを要求せず、prospective confirmationは次の自然な通常playで行う。
+改善時はcanonical frame以降をliveと同じproduction recognition codeでreplayする。raw-to-canonical比較は、
+観測済みtransform不一致、normalizer変更、または独立実装という具体的なoracleがある場合だけ追加する。修正は
+報告runと既存frozen suiteを通し、new bundleをside-by-sideでtargetへ置いてrollback可能にする。threshold、
+geometryまたはrecognition修正だけを目的に追加playを要求せず、prospective confirmationは次の自然な通常playで行う。
 
 delivery checkpointは次の順序とする。
 
-1. manifest-bound raw BGRx/canonical QOI transform inspectorを実装し、現在のbounded retentionだけで
-   source-to-canonicalとrecognitionを分離診断できることを確認する。
-2. current release binary、resource、runtime prerequisiteをbindするprivate operator bundleを作り、cleanな
+1. current release binary、resource、runtime prerequisiteをbindするprivate operator bundleを作り、cleanな
    compatible Bazzite環境でrepository checkoutなしにverify/loadできることを確認する。
-3. scorepeek-owned markerをguided setupへ含め、target 4K Wayland profileをauthorして独立marker replayを通す。
-4. profile名だけのroutine run、status、pre-recognition bounded recent canonical/raw problem-report tail、
-   fixed-count pending-report ledger、explicit marker、既存bytesのfreeze/export、scorepeek-only ordered
-   teardownを通す。
-5. resident evidenceを持つseeded user-visible failureをmark/exportし、development replay、修正、replacement
+2. scorepeek-owned markerをguided setupへ含め、target 4K Wayland profileをauthorして独立marker replayを通す。
+3. profile名だけのroutine run、status、ADR 0043の既存retention、既存bytesのfreeze/export、
+   scorepeek-only ordered teardownを通す。
+4. 既存retentionが選択したevidenceをexportし、development replay、修正、replacement
    bundle、target verify、rollbackまでを追加playなしで一巡させる。
-6. 自然な常用playからsemantic、lifecycle、frame age、queue/retention、CPU/memory/game frametimeを測定し、
+5. 自然な常用playからsemantic、lifecycle、frame age、queue/retention、CPU/memory/game frametimeを測定し、
    exact 4K profileをdiagnostic useからsupportedへ昇格できるか判定する。
 
-各target invocationはまずbounded start-attempt envelopeでbundle preflight、source wait/acquisition、
-binding admissionを区別する。exact admissionがcapture generationを作った場合だけADR 0025の
+bundleのcomplete verificationは作成、transfer後およびactivation時に行う。routine invocationはactivated
+bundle/profile identityとhost prerequisiteをpreflightし、実resource bytesは必須loaderが一度読む経路で検証する。
+preflightとloaderが同じresourceを別々にfull readしない。各target invocationはbounded start-attempt envelopeで
+source wait/acquisition、binding admissionを区別する。exact admissionがcapture generationを作った場合だけ
+ADR 0025の
 binding-owned Diagnostic Runを開始してattemptからlinkし、frame reception、normalization、screen inspection、
 field inference、song resolution、evidence persistence、ordered shutdownをstable operation/error typeで
 区別する。admission前failureを架空のcapture Diagnostic Runにしない。public recognition result、操作CLI、
@@ -545,7 +541,7 @@ flush timeoutは`partial | dropped` evidenceとして残すが、play、capture 
     state machine、attempt、modeまたはretry回数は実装しない。
 11. **M8**: catalog update replay、full private holdout、Bazzite live flowをrelease gateへ統合する。
 
-M3/M4からM7へ進む間は、ADR 0047のcross-machine delivery checkpointを縦に通す。event authorityや
+M3/M4からM7へ進む間は、ADR 0048で簡略化したADR 0047のcross-machine delivery checkpointを縦に通す。event authorityや
 public releaseを待ってからtarget deploymentを始めず、現在のcapture/recognition/diagnostic coreを
 private bundleとして常用し、得られた通常runをM4/M6/M7の改善入力にする。
 

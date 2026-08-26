@@ -17,7 +17,8 @@ authoritative.
 - [ADR 0011: Index FFV1 recordings by packet order](0011-index-ffv1-recordings-by-packet-order.md)
   supersedes ADR 0010's decoded-frame probing method.
 - [ADR 0012: Allow path-backed private source objects](0012-allow-path-backed-private-source-objects.md)
-  supersedes ADR 0010's mandatory local source copy.
+  supersedes ADR 0010's mandatory local source copy. ADR 0048 supersedes its unconditional
+  post-consumption full local rehash.
 - [ADR 0013: Bootstrap the shared layout from a normalized profile](0013-bootstrap-layout-from-a-normalized-profile.md)
   supersedes ADR 0009's multi-profile-first sequencing requirement.
 - [ADR 0014: Delegate local filesystem permissions to the operator](0014-delegate-local-filesystem-permissions.md)
@@ -122,6 +123,12 @@ authoritative.
 - [ADR 0047: Operate target machines from private bundles](0047-operate-target-machines-from-private-bundles.md)
   makes a same-operator private bundle, explicit marker calibration, ordinary profile-selected run,
   bounded local evidence, and offline replay/update round trip the first cross-machine usage path.
+  ADR 0048 supersedes its transform-first checkpoint, duplicate problem-report tail, and
+  per-invocation complete bundle verification.
+- [ADR 0048: Trust operator-owned artifacts across local stages](0048-trust-operator-owned-artifacts-across-local-stages.md)
+  removes unconditional repeated full reads and cross-artifact re-adjudication for trusted local
+  artifacts, and supersedes ADR 0047's transform-first, duplicate-tail, and per-run full-bundle
+  verification requirements.
 
 ## Historical
 
