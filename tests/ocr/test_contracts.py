@@ -27,6 +27,7 @@ from scorepeek_ocr.model_store import (
     OnnxBundleSource,
     OnnxModelSource,
     OnnxNativeContract,
+    default_store,
     load_registered_onnx_bundle,
     load_registered_onnx_source,
     load_registered_source,
@@ -1444,6 +1445,28 @@ class ContractTests(unittest.TestCase):
                         self.assertFalse(relative.exists())
             finally:
                 os.chdir(previous)
+
+    def test_default_model_store_uses_xdg_cache_and_home_fallback(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"XDG_CACHE_HOME": "/cache", "HOME": "/home/test"},
+            clear=True,
+        ):
+            self.assertEqual(default_store(), Path("/cache/scorepeek/models"))
+        with patch.dict(os.environ, {"HOME": "/home/test"}, clear=True):
+            self.assertEqual(
+                default_store(), Path("/home/test/.cache/scorepeek/models")
+            )
+        with patch.dict(
+            os.environ,
+            {"XDG_CACHE_HOME": "relative", "HOME": "/home/test"},
+            clear=True,
+        ):
+            with self.assertRaises(model_store.ModelStoreError):
+                default_store()
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(model_store.ModelStoreError):
+                default_store()
 
     def test_verified_model_bytes_are_detached_from_source_paths(self) -> None:
         data = b"registered model bytes"

@@ -43,11 +43,13 @@ pub use title_decoder::{
 };
 pub use title_onnx::{
     DynamicOfficialOnnxDecodeSummary, DynamicTextObservation, ExportContractParityRequest,
-    ExportContractParitySummary, LIVE_MODEL_ID, LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256,
-    OfficialOnnxDecodeSummary, OnnxParityError, OnnxParitySummary, OnnxTitleDiagnosticRequest,
-    RegisteredDynamicTitleRuntime, RegisteredRecognitionResources, RegisteredResourceLoadError,
+    ExportContractParitySummary, LIVE_MODEL_BUNDLE_MANIFEST_SHA256, LIVE_MODEL_ID,
+    LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256, OfficialOnnxDecodeSummary, OnnxParityError,
+    OnnxParitySummary, OnnxTitleDiagnosticRequest, RegisteredDynamicTitleRuntime,
+    RegisteredLiveModelFile, RegisteredRecognitionResources, RegisteredResourceLoadError,
     RegisteredResourceLoadErrorType, compare_export_contract, compare_paddle_onnx,
-    decode_dynamic_official_onnx_crops, decode_official_onnx_crops,
+    decode_dynamic_official_onnx_crops, decode_official_onnx_crops, registered_live_model_files,
+    verify_registered_live_model_bundle,
 };
 pub use title_preprocessor::{TITLE_PREPROCESSOR_ID, preprocess_title_crop};
 

@@ -19,7 +19,7 @@ mise run recognition:recording-simulation-profile-author -- --candidate /absolut
 Run the profile against an existing private diagnostic root:
 
 ```bash
-mise run recognition:recording-simulation -- --profile /absolute/private/profile.json --profile-sha256 PROFILE_SHA256 --extraction /absolute/private/canonical --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --bundle /absolute/private/model-bundle --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --recording enabled
+mise run recognition:recording-simulation -- --profile /absolute/private/profile.json --profile-sha256 PROFILE_SHA256 --extraction /absolute/private/canonical --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --recording enabled
 ```
 
 Success requires every canonical frame to be inspected, every submitted screen to retain a
@@ -30,7 +30,7 @@ recognition correctness. To inspect exact values without changing a v1 profile, 
 artifact root through the evidence command:
 
 ```bash
-mise run recognition:recording-evidence -- --profile /absolute/private/profile.json --profile-sha256 PROFILE_SHA256 --extraction /absolute/private/canonical --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --bundle /absolute/private/model-bundle --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --recording enabled --recognition-artifact /absolute/private/new-evidence-directory
+mise run recognition:recording-evidence -- --profile /absolute/private/profile.json --profile-sha256 PROFILE_SHA256 --extraction /absolute/private/canonical --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --recording enabled --recognition-artifact /absolute/private/new-evidence-directory
 ```
 
 The final result-song gate uses a separately authored
@@ -38,7 +38,7 @@ The final result-song gate uses a separately authored
 `expected_song_id`; a v2 profile is rejected if any episode omits it. Run it with:
 
 ```bash
-mise run recognition:recording-recognition-simulation -- --profile /absolute/private/profile-v2.json --profile-sha256 PROFILE_SHA256 --extraction /absolute/private/canonical --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --bundle /absolute/private/model-bundle --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --recording enabled --recognition-artifact /absolute/private/new-evidence-directory
+mise run recognition:recording-recognition-simulation -- --profile /absolute/private/profile-v2.json --profile-sha256 PROFILE_SHA256 --extraction /absolute/private/canonical --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --recording enabled --recognition-artifact /absolute/private/new-evidence-directory
 ```
 
 The operator-owned artifact retains exact OCR strings, a run-scoped exact catalog

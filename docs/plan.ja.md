@@ -455,8 +455,10 @@ NV12、別color profileへ黙ってfallbackしない。
 一般公開releaseより先に、cargo-distで通常のLinux x86-64 binary archiveとSHA-256 checksumをlocal生成し、
 repository checkout、mise、RustおよびPythonをgame-session pathから外す。archiveは`scorepeek` binaryと
 cargo-dist標準のrepository metadataだけを含み、`scorepeek-corpus`、catalog、model、capture binding、frame、
-player dataおよびcredentialを含めない。private catalog/modelは既存manifestを持つoperator dataとして
-`$XDG_DATA_HOME/scorepeek`へ別途転送する。source permissionは引き続きpublic redistributionを制限するが、
+player dataおよびcredentialを含めない。private catalogは既存manifestを持つoperator dataとして
+`$XDG_DATA_HOME/scorepeek`へ別途転送する。固定PP-OCRv6-small modelはApache-2.0の再取得可能resourceとして
+通常commandの共通初期化で取得し、`$XDG_CACHE_HOME/scorepeek/models`へ保存する。初回またはcache削除後は
+networkを必要とし、offline利用前にはonlineで通常commandを一度成功させる。source permissionは引き続きpublic redistributionを制限するが、
 同一operator control domain内のprivate transferをsecret扱いやgeneric errorで妨げない。
 
 target machineでは、scorepeek-ownedな既知の1920x1080 markerをexact Gamescope Wayland configで

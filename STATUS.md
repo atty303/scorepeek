@@ -26,7 +26,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   scorepeek-written raw/canonical pair through the same implementation. ADR 0048 trusts
   operator-selected local artifacts, removes that transform-first checkpoint and duplicate
   problem-report retention. ADR 0049 replaces the custom private deployment unit with a standard
-  cargo-dist Linux x86-64 archive and checksum while keeping catalog and model resources separate.
+  cargo-dist Linux x86-64 archive and checksum while keeping the catalog outside the archive.
+  ADR 0050 classifies the fixed Apache-2.0 PP-OCRv6-small model as a disposable XDG cache: every
+  non-information CLI invocation ensures it globally, while help, version and doctor stay offline.
   The archive is now the first cross-machine delivery unit; an operator-owned 4K Bazzite machine
   remains the first consumer acceptance target. No target transfer or 4K profile is implemented at
   this checkpoint.
@@ -556,6 +558,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   and cargo-dist's README inclusion, and runs `--version` plus `doctor` with isolated home and XDG
   roots. Private resources remain outside the archive and no tag, installer, CI or public release
   path is configured.
+- PP-OCRv6-small is not operator data or a release member. The CLI fetches the three files from the
+  registered immutable official revision into `$XDG_CACHE_HOME/scorepeek/models`, with exact
+  size/digest checks, a writer lock, durable atomic publication and the existing 8-generation,
+  192-MiB-object and 512-MiB-total limits. A completed cache avoids network; the fixed loader still
+  verifies bytes when used. Catalogs remain separately managed under XDG data.
 
 ## Approval and authority boundaries
 
@@ -570,11 +577,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Transfer the cargo-dist Linux x86-64 archive and its SHA-256 checksum plus separately managed
-   catalog/model resources to a clean compatible Bazzite environment. Verify checksum, extraction,
-   `scorepeek --version`, `scorepeek doctor`, and resource loading without a repository checkout,
-   mise, Rust, or Python in the game-session path. This deployment and target-machine verification
-   remain a separate operator-authority boundary.
+1. Transfer the cargo-dist Linux x86-64 archive and its SHA-256 checksum plus the separately managed
+   catalog to a clean compatible Bazzite environment. Verify checksum, extraction, `scorepeek
+   --version`, `scorepeek doctor`, the first automatic PP-OCRv6-small download, and subsequent
+   offline cache reuse without a repository checkout, mise, Rust, or Python in the game-session
+   path. This deployment, real upstream download and target-machine verification remain a separate
+   operator-authority boundary.
 2. Add explicit guided Gamescope calibration around a scorepeek-owned known marker, then use it on
    the operator's 4K Bazzite machine to author and independently verify one exact Wayland profile.
    This target-machine mutation and deployment remain separate operator-authority boundaries.

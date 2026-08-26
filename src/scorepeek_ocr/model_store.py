@@ -723,14 +723,14 @@ def _valid_sha256(value: Any) -> bool:
 
 
 def default_store() -> Path:
-    configured = os.environ.get("XDG_DATA_HOME")
+    configured = os.environ.get("XDG_CACHE_HOME")
     if configured:
         base = Path(configured)
     else:
         home = os.environ.get("HOME")
         if not home:
-            raise ModelStoreError("HOME is required when XDG_DATA_HOME is unset")
-        base = Path(home) / ".local" / "share"
+            raise ModelStoreError("HOME is required when XDG_CACHE_HOME is unset")
+        base = Path(home) / ".cache"
     if not base.is_absolute():
         raise ModelStoreError("model store base must be absolute")
     return base / "scorepeek" / "models"

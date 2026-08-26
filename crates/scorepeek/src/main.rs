@@ -42,16 +42,54 @@ fn main() -> ExitCode {
 
 #[allow(clippy::too_many_lines)]
 fn run(args: &[OsString]) -> Result<(), String> {
+    run_with_model_initializer(args, |override_bundle| {
+        scorepeek::model_cache::ensure_small_model(override_bundle, |event| match event {
+            scorepeek::model_cache::ModelCacheEvent::DownloadStarted => {
+                eprintln!("scorepeek: downloading PP-OCRv6-small model...");
+            }
+            scorepeek::model_cache::ModelCacheEvent::DownloadCompleted => {
+                eprintln!("scorepeek: PP-OCRv6-small model download complete");
+            }
+        })
+        .map_err(|error| format!("scorepeek model initialization failed: {error}"))
+    })
+}
+
+fn run_with_model_initializer(
+    args: &[OsString],
+    initialize: impl FnOnce(Option<&Path>) -> Result<PathBuf, String>,
+) -> Result<(), String> {
+    if let Some(result) = try_offline_program_information(args).or_else(|| try_doctor(args)) {
+        return result;
+    }
+    let (override_bundle, args) = parse_global_model_bundle(args)?;
+    let bundle = initialize(override_bundle)?;
+    run_command(args, &bundle)
+}
+
+fn parse_global_model_bundle(args: &[OsString]) -> Result<(Option<&Path>, &[OsString]), String> {
+    match args {
+        [flag, bundle, rest @ ..] if flag == "--model-bundle" => {
+            if rest.is_empty() {
+                return Err("--model-bundle requires a command".to_owned());
+            }
+            Ok((Some(Path::new(bundle)), rest))
+        }
+        _ => Ok((None, args)),
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_command(args: &[OsString], bundle: &Path) -> Result<(), String> {
     if let Some(result) = try_diagnostic_control(args)
         .or_else(|| try_diagnostic_replay(args))
-        .or_else(|| try_recording_simulation(args))
-        .or_else(|| try_live_session(args))
-        .or_else(|| try_capture_commands(args))
-        .or_else(|| try_doctor(args))
+        .or_else(|| try_recording_simulation(args, bundle))
+        .or_else(|| try_live_session(args, bundle))
+        .or_else(|| try_capture_commands(args, bundle))
         .or_else(|| try_provisional_title_candidates(args))
         .or_else(|| try_integrated_context_crop(args))
-        .or_else(|| try_integrated_context_observe(args))
-        .or_else(|| try_registered_resource_gate(args))
+        .or_else(|| try_integrated_context_observe(args, bundle))
+        .or_else(|| try_registered_resource_gate(args, bundle))
         .or_else(|| try_dynamic_official_onnx_decode(args))
         .or_else(|| try_official_onnx_decode(args))
         .or_else(|| try_title_model_contract_parity(args))
@@ -219,20 +257,17 @@ impl From<recognition::RegisteredResourceLoadErrorType> for RegisteredResourceGa
     }
 }
 
-fn try_registered_resource_gate(args: &[OsString]) -> Option<Result<(), String>> {
+fn try_registered_resource_gate(
+    args: &[OsString],
+    bundle_root: &Path,
+) -> Option<Result<(), String>> {
     let [
         recognition_command,
         gate,
         catalog_flag,
         catalog_root,
-        bundle_flag,
-        bundle_root,
         catalog_digest_flag,
         catalog_digest,
-        model_digest_flag,
-        model_digest,
-        runtime_digest_flag,
-        runtime_digest,
     ] = args
     else {
         return None;
@@ -240,10 +275,7 @@ fn try_registered_resource_gate(args: &[OsString]) -> Option<Result<(), String>>
     if recognition_command != "recognition"
         || gate != "field-resource-load-gate"
         || catalog_flag != "--catalog-store"
-        || bundle_flag != "--bundle"
         || catalog_digest_flag != "--catalog-sha256"
-        || model_digest_flag != "--model-sha256"
-        || runtime_digest_flag != "--runtime-sha256"
     {
         return None;
     }
@@ -251,21 +283,17 @@ fn try_registered_resource_gate(args: &[OsString]) -> Option<Result<(), String>>
         catalog_root,
         bundle_root,
         catalog_digest,
-        model_digest,
-        runtime_digest,
     ))
 }
 
 fn registered_resource_gate(
     catalog_root: &OsStr,
-    bundle_root: &OsStr,
+    bundle_root: &Path,
     catalog_digest: &OsStr,
-    model_digest: &OsStr,
-    runtime_digest: &OsStr,
 ) -> Result<(), String> {
     let catalog_digest = parse_cli_sha256(catalog_digest, "catalog SHA-256")?;
-    let model_digest = parse_cli_sha256(model_digest, "model SHA-256")?;
-    let runtime_digest = parse_cli_sha256(runtime_digest, "runtime SHA-256")?;
+    let model_digest = recognition::LIVE_MODEL_SHA256.to_owned();
+    let runtime_digest = recognition::LIVE_RUNTIME_SHA256.to_owned();
     let descriptor = diagnostic_recording::DiagnosticRunDescriptor {
         run_id: "field-resource-load-gate".to_owned(),
         monotonic_start_ms: 0,
@@ -288,7 +316,7 @@ fn registered_resource_gate(
     let worker =
         recognition_live::field_observer::FieldObserverWorker::start(&descriptor, |binding| {
             binding
-                .load_registered_resources(Path::new(catalog_root), Path::new(bundle_root))
+                .load_registered_resources(Path::new(catalog_root), bundle_root)
                 .map(|resources| RegisteredResourceOwner {
                     _resources: resources,
                 })
@@ -391,9 +419,9 @@ fn print_registered_resource_gate_report(
     Ok(())
 }
 
-fn try_capture_commands(args: &[OsString]) -> Option<Result<(), String>> {
-    try_capture_result_recognition(args)
-        .or_else(|| try_capture_field_observation(args))
+fn try_capture_commands(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
+    try_capture_result_recognition(args, bundle)
+        .or_else(|| try_capture_field_observation(args, bundle))
         .or_else(|| try_capture_recognition_handoff(args))
         .or_else(|| try_capture_diagnostic_handoff(args))
         .or_else(|| try_capture_canonical_frame(args))
@@ -414,8 +442,6 @@ const CAPTURE_HANDOFF_FLAGS: &[&str] = &[
     "--build-sha256",
     "--canonical-layout-sha256",
     "--catalog-sha256",
-    "--model-sha256",
-    "--runtime-sha256",
     "--recording",
     "--environment-id",
     "--gamescope-version",
@@ -436,13 +462,10 @@ const CAPTURE_FIELD_OBSERVATION_FLAGS: &[&str] = &[
     "--duration-ms",
     "--diagnostic-root",
     "--catalog-store",
-    "--bundle",
     "--run-id",
     "--build-sha256",
     "--canonical-layout-sha256",
     "--catalog-sha256",
-    "--model-sha256",
-    "--runtime-sha256",
     "--recording",
     "--environment-id",
     "--gamescope-version",
@@ -463,13 +486,10 @@ const CAPTURE_RESULT_RECOGNITION_FLAGS: &[&str] = &[
     "--duration-ms",
     "--diagnostic-root",
     "--catalog-store",
-    "--bundle",
     "--run-id",
     "--build-sha256",
     "--canonical-layout-sha256",
     "--catalog-sha256",
-    "--model-sha256",
-    "--runtime-sha256",
     "--recording",
     "--environment-id",
     "--gamescope-version",
@@ -490,13 +510,10 @@ const LIVE_SESSION_FLAGS: &[&str] = &[
     "--capture-generation",
     "--diagnostic-root",
     "--catalog-store",
-    "--bundle",
     "--run-id",
     "--build-sha256",
     "--canonical-layout-sha256",
     "--catalog-sha256",
-    "--model-sha256",
-    "--runtime-sha256",
     "--recording",
     "--environment-id",
     "--gamescope-version",
@@ -511,12 +528,12 @@ const LIVE_SESSION_FLAGS: &[&str] = &[
     "--recognition-artifact",
 ];
 
-fn try_live_session(args: &[OsString]) -> Option<Result<(), String>> {
+fn try_live_session(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
     let values = command_flag_values(args, "run", "gamescope", LIVE_SESSION_FLAGS)?;
-    Some(run_live_session(&values))
+    Some(run_live_session(&values, bundle))
 }
 
-fn try_capture_result_recognition(args: &[OsString]) -> Option<Result<(), String>> {
+fn try_capture_result_recognition(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
     let values = capture_flag_values(
         args,
         "gamescope-result-recognition-gate",
@@ -527,17 +544,18 @@ fn try_capture_result_recognition(args: &[OsString]) -> Option<Result<(), String
         .expect("result recognition flags are non-empty");
     Some(run_capture_field_observation(
         common,
+        bundle,
         Some(Path::new(artifact)),
     ))
 }
 
-fn try_capture_field_observation(args: &[OsString]) -> Option<Result<(), String>> {
+fn try_capture_field_observation(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
     let values = capture_flag_values(
         args,
         "gamescope-field-observation-gate",
         CAPTURE_FIELD_OBSERVATION_FLAGS,
     )?;
-    Some(run_capture_field_observation(&values, None))
+    Some(run_capture_field_observation(&values, bundle, None))
 }
 
 fn try_capture_recognition_handoff(args: &[OsString]) -> Option<Result<(), String>> {
@@ -585,20 +603,17 @@ fn command_flag_values<'a>(
     Some(values)
 }
 
-fn run_live_session(values: &[&OsStr]) -> Result<(), String> {
+fn run_live_session(values: &[&OsStr], bundle_root: &Path) -> Result<(), String> {
     let [
         binding,
         binding_digest,
         generation,
         diagnostic_root,
         catalog_root,
-        bundle_root,
         run_id,
         build_digest,
         layout_digest,
         catalog_digest,
-        model_digest,
-        runtime_digest,
         recording,
         environment,
         version,
@@ -643,8 +658,8 @@ fn run_live_session(values: &[&OsStr]) -> Result<(), String> {
             normalizer_sha256: String::new(),
             canonical_layout_sha256: parse_cli_sha256(layout_digest, "canonical layout SHA-256")?,
             catalog_sha256: parse_cli_sha256(catalog_digest, "catalog SHA-256")?,
-            model_sha256: parse_cli_sha256(model_digest, "model SHA-256")?,
-            runtime_sha256: parse_cli_sha256(runtime_digest, "runtime SHA-256")?,
+            model_sha256: recognition::LIVE_MODEL_SHA256.to_owned(),
+            runtime_sha256: recognition::LIVE_RUNTIME_SHA256.to_owned(),
             replay: None,
         },
     };
@@ -669,7 +684,7 @@ fn run_live_session(values: &[&OsStr]) -> Result<(), String> {
                 diagnostic_root: Path::new(diagnostic_root),
             },
             catalog_root: Path::new(catalog_root),
-            bundle_root: Path::new(bundle_root),
+            bundle_root,
             recognition_artifact_root: Some(Path::new(recognition_artifact_root)),
             recognition_artifact_retention:
                 recognition_artifact::RecognitionArtifactRetention::ForegroundCompactedV1,
@@ -825,8 +840,6 @@ fn run_capture_handoff(values: &[&OsStr], inspect_screen: bool) -> Result<(), St
         build_digest,
         layout_digest,
         catalog_digest,
-        model_digest,
-        runtime_digest,
         recording,
         environment,
         version,
@@ -873,8 +886,8 @@ fn run_capture_handoff(values: &[&OsStr], inspect_screen: bool) -> Result<(), St
             normalizer_sha256: String::new(),
             canonical_layout_sha256: parse_cli_sha256(layout_digest, "canonical layout SHA-256")?,
             catalog_sha256: parse_cli_sha256(catalog_digest, "catalog SHA-256")?,
-            model_sha256: parse_cli_sha256(model_digest, "model SHA-256")?,
-            runtime_sha256: parse_cli_sha256(runtime_digest, "runtime SHA-256")?,
+            model_sha256: recognition::LIVE_MODEL_SHA256.to_owned(),
+            runtime_sha256: recognition::LIVE_RUNTIME_SHA256.to_owned(),
             replay: None,
         },
     };
@@ -907,6 +920,7 @@ fn run_capture_handoff(values: &[&OsStr], inspect_screen: bool) -> Result<(), St
 
 fn run_capture_field_observation(
     values: &[&OsStr],
+    bundle_root: &Path,
     recognition_artifact_root: Option<&Path>,
 ) -> Result<(), String> {
     let [
@@ -916,13 +930,10 @@ fn run_capture_field_observation(
         duration,
         diagnostic_root,
         catalog_root,
-        bundle_root,
         run_id,
         build_digest,
         layout_digest,
         catalog_digest,
-        model_digest,
-        runtime_digest,
         recording,
         environment,
         version,
@@ -969,8 +980,8 @@ fn run_capture_field_observation(
             normalizer_sha256: String::new(),
             canonical_layout_sha256: parse_cli_sha256(layout_digest, "canonical layout SHA-256")?,
             catalog_sha256: parse_cli_sha256(catalog_digest, "catalog SHA-256")?,
-            model_sha256: parse_cli_sha256(model_digest, "model SHA-256")?,
-            runtime_sha256: parse_cli_sha256(runtime_digest, "runtime SHA-256")?,
+            model_sha256: recognition::LIVE_MODEL_SHA256.to_owned(),
+            runtime_sha256: recognition::LIVE_RUNTIME_SHA256.to_owned(),
             replay: None,
         },
     };
@@ -988,7 +999,7 @@ fn run_capture_field_observation(
         capture_live::GamescopeFieldObservationGateConfig {
             handoff,
             catalog_root: Path::new(catalog_root),
-            bundle_root: Path::new(bundle_root),
+            bundle_root,
             recognition_artifact_root,
             recognition_artifact_retention:
                 recognition_artifact::RecognitionArtifactRetention::Complete,
@@ -1543,6 +1554,20 @@ fn try_program_information(args: &[OsString]) -> Option<Result<(), String>> {
     }
 }
 
+fn try_offline_program_information(args: &[OsString]) -> Option<Result<(), String>> {
+    match args {
+        [flag] if flag == "--help" => {
+            print_usage();
+            Some(Ok(()))
+        }
+        [flag] if flag == "--version" => {
+            println!("scorepeek {}", env!("CARGO_PKG_VERSION"));
+            Some(Ok(()))
+        }
+        _ => None,
+    }
+}
+
 fn try_diagnostic_control(args: &[OsString]) -> Option<Result<(), String>> {
     match args {
         [diagnostic, command, root_flag, root]
@@ -1697,13 +1722,16 @@ fn try_doctor(args: &[OsString]) -> Option<Result<(), String>> {
     })
 }
 
-fn try_recording_simulation(args: &[OsString]) -> Option<Result<(), String>> {
+fn try_recording_simulation(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
     try_recording_simulation_profile_author(args)
-        .or_else(|| try_recording_recognition_evidence_run(args))
-        .or_else(|| try_recording_simulation_run(args))
+        .or_else(|| try_recording_recognition_evidence_run(args, bundle))
+        .or_else(|| try_recording_simulation_run(args, bundle))
 }
 
-fn try_recording_recognition_evidence_run(args: &[OsString]) -> Option<Result<(), String>> {
+fn try_recording_recognition_evidence_run(
+    args: &[OsString],
+    bundle: &Path,
+) -> Option<Result<(), String>> {
     let [
         recognition,
         simulate,
@@ -1717,8 +1745,6 @@ fn try_recording_recognition_evidence_run(args: &[OsString]) -> Option<Result<()
         diagnostic_root,
         catalog_store_flag,
         catalog_store,
-        bundle_flag,
-        bundle,
         run_id_flag,
         run_id,
         build_digest_flag,
@@ -1739,7 +1765,6 @@ fn try_recording_recognition_evidence_run(args: &[OsString]) -> Option<Result<()
         && extraction_flag == "--extraction"
         && diagnostic_root_flag == "--diagnostic-root"
         && catalog_store_flag == "--catalog-store"
-        && bundle_flag == "--bundle"
         && run_id_flag == "--run-id"
         && build_digest_flag == "--build-sha256"
         && recording_flag == "--recording"
@@ -1812,7 +1837,7 @@ fn try_recording_simulation_profile_author(args: &[OsString]) -> Option<Result<(
     None
 }
 
-fn try_recording_simulation_run(args: &[OsString]) -> Option<Result<(), String>> {
+fn try_recording_simulation_run(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
     let [
         recognition,
         simulate,
@@ -1826,8 +1851,6 @@ fn try_recording_simulation_run(args: &[OsString]) -> Option<Result<(), String>>
         diagnostic_root,
         catalog_store_flag,
         catalog_store,
-        bundle_flag,
-        bundle,
         run_id_flag,
         run_id,
         build_digest_flag,
@@ -1845,7 +1868,6 @@ fn try_recording_simulation_run(args: &[OsString]) -> Option<Result<(), String>>
         && extraction_flag == "--extraction"
         && diagnostic_root_flag == "--diagnostic-root"
         && catalog_store_flag == "--catalog-store"
-        && bundle_flag == "--bundle"
         && run_id_flag == "--run-id"
         && build_digest_flag == "--build-sha256"
         && recording_flag == "--recording")
@@ -1873,7 +1895,7 @@ fn execute_recording_simulation(
     extraction: &OsStr,
     diagnostic_root: &OsStr,
     catalog_store: &OsStr,
-    bundle: &OsStr,
+    bundle: &Path,
     run_id: &OsStr,
     build_digest: &OsStr,
     recording: &OsStr,
@@ -1888,7 +1910,7 @@ fn execute_recording_simulation(
             extraction_directory: Path::new(extraction),
             diagnostic_root: Path::new(diagnostic_root),
             catalog_root: Path::new(catalog_store),
-            bundle_root: Path::new(bundle),
+            bundle_root: bundle,
             run_id: parse_diagnostic_run_id(run_id)?,
             build_sha256: parse_cli_sha256(build_digest, "build SHA-256")?,
             policy: parse_diagnostic_recording_policy(recording)?,
@@ -1968,7 +1990,7 @@ fn try_dynamic_official_onnx_decode(args: &[OsString]) -> Option<Result<(), Stri
         })
 }
 
-fn try_integrated_context_observe(args: &[OsString]) -> Option<Result<(), String>> {
+fn try_integrated_context_observe(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
     let [
         recognition,
         observe,
@@ -1976,10 +1998,6 @@ fn try_integrated_context_observe(args: &[OsString]) -> Option<Result<(), String
         crops,
         digest_flag,
         digest,
-        model_id_flag,
-        model_id,
-        bundle_flag,
-        bundle,
         output_flag,
         output,
     ] = args
@@ -1990,21 +2008,16 @@ fn try_integrated_context_observe(args: &[OsString]) -> Option<Result<(), String
         && observe == "integrated-context-observe"
         && crops_flag == "--crop-artifact"
         && digest_flag == "--crop-artifact-sha256"
-        && model_id_flag == "--model-id"
-        && bundle_flag == "--bundle"
         && output_flag == "--output")
         .then(|| {
             let digest = digest
                 .to_str()
                 .ok_or_else(|| "crop artifact SHA-256 must be UTF-8".to_owned())?;
-            let model_id = model_id
-                .to_str()
-                .ok_or_else(|| "model ID must be UTF-8".to_owned())?;
             let summary = recognition::observe_integrated_context(
                 Path::new(crops),
                 digest,
-                model_id,
-                Path::new(bundle),
+                recognition::LIVE_MODEL_ID,
+                bundle,
                 Path::new(output),
             )
             .map_err(|error| error.to_string())?;
@@ -2747,26 +2760,26 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek doctor\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256 --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition inspect-diagnostic-qoi --frame FILE --frame-sha256 SHA256\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --model-id MODEL_ID --bundle DIRECTORY --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
+        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256 --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition inspect-diagnostic-qoi --frame FILE --frame-sha256 SHA256\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
         env!("CARGO_PKG_VERSION")
     );
     println!(
-        "  scorepeek recognition field-resource-load-gate --catalog-store DIRECTORY --bundle DIRECTORY --catalog-sha256 SHA256 --model-sha256 SHA256 --runtime-sha256 SHA256"
+        "  scorepeek recognition field-resource-load-gate --catalog-store DIRECTORY --catalog-sha256 SHA256"
     );
     println!(
-        "  scorepeek capture gamescope-diagnostic-handoff-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --model-sha256 SHA256 --runtime-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER"
+        "  scorepeek capture gamescope-diagnostic-handoff-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER"
     );
     println!(
-        "  scorepeek capture gamescope-recognition-handoff-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --model-sha256 SHA256 --runtime-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER"
+        "  scorepeek capture gamescope-recognition-handoff-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER"
     );
     println!(
-        "  scorepeek capture gamescope-field-observation-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --catalog-store DIRECTORY --bundle DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --model-sha256 SHA256 --runtime-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER"
+        "  scorepeek capture gamescope-field-observation-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --catalog-store DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER"
     );
     println!(
-        "  scorepeek capture gamescope-result-recognition-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --catalog-store DIRECTORY --bundle DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --model-sha256 SHA256 --runtime-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER --recognition-artifact DIRECTORY"
+        "  scorepeek capture gamescope-result-recognition-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --catalog-store DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER --recognition-artifact DIRECTORY"
     );
     println!(
-        "  scorepeek run gamescope --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --diagnostic-root DIRECTORY --catalog-store DIRECTORY --bundle DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --model-sha256 SHA256 --runtime-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER --recognition-artifact DIRECTORY"
+        "  scorepeek run gamescope --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --diagnostic-root DIRECTORY --catalog-store DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --recording enabled|disabled --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER --recognition-artifact DIRECTORY"
     );
 }
 
@@ -2775,7 +2788,7 @@ mod tests {
     use super::{
         LIVE_SESSION_FLAGS, PrivatePublicationPoint, catalog_paths, catalog_sync_error,
         command_flag_values, prepare_live_diagnostic_root, publish_private_file,
-        publish_private_file_with, write_live_session_event,
+        publish_private_file_with, run_with_model_initializer, write_live_session_event,
     };
     use crate::capture_live::GamescopeLiveSessionEvent;
     use crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation;
@@ -2787,9 +2800,63 @@ mod tests {
         CatalogCandidateDomain, DynamicTextObservation, FieldNotObserved, FieldNotObservedReason,
         ResultScreenFieldObservations, ScreenFieldObservations,
     };
-    use std::ffi::OsStr;
+    use std::cell::Cell;
+    use std::ffi::{OsStr, OsString};
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn help_version_and_doctor_skip_model_initialization() {
+        for args in [["--help"], ["--version"], ["doctor"]] {
+            let initialized = Cell::new(false);
+            run_with_model_initializer(&args.map(OsString::from), |_| {
+                initialized.set(true);
+                Err("must not initialize".to_owned())
+            })
+            .unwrap();
+            assert!(!initialized.get());
+        }
+    }
+
+    #[test]
+    fn every_other_command_initializes_before_dispatch() {
+        let initialized = Cell::new(false);
+        let error = run_with_model_initializer(&[OsString::from("unknown")], |_| {
+            initialized.set(true);
+            Ok(PathBuf::from("/unused-model-bundle"))
+        })
+        .unwrap_err();
+        assert!(initialized.get());
+        assert_eq!(error, "usage: scorepeek --help");
+    }
+
+    #[test]
+    fn short_information_aliases_initialize_before_dispatch() {
+        for flag in ["-h", "-V"] {
+            let initialized = Cell::new(false);
+            run_with_model_initializer(&[OsString::from(flag)], |_| {
+                initialized.set(true);
+                Ok(PathBuf::from("/unused-model-bundle"))
+            })
+            .unwrap();
+            assert!(initialized.get());
+        }
+    }
+
+    #[test]
+    fn global_model_bundle_is_forwarded_to_initialization() {
+        let selected = Cell::new(false);
+        let args = [
+            OsString::from("--model-bundle"),
+            OsString::from("/development/small"),
+            OsString::from("unknown"),
+        ];
+        let _ = run_with_model_initializer(&args, |bundle| {
+            selected.set(bundle == Some(Path::new("/development/small")));
+            Ok(PathBuf::from("/development/small"))
+        });
+        assert!(selected.get());
+    }
 
     #[test]
     fn private_file_publication_is_no_clobber_and_cleans_every_failed_checkpoint() {

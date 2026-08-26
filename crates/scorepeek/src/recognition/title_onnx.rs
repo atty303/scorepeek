@@ -46,7 +46,7 @@ const MAX_BATCH_ROWS: usize = 4_096;
 const CENSUS_BATCH_SIZE: usize = 8;
 const SMALL_BUNDLE_MANIFEST_BYTES: &[u8] =
     include_bytes!("../../../../models/manifests/pp-ocrv6-small-rec-onnx-bundle-v1.json");
-const SMALL_BUNDLE_MANIFEST_SHA256: &str =
+pub const LIVE_MODEL_BUNDLE_MANIFEST_SHA256: &str =
     "4064dfa4124ada63613fe39fe2dee92f6ce6cae898e2830b302f5ae593f60672";
 const TINY_BUNDLE_MANIFEST_BYTES: &[u8] =
     include_bytes!("../../../../models/manifests/pp-ocrv6-tiny-rec-onnx-bundle-v1.json");
@@ -240,6 +240,43 @@ struct DynamicBundleFile {
     bytes: u64,
 }
 
+/// One immutable file registered for the live PP-OCRv6-small bundle.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegisteredLiveModelFile {
+    pub filename: String,
+    pub source_url: String,
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+/// Returns the verified download contract embedded for the live PP-OCRv6-small bundle.
+///
+/// # Errors
+/// Returns an error if the embedded manifest no longer matches the compiled registration.
+pub fn registered_live_model_files() -> Result<Vec<RegisteredLiveModelFile>, OnnxParityError> {
+    let manifest = DynamicBundleManifest::load_registered(LIVE_MODEL_ID)?;
+    Ok(manifest
+        .files
+        .into_iter()
+        .map(|file| RegisteredLiveModelFile {
+            filename: file.filename,
+            source_url: file.source_url,
+            sha256: file.sha256,
+            bytes: file.bytes,
+        })
+        .collect())
+}
+
+/// Verifies the complete registered live bundle without constructing an ONNX session.
+///
+/// # Errors
+/// Returns an error for missing, changed, non-regular, or malformed bundle files.
+pub fn verify_registered_live_model_bundle(bundle: &Path) -> Result<(), OnnxParityError> {
+    DynamicBundleManifest::load_registered(LIVE_MODEL_ID)?
+        .verified_model_bytes(bundle)
+        .map(|_| ())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LiveRuntimeManifest {
@@ -276,7 +313,7 @@ impl LiveRuntimeManifest {
             || manifest.graph_optimization != "all"
             || manifest.preprocessor_id != DYNAMIC_TITLE_PREPROCESSOR_ID
             || manifest.decoder_id != "scorepeek-ctc-greedy-collapse-v1"
-            || manifest.model_bundle_manifest_sha256 != SMALL_BUNDLE_MANIFEST_SHA256
+            || manifest.model_bundle_manifest_sha256 != LIVE_MODEL_BUNDLE_MANIFEST_SHA256
         {
             return Err(OnnxParityError::InvalidArtifact);
         }
@@ -623,7 +660,7 @@ fn registered_dynamic_bundle(model_id: &str) -> Result<RegisteredDynamicBundle, 
     match model_id {
         "pp-ocrv6-small-rec-onnx-v1" => Ok((
             SMALL_BUNDLE_MANIFEST_BYTES,
-            SMALL_BUNDLE_MANIFEST_SHA256,
+            LIVE_MODEL_BUNDLE_MANIFEST_SHA256,
             "PP-OCRv6_small_rec",
             "PaddlePaddle/PP-OCRv6_small_rec_onnx",
             "b8f84f0b80c529de40b4fbb3544b84fa7233a513",

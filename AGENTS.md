@@ -48,8 +48,10 @@
   External catalog adapters must preserve source revision, lineage, provenance,
   and content hashes; they must parse data without executing downloaded code.
 - OCR models, dictionaries, and configs require immutable revisions, hashes,
-  licenses, and reproducible export records. Runtime model auto-download and
-  arbitrary unregistered local model paths are prohibited.
+  licenses, and reproducible export records. ADR 0050 permits only the fixed registered
+  PP-OCRv6-small bundle to be fetched into the XDG cache during common CLI initialization;
+  unregistered runtime downloads, alternate-model selection, and arbitrary local model paths
+  remain prohibited.
 - Catalog federation must not use fuzzy identity merging, weighted majority, or
   source recency to resolve cross-source conflicts. Ambiguous records stay
   quarantined and the last-known-good catalog remains active.

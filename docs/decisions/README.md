@@ -133,6 +133,10 @@ authoritative.
   supersedes ADR 0047's custom deployment unit and ADR 0048's remaining private-bundle lifecycle.
   Cargo-dist produces a standard local Linux x86-64 archive and checksum, while private resources
   remain separately managed operator data.
+- [ADR 0050: Cache and fetch the registered small model globally](0050-cache-and-fetch-the-registered-small-model.md)
+  supersedes the runtime auto-download prohibition in ADR 0003/0006, the caller-supplied model
+  location in ADR 0031, and ADR 0049's manual model-transfer requirement. Catalogs remain operator
+  data; the fixed official small model is an automatically reacquired XDG cache.
 
 ## Historical
 

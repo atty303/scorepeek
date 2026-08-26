@@ -92,10 +92,17 @@ scorepeek doctor
 ```
 
 The archive does not contain private catalogs, OCR models, capture bindings, frames or credentials.
-Transfer the registered catalog and model separately under `$XDG_DATA_HOME/scorepeek` (normally
-`$HOME/.local/share/scorepeek`) and pass the applicable catalog/model path to the existing command.
-Scorepeek's existing resource manifests and loaders verify those bytes when they are used; the
-release task does not create, acquire, update or delete operator data.
+Catalogs remain separately managed operator data under `$XDG_DATA_HOME/scorepeek` (normally
+`$HOME/.local/share/scorepeek`). The fixed PP-OCRv6-small model is different: the first ordinary
+command downloads its three registered files from the immutable official revision and publishes
+them below `$XDG_CACHE_HOME/scorepeek/models` (normally `$HOME/.cache/scorepeek/models`). The
+registered source is Apache-2.0. `--help`, `--version`, and `doctor` do not initialize the model.
+Deleting the cache is safe; the next ordinary command downloads it again and therefore needs a
+network connection. For offline use, successfully run one ordinary command while online first.
+The release task itself does not acquire the model or include it in the archive.
+Developers may instead provide a complete fixed small bundle with
+`scorepeek --model-bundle /absolute/directory <command...>`; scorepeek verifies the same registered
+contract and does not use the network. This is not an alternate-model selector.
 
 ## Development
 
@@ -122,8 +129,8 @@ mise run capture:gamescope:test:lifecycle -- --duration-ms 100 --runs 100 --cons
 mise run capture:gamescope:calibration:sample -- --output /absolute/private/sample --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear
 mise run capture:gamescope:calibration:session-sample -- --output /absolute/private/session-sample --environment-id development-machine-v1 --gamescope-version 3.16.19-128-g7282613+ --backend wayland --output-width 2556 --output-height 1428 --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear
 mise run capture:gamescope:binding:author -- --calibration /absolute/private/session-sample --calibration-sha256 SHA256 --output /absolute/private/binding.json --left-numerator 26 --left-denominator 3 --top-numerator 0 --top-denominator 1 --width-numerator 7616 --width-denominator 3 --height-numerator 1428 --height-denominator 1
-mise run capture:gamescope:test:result-recognition -- --binding /absolute/private/binding.json --binding-sha256 SHA256 --capture-generation 1 --duration-ms 30000 --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --bundle /absolute/private/model-bundle --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --canonical-layout-sha256 LAYOUT_SHA256 --catalog-sha256 CATALOG_SHA256 --model-sha256 MODEL_SHA256 --runtime-sha256 RUNTIME_SHA256 --recording enabled --environment-id development-machine-v1 --gamescope-version 3.16.19-128-g7282613+ --backend wayland --output-width 2556 --output-height 1428 --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear --recognition-artifact /absolute/private/new-recognition-evidence
-mise run run:gamescope -- --binding /absolute/private/binding.json --binding-sha256 SHA256 --capture-generation 1 --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --bundle /absolute/private/model-bundle --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --canonical-layout-sha256 LAYOUT_SHA256 --catalog-sha256 CATALOG_SHA256 --model-sha256 MODEL_SHA256 --runtime-sha256 RUNTIME_SHA256 --recording enabled --environment-id development-machine-v1 --gamescope-version 3.16.19-128-g7282613+ --backend wayland --output-width 2556 --output-height 1428 --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear --recognition-artifact /absolute/private/new-recognition-evidence
+mise run capture:gamescope:test:result-recognition -- --binding /absolute/private/binding.json --binding-sha256 SHA256 --capture-generation 1 --duration-ms 30000 --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --canonical-layout-sha256 LAYOUT_SHA256 --catalog-sha256 CATALOG_SHA256 --recording enabled --environment-id development-machine-v1 --gamescope-version 3.16.19-128-g7282613+ --backend wayland --output-width 2556 --output-height 1428 --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear --recognition-artifact /absolute/private/new-recognition-evidence
+mise run run:gamescope -- --binding /absolute/private/binding.json --binding-sha256 SHA256 --capture-generation 1 --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --canonical-layout-sha256 LAYOUT_SHA256 --catalog-sha256 CATALOG_SHA256 --recording enabled --environment-id development-machine-v1 --gamescope-version 3.16.19-128-g7282613+ --backend wayland --output-width 2556 --output-height 1428 --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear --recognition-artifact /absolute/private/new-recognition-evidence
 mise run catalog:sync
 mise run corpus:recording:import -- --store /absolute/private/store --capture-context /absolute/private/capture-context.json /absolute/recordings/complete-run.mkv
 mise run corpus:dataset:seal -- --store /absolute/private/store calibration-001

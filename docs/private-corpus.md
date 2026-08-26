@@ -349,16 +349,18 @@ archive and extracted-file sizes and SHA-256 values, Apache-2.0 license
 reference, and compatible package versions. `ocr:model:fetch` downloads only
 that registered archive, bounds and hashes it before extraction, rejects
 unexpected tar entries, and publishes the verified three-file model below the
-private content-addressed `$XDG_DATA_HOME/scorepeek/models` store. The spike
+content-addressed `$XDG_CACHE_HOME/scorepeek/models` cache. The spike
 always passes that verified local directory to PaddleOCR, so inference never
 auto-downloads a model.
 
 The separately registered `PP-OCRv6_small_rec` ONNX graph is pinned to an exact
 official repository revision, byte length, SHA-256, Apache-2.0 reference, and
 the same Paddle inference JSON/YAML digests. `ocr:onnx:model:fetch` publishes
-only those verified bytes to the private content-addressed model store. It is
-an explicit offline acquisition step; the Rust command never downloads a
-model.
+only those verified bytes to the content-addressed model cache. The normal Rust CLI uses the same
+cache base and globally fetches only the fixed PP-OCRv6-small three-file bundle before dispatch when
+it is absent. The official source revision and Apache-2.0 license remain registered; cache deletion
+causes reacquisition, so offline use requires one successful ordinary invocation while online.
+The old `$XDG_DATA_HOME/scorepeek/models` store is not migrated or used as fallback.
 
 Official-model comparisons use a separate bundle registry so they do not alter
 the accepted small-model parity object. The registered candidates are
