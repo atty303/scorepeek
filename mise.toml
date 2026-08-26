@@ -2,6 +2,7 @@ min_version = "2026.8.3"
 
 [tools]
 actionlint = "1.7.12"
+cargo-dist = "0.32.0"
 hk = "1.54.1"
 python = "3.12.13"
 rclone = "1.74.2"
@@ -58,8 +59,21 @@ set -euo pipefail
 if (( $# > 0 )); then
   exec hk check "$@"
 fi
-exec hk check --all
+hk check --all
+exec mise run dist:plan
 '''
+
+[tasks."dist:plan"]
+description = "Inspect the local cargo-dist release plan"
+run = "dist plan"
+
+[tasks."dist:build"]
+description = "Build the local Linux x86-64 release archive and checksum"
+run = "dist build"
+
+[tasks."dist:test"]
+description = "Build and smoke-test the local Linux x86-64 release archive"
+run = "scripts/test-dist-artifact.bash"
 
 [tasks.fix]
 description = "Fix the repository or selected files"

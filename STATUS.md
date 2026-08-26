@@ -25,12 +25,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   No independent transform mismatch or changed normalizer currently justifies replaying a
   scorepeek-written raw/canonical pair through the same implementation. ADR 0048 trusts
   operator-selected local artifacts, removes that transform-first checkpoint and duplicate
-  problem-report retention, and makes an operator-owned 4K Bazzite machine the first consumer
-  acceptance target:
-  package the current core as a private verified bundle, explicitly calibrate one target profile,
-  run it during ordinary play, transfer only selected bounded evidence, replay and improve it on
-  the development machine, and return a rollback-capable bundle without requesting tuning-only
-  plays. No portable bundle or 4K target profile is implemented at this checkpoint.
+  problem-report retention. ADR 0049 replaces the custom private deployment unit with a standard
+  cargo-dist Linux x86-64 archive and checksum while keeping catalog and model resources separate.
+  The archive is now the first cross-machine delivery unit; an operator-owned 4K Bazzite machine
+  remains the first consumer acceptance target. No target transfer or 4K profile is implemented at
+  this checkpoint.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -552,11 +551,16 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - OCR training stages no longer validate every preparation file before reading their own inputs.
   Each stage checks the selected preparation manifest and the files it actually consumes; external
   PaddleOCR checkout and model bundle verification remains at the external-code/resource boundary.
+- Cargo-dist 0.32.0 now plans and builds only the `scorepeek` Linux x86-64 CLI archive with its
+  standard SHA-256 checksum. The local artifact test verifies the checksum, permits only the binary
+  and cargo-dist's README inclusion, and runs `--version` plus `doctor` with isolated home and XDG
+  roots. Private resources remain outside the archive and no tag, installer, CI or public release
+  path is configured.
 
 ## Approval and authority boundaries
 
 - New dependencies require prior approval with purpose, version/license, alternatives, and
-  runtime/bundle/host/reproducibility impact.
+  runtime/distribution/host/reproducibility impact.
 - Captured frames, game/player data, complete labels, raw catalog inputs, generated catalogs, OCR
   models, credentials, and environment-specific artifacts must not be committed.
 - External-source use remains governed by `docs/sources.md`; no source requiring new permission may
@@ -566,18 +570,17 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Define and implement the create-only `scorepeek-operator-bundle-v1` around a freshly built Linux
-   x86-64 release binary, immutable catalog/model/runtime resources, exact digests and sizes, and
-   explicit host prerequisites. Verify it on a clean compatible Bazzite environment without a
-   repository checkout, mise, Rust, or Python in the game-session path. Complete bundle verification
-   belongs to creation, transfer and activation; routine startup must not separately rehash resources
-   that the required loader reads.
+1. Transfer the cargo-dist Linux x86-64 archive and its SHA-256 checksum plus separately managed
+   catalog/model resources to a clean compatible Bazzite environment. Verify checksum, extraction,
+   `scorepeek --version`, `scorepeek doctor`, and resource loading without a repository checkout,
+   mise, Rust, or Python in the game-session path. This deployment and target-machine verification
+   remain a separate operator-authority boundary.
 2. Add explicit guided Gamescope calibration around a scorepeek-owned known marker, then use it on
    the operator's 4K Bazzite machine to author and independently verify one exact Wayland profile.
    This target-machine mutation and deployment remain separate operator-authority boundaries.
 3. Add the profile-selected routine entrypoint using ADR 0043's existing bounded retention and
    existing-bytes-only freeze/export surface. Keep pre-admission attempts separate from ADR 0025
-   binding-owned Diagnostic Runs, then complete one target-to-development replay/update/rollback
+   binding-owned Diagnostic Runs, then complete one target-to-development replay/update
    round trip during natural play. Add new tail, marker or ledger machinery only if retained target
    evidence demonstrates a concrete gap.
    Scorepeek must never start, signal, terminate, or restart INFINITAS or the ordinary Gamescope
@@ -586,7 +589,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 Do not add transform replay without an independent oracle, broaden routine raw retention, silently
 calibrate or switch profiles, request play solely to
 tune recognition, or claim event authority, target-host performance acceptance, public
-redistribution, or support before the corresponding ADR 0047 delivery checkpoint has complete
+redistribution, or support before the corresponding ADR 0049 delivery checkpoint has complete
 evidence.
 
 ## Stable milestone map

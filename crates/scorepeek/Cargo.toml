@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[package.metadata.dist]
+dist = true
+
 [dependencies]
 encoding_rs.workspace = true
 ort.workspace = true

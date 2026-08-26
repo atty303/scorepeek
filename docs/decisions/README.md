@@ -129,6 +129,10 @@ authoritative.
   removes unconditional repeated full reads and cross-artifact re-adjudication for trusted local
   artifacts, and supersedes ADR 0047's transform-first, duplicate-tail, and per-run full-bundle
   verification requirements.
+- [ADR 0049: Distribute the CLI with cargo-dist](0049-distribute-the-cli-with-cargo-dist.md)
+  supersedes ADR 0047's custom deployment unit and ADR 0048's remaining private-bundle lifecycle.
+  Cargo-dist produces a standard local Linux x86-64 archive and checksum, while private resources
+  remain separately managed operator data.
 
 ## Historical
 

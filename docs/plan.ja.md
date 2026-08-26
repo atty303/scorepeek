@@ -111,10 +111,11 @@
   handoff、およびGamescopeのprofile-bound normalized frameから同じworkerへのownership transferまで。
   recognition input、target-host性能、
   accepted field認識、event daemonは未着手）
-- 別machine常用プレイ診断ループ: 計画確定（同一operator向けprivate bundle、明示的marker
-  calibration、profile選択だけの通常起動、bounded local evidence、選択runだけの明示transfer、
-  development-machine replay、side-by-side更新とrollbackまで。ADR 0048によりtransform-firstと
-  duplicate problem-report tailを外し、4K target profileの実装・校正は未着手）
+- 別machine常用プレイ診断ループ: cargo-distによるLinux x86-64 CLI archiveとSHA-256 checksumの
+  local生成まで実装。private catalog/modelは別管理とし、明示的marker calibration、profile選択だけの
+  通常起動、bounded local evidence、選択runだけの明示transfer、development-machine replayを続ける。
+  ADR 0048によりtransform-firstとduplicate problem-report tailを外し、ADR 0049により独自bundle、
+  activationおよびside-by-side rollback protocolを廃止。4K targetへの転送・校正は未着手）
 - scorepeek-owned OCR学習/export: smallをartist/chart context/selection song contextと統合した後の凍結残差が
   missing OCR signalに帰属し、別経路が安全に解消できる場合だけ再検討
 - Bazzite実機検証とprivate corpus収集: 着手（OBS/vkcapture実録画1本のcopyless isolated
@@ -451,12 +452,12 @@ NV12、別color profileへ黙ってfallbackしない。
 ## 別machine常用プレイ診断ループ
 
 次の実用化checkpointは、別のoperator-owned Bazzite machineを最初の利用者環境として扱う。
-一般公開releaseより先に、repository checkout、mise、RustおよびPythonをgame-session pathから外した
-private operator bundleを作り、通常プレイの副作用として診断証拠を集める。bundleはexact release
-binary、build、layout、active catalog、registered model/runtimeとdigestをbindする。target固有のcapture
-binding、frame、player data、credentialおよびmutable stateはbundleへ含めない。catalog/modelのsource
-permissionは引き続きpublic redistributionを制限するが、同一operator control domain内のprivate transferを
-secret扱いやgeneric errorで妨げない。
+一般公開releaseより先に、cargo-distで通常のLinux x86-64 binary archiveとSHA-256 checksumをlocal生成し、
+repository checkout、mise、RustおよびPythonをgame-session pathから外す。archiveは`scorepeek` binaryと
+cargo-dist標準のrepository metadataだけを含み、`scorepeek-corpus`、catalog、model、capture binding、frame、
+player dataおよびcredentialを含めない。private catalog/modelは既存manifestを持つoperator dataとして
+`$XDG_DATA_HOME/scorepeek`へ別途転送する。source permissionは引き続きpublic redistributionを制限するが、
+同一operator control domain内のprivate transferをsecret扱いやgeneric errorで妨げない。
 
 target machineでは、scorepeek-ownedな既知の1920x1080 markerをexact Gamescope Wayland configで
 明示的に校正し、observed BGRx contractとmarker geometryが一致した場合だけmachine-local profileを
@@ -476,29 +477,29 @@ partial-resultおよびunknown-to-known transition retention、選択済みsame-
 targetで使用する。別のpre-recognition tail、problem-report ledgerまたはworker watermarkは、自然なtarget runで
 既存retentionが具体的な必要証拠を失った場合だけ別decisionで追加する。後からのfreezeは既に保存されたbytesの
 retention priorityだけを変更し、未保存observationを復元したとは扱わない。選択runのexportだけが
-bundle/profile identity、complete/partial status、exact OCR/catalog/song/decision、既に選択済みのcanonical
+release/resource/profile identity、complete/partial status、exact OCR/catalog/song/decision、既に選択済みのcanonical
 QOIとraw BGRx pairをdevelopment machineへ渡す。unrelated runは含めない。
 
 改善時はcanonical frame以降をliveと同じproduction recognition codeでreplayする。raw-to-canonical比較は、
 観測済みtransform不一致、normalizer変更、または独立実装という具体的なoracleがある場合だけ追加する。修正は
-報告runと既存frozen suiteを通し、new bundleをside-by-sideでtargetへ置いてrollback可能にする。threshold、
+報告runと既存frozen suiteを通し、replacement archiveとresourceをtargetで再確認する。threshold、
 geometryまたはrecognition修正だけを目的に追加playを要求せず、prospective confirmationは次の自然な通常playで行う。
 
 delivery checkpointは次の順序とする。
 
-1. current release binary、resource、runtime prerequisiteをbindするprivate operator bundleを作り、cleanな
-   compatible Bazzite環境でrepository checkoutなしにverify/loadできることを確認する。
+1. cargo-dist 0.32.0で`scorepeek`だけのLinux x86-64 archiveとSHA-256 checksumをlocal生成し、private
+   resourceを別途転送したclean compatible Bazzite環境でrepository checkoutなしにverify/loadできることを確認する。
 2. scorepeek-owned markerをguided setupへ含め、target 4K Wayland profileをauthorして独立marker replayを通す。
 3. profile名だけのroutine run、status、ADR 0043の既存retention、既存bytesのfreeze/export、
    scorepeek-only ordered teardownを通す。
 4. 既存retentionが選択したevidenceをexportし、development replay、修正、replacement
-   bundle、target verify、rollbackまでを追加playなしで一巡させる。
+   archive/resource、target verifyまでを追加playなしで一巡させる。
 5. 自然な常用playからsemantic、lifecycle、frame age、queue/retention、CPU/memory/game frametimeを測定し、
    exact 4K profileをdiagnostic useからsupportedへ昇格できるか判定する。
 
-bundleのcomplete verificationは作成、transfer後およびactivation時に行う。routine invocationはactivated
-bundle/profile identityとhost prerequisiteをpreflightし、実resource bytesは必須loaderが一度読む経路で検証する。
-preflightとloaderが同じresourceを別々にfull readしない。各target invocationはbounded start-attempt envelopeで
+archiveのtransfer integrityはcargo-distのSHA-256 checksumで確認する。private resourceは既存manifestと必須loaderが
+読む経路で検証し、同じresourceを独自deployment preflightでもう一度full readしない。host適合性は
+`scorepeek doctor`、対応Bazzite条件およびcapture profile contractで確認する。各target invocationはbounded start-attempt envelopeで
 source wait/acquisition、binding admissionを区別する。exact admissionがcapture generationを作った場合だけ
 ADR 0025の
 binding-owned Diagnostic Runを開始してattemptからlinkし、frame reception、normalization、screen inspection、
@@ -541,11 +542,11 @@ flush timeoutは`partial | dropped` evidenceとして残すが、play、capture 
     state machine、attempt、modeまたはretry回数は実装しない。
 11. **M8**: catalog update replay、full private holdout、Bazzite live flowをrelease gateへ統合する。
 
-M3/M4からM7へ進む間は、ADR 0048で簡略化したADR 0047のcross-machine delivery checkpointを縦に通す。event authorityや
+M3/M4からM7へ進む間は、ADR 0049で通常のRust CLI配布へ置き換えたcross-machine delivery checkpointを縦に通す。event authorityや
 public releaseを待ってからtarget deploymentを始めず、現在のcapture/recognition/diagnostic coreを
-private bundleとして常用し、得られた通常runをM4/M6/M7の改善入力にする。
+cargo-dist archiveと別管理のprivate resourceで常用し、得られた通常runをM4/M6/M7の改善入力にする。
 
-新規runtime、training、parser、capture dependencyは、version、license、代替案、bundle/host影響を
+新規runtime、training、parser、capture dependencyは、version、license、代替案、distribution/host影響を
 一括提示して承認を得た後にだけ追加する。
 
 最初のPipeWire build bootstrapはLinux x86-64を対象に、safe `pipewire` 0.10 seriesを使う。

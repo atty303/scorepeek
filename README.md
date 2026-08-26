@@ -67,6 +67,36 @@ See [the current committed checkpoint](STATUS.md),
 [architecture overview](docs/architecture.md), the
 [source policy](docs/sources.md), and [research evidence](docs/research.md).
 
+## Local distribution
+
+Cargo-dist 0.32.0 builds the ordinary Linux x86-64 CLI archive locally. This repository does not
+publish a GitHub Release, tag, installer or source archive.
+
+```text
+mise run dist:plan
+mise run dist:build
+mise run dist:test
+```
+
+The build writes `target/distrib/scorepeek-x86_64-unknown-linux-gnu.tar.xz` and its `.sha256`
+sidecar. Verify the checksum, extract the archive and copy the executable to the usual user-local
+binary directory:
+
+```text
+cd target/distrib
+sha256sum --check scorepeek-x86_64-unknown-linux-gnu.tar.xz.sha256
+tar -xJf scorepeek-x86_64-unknown-linux-gnu.tar.xz
+install -Dm755 scorepeek-x86_64-unknown-linux-gnu/scorepeek "$HOME/.local/bin/scorepeek"
+scorepeek --version
+scorepeek doctor
+```
+
+The archive does not contain private catalogs, OCR models, capture bindings, frames or credentials.
+Transfer the registered catalog and model separately under `$XDG_DATA_HOME/scorepeek` (normally
+`$HOME/.local/share/scorepeek`) and pass the applicable catalog/model path to the existing command.
+Scorepeek's existing resource manifests and loaders verify those bytes when they are used; the
+release task does not create, acquire, update or delete operator data.
+
 ## Development
 
 Install [mise](https://mise.jdx.dev/), then use the repository entry points:
