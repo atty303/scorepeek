@@ -199,6 +199,7 @@ cargo run --locked --quiet -p scorepeek-corpus -- diagnostic verify /absolute/ne
 cargo run --locked --quiet -p scorepeek-corpus -- corpus import-diagnostic --store /absolute/private-corpus-v1 --diagnostic /absolute/new-diagnostic --review-draft /absolute/review.json
 cargo run --locked --quiet -p scorepeek-corpus -- review apply --store /absolute/private-corpus-v1 --draft /absolute/review.json --labels /absolute/operator-labels.json
 mise run corpus:test
+mise run corpus:temporal:evaluate
 mise run recognition:inspect -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID
 mise run recognition:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/crops
 mise run recognition:music-select:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/music-select-crops
@@ -218,6 +219,10 @@ mise run ocr:parity:run -- --model /absolute/private/models/inference.onnx --ref
 mise run corpus:synthetic:render -- --output /absolute/new/output-directory /absolute/synthetic-request.json
 mise run catalog:schedule:systemd:verify
 ```
+
+`corpus:temporal:evaluate` compares the production result reducer's default two-observation policy
+with a three-observation policy without changing the active suite. Its JSON is descriptive,
+generation-bound evidence; see [the offline temporal evaluation contract](docs/temporal-evaluation.md).
 
 The developer `run:gamescope` gate keeps one admitted provider connected until SIGINT or SIGTERM.
 Its control path does not signal Gamescope, INFINITAS, or the process group. Stdout is bounded

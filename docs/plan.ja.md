@@ -567,6 +567,9 @@ flush timeoutは`partial | dropped` evidenceとして残すが、play、capture 
    display/comparison string table、song ID、string reference、全candidate metric、判断と理由、expected-versus-observed値を保持する。pixelは既存のbounded image artifactをidentityで
    参照する。result-song ranking/acceptanceはADR 0038、screen-local music-select song resolutionは
    ADR 0046、raw observationを変更しないprovisional result temporal stabilizationはADR 0059で追加済みとする。
+   active private suiteのordered observationにproduction reducerを適用するoffline比較は
+   `scorepeek-private-temporal-evaluation-v1`で行い、raw正誤、最終state、transition、安定化遅延を
+   generationへ結び付ける。この結果だけでthreshold選択、event authorityまたはrelease精度を承認しない。
    chart、music-select stable-selection temporal stateおよびevent authorityは後続の独立contractとする。
 10. **M7**: 少数scenario replayから最小selection song contextとrecognition-trigger非依存のbounded
     live diagnosticsを検証し、その後versioned event schemaとNDJSON daemonを統合する。ゲーム全体の

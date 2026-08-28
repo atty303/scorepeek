@@ -14,6 +14,7 @@ use tempfile::Builder;
 mod frame_corpus;
 mod media;
 mod music_list;
+mod temporal_evaluation;
 pub use frame_corpus::{
     CorpusReplaySummary, DiagnosticConversionSummary, DiagnosticImportSummary,
     DiagnosticVerificationSummary, ReviewApplySummary, VideoReplaySummary, apply_review,
@@ -27,6 +28,9 @@ pub use music_list::{
     inspect_music_list_row_observation_draft, measure_music_list_motion,
     plan_music_list_motion_review, verify_music_list_motion,
     verify_music_list_row_observation_draft,
+};
+pub use temporal_evaluation::{
+    TemporalEvaluationPolicy, TemporalEvaluationSummary, evaluate_temporal_corpus,
 };
 
 const INGEST_REQUEST_SCHEMA: &str = "scorepeek-private-corpus-ingest-v2";

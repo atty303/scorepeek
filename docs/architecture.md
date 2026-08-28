@@ -149,6 +149,13 @@ Version participates only when it is independently recognized. Raw frame observa
 temporal transitions remain separate from future accepted domain events. Rejection is preferable
 to a guess.
 
+The offline corpus tool can replay this exact production reducer over ordered, operator-reviewed
+result intervals and compare bounded observation-count/gap policies. Its versioned JSON report
+keeps raw per-frame correctness, final temporal outcomes, transition counts, and stabilization
+latency separate. The report is descriptive evidence bound to one active private-suite generation;
+it neither calibrates thresholds nor grants event or release-accuracy authority. See
+[the temporal evaluation contract](temporal-evaluation.md).
+
 Python is an offline training/export dependency only. The game-session runtime
 uses a pinned ONNX model in Rust and has no model or catalog network fallback.
 Real captures, training labels, source snapshots, generated catalogs, and model

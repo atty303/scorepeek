@@ -217,6 +217,15 @@ root="${SCOREPEEK_CORPUS_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/pr
 exec cargo run --locked --quiet -p scorepeek-corpus -- corpus replay --store "$root"
 '''
 
+[tasks."corpus:temporal:evaluate"]
+description = "Evaluate registered temporal result policies over the active private corpus"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+root="${SCOREPEEK_CORPUS_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/private-corpus-v1}"
+exec cargo run --locked --quiet -p scorepeek-corpus -- temporal evaluate --store "$root" "$@"
+'''
+
 [tasks."corpus:diagnostic:replay-video"]
 description = "Generate a verified 10 Hz diagnostic from an auxiliary video"
 run = '''

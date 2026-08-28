@@ -4,10 +4,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use scorepeek_corpus::{
-    apply_music_list_motion_review, apply_review, convert_v2_diagnostic, import_diagnostic,
-    inspect_music_list_row_observation_draft, inspect_review, measure_music_list_motion,
-    plan_music_list_motion_review, render_synthetic_title_set, replay_corpus, replay_video,
-    verify_diagnostic, verify_music_list_motion, verify_music_list_row_observation_draft,
+    TemporalEvaluationPolicy, apply_music_list_motion_review, apply_review, convert_v2_diagnostic,
+    evaluate_temporal_corpus, import_diagnostic, inspect_music_list_row_observation_draft,
+    inspect_review, measure_music_list_motion, plan_music_list_motion_review,
+    render_synthetic_title_set, replay_corpus, replay_video, verify_diagnostic,
+    verify_music_list_motion, verify_music_list_row_observation_draft,
 };
 
 fn main() -> ExitCode {
@@ -106,6 +107,9 @@ fn run(args: &[OsString]) -> Result<(), String> {
 
 #[allow(clippy::too_many_lines)]
 fn run_frame_corpus(args: &[OsString]) -> Option<Result<(), String>> {
+    if args.starts_with(&[OsString::from("temporal"), OsString::from("evaluate")]) {
+        return Some(run_temporal_evaluation(&args[2..]));
+    }
     let result = match args {
         [
             diagnostic,
@@ -223,6 +227,49 @@ fn run_frame_corpus(args: &[OsString]) -> Option<Result<(), String>> {
     Some(result)
 }
 
+fn run_temporal_evaluation(args: &[OsString]) -> Result<(), String> {
+    let mut store = None;
+    let mut policies = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let flag = &args[index];
+        let value = args.get(index + 1).ok_or_else(temporal_usage)?;
+        if flag == "--store" && store.is_none() {
+            store = Some(PathBuf::from(value));
+        } else if flag == "--policy" {
+            policies.push(parse_temporal_policy(value)?);
+        } else {
+            return Err(temporal_usage());
+        }
+        index += 2;
+    }
+    let store = store.ok_or_else(temporal_usage)?;
+    if policies.is_empty() {
+        policies = vec![
+            TemporalEvaluationPolicy::new(2, 250)
+                .expect("registered runtime temporal policy is valid"),
+            TemporalEvaluationPolicy::new(3, 250)
+                .expect("registered comparison temporal policy is valid"),
+        ];
+    }
+    evaluate_temporal_corpus(&store, &policies)
+        .map_err(|error| format!("temporal corpus evaluation failed: {error}"))
+        .and_then(|summary| print_json(&summary, "temporal corpus evaluation"))
+}
+
+fn parse_temporal_policy(value: &OsString) -> Result<TemporalEvaluationPolicy, String> {
+    let value = value.to_str().ok_or_else(temporal_usage)?;
+    let (required, gap) = value.split_once(':').ok_or_else(temporal_usage)?;
+    let required = required.parse::<u8>().map_err(|_| temporal_usage())?;
+    let gap = gap.parse::<u64>().map_err(|_| temporal_usage())?;
+    TemporalEvaluationPolicy::new(required, gap).map_err(|error| error.to_string())
+}
+
+fn temporal_usage() -> String {
+    "usage: scorepeek-corpus temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]"
+        .to_owned()
+}
+
 fn run_remaining(args: &[OsString]) -> Result<(), String> {
     match args {
         [synthetic, render, output, directory, request]
@@ -249,7 +296,7 @@ fn run_remaining(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "usage: scorepeek-corpus <diagnostic replay-video --video FILE --profile NAME --output DIRECTORY|diagnostic verify DIRECTORY|diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY|corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE|review show --draft FILE|review apply --store ROOT --draft FILE --labels FILE|corpus replay --store ROOT|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|music-list motion review-plan --output PLAN ARTIFACT|music-list motion review-apply --output REQUEST ARTIFACT PLAN DECISIONS>"
+            "usage: scorepeek-corpus <diagnostic replay-video --video FILE --profile NAME --output DIRECTORY|diagnostic verify DIRECTORY|diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY|corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE|review show --draft FILE|review apply --store ROOT --draft FILE --labels FILE|corpus replay --store ROOT|temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|music-list motion review-plan --output PLAN ARTIFACT|music-list motion review-apply --output REQUEST ARTIFACT PLAN DECISIONS>"
                 .to_owned(),
         ),
     }
@@ -266,7 +313,7 @@ fn print_json(value: &impl serde::Serialize, context: &str) -> Result<(), String
 
 fn print_usage() {
     println!(
-        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus diagnostic replay-video --video FILE --profile NAME --output DIRECTORY\n  scorepeek-corpus diagnostic verify DIRECTORY\n  scorepeek-corpus diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY\n  scorepeek-corpus corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE\n  scorepeek-corpus review show --draft FILE\n  scorepeek-corpus review apply --store ROOT --draft FILE --labels FILE\n  scorepeek-corpus corpus replay --store ROOT",
+        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus diagnostic replay-video --video FILE --profile NAME --output DIRECTORY\n  scorepeek-corpus diagnostic verify DIRECTORY\n  scorepeek-corpus diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY\n  scorepeek-corpus corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE\n  scorepeek-corpus review show --draft FILE\n  scorepeek-corpus review apply --store ROOT --draft FILE --labels FILE\n  scorepeek-corpus corpus replay --store ROOT\n  scorepeek-corpus temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -275,7 +322,17 @@ fn print_usage() {
 mod tests {
     use std::ffi::OsString;
 
-    use super::run;
+    use super::{parse_temporal_policy, run};
+
+    #[test]
+    fn temporal_policy_requires_bounded_observation_and_gap_pair() {
+        let parsed = parse_temporal_policy(&OsString::from("3:250")).unwrap();
+        assert_eq!(parsed.required_observations, 3);
+        assert_eq!(parsed.maximum_gap_ms, 250);
+        for invalid in ["1:250", "2:0", "17:250", "2:60001", "2", "two:250"] {
+            assert!(parse_temporal_policy(&OsString::from(invalid)).is_err());
+        }
+    }
 
     #[test]
     fn removed_recording_store_routes_are_not_dispatchable() {

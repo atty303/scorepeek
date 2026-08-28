@@ -157,7 +157,9 @@ const CLEAR_TYPES: [&str; 7] = [
     "F-COMBO",
 ];
 
-fn resolve_clear_type(observed: &str) -> Option<&'static str> {
+/// Resolves one OCR value through the registered fail-closed clear-type vocabulary.
+#[must_use]
+pub fn resolve_clear_type(observed: &str) -> Option<&'static str> {
     let mut matches = CLEAR_TYPES
         .into_iter()
         .filter(|candidate| ascii_edit_distance_at_most_one(observed, candidate));

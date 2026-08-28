@@ -81,7 +81,14 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   records; synchronous `screen_changed` records reset the reducer across non-result boundaries.
   Ten temporally analyzable reviewed episodes contain 430 correct song accepts, ten
   unknowns, no wrong accepts, 420 correct clear values, twenty unknowns, and no wrong clear values;
-  four sparse legacy episodes are excluded from temporal calibration. Music-select dwell remains
+  four sparse legacy episodes are excluded from temporal calibration. The read-only
+  `scorepeek-private-temporal-evaluation-v1` evaluator now verifies the active suite and observation
+  object bindings and runs the production reducer over those ordered intervals. Both 2/250 ms and
+  3/250 ms finish jointly stable-correct on all ten analyzable episodes with no wrong stability,
+  conflicts, gap resets, or pending replacements. The 2-observation policy reaches joint stability
+  at p50 591 ms / p95 796 ms versus p50 782 ms / p95 1,003 ms for 3 observations, so the retained
+  evidence does not justify adding the third observation. Three sparse episodes expose one retained
+  result observation and one has no bindable result interval. Music-select dwell remains
   unimplemented pending operator-reviewed stationary and scrolling spans.
   The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
   machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
@@ -574,9 +581,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 ## Unverified boundaries
 
 - The result temporal reducer is grounded by ten reviewed episodes with complete enough ordered
-  observations; four legacy episodes are too sparse for temporal calibration. It has no wrong-accept
-  challenge set, title-disjoint holdout, calibrated false-accept denominator, or release-accuracy
-  authority. The screen-local music-select resolver is grounded by recording-visible selections and
+  observations; four legacy episodes are too sparse for temporal calibration. The offline policy
+  comparison confirms retained-corpus coverage and latency only; it has no wrong-accept challenge
+  set, title-disjoint holdout, calibrated false-accept denominator, or release-accuracy authority.
+  The screen-local music-select resolver is grounded by recording-visible selections and
   separate long-title live observations, but operator-reviewed stationary/scrolling spans,
   stable-selection dwell, charts, digits, accepted event emission, and deduplication remain
   unimplemented.
