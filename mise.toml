@@ -97,8 +97,7 @@ mise run check
 mise run ocr:test
 mise run catalog:schedule:systemd:verify
 cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo test --locked --workspace
-exec mise run corpus:dataset:test:e2e
+exec cargo test --locked --workspace
 '''
 
 [tasks.doctor]
@@ -209,112 +208,21 @@ run = "scripts/verify-pipewire-build-environment.bash"
 description = "Synchronize and conditionally activate the live catalog"
 run = "cargo run --locked --quiet -p scorepeek -- catalog sync"
 
-[tasks."corpus:ingest"]
-description = "Ingest immutable media into an explicit private corpus store"
+[tasks."corpus:test"]
+description = "Replay the complete active frame-first private regression suite"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus -- ingest "$@"
+root="${SCOREPEEK_CORPUS_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/private-corpus-v1}"
+exec cargo run --locked --quiet -p scorepeek-corpus -- corpus replay --store "$root"
 '''
 
-[tasks."corpus:recording:import"]
-description = "Import one complete recording as a reusable private dataset root"
+[tasks."corpus:diagnostic:replay-video"]
+description = "Generate a verified 10 Hz diagnostic from an auxiliary video"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus -- recording import "$@"
-'''
-
-[tasks."corpus:dataset:seal"]
-description = "Seal all imported recordings as an immutable dataset generation"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus -- dataset seal "$@"
-'''
-
-[tasks."corpus:dataset:push"]
-description = "Upload and verify one recording dataset generation"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus -- dataset push "$@"
-'''
-
-[tasks."corpus:dataset:pull"]
-description = "Download and verify one recording dataset generation"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus -- dataset pull "$@"
-'''
-
-[tasks."corpus:dataset:verify"]
-description = "Verify every local byte in one recording dataset generation"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus -- dataset verify "$@"
-'''
-
-[tasks."corpus:dataset:remote-verify"]
-description = "Download-hash every remote byte in one recording dataset generation"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus -- dataset remote-verify "$@"
-'''
-
-[tasks."corpus:dataset:test:e2e"]
-description = "Exercise recording dataset CLI round-trip against a local S3 mock"
-run = "scripts/test-corpus-dataset-e2e.bash"
-
-[tasks."corpus:generation:seal"]
-description = "Seal the current private source bindings as an immutable corpus generation"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus -- generation seal "$@"
-'''
-
-[tasks."corpus:label:author"]
-description = "Validate and publish one canonical private complete-label document"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus -- label author "$@"
-'''
-
-[tasks."corpus:index:generate"]
-description = "Generate a canonical replay index from strict private frame metadata"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus -- index generate "$@"
-'''
-
-[tasks."corpus:media:probe"]
-description = "Probe one immutable private media source into bounded PTS/decode-order evidence"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus -- media probe "$@"
-'''
-
-[tasks."corpus:media:extract"]
-description = "Extract an explicit bounded private RGB8 frame selection"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus -- media extract "$@"
-'''
-
-[tasks."corpus:canonical:extract"]
-description = "Normalize an explicit private frame selection into canonical RGB8"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus -- canonical extract "$@"
+exec cargo run --locked --quiet -p scorepeek-corpus -- diagnostic replay-video "$@"
 '''
 
 [tasks."recognition:inspect"]
@@ -707,14 +615,6 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek-corpus -- synthetic render "$@"
-'''
-
-[tasks."corpus:replay:validate"]
-description = "Validate private corpus replay metadata"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus -- replay validate "$@"
 '''
 
 [tasks."catalog:schedule:systemd:verify"]

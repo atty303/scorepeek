@@ -32,6 +32,7 @@ const FOREGROUND_BASELINE_INTERVAL_MS: u64 = 5 * 60 * 1_000;
 #[derive(Clone)]
 pub struct BoundCanonicalFrame {
     capture_generation: u64,
+    source_sequence: u64,
     sequence: u64,
     monotonic_start_ms: u64,
     monotonic_end_ms: u64,
@@ -55,6 +56,7 @@ impl fmt::Debug for BoundCanonicalFrame {
         formatter
             .debug_struct("BoundCanonicalFrame")
             .field("capture_generation", &self.capture_generation)
+            .field("source_sequence", &self.source_sequence)
             .field("sequence", &self.sequence)
             .field("monotonic_start_ms", &self.monotonic_start_ms)
             .field("monotonic_end_ms", &self.monotonic_end_ms)
@@ -70,9 +72,46 @@ impl BoundCanonicalFrame {
         &self.pixels
     }
 
+    /// Creates one offline replay owner under an already validated immutable binding.
+    ///
+    /// # Errors
+    /// Returns an error when the pixels do not satisfy the canonical RGB8 contract.
+    pub fn for_replay(
+        capture_generation: u64,
+        sequence: u64,
+        monotonic_ms: u64,
+        capture_profile_sha256: String,
+        normalizer_sha256: String,
+        pixels: Box<[u8]>,
+    ) -> Result<Self, scorepeek::recognition::RecognitionError> {
+        if pixels.len() != crate::diagnostic_recording::CANONICAL_BYTES {
+            return Err(scorepeek::recognition::RecognitionError::InvalidCanonicalFrame);
+        }
+        Ok(Self {
+            capture_generation,
+            source_sequence: sequence,
+            sequence,
+            monotonic_start_ms: monotonic_ms,
+            monotonic_end_ms: monotonic_ms,
+            capture_profile_sha256,
+            normalizer_sha256,
+            pixels: Arc::new(pixels),
+            source: None,
+        })
+    }
+
     #[must_use]
     pub(crate) const fn sequence(&self) -> u64 {
         self.sequence
+    }
+
+    #[must_use]
+    pub(crate) const fn source_sequence(&self) -> u64 {
+        self.source_sequence
+    }
+
+    pub(crate) fn assign_tick_sequence(&mut self, tick_sequence: u64) {
+        self.sequence = tick_sequence;
     }
 
     #[must_use]
@@ -109,6 +148,7 @@ impl BoundCanonicalFrame {
     ) -> Self {
         Self {
             capture_generation,
+            source_sequence: sequence,
             sequence,
             monotonic_start_ms,
             monotonic_end_ms,
@@ -138,6 +178,7 @@ impl BoundCanonicalFrame {
     ) -> Self {
         Self {
             capture_generation: generation,
+            source_sequence: sequence,
             sequence,
             monotonic_start_ms: time,
             monotonic_end_ms: time + 16,
@@ -155,6 +196,7 @@ impl From<NormalizedCanonicalFrame> for BoundCanonicalFrame {
         let pixel_address = frame.pixels().as_ptr();
         let live = Self {
             capture_generation: frame.capture_generation().get(),
+            source_sequence: frame.source_sequence(),
             sequence: frame.source_sequence(),
             monotonic_start_ms: received_monotonic_ms,
             monotonic_end_ms: received_monotonic_ms,
@@ -209,9 +251,7 @@ pub struct DiagnosticBridge {
     foreground_ring: VecDeque<DiagnosticOwnedFrame>,
     foreground_last_ring_ms: Option<u64>,
     foreground_last_recorded_ms: Option<u64>,
-    foreground_last_fact_ms: Option<u64>,
     foreground_last_screen: Option<ScreenClass>,
-    foreground_last_fact_screen: Option<ScreenClass>,
     foreground_partial_source_recorded: bool,
 }
 
@@ -345,22 +385,6 @@ impl DiagnosticBridge {
             scorepeek::recognition::ScreenClass::Unknown => DiagnosticScreen::Unknown,
         };
         let predicate = observation.predicate();
-        if self.retention == DiagnosticRetention::ForegroundFailureWindowV1 {
-            const FACT_INTERVAL_MS: u64 = 60_000;
-            let predicate = observation.predicate();
-            let partial_result = observation.screen() == ScreenClass::Unknown
-                && predicate.result_presence.warm_pixels
-                    >= predicate.result_presence.warm_pixels_min;
-            let screen_changed = self.foreground_last_fact_screen != Some(observation.screen());
-            let due = self.foreground_last_fact_ms.is_none_or(|previous| {
-                frame.monotonic_start_ms.saturating_sub(previous) >= FACT_INTERVAL_MS
-            });
-            if !partial_result && !screen_changed && !due {
-                return DiagnosticEnqueueOutcome::SkippedCadence;
-            }
-            self.foreground_last_fact_ms = Some(frame.monotonic_start_ms);
-            self.foreground_last_fact_screen = Some(observation.screen());
-        }
         self.worker.try_record_fact(DiagnosticFact {
             sequence: frame.sequence,
             monotonic_start_ms: frame.monotonic_start_ms,
@@ -531,6 +555,29 @@ impl DiagnosticBridge {
         self.worker.record_external_unbound_error(error_type, count);
     }
 
+    pub(crate) fn record_sampling_summary(
+        &mut self,
+        sequence: u64,
+        monotonic_ms: u64,
+        processed_ticks: u64,
+        busy_skips: u64,
+        maximum_consecutive_busy_skips: u64,
+    ) -> DiagnosticEnqueueOutcome {
+        self.worker.try_record_fact(DiagnosticFact {
+            sequence,
+            monotonic_start_ms: monotonic_ms,
+            monotonic_end_ms: monotonic_ms,
+            operation: DiagnosticOperation::SampleRecognition,
+            status: DiagnosticOperationStatus::Success,
+            error_type: None,
+            detail: DiagnosticDetail::SamplingSummary {
+                processed_ticks,
+                busy_skips,
+                maximum_consecutive_busy_skips,
+            },
+        })
+    }
+
     /// Records the explicit end of this immutable binding before the application starts another.
     pub fn record_binding_change(
         &mut self,
@@ -583,9 +630,7 @@ impl DiagnosticBridge {
             foreground_ring: VecDeque::new(),
             foreground_last_ring_ms: None,
             foreground_last_recorded_ms: None,
-            foreground_last_fact_ms: None,
             foreground_last_screen: None,
-            foreground_last_fact_screen: None,
             foreground_partial_source_recorded: false,
         }
     }
@@ -639,6 +684,7 @@ fn owned_frame(frame: &BoundCanonicalFrame, include_source: bool) -> DiagnosticO
                     .source
                     .as_ref()
                     .map(|source| DiagnosticOwnedSourceFrame {
+                        source_sequence: frame.source_sequence(),
                         contract: source.contract,
                         memory_type: source.memory_type,
                         stride: source.stride,
@@ -712,6 +758,7 @@ mod tests {
     fn frame(generation: u64, sequence: u64, time: u64) -> BoundCanonicalFrame {
         BoundCanonicalFrame {
             capture_generation: generation,
+            source_sequence: sequence,
             sequence,
             monotonic_start_ms: time,
             monotonic_end_ms: time + 16,
@@ -733,6 +780,7 @@ mod tests {
         }
         BoundCanonicalFrame {
             capture_generation: 1,
+            source_sequence: sequence,
             sequence,
             monotonic_start_ms: time,
             monotonic_end_ms: time + 16,
@@ -830,13 +878,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(manifest["frames"].as_array().unwrap().len(), 1);
-        assert_eq!(manifest["facts"].as_array().unwrap().len(), 1);
+        assert_eq!(manifest["facts"]["record_count"], 1);
         let fact: serde_json::Value = serde_json::from_slice(
-            &fs::read(
-                root.path()
-                    .join("screen-observation/fact-00000000000000000000.json"),
-            )
-            .unwrap(),
+            &fs::read(root.path().join("screen-observation/facts.ndjson")).unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -864,7 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn foreground_retention_keeps_only_the_tail_of_a_long_unknown_interval() {
+    fn foreground_retention_records_every_tick_and_keeps_only_the_frame_tail() {
         let root = tempfile::tempdir().unwrap();
         let policy = DiagnosticPolicy {
             retention: DiagnosticRetention::ForegroundFailureWindowV1,
@@ -874,7 +918,7 @@ mod tests {
             root.path(),
             descriptor("foreground-tail", 1),
             policy,
-            2,
+            64,
         );
 
         for sequence in 1..=20 {
@@ -884,6 +928,10 @@ mod tests {
             assert_eq!(
                 bridge.record_frame_for_observation(&observation),
                 DiagnosticEnqueueOutcome::SkippedCadence
+            );
+            assert_eq!(
+                bridge.record_screen_observation(&observation),
+                DiagnosticEnqueueOutcome::Enqueued
             );
         }
         let outcome = bridge.finish(DiagnosticRunStatus::Success, 20_000);
@@ -897,6 +945,7 @@ mod tests {
         assert_eq!(frames.len(), 12);
         assert_eq!(frames.first().unwrap()["sequence"], 9);
         assert_eq!(frames.last().unwrap()["sequence"], 20);
+        assert_eq!(manifest["facts"]["record_count"], 20);
     }
 
     #[test]
@@ -932,15 +981,17 @@ mod tests {
         let directory = root.path().join("foreground-source-pair");
         let manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(directory.join("manifest.json")).unwrap()).unwrap();
-        assert_eq!(manifest["schema"], "scorepeek-private-diagnostic-run-v2");
+        assert_eq!(
+            manifest["schema"],
+            "scorepeek-private-diagnostic-capture-v3"
+        );
         assert_eq!(manifest["frames"].as_array().unwrap().len(), 3);
         assert!(manifest["frames"][0]["source"].is_object());
         assert!(manifest["frames"][1].get("source").is_none());
         assert!(manifest["frames"][2].get("source").is_none());
-        assert_eq!(
-            fs::read(directory.join("source-00000000000000000001.bgrx")).unwrap(),
-            vec![1; 32]
-        );
+        let source = fs::read(directory.join("source-00000000000000000001.qoi")).unwrap();
+        let (_, pixels) = qoi::decode_to_vec(&source).unwrap();
+        assert_eq!(pixels, vec![1; 24]);
     }
 
     #[test]
@@ -1070,7 +1121,7 @@ mod tests {
         let run = root.path().join("field-observation");
         let manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(run.join("manifest.json")).unwrap()).unwrap();
-        let filename = manifest["facts"][0]["filename"].as_str().unwrap();
+        let filename = manifest["facts"]["filename"].as_str().unwrap();
         let fact_bytes = fs::read(run.join(filename)).unwrap();
         let fact: serde_json::Value = serde_json::from_slice(&fact_bytes).unwrap();
         assert_eq!(fact["fact"]["operation"], "observe_fields");
@@ -1141,7 +1192,7 @@ mod tests {
         let run = root.path().join("field-observation-error");
         let manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(run.join("manifest.json")).unwrap()).unwrap();
-        let filename = manifest["facts"][0]["filename"].as_str().unwrap();
+        let filename = manifest["facts"]["filename"].as_str().unwrap();
         let fact_bytes = fs::read(run.join(filename)).unwrap();
         let fact: serde_json::Value = serde_json::from_slice(&fact_bytes).unwrap();
         assert_eq!(fact["fact"]["status"], "error");

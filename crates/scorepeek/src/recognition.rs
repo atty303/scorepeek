@@ -1252,8 +1252,7 @@ pub fn inspect_canonical_rgb8(
         .filter(|pixel| pixel[0] > 178 && pixel[1] > 178 && pixel[2] > 178)
         .fold(0_u32, |count, _| count + 1);
     let result_present = warm >= layout.result.presence.warm_pixels_min
-        && upper_panel_edge_pixels >= layout.result.presence.horizontal_edge_pixels_min
-        && lower_panel_edge_pixels >= layout.result.presence.horizontal_edge_pixels_min;
+        && upper_panel_edge_pixels >= layout.result.presence.horizontal_edge_pixels_min;
     let music_select_present = cyan_header_pixels
         >= layout.music_select.presence.cyan_header_pixels_min
         && colored_level_pixels >= layout.music_select.presence.colored_level_pixels_min

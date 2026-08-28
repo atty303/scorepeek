@@ -179,6 +179,41 @@ impl FractionalLinearGeometry {
             received_monotonic_ns: frame.received_monotonic_ns(),
         })
     }
+
+    /// Applies the production transform to one packed or padded `BGRx` frame.
+    ///
+    /// This is the filesystem-free replay boundary used by offline diagnostic generation. It
+    /// creates no capture admission or profile authority.
+    ///
+    /// # Errors
+    /// Returns a typed error when dimensions, stride, byte length, or saved geometry differ from
+    /// the measured profile contract.
+    pub fn normalize_bgrx_bytes(
+        &self,
+        bytes: &[u8],
+        width: u32,
+        height: u32,
+        stride: u32,
+    ) -> Result<Box<[u8]>, UnboundNormalizationError> {
+        if width != self.observed_width || height != self.observed_height {
+            return Err(UnboundNormalizationError::ObservedContractMismatch);
+        }
+        let stride =
+            usize::try_from(stride).map_err(|_| UnboundNormalizationError::StrideMismatch)?;
+        let observed_width =
+            usize::try_from(width).map_err(|_| UnboundNormalizationError::InvalidGeometry)?;
+        let observed_height =
+            usize::try_from(height).map_err(|_| UnboundNormalizationError::InvalidGeometry)?;
+        if stride < observed_width.saturating_mul(BGRX_BYTES_PER_PIXEL)
+            || stride.checked_mul(observed_height) != Some(bytes.len())
+        {
+            return Err(UnboundNormalizationError::FrameLengthMismatch);
+        }
+        Ok(
+            normalize_bgrx(bytes, stride, observed_width, observed_height, self.source)
+                .into_boxed_slice(),
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]

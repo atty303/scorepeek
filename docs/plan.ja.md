@@ -8,6 +8,12 @@
 - M1.1 catalog contractとlocal federation core: 完了
 - M1.2 live acquisitionとsync orchestration: manual/scheduled syncまで完了
 - M2 observed-profile private corpus、synthetic renderer、label/replay tooling: 完了
+- ADR 0056によりcapture regressionのdata flowを`run/video -> 10 Hz recognition -> diagnostic
+  v3 -> operator review -> frame-first corpus`へclean cutした。60/120 fps inputはlatest-frameだけを
+  100 ms tickへ渡し、busy中のtickはbacklog化せずcountする。videoはsource timestampで同じ10 Hz
+  sequenceを決定的に生成する補助入力であり、active suiteはverified diagnosticからimportした
+  QOI evidenceだけでproduction predicate/OCR/catalog resolutionを全世代replayする。現在のactive
+  suiteは旧video由来3 episodeとtarget live session由来4 episodeの計7 episodeを含み、全件replay済み。
 - M3 common PipeWire receiverとGamescope observed-frame profile: 着手（default remoteのbounded
   registry round trip、exact Gamescope `Video/Source` discovery、選択nodeとdefault remoteを保持する
   未校正lifetime lease、BGRxだけを提示する未校正receiver、およびbounded live/lifecycle gateまで。
@@ -79,7 +85,7 @@
   minimum edit distanceとinteger normalized similarityを全songについて別々に保持する。ranking、top-N truncation、field間集約、
   threshold、accepted field、song decision、selection context更新、diagnostic side effect、eventは行わない。folded observationは
   domain-unique folded candidate formとのみ比較し、search-term-only songはdropやpanicではなくtyped errorでdomain構築を停止する。
-  さらにretained recording evidenceからresult-song resolver v1を固定した。titleのunique minimum edit candidateに対し
+  さらにretained recording evidenceからresult-song resolverを固定し、今回のreview済みlive evidenceによりv2へ更新した。titleのunique minimum edit candidateに対し
   edit distance 1以下、normalized similarity 6/7以上、runner-up edit margin 2以上、選択candidateのartist similarity 2/5以上を
   exact integerで要求し、artist scoreをtitleへ加算しない。失敗はtyped unknownにする。profile v2は全episodeのexact expected song IDをbindし、
   exact songと`CLEAR TYPE`を各2 frame以上要求する。local artifactはexact OCR/catalog strings、全candidate metrics、decision/reason、expected valuesを保持する。

@@ -81,6 +81,23 @@ pub struct FieldObservationSession<O: FieldObserver> {
 }
 
 impl<O: FieldObserver> FieldObservationSession<O> {
+    pub(crate) fn record_sampling_summary(
+        &mut self,
+        sequence: u64,
+        monotonic_ms: u64,
+        processed_ticks: u64,
+        busy_skips: u64,
+        maximum_consecutive_busy_skips: u64,
+    ) {
+        self.recognition.record_sampling_summary(
+            sequence,
+            monotonic_ms,
+            processed_ticks,
+            busy_skips,
+            maximum_consecutive_busy_skips,
+        );
+    }
+
     /// Loads the observer before opening the matching diagnostic-backed recognition run.
     ///
     /// # Errors
@@ -272,35 +289,45 @@ impl FieldObservationSession<RegisteredScreenFieldObserver> {
     }
 }
 
-impl<O, T, E> FieldObservationSession<O>
-where
-    O: FieldObserver<Output = Result<T, ScreenFieldObservationError<E>>>,
-    T: DiagnosticScreenFieldObservation + Send + 'static,
-    E: Send + 'static,
-{
+impl<O: FieldObserver> FieldObservationSession<O> {
     #[must_use]
-    pub fn poll_field_observation(
+    pub fn poll_field_observation<T, E>(
         &mut self,
         pending: &PendingSessionFieldObservation<O::Output>,
-    ) -> FieldObservationSessionPoll<O::Output> {
+    ) -> FieldObservationSessionPoll<O::Output>
+    where
+        O: FieldObserver<Output = Result<T, ScreenFieldObservationError<E>>>,
+        T: DiagnosticScreenFieldObservation + Send + 'static,
+        E: Send + 'static,
+    {
         self.poll_owned_field_observation(pending, None)
     }
 
     /// Waits only for the caller-selected bound and records a completed value-free fact.
     #[must_use]
-    pub fn wait_field_observation(
+    pub fn wait_field_observation<T, E>(
         &mut self,
         pending: &PendingSessionFieldObservation<O::Output>,
         timeout: Duration,
-    ) -> FieldObservationSessionPoll<O::Output> {
+    ) -> FieldObservationSessionPoll<O::Output>
+    where
+        O: FieldObserver<Output = Result<T, ScreenFieldObservationError<E>>>,
+        T: DiagnosticScreenFieldObservation + Send + 'static,
+        E: Send + 'static,
+    {
         self.poll_owned_field_observation(pending, Some(timeout))
     }
 
-    fn poll_owned_field_observation(
+    fn poll_owned_field_observation<T, E>(
         &mut self,
         pending: &PendingSessionFieldObservation<O::Output>,
         timeout: Option<Duration>,
-    ) -> FieldObservationSessionPoll<O::Output> {
+    ) -> FieldObservationSessionPoll<O::Output>
+    where
+        O: FieldObserver<Output = Result<T, ScreenFieldObservationError<E>>>,
+        T: DiagnosticScreenFieldObservation + Send + 'static,
+        E: Send + 'static,
+    {
         if !Arc::ptr_eq(&pending.owner, &self.owner) {
             self.recognition.reject_pending_field_observation();
             return FieldObservationSessionPoll::BindingMismatch;

@@ -1,5 +1,41 @@
 # Private corpus contract
 
+## Frame-first capture regression (current)
+
+ADR 0056 replaces the former recording-root capture dataset with this flow:
+
+```text
+live run     -> 10 Hz recognition -> diagnostic v3 -> review -> corpus
+video replay -> 10 Hz recognition -> diagnostic v3 -> review -> corpus
+```
+
+The only importable capture-regression input is a successfully verified
+`scorepeek-private-diagnostic-session-v3`. Facts, recognition observations, and watcher/session
+events are session NDJSON streams. Ordered canonical evidence is RGB8 1920x1080 QOI and is
+content-deduplicated; video and observed-frame evidence are optional. Recognition output is a
+review aid, never ground truth. Video replay evidence stops at 1,024 frame references or 1 GiB of
+unique QOI bytes without stopping recognition or the fact/observation streams. Each NDJSON record
+is bounded to 1 MiB and each session stream to 250,000 records; reaching the stream bound is
+recorded as degradation. Corpus replay runs the production predicate over every retained canonical
+frame, while OCR/catalog/clear-type expectations apply only to operator-labeled stable frames.
+Value-bearing records keep exact OCR and resolver output but bind a candidate count to the separate
+exact catalog object instead of duplicating every recomputable per-song metric at every tick. The
+complete observation stream is bounded to 512 MiB.
+
+```text
+scorepeek-corpus diagnostic replay-video --video /absolute/input.mkv --profile gamescope-4k --output /absolute/new-diagnostic
+scorepeek-corpus diagnostic verify /absolute/new-diagnostic
+scorepeek-corpus corpus import-diagnostic --store /absolute/private-corpus-v1 --diagnostic /absolute/new-diagnostic --review-draft /absolute/review.json
+scorepeek-corpus review show --draft /absolute/review.json
+scorepeek-corpus review apply --store /absolute/private-corpus-v1 --draft /absolute/review.json --labels /absolute/operator-labels.json
+scorepeek-corpus corpus replay --store /absolute/private-corpus-v1
+```
+
+`mise run corpus:test` replays every session in the active suite. It does not omit older sessions
+when a new play is added. The old recording dataset and video-first sections below describe
+read-only archived tooling and OCR-training inputs; they are not accepted by the current
+capture-regression importer.
+
 This document defines the M2 boundary between immutable private media,
 offline corpus tooling, the future training/export pipeline, and the scorepeek
 game-session core. Real media, extracted frames, complete labels, and replay
@@ -26,6 +62,12 @@ infer or model Wine, Vulkan, Gamescope, compositor, PipeWire, operating-system,
 or capture-layer classifications from a profile ID.
 
 ## Complete recording dataset roots
+
+This section and the remaining v1 recording-store sections are historical design records for the
+read-only archive and OCR experiments. Their direct ingest, media extraction, generation sealing,
+label authoring, replay-index, and replay-validation CLI routes were removed by ADR 0056. They are
+not instructions for the active capture-regression corpus; use only the v3 diagnostic workflow
+above for new sessions.
 
 The preferred collection path imports one finished, self-contained Matroska
 recording made from before game startup through final game shutdown. The raw

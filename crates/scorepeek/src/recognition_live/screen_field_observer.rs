@@ -67,6 +67,7 @@ pub struct RegisteredScreenFieldObservation {
     fields: ScreenFieldObservations,
     candidates: ScreenCatalogCandidateObservations,
     song_resolution: ScreenSongResolution,
+    clear_type: Option<&'static str>,
 }
 
 impl RegisteredScreenFieldObservation {
@@ -95,10 +96,17 @@ impl RegisteredScreenFieldObservation {
             )),
             _ => unreachable!("field observations and candidates share one screen"),
         };
+        let clear_type = match &fields {
+            ScreenFieldObservations::Result(fields) => {
+                resolve_clear_type(&fields.clear_type.open_text)
+            }
+            ScreenFieldObservations::MusicSelect(_) => None,
+        };
         Self {
             fields,
             candidates,
             song_resolution,
+            clear_type,
         }
     }
 
@@ -132,6 +140,61 @@ impl RegisteredScreenFieldObservation {
     pub const fn song_resolution(&self) -> &ScreenSongResolution {
         &self.song_resolution
     }
+
+    #[must_use]
+    pub const fn clear_type(&self) -> Option<&'static str> {
+        self.clear_type
+    }
+}
+
+const CLEAR_TYPES: [&str; 7] = [
+    "FAILED",
+    "ASSIST CLEAR",
+    "EASY CLEAR",
+    "CLEAR",
+    "HARD CLEAR",
+    "EXH-CLEAR",
+    "F-COMBO",
+];
+
+fn resolve_clear_type(observed: &str) -> Option<&'static str> {
+    let mut matches = CLEAR_TYPES
+        .into_iter()
+        .filter(|candidate| ascii_edit_distance_at_most_one(observed, candidate));
+    let selected = matches.next()?;
+    matches.next().is_none().then_some(selected)
+}
+
+fn ascii_edit_distance_at_most_one(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    if left.len().abs_diff(right.len()) > 1 {
+        return false;
+    }
+    let (shorter, longer) = if left.len() <= right.len() {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    let mut short = 0;
+    let mut long = 0;
+    let mut edits = 0;
+    while short < shorter.len() && long < longer.len() {
+        if shorter[short] == longer[long] {
+            short += 1;
+            long += 1;
+        } else {
+            edits += 1;
+            if edits > 1 {
+                return false;
+            }
+            if shorter.len() == longer.len() {
+                short += 1;
+            }
+            long += 1;
+        }
+    }
+    edits + usize::from(long < longer.len()) <= 1
 }
 
 impl FieldObserver for RegisteredScreenFieldObserver {
@@ -160,6 +223,15 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn clear_type_resolution_accepts_only_a_unique_one_edit_registered_value() {
+        assert_eq!(resolve_clear_type("EXH-CLEAR"), Some("EXH-CLEAR"));
+        assert_eq!(resolve_clear_type("XH-CLEAR"), Some("EXH-CLEAR"));
+        assert_eq!(resolve_clear_type("F-COMBO"), Some("F-COMBO"));
+        assert_eq!(resolve_clear_type(""), None);
+        assert_eq!(resolve_clear_type("UNRELATED"), None);
+    }
 
     #[test]
     fn registered_output_keeps_fields_and_full_catalog_evidence_together() {

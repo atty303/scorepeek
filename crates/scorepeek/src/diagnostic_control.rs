@@ -231,7 +231,7 @@ struct RunManifestDocument {
     total_bytes: u64,
     start: StartReference,
     frames: Vec<FrameReference>,
-    facts: Vec<FactReference>,
+    facts: FactManifest,
     degradations: Vec<DegradationReference>,
     degradation_entries_dropped: u64,
     degradation_reason_counts: Vec<DegradationReasonCount>,
@@ -264,7 +264,14 @@ struct FrameReference {
 #[serde(deny_unknown_fields)]
 struct SourceFrameReference {
     filename: String,
-    pixel_format: String,
+    #[serde(default)]
+    source_sequence: Option<u64>,
+    #[serde(default)]
+    pixel_format: Option<String>,
+    #[serde(default)]
+    observed_pixel_format: Option<String>,
+    #[serde(default)]
+    encoded_pixel_format: Option<String>,
     video: UncalibratedVideoContract,
     memory_type: UncalibratedMemoryType,
     stride: u32,
@@ -279,6 +286,24 @@ struct FactReference {
     index: u64,
     sequence: u64,
     filename: String,
+    file_sha256: String,
+    bytes: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum FactManifest {
+    Legacy(Vec<FactReference>),
+    Ndjson(NdjsonReference),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NdjsonReference {
+    filename: String,
+    record_count: u64,
+    first_sequence: Option<u64>,
+    last_sequence: Option<u64>,
     file_sha256: String,
     bytes: u64,
 }
@@ -466,8 +491,15 @@ fn export_complete_run(
             expected.insert(source.filename.clone(), source.file_sha256.clone());
         }
     }
-    for fact in &manifest.facts {
-        expected.insert(fact.filename.clone(), fact.file_sha256.clone());
+    match &manifest.facts {
+        FactManifest::Legacy(facts) => {
+            for fact in facts {
+                expected.insert(fact.filename.clone(), fact.file_sha256.clone());
+            }
+        }
+        FactManifest::Ndjson(facts) => {
+            expected.insert(facts.filename.clone(), facts.file_sha256.clone());
+        }
     }
 
     let mut builder = fs::DirBuilder::new();
@@ -1508,7 +1540,7 @@ fn validate_delete_marker(
     for file in document.files {
         if file.filename == DELETE_MARKER_FILENAME
             || file.filename == DELETE_MARKER_STAGING_FILENAME
-            || file.bytes == 0
+            || (file.bytes == 0 && file.filename != "facts.ndjson")
             || files.insert(file.filename, file.bytes).is_some()
         {
             return Err(DiagnosticErrorType::StoreUnavailable);
@@ -1584,7 +1616,9 @@ fn validate_manifest(
 ) -> Result<(), String> {
     if !matches!(
         manifest.schema.as_str(),
-        "scorepeek-private-diagnostic-run-v1" | "scorepeek-private-diagnostic-run-v2"
+        "scorepeek-private-diagnostic-run-v1"
+            | "scorepeek-private-diagnostic-run-v2"
+            | "scorepeek-private-diagnostic-capture-v3"
     ) || (manifest.schema == "scorepeek-private-diagnostic-run-v1"
         && manifest.frames.iter().any(|frame| frame.source.is_some()))
         || manifest.start.schema != "scorepeek-private-diagnostic-artifact-v1"
@@ -1672,6 +1706,7 @@ fn valid_degradation(entry: &DegradationReference) -> bool {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn valid_manifest_entries(
     manifest: &RunManifestDocument,
     files: &BTreeMap<String, u64>,
@@ -1679,8 +1714,12 @@ fn valid_manifest_entries(
     manifest_bytes: u64,
     monotonic_start_ms: u64,
 ) -> bool {
+    let fact_count = match &manifest.facts {
+        FactManifest::Legacy(facts) => facts.len() as u64,
+        FactManifest::Ndjson(facts) => facts.record_count,
+    };
     if manifest.frames.len() > MAX_FRAMES_PER_RUN
-        || manifest.facts.len() > MAX_FACTS_PER_RUN
+        || fact_count > MAX_FACTS_PER_RUN as u64
         || manifest.degradations.len() > MAX_DEGRADATIONS_PER_RUN
         || manifest.degradation_reason_counts.len() > DiagnosticErrorType::COUNT
     {
@@ -1710,16 +1749,32 @@ fn valid_manifest_entries(
         previous_sequence = Some(frame.sequence);
         let source_bytes = frame.source.as_ref().map_or(0, |source| source.bytes);
         if frame.source.as_ref().is_some_and(|source| {
-            let _ = (source.memory_type, source.received_monotonic_ns);
+            let _ = (
+                source.source_sequence,
+                source.memory_type,
+                source.received_monotonic_ns,
+            );
             let minimum_stride = source.video.width.checked_mul(4);
             let expected_bytes =
                 u64::from(source.stride).checked_mul(u64::from(source.video.height));
-            source.filename != format!("source-{:020}.bgrx", frame.sequence)
-                || source.pixel_format != "bgrx"
+            let legacy = manifest.schema != "scorepeek-private-diagnostic-capture-v3";
+            let legacy_source_invalid = source.filename
+                != format!("source-{:020}.bgrx", frame.sequence)
+                || source.pixel_format.as_deref() != Some("bgrx");
+            let qoi_source_invalid =
+                source.filename != format!("source-{:020}.qoi", frame.sequence);
+            let source_contract_invalid = if legacy {
+                legacy_source_invalid
+            } else {
+                qoi_source_invalid
+                    || source.observed_pixel_format.as_deref() != Some("bgrx")
+                    || source.encoded_pixel_format.as_deref() != Some("rgb8")
+            };
+            source_contract_invalid
                 || source.video.width == 0
                 || source.video.height == 0
                 || minimum_stride.is_none_or(|minimum| source.stride < minimum)
-                || expected_bytes != Some(source.bytes)
+                || (legacy && expected_bytes != Some(source.bytes))
                 || source.bytes == 0
                 || source.bytes > MAX_SOURCE_FRAME_BYTES
                 || !valid_sha256(&source.file_sha256)
@@ -1737,21 +1792,48 @@ fn valid_manifest_entries(
         };
         artifact_bytes = next;
     }
-    for (expected_index, fact) in manifest.facts.iter().enumerate() {
-        if fact.index != expected_index as u64
-            || fact.bytes == 0
-            || fact.bytes > MAX_START_BYTES
-            || !valid_sha256(&fact.file_sha256)
-            || fact.filename != format!("fact-{:020}.json", fact.index)
-            || expected.insert(fact.filename.clone(), fact.bytes).is_some()
-        {
-            return false;
+    match &manifest.facts {
+        FactManifest::Legacy(facts) => {
+            for (expected_index, fact) in facts.iter().enumerate() {
+                if fact.index != expected_index as u64
+                    || fact.bytes == 0
+                    || fact.bytes > MAX_START_BYTES
+                    || !valid_sha256(&fact.file_sha256)
+                    || fact.filename != format!("fact-{:020}.json", fact.index)
+                    || expected.insert(fact.filename.clone(), fact.bytes).is_some()
+                {
+                    return false;
+                }
+                let _ = fact.sequence;
+                let Some(next) = artifact_bytes.checked_add(fact.bytes) else {
+                    return false;
+                };
+                artifact_bytes = next;
+            }
         }
-        let _ = fact.sequence;
-        let Some(next) = artifact_bytes.checked_add(fact.bytes) else {
-            return false;
-        };
-        artifact_bytes = next;
+        FactManifest::Ndjson(facts) => {
+            if manifest.schema != "scorepeek-private-diagnostic-capture-v3"
+                || facts.filename != "facts.ndjson"
+                || !valid_sha256(&facts.file_sha256)
+                || facts.bytes > (MAX_FACTS_PER_RUN as u64 * MAX_FACT_BYTES as u64)
+                || (facts.record_count == 0
+                    && (facts.first_sequence.is_some() || facts.last_sequence.is_some()))
+                || (facts.record_count > 0
+                    && facts
+                        .first_sequence
+                        .zip(facts.last_sequence)
+                        .is_none_or(|(first, last)| first > last))
+                || expected
+                    .insert(facts.filename.clone(), facts.bytes)
+                    .is_some()
+            {
+                return false;
+            }
+            let Some(next) = artifact_bytes.checked_add(facts.bytes) else {
+                return false;
+            };
+            artifact_bytes = next;
+        }
     }
     artifact_bytes == manifest.artifact_bytes && &expected == files
 }
@@ -1766,7 +1848,7 @@ fn validate_partial_files(files: &BTreeMap<String, u64>, run_bytes: u64) -> Resu
         if name == "run.json" {
             continue;
         }
-        if *bytes == 0 {
+        if *bytes == 0 && name != "facts.ndjson" {
             return Err(invalid_store());
         }
         if valid_indexed_artifact_name(name, "frame-", ".qoi") {
@@ -1774,8 +1856,14 @@ fn validate_partial_files(files: &BTreeMap<String, u64>, run_bytes: u64) -> Resu
             if frame_count > MAX_FRAMES_PER_RUN {
                 return Err(invalid_store());
             }
-        } else if valid_indexed_artifact_name(name, "source-", ".bgrx") {
+        } else if valid_indexed_artifact_name(name, "source-", ".bgrx")
+            || valid_indexed_artifact_name(name, "source-", ".qoi")
+        {
             if *bytes > MAX_SOURCE_FRAME_BYTES {
+                return Err(invalid_store());
+            }
+        } else if name == "facts.ndjson" {
+            if *bytes > MAX_FACTS_PER_RUN as u64 * MAX_FACT_BYTES as u64 {
                 return Err(invalid_store());
             }
         } else if valid_indexed_artifact_name(name, "fact-", ".json") {
@@ -1830,7 +1918,11 @@ fn valid_start(start: &RunStartDocument) -> bool {
 
 fn parse_run_start(bytes: &[u8], run_id: &str) -> Result<RunStartDocument, String> {
     if let Ok(start) = serde_json::from_slice::<RunStartDocument>(bytes)
-        && start.schema == "scorepeek-private-diagnostic-run-start-v2"
+        && matches!(
+            start.schema.as_str(),
+            "scorepeek-private-diagnostic-run-start-v2"
+                | "scorepeek-private-diagnostic-capture-start-v3"
+        )
         && start.run_id == run_id
         && valid_start(&start)
         && canonical_json(&start)? == bytes
@@ -2318,10 +2410,13 @@ mod tests {
         }
         assert!(validate_partial_files(&files, run_bytes).is_err());
 
-        let mut files = BTreeMap::from([("run.json".to_owned(), run_bytes)]);
-        for index in 0..=MAX_FACTS_PER_RUN {
-            files.insert(format!("fact-{index:020}.json"), 1);
-        }
+        let files = BTreeMap::from([
+            ("run.json".to_owned(), run_bytes),
+            (
+                "facts.ndjson".to_owned(),
+                MAX_FACTS_PER_RUN as u64 * MAX_FACT_BYTES as u64 + 1,
+            ),
+        ]);
         assert!(validate_partial_files(&files, run_bytes).is_err());
 
         let files = BTreeMap::from([

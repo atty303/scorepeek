@@ -269,6 +269,23 @@ impl RecognitionSession {
         );
     }
 
+    pub(crate) fn record_sampling_summary(
+        &mut self,
+        sequence: u64,
+        monotonic_ms: u64,
+        processed_ticks: u64,
+        busy_skips: u64,
+        maximum_consecutive_busy_skips: u64,
+    ) {
+        let _ = self.bridge.record_sampling_summary(
+            sequence,
+            monotonic_ms,
+            processed_ticks,
+            busy_skips,
+            maximum_consecutive_busy_skips,
+        );
+    }
+
     pub(crate) fn reject_pending_field_observation(&mut self) {
         self.bridge.record_unbound_field_observer_degradation(
             DiagnosticErrorType::InvalidConfiguration,
@@ -582,14 +599,14 @@ mod tests {
         .unwrap();
         old.inspect(&BoundCanonicalFrame::for_test(1, 1, 0))
             .unwrap();
-        let first_fact = root
-            .path()
-            .join("old-session/fact-00000000000000000000.json");
+        let first_fact = root.path().join("old-session/facts.ndjson");
         let deadline = Instant::now() + Duration::from_secs(1);
-        while !first_fact.is_file() && Instant::now() < deadline {
+        while first_fact.metadata().map_or(0, |metadata| metadata.len()) == 0
+            && Instant::now() < deadline
+        {
             std::thread::yield_now();
         }
-        assert!(first_fact.is_file());
+        assert!(first_fact.metadata().unwrap().len() > 0);
         let next_descriptor = descriptor("next-session", 2);
         let expected_next_binding = next_descriptor.binding.identity_sha256().unwrap();
         let transition = old
@@ -620,17 +637,10 @@ mod tests {
             &fs::read(root.path().join("old-session/manifest.json")).unwrap(),
         )
         .unwrap();
-        let facts = manifest["facts"].as_array().unwrap();
-        assert_eq!(facts.len(), 2);
-        let binding_fact: serde_json::Value = serde_json::from_slice(
-            &fs::read(
-                root.path()
-                    .join("old-session")
-                    .join(facts[1]["filename"].as_str().unwrap()),
-            )
-            .unwrap(),
-        )
-        .unwrap();
+        assert_eq!(manifest["facts"]["record_count"], 2);
+        let facts = fs::read_to_string(root.path().join("old-session/facts.ndjson")).unwrap();
+        let binding_fact: serde_json::Value =
+            serde_json::from_str(facts.lines().nth(1).unwrap()).unwrap();
         assert_eq!(binding_fact["fact"]["operation"], "change_binding");
         assert_eq!(
             binding_fact["fact"]["detail"]["next_binding_sha256"],

@@ -180,20 +180,11 @@ mise run capture:gamescope:binding:author -- --calibration /absolute/private/ses
 mise run capture:gamescope:test:result-recognition -- --binding /absolute/private/binding.json --binding-sha256 SHA256 --capture-generation 1 --duration-ms 30000 --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --canonical-layout-sha256 LAYOUT_SHA256 --catalog-sha256 CATALOG_SHA256 --recording enabled --recognition-artifact /absolute/private/new-recognition-evidence
 mise run run:gamescope -- --binding /absolute/private/binding.json --binding-sha256 SHA256 --capture-generation 1 --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --canonical-layout-sha256 LAYOUT_SHA256 --catalog-sha256 CATALOG_SHA256 --recording enabled --recognition-artifact /absolute/private/new-recognition-evidence
 mise run catalog:sync
-mise run corpus:recording:import -- --store /absolute/private/store --capture-context /absolute/private/capture-context.json /absolute/recordings/complete-run.mkv
-mise run corpus:dataset:seal -- --store /absolute/private/store calibration-001
-mise run corpus:dataset:push -- --store /absolute/private/store --remote /absolute/private/remote.json GENERATION_SHA256
-mise run corpus:dataset:pull -- --store /absolute/private/restored-store --remote /absolute/private/remote.json GENERATION_SHA256
-mise run corpus:dataset:verify -- --store /absolute/private/store GENERATION_SHA256
-mise run corpus:dataset:remote-verify -- --store /absolute/private/store --remote /absolute/private/remote.json GENERATION_SHA256
-mise run corpus:dataset:test:e2e
-mise run corpus:ingest -- --store /absolute/private/store /absolute/source.media /absolute/request.json
-mise run corpus:generation:seal -- --store /absolute/private/store generation-001
-mise run corpus:label:author -- --store /absolute/private/store /absolute/complete-label.json
-mise run corpus:index:generate -- --store /absolute/private/store /absolute/index-plan.json
-mise run corpus:media:probe -- --store /absolute/private/store --output /absolute/private/probe.json fixture-001
-mise run corpus:media:extract -- --store /absolute/private/store --output /absolute/private/new-extraction /absolute/private/probe.json /absolute/private/extraction-request.json
-mise run corpus:canonical:extract -- --store /absolute/private/store --output /absolute/private/canonical /absolute/private/probe.json /absolute/private/extraction-request.json
+mise run corpus:diagnostic:replay-video -- --video /absolute/input.mkv --profile gamescope-4k --output /absolute/new-diagnostic
+cargo run --locked --quiet -p scorepeek-corpus -- diagnostic verify /absolute/new-diagnostic
+cargo run --locked --quiet -p scorepeek-corpus -- corpus import-diagnostic --store /absolute/private-corpus-v1 --diagnostic /absolute/new-diagnostic --review-draft /absolute/review.json
+cargo run --locked --quiet -p scorepeek-corpus -- review apply --store /absolute/private-corpus-v1 --draft /absolute/review.json --labels /absolute/operator-labels.json
+mise run corpus:test
 mise run recognition:inspect -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID
 mise run recognition:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/crops
 mise run recognition:music-select:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/music-select-crops
@@ -211,7 +202,6 @@ mise run recognition:title:spike -- --catalog-store /absolute/private/catalog --
 mise run ocr:parity:reference -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --candidates /absolute/private/parity-candidates.json --output /absolute/private/paddle-reference
 mise run ocr:parity:run -- --model /absolute/private/models/inference.onnx --reference /absolute/private/paddle-reference --reference-sha256 REFERENCE_MANIFEST_SHA256 --crop-artifact /absolute/private/crops --catalog-store /absolute/private/catalog --dictionary /absolute/private/models/inference.yml --minimum-log-probability SCORE --minimum-runner-up-margin SCORE
 mise run corpus:synthetic:render -- --output /absolute/new/output-directory /absolute/synthetic-request.json
-mise run corpus:replay:validate -- --store /absolute/private/store /absolute/replay-suite.json
 mise run catalog:schedule:systemd:verify
 ```
 

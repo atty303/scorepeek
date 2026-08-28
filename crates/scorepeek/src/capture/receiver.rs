@@ -24,7 +24,7 @@ const MAX_WIDTH: u32 = 7_680;
 const MAX_HEIGHT: u32 = 4_320;
 const MAX_FRAME_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BUFFERS_PER_CALLBACK: usize = 64;
-const REQUESTED_FRAMERATE_NUM: u32 = 60;
+const REQUESTED_FRAMERATE_NUM: u32 = 10;
 const REQUESTED_FRAMERATE_DENOM: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -33,6 +33,7 @@ pub struct DiagnosticOwnedFrame {
 
 #[derive(Debug)]
 pub struct DiagnosticOwnedSourceFrame {
+    pub source_sequence: u64,
     pub contract: UncalibratedVideoContract,
     pub memory_type: UncalibratedMemoryType,
     pub stride: u32,
@@ -655,6 +656,7 @@ fn source_input(
     source: Option<&DiagnosticOwnedSourceFrame>,
 ) -> Option<DiagnosticSourceFrameInput<'_>> {
     source.map(|source| DiagnosticSourceFrameInput {
+        source_sequence: source.source_sequence,
         contract: source.contract,
         memory_type: source.memory_type,
         stride: source.stride,
@@ -762,7 +764,7 @@ mod tests {
         );
         let caller_result = Result::<_, &'static str>::Ok("recognition-result");
         assert_eq!(
-            worker.try_record_frame(frame(2, 500)),
+            worker.try_record_frame(frame(2, 50)),
             DiagnosticEnqueueOutcome::SkippedCadence
         );
         assert_eq!(
@@ -884,7 +886,7 @@ mod tests {
             DiagnosticEnqueueOutcome::Enqueued
         );
         assert_eq!(
-            worker.try_record_frame(frame(2, 500)),
+            worker.try_record_frame(frame(2, 50)),
             DiagnosticEnqueueOutcome::SkippedCadence
         );
         assert_eq!(

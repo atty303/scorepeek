@@ -154,6 +154,9 @@ authoritative.
 - [ADR 0055: Bound canonical sampling footprints](0055-bound-canonical-sampling-footprints.md)
   supersedes ADR 0054's continuous-rectangle containment rule. Signed source origins are accepted
   when every canonical pixel-center sample required by the production normalizer remains present.
+- [ADR 0056: Use 10 Hz diagnostics as the frame-corpus boundary](0056-use-10-hz-diagnostics-as-the-frame-corpus-boundary.md)
+  makes verified diagnostic sessions the only capture-regression input, fixes recognition at 10 Hz,
+  stores bounded QOI evidence plus session NDJSON streams, and makes video optional auxiliary input.
 
 ## Historical
 

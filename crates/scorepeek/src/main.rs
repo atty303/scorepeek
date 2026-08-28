@@ -14,6 +14,7 @@ mod recognition_artifact;
 pub mod recognition_live;
 mod recording_simulation;
 mod routine_watcher;
+mod session_artifact;
 
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -704,6 +705,38 @@ fn run_routine_live_session(
                 if report.output_failed() {
                     return Err("live result output failed".to_owned());
                 }
+                if let (
+                    Some(recognition_root),
+                    Some(capture_manifest_sha256),
+                    Some(recognition_manifest_sha256),
+                ) = (
+                    recognition_root.as_deref(),
+                    report.diagnostic_manifest_sha256(),
+                    report.recognition_artifact_manifest_sha256(),
+                ) {
+                    let (processed_ticks, busy_skips, maximum_consecutive_busy_skips) =
+                        report.recognition_sampling();
+                    if let Err(error) =
+                        session_artifact::publish(&session_artifact::PublishRequest {
+                            root: &state.diagnostic_session_store,
+                            session_id: &session_id,
+                            capture_generation: generation,
+                            profile_sha256: selected.binding.capture_profile_sha256(),
+                            catalog_sha256: &active.digest,
+                            processed_ticks,
+                            busy_skips,
+                            maximum_consecutive_busy_skips,
+                            completeness: report.diagnostic_completeness_name(),
+                            capture_directory: &state.diagnostic_root.join(&session_id),
+                            capture_manifest_sha256,
+                            recognition_directory: recognition_root,
+                            recognition_manifest_sha256,
+                            profile_path: &selected.path,
+                        })
+                    {
+                        eprintln!("scorepeek: diagnostic session publication degraded: {error}");
+                    }
+                }
                 if started {
                     lifetimes.admitted();
                     let outcome = match report.stop_reason() {
@@ -995,7 +1028,7 @@ fn execute_live_session(
                 Path::new(recognition_artifact_root),
             ),
             recognition_artifact_retention:
-                recognition_artifact::RecognitionArtifactRetention::ForegroundCompactedV1,
+                recognition_artifact::RecognitionArtifactRetention::Complete,
         },
         stop,
         &mut |event| {
@@ -1134,7 +1167,8 @@ fn write_live_session_event(
                     serde_json::json!({
                         "title": fields.title.open_text,
                         "artist": fields.artist.open_text,
-                        "clear_type": fields.clear_type.open_text,
+                        "clear_type": observation.clear_type(),
+                        "clear_type_ocr": fields.clear_type.open_text,
                         "difficulty": not_observed_field(),
                         "level": not_observed_field(),
                         "notes": not_observed_field(),

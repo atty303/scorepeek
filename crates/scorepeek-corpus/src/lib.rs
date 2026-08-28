@@ -11,11 +11,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tempfile::Builder;
 
-mod dataset;
+mod frame_corpus;
 mod media;
 mod music_list;
-mod remote;
-pub use dataset::{DatasetSummary, RecordingImportSummary};
+pub use frame_corpus::{
+    CorpusReplaySummary, DiagnosticConversionSummary, DiagnosticImportSummary,
+    DiagnosticVerificationSummary, ReviewApplySummary, VideoReplaySummary, apply_review,
+    convert_v2_diagnostic, import_diagnostic, inspect_review, replay_corpus, replay_video,
+    verify_diagnostic,
+};
 pub use media::{CanonicalFrameExtractionSummary, FrameExtractionSummary, MediaProbeSummary};
 pub use music_list::{
     MusicListMotionReviewApplySummary, MusicListMotionReviewPlanSummary, MusicListMotionSummary,
@@ -24,7 +28,6 @@ pub use music_list::{
     plan_music_list_motion_review, verify_music_list_motion,
     verify_music_list_row_observation_draft,
 };
-pub use remote::DatasetRemoteSummary;
 
 const INGEST_REQUEST_SCHEMA: &str = "scorepeek-private-corpus-ingest-v2";
 const INGEST_SUMMARY_SCHEMA: &str = "scorepeek-private-corpus-ingest-summary-v2";
@@ -376,6 +379,7 @@ impl CorpusStore {
         Self { root: root.into() }
     }
 
+    #[allow(dead_code)]
     fn register_external_source(
         &self,
         source_path: &Path,
@@ -506,6 +510,7 @@ impl CorpusStore {
             .map(|(manifest, ())| manifest)
     }
 
+    #[allow(dead_code)]
     fn ingest_verified_recording_with<T>(
         &self,
         source_path: &Path,
@@ -2501,6 +2506,7 @@ fn write_atomic_file(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn replace_atomic_file(
     directory: &Path,
     path: &Path,

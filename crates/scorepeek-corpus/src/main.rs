@@ -4,9 +4,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use scorepeek_corpus::{
-    CorpusStore, apply_music_list_motion_review, inspect_music_list_row_observation_draft,
-    measure_music_list_motion, plan_music_list_motion_review, render_synthetic_title_set,
-    verify_music_list_motion, verify_music_list_row_observation_draft,
+    apply_music_list_motion_review, apply_review, convert_v2_diagnostic, import_diagnostic,
+    inspect_music_list_row_observation_draft, inspect_review, measure_music_list_motion,
+    plan_music_list_motion_review, render_synthetic_title_set, replay_corpus, replay_video,
+    verify_diagnostic, verify_music_list_motion, verify_music_list_row_observation_draft,
 };
 
 fn main() -> ExitCode {
@@ -21,6 +22,9 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &[OsString]) -> Result<(), String> {
+    if let Some(result) = run_frame_corpus(args) {
+        return result;
+    }
     if let [music_list, motion, measure, request, output, document] = args
         && music_list == "music-list"
         && motion == "motion"
@@ -97,83 +101,130 @@ fn run(args: &[OsString]) -> Result<(), String> {
             })?;
         return print_json(&summary, "music-list row observation draft verification");
     }
-    if let Some(result) = run_dataset(args) {
-        return result;
-    }
-    if let Some(result) = run_media(args) {
-        return result;
-    }
-    run_legacy(args)
+    run_remaining(args)
 }
 
-fn run_legacy(args: &[OsString]) -> Result<(), String> {
+#[allow(clippy::too_many_lines)]
+fn run_frame_corpus(args: &[OsString]) -> Option<Result<(), String>> {
+    let result = match args {
+        [
+            diagnostic,
+            replay,
+            video_flag,
+            video,
+            profile_flag,
+            profile,
+            output_flag,
+            output,
+        ] if diagnostic == "diagnostic"
+            && replay == "replay-video"
+            && video_flag == "--video"
+            && profile_flag == "--profile"
+            && output_flag == "--output" =>
+        {
+            replay_video(
+                &PathBuf::from(video),
+                &profile.to_string_lossy(),
+                &PathBuf::from(output),
+            )
+            .map_err(|error| format!("video diagnostic replay failed: {error}"))
+            .and_then(|summary| print_json(&summary, "video diagnostic replay"))
+        }
+        [diagnostic, verify, directory] if diagnostic == "diagnostic" && verify == "verify" => {
+            verify_diagnostic(&PathBuf::from(directory))
+                .map_err(|error| format!("diagnostic verification failed: {error}"))
+                .and_then(|summary| print_json(&summary, "diagnostic verification"))
+        }
+        [
+            diagnostic,
+            convert,
+            diagnostic_flag,
+            diagnostic_directory,
+            recognition_flag,
+            recognition_directory,
+            output_flag,
+            output,
+        ] if diagnostic == "diagnostic"
+            && convert == "convert-v2"
+            && diagnostic_flag == "--diagnostic"
+            && recognition_flag == "--recognition"
+            && output_flag == "--output" =>
+        {
+            convert_v2_diagnostic(
+                &PathBuf::from(diagnostic_directory),
+                &PathBuf::from(recognition_directory),
+                &PathBuf::from(output),
+            )
+            .map_err(|error| format!("diagnostic conversion failed: {error}"))
+            .and_then(|summary| print_json(&summary, "diagnostic conversion"))
+        }
+        [
+            corpus,
+            import,
+            store_flag,
+            store,
+            diagnostic_flag,
+            diagnostic,
+            draft_flag,
+            draft,
+        ] if corpus == "corpus"
+            && import == "import-diagnostic"
+            && store_flag == "--store"
+            && diagnostic_flag == "--diagnostic"
+            && draft_flag == "--review-draft" =>
+        {
+            import_diagnostic(
+                &PathBuf::from(store),
+                &PathBuf::from(diagnostic),
+                &PathBuf::from(draft),
+            )
+            .map_err(|error| format!("diagnostic import failed: {error}"))
+            .and_then(|summary| print_json(&summary, "diagnostic import"))
+        }
+        [review, show, draft_flag, draft]
+            if review == "review" && show == "show" && draft_flag == "--draft" =>
+        {
+            inspect_review(&PathBuf::from(draft))
+                .map_err(|error| format!("review inspection failed: {error}"))
+                .and_then(|summary| print_json(&summary, "review inspection"))
+        }
+        [
+            review,
+            apply,
+            store_flag,
+            store,
+            draft_flag,
+            draft,
+            labels_flag,
+            labels,
+        ] if review == "review"
+            && apply == "apply"
+            && store_flag == "--store"
+            && draft_flag == "--draft"
+            && labels_flag == "--labels" =>
+        {
+            apply_review(
+                &PathBuf::from(store),
+                &PathBuf::from(draft),
+                &PathBuf::from(labels),
+            )
+            .map_err(|error| format!("review application failed: {error}"))
+            .and_then(|summary| print_json(&summary, "review application"))
+        }
+        [corpus, replay, store_flag, store]
+            if corpus == "corpus" && replay == "replay" && store_flag == "--store" =>
+        {
+            replay_corpus(&PathBuf::from(store))
+                .map_err(|error| format!("corpus replay failed: {error}"))
+                .and_then(|summary| print_json(&summary, "corpus replay"))
+        }
+        _ => return None,
+    };
+    Some(result)
+}
+
+fn run_remaining(args: &[OsString]) -> Result<(), String> {
     match args {
-        [command, store, root, source, request] if command == "ingest" && store == "--store" => {
-            let manifest = CorpusStore::new(PathBuf::from(root))
-                .ingest(PathBuf::from(source), PathBuf::from(request))
-                .map_err(|error| format!("scorepeek-corpus ingest failed: {error}"))?;
-            let summary = manifest
-                .summary()
-                .map_err(|error| format!("ingest result validation failed: {error}"))?;
-            println!(
-                "{}",
-                serde_json::to_string(&summary)
-                    .map_err(|error| format!("ingest result encoding failed: {error}"))?
-            );
-            Ok(())
-        }
-        [replay, validate, store, root, suite]
-            if replay == "replay" && validate == "validate" && store == "--store" =>
-        {
-            let summary = CorpusStore::new(PathBuf::from(root))
-                .validate_replay_suite(PathBuf::from(suite))
-                .map_err(|error| format!("invalid replay suite: {error}"))?;
-            println!(
-                "{}",
-                serde_json::to_string(&summary)
-                    .map_err(|error| format!("replay summary encoding failed: {error}"))?
-            );
-            Ok(())
-        }
-        [label, author, store, root, document]
-            if label == "label" && author == "author" && store == "--store" =>
-        {
-            let summary = CorpusStore::new(PathBuf::from(root))
-                .author_complete_label(PathBuf::from(document))
-                .map_err(|error| format!("scorepeek-corpus label author failed: {error}"))?;
-            println!(
-                "{}",
-                serde_json::to_string(&summary)
-                    .map_err(|error| format!("complete-label summary encoding failed: {error}"))?
-            );
-            Ok(())
-        }
-        [generation, seal, store, root, generation_id]
-            if generation == "generation" && seal == "seal" && store == "--store" =>
-        {
-            let summary = CorpusStore::new(PathBuf::from(root))
-                .seal_generation(&generation_id.to_string_lossy())
-                .map_err(|error| format!("scorepeek-corpus generation seal failed: {error}"))?;
-            println!(
-                "{}",
-                serde_json::to_string(&summary)
-                    .map_err(|error| format!("generation summary encoding failed: {error}"))?
-            );
-            Ok(())
-        }
-        [index, generate, store, root, plan]
-            if index == "index" && generate == "generate" && store == "--store" =>
-        {
-            let summary = CorpusStore::new(PathBuf::from(root))
-                .generate_replay_index(PathBuf::from(plan))
-                .map_err(|error| format!("scorepeek-corpus index generate failed: {error}"))?;
-            println!(
-                "{}",
-                serde_json::to_string(&summary)
-                    .map_err(|error| format!("replay-index summary encoding failed: {error}"))?
-            );
-            Ok(())
-        }
         [synthetic, render, output, directory, request]
             if synthetic == "synthetic" && render == "render" && output == "--output" =>
         {
@@ -198,171 +249,10 @@ fn run_legacy(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "usage: scorepeek-corpus <recording import --store ROOT --capture-context CONTEXT [--external] RECORDING|dataset seal|push|pull|verify|remote-verify ...|ingest --store ROOT SOURCE REQUEST|generation seal --store ROOT GENERATION_ID|label author --store ROOT DOCUMENT|index generate --store ROOT PLAN|media probe --store ROOT --output MANIFEST FIXTURE_ID|media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST|canonical extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|music-list motion review-plan --output PLAN ARTIFACT|music-list motion review-apply --output REQUEST ARTIFACT PLAN DECISIONS|replay validate --store ROOT SUITE>"
+            "usage: scorepeek-corpus <diagnostic replay-video --video FILE --profile NAME --output DIRECTORY|diagnostic verify DIRECTORY|diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY|corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE|review show --draft FILE|review apply --store ROOT --draft FILE --labels FILE|corpus replay --store ROOT|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|music-list motion review-plan --output PLAN ARTIFACT|music-list motion review-apply --output REQUEST ARTIFACT PLAN DECISIONS>"
                 .to_owned(),
         ),
     }
-}
-
-fn run_dataset(args: &[OsString]) -> Option<Result<(), String>> {
-    let result = match args {
-        [
-            recording,
-            import,
-            store,
-            root,
-            capture_context,
-            context,
-            source,
-        ] if recording == "recording"
-            && import == "import"
-            && store == "--store"
-            && capture_context == "--capture-context" =>
-        {
-            CorpusStore::new(PathBuf::from(root))
-                .import_recording(PathBuf::from(source), PathBuf::from(context))
-                .map_err(|error| format!("scorepeek-corpus recording import failed: {error}"))
-                .and_then(|summary| print_json(&summary, "recording import summary"))
-        }
-        [
-            recording,
-            import,
-            store,
-            root,
-            capture_context,
-            context,
-            external,
-            source,
-        ] if recording == "recording"
-            && import == "import"
-            && store == "--store"
-            && capture_context == "--capture-context"
-            && external == "--external" =>
-        {
-            CorpusStore::new(PathBuf::from(root))
-                .import_external_recording(PathBuf::from(source), PathBuf::from(context))
-                .map_err(|error| format!("scorepeek-corpus recording import failed: {error}"))
-                .and_then(|summary| print_json(&summary, "recording import summary"))
-        }
-        [dataset, seal, store, root, dataset_id]
-            if dataset == "dataset" && seal == "seal" && store == "--store" =>
-        {
-            CorpusStore::new(PathBuf::from(root))
-                .seal_recording_dataset(&dataset_id.to_string_lossy())
-                .map_err(|error| format!("scorepeek-corpus dataset seal failed: {error}"))
-                .and_then(|summary| print_json(&summary, "dataset summary"))
-        }
-        [dataset, verify, store, root, generation]
-            if dataset == "dataset" && verify == "verify" && store == "--store" =>
-        {
-            CorpusStore::new(PathBuf::from(root))
-                .verify_recording_dataset(&generation.to_string_lossy())
-                .map_err(|error| format!("scorepeek-corpus dataset verify failed: {error}"))
-                .and_then(|summary| print_json(&summary, "dataset summary"))
-        }
-        [
-            dataset,
-            operation,
-            store,
-            root,
-            remote,
-            remote_config,
-            generation,
-        ] if dataset == "dataset"
-            && store == "--store"
-            && remote == "--remote"
-            && matches!(
-                operation.to_string_lossy().as_ref(),
-                "push" | "pull" | "remote-verify"
-            ) =>
-        {
-            let corpus = CorpusStore::new(PathBuf::from(root));
-            let result = match operation.to_string_lossy().as_ref() {
-                "push" => corpus.push_recording_dataset(
-                    PathBuf::from(remote_config),
-                    &generation.to_string_lossy(),
-                ),
-                "pull" => corpus.pull_recording_dataset(
-                    PathBuf::from(remote_config),
-                    &generation.to_string_lossy(),
-                ),
-                "remote-verify" => corpus.verify_remote_recording_dataset(
-                    PathBuf::from(remote_config),
-                    &generation.to_string_lossy(),
-                ),
-                _ => unreachable!(),
-            };
-            result
-                .map_err(|error| format!("scorepeek-corpus dataset operation failed: {error}"))
-                .and_then(|summary| print_json(&summary, "remote dataset summary"))
-        }
-        _ => return None,
-    };
-    Some(result)
-}
-
-fn run_media(args: &[OsString]) -> Option<Result<(), String>> {
-    let result = match args {
-        [media, probe, store, root, output, manifest, fixture_id]
-            if media == "media"
-                && probe == "probe"
-                && store == "--store"
-                && output == "--output" =>
-        {
-            CorpusStore::new(PathBuf::from(root))
-                .probe_media(&fixture_id.to_string_lossy(), PathBuf::from(manifest))
-                .map_err(|error| format!("scorepeek-corpus media probe failed: {error}"))
-                .and_then(|summary| print_json(&summary, "media probe summary"))
-        }
-        [
-            media,
-            extract,
-            store,
-            root,
-            output,
-            directory,
-            probe_manifest,
-            request,
-        ] if media == "media"
-            && extract == "extract"
-            && store == "--store"
-            && output == "--output" =>
-        {
-            CorpusStore::new(PathBuf::from(root))
-                .extract_frames(
-                    PathBuf::from(probe_manifest),
-                    PathBuf::from(request),
-                    PathBuf::from(directory),
-                )
-                .map_err(|error| format!("scorepeek-corpus media extract failed: {error}"))
-                .and_then(|summary| print_json(&summary, "frame extraction summary"))
-        }
-        [
-            canonical,
-            extract,
-            store,
-            root,
-            output,
-            directory,
-            probe_manifest,
-            request,
-        ] if canonical == "canonical"
-            && extract == "extract"
-            && store == "--store"
-            && output == "--output" =>
-        {
-            CorpusStore::new(PathBuf::from(root))
-                .extract_canonical_frames(
-                    PathBuf::from(probe_manifest),
-                    PathBuf::from(request),
-                    PathBuf::from(directory),
-                )
-                .map_err(|error| format!("scorepeek-corpus canonical extract failed: {error}"))
-                .and_then(|summary| print_json(&summary, "canonical frame extraction summary"))
-        }
-        _ => return None,
-    };
-    Some(result)
 }
 
 fn print_json(value: &impl serde::Serialize, context: &str) -> Result<(), String> {
@@ -376,7 +266,33 @@ fn print_json(value: &impl serde::Serialize, context: &str) -> Result<(), String
 
 fn print_usage() {
     println!(
-        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus recording import --store ROOT --capture-context CONTEXT [--external] RECORDING\n  scorepeek-corpus dataset seal --store ROOT DATASET_ID\n  scorepeek-corpus dataset push --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus dataset pull --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus dataset verify --store ROOT GENERATION_SHA256\n  scorepeek-corpus dataset remote-verify --store ROOT --remote REMOTE GENERATION_SHA256\n  scorepeek-corpus ingest --store ROOT SOURCE REQUEST\n  scorepeek-corpus generation seal --store ROOT GENERATION_ID\n  scorepeek-corpus label author --store ROOT DOCUMENT\n  scorepeek-corpus index generate --store ROOT PLAN\n  scorepeek-corpus media probe --store ROOT --output MANIFEST FIXTURE_ID\n  scorepeek-corpus media extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST\n  scorepeek-corpus canonical extract --store ROOT --output DIRECTORY PROBE_MANIFEST REQUEST\n  scorepeek-corpus synthetic render --output DIRECTORY REQUEST\n  scorepeek-corpus music-list observation-draft inspect DOCUMENT\n  scorepeek-corpus music-list observation-draft verify DOCUMENT\n  scorepeek-corpus music-list motion measure --output ARTIFACT REQUEST\n  scorepeek-corpus music-list motion verify ARTIFACT\n  scorepeek-corpus music-list motion review-plan --output PLAN ARTIFACT\n  scorepeek-corpus music-list motion review-apply --output REQUEST ARTIFACT PLAN DECISIONS\n  scorepeek-corpus replay validate --store ROOT SUITE",
+        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus diagnostic replay-video --video FILE --profile NAME --output DIRECTORY\n  scorepeek-corpus diagnostic verify DIRECTORY\n  scorepeek-corpus diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY\n  scorepeek-corpus corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE\n  scorepeek-corpus review show --draft FILE\n  scorepeek-corpus review apply --store ROOT --draft FILE --labels FILE\n  scorepeek-corpus corpus replay --store ROOT",
         env!("CARGO_PKG_VERSION")
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use super::run;
+
+    #[test]
+    fn removed_recording_store_routes_are_not_dispatchable() {
+        for command in [
+            [
+                "ingest",
+                "--store",
+                "/tmp/store",
+                "/tmp/video",
+                "/tmp/request",
+            ]
+            .as_slice(),
+            ["generation", "seal", "--store", "/tmp/store", "generation"].as_slice(),
+            ["replay", "validate", "--store", "/tmp/store", "/tmp/suite"].as_slice(),
+        ] {
+            let args = command.iter().map(OsString::from).collect::<Vec<_>>();
+            assert!(run(&args).is_err());
+        }
+    }
 }

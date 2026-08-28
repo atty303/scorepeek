@@ -17,11 +17,12 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 const CATALOG_SCHEMA: &str = "scorepeek-recognition-catalog-evidence-v1";
-const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v4";
-const MANIFEST_SCHEMA: &str = "scorepeek-recognition-evidence-manifest-v2";
+const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v5";
+const MANIFEST_SCHEMA: &str = "scorepeek-recognition-evidence-manifest-v3";
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_OBSERVATION_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_OBSERVATIONS: usize = 3_600;
+const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_OBSERVATION_RECORD_BYTES: usize = 1024 * 1024;
+const MAX_OBSERVATIONS: usize = 250_000;
 
 pub struct RecognitionArtifactWriter {
     root: PathBuf,
@@ -46,7 +47,7 @@ struct StoredCatalog<'a> {
 #[derive(Serialize)]
 struct StoredObservation<'a> {
     schema: &'static str,
-    sequence: u64,
+    tick_sequence: u64,
     timing: RecognitionArtifactTiming,
     fields: StoredFields<'a>,
     candidates: StoredCandidates,
@@ -118,12 +119,12 @@ enum StoredCandidates {
     Result {
         comparison_key_id: &'static str,
         candidate_order: &'static str,
-        candidates: Vec<[usize; 6]>,
+        candidate_count: usize,
     },
     MusicSelect {
         comparison_key_id: &'static str,
         candidate_order: &'static str,
-        candidates: Vec<[usize; 12]>,
+        candidate_count: usize,
     },
 }
 
@@ -219,7 +220,7 @@ impl RecognitionArtifactWriter {
         };
         let stored = StoredObservation {
             schema: OBSERVATION_SCHEMA,
-            sequence,
+            tick_sequence: sequence,
             timing,
             fields: StoredFields::from(fields),
             candidates: StoredCandidates::try_from(candidates)?,
@@ -229,6 +230,9 @@ impl RecognitionArtifactWriter {
         let mut bytes = serde_json::to_vec(&stored)
             .map_err(|_| "recognition observation serialization failed".to_owned())?;
         bytes.push(b'\n');
+        if bytes.len() > MAX_OBSERVATION_RECORD_BYTES {
+            return Err("recognition observation record capacity exceeded".to_owned());
+        }
         let next_bytes = self
             .observation_bytes
             .checked_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
@@ -756,25 +760,7 @@ impl TryFrom<&ScreenCatalogCandidateObservations> for StoredCandidates {
                 Ok(Self::Result {
                     comparison_key_id,
                     candidate_order: "catalog_songs",
-                    candidates: candidates
-                        .iter()
-                        .map(|candidate| {
-                            [
-                                candidate.title.minimum_edit_distance,
-                                candidate.title.maximum_normalized_similarity.matching_units,
-                                candidate.title.maximum_normalized_similarity.compared_units,
-                                candidate.artist.minimum_edit_distance,
-                                candidate
-                                    .artist
-                                    .maximum_normalized_similarity
-                                    .matching_units,
-                                candidate
-                                    .artist
-                                    .maximum_normalized_similarity
-                                    .compared_units,
-                            ]
-                        })
-                        .collect(),
+                    candidate_count: candidates.len(),
                 })
             }
             ScreenCatalogCandidateObservations::MusicSelect {
@@ -790,49 +776,7 @@ impl TryFrom<&ScreenCatalogCandidateObservations> for StoredCandidates {
                 Ok(Self::MusicSelect {
                     comparison_key_id,
                     candidate_order: "catalog_songs",
-                    candidates: candidates
-                        .iter()
-                        .map(|candidate| {
-                            [
-                                candidate.central_title.minimum_edit_distance,
-                                candidate
-                                    .central_title
-                                    .maximum_normalized_similarity
-                                    .matching_units,
-                                candidate
-                                    .central_title
-                                    .maximum_normalized_similarity
-                                    .compared_units,
-                                candidate.artist.minimum_edit_distance,
-                                candidate
-                                    .artist
-                                    .maximum_normalized_similarity
-                                    .matching_units,
-                                candidate
-                                    .artist
-                                    .maximum_normalized_similarity
-                                    .compared_units,
-                                candidate.active_list_title.minimum_edit_distance,
-                                candidate
-                                    .active_list_title
-                                    .maximum_normalized_similarity
-                                    .matching_units,
-                                candidate
-                                    .active_list_title
-                                    .maximum_normalized_similarity
-                                    .compared_units,
-                                candidate.active_list_title_prefix.minimum_edit_distance,
-                                candidate
-                                    .active_list_title_prefix
-                                    .maximum_normalized_similarity
-                                    .matching_units,
-                                candidate
-                                    .active_list_title_prefix
-                                    .maximum_normalized_similarity
-                                    .compared_units,
-                            ]
-                        })
-                        .collect(),
+                    candidate_count: candidates.len(),
                 })
             }
         }
@@ -1026,6 +970,9 @@ mod tests {
         assert!(observation.contains("ABSOLUTE EVIL"));
         assert!(observation.contains("Yuta Imai"));
         assert!(observation.contains("FAILED"));
+        let observation: serde_json::Value = serde_json::from_str(&observation).unwrap();
+        assert_eq!(observation["candidates"]["candidate_count"], 1);
+        assert!(observation["candidates"].get("candidates").is_none());
         let catalog = fs::read_to_string(root.join("catalog.json")).unwrap();
         assert!(catalog.contains("test-comparison-v1"));
         assert!(catalog.contains("ABSOLUTE EVIL"));
@@ -1053,6 +1000,40 @@ mod tests {
             RecognitionArtifactWriter::create(&root, "simulation-001".to_owned(), "a".repeat(64),)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn complete_stream_continues_beyond_the_former_six_minute_limit() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("long-run");
+        let mut writer =
+            RecognitionArtifactWriter::create(&root, "long-run".to_owned(), "a".repeat(64))
+                .unwrap();
+        for sequence in 0..=3_600 {
+            writer
+                .record(
+                    sequence,
+                    RecognitionArtifactTiming::Live {
+                        monotonic_start_ms: sequence * 100,
+                        monotonic_end_ms: sequence * 100,
+                    },
+                    &result_fields(),
+                    &empty_catalog_candidates(),
+                    &ScreenSongResolution::Result(ResultSongResolution::Unknown {
+                        resolver_id: RESULT_SONG_RESOLVER_ID,
+                        reason: ResultSongUnknownReason::NoCatalogCandidates,
+                        selected: None,
+                        runner_up: None,
+                        title_edit_margin: None,
+                    }),
+                    None,
+                )
+                .unwrap();
+        }
+        writer.finish(true).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest["retained_observation_count"], 3_601);
     }
 
     #[test]
@@ -1163,7 +1144,7 @@ mod tests {
         assert_eq!(outcome.status, RecognitionArtifactFinishStatus::Complete);
         assert_eq!(outcome.manifest_sha256.unwrap().len(), 64);
         let stored = fs::read_to_string(root.join("observations.ndjson")).unwrap();
-        assert!(stored.contains("scorepeek-recognition-observation-v4"));
+        assert!(stored.contains("scorepeek-recognition-observation-v5"));
         assert!(stored.contains("\"source\":\"live\""));
         assert!(stored.contains("\"monotonic_start_ms\":1000"));
         assert!(stored.contains("\"monotonic_end_ms\":1017"));

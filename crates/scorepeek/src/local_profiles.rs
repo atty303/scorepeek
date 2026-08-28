@@ -105,6 +105,7 @@ pub fn select_for_run(name: Option<&OsStr>) -> Result<SelectedProfile, String> {
 
 pub struct RoutineStatePaths {
     pub diagnostic_root: PathBuf,
+    pub diagnostic_session_store: PathBuf,
     pub recognition_store: PathBuf,
     pub watcher_status: PathBuf,
     pub recording_enabled: bool,
@@ -133,9 +134,11 @@ pub fn state_paths(recording_enabled: bool) -> Result<RoutineStatePaths, String>
     let recognition = scorepeek.join("recognition");
     if recording_enabled {
         ensure_directory_tree(&recognition)?;
+        ensure_directory_tree(&scorepeek.join("diagnostic-sessions"))?;
     }
     Ok(RoutineStatePaths {
         diagnostic_root: scorepeek.join("diagnostics"),
+        diagnostic_session_store: scorepeek.join("diagnostic-sessions"),
         recognition_store: recognition,
         watcher_status: scorepeek.join("watcher-status.json"),
         recording_enabled,

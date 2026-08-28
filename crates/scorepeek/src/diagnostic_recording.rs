@@ -1,5 +1,7 @@
-use std::fs::{self, DirBuilder, File};
+use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::io::{BufWriter, Write as _};
 use std::os::unix::fs::DirBuilderExt as _;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -10,7 +12,7 @@ use sha2::{Digest as _, Sha256};
 use crate::diagnostic_control::DiagnosticStoreLease;
 use crate::publish_private_file;
 
-pub const DEFAULT_SAMPLE_INTERVAL_MS: u64 = 1_000;
+pub const DEFAULT_SAMPLE_INTERVAL_MS: u64 = 100;
 pub const DEFAULT_AGGREGATE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 pub const NORMAL_RETENTION_HOURS: u32 = 24;
 pub const PRIORITY_RETENTION_HOURS: u32 = 7 * 24;
@@ -21,7 +23,7 @@ pub(crate) const CANONICAL_BYTES: usize = CANONICAL_WIDTH as usize * CANONICAL_H
 const MAX_SOURCE_FRAME_BYTES: usize = 128 * 1024 * 1024;
 pub(crate) const MANIFEST_RESERVE_BYTES: u64 = 1024 * 1024;
 pub(crate) const MAX_FRAMES_PER_RUN: usize = 8_192;
-pub(crate) const MAX_FACTS_PER_RUN: usize = 32_768;
+pub(crate) const MAX_FACTS_PER_RUN: usize = 250_000;
 pub(crate) const MAX_FACT_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_DEGRADATIONS_PER_RUN: usize = 4_096;
 
@@ -204,6 +206,7 @@ impl DiagnosticRunDescriptor {
 pub enum DiagnosticOperation {
     CaptureFrame,
     NormalizeFrame,
+    SampleRecognition,
     InspectRecognition,
     ObserveFields,
     ReduceSongContext,
@@ -298,6 +301,11 @@ pub enum DiagnosticEventOutcome {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DiagnosticDetail {
     Operation,
+    SamplingSummary {
+        processed_ticks: u64,
+        busy_skips: u64,
+        maximum_consecutive_busy_skips: u64,
+    },
     ScreenObservation {
         screen: DiagnosticScreen,
     },
@@ -341,6 +349,7 @@ pub enum DiagnosticDetail {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct DiagnosticFact {
+    #[serde(rename = "tick_sequence")]
     pub sequence: u64,
     pub monotonic_start_ms: u64,
     pub monotonic_end_ms: u64,
@@ -361,6 +370,7 @@ pub struct DiagnosticFrameInput<'a> {
 
 #[derive(Clone, Copy)]
 pub struct DiagnosticSourceFrameInput<'a> {
+    pub source_sequence: u64,
     pub contract: UncalibratedVideoContract,
     pub memory_type: UncalibratedMemoryType,
     pub stride: u32,
@@ -384,7 +394,12 @@ pub struct ActiveDiagnosticRecorder {
     store_lease: DiagnosticStoreLease,
     policy: DiagnosticPolicy,
     frames: Vec<DiagnosticFrameArtifact>,
-    facts: Vec<DiagnosticFactArtifact>,
+    facts: Option<BufWriter<File>>,
+    facts_hasher: Sha256,
+    facts_bytes: u64,
+    facts_count: u64,
+    facts_first_sequence: Option<u64>,
+    facts_last_sequence: Option<u64>,
     degradations: Vec<DiagnosticDegradationArtifact>,
     degradation_entries_dropped: u64,
     degradation_reason_counts: [u64; DiagnosticErrorType::COUNT],
@@ -459,7 +474,7 @@ struct DiagnosticRunManifest<'a> {
     total_bytes: u64,
     start: &'a DiagnosticStartArtifact,
     frames: &'a [DiagnosticFrameArtifact],
-    facts: &'a [DiagnosticFactArtifact],
+    facts: Option<DiagnosticNdjsonArtifact>,
     degradations: &'a [DiagnosticDegradationArtifact],
     degradation_entries_dropped: u64,
     degradation_reason_counts: &'a [DiagnosticDegradationReasonCount],
@@ -496,7 +511,9 @@ struct DiagnosticFrameArtifact {
 #[derive(Serialize)]
 struct DiagnosticSourceFrameArtifact {
     filename: String,
-    pixel_format: &'static str,
+    source_sequence: u64,
+    observed_pixel_format: &'static str,
+    encoded_pixel_format: &'static str,
     video: UncalibratedVideoContract,
     memory_type: UncalibratedMemoryType,
     stride: u32,
@@ -505,17 +522,39 @@ struct DiagnosticSourceFrameArtifact {
     bytes: u64,
 }
 
+fn encode_source_qoi(source: DiagnosticSourceFrameInput<'_>) -> Result<Vec<u8>, ()> {
+    let width = usize::try_from(source.contract.width).map_err(|_| ())?;
+    let height = usize::try_from(source.contract.height).map_err(|_| ())?;
+    let stride = usize::try_from(source.stride).map_err(|_| ())?;
+    let rgb_bytes = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or(())?;
+    let mut rgb = Vec::with_capacity(rgb_bytes);
+    for row in source.bytes.chunks_exact(stride).take(height) {
+        for pixel in row[..width.checked_mul(4).ok_or(())?].chunks_exact(4) {
+            rgb.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
+        }
+    }
+    if rgb.len() != rgb_bytes {
+        return Err(());
+    }
+    qoi::encode_to_vec(&rgb, source.contract.width, source.contract.height).map_err(|_| ())
+}
+
 #[derive(Serialize)]
-struct DiagnosticFactArtifact {
-    index: u64,
-    sequence: u64,
-    filename: String,
+struct DiagnosticNdjsonArtifact {
+    filename: &'static str,
+    record_count: u64,
+    first_sequence: Option<u64>,
+    last_sequence: Option<u64>,
     file_sha256: String,
     bytes: u64,
 }
 
 impl DiagnosticRecorder {
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn start(
         root: &Path,
         descriptor: &DiagnosticRunDescriptor,
@@ -539,7 +578,7 @@ impl DiagnosticRecorder {
         };
         let _ = root_metadata;
         let start = DiagnosticRunStart {
-            schema: "scorepeek-private-diagnostic-run-start-v2",
+            schema: "scorepeek-private-diagnostic-capture-start-v3",
             run_id: &descriptor.run_id,
             monotonic_start_ms: descriptor.monotonic_start_ms,
             resource: &descriptor.resource,
@@ -583,12 +622,43 @@ impl DiagnosticRecorder {
                 error_type: DiagnosticErrorType::WriteFailed,
             });
         }
+        let facts_path = directory.join("facts.ndjson");
+        let Ok(facts) = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&facts_path)
+        else {
+            let _ = fs::remove_file(directory.join("run.json"));
+            let _ = fs::remove_dir(&directory);
+            let _ = File::open(root).and_then(|root| root.sync_all());
+            return Self::Degraded(DiagnosticDegradation {
+                error_type: DiagnosticErrorType::WriteFailed,
+            });
+        };
+        if File::open(&directory)
+            .and_then(|directory| directory.sync_all())
+            .is_err()
+        {
+            let _ = fs::remove_file(facts_path);
+            let _ = fs::remove_file(directory.join("run.json"));
+            let _ = fs::remove_dir(&directory);
+            let _ = File::open(root).and_then(|root| root.sync_all());
+            return Self::Degraded(DiagnosticDegradation {
+                error_type: DiagnosticErrorType::WriteFailed,
+            });
+        }
         Self::Active(Box::new(ActiveDiagnosticRecorder {
             directory,
             store_lease,
             policy,
             frames: Vec::new(),
-            facts: Vec::new(),
+            facts: Some(BufWriter::new(facts)),
+            facts_hasher: Sha256::new(),
+            facts_bytes: 0,
+            facts_count: 0,
+            facts_first_sequence: None,
+            facts_last_sequence: None,
             degradations: Vec::new(),
             degradation_entries_dropped: 0,
             degradation_reason_counts: [0; DiagnosticErrorType::COUNT],
@@ -775,7 +845,16 @@ impl ActiveDiagnosticRecorder {
             return self.drop(DiagnosticErrorType::EncodeFailed, frame.sequence);
         };
         let encoded_bytes = encoded.len() as u64;
-        let source_bytes = frame.source.map_or(0, |source| source.bytes.len() as u64);
+        let encoded_source = match frame.source {
+            Some(source) => match encode_source_qoi(source) {
+                Ok(encoded) => Some(encoded),
+                Err(()) => return self.drop(DiagnosticErrorType::EncodeFailed, frame.sequence),
+            },
+            None => None,
+        };
+        let source_bytes = encoded_source
+            .as_ref()
+            .map_or(0, |source| source.len() as u64);
         let reserved_bytes = encoded_bytes.saturating_add(source_bytes);
         if self
             .bytes
@@ -795,16 +874,19 @@ impl ActiveDiagnosticRecorder {
         }
         let mut source_write_failed = false;
         let source = if let Some(source) = frame.source {
-            let filename = format!("source-{:020}.bgrx", frame.sequence);
-            if self.publish_reserved(&filename, source.bytes) {
+            let encoded_source = encoded_source.as_ref().expect("source was encoded above");
+            let filename = format!("source-{:020}.qoi", frame.sequence);
+            if self.publish_reserved(&filename, encoded_source) {
                 Some(DiagnosticSourceFrameArtifact {
                     filename,
-                    pixel_format: "bgrx",
+                    source_sequence: source.source_sequence,
+                    observed_pixel_format: "bgrx",
+                    encoded_pixel_format: "rgb8",
                     video: source.contract,
                     memory_type: source.memory_type,
                     stride: source.stride,
                     received_monotonic_ns: source.received_monotonic_ns,
-                    file_sha256: encode_sha256(source.bytes),
+                    file_sha256: encode_sha256(encoded_source),
                     bytes: source_bytes,
                 })
             } else {
@@ -862,7 +944,7 @@ impl ActiveDiagnosticRecorder {
     }
 
     fn record_fact(&mut self, fact: &DiagnosticFact) -> DiagnosticRecordOutcome {
-        if self.facts.len() >= MAX_FACTS_PER_RUN {
+        if self.facts_count >= MAX_FACTS_PER_RUN as u64 {
             return self.drop(DiagnosticErrorType::FactLimitExceeded, fact.sequence);
         }
         if fact.monotonic_start_ms < self.run_monotonic_start_ms || !valid_fact(fact) {
@@ -887,23 +969,25 @@ impl ActiveDiagnosticRecorder {
         if let Err(error_type) = self.store_lease.reserve(bytes.len() as u64) {
             return self.drop(error_type, fact.sequence);
         }
-        let index = self.facts.len() as u64;
-        let filename = format!("fact-{index:020}.json");
-        if !self.publish_reserved(&filename, &bytes) {
+        let Some(writer) = self.facts.as_mut() else {
+            self.store_lease.release(bytes.len() as u64);
+            return self.drop(DiagnosticErrorType::WriteFailed, fact.sequence);
+        };
+        if writer.write_all(&bytes).is_err() || writer.flush().is_err() {
+            self.store_lease.release(bytes.len() as u64);
+            self.facts = None;
             return self.drop(DiagnosticErrorType::WriteFailed, fact.sequence);
         }
         self.bytes += bytes.len() as u64;
+        self.facts_bytes += bytes.len() as u64;
+        self.facts_hasher.update(&bytes);
+        self.facts_count += 1;
+        self.facts_first_sequence.get_or_insert(fact.sequence);
+        self.facts_last_sequence = Some(fact.sequence);
         self.maximum_artifact_end_ms = Some(
             self.maximum_artifact_end_ms
                 .map_or(fact.monotonic_end_ms, |end| end.max(fact.monotonic_end_ms)),
         );
-        self.facts.push(DiagnosticFactArtifact {
-            index,
-            sequence: fact.sequence,
-            filename,
-            file_sha256: encode_sha256(&bytes),
-            bytes: bytes.len() as u64,
-        });
         DiagnosticRecordOutcome::Recorded
     }
 
@@ -915,6 +999,11 @@ impl ActiveDiagnosticRecorder {
     ) -> DiagnosticFinishOutcome {
         if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
             return cancelled_finish();
+        }
+        if let Some(mut facts) = self.facts.take()
+            && (facts.flush().is_err() || facts.get_ref().sync_all().is_err())
+        {
+            self.mark_drop_for_sequence(DiagnosticErrorType::WriteFailed, None);
         }
         if monotonic_end_ms < self.run_monotonic_start_ms
             || self
@@ -1020,7 +1109,7 @@ impl ActiveDiagnosticRecorder {
         let mut total_bytes = self.bytes;
         for _ in 0..8 {
             let manifest = DiagnosticRunManifest {
-                schema: "scorepeek-private-diagnostic-run-v2",
+                schema: "scorepeek-private-diagnostic-capture-v3",
                 monotonic_end_ms,
                 status,
                 completeness,
@@ -1034,7 +1123,14 @@ impl ActiveDiagnosticRecorder {
                 total_bytes,
                 start: &self.start,
                 frames: &self.frames,
-                facts: &self.facts,
+                facts: Some(DiagnosticNdjsonArtifact {
+                    filename: "facts.ndjson",
+                    record_count: self.facts_count,
+                    first_sequence: self.facts_first_sequence,
+                    last_sequence: self.facts_last_sequence,
+                    file_sha256: encode_digest(self.facts_hasher.clone().finalize()),
+                    bytes: self.facts_bytes,
+                }),
                 degradations: &self.degradations,
                 degradation_entries_dropped: self.degradation_entries_dropped,
                 degradation_reason_counts: &reason_counts,
@@ -1188,6 +1284,9 @@ fn valid_fact(fact: &DiagnosticFact) -> bool {
             DiagnosticOperation::CaptureFrame | DiagnosticOperation::NormalizeFrame,
             DiagnosticDetail::Operation
         ) | (
+            DiagnosticOperation::SampleRecognition,
+            DiagnosticDetail::SamplingSummary { .. }
+        ) | (
             DiagnosticOperation::InspectRecognition,
             DiagnosticDetail::ScreenObservation { .. }
                 | DiagnosticDetail::ScreenPredicateObservation { .. }
@@ -1287,6 +1386,7 @@ fn valid_fact_status_error(fact: &DiagnosticFact) -> bool {
             DiagnosticOperation::NormalizeFrame => {
                 error == DiagnosticFactErrorType::NormalizeFailed
             }
+            DiagnosticOperation::SampleRecognition | DiagnosticOperation::ChangeBinding => false,
             DiagnosticOperation::InspectRecognition => matches!(
                 error,
                 DiagnosticFactErrorType::RecognitionFailed
@@ -1303,7 +1403,6 @@ fn valid_fact_status_error(fact: &DiagnosticFact) -> bool {
                 DiagnosticFactErrorType::EventDeliveryFailed
                     | DiagnosticFactErrorType::ConsumerUnavailable
             ),
-            DiagnosticOperation::ChangeBinding => false,
         },
         _ => false,
     }
@@ -1327,8 +1426,12 @@ fn canonical_json(value: &impl Serialize) -> Result<Vec<u8>, ()> {
 }
 
 fn encode_sha256(bytes: &[u8]) -> String {
+    encode_digest(Sha256::digest(bytes))
+}
+
+fn encode_digest(bytes: impl AsRef<[u8]>) -> String {
     let mut encoded = String::with_capacity(64);
-    for byte in Sha256::digest(bytes) {
+    for byte in bytes.as_ref() {
         use std::fmt::Write as _;
         write!(encoded, "{byte:02x}").expect("writing to String cannot fail");
     }
@@ -1367,7 +1470,9 @@ pub fn completed_run_start_is_intact(directory: &Path) -> bool {
     };
     if !matches!(
         manifest.schema.as_str(),
-        "scorepeek-private-diagnostic-run-v1" | "scorepeek-private-diagnostic-run-v2"
+        "scorepeek-private-diagnostic-run-v1"
+            | "scorepeek-private-diagnostic-run-v2"
+            | "scorepeek-private-diagnostic-capture-v3"
     ) || manifest.start.schema != "scorepeek-private-diagnostic-artifact-v1"
         || manifest.start.filename != "run.json"
         || !valid_sha256(&manifest.start.file_sha256)
@@ -1489,6 +1594,7 @@ mod tests {
             monotonic_end_ms: 1_016,
             pixels: &canonical,
             source: Some(DiagnosticSourceFrameInput {
+                source_sequence: 70,
                 contract: source_contract(),
                 memory_type: UncalibratedMemoryType::MemoryFileDescriptor,
                 stride: 16,
@@ -1510,15 +1616,16 @@ mod tests {
         assert_eq!(entry["sequence"], 7);
         assert_eq!(
             entry["source"]["filename"],
-            "source-00000000000000000007.bgrx"
+            "source-00000000000000000007.qoi"
         );
-        assert_eq!(entry["source"]["pixel_format"], "bgrx");
+        assert_eq!(entry["source"]["observed_pixel_format"], "bgrx");
+        assert_eq!(entry["source"]["encoded_pixel_format"], "rgb8");
         assert_eq!(entry["source"]["stride"], 16);
-        assert_eq!(entry["source"]["bytes"], 32);
-        assert_eq!(
-            fs::read(directory.join("source-00000000000000000007.bgrx")).unwrap(),
-            source
-        );
+        let encoded = fs::read(directory.join("source-00000000000000000007.qoi")).unwrap();
+        assert_eq!(entry["source"]["bytes"], encoded.len());
+        let (header, decoded) = qoi::decode_to_vec(&encoded).unwrap();
+        assert_eq!((header.width, header.height), (4, 2));
+        assert_eq!(decoded, vec![17_u8; 24]);
         let runs = crate::diagnostic_control::inspect_store(root.path()).unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].run_id, "paired-source-run");
@@ -1608,7 +1715,7 @@ mod tests {
             DiagnosticRecordOutcome::Recorded
         );
         assert_eq!(
-            recorder.record_frame(frame(2, 500, &input)),
+            recorder.record_frame(frame(2, 50, &input)),
             DiagnosticRecordOutcome::SkippedCadence
         );
         let fact = DiagnosticFact {
@@ -1865,7 +1972,7 @@ mod tests {
             DiagnosticRecordOutcome::Recorded
         );
         let _ = recorder.finish(DiagnosticRunStatus::Success, 4_010);
-        let bytes = fs::read(root.path().join("fact-run/fact-00000000000000000000.json")).unwrap();
+        let bytes = fs::read(root.path().join("fact-run/facts.ndjson")).unwrap();
         assert!(!bytes.windows(4).any(|window| window == b"RGB8"));
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["fact"]["detail"]["kind"],

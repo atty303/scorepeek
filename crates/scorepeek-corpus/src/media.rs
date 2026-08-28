@@ -236,6 +236,7 @@ struct FfprobePacket {
     pts: Option<i64>,
 }
 
+#[allow(dead_code)]
 pub(crate) fn inspect_recording(path: &Path) -> Result<RawMediaObservation, CorpusError> {
     let mut source = File::open(path)?;
     inspect_recording_file(&mut source)
@@ -277,6 +278,7 @@ pub(crate) fn inspect_recording_file(
     })
 }
 
+#[allow(dead_code)]
 pub(crate) fn inspect_recording_contract(
     path: &Path,
 ) -> Result<ObservedMediaContract, CorpusError> {
@@ -284,6 +286,7 @@ pub(crate) fn inspect_recording_contract(
     inspect_recording_contract_file(&mut source)
 }
 
+#[allow(dead_code)]
 fn inspect_recording_contract_file(
     source: &mut File,
 ) -> Result<ObservedMediaContract, CorpusError> {
@@ -330,6 +333,7 @@ fn probe_recording_packets(source: &mut File) -> Result<FfprobeOutput, CorpusErr
         .map_err(|_| invalid_media("ffprobe returned invalid bounded packet JSON"))
 }
 
+#[allow(dead_code)]
 fn probe_recording(source: &mut File, show_entries: &str) -> Result<FfprobeOutput, CorpusError> {
     validate_input_file(source)?;
     source.seek(SeekFrom::Start(0))?;
@@ -438,6 +442,7 @@ impl CorpusStore {
         )
     }
 
+    #[allow(dead_code)]
     pub(crate) fn probe_media_from_observation(
         &self,
         fixture_id: &str,
@@ -717,6 +722,7 @@ impl ObservedMediaContract {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn validate_recording_probe_bytes(
     bytes: &[u8],
     recording_sha256: &str,

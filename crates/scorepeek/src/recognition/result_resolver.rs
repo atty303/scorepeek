@@ -5,11 +5,11 @@ use crate::catalog::ScorepeekSongId;
 use super::{CatalogTextCandidateScore, ResultSongCandidateObservation};
 
 pub const RESULT_SONG_RESOLVER_ID: &str =
-    "scorepeek-result-song-title-primary-artist-corroborated-v1";
+    "scorepeek-result-song-title-primary-artist-corroborated-v2";
 
-const MAXIMUM_TITLE_EDIT_DISTANCE: usize = 1;
-const MINIMUM_TITLE_MATCHING_UNITS: usize = 6;
-const MINIMUM_TITLE_COMPARED_UNITS: usize = 7;
+const MAXIMUM_TITLE_EDIT_DISTANCE: usize = 3;
+const MINIMUM_TITLE_MATCHING_UNITS: usize = 3;
+const MINIMUM_TITLE_COMPARED_UNITS: usize = 4;
 const MINIMUM_TITLE_EDIT_MARGIN: usize = 2;
 const MINIMUM_ARTIST_MATCHING_UNITS: usize = 2;
 const MINIMUM_ARTIST_COMPARED_UNITS: usize = 5;
@@ -242,6 +242,16 @@ mod tests {
             ],
         );
         assert_eq!(one_edit.accepted_song_id(), Some(id(1)));
+
+        let measured_result_ocr = resolve_result_song(
+            "Miracle Sumpho",
+            "US",
+            &[
+                candidate(id(1), score(3, 11, 14), score(2, 2, 4)),
+                candidate(id(2), score(8, 5, 13), score(9, 0, 11)),
+            ],
+        );
+        assert_eq!(measured_result_ocr.accepted_song_id(), Some(id(1)));
     }
 
     #[test]

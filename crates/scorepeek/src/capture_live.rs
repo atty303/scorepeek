@@ -40,6 +40,7 @@ use scorepeek::recognition::{
     CanonicalLayout, OnnxParityError, RegisteredResourceLoadErrorType, ScreenClass,
     ScreenFieldObservationError,
 };
+use scorepeek::recognition_cadence::{CadenceDecision, RecognitionCadence};
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 const RECEIVER_START_TIMEOUT: Duration = Duration::from_secs(2);
@@ -335,6 +336,10 @@ pub struct GamescopeFieldObservationGateReport {
     capture_generation: u64,
     observed_frames: u64,
     normalized_frames: u64,
+    recognition_ticks: u64,
+    recognition_busy_skips: u64,
+    maximum_consecutive_busy_skips: u64,
+    last_recognition_sequence: Option<u64>,
     inspected_frames: u64,
     result_frames: u64,
     music_select_frames: u64,
@@ -440,6 +445,30 @@ impl GamescopeFieldObservationGateReport {
             Some(FieldObservationGateErrorType::ResultOutputFailed)
         )
     }
+
+    pub fn diagnostic_manifest_sha256(&self) -> Option<&str> {
+        self.diagnostic_manifest_sha256.as_deref()
+    }
+
+    pub fn recognition_artifact_manifest_sha256(&self) -> Option<&str> {
+        self.recognition_artifact_manifest_sha256.as_deref()
+    }
+
+    pub const fn recognition_sampling(&self) -> (u64, u64, u64) {
+        (
+            self.recognition_ticks,
+            self.recognition_busy_skips,
+            self.maximum_consecutive_busy_skips,
+        )
+    }
+
+    pub const fn diagnostic_completeness_name(&self) -> &'static str {
+        match self.diagnostic_completeness {
+            Some(DiagnosticCompleteness::Complete) => "complete",
+            Some(DiagnosticCompleteness::Partial) => "partial",
+            Some(DiagnosticCompleteness::Dropped) | None => "dropped",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -470,6 +499,10 @@ struct RecognitionHandoffCounters {
 struct FieldObservationCounters {
     observed_frames: u64,
     normalized_frames: u64,
+    recognition_ticks: u64,
+    recognition_busy_skips: u64,
+    maximum_consecutive_busy_skips: u64,
+    last_recognition_sequence: Option<u64>,
     inspected_frames: u64,
     result_frames: u64,
     music_select_frames: u64,
@@ -966,6 +999,13 @@ pub fn run_gamescope_live_session(
             }
         }
     }
+    session.record_sampling_summary(
+        counters.last_recognition_sequence.unwrap_or(0),
+        finish_time,
+        counters.recognition_ticks,
+        counters.recognition_busy_skips,
+        counters.maximum_consecutive_busy_skips,
+    );
     let mut source_ended = matches!(
         terminal,
         Some((
@@ -1354,17 +1394,42 @@ fn offer_live_field_observation_frames(
     sink: &mut BoundedDiagnosticSink,
     emit: &mut LiveEventEmitter<'_>,
 ) -> Option<(FieldObservationGateErrorType, Option<CaptureErrorType>)> {
+    let mut cadence = RecognitionCadence::default();
     let mut source = GamescopeCanonicalFrameSource {
         lease,
         counters,
         sink,
     };
     while !stop.load(Ordering::Acquire) {
+        if let Some(error) = poll_field_observations(
+            session,
+            pending,
+            source.counters,
+            artifact_worker,
+            None,
+            Some(emit),
+        ) {
+            return Some((error, None));
+        }
         let frame = match source.next_frame(LIVE_SESSION_POLL_INTERVAL) {
             Ok(frame) => frame,
             Err(error) => return Some(error),
         };
-        if let Some(frame) = frame {
+        if let Some(mut frame) = frame {
+            match cadence.observe(frame.monotonic_end_ms(), !pending.is_empty()) {
+                CadenceDecision::SkipCadence => continue,
+                CadenceDecision::SkipBusy { .. } => {
+                    source.counters.recognition_busy_skips = cadence.busy_skips();
+                    source.counters.maximum_consecutive_busy_skips =
+                        cadence.maximum_consecutive_busy_skips();
+                    continue;
+                }
+                CadenceDecision::Process { tick_sequence } => {
+                    source.counters.recognition_ticks = cadence.processed();
+                    source.counters.last_recognition_sequence = Some(tick_sequence);
+                    frame.assign_tick_sequence(tick_sequence);
+                }
+            }
             let Ok(result) = session.inspect(&frame) else {
                 return Some((FieldObservationGateErrorType::RecognitionFailed, None));
             };
@@ -1400,16 +1465,6 @@ fn offer_live_field_observation_frames(
                     }
                 }
             }
-        }
-        if let Some(error) = poll_field_observations(
-            session,
-            pending,
-            source.counters,
-            artifact_worker,
-            None,
-            Some(emit),
-        ) {
-            return Some((error, None));
         }
     }
     None
@@ -1705,6 +1760,10 @@ fn field_observation_report(
         capture_generation: capture_generation.get(),
         observed_frames: counters.observed_frames,
         normalized_frames: counters.normalized_frames,
+        recognition_ticks: counters.recognition_ticks,
+        recognition_busy_skips: counters.recognition_busy_skips,
+        maximum_consecutive_busy_skips: counters.maximum_consecutive_busy_skips,
+        last_recognition_sequence: counters.last_recognition_sequence,
         inspected_frames: counters.inspected_frames,
         result_frames: counters.result_frames,
         music_select_frames: counters.music_select_frames,

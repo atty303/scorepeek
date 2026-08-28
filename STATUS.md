@@ -45,6 +45,19 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   identity; ordinary admission no longer compares launch metadata or Gamescope version.
   ADR 0055 corrects crop admission to use the canonical pixel-center sampling footprint, allowing
   signed half-pixel scaler phase while still rejecting missing required samples.
+  ADR 0056 fixes application recognition at 10 Hz with latest-frame/no-backlog live sampling and
+  deterministic source-time video sampling. A verified v3 diagnostic containing session NDJSON
+  streams and bounded deduplicated QOI evidence is now the only capture-regression corpus input;
+  operator review, immutable labels, suite publication, and production frame replay are separate
+  stages. Video is auxiliary and the former recording-dataset CLI routes have been removed. The
+  active frame-first suite contains two verified diagnostics and seven operator-reviewed episodes:
+  the retained three-episode video and the four-song target session. `mise run corpus:test` replays
+  all 908 stored canonical frame references through the production predicate and all seven stable
+  QOIs through OCR, catalog resolution, and clear-type resolution successfully. The current
+  suite also contains one operator-confirmed black startup frame as an explicit negative predicate
+  expectation. The current four-song legacy diagnostic was normalized to v3 with 636
+  canonical QOIs and 32,768 facts in one NDJSON stream; the video diagnostic deterministically
+  processed 4,584 10 Hz observations and retained 272 deduplicated canonical QOIs.
   The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
   machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
   model. After the `/home` symlink fix, retained synthetic target evidence showed the 1920x1080
@@ -54,8 +67,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   rectangle check misclassified as crop. After ADR 0055 aligned admission with the normalizer's
   sampling footprint, the same target command authored `gamescope-4k` from nine fiducials with
   rectangle `(-0.5, -0.5, 3840, 2160)` in the observed 3840x2160 frame. This proves calibration and
-  production normalization for the marker, but ordinary-run recognition and lifecycle acceptance
-  remain unverified.
+  production normalization for the marker. One ordinary watcher run retained four reviewed result
+  episodes, but prospective v3 live publication and the full startup/lifetime/signal matrix remain
+  unverified.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -66,10 +80,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   quarantine, last-known-good activation, bounded private caches, and durable catalog snapshots.
 - `scorepeek catalog sync` plus manual, persistent user-systemd, and transient scheduling routes.
   The CLI retains actionable credential-free adapter, transport, cache, and store error causes.
-- Separate offline-only `scorepeek-corpus` tooling for bounded content-addressed ingest, FFV1
-  packet-order probing and extraction, complete-label authoring, generation sealing, replay indexes,
-  split isolation, dataset preparation, and S3-compatible transfer. Runtime code has no corpus or
-  Python training dependency.
+- Separate offline-only `scorepeek-corpus` tooling verifies and imports v3 diagnostics, applies
+  immutable operator labels, atomically activates suite generations, and replays every active
+  frame. Historical recording-store internals remain testable for OCR work but their direct
+  capture-regression CLI routes are removed. Runtime code has no corpus or Python training
+  dependency.
 - Private frames, labels, recordings, source snapshots, generated catalogs, models, and environment
   artifacts remain outside the repository. Committed fixtures are synthetic or opaque and
   non-personal.
@@ -85,12 +100,13 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   preprocessing, CTC decoding, exact-first comparison keys, catalog search, and private replay
   tooling are digest-bound and reproducible. Custom training/export is deferred until integrated
   evidence isolates a residual that requires it.
-- Application-owned bounded QOI diagnostic runs with non-blocking producer handoff, a dedicated
-  writer, strict replay, explicit partial/degraded coverage, crash recovery, retention, read-only
-  controls, and create-only export. Foreground runs keep a 12-second unknown tail, result/transition
-  evidence and low-frequency baselines; only the first partial-result or a known-screen transition
-  may pair exact raw BGRx with its same-sequence canonical QOI. Pixels and recognition facts remain
-  separate from public result surfaces.
+- Application-owned v3 diagnostic sessions retain full 10 Hz fact and observation NDJSON streams
+  plus bounded content-deduplicated canonical QOI evidence. Live sampling uses only the latest
+  frame and counts busy ticks without backlog; video sampling uses source timestamps. Optional
+  observed QOI pairs preserve normalization evidence without storing uncompressed BGRx in new
+  diagnostics. A session records at most 250,000 fact or observation records, and each NDJSON
+  record is bounded to 1 MiB. Pixels and recognition facts remain separate from public result
+  surfaces.
 
 ### Gamescope capture and calibration
 
@@ -267,9 +283,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - Recording profile v2 requires an exact expected `ScorepeekSongId` for every episode. The
   recognition simulation requires at least two exact expected song decisions and two exact
   expected `CLEAR TYPE` observations per episode, rejects a different accepted song immediately,
-  and retains sequence/PTS, exact OCR, exact catalog strings, all per-field metrics,
+  and retains sequence/PTS, exact OCR, exact catalog strings, candidate counts plus the resolver's
+  selected/runner-up evidence,
   decisions/reasons, and expected values in a create-only bounded local artifact. Catalog JSON is
-  capped at 16 MiB; observation NDJSON is capped at 256 MiB and 3,600 records; the manifest is
+  capped at 16 MiB; observation NDJSON is capped at 512 MiB, 1 MiB per record, and 250,000 records;
+  the manifest is
   created last after child sync.
 - ADR 0039 adds `gamescope-result-recognition-gate` without removing the existing counts-oriented
   field gate. Completed registered observations move through a capacity-two non-blocking worker to
@@ -289,8 +307,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   unknown as well as recognized screens, and finalizes the existing field, diagnostic, and
   recognition-artifact workers in order. Its control path does not signal Gamescope, INFINITAS, or
   the process group.
-- ADR 0043 makes the foreground artifact practical for multi-hour sessions. Recognition evidence
-  retains one representative result per interval, splits result observations separated by more
+- ADR 0043 made the former compacted foreground artifact practical for multi-hour sessions.
+  ADR 0056 replaces that ordinary-run retention with the complete bounded v3 stream. The historical
+  policy retains one representative result per interval, splits result observations separated by more
   than 30 seconds even without music-select, and keeps five-minute music-select samples, with
   compact candidate metric arrays in exact catalog order. Diagnostic QOI uses a bounded failure window;
   paired source bytes are limited by the existing 8 GiB run/store capacity and are not recorded
@@ -627,19 +646,13 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Exercise the measured target `gamescope-4k` profile against actual INFINITAS music-select and result scenes,
-   then exercise the watcher with scorepeek-first and Gamescope-first startup,
-   two sequential Gamescope lifetimes, simultaneous sources, and idle/active SIGINT and SIGTERM.
-   Confirm scene detection and OCR without changing the measured geometry. These live game and
-   lifecycle checks remain separate operator-authority boundaries; do not claim recognition or
-   lifecycle support before they pass.
-2. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
+1. Exercise the measured target `gamescope-4k` watcher with scorepeek-first/Gamescope-first startup,
+   sequential and simultaneous source lifetimes, and idle/active signals. Do not claim target
+   lifecycle support before those separate checks pass.
+2. Run one prospective ordinary session with the committed v3 live publisher, verify its complete
+   per-tick observation stream, and add only operator-reviewed episodes to the active suite.
+3. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
-3. Use ADR 0043's existing bounded retention and existing-bytes-only freeze/export surface to
-   complete one target-to-development replay/update round trip during natural play. Add new tail,
-   marker or ledger machinery only if retained target evidence demonstrates a concrete gap.
-   Scorepeek must never start, signal, terminate, or restart INFINITAS or the ordinary Gamescope
-   process.
 
 Do not add transform replay without an independent oracle, broaden routine raw retention, silently
 calibrate or switch profiles, request play solely to
