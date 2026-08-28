@@ -1179,8 +1179,8 @@ fn prepare_live_diagnostic_root<'a>(
 }
 
 fn prepare_private_directory(path: &Path) -> bool {
-    match path.symlink_metadata() {
-        Ok(metadata) => path.is_absolute() && metadata.is_dir() && !metadata.is_symlink(),
+    match path.metadata() {
+        Ok(metadata) => path.is_absolute() && metadata.is_dir(),
         Err(error) if error.kind() == io::ErrorKind::NotFound && path.is_absolute() => {
             let Some(parent) = path.parent() else {
                 return false;
@@ -2694,13 +2694,9 @@ fn inspect_diagnostic_qoi(frame: &OsStr, expected_sha256: &OsStr) -> Result<(), 
     let path = Path::new(frame);
     let expected_sha256 = parse_cli_sha256(expected_sha256, "diagnostic QOI SHA-256")?;
     let metadata = path
-        .symlink_metadata()
+        .metadata()
         .map_err(|_| "diagnostic QOI is unavailable".to_owned())?;
-    if !path.is_absolute()
-        || !metadata.is_file()
-        || metadata.file_type().is_symlink()
-        || metadata.len() > MAX_DIAGNOSTIC_QOI_BYTES
-    {
+    if !path.is_absolute() || !metadata.is_file() || metadata.len() > MAX_DIAGNOSTIC_QOI_BYTES {
         return Err("diagnostic QOI must be a bounded absolute regular file".to_owned());
     }
     let encoded = fs::read(path).map_err(|_| "diagnostic QOI read failed".to_owned())?;
@@ -2881,10 +2877,10 @@ fn provisional_title_candidates(catalog_store: &OsStr, output: &OsStr) -> Result
     let parent = output
         .parent()
         .ok_or_else(|| "provisional title candidate output must have a parent".to_owned())?;
-    let metadata = parent.symlink_metadata().map_err(|error| {
+    let metadata = parent.metadata().map_err(|error| {
         format!("provisional title candidate output parent inspection failed: {error}")
     })?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+    if !metadata.is_dir() {
         return Err(
             "provisional title candidate output parent must be a regular directory".to_owned(),
         );
@@ -3013,9 +3009,9 @@ fn title_model_export_requirements(
         .parent()
         .ok_or_else(|| "model export requirements output must have a parent".to_owned())?;
     let parent_metadata = parent
-        .symlink_metadata()
+        .metadata()
         .map_err(|error| format!("model export requirements parent inspection failed: {error}"))?;
-    if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
+    if !parent_metadata.is_dir() {
         return Err("model export requirements parent must be a regular directory".to_owned());
     }
     let active = CatalogStore::new(catalog_store)

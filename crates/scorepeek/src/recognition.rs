@@ -148,8 +148,8 @@ impl CanonicalFrame {
     /// Reads one P6 frame only after validating its canonical extraction and normalizer evidence.
     ///
     /// # Errors
-    /// Returns an error for an unknown frame ID, invalid or mismatched evidence, a symlinked
-    /// artifact, or bytes outside the fixed canonical RGB8 contract.
+    /// Returns an error for an unknown frame ID, invalid or mismatched evidence, or bytes outside
+    /// the fixed canonical RGB8 contract.
     pub fn read_extraction(
         directory: impl AsRef<Path>,
         frame_id: &str,
@@ -159,13 +159,13 @@ impl CanonicalFrame {
             return Err(RecognitionError::InvalidCanonicalFrame);
         }
         let directory = directory.as_ref();
-        if !directory.symlink_metadata()?.is_dir() {
+        if !directory.metadata()?.is_dir() {
             return Err(RecognitionError::InvalidCanonicalFrame);
         }
         let manifest_path = directory.join("manifest.json");
         let normalizer_path = directory.join("normalizer.json");
         for path in [&manifest_path, &normalizer_path] {
-            if !path.symlink_metadata()?.is_file() {
+            if !path.metadata()?.is_file() {
                 return Err(RecognitionError::InvalidCanonicalFrame);
             }
         }
@@ -408,7 +408,7 @@ fn read_bounded_regular(
     maximum: u64,
     exact: Option<u64>,
 ) -> Result<Vec<u8>, RecognitionError> {
-    let metadata = path.symlink_metadata()?;
+    let metadata = path.metadata()?;
     if !metadata.is_file()
         || metadata.len() == 0
         || metadata.len() > maximum
@@ -1733,7 +1733,7 @@ fn read_integrated_context_crop_artifact(
     expected_manifest_sha256: &str,
 ) -> Result<IntegratedContextCropArtifact, RecognitionError> {
     if !directory.is_absolute()
-        || !directory.symlink_metadata()?.is_dir()
+        || !directory.metadata()?.is_dir()
         || !valid_sha256(expected_manifest_sha256)
     {
         return Err(RecognitionError::InvalidCanonicalFrame);
@@ -1823,7 +1823,7 @@ pub(super) fn read_title_crop_artifact(
     expected_manifest_sha256: &str,
 ) -> Result<(Roi, Vec<u8>), RecognitionError> {
     if !directory.is_absolute()
-        || !directory.symlink_metadata()?.is_dir()
+        || !directory.metadata()?.is_dir()
         || !valid_sha256(expected_manifest_sha256)
     {
         return Err(RecognitionError::InvalidCanonicalFrame);

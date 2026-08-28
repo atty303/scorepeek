@@ -378,7 +378,7 @@ impl CorpusStore {
             .root
             .join("dataset-generations")
             .join(format!("{generation_sha256}.json"));
-        match generation_path.symlink_metadata() {
+        match generation_path.metadata() {
             Ok(_) => {
                 validate_regular_file(&generation_path, ErrorContext::Request)?;
                 let existing = read_bounded_regular(

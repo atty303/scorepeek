@@ -462,6 +462,10 @@ player dataおよびcredentialを含めない。private catalogは既存manifest
 通常commandの共通初期化で取得し、`$XDG_CACHE_HOME/scorepeek/models`へ保存する。初回またはcache削除後は
 networkを必要とし、offline利用前にはonlineで通常commandを一度成功させる。source permissionは引き続きpublic redistributionを制限するが、
 同一operator control domain内のprivate transferをsecret扱いやgeneric errorで妨げない。
+同じ理由で、通常CLIが使うXDG config/state/cache/data root、そのancestorおよびoperatorが選択した
+read-only local inputはsymlinkを辿り、resolved targetへ既存のtype、size、digest、schemaおよびadmission
+contractを適用する。create-only destinationは既存entryを上書きせず、自動cleanup/deleteは所有を確認した
+entryだけをsymlink先へ追従せず処理する。
 
 target machineでは、scorepeek-ownedな既知の1920x1080 markerをexact Gamescope Wayland configで
 明示的に校正し、observed BGRx contractとmarker geometryが一致した場合だけmachine-local profileを

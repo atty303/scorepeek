@@ -166,10 +166,10 @@ fn ensure_recognition_capacity(root: &Path) -> Result<(), String> {
         .map_err(|error| format!("recognition artifact store could not be read: {error}"))?
     {
         let entry = entry.map_err(|error| format!("recognition artifact entry failed: {error}"))?;
-        let metadata = entry.path().symlink_metadata().map_err(|error| {
+        let metadata = entry.path().metadata().map_err(|error| {
             format!("recognition artifact entry could not be inspected: {error}")
         })?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        if !metadata.is_dir() {
             return Err("recognition artifact store contains an unexpected entry".to_owned());
         }
         generations += 1;
@@ -178,10 +178,10 @@ fn ensure_recognition_capacity(root: &Path) -> Result<(), String> {
         {
             let file =
                 file.map_err(|error| format!("recognition artifact file failed: {error}"))?;
-            let metadata = file.path().symlink_metadata().map_err(|error| {
+            let metadata = file.path().metadata().map_err(|error| {
                 format!("recognition artifact file could not be inspected: {error}")
             })?;
-            if !metadata.is_file() || metadata.file_type().is_symlink() {
+            if !metadata.is_file() {
                 return Err("recognition artifact contains an unexpected entry".to_owned());
             }
             bytes = bytes
@@ -301,7 +301,11 @@ fn list_profiles() -> Result<(), String> {
 
 fn load_profiles() -> Result<Vec<(String, SelectedProfile)>, String> {
     let directory = profile_directory()?;
-    let entries = match fs::read_dir(&directory) {
+    load_profiles_from(&directory)
+}
+
+fn load_profiles_from(directory: &Path) -> Result<Vec<(String, SelectedProfile)>, String> {
+    let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => {
@@ -332,20 +336,7 @@ fn load_profiles() -> Result<Vec<(String, SelectedProfile)>, String> {
             ));
         };
         profile_name(OsStr::new(name))?;
-        let metadata = path
-            .symlink_metadata()
-            .map_err(|error| format!("capture profile inspection failed: {error}"))?;
-        if !metadata.is_file()
-            || metadata.file_type().is_symlink()
-            || metadata.len() > MAX_PROFILE_BYTES
-        {
-            return Err(format!(
-                "capture profile is not a bounded regular file: {}",
-                path.display()
-            ));
-        }
-        let bytes = fs::read(&path)
-            .map_err(|error| format!("capture profile could not be read: {error}"))?;
+        let bytes = read_profile(&path)?;
         let digest = sha256(&bytes);
         let binding = GamescopeProfileBinding::parse(&bytes, &digest)
             .map_err(|error| format!("capture profile {} is invalid: {error:?}", path.display()))?;
@@ -366,6 +357,27 @@ fn load_profiles() -> Result<Vec<(String, SelectedProfile)>, String> {
     }
     profiles.sort_by(|left, right| left.0.cmp(&right.0));
     Ok(profiles)
+}
+
+fn read_profile(path: &Path) -> Result<Vec<u8>, String> {
+    let metadata = path
+        .metadata()
+        .map_err(|error| format!("capture profile inspection failed: {error}"))?;
+    if !metadata.is_file() || metadata.len() > MAX_PROFILE_BYTES {
+        return Err(format!(
+            "capture profile is not a bounded regular file: {}",
+            path.display()
+        ));
+    }
+    let bytes =
+        fs::read(path).map_err(|error| format!("capture profile could not be read: {error}"))?;
+    if bytes.len() as u64 != metadata.len() {
+        return Err(format!(
+            "capture profile changed while reading: {}",
+            path.display()
+        ));
+    }
+    Ok(bytes)
 }
 
 fn profile_directory() -> Result<PathBuf, String> {
@@ -558,8 +570,8 @@ fn ensure_directory_tree(path: &Path) -> Result<(), String> {
     let mut current = PathBuf::from("/");
     for component in path.components().skip(1) {
         current.push(component.as_os_str());
-        match current.symlink_metadata() {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+        match current.metadata() {
+            Ok(metadata) if metadata.is_dir() => {
                 sync_directory_component(&current)?;
                 continue;
             }
@@ -581,10 +593,10 @@ fn ensure_directory_tree(path: &Path) -> Result<(), String> {
         match builder.create(&current) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let metadata = current.symlink_metadata().map_err(|error| {
+                let metadata = current.metadata().map_err(|error| {
                     format!("capture profile directory race could not be inspected: {error}")
                 })?;
-                if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                if metadata.is_dir() {
                     sync_directory_component(&current)?;
                     continue;
                 }
@@ -672,8 +684,10 @@ mod tests {
     use super::{
         EffectiveGamescopeConfiguration, MAX_RECOGNITION_GENERATIONS, ensure_directory_tree,
         ensure_recognition_capacity, gamescope_arguments, profile_name, publish_create_only,
+        read_profile,
     };
     use std::ffi::{OsStr, OsString};
+    use std::os::unix::fs::symlink;
 
     #[test]
     fn profile_names_are_path_safe() {
@@ -729,6 +743,31 @@ mod tests {
         assert_eq!(std::fs::read(&profile).unwrap(), b"first");
         assert!(publish_create_only(&profile, b"second").is_err());
         assert_eq!(std::fs::read(profile).unwrap(), b"first");
+    }
+
+    #[test]
+    fn directory_creation_follows_operator_symlinked_ancestors() {
+        let temporary = tempfile::tempdir().unwrap();
+        let actual_home = temporary.path().join("actual-home");
+        std::fs::create_dir(&actual_home).unwrap();
+        let home_alias = temporary.path().join("home");
+        symlink(&actual_home, &home_alias).unwrap();
+
+        let directory = home_alias.join("user/.config/scorepeek/profiles");
+        ensure_directory_tree(&directory).unwrap();
+
+        assert!(actual_home.join("user/.config/scorepeek/profiles").is_dir());
+    }
+
+    #[test]
+    fn profile_files_may_be_operator_symlinks() {
+        let temporary = tempfile::tempdir().unwrap();
+        let actual = temporary.path().join("actual.json");
+        std::fs::write(&actual, b"profile").unwrap();
+        let alias = temporary.path().join("linked.json");
+        symlink(&actual, &alias).unwrap();
+
+        assert_eq!(read_profile(&alias).unwrap(), b"profile");
     }
 
     #[test]

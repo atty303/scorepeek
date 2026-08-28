@@ -441,7 +441,7 @@ fn ensure_cache_capacity(
         let entry = entry.map_err(TextageAcquisitionError::CacheIo)?;
         let metadata = entry
             .path()
-            .symlink_metadata()
+            .metadata()
             .map_err(TextageAcquisitionError::CacheIo)?;
         if !metadata.is_dir() || !valid_digest(&entry.file_name().to_string_lossy()) {
             return Err(TextageAcquisitionError::CacheCapacityExceeded);
@@ -473,7 +473,7 @@ fn bundle_size(path: &Path) -> Result<u64, TextageAcquisitionError> {
         seen |= resource.bit();
         let metadata = entry
             .path()
-            .symlink_metadata()
+            .metadata()
             .map_err(TextageAcquisitionError::CacheIo)?;
         if !metadata.is_file() || metadata.len() > MAX_TEXTAGE_FILE_BYTES as u64 {
             return Err(TextageAcquisitionError::CacheCapacityExceeded);
@@ -492,7 +492,7 @@ fn verify_existing_bundle(
     expected: &[(TextageResource, &[u8])],
 ) -> Result<(), TextageAcquisitionError> {
     if !destination
-        .symlink_metadata()
+        .metadata()
         .map_err(TextageAcquisitionError::CacheIo)?
         .is_dir()
     {

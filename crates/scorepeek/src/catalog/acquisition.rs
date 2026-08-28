@@ -317,7 +317,7 @@ fn ensure_cache_capacity(
         let entry = entry.map_err(DqnAcquisitionError::CacheIo)?;
         let metadata = entry
             .path()
-            .symlink_metadata()
+            .metadata()
             .map_err(DqnAcquisitionError::CacheIo)?;
         if !metadata.is_file()
             || entry
@@ -369,7 +369,7 @@ pub(super) fn create_private_directory(path: &Path) -> io::Result<()> {
     let mut missing = Vec::new();
     let mut candidate = path;
     loop {
-        match candidate.symlink_metadata() {
+        match candidate.metadata() {
             Ok(metadata) if metadata.is_dir() => break,
             Ok(_) => {
                 return Err(io::Error::new(
@@ -412,13 +412,13 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn managed_cache_directory_rejects_symlinks() {
+    fn managed_cache_directory_follows_operator_symlinks() {
         let root = TempDir::new().unwrap();
         let target = root.path().join("target");
         let alias = root.path().join("alias");
         fs::create_dir(&target).unwrap();
         symlink(&target, &alias).unwrap();
-        assert!(create_private_directory(&alias).is_err());
+        create_private_directory(&alias).unwrap();
     }
 
     use super::*;

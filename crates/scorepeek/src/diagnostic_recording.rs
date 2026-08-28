@@ -529,10 +529,8 @@ impl DiagnosticRecorder {
                 error_type: DiagnosticErrorType::InvalidConfiguration,
             });
         }
-        let root_metadata = match root.symlink_metadata() {
-            Ok(metadata) if root.is_absolute() && metadata.is_dir() && !metadata.is_symlink() => {
-                metadata
-            }
+        let root_metadata = match root.metadata() {
+            Ok(metadata) if root.is_absolute() && metadata.is_dir() => metadata,
             _ => {
                 return Self::Degraded(DiagnosticDegradation {
                     error_type: DiagnosticErrorType::StoreUnavailable,
@@ -1354,10 +1352,10 @@ struct DiagnosticManifestStartReference {
 /// Checks that a completed run still has the exact start document bound by its manifest.
 #[must_use]
 pub fn completed_run_start_is_intact(directory: &Path) -> bool {
-    let Ok(metadata) = directory.symlink_metadata() else {
+    let Ok(metadata) = directory.metadata() else {
         return false;
     };
-    if !directory.is_absolute() || !metadata.is_dir() || metadata.is_symlink() {
+    if !directory.is_absolute() || !metadata.is_dir() {
         return false;
     }
     let Ok(manifest_bytes) = std::fs::read(directory.join("manifest.json")) else {
@@ -1377,10 +1375,10 @@ pub fn completed_run_start_is_intact(directory: &Path) -> bool {
         return false;
     }
     let start_path = directory.join("run.json");
-    let Ok(start_metadata) = start_path.symlink_metadata() else {
+    let Ok(start_metadata) = start_path.metadata() else {
         return false;
     };
-    if !start_metadata.is_file() || start_metadata.is_symlink() {
+    if !start_metadata.is_file() {
         return false;
     }
     let Ok(start_bytes) = std::fs::read(start_path) else {

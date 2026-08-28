@@ -255,9 +255,9 @@ fn valid_request(request: &DiagnosticReplayRequest) -> bool {
 
 fn validate_directory(path: &Path, name: &str) -> Result<(), String> {
     let metadata = path
-        .symlink_metadata()
+        .metadata()
         .map_err(|_| format!("{name} is unavailable"))?;
-    if !path.is_absolute() || !metadata.is_dir() || metadata.is_symlink() {
+    if !path.is_absolute() || !metadata.is_dir() {
         return Err(format!("{name} must be an absolute regular directory"));
     }
     Ok(())
@@ -265,13 +265,9 @@ fn validate_directory(path: &Path, name: &str) -> Result<(), String> {
 
 fn read_bounded_regular(path: &Path, maximum: u64) -> Result<Vec<u8>, String> {
     let metadata = path
-        .symlink_metadata()
+        .metadata()
         .map_err(|_| "diagnostic replay request is unavailable".to_owned())?;
-    if !path.is_absolute()
-        || !metadata.is_file()
-        || metadata.is_symlink()
-        || metadata.len() > maximum
-    {
+    if !path.is_absolute() || !metadata.is_file() || metadata.len() > maximum {
         return Err("diagnostic replay request file is invalid".to_owned());
     }
     let bytes = fs::read(path).map_err(|_| "diagnostic replay request read failed".to_owned())?;

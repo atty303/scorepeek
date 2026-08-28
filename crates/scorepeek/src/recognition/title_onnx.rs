@@ -495,7 +495,7 @@ fn validate_registered_resource_directory(
         return Err(RegisteredResourceLoadError::InvalidLocation { role, source: None });
     }
     let metadata =
-        path.symlink_metadata()
+        path.metadata()
             .map_err(|source| RegisteredResourceLoadError::InvalidLocation {
                 role,
                 source: Some(source),
@@ -1443,7 +1443,7 @@ fn load_verified_title_inputs(
         return Err(OnnxParityError::InvalidArtifact);
     }
     if !request.reference_directory.is_absolute()
-        || !request.reference_directory.symlink_metadata()?.is_dir()
+        || !request.reference_directory.metadata()?.is_dir()
     {
         return Err(OnnxParityError::InvalidArtifact);
     }
@@ -1611,7 +1611,7 @@ impl TensorArtifact {
 }
 
 fn read_exact_regular(path: &Path, exact: u64) -> Result<Vec<u8>, OnnxParityError> {
-    let metadata = path.symlink_metadata()?;
+    let metadata = path.metadata()?;
     if !metadata.is_file() || metadata.len() != exact {
         return Err(OnnxParityError::InvalidArtifact);
     }
@@ -1625,7 +1625,7 @@ fn read_exact_regular(path: &Path, exact: u64) -> Result<Vec<u8>, OnnxParityErro
 }
 
 fn read_bounded_regular(path: &Path, maximum: u64) -> Result<Vec<u8>, OnnxParityError> {
-    let metadata = path.symlink_metadata()?;
+    let metadata = path.metadata()?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > maximum {
         return Err(OnnxParityError::InvalidArtifact);
     }

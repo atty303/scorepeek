@@ -144,6 +144,10 @@ authoritative.
 - [ADR 0052: Watch Gamescope without owning it](0052-watch-gamescope-without-owning-it.md)
   supersedes ADR 0040's single-session, no-reconnect and stdin-stop contract and ADR 0051's
   ordinary-run lifecycle. Setup retains ownership of its dedicated calibration Gamescope only.
+- [ADR 0053: Follow operator-owned local symlinks](0053-follow-operator-local-symlinks.md)
+  supersedes ADR 0014's blanket local-symlink rejection for the distributed CLI. Operator-selected
+  roots and inputs follow links while create-only publication and owned destructive cleanup remain
+  no-clobber and non-following.
 
 ## Historical
 

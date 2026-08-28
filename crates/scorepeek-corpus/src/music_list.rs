@@ -1284,8 +1284,8 @@ fn read_bounded_regular_after_metadata(
     path: &Path,
     after_metadata: impl FnOnce() -> Result<(), CorpusError>,
 ) -> Result<Vec<u8>, CorpusError> {
-    let path_metadata = path.symlink_metadata()?;
-    if path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
+    let path_metadata = path.metadata()?;
+    if !path_metadata.is_file() {
         return Err(invalid("observation document is not a regular file"));
     }
     after_metadata()?;
@@ -1758,9 +1758,9 @@ fn read_validated_crop_pixels(
 }
 
 fn verify_directory(path: &Path) -> Result<(), CorpusError> {
-    let metadata = path.symlink_metadata()?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(invalid("artifact directory is not a real directory"));
+    let metadata = path.metadata()?;
+    if !metadata.is_dir() {
+        return Err(invalid("artifact directory is not a directory"));
     }
     Ok(())
 }

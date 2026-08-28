@@ -410,7 +410,13 @@ impl CorpusStore {
 
         let destination = content_dir.join(&source.sha256);
         match destination.symlink_metadata() {
-            Ok(metadata) if metadata.is_dir() => {
+            Ok(entry_metadata) => {
+                let metadata = destination.metadata()?;
+                if !metadata.is_dir() {
+                    return Err(CorpusError::InvalidRequest(
+                        "content-addressed destination is not a directory".to_owned(),
+                    ));
+                }
                 let stored_media = destination.join(SOURCE_FILE);
                 if stored_media.exists() {
                     let resolved = resolve_stored_source_path(&destination, source)?;
@@ -425,6 +431,11 @@ impl CorpusStore {
                     drop(lock);
                     return Ok(canonical_path);
                 }
+                if entry_metadata.file_type().is_symlink() {
+                    return Err(CorpusError::InvalidRequest(
+                        "symlinked content destination cannot be updated".to_owned(),
+                    ));
+                }
                 replace_atomic_file(
                     &destination,
                     &destination.join(EXTERNAL_SOURCE_FILE),
@@ -434,11 +445,6 @@ impl CorpusStore {
                 sync_stored_source_and_parent(&destination, &content_dir)?;
                 drop(lock);
                 return Ok(canonical_path);
-            }
-            Ok(_) => {
-                return Err(CorpusError::InvalidRequest(
-                    "content-addressed destination is not a directory".to_owned(),
-                ));
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
@@ -566,7 +572,7 @@ impl CorpusStore {
         };
         let manifest_bytes = canonical_json(&manifest)?;
         let manifest_path = manifest_dir.join(format!("{}.json", manifest.fixture_id));
-        let manifest_exists = match manifest_path.symlink_metadata() {
+        let manifest_exists = match manifest_path.metadata() {
             Ok(_) => {
                 if read_bounded_regular(&manifest_path, MAX_REQUEST_BYTES, ErrorContext::Request)?
                     != manifest_bytes
@@ -580,7 +586,7 @@ impl CorpusStore {
         };
 
         let destination = content_dir.join(&manifest.source.sha256);
-        let destination_exists = match destination.symlink_metadata() {
+        let destination_exists = match destination.metadata() {
             Ok(metadata) if metadata.is_dir() => true,
             Ok(_) => {
                 return Err(CorpusError::InvalidRequest(
@@ -1803,7 +1809,7 @@ pub fn render_synthetic_title_set(
     let parent = output.parent().ok_or_else(|| {
         CorpusError::InvalidRequest("synthetic output has no parent directory".to_owned())
     })?;
-    if !parent.symlink_metadata()?.is_dir() {
+    if !parent.metadata()?.is_dir() {
         return Err(CorpusError::InvalidRequest(
             "synthetic output parent must be a directory".to_owned(),
         ));
@@ -2072,7 +2078,7 @@ fn read_ingest_request(path: &Path) -> Result<IngestRequest, CorpusError> {
 }
 
 fn validate_source_file(path: &Path) -> Result<(), CorpusError> {
-    let metadata = path.symlink_metadata()?;
+    let metadata = path.metadata()?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_SOURCE_BYTES {
         return Err(CorpusError::InvalidRequest(
             "source must be a non-empty bounded regular file".to_owned(),
@@ -2158,7 +2164,7 @@ fn ensure_content_capacity(
         if name.starts_with(SOURCE_STAGING_PREFIX) {
             continue;
         }
-        if !is_sha256(&name) || !entry.path().symlink_metadata()?.is_dir() {
+        if !is_sha256(&name) || !entry.path().metadata()?.is_dir() {
             return Err(CorpusError::InvalidRequest(
                 "content store contains an unrecognized entry".to_owned(),
             ));
@@ -2187,7 +2193,7 @@ fn stored_source_logical_bytes(
 ) -> Result<u64, CorpusError> {
     validate_directory(directory, ErrorContext::Request)?;
     let source = directory.join(SOURCE_FILE);
-    match source.symlink_metadata() {
+    match source.metadata() {
         Ok(metadata)
             if metadata.is_file() && metadata.len() > 0 && metadata.len() <= MAX_SOURCE_BYTES =>
         {
@@ -2241,7 +2247,7 @@ fn ensure_manifest_capacity_additions(
             ));
         };
         validate_opaque_id(fixture_id, "stored fixture ID", ErrorContext::Request)?;
-        let metadata = entry.path().symlink_metadata()?;
+        let metadata = entry.path().metadata()?;
         if !metadata.is_file() || metadata.len() > MAX_REQUEST_BYTES as u64 {
             return Err(CorpusError::InvalidRequest(
                 "manifest store contains an invalid file".to_owned(),
@@ -2290,7 +2296,7 @@ fn ensure_generation_capacity(
                 "generation store contains an invalid digest name".to_owned(),
             ));
         }
-        let metadata = entry.path().symlink_metadata()?;
+        let metadata = entry.path().metadata()?;
         if !metadata.is_file() || metadata.len() > MAX_GENERATION_BYTES as u64 {
             return Err(CorpusError::InvalidRequest(
                 "generation store contains an invalid file".to_owned(),
@@ -2319,7 +2325,7 @@ fn ensure_label_capacity(label_dir: &Path, added_bytes: usize) -> Result<(), Cor
         let entry = entry?;
         count = count.checked_add(1).ok_or(CorpusError::CapacityExceeded)?;
         total = total
-            .checked_add(entry.path().symlink_metadata()?.len())
+            .checked_add(entry.path().metadata()?.len())
             .ok_or(CorpusError::CapacityExceeded)?;
     }
     if count >= MAX_LABEL_OBJECTS
@@ -2351,7 +2357,7 @@ fn ensure_index_capacity(index_dir: &Path, added_bytes: usize) -> Result<(), Cor
             ));
         };
         validate_sha256(digest, "replay-index filename", ErrorContext::Replay)?;
-        let metadata = entry.path().symlink_metadata()?;
+        let metadata = entry.path().metadata()?;
         if !metadata.is_file()
             || metadata.len() == 0
             || metadata.len() > MAX_REPLAY_INDEX_BYTES as u64
@@ -2394,14 +2400,14 @@ fn resolve_stored_source_path_unverified(
     directory: &Path,
     expected: &ContentRef,
 ) -> Result<PathBuf, CorpusError> {
-    if !directory.symlink_metadata()?.is_dir() {
+    if !directory.metadata()?.is_dir() {
         return Err(CorpusError::InvalidRequest(
             "content-addressed destination is not a directory".to_owned(),
         ));
     }
     validate_directory(directory, ErrorContext::Request)?;
     let source = directory.join(SOURCE_FILE);
-    match source.symlink_metadata() {
+    match source.metadata() {
         Ok(metadata) => {
             if !metadata.is_file() || metadata.len() != expected.bytes {
                 return Err(CorpusError::InvalidRequest(
@@ -2457,12 +2463,12 @@ fn validate_external_source_file(
     expected: &ContentRef,
     verify_digest: bool,
 ) -> Result<(), CorpusError> {
-    if !path.is_absolute() || fs::canonicalize(path)? != path {
+    if !path.is_absolute() {
         return Err(CorpusError::InvalidRequest(
-            "external source path must remain canonical".to_owned(),
+            "external source path must be absolute".to_owned(),
         ));
     }
-    let metadata = path.symlink_metadata()?;
+    let metadata = path.metadata()?;
     if !metadata.is_file() || metadata.len() != expected.bytes {
         return Err(CorpusError::InvalidRequest(
             "external source does not match its locator".to_owned(),
@@ -2515,7 +2521,7 @@ fn replace_atomic_file(
 
 fn sync_stored_source_and_parent(directory: &Path, content_dir: &Path) -> io::Result<()> {
     let source = directory.join(SOURCE_FILE);
-    match source.symlink_metadata() {
+    match source.metadata() {
         Ok(metadata) if metadata.is_file() => File::open(source)?.sync_all()?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             File::open(directory.join(EXTERNAL_SOURCE_FILE))?.sync_all()?;
@@ -2660,7 +2666,7 @@ fn recover_index_staging(index_dir: &Path) -> Result<(), CorpusError> {
 }
 
 fn preflight_managed_components(root: &Path) -> Result<(), CorpusError> {
-    match root.symlink_metadata() {
+    match root.metadata() {
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => {
             return Err(CorpusError::InvalidRequest(
@@ -2682,7 +2688,7 @@ fn preflight_managed_components(root: &Path) -> Result<(), CorpusError> {
         "recordings",
         "dataset-generations",
     ] {
-        match root.join(name).symlink_metadata() {
+        match root.join(name).metadata() {
             Ok(metadata) if metadata.is_dir() => {}
             Ok(_) => {
                 return Err(CorpusError::InvalidRequest(format!(
@@ -2708,7 +2714,7 @@ fn create_private_directory(path: &Path) -> io::Result<()> {
     let mut missing = Vec::new();
     let mut candidate = path;
     loop {
-        match candidate.symlink_metadata() {
+        match candidate.metadata() {
             Ok(metadata) if metadata.is_dir() => break,
             Ok(_) => {
                 return Err(io::Error::new(
@@ -2776,7 +2782,7 @@ fn sync_directory_and_parent(path: &Path) -> io::Result<()> {
 }
 
 fn validate_directory(path: &Path, context: ErrorContext) -> Result<(), CorpusError> {
-    let metadata = path.symlink_metadata()?;
+    let metadata = path.metadata()?;
     if !metadata.is_dir() {
         return Err(context.error("private store path must be a directory"));
     }
@@ -2784,7 +2790,7 @@ fn validate_directory(path: &Path, context: ErrorContext) -> Result<(), CorpusEr
 }
 
 fn validate_regular_file(path: &Path, context: ErrorContext) -> Result<(), CorpusError> {
-    let metadata = path.symlink_metadata()?;
+    let metadata = path.metadata()?;
     if !metadata.is_file() {
         return Err(context.error("private store path must be a regular file"));
     }
@@ -2796,7 +2802,7 @@ fn read_bounded_regular(
     maximum: usize,
     context: ErrorContext,
 ) -> Result<Vec<u8>, CorpusError> {
-    let metadata = path.symlink_metadata()?;
+    let metadata = path.metadata()?;
     if !metadata.is_file() || metadata.len() > maximum as u64 {
         return Err(context.error("metadata input is not a bounded regular file"));
     }
@@ -2813,7 +2819,7 @@ fn read_bounded_regular(
 }
 
 fn digest_regular_file(path: &Path, maximum: u64) -> Result<String, CorpusError> {
-    let metadata = path.symlink_metadata()?;
+    let metadata = path.metadata()?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > maximum {
         return Err(CorpusError::InvalidRequest(
             "stored object is not a bounded regular file".to_owned(),
@@ -3019,7 +3025,7 @@ fn validate_label_store(label_dir: &Path) -> Result<(), CorpusError> {
             )
         })?;
         validate_sha256(digest, "complete-label filename", ErrorContext::Replay)?;
-        let metadata = entry.path().symlink_metadata()?;
+        let metadata = entry.path().metadata()?;
         if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_LABEL_BYTES as u64 {
             return Err(CorpusError::InvalidReplay(
                 "complete-label store contains an invalid object".to_owned(),
@@ -3153,8 +3159,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        ContentRef, CorpusError, CorpusSplit, CorpusStore, LABEL_STAGING_PREFIX, LabelShape,
-        SourceManifest, digest_bytes, render_synthetic_title_set, verify_open_source,
+        ContentRef, CorpusError, CorpusSplit, CorpusStore, EXTERNAL_SOURCE_FILE,
+        LABEL_STAGING_PREFIX, LabelShape, SourceManifest, digest_bytes, render_synthetic_title_set,
+        verify_open_source,
     };
 
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -4017,7 +4024,7 @@ mod tests {
     }
 
     #[test]
-    fn ingest_rejects_symlinked_store_components_and_lock() {
+    fn ingest_follows_operator_root_symlink_and_rejects_changed_content_and_lock() {
         let temporary = tempdir().unwrap();
         let source = temporary.path().join("source.media");
         let request = temporary.path().join("request.json");
@@ -4028,7 +4035,7 @@ mod tests {
         let alias = temporary.path().join("alias");
         fs::create_dir(&target).unwrap();
         symlink(&target, &alias).unwrap();
-        assert!(CorpusStore::new(&alias).ingest(&source, &request).is_err());
+        CorpusStore::new(&alias).ingest(&source, &request).unwrap();
 
         let root = temporary.path().join("private-corpus");
         let store = CorpusStore::new(&root);
@@ -4056,7 +4063,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_component_preflight_rejects_without_mutating_the_store() {
+    fn managed_component_preflight_follows_operator_directory_symlinks() {
         let temporary = tempdir().unwrap();
         let root = temporary.path().join("private-corpus");
         let store = CorpusStore::new(&root);
@@ -4079,18 +4086,60 @@ mod tests {
         let request = temporary.path().join("fixture-002.json");
         fs::write(&source, b"second source").unwrap();
         write_request_for(&request, "fixture-002", "session-002", "capture-profile-a");
-        assert!(store.ingest(&source, &request).is_err());
+        store.ingest(&source, &request).unwrap();
 
         assert_eq!(root.metadata().unwrap().permissions().mode() & 0o777, 0o755);
         assert_eq!(
             fs::read_dir(root.join("content")).unwrap().count(),
-            content_count
+            content_count + 1
         );
         assert_eq!(
             fs::read_dir(root.join("manifests")).unwrap().count(),
-            manifest_count
+            manifest_count + 1
         );
         assert_eq!(fs::read_dir(outside).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn symlinked_content_destination_is_reused_but_not_updated() {
+        let temporary = tempdir().unwrap();
+        let store = CorpusStore::new(temporary.path().join("store"));
+        let first_path = temporary.path().join("first.media");
+        let second_path = temporary.path().join("second.media");
+        let bytes = b"same external source";
+        fs::write(&first_path, bytes).unwrap();
+        fs::write(&second_path, bytes).unwrap();
+        let source = ContentRef {
+            sha256: digest_bytes(bytes),
+            bytes: bytes.len() as u64,
+        };
+        let first_path = fs::canonicalize(first_path).unwrap();
+        let second_path = fs::canonicalize(second_path).unwrap();
+        store
+            .register_external_source(&first_path, &source)
+            .unwrap();
+        let destination = store.root.join("content").join(&source.sha256);
+        let moved = temporary.path().join("moved-content");
+        fs::rename(&destination, &moved).unwrap();
+        symlink(&moved, &destination).unwrap();
+        let locator_before = fs::read(moved.join(EXTERNAL_SOURCE_FILE)).unwrap();
+
+        assert!(
+            store
+                .register_external_source(&second_path, &source)
+                .is_err()
+        );
+        assert!(
+            destination
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read(moved.join(EXTERNAL_SOURCE_FILE)).unwrap(),
+            locator_before
+        );
     }
 
     fn write_request(path: &std::path::Path, profile: &str) {

@@ -477,10 +477,11 @@ recovery and publication. Newly created files and relevant directories are
 synced before success is reported. The aggregate-only command result includes
 capture-profile, source, and source-manifest SHA-256 values for downstream
 binding.
-The root, managed directories, and writer lock must be real filesystem entries;
-symlinks are rejected before managed content is changed. Filesystem permissions,
-ownership, ACLs, and retention are operator responsibilities. Creation may use
-restrictive defaults, but scorepeek neither validates nor guarantees Unix modes.
+Operator-selected roots, ancestors, sources, and read-only content may be symlinks; validation
+applies to the resolved target. Create-only destinations remain no-clobber, and recovery or deletion
+does not follow a substituted symlink entry. Filesystem permissions, ownership, ACLs, and retention
+are operator responsibilities. Creation may use restrictive defaults, but scorepeek neither
+validates nor guarantees Unix modes.
 
 The same bytes and request are idempotent. An existing fixture ID cannot be
 rebound to different bytes or metadata. Existing identical content remains

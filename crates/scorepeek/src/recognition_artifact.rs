@@ -168,9 +168,9 @@ impl RecognitionArtifactWriter {
         let parent = root
             .parent()
             .ok_or_else(|| "recognition artifact root has no parent".to_owned())?;
-        let parent_metadata = fs::symlink_metadata(parent)
+        let parent_metadata = fs::metadata(parent)
             .map_err(|error| format!("recognition artifact parent is unavailable: {error}"))?;
-        if !parent_metadata.file_type().is_dir() || parent_metadata.file_type().is_symlink() {
+        if !parent_metadata.file_type().is_dir() {
             return Err("recognition artifact parent must be a directory".to_owned());
         }
         DirBuilder::new()

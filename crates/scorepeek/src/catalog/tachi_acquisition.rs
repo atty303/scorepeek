@@ -499,9 +499,7 @@ fn ensure_cache_capacity(
     for entry in fs::read_dir(directory).map_err(TachiAcquisitionError::CacheIo)? {
         let entry = entry.map_err(TachiAcquisitionError::CacheIo)?;
         let path = entry.path();
-        let metadata = path
-            .symlink_metadata()
-            .map_err(TachiAcquisitionError::CacheIo)?;
+        let metadata = path.metadata().map_err(TachiAcquisitionError::CacheIo)?;
         if !metadata.is_dir() || !valid_generation_name(&entry.file_name().to_string_lossy()) {
             return Err(TachiAcquisitionError::CacheCapacityExceeded);
         }
@@ -533,7 +531,7 @@ fn bundle_size(path: &Path) -> Result<u64, TachiAcquisitionError> {
         seen |= bit;
         let metadata = entry
             .path()
-            .symlink_metadata()
+            .metadata()
             .map_err(TachiAcquisitionError::CacheIo)?;
         if !metadata.is_file() || metadata.len() > resource.maximum() as u64 {
             return Err(TachiAcquisitionError::CacheCapacityExceeded);
@@ -552,7 +550,7 @@ fn verify_existing_bundle(
     expected: &[(TachiResource, &[u8])],
 ) -> Result<(), TachiAcquisitionError> {
     if !destination
-        .symlink_metadata()
+        .metadata()
         .map_err(TachiAcquisitionError::CacheIo)?
         .is_dir()
     {

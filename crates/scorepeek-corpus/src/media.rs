@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::os::unix::fs::MetadataExt as _;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -1313,7 +1314,7 @@ pub(crate) fn find_executable(name: &str) -> Result<PathBuf, CorpusError> {
         .map(|directory| directory.join(name))
         .find(|candidate| {
             candidate
-                .symlink_metadata()
+                .metadata()
                 .is_ok_and(|metadata| metadata.is_file())
         })
         .ok_or_else(|| invalid_media("pinned media tool is not available on PATH"))
@@ -1590,8 +1591,18 @@ fn recover_output_staging(parent: &Path) -> Result<(), CorpusError> {
 
 fn validate_owned_marker(directory: &Path, name: &str, expected: &[u8]) -> Result<(), CorpusError> {
     let marker = directory.join(name);
-    validate_regular_file(&marker, ErrorContext::Replay)?;
-    if read_bounded_regular(&marker, 128, ErrorContext::Replay)? != expected {
+    let before = marker.symlink_metadata()?;
+    if !before.is_file() || before.file_type().is_symlink() || before.len() > 128 {
+        return Err(invalid_media("owned output marker is invalid"));
+    }
+    let file = File::open(&marker)?;
+    let opened = file.metadata()?;
+    if before.dev() != opened.dev() || before.ino() != opened.ino() {
+        return Err(invalid_media("owned output marker is invalid"));
+    }
+    let mut actual = Vec::with_capacity(expected.len());
+    file.take(129).read_to_end(&mut actual)?;
+    if actual != expected {
         return Err(invalid_media("owned output marker is invalid"));
     }
     Ok(())
@@ -1774,6 +1785,7 @@ fn invalid_media(detail: impl Into<String>) -> CorpusError {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::os::unix::fs::symlink;
     use tempfile::tempdir;
 
     #[test]
@@ -1987,6 +1999,33 @@ mod tests {
             b"user-data"
         );
         assert!(!claim.exists());
+    }
+
+    #[test]
+    fn recovery_preserves_staging_with_a_symlinked_valid_marker() {
+        let temporary = tempdir().unwrap();
+        let private = temporary.path().join("private");
+        fs::create_dir(&private).unwrap();
+        let staging = private.join(format!("{EXTRACT_STAGING_PREFIX}operator"));
+        fs::create_dir(&staging).unwrap();
+        fs::write(staging.join("sentinel"), b"operator-data").unwrap();
+        let marker_target = temporary.path().join("marker");
+        fs::write(&marker_target, STAGING_MARKER_BYTES).unwrap();
+        symlink(&marker_target, staging.join(STAGING_MARKER)).unwrap();
+
+        assert!(lock_output_parent(&private.join("new-output")).is_err());
+        assert_eq!(
+            fs::read(staging.join("sentinel")).unwrap(),
+            b"operator-data"
+        );
+        assert!(
+            staging
+                .join(STAGING_MARKER)
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]

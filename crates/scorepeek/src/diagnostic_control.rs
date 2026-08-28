@@ -430,8 +430,8 @@ fn resolve_export_destination(root: &Path, destination: &Path) -> Option<PathBuf
         return None;
     }
     let parent = destination.parent()?;
-    let parent_metadata = parent.symlink_metadata().ok()?;
-    if !parent_metadata.is_dir() || parent_metadata.file_type().is_symlink() {
+    let parent_metadata = parent.metadata().ok()?;
+    if !parent_metadata.is_dir() {
         return None;
     }
     let canonical_root = root.canonicalize().ok()?;
@@ -1063,18 +1063,16 @@ fn validate_locked_root(
     root_lock: &File,
 ) -> Result<(), DiagnosticErrorType> {
     let raw = root
-        .symlink_metadata()
+        .metadata()
         .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
     let canonical = canonical_root
-        .symlink_metadata()
+        .metadata()
         .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
     let opened = root_lock
         .metadata()
         .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
     if !raw.is_dir()
-        || raw.file_type().is_symlink()
         || !canonical.is_dir()
-        || canonical.file_type().is_symlink()
         || !same_inode(&raw, &opened)
         || !same_inode(&canonical, &opened)
     {
@@ -1170,9 +1168,9 @@ fn ensure_store_lock_marker(root: &Path) -> Result<(), DiagnosticErrorType> {
 
 fn open_lock_directory(path: &Path) -> Result<File, DiagnosticErrorType> {
     let before = path
-        .symlink_metadata()
+        .metadata()
         .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
-    if !path.is_absolute() || !before.is_dir() || before.file_type().is_symlink() {
+    if !path.is_absolute() || !before.is_dir() {
         return Err(DiagnosticErrorType::StoreUnavailable);
     }
     let file = File::open(path).map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
@@ -1180,7 +1178,7 @@ fn open_lock_directory(path: &Path) -> Result<File, DiagnosticErrorType> {
         .metadata()
         .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
     let after = path
-        .symlink_metadata()
+        .metadata()
         .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
     if !same_inode(&before, &opened) || !same_inode(&before, &after) {
         return Err(DiagnosticErrorType::StoreUnavailable);
@@ -1282,7 +1280,7 @@ fn complete_freeze_publication(directory: &Path, run_id: &str) -> Result<(), Dia
 }
 
 fn read_freeze_document(path: &Path, run_id: &str) -> Result<FreezeDocument, DiagnosticErrorType> {
-    let bytes = read_bounded_regular(path, MAX_CONTROL_BYTES)
+    let bytes = read_bounded_owned_regular(path, MAX_CONTROL_BYTES)
         .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
     let document: FreezeDocument =
         serde_json::from_slice(&bytes).map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
@@ -1391,6 +1389,12 @@ fn mark_delete_staging(directory: &Path, run_id: &str) -> Result<(), DiagnosticE
     let marker_exists = marker_path.symlink_metadata().is_ok();
     let mut staging_exists = staging_path.symlink_metadata().is_ok();
     if !marker_exists && staging_exists && validate_delete_marker(&staging_path, run_id).is_err() {
+        let metadata = staging_path
+            .symlink_metadata()
+            .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            return Err(DiagnosticErrorType::StoreUnavailable);
+        }
         fs::remove_file(&staging_path)
             .and_then(|()| File::open(directory)?.sync_all())
             .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
@@ -1488,7 +1492,7 @@ fn validate_delete_marker(
     marker: &Path,
     run_id: &str,
 ) -> Result<BTreeMap<String, u64>, DiagnosticErrorType> {
-    let bytes = read_bounded_regular(marker, MAX_MANIFEST_BYTES)
+    let bytes = read_bounded_owned_regular(marker, MAX_MANIFEST_BYTES)
         .map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
     let document: DeleteMarkerDocument =
         serde_json::from_slice(&bytes).map_err(|_| DiagnosticErrorType::StoreUnavailable)?;
@@ -1888,6 +1892,31 @@ fn run_files(directory: &Path) -> Result<BTreeMap<String, u64>, String> {
 }
 
 fn read_bounded_regular(path: &Path, maximum: u64) -> Result<Vec<u8>, String> {
+    let before = path.metadata().map_err(|_| invalid_store())?;
+    if !before.is_file() || before.len() > maximum {
+        return Err(invalid_store());
+    }
+    let mut file = File::open(path).map_err(|_| invalid_store())?;
+    let opened = file.metadata().map_err(|_| invalid_store())?;
+    if !same_file(&before, &opened) {
+        return Err(invalid_store());
+    }
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(maximum + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| invalid_store())?;
+    let after = file.metadata().map_err(|_| invalid_store())?;
+    if bytes.len() as u64 != before.len()
+        || bytes.len() as u64 > maximum
+        || !same_file(&before, &after)
+    {
+        return Err(invalid_store());
+    }
+    Ok(bytes)
+}
+
+fn read_bounded_owned_regular(path: &Path, maximum: u64) -> Result<Vec<u8>, String> {
     let before = path.symlink_metadata().map_err(|_| invalid_store())?;
     if !before.is_file() || before.file_type().is_symlink() || before.len() > maximum {
         return Err(invalid_store());
@@ -1913,8 +1942,8 @@ fn read_bounded_regular(path: &Path, maximum: u64) -> Result<Vec<u8>, String> {
 }
 
 fn directory_identity(path: &Path) -> Result<(u64, u64, i64, i64), String> {
-    let metadata = path.symlink_metadata().map_err(|_| invalid_store())?;
-    if !path.is_absolute() || !metadata.is_dir() || metadata.file_type().is_symlink() {
+    let metadata = path.metadata().map_err(|_| invalid_store())?;
+    if !path.is_absolute() || !metadata.is_dir() {
         return Err(invalid_store());
     }
     Ok((
@@ -2592,6 +2621,48 @@ mod tests {
     }
 
     #[test]
+    fn delete_recovery_preserves_a_valid_document_staging_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let recorder = DiagnosticRecorder::start(
+            root.path(),
+            &descriptor("delete-symlink-run"),
+            DiagnosticPolicy::default(),
+        );
+        let _ = recorder.finish(DiagnosticRunStatus::Success, 1_000);
+        let staging = root
+            .path()
+            .join(format!("{DELETE_STAGING_PREFIX}delete-symlink-run"));
+        fs::rename(root.path().join("delete-symlink-run"), &staging).unwrap();
+        let document = DeleteMarkerDocument {
+            schema: "scorepeek-diagnostic-delete-staging-v1".to_owned(),
+            run_id: "delete-symlink-run".to_owned(),
+            files: run_files(&staging)
+                .unwrap()
+                .into_iter()
+                .map(|(filename, bytes)| DeleteMarkerFile { filename, bytes })
+                .collect(),
+        };
+        let external = tempfile::NamedTempFile::new().unwrap();
+        fs::write(external.path(), canonical_json(&document).unwrap()).unwrap();
+        let marker_staging = staging.join(DELETE_MARKER_STAGING_FILENAME);
+        std::os::unix::fs::symlink(external.path(), &marker_staging).unwrap();
+
+        assert_eq!(
+            DiagnosticStoreLease::acquire(root.path(), 0).err(),
+            Some(DiagnosticErrorType::StoreUnavailable)
+        );
+        assert!(
+            marker_staging
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(staging.join("manifest.json").is_file());
+        assert!(external.path().is_file());
+    }
+
+    #[test]
     fn exact_start_capacity_does_not_evict_a_normal_run_for_manifest_reserve() {
         let probe = tempfile::tempdir().unwrap();
         let probe_run = DiagnosticRecorder::start(
@@ -3036,7 +3107,7 @@ mod tests {
     }
 
     #[test]
-    fn freeze_recovery_preserves_an_unowned_staging_symlink() {
+    fn freeze_recovery_preserves_a_valid_document_staging_symlink() {
         let root = tempfile::tempdir().unwrap();
         let recorder = DiagnosticRecorder::start(
             root.path(),
@@ -3046,6 +3117,13 @@ mod tests {
         let _ = recorder.finish(DiagnosticRunStatus::Success, 1_000);
         let run = inspect_store(root.path()).unwrap().remove(0);
         let external = tempfile::NamedTempFile::new().unwrap();
+        let document = FreezeDocument {
+            schema: "scorepeek-diagnostic-freeze-v1".to_owned(),
+            run_id: run.run_id.clone(),
+            run_sha256: run.run_sha256.clone(),
+            manifest_sha256: run.manifest_sha256.clone(),
+        };
+        fs::write(external.path(), canonical_json(&document).unwrap()).unwrap();
         let staging = root
             .path()
             .join("freeze-symlink-run")

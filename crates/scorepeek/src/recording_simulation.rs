@@ -1071,9 +1071,9 @@ fn publish_create_only(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .parent()
         .ok_or_else(|| "profile output parent is invalid".to_owned())?;
     let parent_metadata = parent
-        .symlink_metadata()
+        .metadata()
         .map_err(|_| "profile output parent is unavailable".to_owned())?;
-    if !path.is_absolute() || !parent_metadata.is_dir() || parent_metadata.is_symlink() {
+    if !path.is_absolute() || !parent_metadata.is_dir() {
         return Err("profile output path is invalid".to_owned());
     }
     let mut output = OpenOptions::new()
@@ -1100,14 +1100,9 @@ fn publish_create_only(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 fn read_bounded_regular(path: &Path, maximum: u64, name: &str) -> Result<Vec<u8>, String> {
     let before = path
-        .symlink_metadata()
+        .metadata()
         .map_err(|_| format!("{name} is unavailable"))?;
-    if !path.is_absolute()
-        || !before.is_file()
-        || before.is_symlink()
-        || before.len() == 0
-        || before.len() > maximum
-    {
+    if !path.is_absolute() || !before.is_file() || before.len() == 0 || before.len() > maximum {
         return Err(format!("{name} is invalid"));
     }
     let mut file = File::open(path).map_err(|_| format!("{name} read failed"))?;

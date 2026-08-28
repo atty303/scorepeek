@@ -114,7 +114,10 @@ scorepeek profile list
 ```
 
 Setup stores the profile under `$XDG_CONFIG_HOME/scorepeek/profiles` (normally
-`$HOME/.config/scorepeek/profiles`). It does not start INFINITAS and does not turn an unverified
+`$HOME/.config/scorepeek/profiles`). Operator-selected local roots and inputs follow normal
+filesystem symlinks, including Bazzite's `/home -> /var/home`; resolved files still have to satisfy
+their type, size, digest, schema, and admission contracts. Setup does not start INFINITAS and does
+not turn an unverified
 configuration into a supported profile. Start the watcher before or after the ordinary
 Gamescope/game session:
 
@@ -280,7 +283,8 @@ game-session `scorepeek` crate does not depend on it. Ingest requires an
 explicit absolute private-store root and copies immutable source media into a
 bounded SHA-256-addressed store. Filesystem permissions, ownership, ACLs, and
 retention are the operator's responsibility; scorepeek validates path types,
-symlink boundaries, sizes, hashes, and no-clobber publication, not Unix modes.
+resolved sizes and hashes, and no-clobber publication, not Unix modes or the absence of local
+symlinks.
 Before assigning
 splits, generation sealing records every current fixture binding in one
 immutable content-addressed generation. Replay-suite validation reads that

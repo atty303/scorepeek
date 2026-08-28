@@ -278,7 +278,7 @@ impl CorpusStore {
             .root
             .join("recordings")
             .join(format!("{recording_sha256}.json"));
-        match path.symlink_metadata() {
+        match path.metadata() {
             Ok(metadata) if metadata.is_file() => Ok(true),
             Ok(_) => Err(CorpusError::InvalidRequest(
                 "recording manifest is not a regular file".to_owned(),
@@ -358,7 +358,7 @@ impl CorpusStore {
             .root
             .join("recordings")
             .join(format!("{recording_sha256}.json"));
-        match recording_path.symlink_metadata() {
+        match recording_path.metadata() {
             Ok(metadata) if metadata.is_file() => {}
             Ok(_) => {
                 return Err(CorpusError::InvalidRequest(
@@ -590,7 +590,7 @@ impl CorpusStore {
         } else {
             self.dataset_object_path(object)
         };
-        match path.symlink_metadata() {
+        match path.metadata() {
             Ok(_) => {
                 self.validate_dataset_object(object)?;
                 Ok(true)
@@ -642,7 +642,7 @@ impl CorpusStore {
                     recording_sha256: recording.recording_sha256.clone(),
                 };
                 let path = self.readable_dataset_object_path_unverified(&object)?;
-                let metadata = path.symlink_metadata()?;
+                let metadata = path.metadata()?;
                 if !metadata.is_file() {
                     return Err(CorpusError::InvalidRequest(
                         "dataset object is not a regular file".to_owned(),
@@ -782,7 +782,7 @@ impl CorpusStore {
         let document_dir = self.root.join(directory);
         create_private_directory(&document_dir)?;
         let destination = document_dir.join(format!("{name}.json"));
-        match destination.symlink_metadata() {
+        match destination.metadata() {
             Ok(metadata) if metadata.is_file() => {
                 if read_bounded_regular(
                     &destination,
@@ -978,7 +978,7 @@ impl RecordingDatasetGeneration {
 }
 
 pub(crate) fn validate_object(path: &Path, object: &DatasetObject) -> Result<(), CorpusError> {
-    let metadata = path.symlink_metadata()?;
+    let metadata = path.metadata()?;
     if !metadata.is_file() || metadata.len() != object.bytes {
         return Err(CorpusError::InvalidRequest(
             "dataset object size or type is invalid".to_owned(),
@@ -1024,7 +1024,7 @@ pub(crate) fn ensure_dataset_document_capacity(
             CorpusError::InvalidRequest("dataset store contains an unrecognized entry".to_owned())
         })?;
         validate_sha256(digest, "dataset document digest", ErrorContext::Request)?;
-        let metadata = entry.path().symlink_metadata()?;
+        let metadata = entry.path().metadata()?;
         if !metadata.is_file()
             || metadata.len() == 0
             || metadata.len() > MAX_DATASET_DOCUMENT_BYTES as u64
@@ -1427,7 +1427,7 @@ mod tests {
         );
     }
 
-    fn assert_intermediate_symlink_is_rejected(fixture: &ImportedDataset) {
+    fn assert_intermediate_symlink_is_accepted(fixture: &ImportedDataset) {
         let ImportedDataset {
             private,
             store,
@@ -1439,11 +1439,9 @@ mod tests {
         let moved_content = private.join("moved-content");
         fs::rename(&content_directory, &moved_content).unwrap();
         symlink(&moved_content, &content_directory).unwrap();
-        assert!(
-            store
-                .verify_recording_dataset(&generation.generation_sha256)
-                .is_err()
-        );
+        store
+            .verify_recording_dataset(&generation.generation_sha256)
+            .unwrap();
     }
 
     #[test]
@@ -1451,7 +1449,7 @@ mod tests {
         let fixture = prepare_imported_dataset();
         assert_reusable_source_bytes(&fixture);
         assert_typed_role_substitution_is_rejected(&fixture);
-        assert_intermediate_symlink_is_rejected(&fixture);
+        assert_intermediate_symlink_is_accepted(&fixture);
     }
 
     #[test]

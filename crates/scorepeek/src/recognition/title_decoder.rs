@@ -499,7 +499,7 @@ pub(super) fn load_dictionary_contract(
     expected_sha256: &str,
     output_classes: usize,
 ) -> Result<Vec<String>, CatalogTitleDecoderError> {
-    let metadata = path.symlink_metadata()?;
+    let metadata = path.metadata()?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_INFERENCE_YML_BYTES {
         return Err(CatalogTitleDecoderError::InvalidDictionary);
     }

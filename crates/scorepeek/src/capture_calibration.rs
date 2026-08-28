@@ -772,16 +772,16 @@ fn resolve_existing_directory(path: &Path) -> Result<PathBuf, ()> {
     {
         return Err(());
     }
-    let metadata = path.symlink_metadata().map_err(|_| ())?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+    let metadata = path.metadata().map_err(|_| ())?;
+    if !metadata.is_dir() {
         return Err(());
     }
     path.canonicalize().map_err(|_| ())
 }
 
 fn read_bounded_regular_file(path: &Path, maximum: u64) -> Result<Vec<u8>, ()> {
-    let before = path.symlink_metadata().map_err(|_| ())?;
-    if !before.is_file() || before.file_type().is_symlink() || before.len() > maximum {
+    let before = path.metadata().map_err(|_| ())?;
+    if !before.is_file() || before.len() > maximum {
         return Err(());
     }
     let mut file = File::open(path).map_err(|_| ())?;
@@ -830,9 +830,9 @@ fn publish_binding_with(
         .parent()
         .ok_or(BindingAuthorErrorType::OutputUnavailable)?;
     let metadata = parent
-        .symlink_metadata()
+        .metadata()
         .map_err(|_| BindingAuthorErrorType::OutputUnavailable)?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+    if !metadata.is_dir() {
         return Err(BindingAuthorErrorType::OutputUnavailable);
     }
     let canonical_output = parent
@@ -1230,8 +1230,8 @@ fn resolve_output(output: &Path) -> Result<PathBuf, ()> {
         return Err(());
     }
     let parent = output.parent().ok_or(())?;
-    let metadata = parent.symlink_metadata().map_err(|_| ())?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+    let metadata = parent.metadata().map_err(|_| ())?;
+    if !metadata.is_dir() {
         return Err(());
     }
     let output = parent

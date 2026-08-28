@@ -3,7 +3,7 @@
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read as _, Write as _};
-use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -341,8 +341,10 @@ fn ensure_model_with_publish_hook(
     sync_directory(staging.path())?;
     before_publish(staging.path())?;
     let staging_path = staging.keep();
+    let mut renamed = false;
     let publication = (|| -> Result<(), ModelCacheError> {
         fs::rename(&staging_path, &target)?;
+        renamed = true;
         sync_directory(&bundles)?;
         fs::remove_file(target.join(STAGING_MARKER))?;
         sync_directory(&target)?;
@@ -350,7 +352,7 @@ fn ensure_model_with_publish_hook(
         Ok(())
     })();
     if let Err(error) = publication {
-        if target.exists() {
+        if renamed {
             fs::remove_dir_all(&target)?;
             sync_directory(&bundles)?;
         } else if staging_path.exists() {
@@ -463,11 +465,8 @@ fn ensure_store_capacity(
         let mut file_count = 0_usize;
         for file in path.read_dir()? {
             let file = file?;
-            let metadata = file.path().symlink_metadata()?;
-            if metadata.file_type().is_symlink()
-                || !metadata.is_file()
-                || metadata.len() == 0
-                || metadata.len() > MAX_BUNDLE_FILE_BYTES
+            let metadata = file.path().metadata()?;
+            if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_BUNDLE_FILE_BYTES
             {
                 return Err(ModelCacheError::Location(
                     "model bundle store contains an invalid file",
@@ -524,8 +523,8 @@ fn ensure_bundle_store(store: &Path) -> Result<PathBuf, ModelCacheError> {
     if bundles.exists() {
         validate_absolute_directory(&bundles)?;
         let marker = bundles.join(STORE_MARKER);
-        if marker.exists() {
-            if fs::read(&marker)? != STORE_MARKER_BYTES {
+        if marker.symlink_metadata().is_ok() {
+            if !owned_marker_matches(&marker, STORE_MARKER_BYTES)? {
                 return Err(ModelCacheError::Location(
                     "model bundle store marker is invalid",
                 ));
@@ -560,7 +559,7 @@ fn recover_owned_staging(bundles: &Path) -> Result<(), ModelCacheError> {
         let recoverable_name = name.starts_with(STAGING_PREFIX)
             || (name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit()));
         if recoverable_name
-            && fs::read(path.join(STAGING_MARKER)).ok().as_deref() == Some(STAGING_MARKER_BYTES)
+            && owned_marker_matches(&path.join(STAGING_MARKER), STAGING_MARKER_BYTES)?
         {
             fs::remove_dir_all(path)?;
             changed = true;
@@ -573,11 +572,40 @@ fn recover_owned_staging(bundles: &Path) -> Result<(), ModelCacheError> {
 }
 
 fn completed_target_exists(target: &Path) -> Result<bool, ModelCacheError> {
-    if !target.exists() {
+    let entry = match target.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    validate_absolute_directory(target)?;
+    let incomplete = target.join(STAGING_MARKER).symlink_metadata().is_ok();
+    if entry.file_type().is_symlink() && incomplete {
+        return Err(ModelCacheError::Location(
+            "incomplete symlinked model bundle cannot be replaced",
+        ));
+    }
+    Ok(!incomplete)
+}
+
+fn owned_marker_matches(path: &Path, expected: &[u8]) -> Result<bool, ModelCacheError> {
+    let before = match path.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    if !before.is_file() || before.file_type().is_symlink() || before.len() != expected.len() as u64
+    {
         return Ok(false);
     }
-    validate_absolute_directory(target)?;
-    Ok(!target.join(STAGING_MARKER).exists())
+    let file = File::open(path)?;
+    let opened = file.metadata()?;
+    if before.dev() != opened.dev() || before.ino() != opened.ino() {
+        return Ok(false);
+    }
+    let mut actual = Vec::with_capacity(expected.len());
+    file.take(expected.len() as u64 + 1)
+        .read_to_end(&mut actual)?;
+    Ok(actual == expected)
 }
 
 fn write_durable_file(path: &Path, bytes: &[u8]) -> Result<(), ModelCacheError> {
@@ -606,8 +634,8 @@ fn validate_absolute_directory(path: &Path) -> Result<(), ModelCacheError> {
 }
 
 fn validate_directory(path: &Path, message: &'static str) -> Result<(), ModelCacheError> {
-    let metadata = path.symlink_metadata()?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+    let metadata = path.metadata()?;
+    if !metadata.is_dir() {
         return Err(ModelCacheError::Location(message));
     }
     Ok(())
@@ -616,6 +644,7 @@ fn validate_directory(path: &Path, message: &'static str) -> Result<(), ModelCac
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::os::unix::fs::symlink;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
 
@@ -858,6 +887,60 @@ mod tests {
         recover_owned_staging(&bundles).unwrap();
         assert!(!owned.exists());
         assert!(unmarked.exists());
+    }
+
+    #[test]
+    fn recovery_preserves_a_staging_directory_with_a_symlinked_valid_marker() {
+        let temporary = tempfile::tempdir().unwrap();
+        let bundles = temporary.path().join("bundles");
+        fs::create_dir(&bundles).unwrap();
+        let staging = bundles.join(format!("{STAGING_PREFIX}operator"));
+        fs::create_dir(&staging).unwrap();
+        let marker_target = temporary.path().join("marker");
+        fs::write(&marker_target, STAGING_MARKER_BYTES).unwrap();
+        symlink(&marker_target, staging.join(STAGING_MARKER)).unwrap();
+
+        recover_owned_staging(&bundles).unwrap();
+
+        assert!(staging.is_dir());
+        assert!(
+            staging
+                .join(STAGING_MARKER)
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn incomplete_symlinked_target_is_not_replaced() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = temporary.path().join("models");
+        let bundles = store.join("bundles");
+        fs::create_dir_all(&bundles).unwrap();
+        let external = temporary.path().join("external-incomplete");
+        fs::create_dir(&external).unwrap();
+        fs::write(external.join(STAGING_MARKER), STAGING_MARKER_BYTES).unwrap();
+        let digest = "5".repeat(64);
+        let target = bundles.join(&digest);
+        symlink(&external, &target).unwrap();
+        let (files, bodies) = fixture();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let transport = FakeTransport {
+            bodies: Arc::new(bodies),
+            requests: Arc::clone(&requests),
+        };
+
+        assert!(
+            ensure_model_with(&store, &digest, &files, &transport, verify_fixture, |_| {}).is_err()
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+        assert!(target.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(
+            fs::read(external.join(STAGING_MARKER)).unwrap(),
+            STAGING_MARKER_BYTES
+        );
     }
 
     #[test]

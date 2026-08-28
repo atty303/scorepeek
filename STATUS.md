@@ -36,9 +36,14 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   unverified. ADR 0052 makes that ordinary entrypoint a Gamescope-non-owning watcher: it waits
   before or after source startup, treats sequential source lifetimes as separate sessions, refuses
   simultaneous-source selection, and stops only on SIGINT/SIGTERM.
-  The archive is now the first cross-machine delivery unit; an operator-owned 4K Bazzite machine
-  remains the first consumer acceptance target. No target transfer or 4K profile is implemented at
-  this checkpoint.
+  ADR 0053 removes blanket symlink rejection from operator-selected local roots and inputs while
+  retaining resolved content validation, create-only no-clobber publication, and non-following
+  owned cleanup. This includes Bazzite's standard `/home -> /var/home` layout.
+  The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
+  machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
+  model. The first guided setup exposed the now-fixed `/home` symlink rejection before Gamescope
+  calibration began. The corrected binary has not yet been transferred and no target profile has
+  been authored, so target lifecycle acceptance remains unverified.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -598,17 +603,14 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Transfer the cargo-dist Linux x86-64 archive and its SHA-256 checksum plus the separately managed
-   catalog to a clean compatible Bazzite environment. Verify checksum, extraction, `scorepeek
-   --version`, `scorepeek doctor`, the first automatic PP-OCRv6-small download, and subsequent
-   offline cache reuse without a repository checkout, mise, Rust, or Python in the game-session
-   path. This deployment, real upstream download and target-machine verification remain a separate
-   operator-authority boundary.
-2. On the operator's 4K Bazzite machine, use guided setup to author and independently verify one
-   exact Wayland profile, then exercise the watcher with scorepeek-first and Gamescope-first startup,
+1. Build and transfer the corrected cargo-dist archive, then rerun guided setup on the operator's
+   4K Bazzite machine to verify the normal `/home -> /var/home` path and author one exact Wayland
+   profile. Then exercise the watcher with scorepeek-first and Gamescope-first startup,
    two sequential Gamescope lifetimes, simultaneous sources, and idle/active SIGINT and SIGTERM.
    This target-machine mutation and deployment remain separate operator-authority boundaries; do
    not claim lifecycle support before it passes.
+2. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
+   in the game-session path.
 3. Use ADR 0043's existing bounded retention and existing-bytes-only freeze/export surface to
    complete one target-to-development replay/update round trip during natural play. Add new tail,
    marker or ledger machinery only if retained target evidence demonstrates a concrete gap.

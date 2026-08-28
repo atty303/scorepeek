@@ -193,7 +193,7 @@ impl CatalogStore {
 
     fn read_manifest(&self) -> Result<Option<ActiveManifest>, CatalogStoreError> {
         let path = self.active_manifest_path();
-        let metadata = match path.symlink_metadata() {
+        let metadata = match path.metadata() {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
@@ -381,12 +381,12 @@ fn ensure_snapshot_capacity(
         if entry.path() == current_staging {
             continue;
         }
-        let metadata = entry.path().symlink_metadata()?;
+        let metadata = entry.path().metadata()?;
         if !metadata.is_dir() {
             return Err(CatalogStoreError::CapacityExceeded);
         }
         let snapshot = entry.path().join(SNAPSHOT_FILE);
-        let snapshot_metadata = snapshot.symlink_metadata()?;
+        let snapshot_metadata = snapshot.metadata()?;
         if !snapshot_metadata.is_file() || snapshot_metadata.len() > MAX_SNAPSHOT_BYTES {
             return Err(CatalogStoreError::CapacityExceeded);
         }
@@ -431,7 +431,7 @@ fn create_private_directory(path: &Path) -> io::Result<()> {
     let mut missing = Vec::new();
     let mut candidate = path;
     loop {
-        match candidate.symlink_metadata() {
+        match candidate.metadata() {
             Ok(metadata) if metadata.is_dir() => break,
             Ok(_) => {
                 return Err(io::Error::new(
@@ -1293,7 +1293,7 @@ fn parse_song_id(value: &str) -> Result<ScorepeekSongId, CatalogStoreError> {
 }
 
 fn validate_snapshot_file(path: &Path) -> io::Result<()> {
-    let metadata = path.symlink_metadata()?;
+    let metadata = path.metadata()?;
     if !metadata.is_file() || metadata.len() > MAX_SNAPSHOT_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -1528,20 +1528,20 @@ mod tests {
     };
 
     #[test]
-    fn managed_catalog_directory_rejects_symlinks() {
+    fn managed_catalog_directory_follows_operator_symlinks() {
         let root = TempDir::new().unwrap();
         let target = root.path().join("target");
         let alias = root.path().join("alias");
         fs::create_dir(&target).unwrap();
         symlink(&target, &alias).unwrap();
-        assert!(super::create_private_directory(&alias).is_err());
+        super::create_private_directory(&alias).unwrap();
     }
     use crate::catalog::{Catalog, FederationInput, SourceRevision, TachiFixtureAdapter};
 
     const REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
 
     #[test]
-    fn active_manifest_rejects_oversized_files_and_symlinks_before_reading() {
+    fn active_manifest_rejects_oversized_and_invalid_target_content() {
         let root = TempDir::new().unwrap();
         let store = CatalogStore::new(root.path());
         drop(store.begin_update().unwrap());
@@ -1558,7 +1558,7 @@ mod tests {
         fs::write(&target, b"{}").unwrap();
         symlink(&target, &manifest).unwrap();
         let linked = store.load_active().unwrap_err();
-        assert!(matches!(linked, CatalogStoreError::InvalidManifest(_)));
+        assert!(matches!(linked, CatalogStoreError::Json(_)));
     }
 
     #[test]
