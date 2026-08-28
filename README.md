@@ -120,7 +120,8 @@ their type, size, digest, schema, and admission contracts. Setup measures the po
 axis-aligned X/Y scale and translation from the captured marker and saves only the observed BGRx
 dimensions and rational source rectangle needed by the production normalizer. Padding,
 non-centered and fractional offsets, non-integer or different X/Y scales, and aspect distortion
-are accepted when the complete canonical image is present. Crop, rotation, mirror, shear,
+are accepted when every canonical pixel-center sample is present; a signed half-pixel source
+origin can represent normal scaler phase. Crop, rotation, mirror, shear,
 perspective, or unreadable marker interiors are rejected because the current normalizer cannot
 recover them. Gamescope version, backend, filter, scaler, refresh, launch arguments, stride, and
 memory allocation are not profile identity.

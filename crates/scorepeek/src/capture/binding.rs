@@ -880,7 +880,7 @@ impl FractionalRectangleArtifact {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RationalArtifact {
-    numerator: u32,
+    numerator: i64,
     denominator: u32,
 }
 
@@ -1214,10 +1214,10 @@ mod tests {
     #[test]
     fn measured_profile_is_minimal_and_round_trips_geometry() {
         let rectangle = FractionalRectangle::new(
-            RationalCoordinate::new(17, 2_048).unwrap(),
-            RationalCoordinate::new(31, 2_048).unwrap(),
-            RationalCoordinate::new(7_864_303, 2_048).unwrap(),
-            RationalCoordinate::new(4_423_649, 2_048).unwrap(),
+            RationalCoordinate::new(-1_024, 2_048).unwrap(),
+            RationalCoordinate::new(-1_024, 2_048).unwrap(),
+            RationalCoordinate::new(7_864_320, 2_048).unwrap(),
+            RationalCoordinate::new(4_423_680, 2_048).unwrap(),
         );
         let authored = GamescopeProfileBinding::author_measured(
             MeasuredGamescopeProfileBindingAuthoringInput {
@@ -1244,6 +1244,27 @@ mod tests {
         ] {
             assert!(!encoded.contains(forbidden), "unexpected field {forbidden}");
         }
+    }
+
+    #[test]
+    fn measured_profile_retains_the_preexisting_unsigned_numerator_range() {
+        let rectangle = FractionalRectangle::new(
+            RationalCoordinate::new(3_000_000_000, 3_000_000_000).unwrap(),
+            RationalCoordinate::new(0, 1).unwrap(),
+            RationalCoordinate::new(3_000_000_000, 1_000_000).unwrap(),
+            RationalCoordinate::new(2_160, 1).unwrap(),
+        );
+        let authored = GamescopeProfileBinding::author_measured(
+            MeasuredGamescopeProfileBindingAuthoringInput {
+                observed_width: 3_840,
+                observed_height: 2_160,
+                geometry: rectangle,
+            },
+        )
+        .unwrap();
+        let binding =
+            GamescopeProfileBinding::parse(&authored.bytes, &authored.artifact_sha256).unwrap();
+        assert_eq!(binding.source_rectangle(), rectangle);
     }
 
     #[test]

@@ -43,14 +43,19 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   a measured positive axis-aligned X/Y transform. The machine-local v3 profile stores only actual
   BGRx dimensions, the measured rational source rectangle, canonical contract, and normalizer
   identity; ordinary admission no longer compares launch metadata or Gamescope version.
+  ADR 0055 corrects crop admission to use the canonical pixel-center sampling footprint, allowing
+  signed half-pixel scaler phase while still rejecting missing required samples.
   The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
   machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
   model. After the `/home` symlink fix, retained synthetic target evidence showed the 1920x1080
   marker in a 3840x2160 BGRx frame with intact fiducial interiors and only bounded scaling-filter
-  boundary differences. The measured-transform implementation then authored a target v3 profile
-  from nine fiducials: its source rectangle is `(0, 0, 3839.5, 2159.5)` in the observed 3840x2160
-  frame. This proves calibration and production normalization for the marker, but ordinary-run
-  recognition and lifecycle acceptance remain unverified.
+  boundary differences. The first measured-transform run authored a v3 profile with rectangle
+  `(0, 0, 3839.5, 2159.5)`. A repeat exposed a valid half-pixel scaler phase that the continuous
+  rectangle check misclassified as crop. After ADR 0055 aligned admission with the normalizer's
+  sampling footprint, the same target command authored `gamescope-4k` from nine fiducials with
+  rectangle `(-0.5, -0.5, 3840, 2160)` in the observed 3840x2160 frame. This proves calibration and
+  production normalization for the marker, but ordinary-run recognition and lifecycle acceptance
+  remain unverified.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -110,10 +115,15 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   implementation. It contains no launch arguments, Gamescope version/backend/scaler/filter,
   refresh/color metadata, calibration stride/memory type, or discarded frame digest.
 - Setup fits nine redundant marker fiducials to independent positive X/Y scale and translation,
-  rejects residual above one observed pixel and an extrapolated rectangle outside the frame, then
+  rejects residual above one observed pixel and a canonical pixel-center sampling footprint outside
+  the frame, then
   verifies fiducial and cell interiors through the production normalizer. Correctable padding,
   offset, fractional phase, non-integer/anisotropic scale, aspect distortion and bounded filter
   edges are accepted; crop and non-axis-aligned transforms fail closed.
+- ADR 0055 aligns crop admission with the production normalizer's half-pixel convention. Source
+  left/top rationals may be negative; every first/last canonical pixel-center sample must remain in
+  observed pixel support, while width/height stay positive. The target-observed
+  `(-0.5, -0.5, 3840, 2160)` phase is therefore correctable rather than cropped.
 - Runtime admission requires actual BGRx dimensions to match the profile and the receiver to have a
   valid current memory/stride/byte layout with in-bounds saved geometry. Launch provenance,
   Gamescope version, filter, scaler, refresh/color metadata, and calibration-time allocation do not
@@ -617,7 +627,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Exercise the measured target profile against actual INFINITAS music-select and result scenes,
+1. Exercise the measured target `gamescope-4k` profile against actual INFINITAS music-select and result scenes,
    then exercise the watcher with scorepeek-first and Gamescope-first startup,
    two sequential Gamescope lifetimes, simultaneous sources, and idle/active SIGINT and SIGTERM.
    Confirm scene detection and OCR without changing the measured geometry. These live game and

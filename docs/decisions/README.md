@@ -151,6 +151,9 @@ authoritative.
 - [ADR 0054: Measure Gamescope profile transforms](0054-measure-gamescope-profile-transforms.md)
   supersedes ADR 0029/0051 requirements for launch provenance, aspect-fit geometry, complete marker
   comparison, retained launch metadata, and Gamescope-version runtime rejection.
+- [ADR 0055: Bound canonical sampling footprints](0055-bound-canonical-sampling-footprints.md)
+  supersedes ADR 0054's continuous-rectangle containment rule. Signed source origins are accepted
+  when every canonical pixel-center sample required by the production normalizer remains present.
 
 ## Historical
 

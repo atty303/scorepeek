@@ -209,17 +209,6 @@ fn finalize_measured_rectangle(
     rectangle_width: f64,
     rectangle_height: f64,
 ) -> Result<FractionalRectangle, String> {
-    let observed_width = f64::from(width);
-    let observed_height = f64::from(height);
-    if left < 0.0
-        || top < 0.0
-        || left + rectangle_width > observed_width
-        || top + rectangle_height > observed_height
-    {
-        return Err(format!(
-            "Gamescope marker is cropped and cannot be reconstructed: rectangle=({left:.3},{top:.3},{rectangle_width:.3},{rectangle_height:.3}) frame=({observed_width:.0},{observed_height:.0})"
-        ));
-    }
     let rectangle = FractionalRectangle::new(
         quantize_coordinate(left)?,
         quantize_coordinate(top)?,
@@ -227,7 +216,9 @@ fn finalize_measured_rectangle(
         quantize_coordinate(rectangle_height)?,
     );
     FractionalLinearGeometry::new(width, height, rectangle).map_err(|_| {
-        "Gamescope marker quantized rectangle is cropped and cannot be reconstructed".to_owned()
+        format!(
+            "Gamescope marker is cropped and cannot be reconstructed: rectangle=({left:.3},{top:.3},{rectangle_width:.3},{rectangle_height:.3}) frame=({width},{height})"
+        )
     })?;
     Ok(rectangle)
 }
@@ -305,12 +296,15 @@ fn validate_fiducial_bounds(
 }
 
 fn quantize_coordinate(value: f64) -> Result<RationalCoordinate, String> {
-    if !value.is_finite() || value < 0.0 || value > f64::from(u32::MAX) / 2_048.0 {
+    if !value.is_finite()
+        || value < f64::from(i32::MIN) / 2_048.0
+        || value > f64::from(i32::MAX) / 2_048.0
+    {
         return Err("Gamescope marker geometry was invalid".to_owned());
     }
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let numerator = (value * 2_048.0).round() as u32;
-    RationalCoordinate::new(numerator, 2_048)
+    #[allow(clippy::cast_possible_truncation)]
+    let numerator = (value * 2_048.0).round() as i32;
+    RationalCoordinate::new(i64::from(numerator), 2_048)
         .map_err(|_| "Gamescope marker geometry was invalid".to_owned())
 }
 
@@ -743,7 +737,7 @@ pub fn parse_fractional_geometry(
         let numerator = numerator
             .to_str()
             .ok_or_else(|| "geometry coordinate must be UTF-8".to_owned())?
-            .parse::<u32>()
+            .parse::<i64>()
             .map_err(|_| "geometry coordinate must be an integer".to_owned())?;
         let denominator = denominator
             .to_str()
@@ -1608,6 +1602,7 @@ mod tests {
             (1_920, 1_080, 0.0, 0.0, 1.0, 1.0),
             (2_560, 1_440, 64.25, 22.75, 1.2, 1.25),
             (3_840, 2_160, 0.0, 0.0, 2.0, 2.0),
+            (3_840, 2_160, -0.5, -0.5, 2.0, 2.0),
             (3_500, 2_000, 37.5, 81.25, 1.7, 1.6),
         ] {
             let bytes = transformed_marker(width, height, left, top, scale_x, scale_y);
@@ -1624,11 +1619,15 @@ mod tests {
 
     #[test]
     fn measured_geometry_rejects_crop_and_non_axis_aligned_mapping() {
+        for (left, top) in [(-0.5, 0.0), (0.5, 0.0), (0.0, -0.5), (0.0, 0.5)] {
+            finalize_measured_rectangle(1_920, 1_080, left, top, 1_920.0, 1_080.0).unwrap();
+        }
+
         for (left, top, rectangle_width, rectangle_height) in [
-            (-1.0 / 2_048.0, 0.0, 1_920.0, 1_080.0),
-            (1.0 / 2_048.0, 0.0, 1_920.0, 1_080.0),
-            (0.0, -1.0 / 2_048.0, 1_920.0, 1_080.0),
-            (0.0, 1.0 / 2_048.0, 1_920.0, 1_080.0),
+            (-0.5 - 1.0 / 2_048.0, 0.0, 1_920.0, 1_080.0),
+            (0.5 + 1.0 / 2_048.0, 0.0, 1_920.0, 1_080.0),
+            (0.0, -0.5 - 1.0 / 2_048.0, 1_920.0, 1_080.0),
+            (0.0, 0.5 + 1.0 / 2_048.0, 1_920.0, 1_080.0),
             (-1.0, 0.0, 1_920.0, 1_080.0),
             (1.0, 0.0, 1_920.0, 1_080.0),
             (0.0, -1.0, 1_920.0, 1_080.0),
@@ -1719,7 +1718,7 @@ mod tests {
     }
 
     fn coordinate(value: scorepeek::capture::RationalCoordinate) -> f64 {
-        f64::from(value.numerator()) / f64::from(value.denominator())
+        f64::from(i32::try_from(value.numerator()).unwrap()) / f64::from(value.denominator())
     }
 
     fn transformed_marker(

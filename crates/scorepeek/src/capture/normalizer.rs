@@ -13,16 +13,16 @@ const COEFFICIENT_SCALE: f32 = 2_048.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct RationalCoordinate {
-    numerator: u32,
+    numerator: i64,
     denominator: u32,
 }
 
 impl RationalCoordinate {
-    /// Creates one non-negative rational coordinate.
+    /// Creates one signed rational coordinate.
     ///
     /// # Errors
     /// Returns an error when the denominator is zero.
-    pub const fn new(numerator: u32, denominator: u32) -> Result<Self, UnboundNormalizationError> {
+    pub const fn new(numerator: i64, denominator: u32) -> Result<Self, UnboundNormalizationError> {
         if denominator == 0 {
             return Err(UnboundNormalizationError::InvalidGeometry);
         }
@@ -32,12 +32,13 @@ impl RationalCoordinate {
         })
     }
 
+    #[allow(clippy::cast_precision_loss)]
     const fn as_f64(self) -> f64 {
         self.numerator as f64 / self.denominator as f64
     }
 
     #[must_use]
-    pub const fn numerator(self) -> u32 {
+    pub const fn numerator(self) -> i64 {
         self.numerator
     }
 
@@ -109,10 +110,10 @@ impl FractionalLinearGeometry {
         self.source
     }
 
-    /// Validates an explicit fractional source rectangle within the observed frame.
+    /// Validates that every canonical pixel-center sample lies within the observed frame.
     ///
     /// # Errors
-    /// Returns an error for a zero-sized or out-of-bounds rectangle.
+    /// Returns an error for a non-positive extent or an out-of-bounds sampling footprint.
     pub fn new(
         observed_width: u32,
         observed_height: u32,
@@ -120,10 +121,10 @@ impl FractionalLinearGeometry {
     ) -> Result<Self, UnboundNormalizationError> {
         if observed_width == 0
             || observed_height == 0
-            || source.width.numerator == 0
-            || source.height.numerator == 0
-            || !coordinate_sum_within(source.left, source.width, observed_width)
-            || !coordinate_sum_within(source.top, source.height, observed_height)
+            || source.width.numerator <= 0
+            || source.height.numerator <= 0
+            || !sampling_axis_within(source.left, source.width, CANONICAL_WIDTH, observed_width)
+            || !sampling_axis_within(source.top, source.height, CANONICAL_HEIGHT, observed_height)
         {
             return Err(UnboundNormalizationError::InvalidGeometry);
         }
@@ -313,16 +314,25 @@ impl NormalizedCanonicalFrame {
     }
 }
 
-fn coordinate_sum_within(
+fn sampling_axis_within(
     start: RationalCoordinate,
     extent: RationalCoordinate,
-    boundary: u32,
+    target_size: usize,
+    source_size: u32,
 ) -> bool {
-    let left = u128::from(start.numerator) * u128::from(extent.denominator);
-    let width = u128::from(extent.numerator) * u128::from(start.denominator);
-    let limit =
-        u128::from(boundary) * u128::from(start.denominator) * u128::from(extent.denominator);
-    left + width <= limit
+    let start_numerator = i128::from(start.numerator);
+    let start_denominator = i128::from(start.denominator);
+    let extent_numerator = i128::from(extent.numerator);
+    let extent_denominator = i128::from(extent.denominator);
+    let target_size = i128::try_from(target_size).expect("canonical size fits i128");
+    let source_size = i128::from(source_size);
+    let doubled_target = 2 * target_size;
+    let first_numerator = start_numerator * extent_denominator * doubled_target
+        + extent_numerator * start_denominator;
+    let last_numerator = start_numerator * extent_denominator * doubled_target
+        + extent_numerator * start_denominator * (doubled_target - 1);
+    let common_denominator = start_denominator * extent_denominator * doubled_target;
+    first_numerator >= 0 && last_numerator <= source_size * common_denominator
 }
 
 fn normalize_bgrx(
@@ -414,7 +424,7 @@ mod tests {
     use super::*;
     use crate::capture::UncalibratedVideoContract;
 
-    fn rational(numerator: u32, denominator: u32) -> RationalCoordinate {
+    fn rational(numerator: i64, denominator: u32) -> RationalCoordinate {
         RationalCoordinate::new(numerator, denominator).unwrap()
     }
 
@@ -475,6 +485,32 @@ mod tests {
                     rational(0, 1),
                     rational(300, 3),
                     rational(100, 1),
+                ),
+            )
+            .is_err()
+        );
+        assert!(
+            FractionalLinearGeometry::new(
+                3_840,
+                2_160,
+                FractionalRectangle::new(
+                    rational(-1, 2),
+                    rational(-1, 2),
+                    rational(3_840, 1),
+                    rational(2_160, 1),
+                ),
+            )
+            .is_ok()
+        );
+        assert!(
+            FractionalLinearGeometry::new(
+                3_840,
+                2_160,
+                FractionalRectangle::new(
+                    rational(-2_049, 2_048),
+                    rational(0, 1),
+                    rational(3_840, 1),
+                    rational(2_160, 1),
                 ),
             )
             .is_err()

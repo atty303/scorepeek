@@ -469,14 +469,15 @@ entryだけをsymlink先へ追従せず処理する。
 
 target machineでは、scorepeek-ownedな既知の1920x1080 markerを専用Gamescopeで表示し、raw BGRx上の
 冗長なcorner/edge/center fiducialから正のX/Y scaleとtranslationを実測する。全対応点が1 observed pixel
-以内で一つのaxis-aligned transformへ整合し、外挿したcanonical rectangleがframe内に完全に収まり、
+以内で一つのaxis-aligned transformへ整合し、production normalizerが必要とする最初と最後のcanonical
+pixel centerがobserved pixel support内に収まり、
 production normalizer後のfiducial/cell内部、向き、channel orderが保たれる場合だけmachine-local profileを
 create-onlyで発行する。padding、offset、fractional phase、X/Y別scaleおよびaspect distortionは補正して
 受理し、crop、rotation、mirror、shear、perspective、欠落・重複fiducialは拒否する。filter境界、ringing、
 外周1pxまたは全pixelの完全一致は合否に使わない。これはsetup時だけの測定であり、通常session中の
 自動測定、自動profile切替、threshold緩和またはfallbackではない。
 
-profileはdefault Gamescope source、observed BGRx width/height、1/2048 observed pixel単位のsource
+profileはdefault Gamescope source、observed BGRx width/height、signed left/topを含む1/2048 observed pixel単位のsource
 rectangle、canonical RGB8 1920x1080 contractおよびnormalizer identityだけを保持する。calibrationを起動した
 Gamescope引数、version、backend、filter、scaler、refresh、stride、memory typeおよびframe digestは保持しない。
 runtime admissionはactual BGRx dimension、現在frameのreceiver byte-layout contractと保存geometry boundsだけを
