@@ -13,6 +13,7 @@ mod local_profiles;
 mod recognition_artifact;
 pub mod recognition_live;
 mod recording_simulation;
+mod routine_watcher;
 
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -556,25 +557,19 @@ fn try_routine_live_session(args: &[OsString], bundle: &Path) -> Option<Result<(
     Some(run_routine_live_session(profile, recording, bundle))
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_routine_live_session(
     profile_name: Option<&OsStr>,
     recording: &str,
     bundle: &Path,
 ) -> Result<(), String> {
     let selected = local_profiles::select_for_run(profile_name)?;
-    let installed_version = local_profiles::current_gamescope_version()?;
-    if installed_version != selected.binding.gamescope_version() {
-        return Err(format!(
-            "installed Gamescope version {installed_version:?} does not match profile version {:?}; create a new profile",
-            selected.binding.gamescope_version()
-        ));
-    }
     let (catalog_root, _) = catalog_paths(
         env::var_os("XDG_DATA_HOME").as_deref(),
         env::var_os("XDG_CACHE_HOME").as_deref(),
         env::var_os("HOME").as_deref(),
     )?;
-    let active = CatalogStore::new(&catalog_root)
+    CatalogStore::new(&catalog_root)
         .load_active()
         .map_err(|error| format!("active catalog load failed: {error}"))?
         .ok_or_else(|| {
@@ -586,25 +581,279 @@ fn run_routine_live_session(
     let elapsed = std::time::SystemTime::UNIX_EPOCH
         .elapsed()
         .map_err(|_| "system clock is before the Unix epoch".to_owned())?;
-    let run_id = format!(
+    let invocation_id = format!(
         "run-{}-{}-{}",
         elapsed.as_secs(),
         elapsed.subsec_nanos(),
         std::process::id()
     );
     let recording_enabled = recording == "enabled";
-    let state = local_profiles::state_paths(&run_id, recording_enabled)?;
+    let state = local_profiles::state_paths(recording_enabled)?;
     let build_sha256 = current_executable_sha256()?;
-    let values = vec![
-        selected.path.into_os_string(),
-        selected.digest.into(),
-        "1".into(),
-        state.diagnostic_root.clone().into_os_string(),
-        catalog_root.into_os_string(),
-        run_id.into(),
+    let monitor = live_control::SignalStopMonitor::start()?;
+    let stop = monitor.stop_token();
+    let stdout = io::stdout();
+    let mut output = BufWriter::new(stdout.lock());
+    let mut status = routine_watcher::StatusRecorder::new(
+        recording_enabled.then(|| state.watcher_status.clone()),
+        invocation_id.clone(),
+    );
+    let mut status_failed = false;
+    record_watcher_status(
+        &mut status,
+        routine_watcher::WatcherState::Starting,
+        None,
+        None,
+        &mut status_failed,
+    );
+    write_ndjson(
+        &mut output,
+        &serde_json::json!({
+            "schema": "scorepeek-run-event-v2",
+            "event": "watcher_started",
+            "invocation_id": invocation_id,
+            "profile_sha256": selected.binding.capture_profile_sha256(),
+        }),
+    )?;
+
+    let mut lifetimes = routine_watcher::SourceLifetimes::new();
+    let mut announced = None;
+    while !stop.load(std::sync::atomic::Ordering::Acquire) {
+        let Ok(snapshot) =
+            scorepeek::capture::snapshot_gamescope_sources(std::time::Duration::from_millis(500))
+        else {
+            announce_watcher_state(
+                &mut announced,
+                routine_watcher::WatcherState::RemoteUnavailable,
+                "PipeWire is unavailable; scorepeek will keep waiting",
+            );
+            record_watcher_status(
+                &mut status,
+                routine_watcher::WatcherState::RemoteUnavailable,
+                None,
+                None,
+                &mut status_failed,
+            );
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            continue;
+        };
+        if stop.load(std::sync::atomic::Ordering::Acquire) {
+            break;
+        }
+        let decision = lifetimes.observe(snapshot);
+        match decision {
+            routine_watcher::WatchDecision::WaitAbsent
+            | routine_watcher::WatchDecision::WaitConsumed => {
+                announce_watcher_state(
+                    &mut announced,
+                    routine_watcher::WatcherState::WaitingForSource,
+                    "waiting for a Gamescope PipeWire source",
+                );
+                record_watcher_status(
+                    &mut status,
+                    routine_watcher::WatcherState::WaitingForSource,
+                    None,
+                    None,
+                    &mut status_failed,
+                );
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            routine_watcher::WatchDecision::WaitAmbiguous => {
+                announce_watcher_state(
+                    &mut announced,
+                    routine_watcher::WatcherState::AmbiguousSources,
+                    "multiple Gamescope sources are present; waiting for exactly one",
+                );
+                record_watcher_status(
+                    &mut status,
+                    routine_watcher::WatcherState::AmbiguousSources,
+                    None,
+                    None,
+                    &mut status_failed,
+                );
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            routine_watcher::WatchDecision::Admit {
+                node_id,
+                generation,
+            } => {
+                let installed_version = match local_profiles::current_gamescope_version() {
+                    Ok(version) => version,
+                    Err(error) => {
+                        lifetimes.consume(node_id);
+                        eprintln!("scorepeek: Gamescope session rejected: {error}");
+                        record_watcher_status(
+                            &mut status,
+                            routine_watcher::WatcherState::AdmissionRejected,
+                            None,
+                            Some("gamescope_unavailable"),
+                            &mut status_failed,
+                        );
+                        continue;
+                    }
+                };
+                if installed_version != selected.binding.gamescope_version() {
+                    lifetimes.consume(node_id);
+                    eprintln!(
+                        "scorepeek: Gamescope session rejected because version {installed_version:?} does not match profile version {:?}",
+                        selected.binding.gamescope_version()
+                    );
+                    record_watcher_status(
+                        &mut status,
+                        routine_watcher::WatcherState::AdmissionRejected,
+                        None,
+                        Some("gamescope_version_mismatch"),
+                        &mut status_failed,
+                    );
+                    continue;
+                }
+                let Ok(Some(active)) = CatalogStore::new(&catalog_root).load_active() else {
+                    announce_watcher_state(
+                        &mut announced,
+                        routine_watcher::WatcherState::CatalogUnavailable,
+                        "active catalog is temporarily unavailable; scorepeek will retry",
+                    );
+                    record_watcher_status(
+                        &mut status,
+                        routine_watcher::WatcherState::CatalogUnavailable,
+                        None,
+                        None,
+                        &mut status_failed,
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    continue;
+                };
+                let session_id = format!("{invocation_id}-session-{generation}");
+                let recognition_root = match state.recognition_root(&session_id) {
+                    Ok(root) => root,
+                    Err(error) => {
+                        eprintln!(
+                            "scorepeek: recognition artifact recording degraded for this session: {error}"
+                        );
+                        None
+                    }
+                };
+                let values = routine_live_values(
+                    &selected,
+                    generation,
+                    &state.diagnostic_root,
+                    &catalog_root,
+                    &session_id,
+                    &build_sha256,
+                    &active.digest,
+                    recording,
+                    recognition_root.as_deref(),
+                );
+                let references = values.iter().map(OsString::as_os_str).collect::<Vec<_>>();
+                if stop.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
+                lifetimes.consume(node_id);
+                announced = None;
+                let mut started = false;
+                let mut on_started = || {
+                    started = true;
+                    record_watcher_status(
+                        &mut status,
+                        routine_watcher::WatcherState::SessionActive,
+                        Some(&session_id),
+                        None,
+                        &mut status_failed,
+                    );
+                };
+                let report = execute_live_session(
+                    &references,
+                    bundle,
+                    recognition_root.is_some(),
+                    Some(&session_id),
+                    Some(node_id),
+                    &stop,
+                    &mut on_started,
+                    &mut output,
+                )?;
+                if report.output_failed() {
+                    return Err("live result output failed".to_owned());
+                }
+                if started {
+                    lifetimes.admitted();
+                    let outcome = match report.stop_reason() {
+                        Some(capture_live::LiveSessionStopReason::RequestedSignal) => "stopped",
+                        Some(capture_live::LiveSessionStopReason::SourceEnded) => "source_ended",
+                        _ => "error",
+                    };
+                    write_ndjson(
+                        &mut output,
+                        &serde_json::json!({
+                            "schema": "scorepeek-run-event-v2",
+                            "event": "session_finished",
+                            "session_id": session_id,
+                            "capture_generation": generation,
+                            "outcome": outcome,
+                            "report": report,
+                        }),
+                    )?;
+                    record_watcher_status(
+                        &mut status,
+                        routine_watcher::WatcherState::SessionFinished,
+                        None,
+                        Some(outcome),
+                        &mut status_failed,
+                    );
+                } else {
+                    eprintln!(
+                        "scorepeek: Gamescope source could not be admitted; waiting for this source lifetime to end"
+                    );
+                    record_watcher_status(
+                        &mut status,
+                        routine_watcher::WatcherState::AdmissionRejected,
+                        None,
+                        Some("capture_admission_failed"),
+                        &mut status_failed,
+                    );
+                }
+            }
+        }
+    }
+    record_watcher_status(
+        &mut status,
+        routine_watcher::WatcherState::Stopped,
+        None,
+        Some("signal"),
+        &mut status_failed,
+    );
+    write_ndjson(
+        &mut output,
+        &serde_json::json!({
+            "schema": "scorepeek-run-event-v2",
+            "event": "watcher_stopped",
+            "invocation_id": invocation_id,
+            "reason": "signal",
+        }),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn routine_live_values(
+    selected: &local_profiles::SelectedProfile,
+    generation: u64,
+    diagnostic_root: &Path,
+    catalog_root: &Path,
+    session_id: &str,
+    build_sha256: &str,
+    catalog_sha256: &str,
+    recording: &str,
+    recognition_root: Option<&Path>,
+) -> Vec<OsString> {
+    vec![
+        selected.path.clone().into_os_string(),
+        selected.digest.clone().into(),
+        generation.to_string().into(),
+        diagnostic_root.as_os_str().to_owned(),
+        catalog_root.as_os_str().to_owned(),
+        session_id.into(),
         build_sha256.into(),
         recognition::CanonicalLayout::sha256().into(),
-        active.digest.into(),
+        catalog_sha256.into(),
         recording.into(),
         selected.binding.environment_id().into(),
         selected.binding.gamescope_version().into(),
@@ -616,10 +865,38 @@ fn run_routine_live_session(
         selected.binding.nested_refresh_hz().to_string().into(),
         selected.binding.scaler().into(),
         selected.binding.filter().into(),
-        state.recognition_root.clone().into_os_string(),
-    ];
-    let references = values.iter().map(OsString::as_os_str).collect::<Vec<_>>();
-    run_live_session(&references, bundle, recording_enabled)
+        recognition_root
+            .unwrap_or(Path::new("/"))
+            .as_os_str()
+            .to_owned(),
+    ]
+}
+
+fn announce_watcher_state(
+    announced: &mut Option<routine_watcher::WatcherState>,
+    state: routine_watcher::WatcherState,
+    message: &str,
+) {
+    if *announced != Some(state) {
+        eprintln!("scorepeek: {message}");
+        *announced = Some(state);
+    }
+}
+
+fn record_watcher_status(
+    recorder: &mut routine_watcher::StatusRecorder,
+    state: routine_watcher::WatcherState,
+    session_id: Option<&str>,
+    outcome: Option<&'static str>,
+    failed: &mut bool,
+) {
+    if *failed {
+        return;
+    }
+    if let Err(error) = recorder.transition(state, session_id, outcome) {
+        eprintln!("scorepeek: watcher status recording disabled: {error}");
+        *failed = true;
+    }
 }
 
 fn try_live_session(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
@@ -702,6 +979,40 @@ fn run_live_session(
     bundle_root: &Path,
     persist_recognition: bool,
 ) -> Result<(), String> {
+    let monitor = live_control::SignalStopMonitor::start()?;
+    let stop = monitor.stop_token();
+    let stdout = io::stdout();
+    let mut output = BufWriter::new(stdout.lock());
+    let report = execute_live_session(
+        values,
+        bundle_root,
+        persist_recognition,
+        None,
+        None,
+        &stop,
+        &mut || {},
+        &mut output,
+    )?;
+    write_ndjson(&mut output, &report)?;
+    report.succeeded().then_some(()).ok_or_else(|| {
+        report
+            .failure_detail()
+            .unwrap_or("Gamescope live recognition session failed")
+            .to_owned()
+    })
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn execute_live_session(
+    values: &[&OsStr],
+    bundle_root: &Path,
+    persist_recognition: bool,
+    session_id: Option<&str>,
+    expected_source_node_id: Option<u32>,
+    stop: &std::sync::atomic::AtomicBool,
+    on_started: &mut impl FnMut(),
+    output: &mut impl io::Write,
+) -> Result<capture_live::GamescopeFieldObservationGateReport, String> {
     let [
         binding,
         binding_digest,
@@ -764,11 +1075,9 @@ fn run_live_session(
     let mut policy = parse_diagnostic_recording_policy(recording)?;
     policy.retention = diagnostic_recording::DiagnosticRetention::ForegroundFailureWindowV1;
     let diagnostic_preflight = prepare_live_diagnostic_root(Path::new(diagnostic_root), &policy);
-    let monitor = live_control::InputStopMonitor::start()?;
-    let stop = monitor.stop_token();
-    let stdout = io::stdout();
-    let mut output = BufWriter::new(stdout.lock());
-    write_ndjson(&mut output, &diagnostic_preflight)?;
+    if session_id.is_none() {
+        write_ndjson(output, &diagnostic_preflight)?;
+    }
     let report = capture_live::run_gamescope_live_session(
         capture_live::GamescopeFieldObservationGateConfig {
             handoff: capture_live::GamescopeDiagnosticHandoffGateConfig {
@@ -780,6 +1089,7 @@ fn run_live_session(
                 policy,
                 duration_ms: 0,
                 diagnostic_root: Path::new(diagnostic_root),
+                expected_source_node_id,
             },
             catalog_root: Path::new(catalog_root),
             bundle_root,
@@ -790,16 +1100,23 @@ fn run_live_session(
             recognition_artifact_retention:
                 recognition_artifact::RecognitionArtifactRetention::ForegroundCompactedV1,
         },
-        &stop,
-        &mut |event| write_live_session_event(&mut output, event),
+        stop,
+        &mut |event| {
+            if matches!(
+                event,
+                capture_live::GamescopeLiveSessionEvent::Started { .. }
+            ) {
+                on_started();
+            }
+            write_live_session_event(
+                output,
+                session_id,
+                session_id.map(|_| generation.get()),
+                event,
+            )
+        },
     );
-    write_ndjson(&mut output, &report)?;
-    report.succeeded().then_some(()).ok_or_else(|| {
-        report
-            .failure_detail()
-            .unwrap_or("Gamescope live recognition session failed")
-            .to_owned()
-    })
+    Ok(report)
 }
 
 fn optional_recognition_root(enabled: bool, root: &Path) -> Option<&Path> {
@@ -881,20 +1198,33 @@ fn prepare_private_directory(path: &Path) -> bool {
 
 fn write_live_session_event(
     output: &mut impl io::Write,
+    session_id: Option<&str>,
+    routine_generation: Option<u64>,
     event: capture_live::GamescopeLiveSessionEvent<'_>,
 ) -> Result<(), String> {
+    let schema = if session_id.is_some() {
+        "scorepeek-run-event-v2"
+    } else {
+        "scorepeek-live-session-event-v1"
+    };
     let value = match event {
         capture_live::GamescopeLiveSessionEvent::Started {
             capture_generation,
             capture_profile_sha256,
             normalizer_artifact_sha256,
-        } => serde_json::json!({
-            "schema": "scorepeek-live-session-event-v1",
-            "event": "session_started",
-            "capture_generation": capture_generation,
-            "capture_profile_sha256": capture_profile_sha256,
-            "normalizer_artifact_sha256": normalizer_artifact_sha256,
-        }),
+        } => {
+            let mut value = serde_json::json!({
+                "schema": schema,
+                "event": "session_started",
+                "capture_generation": capture_generation,
+                "capture_profile_sha256": capture_profile_sha256,
+                "normalizer_artifact_sha256": normalizer_artifact_sha256,
+            });
+            if let Some(session_id) = session_id {
+                value["session_id"] = session_id.into();
+            }
+            value
+        }
         capture_live::GamescopeLiveSessionEvent::Observation {
             sequence,
             monotonic_start_ms,
@@ -924,8 +1254,8 @@ fn write_live_session_event(
                     }),
                 ),
             };
-            serde_json::json!({
-                "schema": "scorepeek-live-session-event-v1",
+            let mut value = serde_json::json!({
+                "schema": schema,
                 "event": "field_observation",
                 "sequence": sequence,
                 "monotonic_start_ms": monotonic_start_ms,
@@ -934,7 +1264,12 @@ fn write_live_session_event(
                 "fields": fields,
                 "result_song_resolution": observation.result_resolution(),
                 "music_select_song_resolution": observation.music_select_resolution(),
-            })
+            });
+            if let Some(session_id) = session_id {
+                value["session_id"] = session_id.into();
+                value["capture_generation"] = routine_generation.into();
+            }
+            value
         }
     };
     write_ndjson(output, &value)
@@ -1027,6 +1362,7 @@ fn run_capture_handoff(values: &[&OsStr], inspect_screen: bool) -> Result<(), St
         policy,
         duration_ms,
         diagnostic_root: Path::new(diagnostic_root),
+        expected_source_node_id: None,
     };
     if inspect_screen {
         let report = capture_live::run_gamescope_recognition_handoff_gate(config);
@@ -1121,6 +1457,7 @@ fn run_capture_field_observation(
         policy,
         duration_ms,
         diagnostic_root: Path::new(diagnostic_root),
+        expected_source_node_id: None,
     };
     let report = capture_live::run_gamescope_field_observation_gate(
         capture_live::GamescopeFieldObservationGateConfig {
@@ -3141,6 +3478,8 @@ mod tests {
         let mut bytes = Vec::new();
         write_live_session_event(
             &mut bytes,
+            None,
+            None,
             GamescopeLiveSessionEvent::Observation {
                 sequence: 42,
                 monotonic_start_ms: 100,
@@ -3159,6 +3498,41 @@ mod tests {
             value["result_song_resolution"]["reason"],
             "no_catalog_candidates"
         );
+    }
+
+    #[test]
+    fn routine_observation_binds_session_and_generation() {
+        let domain = CatalogCandidateDomain::from_catalog(&Catalog::default()).unwrap();
+        let output = RegisteredScreenFieldObservation::from_fields(
+            &domain,
+            ScreenFieldObservations::Result(ResultScreenFieldObservations {
+                title: text("TITLE"),
+                artist: text("ARTIST"),
+                clear_type: text("CLEAR"),
+                difficulty: not_observed(),
+                level: not_observed(),
+                notes: not_observed(),
+                current_score: not_observed(),
+            }),
+        );
+        let mut bytes = Vec::new();
+        write_live_session_event(
+            &mut bytes,
+            Some("invocation-session-2"),
+            Some(2),
+            GamescopeLiveSessionEvent::Observation {
+                sequence: 1,
+                monotonic_start_ms: 10,
+                monotonic_end_ms: 20,
+                output: &output,
+            },
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["schema"], "scorepeek-run-event-v2");
+        assert_eq!(value["session_id"], "invocation-session-2");
+        assert_eq!(value["capture_generation"], 2);
+        assert_eq!(value["sequence"], 1);
     }
 
     fn text(value: &str) -> DynamicTextObservation {

@@ -217,6 +217,14 @@ pub struct GamescopeSourceProbe {
     pub registry_global_count: u32,
 }
 
+/// One bounded observation of Gamescope video sources on the default `PipeWire` remote.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GamescopeSourceSnapshot {
+    Absent,
+    Unique { node_id: u32 },
+    Ambiguous { candidate_count: u32 },
+}
+
 /// A default-remote Gamescope source whose lifetime remains bound to the selected node.
 ///
 /// This lease is deliberately uncalibrated: it contains no capture-profile identifier and cannot
@@ -526,6 +534,26 @@ pub fn probe_gamescope_source(
     };
     lease.shutdown(sink);
     Ok(probe)
+}
+
+/// Observes the current candidate set without acquiring a capture stream.
+///
+/// This operation owns only one bounded default-remote registry round trip. It does not choose a
+/// profile or apply reconnect policy; those remain application responsibilities.
+///
+/// # Errors
+/// Returns a typed transport or registry error when the bounded observation cannot complete.
+pub fn snapshot_gamescope_sources(
+    timeout: Duration,
+) -> Result<GamescopeSourceSnapshot, CaptureError> {
+    let (_runtime, snapshot) = acquire_default_remote(timeout).map_err(|failure| failure.error)?;
+    Ok(match (snapshot.candidate_count, snapshot.first_candidate) {
+        (0, None) => GamescopeSourceSnapshot::Absent,
+        (1, Some(node_id)) => GamescopeSourceSnapshot::Unique { node_id },
+        _ => GamescopeSourceSnapshot::Ambiguous {
+            candidate_count: snapshot.candidate_count,
+        },
+    })
 }
 
 /// Acquires exactly one Gamescope video source and retains its default-remote lifetime.

@@ -141,6 +141,9 @@ authoritative.
   replaces manual capture-binding transfer and routine binding/provenance arguments with a
   scorepeek-owned marker setup, one canonical machine-local profile file, profile listing, and a
   profile-selected ordinary run. Target-machine qualification remains separate.
+- [ADR 0052: Watch Gamescope without owning it](0052-watch-gamescope-without-owning-it.md)
+  supersedes ADR 0040's single-session, no-reconnect and stdin-stop contract and ADR 0051's
+  ordinary-run lifecycle. Setup retains ownership of its dedicated calibration Gamescope only.
 
 ## Historical
 

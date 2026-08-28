@@ -115,22 +115,28 @@ scorepeek profile list
 
 Setup stores the profile under `$XDG_CONFIG_HOME/scorepeek/profiles` (normally
 `$HOME/.config/scorepeek/profiles`). It does not start INFINITAS and does not turn an unverified
-configuration into a supported profile. Start the ordinary Gamescope/game session with the same
-configuration, then run:
+configuration into a supported profile. Start the watcher before or after the ordinary
+Gamescope/game session:
 
 ```text
 scorepeek run --profile bazzite-4k
 ```
 
 When exactly one profile exists, `scorepeek run` selects it automatically. Multiple profiles require
-`--profile NAME`. Recording is bounded and enabled by default; add `--no-recording` to suppress both
-diagnostic and recognition artifact persistence.
+`--profile NAME`. Recording is bounded and enabled by default; add `--no-recording` to suppress
+watcher status, diagnostic, and recognition artifact persistence. The watcher waits when no source
+exists, attaches only when exactly one Gamescope video source exists, and stays running across
+sequential Gamescope lifetimes. Stop scorepeek with SIGINT (normally Ctrl-C) or SIGTERM. Scorepeek
+does not start, signal, stop, or restart ordinary Gamescope, Steam, or INFINITAS processes.
 Scorepeek rejects a profile authored with a different installed Gamescope version instead of
 silently changing capture configuration.
 
-Ordinary recognition artifacts are stored per run below `$XDG_STATE_HOME/scorepeek/recognition`.
+Ordinary recognition artifacts are stored per Gamescope session below
+`$XDG_STATE_HOME/scorepeek/recognition`; the bounded watcher status is stored at
+`$XDG_STATE_HOME/scorepeek/watcher-status.json`.
 Scorepeek keeps this store bounded at eight generations and 1 GiB; it does not delete an old run
-automatically. At capacity, remove an old run deliberately or use `--no-recording`.
+automatically. At capacity, recognition continues and only that session's artifact persistence is
+degraded. Remove an old run deliberately when more retained evidence is needed.
 
 ## Development
 
@@ -195,9 +201,9 @@ mise run corpus:replay:validate -- --store /absolute/private/store /absolute/rep
 mise run catalog:schedule:systemd:verify
 ```
 
-`run:gamescope` keeps one admitted provider connected. Enter the exact line `stop` on its stdin to
-request ordered scorepeek shutdown; the control path does not signal Gamescope, INFINITAS, or the
-process group. Stdout is bounded NDJSON with exact OCR and typed result-song decisions. Full
+The developer `run:gamescope` gate keeps one admitted provider connected until SIGINT or SIGTERM.
+Its control path does not signal Gamescope, INFINITAS, or the process group. Stdout is bounded
+NDJSON with exact OCR and typed result-song decisions. Full
 candidate evidence stays in the create-only private recognition artifact, while predicate counts
 and sampled pixels stay in the private diagnostic root.
 

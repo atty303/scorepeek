@@ -1,21 +1,28 @@
-use std::io;
+use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
+use std::sync::atomic::AtomicBool;
 
-pub struct InputStopMonitor {
+pub struct SignalStopMonitor {
     stop: Arc<AtomicBool>,
+    registrations: [signal_hook::SigId; 2],
 }
 
-impl InputStopMonitor {
+impl SignalStopMonitor {
     pub fn start() -> Result<Self, String> {
         let stop = Arc::new(AtomicBool::new(false));
-        let worker_stop = Arc::clone(&stop);
-        thread::Builder::new()
-            .name("scorepeek-stop-input".to_owned())
-            .spawn(move || monitor_input(&worker_stop))
-            .map_err(|error| format!("live stop-input monitor thread unavailable: {error}"))?;
-        Ok(Self { stop })
+        let interrupt = signal_hook::flag::register(SIGINT, Arc::clone(&stop))
+            .map_err(|error| format!("SIGINT handler registration failed: {error}"))?;
+        let terminate = match signal_hook::flag::register(SIGTERM, Arc::clone(&stop)) {
+            Ok(registration) => registration,
+            Err(error) => {
+                signal_hook::low_level::unregister(interrupt);
+                return Err(format!("SIGTERM handler registration failed: {error}"));
+            }
+        };
+        Ok(Self {
+            stop,
+            registrations: [interrupt, terminate],
+        })
     }
 
     pub fn stop_token(&self) -> Arc<AtomicBool> {
@@ -23,73 +30,49 @@ impl InputStopMonitor {
     }
 }
 
-fn monitor_input(stop: &AtomicBool) {
-    let stdin = io::stdin();
-    monitor_reader(stdin.lock(), stop);
-}
-
-fn monitor_reader(mut reader: impl io::BufRead, stop: &AtomicBool) {
-    let mut line = [0_u8; 6];
-    let mut length = 0_usize;
-    let mut oversized = false;
-    loop {
-        let available = match reader.fill_buf() {
-            Ok([]) | Err(_) => return,
-            Ok(available) => available,
-        };
-        let mut consumed = 0;
-        for &byte in available {
-            consumed += 1;
-            if !oversized {
-                if length < line.len() {
-                    line[length] = byte;
-                    length += 1;
-                } else {
-                    oversized = true;
-                }
-            }
-            if byte == b'\n' {
-                if !oversized && is_stop_line_bytes(&line[..length]) {
-                    stop.store(true, Ordering::Release);
-                    reader.consume(consumed);
-                    return;
-                }
-                length = 0;
-                oversized = false;
-            }
+impl Drop for SignalStopMonitor {
+    fn drop(&mut self) {
+        for registration in self.registrations {
+            signal_hook::low_level::unregister(registration);
         }
-        reader.consume(consumed);
     }
-}
-
-fn is_stop_line_bytes(line: &[u8]) -> bool {
-    matches!(line, b"stop\n" | b"stop\r\n")
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::process::Command;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
 
-    use super::{is_stop_line_bytes, monitor_reader};
+    use signal_hook::consts::signal::{SIGINT, SIGTERM};
 
-    #[test]
-    fn only_exact_stop_control_line_requests_shutdown() {
-        assert!(is_stop_line_bytes(b"stop\n"));
-        assert!(is_stop_line_bytes(b"stop\r\n"));
-        assert!(!is_stop_line_bytes(b"stop"));
-        assert!(!is_stop_line_bytes(b"stop \n"));
-        assert!(!is_stop_line_bytes(b" stop\n"));
-        assert!(!is_stop_line_bytes(b""));
-    }
+    use super::SignalStopMonitor;
 
     #[test]
-    fn monitor_skips_other_and_oversized_lines_before_exact_stop() {
-        let stop = AtomicBool::new(false);
-        let input = format!("help\n{}\nstop\n", "x".repeat(4096));
+    fn signal_monitor_handles_interrupt_and_terminate_in_subprocesses() {
+        if let Some(signal) = std::env::var_os("SCOREPEEK_SIGNAL_MONITOR_CHILD") {
+            let signal = if signal == "INT" { SIGINT } else { SIGTERM };
+            let monitor = SignalStopMonitor::start().unwrap();
+            signal_hook::low_level::raise(signal).unwrap();
+            let started = Instant::now();
+            while !monitor.stop_token().load(Ordering::Acquire) {
+                assert!(started.elapsed() < Duration::from_secs(1));
+                std::thread::yield_now();
+            }
+            return;
+        }
 
-        monitor_reader(Cursor::new(input), &stop);
-
-        assert!(stop.load(Ordering::Acquire));
+        for signal in ["INT", "TERM"] {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "live_control::tests::signal_monitor_handles_interrupt_and_terminate_in_subprocesses",
+                    "--nocapture",
+                ])
+                .env("SCOREPEEK_SIGNAL_MONITOR_CHILD", signal)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
     }
 }

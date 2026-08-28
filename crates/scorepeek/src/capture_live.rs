@@ -140,6 +140,7 @@ enum FieldObservationGateErrorType {
 #[serde(rename_all = "snake_case")]
 pub enum LiveSessionStopReason {
     RequestedSignal,
+    SourceEnded,
     TerminalFailure,
 }
 
@@ -429,6 +430,17 @@ impl GamescopeFieldObservationGateReport {
     pub fn failure_detail(&self) -> Option<&str> {
         self.failure_detail.as_deref()
     }
+
+    pub const fn stop_reason(&self) -> Option<LiveSessionStopReason> {
+        self.session_stop_reason
+    }
+
+    pub const fn output_failed(&self) -> bool {
+        matches!(
+            self.error_type,
+            Some(FieldObservationGateErrorType::ResultOutputFailed)
+        )
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -518,6 +530,7 @@ pub struct GamescopeDiagnosticHandoffGateConfig<'a> {
     pub policy: DiagnosticPolicy,
     pub duration_ms: u64,
     pub diagnostic_root: &'a std::path::Path,
+    pub expected_source_node_id: Option<u32>,
 }
 
 pub struct GamescopeFieldObservationGateConfig<'a> {
@@ -791,13 +804,13 @@ type RegisteredFieldOutput =
 pub fn run_gamescope_field_observation_gate(
     config: GamescopeFieldObservationGateConfig<'_>,
 ) -> GamescopeFieldObservationGateReport {
-    let artifact_requested = config.recognition_artifact_root.is_some();
     let capture_generation = config.handoff.capture_generation;
     let duration = Duration::from_millis(config.handoff.duration_ms);
     let StartedFieldObservationGate {
         mut lease,
         mut session,
         mut artifact_worker,
+        artifact_requested,
         mut sink,
     } = match start_field_observation_gate(config) {
         Ok(started) => started,
@@ -881,6 +894,7 @@ pub fn run_gamescope_field_observation_gate(
     )
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn run_gamescope_live_session(
     config: GamescopeFieldObservationGateConfig<'_>,
     stop: &AtomicBool,
@@ -891,6 +905,7 @@ pub fn run_gamescope_live_session(
         mut lease,
         mut session,
         mut artifact_worker,
+        artifact_requested,
         mut sink,
     } = match start_field_observation_gate(config) {
         Ok(started) => started,
@@ -942,10 +957,27 @@ pub fn run_gamescope_live_session(
             emit,
         );
         if let Some(error) = drain_error {
-            terminal.get_or_insert(error);
+            if matches!(
+                terminal,
+                Some((
+                    FieldObservationGateErrorType::CaptureFailed,
+                    Some(CaptureErrorType::SourceLost)
+                ))
+            ) {
+                terminal = Some(error);
+            } else {
+                terminal.get_or_insert(error);
+            }
         }
     }
-    let finish_status = if terminal.is_none() {
+    let mut source_ended = matches!(
+        terminal,
+        Some((
+            FieldObservationGateErrorType::CaptureFailed,
+            Some(CaptureErrorType::SourceLost)
+        ))
+    );
+    let finish_status = if terminal.is_none() || source_ended {
         DiagnosticRunStatus::Success
     } else {
         DiagnosticRunStatus::Error
@@ -957,18 +989,26 @@ pub fn run_gamescope_live_session(
         DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT,
     );
     if outcome.field_observer.status != FieldObserverFinishStatus::Complete {
-        terminal.get_or_insert((
+        terminal = Some((
             FieldObservationGateErrorType::FieldObserverFinishFailed,
             None,
         ));
+        source_ended = false;
     }
-    let artifact_outcome = artifact_worker.map(|worker| worker.finish(terminal.is_none()));
-    let stop_reason = if terminal.is_none() {
+    let artifact_outcome =
+        artifact_worker.map(|worker| worker.finish(terminal.is_none() || source_ended));
+    let stop_reason = if source_ended {
+        LiveSessionStopReason::SourceEnded
+    } else if terminal.is_none() {
         LiveSessionStopReason::RequestedSignal
     } else {
         LiveSessionStopReason::TerminalFailure
     };
-    let (error_type, capture_error_type) = terminal.unzip();
+    let (error_type, capture_error_type) = if source_ended {
+        (None, Some(Some(CaptureErrorType::SourceLost)))
+    } else {
+        terminal.unzip()
+    };
     let mut report = field_observation_report(
         error_type,
         capture_error_type.flatten(),
@@ -978,7 +1018,7 @@ pub fn run_gamescope_live_session(
             field_observer: Some(outcome.field_observer),
             diagnostic: Some(outcome.diagnostic),
             recognition_artifact: artifact_outcome,
-            artifact_requested: true,
+            artifact_requested,
         },
         sink,
     );
@@ -991,9 +1031,11 @@ struct StartedFieldObservationGate {
     lease: CalibratedGamescopeLease,
     session: FieldObservationSession<RegisteredScreenFieldObserver>,
     artifact_worker: Option<RecognitionArtifactWorker>,
+    artifact_requested: bool,
     sink: BoundedDiagnosticSink,
 }
 
+#[allow(clippy::too_many_lines)]
 fn start_field_observation_gate(
     mut config: GamescopeFieldObservationGateConfig<'_>,
 ) -> Result<StartedFieldObservationGate, Box<GamescopeFieldObservationGateReport>> {
@@ -1039,6 +1081,46 @@ fn start_field_observation_gate(
         .clone();
     let expected_normalizer = config.handoff.descriptor.binding.normalizer_sha256.clone();
     let artifact_run_id = config.handoff.descriptor.run_id.clone();
+    let mut sink = sink;
+    let lease = match start_diagnostic_handoff_capture(
+        config.handoff.session,
+        binding,
+        capture_generation,
+        config.handoff.expected_source_node_id,
+        &mut sink,
+    ) {
+        Ok(lease) => lease,
+        Err((error, capture_error)) => {
+            let error = match error {
+                DiagnosticHandoffGateErrorType::AdmissionRejected => {
+                    FieldObservationGateErrorType::AdmissionRejected
+                }
+                _ => FieldObservationGateErrorType::CaptureFailed,
+            };
+            return Err(Box::new(empty_field_observation_report(
+                error,
+                capture_error,
+                capture_generation,
+                None,
+                artifact_requested,
+                sink,
+            )));
+        }
+    };
+    if expected_profile != lease.capture_profile_sha256()
+        || expected_normalizer != lease.normalizer_artifact_sha256()
+    {
+        let lease = lease;
+        let (shutdown, _) = lease.shutdown_with_elapsed(&mut sink);
+        return Err(Box::new(empty_field_observation_report(
+            FieldObservationGateErrorType::DiagnosticBindingMismatch,
+            shutdown.err().map(|error| error.error_type()),
+            capture_generation,
+            None,
+            artifact_requested,
+            sink,
+        )));
+    }
     let session = match FieldObservationSession::start_registered(
         config.handoff.diagnostic_root,
         config.handoff.descriptor,
@@ -1048,10 +1130,12 @@ fn start_field_observation_gate(
     ) {
         Ok(session) => session,
         Err(error) => {
+            let lease = lease;
+            let (shutdown, _) = lease.shutdown_with_elapsed(&mut sink);
             let (error_type, field_finish, detail) = field_start_error(error);
             let mut report = empty_field_observation_report(
                 error_type,
-                None,
+                shutdown.err().map(|error| error.error_type()),
                 capture_generation,
                 field_finish,
                 artifact_requested,
@@ -1078,109 +1162,11 @@ fn start_field_observation_gate(
                     )
                 }
             });
-    start_capture_after_field_session(
-        config.handoff.session,
-        binding,
-        capture_generation,
-        FieldCaptureExpectation {
-            profile: &expected_profile,
-            normalizer: &expected_normalizer,
-            artifact_requested,
-        },
-        session,
-        artifact_worker,
-        sink,
-    )
-}
-
-#[derive(Clone, Copy)]
-struct FieldCaptureExpectation<'a> {
-    profile: &'a str,
-    normalizer: &'a str,
-    artifact_requested: bool,
-}
-
-fn start_capture_after_field_session(
-    provenance: GamescopeSessionProvenance,
-    binding: GamescopeProfileBinding,
-    capture_generation: CaptureGeneration,
-    expected: FieldCaptureExpectation<'_>,
-    session: FieldObservationSession<RegisteredScreenFieldObserver>,
-    artifact_worker: Option<RecognitionArtifactWorker>,
-    mut sink: BoundedDiagnosticSink,
-) -> Result<StartedFieldObservationGate, Box<GamescopeFieldObservationGateReport>> {
-    let lease = match start_diagnostic_handoff_capture(
-        provenance,
-        binding,
-        capture_generation,
-        &mut sink,
-    ) {
-        Ok(lease) => lease,
-        Err((error, capture_error)) => {
-            let error = match error {
-                DiagnosticHandoffGateErrorType::AdmissionRejected => {
-                    FieldObservationGateErrorType::AdmissionRejected
-                }
-                _ => FieldObservationGateErrorType::CaptureFailed,
-            };
-            let finish_time = sink
-                .facts
-                .iter()
-                .map(|fact| fact.monotonic_end_ms)
-                .max()
-                .unwrap_or(0);
-            let outcome = session.finish_after_capture(
-                DiagnosticRunStatus::Error,
-                finish_time,
-                Duration::ZERO,
-                DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT,
-            );
-            let artifact_outcome = artifact_worker.map(|worker| worker.finish(false));
-            return Err(Box::new(field_observation_report(
-                Some(error),
-                capture_error,
-                capture_generation,
-                FieldObservationCounters::default(),
-                FieldObservationFinishOutcomes {
-                    field_observer: Some(outcome.field_observer),
-                    diagnostic: Some(outcome.diagnostic),
-                    recognition_artifact: artifact_outcome,
-                    artifact_requested: expected.artifact_requested,
-                },
-                sink,
-            )));
-        }
-    };
-    if expected.profile != lease.capture_profile_sha256()
-        || expected.normalizer != lease.normalizer_artifact_sha256()
-    {
-        let (shutdown, finish_time) = lease.shutdown_with_elapsed(&mut sink);
-        let capture_error = shutdown.err().map(|error| error.error_type());
-        let outcome = session.finish_after_capture(
-            DiagnosticRunStatus::Error,
-            finish_time,
-            Duration::ZERO,
-            DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT,
-        );
-        let artifact_outcome = artifact_worker.map(|worker| worker.finish(false));
-        return Err(Box::new(field_observation_report(
-            Some(FieldObservationGateErrorType::DiagnosticBindingMismatch),
-            capture_error,
-            capture_generation,
-            FieldObservationCounters::default(),
-            FieldObservationFinishOutcomes {
-                field_observer: Some(outcome.field_observer),
-                diagnostic: Some(outcome.diagnostic),
-                recognition_artifact: artifact_outcome,
-                artifact_requested: expected.artifact_requested,
-            },
-            sink,
-        )));
-    }
     Ok(StartedFieldObservationGate {
         lease,
         session,
         artifact_worker,
+        artifact_requested,
         sink,
     })
 }
@@ -1815,6 +1801,7 @@ fn run_gamescope_handoff_gate(
         config.session,
         binding,
         capture_generation,
+        config.expected_source_node_id,
         &mut sink,
     ) {
         Ok(lease) => lease,
@@ -2001,6 +1988,7 @@ fn start_diagnostic_handoff_capture(
     session: GamescopeSessionProvenance,
     binding: GamescopeProfileBinding,
     capture_generation: CaptureGeneration,
+    expected_source_node_id: Option<u32>,
     sink: &mut BoundedDiagnosticSink,
 ) -> Result<CalibratedGamescopeLease, (DiagnosticHandoffGateErrorType, Option<CaptureErrorType>)> {
     let lease = acquire_gamescope_source_for_session(DISCOVERY_TIMEOUT, session, sink).map_err(
@@ -2011,6 +1999,13 @@ fn start_diagnostic_handoff_capture(
             )
         },
     )?;
+    if expected_source_node_id.is_some_and(|expected| expected != lease.node_id()) {
+        lease.shutdown(sink);
+        return Err((
+            DiagnosticHandoffGateErrorType::CaptureFailed,
+            Some(CaptureErrorType::SourceLost),
+        ));
+    }
     let receiver = start_uncalibrated_gamescope_receiver(lease, RECEIVER_START_TIMEOUT, sink)
         .map_err(|error| {
             (
@@ -2829,6 +2824,7 @@ mod tests {
                 policy: DiagnosticPolicy::default(),
                 duration_ms: 1_000,
                 diagnostic_root: root.path(),
+                expected_source_node_id: None,
             });
         let encoded = serde_json::to_string(&report).unwrap();
 
@@ -2869,6 +2865,7 @@ mod tests {
                 policy: DiagnosticPolicy::default(),
                 duration_ms: 1_000,
                 diagnostic_root: root.path(),
+                expected_source_node_id: None,
             });
         let encoded = serde_json::to_string(&report).unwrap();
 

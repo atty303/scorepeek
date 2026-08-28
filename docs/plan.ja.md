@@ -86,8 +86,10 @@
   Gamescope liveでは同じserializerをcapture loop外のcapacity 2 workerで使用し、live monotonic intervalをrecording PTSと区別する。
   新しいvalue-evidence gateは1件以上のcompleted result resolution、全completed observationのenqueue、manifest完了を要求し、
   compact outputはartifact status/count/digestだけを持つ。timeout workerが実際に終了するまではprocess-wide supervisorが次runを拒否する。
-  通常運用は別のforeground sessionとして同じproviderとpost-canonical経路を継続利用し、exact stdin `stop` control、
-  exact-value NDJSON、create-only recognition artifact、unknownを含むnumeric screen-predicate diagnosticを持つ。
+  通常運用はGamescopeを所有しない常駐watcherとして同じproviderとpost-canonical経路を継続利用する。
+  先起動・後起動のどちらでもsourceを待ち、sequentialなsource lifetimeを独立generation/sessionとして扱い、
+  SIGINT/SIGTERMだけで順序付き終了する。multi-session exact-value NDJSON、sessionごとのcreate-only
+  recognition artifact、unknownを含むnumeric screen-predicate diagnosticを持つ。
   registered resourceとcandidate domainをcapture開始前にloadし、Gamescope capture loopからfield submit、inference、全song scoring、
   capture/worker/diagnosticの順序付き終了までを一つのbounded gateへ統合済み。private INFINITAS frameによる実submit、実行cost、
   queue behavior、candidate内容は未検証で、accepted resultは未実装。
@@ -469,8 +471,10 @@ Gamescope version/configはそれぞれ別profileとする。
 
 通常操作は`scorepeek run --profile NAME`とし、profile省略はlocal profileが一つだけの場合に限る。
 scorepeekはoperatorが起動したGamescopeへattachし、INFINITASまたは通常Gamescopeを起動、signal、終了、
-restartしない。scorepeekの停止はscorepeek-owned receiver、provider、field worker、diagnostic、artifact
-だけを順序付きで終了する。stable event authorityの完成を待たず、現在のprovisional recognitionを通常
+restartしない。sourceがない間は待機し、exactly oneのGamescope sourceだけへattachする。同時複数sourceは
+一つになるまで選択せず、source終了後はsessionを確定して次のlifetimeを待つ。scorepeekのSIGINT/SIGTERM停止は
+scorepeek-owned receiver、provider、field worker、diagnostic、artifactだけを順序付きで終了する。
+stable event authorityの完成を待たず、現在のprovisional recognitionを通常
 経路へ流して診断改善を開始するが、accepted eventまたはsupported profileとは呼ばない。
 
 通常runのlocal recordingは既定有効、bounded、opt-out可能とし、remote送信は既定無効の明示操作とする。

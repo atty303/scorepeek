@@ -33,7 +33,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   scorepeek-owned Gamescope marker, publishes one create-only machine-local canonical binding,
   lists local profiles, and lets `scorepeek run` select a profile by name while reusing the existing
   foreground diagnostic and provisional-recognition path. Real target calibration remains
-  unverified.
+  unverified. ADR 0052 makes that ordinary entrypoint a Gamescope-non-owning watcher: it waits
+  before or after source startup, treats sequential source lifetimes as separate sessions, refuses
+  simultaneous-source selection, and stops only on SIGINT/SIGTERM.
   The archive is now the first cross-machine delivery unit; an operator-owned 4K Bazzite machine
   remains the first consumer acceptance target. No target transfer or 4K profile is implemented at
   this checkpoint.
@@ -255,8 +257,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   but the timed-out run stays failed. The existing counts gate retains its v1 report and the new
   command uses a distinct v1 schema. Compact JSON links by status/count/digest rather than duplicating its
   OCR, song IDs, catalog strings, candidate metrics, or decisions.
-- ADR 0040 adds `scorepeek run gamescope`, which owns one admitted provider until the exact stdin
-  control line `stop` or a typed terminal failure. It emits exact bounded field/resolver NDJSON,
+- ADR 0040 adds the developer `scorepeek run gamescope` gate. ADR 0052 supersedes its ordinary
+  single-session and stdin-control lifecycle with a signal-stopped multi-session watcher. It emits exact bounded field/resolver NDJSON,
   preflights an enabled private diagnostic root, records full numeric screen-predicate evidence for
   unknown as well as recognized screens, and finalizes the existing field, diagnostic, and
   recognition-artifact workers in order. Its control path does not signal Gamescope, INFINITAS, or
@@ -573,12 +575,15 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   Gamescope argument vector under XDG config. `scorepeek profile list` and profile-selected
   `scorepeek run` remove binding paths, digests and repeated provenance from ordinary operation.
   Existing raw commands remain developer gates.
-  Each ordinary run uses a distinct create-only recognition artifact directory; `--no-recording`
-  disables both diagnostic and recognition artifact persistence. Diagnostic resource provenance
+  Each admitted Gamescope lifetime uses a distinct create-only recognition artifact directory;
+  `--no-recording` disables watcher status, diagnostic, and recognition artifact persistence.
+  Diagnostic resource provenance
   uses the executing binary inode's SHA-256 without changing the CLI version or archive identity.
-  One ordinary-run lock serializes admission to the XDG recognition store, which rejects a new
-  recorded run at eight generations or when its maximum reservation would exceed 1 GiB; it never
-  deletes an existing run automatically.
+  One ordinary-run lock serializes admission to the XDG recognition store. At eight generations or
+  when the next maximum reservation would exceed 1 GiB, the affected session continues recognition
+  without an artifact; scorepeek never deletes an existing run automatically. A single atomically
+  replaced watcher record retains only current state, invocation/session links and the last 32
+  low-cardinality transitions.
 
 ## Approval and authority boundaries
 
@@ -600,8 +605,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    path. This deployment, real upstream download and target-machine verification remain a separate
    operator-authority boundary.
 2. On the operator's 4K Bazzite machine, use guided setup to author and independently verify one
-   exact Wayland profile, then exercise the profile-selected routine entrypoint. This target-machine
-   mutation and deployment remain separate operator-authority boundaries.
+   exact Wayland profile, then exercise the watcher with scorepeek-first and Gamescope-first startup,
+   two sequential Gamescope lifetimes, simultaneous sources, and idle/active SIGINT and SIGTERM.
+   This target-machine mutation and deployment remain separate operator-authority boundaries; do
+   not claim lifecycle support before it passes.
 3. Use ADR 0043's existing bounded retention and existing-bytes-only freeze/export surface to
    complete one target-to-development replay/update round trip during natural play. Add new tail,
    marker or ledger machinery only if retained target evidence demonstrates a concrete gap.

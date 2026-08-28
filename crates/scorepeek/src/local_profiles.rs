@@ -111,11 +111,13 @@ pub fn select_for_run(name: Option<&OsStr>) -> Result<SelectedProfile, String> {
 
 pub struct RoutineStatePaths {
     pub diagnostic_root: PathBuf,
-    pub recognition_root: PathBuf,
+    pub recognition_store: PathBuf,
+    pub watcher_status: PathBuf,
+    pub recording_enabled: bool,
     _run_lock: File,
 }
 
-pub fn state_paths(run_id: &str, recording_enabled: bool) -> Result<RoutineStatePaths, String> {
+pub fn state_paths(recording_enabled: bool) -> Result<RoutineStatePaths, String> {
     let state = xdg_base(
         env::var_os("XDG_STATE_HOME"),
         env::var_os("HOME"),
@@ -137,13 +139,24 @@ pub fn state_paths(run_id: &str, recording_enabled: bool) -> Result<RoutineState
     let recognition = scorepeek.join("recognition");
     if recording_enabled {
         ensure_directory_tree(&recognition)?;
-        ensure_recognition_capacity(&recognition)?;
     }
     Ok(RoutineStatePaths {
         diagnostic_root: scorepeek.join("diagnostics"),
-        recognition_root: recognition.join(run_id),
+        recognition_store: recognition,
+        watcher_status: scorepeek.join("watcher-status.json"),
+        recording_enabled,
         _run_lock: run_lock,
     })
+}
+
+impl RoutineStatePaths {
+    pub fn recognition_root(&self, session_id: &str) -> Result<Option<PathBuf>, String> {
+        if !self.recording_enabled {
+            return Ok(None);
+        }
+        ensure_recognition_capacity(&self.recognition_store)?;
+        Ok(Some(self.recognition_store.join(session_id)))
+    }
 }
 
 fn ensure_recognition_capacity(root: &Path) -> Result<(), String> {
@@ -180,7 +193,7 @@ fn ensure_recognition_capacity(root: &Path) -> Result<(), String> {
         || bytes > MAX_RECOGNITION_AGGREGATE_BYTES - MAX_RECOGNITION_RUN_BYTES
     {
         return Err(format!(
-            "recognition artifact store is at capacity ({generations} generations, {bytes} bytes); remove an old run or use --no-recording"
+            "recognition artifact store is at capacity ({generations} generations, {bytes} bytes)"
         ));
     }
     Ok(())
