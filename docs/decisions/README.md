@@ -148,6 +148,9 @@ authoritative.
   supersedes ADR 0014's blanket local-symlink rejection for the distributed CLI. Operator-selected
   roots and inputs follow links while create-only publication and owned destructive cleanup remain
   no-clobber and non-following.
+- [ADR 0054: Measure Gamescope profile transforms](0054-measure-gamescope-profile-transforms.md)
+  supersedes ADR 0029/0051 requirements for launch provenance, aspect-fit geometry, complete marker
+  comparison, retained launch metadata, and Gamescope-version runtime rejection.
 
 ## Historical
 

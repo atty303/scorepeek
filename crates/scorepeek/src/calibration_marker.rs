@@ -11,6 +11,7 @@ use x11rb::wrapper::ConnectionExt as _;
 
 pub const WIDTH: u32 = 1_920;
 pub const HEIGHT: u32 = 1_080;
+pub const FIDUCIAL_SIZE: u32 = 48;
 const LIFETIME: Duration = Duration::from_secs(30);
 const PUT_ROWS: u32 = 32;
 
@@ -25,15 +26,8 @@ pub fn rgb8() -> Box<[u8]> {
 }
 
 fn pixel(x: u32, y: u32) -> [u8; 3] {
-    let fiducials = [
-        (0, 0, [255, 0, 255]),
-        (WIDTH - 32, 0, [0, 255, 255]),
-        (0, HEIGHT - 32, [255, 255, 0]),
-        (WIDTH - 32, HEIGHT - 32, [255, 255, 255]),
-        (WIDTH / 2 - 16, HEIGHT / 2 - 16, [255, 64, 0]),
-    ];
-    for (left, top, color) in fiducials {
-        if x >= left && x < left + 32 && y >= top && y < top + 32 {
+    for &(left, top, color) in fiducials() {
+        if x >= left && x < left + FIDUCIAL_SIZE && y >= top && y < top + FIDUCIAL_SIZE {
             return color;
         }
     }
@@ -43,6 +37,21 @@ fn pixel(x: u32, y: u32) -> [u8; 3] {
         u8::try_from((column * 47 + row * 17 + 29) % 224 + 16).expect("marker channel is bounded"),
         u8::try_from((column * 19 + row * 61 + 71) % 224 + 16).expect("marker channel is bounded"),
         u8::try_from((column * 83 + row * 23 + 113) % 224 + 16).expect("marker channel is bounded"),
+    ]
+}
+
+#[must_use]
+pub const fn fiducials() -> &'static [(u32, u32, [u8; 3]); 9] {
+    &[
+        (48, 48, [255, 0, 255]),
+        (936, 48, [0, 255, 255]),
+        (1_824, 48, [255, 255, 0]),
+        (48, 516, [255, 0, 0]),
+        (936, 516, [0, 255, 0]),
+        (1_824, 516, [0, 0, 255]),
+        (48, 984, [255, 64, 0]),
+        (936, 984, [64, 255, 0]),
+        (1_824, 984, [0, 64, 255]),
     ]
 }
 
@@ -146,8 +155,9 @@ mod tests {
         let second = rgb8();
         assert_eq!(first, second);
         assert_eq!(first.len(), (WIDTH * HEIGHT * 3) as usize);
-        assert_eq!(&first[..3], &[255, 0, 255]);
-        let bottom_right = ((HEIGHT * WIDTH - 1) * 3) as usize;
-        assert_eq!(&first[bottom_right..bottom_right + 3], &[255, 255, 255]);
+        let first_fiducial = ((48 * WIDTH + 48) * 3) as usize;
+        assert_eq!(&first[first_fiducial..first_fiducial + 3], &[255, 0, 255]);
+        let last_fiducial = ((984 * WIDTH + 1_824) * 3) as usize;
+        assert_eq!(&first[last_fiducial..last_fiducial + 3], &[0, 64, 255]);
     }
 }

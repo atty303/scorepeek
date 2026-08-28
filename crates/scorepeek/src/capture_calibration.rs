@@ -11,9 +11,9 @@ use scorepeek::capture::{
     AuthoredGamescopeProfileBinding, CaptureDiagnosticFact, CaptureDiagnosticOperation,
     CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureErrorType, CaptureSourceKind,
     FractionalLinearGeometry, FractionalRectangle, GamescopeProfileBinding,
-    GamescopeProfileBindingAuthoringInput, GamescopeSessionProvenance,
-    GamescopeSessionProvenanceInput, RationalCoordinate, UncalibratedFrame, UncalibratedMemoryType,
-    UncalibratedVideoContract, acquire_gamescope_source, start_uncalibrated_gamescope_receiver,
+    GamescopeProfileBindingAuthoringInput, MeasuredGamescopeProfileBindingAuthoringInput,
+    RationalCoordinate, UncalibratedFrame, UncalibratedMemoryType, UncalibratedVideoContract,
+    acquire_gamescope_source, start_uncalibrated_gamescope_receiver,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -32,25 +32,19 @@ const OWNERSHIP_BYTES: &[u8] = b"scorepeek-owned-uncalibrated-calibration-v1\n";
 static BINDING_STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub struct GuidedGamescopeProfileInput<'a> {
-    pub gamescope_arguments: Vec<String>,
-    pub gamescope_version: String,
-    pub backend_id: String,
-    pub nested_width: u32,
-    pub nested_height: u32,
-    pub nested_refresh_hz: u32,
-    pub scaler: String,
-    pub filter: String,
     pub expected_marker_rgb8: &'a [u8],
 }
 
 pub struct GuidedGamescopeProfile {
     pub binding: AuthoredGamescopeProfileBinding,
-    pub exact_pixel_count: u64,
-    pub mean_absolute_error: f64,
+    pub observed_width: u32,
+    pub observed_height: u32,
+    pub geometry: FractionalRectangle,
+    pub verified_fiducial_count: u32,
 }
 
 pub fn capture_guided_gamescope_profile(
-    input: GuidedGamescopeProfileInput<'_>,
+    input: &GuidedGamescopeProfileInput<'_>,
 ) -> Result<GuidedGamescopeProfile, String> {
     let mut sink = BoundedDiagnosticSink::default();
     let lease = acquire_gamescope_source(DISCOVERY_TIMEOUT, &mut sink).map_err(|error| {
@@ -71,137 +65,303 @@ pub fn capture_guided_gamescope_profile(
     })?;
     let frame = frame.ok_or_else(|| "Gamescope marker frame was unavailable".to_owned())?;
     let contract = frame.contract();
-    let geometry = aspect_fit_geometry(contract.width, contract.height)?;
+    let geometry = measure_marker_geometry(&frame)?;
     let normalized = FractionalLinearGeometry::new(contract.width, contract.height, geometry)
         .map_err(|_| "Gamescope marker geometry was invalid".to_owned())?
         .normalize(&frame)
         .map_err(|_| "Gamescope marker normalization failed".to_owned())?;
-    let (exact_pixel_count, mean_absolute_error) =
-        validate_marker(normalized.pixels(), input.expected_marker_rgb8)?;
-    let calibration_evidence_sha256 = encode_sha256(frame.bytes());
-    let binding = GamescopeProfileBinding::author_local(
-        GamescopeProfileBindingAuthoringInput {
-            calibration_evidence_sha256,
-            environment_id: "local".to_owned(),
-            gamescope_version: input.gamescope_version,
-            backend_id: input.backend_id,
-            output_width: contract.width,
-            output_height: contract.height,
-            nested_width: input.nested_width,
-            nested_height: input.nested_height,
-            nested_refresh_hz: input.nested_refresh_hz,
-            scaler: input.scaler,
-            filter: input.filter,
-            observed_video_contract: contract,
-            memory_type: frame.memory_type(),
-            stride: frame.stride(),
+    let verified_fiducial_count =
+        validate_measured_marker(normalized.pixels(), input.expected_marker_rgb8)?;
+    let binding =
+        GamescopeProfileBinding::author_measured(MeasuredGamescopeProfileBindingAuthoringInput {
+            observed_width: contract.width,
+            observed_height: contract.height,
             geometry,
-        },
-        input.gamescope_arguments,
-    )
-    .map_err(|error| format!("Gamescope profile binding was invalid: {error:?}"))?;
+        })
+        .map_err(|error| format!("Gamescope profile binding was invalid: {error:?}"))?;
     Ok(GuidedGamescopeProfile {
         binding,
-        exact_pixel_count,
-        mean_absolute_error,
+        observed_width: contract.width,
+        observed_height: contract.height,
+        geometry,
+        verified_fiducial_count,
     })
 }
 
-fn aspect_fit_geometry(width: u32, height: u32) -> Result<FractionalRectangle, String> {
-    let wide = u64::from(width) * 1_080 >= u64::from(height) * 1_920;
-    let coordinate = |numerator, denominator| {
-        let divisor = greatest_common_divisor(numerator, denominator);
-        RationalCoordinate::new(numerator / divisor, denominator / divisor)
-            .map_err(|_| "Gamescope marker geometry was invalid".to_owned())
-    };
-    if wide {
-        let content_numerator = height
-            .checked_mul(1_920)
-            .ok_or_else(|| "Gamescope marker geometry overflowed".to_owned())?;
-        let outer_numerator = width
-            .checked_mul(1_080)
-            .ok_or_else(|| "Gamescope marker geometry overflowed".to_owned())?;
-        let left_numerator = outer_numerator
-            .checked_sub(content_numerator)
-            .ok_or_else(|| "Gamescope marker geometry was invalid".to_owned())?;
-        Ok(FractionalRectangle::new(
-            coordinate(left_numerator, 2_160)?,
-            coordinate(0, 1)?,
-            coordinate(content_numerator, 1_080)?,
-            coordinate(height, 1)?,
-        ))
-    } else {
-        let content_numerator = width
-            .checked_mul(1_080)
-            .ok_or_else(|| "Gamescope marker geometry overflowed".to_owned())?;
-        let outer_numerator = height
-            .checked_mul(1_920)
-            .ok_or_else(|| "Gamescope marker geometry overflowed".to_owned())?;
-        let top_numerator = outer_numerator
-            .checked_sub(content_numerator)
-            .ok_or_else(|| "Gamescope marker geometry was invalid".to_owned())?;
-        Ok(FractionalRectangle::new(
-            coordinate(0, 1)?,
-            coordinate(top_numerator, 3_840)?,
-            coordinate(width, 1)?,
-            coordinate(content_numerator, 1_920)?,
-        ))
+#[derive(Clone, Copy)]
+struct FiducialObservation {
+    count: u32,
+    sum_x: f64,
+    sum_y: f64,
+    minimum_x: u32,
+    minimum_y: u32,
+    maximum_x: u32,
+    maximum_y: u32,
+}
+
+impl FiducialObservation {
+    const fn empty() -> Self {
+        Self {
+            count: 0,
+            sum_x: 0.0,
+            sum_y: 0.0,
+            minimum_x: u32::MAX,
+            minimum_y: u32::MAX,
+            maximum_x: 0,
+            maximum_y: 0,
+        }
     }
 }
 
-fn greatest_common_divisor(mut left: u32, mut right: u32) -> u32 {
-    while right != 0 {
-        (left, right) = (right, left % right);
-    }
-    left.max(1)
+fn measure_marker_geometry(frame: &UncalibratedFrame) -> Result<FractionalRectangle, String> {
+    let contract = frame.contract();
+    measure_marker_geometry_bgrx(
+        contract.width,
+        contract.height,
+        frame.stride(),
+        frame.bytes(),
+    )
 }
 
-fn validate_marker(actual: &[u8], expected: &[u8]) -> Result<(u64, f64), String> {
-    if actual.len() != expected.len() || actual.len() != 1_920 * 1_080 * 3 {
-        return Err("Gamescope marker byte length did not match".to_owned());
+fn measure_marker_geometry_bgrx(
+    width: u32,
+    height: u32,
+    stride: u32,
+    bytes: &[u8],
+) -> Result<FractionalRectangle, String> {
+    let stride =
+        usize::try_from(stride).map_err(|_| "Gamescope marker stride was invalid".to_owned())?;
+    let required = stride
+        .checked_mul(usize::try_from(height).expect("u32 fits usize"))
+        .ok_or_else(|| "Gamescope marker byte length overflowed".to_owned())?;
+    if bytes.len() != required || stride < usize::try_from(width).expect("u32 fits usize") * 4 {
+        return Err("Gamescope marker byte layout was invalid".to_owned());
     }
-    let mut exact_pixels = 0u64;
-    let mut absolute_error = 0u32;
-    for (actual_pixel, expected_pixel) in actual.chunks_exact(3).zip(expected.chunks_exact(3)) {
-        if actual_pixel == expected_pixel {
-            exact_pixels += 1;
-        }
-        for (&actual, &expected) in actual_pixel.iter().zip(expected_pixel) {
-            absolute_error += u32::from(actual.abs_diff(expected));
-        }
-    }
-    let total_pixels = 1_920u32 * 1_080;
-    let mean_absolute_error = f64::from(absolute_error) / f64::from(total_pixels * 3);
-    if exact_pixels * 100 < u64::from(total_pixels) * 99 || mean_absolute_error > 0.5 {
-        return Err(format!(
-            "Gamescope marker comparison failed: exact_pixels={exact_pixels}, mean_absolute_error={mean_absolute_error:.6}"
-        ));
-    }
-    for (left, top) in [
-        (0, 0),
-        (1_920 - 32, 0),
-        (0, 1_080 - 32),
-        (1_920 - 32, 1_080 - 32),
-        (1_920 / 2 - 16, 1_080 / 2 - 16),
-    ] as [(u32, u32); 5]
-    {
-        let mut exact = 0u32;
-        for y in top..top + 32 {
-            for x in left..left + 32 {
-                let offset =
-                    usize::try_from((y * 1_920 + x) * 3).expect("marker offset fits usize");
-                if actual[offset..offset + 3] == expected[offset..offset + 3] {
-                    exact += 1;
+    let mut observations = [FiducialObservation::empty(); 9];
+    for y in 0..height {
+        let row = usize::try_from(y)
+            .ok()
+            .and_then(|value| value.checked_mul(stride))
+            .ok_or_else(|| "Gamescope marker frame offset overflowed".to_owned())?;
+        for x in 0..width {
+            let offset = row
+                .checked_add(usize::try_from(x).expect("u32 fits usize") * 4)
+                .ok_or_else(|| "Gamescope marker frame offset overflowed".to_owned())?;
+            let bgr = &bytes[offset..offset + 3];
+            for (index, &(_, _, rgb)) in crate::calibration_marker::fiducials().iter().enumerate() {
+                if bgr[0].abs_diff(rgb[2]) <= 10
+                    && bgr[1].abs_diff(rgb[1]) <= 10
+                    && bgr[2].abs_diff(rgb[0]) <= 10
+                {
+                    let observation = &mut observations[index];
+                    observation.count += 1;
+                    observation.sum_x += f64::from(x);
+                    observation.sum_y += f64::from(y);
+                    observation.minimum_x = observation.minimum_x.min(x);
+                    observation.minimum_y = observation.minimum_y.min(y);
+                    observation.maximum_x = observation.maximum_x.max(x);
+                    observation.maximum_y = observation.maximum_y.max(y);
+                    break;
                 }
             }
         }
-        if exact < 1_024 * 99 / 100 {
+    }
+    let mut points = Vec::with_capacity(observations.len());
+    for (observation, &(left, top, _)) in observations
+        .iter()
+        .zip(crate::calibration_marker::fiducials())
+    {
+        if observation.count < 16 {
+            return Err("Gamescope marker has a missing or unreadable fiducial".to_owned());
+        }
+        points.push((
+            f64::from(left + crate::calibration_marker::FIDUCIAL_SIZE / 2),
+            f64::from(top + crate::calibration_marker::FIDUCIAL_SIZE / 2),
+            observation.sum_x / f64::from(observation.count) + 0.5,
+            observation.sum_y / f64::from(observation.count) + 0.5,
+        ));
+    }
+    let (scale_x, left) = fit_axis(&points, 0, 2)?;
+    let (scale_y, top) = fit_axis(&points, 1, 3)?;
+    if scale_x <= 0.0 || scale_y <= 0.0 {
+        return Err("Gamescope marker is mirrored or rotated".to_owned());
+    }
+    for &(canonical_x, canonical_y, observed_x, observed_y) in &points {
+        if (scale_x.mul_add(canonical_x, left) - observed_x).abs() > 1.0
+            || (scale_y.mul_add(canonical_y, top) - observed_y).abs() > 1.0
+        {
+            return Err(
+                "Gamescope marker does not have one axis-aligned linear transform".to_owned(),
+            );
+        }
+    }
+    validate_fiducial_bounds(&observations, scale_x, scale_y, left, top)?;
+    let rectangle_width = scale_x * f64::from(crate::calibration_marker::WIDTH);
+    let rectangle_height = scale_y * f64::from(crate::calibration_marker::HEIGHT);
+    finalize_measured_rectangle(width, height, left, top, rectangle_width, rectangle_height)
+}
+
+fn finalize_measured_rectangle(
+    width: u32,
+    height: u32,
+    left: f64,
+    top: f64,
+    rectangle_width: f64,
+    rectangle_height: f64,
+) -> Result<FractionalRectangle, String> {
+    let observed_width = f64::from(width);
+    let observed_height = f64::from(height);
+    if left < 0.0
+        || top < 0.0
+        || left + rectangle_width > observed_width
+        || top + rectangle_height > observed_height
+    {
+        return Err(format!(
+            "Gamescope marker is cropped and cannot be reconstructed: rectangle=({left:.3},{top:.3},{rectangle_width:.3},{rectangle_height:.3}) frame=({observed_width:.0},{observed_height:.0})"
+        ));
+    }
+    let rectangle = FractionalRectangle::new(
+        quantize_coordinate(left)?,
+        quantize_coordinate(top)?,
+        quantize_coordinate(rectangle_width)?,
+        quantize_coordinate(rectangle_height)?,
+    );
+    FractionalLinearGeometry::new(width, height, rectangle).map_err(|_| {
+        "Gamescope marker quantized rectangle is cropped and cannot be reconstructed".to_owned()
+    })?;
+    Ok(rectangle)
+}
+
+fn fit_axis(
+    points: &[(f64, f64, f64, f64)],
+    canonical_index: usize,
+    observed_index: usize,
+) -> Result<(f64, f64), String> {
+    let value = |point: &(f64, f64, f64, f64), index| match index {
+        0 => point.0,
+        1 => point.1,
+        2 => point.2,
+        _ => point.3,
+    };
+    let count = 9.0;
+    let canonical_mean = points
+        .iter()
+        .map(|point| value(point, canonical_index))
+        .sum::<f64>()
+        / count;
+    let observed_mean = points
+        .iter()
+        .map(|point| value(point, observed_index))
+        .sum::<f64>()
+        / count;
+    let numerator = points
+        .iter()
+        .map(|point| {
+            (value(point, canonical_index) - canonical_mean)
+                * (value(point, observed_index) - observed_mean)
+        })
+        .sum::<f64>();
+    let denominator = points
+        .iter()
+        .map(|point| (value(point, canonical_index) - canonical_mean).powi(2))
+        .sum::<f64>();
+    if denominator == 0.0 {
+        return Err("Gamescope marker fiducials were degenerate".to_owned());
+    }
+    let scale = numerator / denominator;
+    Ok((scale, observed_mean - scale * canonical_mean))
+}
+
+fn validate_fiducial_bounds(
+    observations: &[FiducialObservation; 9],
+    scale_x: f64,
+    scale_y: f64,
+    left: f64,
+    top: f64,
+) -> Result<(), String> {
+    for (observation, &(fiducial_left, fiducial_top, _)) in observations
+        .iter()
+        .zip(crate::calibration_marker::fiducials())
+    {
+        let expected_left = scale_x.mul_add(f64::from(fiducial_left), left);
+        let expected_top = scale_y.mul_add(f64::from(fiducial_top), top);
+        let expected_right = scale_x.mul_add(
+            f64::from(fiducial_left + crate::calibration_marker::FIDUCIAL_SIZE),
+            left,
+        );
+        let expected_bottom = scale_y.mul_add(
+            f64::from(fiducial_top + crate::calibration_marker::FIDUCIAL_SIZE),
+            top,
+        );
+        if (f64::from(observation.minimum_x) + 0.5 - expected_left).abs() > 6.0
+            || (f64::from(observation.minimum_y) + 0.5 - expected_top).abs() > 6.0
+            || (f64::from(observation.maximum_x) + 0.5 - expected_right).abs() > 6.0
+            || (f64::from(observation.maximum_y) + 0.5 - expected_bottom).abs() > 6.0
+        {
+            return Err("Gamescope marker has a duplicated or malformed fiducial".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn quantize_coordinate(value: f64) -> Result<RationalCoordinate, String> {
+    if !value.is_finite() || value < 0.0 || value > f64::from(u32::MAX) / 2_048.0 {
+        return Err("Gamescope marker geometry was invalid".to_owned());
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let numerator = (value * 2_048.0).round() as u32;
+    RationalCoordinate::new(numerator, 2_048)
+        .map_err(|_| "Gamescope marker geometry was invalid".to_owned())
+}
+
+fn validate_measured_marker(actual: &[u8], expected: &[u8]) -> Result<u32, String> {
+    if actual.len() != expected.len() || actual.len() != 1_920 * 1_080 * 3 {
+        return Err("Gamescope marker byte length did not match".to_owned());
+    }
+    let inset = crate::calibration_marker::FIDUCIAL_SIZE / 4;
+    for &(left, top, _) in crate::calibration_marker::fiducials() {
+        let mut matching = 0u32;
+        let mut count = 0u32;
+        for y in top + inset..top + crate::calibration_marker::FIDUCIAL_SIZE - inset {
+            for x in left + inset..left + crate::calibration_marker::FIDUCIAL_SIZE - inset {
+                let offset =
+                    usize::try_from((y * 1_920 + x) * 3).expect("marker offset fits usize");
+                count += 1;
+                if actual[offset..offset + 3]
+                    .iter()
+                    .zip(&expected[offset..offset + 3])
+                    .all(|(actual, expected)| actual.abs_diff(*expected) <= 16)
+                {
+                    matching += 1;
+                }
+            }
+        }
+        if matching * 10 < count * 9 {
             return Err(format!(
-                "Gamescope marker fiducial at ({left},{top}) failed: exact_pixels={exact}"
+                "Gamescope marker fiducial at ({left},{top}) was not preserved"
             ));
         }
     }
-    Ok((exact_pixels, mean_absolute_error))
+    for (x, y) in [
+        (180, 180),
+        (660, 300),
+        (1_260, 420),
+        (1_740, 780),
+        (780, 900),
+    ] {
+        let offset = usize::try_from((y * 1_920 + x) * 3).expect("marker offset fits usize");
+        if actual[offset..offset + 3]
+            .iter()
+            .zip(&expected[offset..offset + 3])
+            .any(|(actual, expected)| actual.abs_diff(*expected) > 20)
+        {
+            return Err(
+                "Gamescope marker cell interiors or channel order were not preserved".to_owned(),
+            );
+        }
+    }
+    Ok(u32::try_from(crate::calibration_marker::fiducials().len())
+        .expect("fiducial count fits u32"))
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -250,24 +410,6 @@ pub struct GamescopeSessionConfiguration {
     output_width: u32,
     output_height: u32,
     scaling_configuration: GamescopeScalingConfiguration,
-}
-
-impl GamescopeSessionConfiguration {
-    pub fn capture_provenance(&self) -> Result<GamescopeSessionProvenance, String> {
-        GamescopeSessionProvenance::new(GamescopeSessionProvenanceInput {
-            environment_id: self.environment_id.clone(),
-            gamescope_version: self.gamescope_version.clone(),
-            backend_id: self.backend_id.clone(),
-            output_width: self.output_width,
-            output_height: self.output_height,
-            nested_width: self.scaling_configuration.nested_width,
-            nested_height: self.scaling_configuration.nested_height,
-            nested_refresh_hz: self.scaling_configuration.nested_refresh_hz,
-            scaler: scaler_name(self.scaling_configuration.scaler).to_owned(),
-            filter: filter_name(self.scaling_configuration.filter).to_owned(),
-        })
-        .map_err(|_| "Gamescope session provenance is invalid".to_owned())
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -1435,11 +1577,11 @@ mod tests {
         BindingAuthorErrorType, BindingPublicationPoint, CalibrationFrameArtifact, FRAME_FILENAME,
         GamescopeCalibrationSampleManifest, GamescopeCalibrationSessionSampleManifest,
         MANIFEST_FILENAME, MANIFEST_STAGING_FILENAME, OWNERSHIP_BYTES, OWNERSHIP_FILENAME,
-        PublicationPoint, StoredCalibrationSessionManifest, aspect_fit_geometry,
-        author_gamescope_profile_binding_inner, cleanup_binding_publication,
-        create_binding_staging, encode_sha256, parse_fractional_geometry,
+        PublicationPoint, StoredCalibrationSessionManifest, author_gamescope_profile_binding_inner,
+        cleanup_binding_publication, create_binding_staging, encode_sha256,
+        finalize_measured_rectangle, measure_marker_geometry_bgrx, parse_fractional_geometry,
         parse_scaling_configuration, parse_session_configuration, publish_binding_with,
-        publish_sample_with, resolve_output,
+        publish_sample_with, resolve_output, validate_measured_marker,
     };
 
     fn tiny_video_contract() -> UncalibratedVideoContract {
@@ -1461,33 +1603,203 @@ mod tests {
     }
 
     #[test]
-    fn guided_geometry_uses_exact_aspect_fit_coordinates() {
-        let wide = aspect_fit_geometry(2_556, 1_428).unwrap();
-        assert_eq!(
-            (wide.left().numerator(), wide.left().denominator()),
-            (26, 3)
-        );
-        assert_eq!((wide.top().numerator(), wide.top().denominator()), (0, 1));
-        assert_eq!(
-            (wide.width().numerator(), wide.width().denominator()),
-            (7_616, 3)
-        );
-        assert_eq!(
-            (wide.height().numerator(), wide.height().denominator()),
-            (1_428, 1)
-        );
+    fn measured_geometry_accepts_correctable_axis_aligned_transforms() {
+        for (width, height, left, top, scale_x, scale_y) in [
+            (1_920, 1_080, 0.0, 0.0, 1.0, 1.0),
+            (2_560, 1_440, 64.25, 22.75, 1.2, 1.25),
+            (3_840, 2_160, 0.0, 0.0, 2.0, 2.0),
+            (3_500, 2_000, 37.5, 81.25, 1.7, 1.6),
+        ] {
+            let bytes = transformed_marker(width, height, left, top, scale_x, scale_y);
+            let rectangle = measure_marker_geometry_bgrx(width, height, width * 4, &bytes)
+                .unwrap_or_else(|error| {
+                    panic!("{width}x{height} {left},{top} {scale_x}x{scale_y}: {error}")
+                });
+            assert!((coordinate(rectangle.left()) - left).abs() <= 0.6);
+            assert!((coordinate(rectangle.top()) - top).abs() <= 0.6);
+            assert!((coordinate(rectangle.width()) - scale_x * 1_920.0).abs() <= 1.2);
+            assert!((coordinate(rectangle.height()) - scale_y * 1_080.0).abs() <= 1.2);
+        }
+    }
 
-        let tall = aspect_fit_geometry(1_920, 1_200).unwrap();
-        assert_eq!((tall.left().numerator(), tall.left().denominator()), (0, 1));
-        assert_eq!((tall.top().numerator(), tall.top().denominator()), (60, 1));
-        assert_eq!(
-            (tall.width().numerator(), tall.width().denominator()),
-            (1_920, 1)
-        );
-        assert_eq!(
-            (tall.height().numerator(), tall.height().denominator()),
-            (1_080, 1)
-        );
+    #[test]
+    fn measured_geometry_rejects_crop_and_non_axis_aligned_mapping() {
+        for (left, top, rectangle_width, rectangle_height) in [
+            (-1.0 / 2_048.0, 0.0, 1_920.0, 1_080.0),
+            (1.0 / 2_048.0, 0.0, 1_920.0, 1_080.0),
+            (0.0, -1.0 / 2_048.0, 1_920.0, 1_080.0),
+            (0.0, 1.0 / 2_048.0, 1_920.0, 1_080.0),
+            (-1.0, 0.0, 1_920.0, 1_080.0),
+            (1.0, 0.0, 1_920.0, 1_080.0),
+            (0.0, -1.0, 1_920.0, 1_080.0),
+            (0.0, 1.0, 1_920.0, 1_080.0),
+        ] {
+            assert!(
+                finalize_measured_rectangle(
+                    1_920,
+                    1_080,
+                    left,
+                    top,
+                    rectangle_width,
+                    rectangle_height,
+                )
+                .unwrap_err()
+                .contains("cropped")
+            );
+        }
+
+        for (width, height, left, top) in [
+            (1_920, 1_080, -8.0, 0.0),
+            (1_920, 1_080, 8.0, 0.0),
+            (1_920, 1_080, 0.0, -8.0),
+            (1_920, 1_080, 0.0, 8.0),
+        ] {
+            let cropped = transformed_marker(width, height, left, top, 1.0, 1.0);
+            assert!(
+                measure_marker_geometry_bgrx(width, height, width * 4, &cropped)
+                    .unwrap_err()
+                    .contains("cropped")
+            );
+        }
+
+        let mut sheared = transformed_marker(3_840, 2_200, 0.0, 0.0, 2.0, 2.0);
+        for y in 1_100usize..2_200 {
+            let row = y * 3_840 * 4;
+            sheared[row..row + 3_840 * 4].rotate_right(16);
+        }
+        assert!(measure_marker_geometry_bgrx(3_840, 2_200, 3_840 * 4, &sheared).is_err());
+    }
+
+    #[test]
+    fn marker_detection_tolerates_bounded_filter_edges_and_rejects_bad_fiducials() {
+        let marker = crate::calibration_marker::rgb8();
+        let softened = soften_marker_edges(&marker, 2);
+        let filtered = transformed_marker_from(&softened, 3_840, 2_160, 0.0, 0.0, 2.0, 2.0);
+        measure_marker_geometry_bgrx(3_840, 2_160, 3_840 * 4, &filtered).unwrap();
+        assert_eq!(validate_measured_marker(&softened, &marker).unwrap(), 9);
+
+        let mut missing = marker.to_vec();
+        let &(left, top, _) = &crate::calibration_marker::fiducials()[0];
+        for y in top..top + crate::calibration_marker::FIDUCIAL_SIZE {
+            for x in left..left + crate::calibration_marker::FIDUCIAL_SIZE {
+                let offset = ((y * 1_920 + x) * 3) as usize;
+                missing[offset..offset + 3].fill(32);
+            }
+        }
+        let missing = transformed_marker_from(&missing, 1_920, 1_080, 0.0, 0.0, 1.0, 1.0);
+        assert!(measure_marker_geometry_bgrx(1_920, 1_080, 1_920 * 4, &missing).is_err());
+
+        let mut duplicate = marker.to_vec();
+        let duplicate_color = crate::calibration_marker::fiducials()[0].2;
+        for y in 400u32..448 {
+            for x in 400u32..448 {
+                let offset = ((y * 1_920 + x) * 3) as usize;
+                duplicate[offset..offset + 3].copy_from_slice(&duplicate_color);
+            }
+        }
+        let duplicate = transformed_marker_from(&duplicate, 1_920, 1_080, 0.0, 0.0, 1.0, 1.0);
+        assert!(measure_marker_geometry_bgrx(1_920, 1_080, 1_920 * 4, &duplicate).is_err());
+
+        let mut wrong_channels = transformed_marker(1_920, 1_080, 0.0, 0.0, 1.0, 1.0);
+        for pixel in wrong_channels.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        assert!(measure_marker_geometry_bgrx(1_920, 1_080, 1_920 * 4, &wrong_channels).is_err());
+
+        let mut mirrored = transformed_marker(1_920, 1_080, 0.0, 0.0, 1.0, 1.0);
+        for row in mirrored.chunks_exact_mut(1_920 * 4) {
+            for x in 0..960 {
+                let opposite = 1_919 - x;
+                for channel in 0..4 {
+                    row.swap(x * 4 + channel, opposite * 4 + channel);
+                }
+            }
+        }
+        assert!(measure_marker_geometry_bgrx(1_920, 1_080, 1_920 * 4, &mirrored).is_err());
+    }
+
+    fn coordinate(value: scorepeek::capture::RationalCoordinate) -> f64 {
+        f64::from(value.numerator()) / f64::from(value.denominator())
+    }
+
+    fn transformed_marker(
+        width: u32,
+        height: u32,
+        left: f64,
+        top: f64,
+        scale_x: f64,
+        scale_y: f64,
+    ) -> Vec<u8> {
+        let marker = crate::calibration_marker::rgb8();
+        transformed_marker_from(&marker, width, height, left, top, scale_x, scale_y)
+    }
+
+    fn transformed_marker_from(
+        marker: &[u8],
+        width: u32,
+        height: u32,
+        left: f64,
+        top: f64,
+        scale_x: f64,
+        scale_y: f64,
+    ) -> Vec<u8> {
+        let mut bytes = vec![0u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let canonical_x = ((f64::from(x) + 0.5 - left) / scale_x - 0.5).round();
+                let canonical_y = ((f64::from(y) + 0.5 - top) / scale_y - 0.5).round();
+                let destination = ((y * width + x) * 4) as usize;
+                if (0.0..1_920.0).contains(&canonical_x) && (0.0..1_080.0).contains(&canonical_y) {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let canonical_x = canonical_x as u32;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let canonical_y = canonical_y as u32;
+                    let source = ((canonical_y * 1_920 + canonical_x) * 3) as usize;
+                    bytes[destination..destination + 4].copy_from_slice(&[
+                        marker[source + 2],
+                        marker[source + 1],
+                        marker[source],
+                        0,
+                    ]);
+                }
+            }
+        }
+        bytes
+    }
+
+    fn soften_marker_edges(marker: &[u8], radius: u32) -> Box<[u8]> {
+        let mut softened = marker.to_vec();
+        for y in radius..1_080 - radius {
+            for x in radius..1_920 - radius {
+                let center = ((y * 1_920 + x) * 3) as usize;
+                let different_neighbor = [
+                    (x - radius, y),
+                    (x + radius, y),
+                    (x, y - radius),
+                    (x, y + radius),
+                ]
+                .into_iter()
+                .any(|(neighbor_x, neighbor_y)| {
+                    let neighbor = ((neighbor_y * 1_920 + neighbor_x) * 3) as usize;
+                    marker[center..center + 3] != marker[neighbor..neighbor + 3]
+                });
+                if different_neighbor {
+                    for channel in 0..3 {
+                        let mut total = 0u32;
+                        let mut count = 0u32;
+                        for sample_y in y - radius..=y + radius {
+                            for sample_x in x - radius..=x + radius {
+                                let sample = ((sample_y * 1_920 + sample_x) * 3) as usize;
+                                total += u32::from(marker[sample + channel]);
+                                count += 1;
+                            }
+                        }
+                        softened[center + channel] = u8::try_from(total / count).unwrap();
+                    }
+                }
+            }
+        }
+        softened.into_boxed_slice()
     }
 
     #[test]

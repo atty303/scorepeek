@@ -16,7 +16,8 @@ pub use binding::{
     AuthoredGamescopeProfileBinding, GamescopeProfileBinding,
     GamescopeProfileBindingAuthoringInput, GamescopeProfileBindingError,
     GamescopeSessionProvenance, GamescopeSessionProvenanceInput,
-    GamescopeSessionProvenanceMismatch, ObservedContractMismatch,
+    GamescopeSessionProvenanceMismatch, MeasuredGamescopeProfileBindingAuthoringInput,
+    ObservedContractMismatch,
 };
 pub use normalizer::{
     FractionalLinearGeometry, FractionalRectangle, NormalizedCanonicalFrame, RationalCoordinate,
@@ -237,7 +238,6 @@ pub struct UncalibratedGamescopeSourceLease {
     started: Instant,
     next_diagnostic_sequence: u64,
     terminal_recorded: bool,
-    session_provenance: Option<GamescopeSessionProvenance>,
 }
 
 impl fmt::Debug for UncalibratedGamescopeSourceLease {
@@ -247,7 +247,6 @@ impl fmt::Debug for UncalibratedGamescopeSourceLease {
             .field("node_id", &self.node_id)
             .field("registry_global_count", &self.registry_global_count)
             .field("is_active", &self.runtime.is_some())
-            .field("has_session_provenance", &self.session_provenance.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -569,29 +568,6 @@ pub fn acquire_gamescope_source(
     timeout: Duration,
     sink: &mut impl CaptureDiagnosticSink,
 ) -> Result<UncalibratedGamescopeSourceLease, CaptureError> {
-    acquire_gamescope_source_with_session(timeout, None, sink)
-}
-
-/// Acquires one Gamescope source and binds explicit launch provenance to that source lifetime.
-///
-/// The provenance remains uncalibrated until the receiver's full negotiated contract also matches
-/// an immutable profile binding.
-///
-/// # Errors
-/// Returns the same typed discovery errors as [`acquire_gamescope_source`].
-pub fn acquire_gamescope_source_for_session(
-    timeout: Duration,
-    session_provenance: GamescopeSessionProvenance,
-    sink: &mut impl CaptureDiagnosticSink,
-) -> Result<UncalibratedGamescopeSourceLease, CaptureError> {
-    acquire_gamescope_source_with_session(timeout, Some(session_provenance), sink)
-}
-
-fn acquire_gamescope_source_with_session(
-    timeout: Duration,
-    session_provenance: Option<GamescopeSessionProvenance>,
-    sink: &mut impl CaptureDiagnosticSink,
-) -> Result<UncalibratedGamescopeSourceLease, CaptureError> {
     let started = Instant::now();
     let (runtime, snapshot) = match acquire_default_remote(timeout) {
         Ok(value) => value,
@@ -639,7 +615,6 @@ fn acquire_gamescope_source_with_session(
         started,
         next_diagnostic_sequence: 3,
         terminal_recorded: false,
-        session_provenance,
     })
 }
 

@@ -16,8 +16,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     CaptureDiagnosticDetail, CaptureDiagnosticFact, CaptureDiagnosticOperation,
     CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureError, CaptureErrorType,
-    CaptureGeneration, GamescopeProfileBinding, GamescopeSessionProvenance,
-    GamescopeSessionProvenanceMismatch, ITERATION_SLICE, NormalizedCanonicalFrame,
+    CaptureGeneration, GamescopeProfileBinding, ITERATION_SLICE, NormalizedCanonicalFrame,
     ObservedContractMismatch, UncalibratedGamescopeSourceLease, elapsed_ms,
 };
 
@@ -998,15 +997,7 @@ pub fn admit_gamescope_profile(
     sink: &mut impl CaptureDiagnosticSink,
 ) -> Result<CalibratedGamescopeLease, Box<GamescopeLeaseAdmissionFailure>> {
     receiver.flush_observations(sink);
-    let error_type = classify_profile_admission(
-        &binding,
-        receiver
-            .lease
-            .as_ref()
-            .and_then(|lease| lease.session_provenance.as_ref()),
-        &receiver.state.borrow(),
-    )
-    .err();
+    let error_type = classify_profile_admission(&binding, &receiver.state.borrow()).err();
     receiver.record(
         sink,
         CaptureDiagnosticOperation::ProfileBindingAdmission,
@@ -1042,13 +1033,8 @@ pub fn admit_gamescope_profile(
 
 fn classify_profile_admission(
     binding: &GamescopeProfileBinding,
-    session: Option<&GamescopeSessionProvenance>,
     state: &ReceiverState,
 ) -> Result<(), CaptureErrorType> {
-    let session = session.ok_or(CaptureErrorType::ProfileSessionProvenanceMissing)?;
-    binding
-        .verify_session_provenance(session)
-        .map_err(session_mismatch_error)?;
     let video = state
         .contract
         .ok_or(CaptureErrorType::ProfileVideoContractMismatch)?;
@@ -1061,29 +1047,6 @@ fn classify_profile_admission(
     binding
         .verify_observed_contract(video, memory_type, stride)
         .map_err(observed_mismatch_error)
-}
-
-const fn session_mismatch_error(mismatch: GamescopeSessionProvenanceMismatch) -> CaptureErrorType {
-    match mismatch {
-        GamescopeSessionProvenanceMismatch::Environment => {
-            CaptureErrorType::ProfileEnvironmentMismatch
-        }
-        GamescopeSessionProvenanceMismatch::GamescopeVersion => {
-            CaptureErrorType::ProfileGamescopeVersionMismatch
-        }
-        GamescopeSessionProvenanceMismatch::Backend => CaptureErrorType::ProfileBackendMismatch,
-        GamescopeSessionProvenanceMismatch::OutputDimensions => {
-            CaptureErrorType::ProfileOutputDimensionsMismatch
-        }
-        GamescopeSessionProvenanceMismatch::NestedDimensions => {
-            CaptureErrorType::ProfileNestedDimensionsMismatch
-        }
-        GamescopeSessionProvenanceMismatch::NestedRefresh => {
-            CaptureErrorType::ProfileNestedRefreshMismatch
-        }
-        GamescopeSessionProvenanceMismatch::Scaler => CaptureErrorType::ProfileScalerMismatch,
-        GamescopeSessionProvenanceMismatch::Filter => CaptureErrorType::ProfileFilterMismatch,
-    }
 }
 
 const fn observed_mismatch_error(mismatch: ObservedContractMismatch) -> CaptureErrorType {
@@ -1473,8 +1436,7 @@ fn format_offer() -> Result<Vec<u8>, spa::pod::serialize::GenError> {
 mod tests {
     use super::*;
     use crate::capture::{
-        FractionalRectangle, GamescopeProfileBindingAuthoringInput,
-        GamescopeSessionProvenanceInput, RationalCoordinate,
+        FractionalRectangle, GamescopeProfileBindingAuthoringInput, RationalCoordinate,
     };
 
     fn video_info() -> VideoInfoRaw {
@@ -1493,21 +1455,6 @@ mod tests {
         let info = video_info();
         state.negotiate(info);
         state
-    }
-
-    fn session_input() -> GamescopeSessionProvenanceInput {
-        GamescopeSessionProvenanceInput {
-            environment_id: "test-machine".to_owned(),
-            gamescope_version: "3.16.19".to_owned(),
-            backend_id: "sdl".to_owned(),
-            output_width: 4,
-            output_height: 2,
-            nested_width: 4,
-            nested_height: 2,
-            nested_refresh_hz: 60,
-            scaler: "auto".to_owned(),
-            filter: "linear".to_owned(),
-        }
     }
 
     fn profile_binding() -> GamescopeProfileBinding {
@@ -1537,9 +1484,7 @@ mod tests {
         GamescopeProfileBinding::parse(&authored.bytes, &authored.artifact_sha256).unwrap()
     }
 
-    fn receiver_for_admission(
-        session_provenance: Option<GamescopeSessionProvenance>,
-    ) -> UncalibratedPipeWireReceiver {
+    fn receiver_for_admission() -> UncalibratedPipeWireReceiver {
         let mut state = negotiated_state();
         state.accept_frame(UncalibratedMemoryType::MemoryPointer, 16, &[0; 32], 1);
         UncalibratedPipeWireReceiver {
@@ -1552,7 +1497,6 @@ mod tests {
                 started: Instant::now(),
                 next_diagnostic_sequence: 3,
                 terminal_recorded: false,
-                session_provenance,
             }),
             state: Rc::new(RefCell::new(state)),
             receiver_started_ms: 0,
@@ -1585,135 +1529,52 @@ mod tests {
     }
 
     #[test]
-    fn profile_admission_requires_session_and_every_negotiated_field() {
+    fn profile_admission_requires_dimensions_and_current_byte_layout_only() {
         let binding = profile_binding();
-        let session = GamescopeSessionProvenance::new(session_input()).unwrap();
         let mut state = negotiated_state();
         state.accept_frame(UncalibratedMemoryType::MemoryPointer, 16, &[0; 32], 1);
 
-        assert_eq!(
-            classify_profile_admission(&binding, None, &state),
-            Err(CaptureErrorType::ProfileSessionProvenanceMissing)
-        );
-        assert_eq!(
-            classify_profile_admission(&binding, Some(&session), &state),
-            Ok(())
-        );
+        assert_eq!(classify_profile_admission(&binding, &state), Ok(()));
 
         let mut absent = ReceiverState::new(Instant::now());
         assert_eq!(
-            classify_profile_admission(&binding, Some(&session), &absent),
+            classify_profile_admission(&binding, &absent),
             Err(CaptureErrorType::ProfileVideoContractMismatch)
         );
         absent.contract = negotiated_state().contract;
         assert_eq!(
-            classify_profile_admission(&binding, Some(&session), &absent),
+            classify_profile_admission(&binding, &absent),
             Err(CaptureErrorType::ProfileMemoryTypeMismatch)
         );
         absent.memory_type = Some(UncalibratedMemoryType::MemoryPointer);
         assert_eq!(
-            classify_profile_admission(&binding, Some(&session), &absent),
+            classify_profile_admission(&binding, &absent),
             Err(CaptureErrorType::ProfileStrideMismatch)
         );
 
         let mut video_mismatch = state.contract.expect("contract");
         video_mismatch.color_primaries = 1;
         state.contract = Some(video_mismatch);
-        assert_eq!(
-            classify_profile_admission(&binding, Some(&session), &state),
-            Err(CaptureErrorType::ProfileVideoContractMismatch)
-        );
+        assert_eq!(classify_profile_admission(&binding, &state), Ok(()));
         state.contract = Some(negotiated_state().contract.expect("contract"));
         state.memory_type = Some(UncalibratedMemoryType::DmaBuf);
-        assert_eq!(
-            classify_profile_admission(&binding, Some(&session), &state),
-            Err(CaptureErrorType::ProfileMemoryTypeMismatch)
-        );
+        assert_eq!(classify_profile_admission(&binding, &state), Ok(()));
         state.memory_type = Some(UncalibratedMemoryType::MemoryPointer);
         state.stride = Some(20);
+        assert_eq!(classify_profile_admission(&binding, &state), Ok(()));
+        let mut dimension_mismatch = state.contract.expect("contract");
+        dimension_mismatch.width += 1;
+        state.contract = Some(dimension_mismatch);
         assert_eq!(
-            classify_profile_admission(&binding, Some(&session), &state),
-            Err(CaptureErrorType::ProfileStrideMismatch)
+            classify_profile_admission(&binding, &state),
+            Err(CaptureErrorType::ProfileVideoContractMismatch)
         );
-    }
-
-    #[test]
-    fn session_rejections_map_to_value_free_capture_error_types() {
-        let binding = profile_binding();
-        let mut state = negotiated_state();
-        state.accept_frame(UncalibratedMemoryType::MemoryPointer, 16, &[0; 32], 1);
-        let cases = [
-            (
-                CaptureErrorType::ProfileEnvironmentMismatch,
-                GamescopeSessionProvenanceInput {
-                    environment_id: "other-machine".to_owned(),
-                    ..session_input()
-                },
-            ),
-            (
-                CaptureErrorType::ProfileGamescopeVersionMismatch,
-                GamescopeSessionProvenanceInput {
-                    gamescope_version: "3.16.20".to_owned(),
-                    ..session_input()
-                },
-            ),
-            (
-                CaptureErrorType::ProfileBackendMismatch,
-                GamescopeSessionProvenanceInput {
-                    backend_id: "headless".to_owned(),
-                    ..session_input()
-                },
-            ),
-            (
-                CaptureErrorType::ProfileOutputDimensionsMismatch,
-                GamescopeSessionProvenanceInput {
-                    output_width: 5,
-                    ..session_input()
-                },
-            ),
-            (
-                CaptureErrorType::ProfileNestedDimensionsMismatch,
-                GamescopeSessionProvenanceInput {
-                    nested_width: 5,
-                    ..session_input()
-                },
-            ),
-            (
-                CaptureErrorType::ProfileNestedRefreshMismatch,
-                GamescopeSessionProvenanceInput {
-                    nested_refresh_hz: 61,
-                    ..session_input()
-                },
-            ),
-            (
-                CaptureErrorType::ProfileScalerMismatch,
-                GamescopeSessionProvenanceInput {
-                    scaler: "fit".to_owned(),
-                    ..session_input()
-                },
-            ),
-            (
-                CaptureErrorType::ProfileFilterMismatch,
-                GamescopeSessionProvenanceInput {
-                    filter: "nearest".to_owned(),
-                    ..session_input()
-                },
-            ),
-        ];
-        for (expected, input) in cases {
-            let session = GamescopeSessionProvenance::new(input).unwrap();
-            assert_eq!(
-                classify_profile_admission(&binding, Some(&session), &state),
-                Err(expected)
-            );
-        }
     }
 
     #[test]
     fn admission_records_one_value_free_result_and_retains_rejected_receiver() {
         let binding = profile_binding();
-        let session = GamescopeSessionProvenance::new(session_input()).unwrap();
-        let receiver = receiver_for_admission(Some(session));
+        let receiver = receiver_for_admission();
         let mut facts = Facts::default();
         let admitted = admit_gamescope_profile(
             receiver,
@@ -1737,7 +1598,8 @@ mod tests {
         );
         admitted.shutdown(&mut ()).unwrap();
 
-        let receiver = receiver_for_admission(None);
+        let receiver = receiver_for_admission();
+        receiver.state.borrow_mut().contract.as_mut().unwrap().width += 1;
         let failure = admit_gamescope_profile(
             receiver,
             profile_binding(),
@@ -1747,7 +1609,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             failure.error_type(),
-            CaptureErrorType::ProfileSessionProvenanceMissing
+            CaptureErrorType::ProfileVideoContractMismatch
         );
         let rejection = facts.0.last().expect("rejection fact");
         assert_eq!(
@@ -1757,7 +1619,7 @@ mod tests {
         assert_eq!(rejection.status, CaptureDiagnosticStatus::Error);
         assert_eq!(
             rejection.error_type,
-            Some(CaptureErrorType::ProfileSessionProvenanceMissing)
+            Some(CaptureErrorType::ProfileVideoContractMismatch)
         );
         assert_eq!(
             rejection.detail,
@@ -1771,8 +1633,7 @@ mod tests {
         let binding = profile_binding();
         let expected_profile = binding.capture_profile_sha256().to_owned();
         let expected_normalizer = binding.normalizer_artifact_sha256().to_owned();
-        let session = GamescopeSessionProvenance::new(session_input()).unwrap();
-        let receiver = receiver_for_admission(Some(session));
+        let receiver = receiver_for_admission();
         let mut facts = Facts::default();
         let mut admitted = admit_gamescope_profile(
             receiver,
@@ -1837,8 +1698,7 @@ mod tests {
         ];
         for expected in cases {
             let binding = profile_binding();
-            let session = GamescopeSessionProvenance::new(session_input()).unwrap();
-            let receiver = receiver_for_admission(Some(session));
+            let receiver = receiver_for_admission();
             let mut source = Facts::default();
             let mut admitted = admit_gamescope_profile(
                 receiver,

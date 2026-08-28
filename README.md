@@ -106,7 +106,7 @@ contract and does not use the network. This is not an alternate-model selector.
 
 After transferring or synchronizing one active catalog, create a capture profile on the machine
 that will run the game. Scorepeek starts and stops a dedicated calibration Gamescope containing its
-own marker; arguments after `--` are the Gamescope settings to record for this profile:
+own marker; arguments after `--` are used only to launch that calibration process:
 
 ```text
 scorepeek setup gamescope --profile bazzite-4k -- -W 3840 -H 2160 -w 1920 -h 1080 -r 120 -S fit -F linear
@@ -116,10 +116,18 @@ scorepeek profile list
 Setup stores the profile under `$XDG_CONFIG_HOME/scorepeek/profiles` (normally
 `$HOME/.config/scorepeek/profiles`). Operator-selected local roots and inputs follow normal
 filesystem symlinks, including Bazzite's `/home -> /var/home`; resolved files still have to satisfy
-their type, size, digest, schema, and admission contracts. Setup does not start INFINITAS and does
-not turn an unverified
-configuration into a supported profile. Start the watcher before or after the ordinary
-Gamescope/game session:
+their type, size, digest, schema, and admission contracts. Setup measures the positive
+axis-aligned X/Y scale and translation from the captured marker and saves only the observed BGRx
+dimensions and rational source rectangle needed by the production normalizer. Padding,
+non-centered and fractional offsets, non-integer or different X/Y scales, and aspect distortion
+are accepted when the complete canonical image is present. Crop, rotation, mirror, shear,
+perspective, or unreadable marker interiors are rejected because the current normalizer cannot
+recover them. Gamescope version, backend, filter, scaler, refresh, launch arguments, stride, and
+memory allocation are not profile identity.
+
+Setup does not start INFINITAS and proves only the capture transform; it does not turn an
+unverified configuration into a supported profile. Existing local profile schemas must be
+recreated with setup. Start the watcher before or after the ordinary Gamescope/game session:
 
 ```text
 scorepeek run --profile bazzite-4k
@@ -131,8 +139,10 @@ watcher status, diagnostic, and recognition artifact persistence. The watcher wa
 exists, attaches only when exactly one Gamescope video source exists, and stays running across
 sequential Gamescope lifetimes. Stop scorepeek with SIGINT (normally Ctrl-C) or SIGTERM. Scorepeek
 does not start, signal, stop, or restart ordinary Gamescope, Steam, or INFINITAS processes.
-Scorepeek rejects a profile authored with a different installed Gamescope version instead of
-silently changing capture configuration.
+Each Gamescope session is admitted from the actual source format, dimensions, current byte layout,
+and saved geometry. Music-select/result scene detection and OCR during ordinary `run` are the
+authority for recognition support; scorepeek does not re-estimate geometry or switch profiles at
+runtime.
 
 Ordinary recognition artifacts are stored per Gamescope session below
 `$XDG_STATE_HOME/scorepeek/recognition`; the bounded watcher status is stored at
@@ -166,8 +176,8 @@ mise run capture:gamescope:test:lifecycle -- --duration-ms 100 --runs 100 --cons
 mise run capture:gamescope:calibration:sample -- --output /absolute/private/sample --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear
 mise run capture:gamescope:calibration:session-sample -- --output /absolute/private/session-sample --environment-id development-machine-v1 --gamescope-version 3.16.19-128-g7282613+ --backend wayland --output-width 2556 --output-height 1428 --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear
 mise run capture:gamescope:binding:author -- --calibration /absolute/private/session-sample --calibration-sha256 SHA256 --output /absolute/private/binding.json --left-numerator 26 --left-denominator 3 --top-numerator 0 --top-denominator 1 --width-numerator 7616 --width-denominator 3 --height-numerator 1428 --height-denominator 1
-mise run capture:gamescope:test:result-recognition -- --binding /absolute/private/binding.json --binding-sha256 SHA256 --capture-generation 1 --duration-ms 30000 --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --canonical-layout-sha256 LAYOUT_SHA256 --catalog-sha256 CATALOG_SHA256 --recording enabled --environment-id development-machine-v1 --gamescope-version 3.16.19-128-g7282613+ --backend wayland --output-width 2556 --output-height 1428 --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear --recognition-artifact /absolute/private/new-recognition-evidence
-mise run run:gamescope -- --binding /absolute/private/binding.json --binding-sha256 SHA256 --capture-generation 1 --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --canonical-layout-sha256 LAYOUT_SHA256 --catalog-sha256 CATALOG_SHA256 --recording enabled --environment-id development-machine-v1 --gamescope-version 3.16.19-128-g7282613+ --backend wayland --output-width 2556 --output-height 1428 --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear --recognition-artifact /absolute/private/new-recognition-evidence
+mise run capture:gamescope:test:result-recognition -- --binding /absolute/private/binding.json --binding-sha256 SHA256 --capture-generation 1 --duration-ms 30000 --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --canonical-layout-sha256 LAYOUT_SHA256 --catalog-sha256 CATALOG_SHA256 --recording enabled --recognition-artifact /absolute/private/new-recognition-evidence
+mise run run:gamescope -- --binding /absolute/private/binding.json --binding-sha256 SHA256 --capture-generation 1 --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --canonical-layout-sha256 LAYOUT_SHA256 --catalog-sha256 CATALOG_SHA256 --recording enabled --recognition-artifact /absolute/private/new-recognition-evidence
 mise run catalog:sync
 mise run corpus:recording:import -- --store /absolute/private/store --capture-context /absolute/private/capture-context.json /absolute/recordings/complete-run.mkv
 mise run corpus:dataset:seal -- --store /absolute/private/store calibration-001

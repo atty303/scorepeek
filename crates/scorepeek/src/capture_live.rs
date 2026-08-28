@@ -7,8 +7,7 @@ use std::time::{Duration, Instant};
 use scorepeek::capture::{
     CalibratedGamescopeLease, CaptureDiagnosticDetail, CaptureDiagnosticFact,
     CaptureDiagnosticOperation, CaptureDiagnosticSink, CaptureDiagnosticStatus, CaptureErrorType,
-    CaptureGeneration, GamescopeProfileBinding, GamescopeSessionProvenance,
-    acquire_gamescope_source, acquire_gamescope_source_for_session, admit_gamescope_profile,
+    CaptureGeneration, GamescopeProfileBinding, acquire_gamescope_source, admit_gamescope_profile,
     start_uncalibrated_gamescope_receiver,
 };
 use serde::Serialize;
@@ -524,7 +523,6 @@ impl HandoffSession {
 pub struct GamescopeDiagnosticHandoffGateConfig<'a> {
     pub binding_path: &'a std::path::Path,
     pub expected_binding_sha256: &'a str,
-    pub session: GamescopeSessionProvenance,
     pub capture_generation: CaptureGeneration,
     pub descriptor: DiagnosticRunDescriptor,
     pub policy: DiagnosticPolicy,
@@ -608,7 +606,6 @@ pub fn parse_consumer_interval_ms(value: &OsStr) -> Result<u64, String> {
 pub fn run_gamescope_binding_admission_gate(
     binding_path: &std::path::Path,
     expected_binding_sha256: &str,
-    session: GamescopeSessionProvenance,
 ) -> GamescopeBindingAdmissionGateReport {
     let binding = match read_binding(binding_path, expected_binding_sha256) {
         Ok(binding) => binding,
@@ -617,7 +614,7 @@ pub fn run_gamescope_binding_admission_gate(
         }
     };
     let mut sink = BoundedDiagnosticSink::default();
-    let lease = match acquire_gamescope_source_for_session(DISCOVERY_TIMEOUT, session, &mut sink) {
+    let lease = match acquire_gamescope_source(DISCOVERY_TIMEOUT, &mut sink) {
         Ok(lease) => lease,
         Err(error) => {
             return binding_admission_report(
@@ -682,7 +679,6 @@ pub fn run_gamescope_binding_admission_gate(
 pub fn run_gamescope_canonical_frame_gate(
     binding_path: &std::path::Path,
     expected_binding_sha256: &str,
-    session: GamescopeSessionProvenance,
     capture_generation: CaptureGeneration,
 ) -> GamescopeCanonicalFrameGateReport {
     let binding = match read_binding(binding_path, expected_binding_sha256) {
@@ -705,7 +701,7 @@ pub fn run_gamescope_canonical_frame_gate(
         }
     };
     let mut sink = BoundedDiagnosticSink::default();
-    let lease = match acquire_gamescope_source_for_session(DISCOVERY_TIMEOUT, session, &mut sink) {
+    let lease = match acquire_gamescope_source(DISCOVERY_TIMEOUT, &mut sink) {
         Ok(lease) => lease,
         Err(error) => {
             return canonical_frame_report(
@@ -1083,7 +1079,6 @@ fn start_field_observation_gate(
     let artifact_run_id = config.handoff.descriptor.run_id.clone();
     let mut sink = sink;
     let lease = match start_diagnostic_handoff_capture(
-        config.handoff.session,
         binding,
         capture_generation,
         config.handoff.expected_source_node_id,
@@ -1798,7 +1793,6 @@ fn run_gamescope_handoff_gate(
     bind_diagnostic_descriptor(&mut config.descriptor, &binding);
     let mut sink = BoundedDiagnosticSink::default();
     let mut lease = match start_diagnostic_handoff_capture(
-        config.session,
         binding,
         capture_generation,
         config.expected_source_node_id,
@@ -1985,20 +1979,17 @@ fn bind_diagnostic_descriptor(
 }
 
 fn start_diagnostic_handoff_capture(
-    session: GamescopeSessionProvenance,
     binding: GamescopeProfileBinding,
     capture_generation: CaptureGeneration,
     expected_source_node_id: Option<u32>,
     sink: &mut BoundedDiagnosticSink,
 ) -> Result<CalibratedGamescopeLease, (DiagnosticHandoffGateErrorType, Option<CaptureErrorType>)> {
-    let lease = acquire_gamescope_source_for_session(DISCOVERY_TIMEOUT, session, sink).map_err(
-        |error| {
-            (
-                DiagnosticHandoffGateErrorType::CaptureFailed,
-                Some(error.error_type()),
-            )
-        },
-    )?;
+    let lease = acquire_gamescope_source(DISCOVERY_TIMEOUT, sink).map_err(|error| {
+        (
+            DiagnosticHandoffGateErrorType::CaptureFailed,
+            Some(error.error_type()),
+        )
+    })?;
     if expected_source_node_id.is_some_and(|expected| expected != lease.node_id()) {
         lease.shutdown(sink);
         return Err((
@@ -2741,23 +2732,8 @@ mod tests {
 
     #[test]
     fn binding_gate_failure_report_omits_paths_and_session_values() {
-        let session = scorepeek::capture::GamescopeSessionProvenance::new(
-            scorepeek::capture::GamescopeSessionProvenanceInput {
-                environment_id: "PRIVATE-ENVIRONMENT".to_owned(),
-                gamescope_version: "PRIVATE-VERSION".to_owned(),
-                backend_id: "PRIVATE-BACKEND".to_owned(),
-                output_width: 4,
-                output_height: 2,
-                nested_width: 4,
-                nested_height: 2,
-                nested_refresh_hz: 60,
-                scaler: "auto".to_owned(),
-                filter: "linear".to_owned(),
-            },
-        )
-        .unwrap();
         let path = std::path::Path::new("/PRIVATE/BINDING/PATH");
-        let report = run_gamescope_binding_admission_gate(path, &"f".repeat(64), session);
+        let report = run_gamescope_binding_admission_gate(path, &"f".repeat(64));
         let encoded = serde_json::to_string(&report).unwrap();
 
         assert!(!encoded.contains("PRIVATE"));
@@ -2766,25 +2742,9 @@ mod tests {
 
     #[test]
     fn canonical_gate_failure_report_omits_paths_and_session_values() {
-        let session = scorepeek::capture::GamescopeSessionProvenance::new(
-            scorepeek::capture::GamescopeSessionProvenanceInput {
-                environment_id: "PRIVATE-ENVIRONMENT".to_owned(),
-                gamescope_version: "PRIVATE-VERSION".to_owned(),
-                backend_id: "PRIVATE-BACKEND".to_owned(),
-                output_width: 4,
-                output_height: 2,
-                nested_width: 4,
-                nested_height: 2,
-                nested_refresh_hz: 60,
-                scaler: "auto".to_owned(),
-                filter: "linear".to_owned(),
-            },
-        )
-        .unwrap();
         let report = run_gamescope_canonical_frame_gate(
             std::path::Path::new("/PRIVATE/BINDING/PATH"),
             &"f".repeat(64),
-            session,
             CaptureGeneration::new(7).unwrap(),
         );
         let encoded = serde_json::to_string(&report).unwrap();
@@ -2797,7 +2757,7 @@ mod tests {
 
     #[test]
     fn diagnostic_handoff_failure_report_omits_paths_and_session_values() {
-        let session = scorepeek::capture::GamescopeSessionProvenance::new(
+        let _session = scorepeek::capture::GamescopeSessionProvenance::new(
             scorepeek::capture::GamescopeSessionProvenanceInput {
                 environment_id: "PRIVATE-ENVIRONMENT".to_owned(),
                 gamescope_version: "PRIVATE-VERSION".to_owned(),
@@ -2818,7 +2778,6 @@ mod tests {
             run_gamescope_diagnostic_handoff_gate(super::GamescopeDiagnosticHandoffGateConfig {
                 binding_path: std::path::Path::new("/PRIVATE/BINDING/PATH"),
                 expected_binding_sha256: &"f".repeat(64),
-                session,
                 capture_generation: generation,
                 descriptor: diagnostic_descriptor(generation.get()),
                 policy: DiagnosticPolicy::default(),
@@ -2836,7 +2795,7 @@ mod tests {
 
     #[test]
     fn recognition_handoff_failure_is_typed_without_private_values() {
-        let session = scorepeek::capture::GamescopeSessionProvenance::new(
+        let _session = scorepeek::capture::GamescopeSessionProvenance::new(
             scorepeek::capture::GamescopeSessionProvenanceInput {
                 environment_id: "PRIVATE-ENVIRONMENT".to_owned(),
                 gamescope_version: "PRIVATE-VERSION".to_owned(),
@@ -2859,7 +2818,6 @@ mod tests {
             run_gamescope_recognition_handoff_gate(super::GamescopeDiagnosticHandoffGateConfig {
                 binding_path: std::path::Path::new("/PRIVATE/BINDING/PATH"),
                 expected_binding_sha256: &"f".repeat(64),
-                session,
                 capture_generation: generation,
                 descriptor,
                 policy: DiagnosticPolicy::default(),

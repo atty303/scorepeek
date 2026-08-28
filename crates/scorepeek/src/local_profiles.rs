@@ -31,27 +31,21 @@ struct SetupSummary {
     schema: &'static str,
     profile: String,
     path: PathBuf,
-    binding_sha256: String,
-    capture_profile_sha256: String,
-    exact_pixel_count: u64,
-    mean_absolute_error: f64,
+    profile_sha256: String,
+    observed_width: u32,
+    observed_height: u32,
+    source_rectangle: scorepeek::capture::FractionalRectangle,
+    verified_fiducial_count: u32,
 }
 
 #[derive(Serialize)]
 struct ProfileSummary<'a> {
     name: &'a str,
     path: &'a Path,
-    binding_sha256: &'a str,
-    capture_profile_sha256: &'a str,
-    gamescope_version: &'a str,
-    gamescope_arguments: &'a [String],
-    output_width: u32,
-    output_height: u32,
-    nested_width: u32,
-    nested_height: u32,
-    nested_refresh_hz: u32,
-    scaler: &'static str,
-    filter: &'static str,
+    profile_sha256: &'a str,
+    observed_width: u32,
+    observed_height: u32,
+    source_rectangle: scorepeek::capture::FractionalRectangle,
 }
 
 pub fn try_command(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
@@ -208,8 +202,6 @@ fn setup_gamescope(name: &OsStr, arguments: &[OsString], bundle: &Path) -> Resul
     if output.symlink_metadata().is_ok() {
         return Err(format!("capture profile {name:?} already exists"));
     }
-    let effective = EffectiveGamescopeConfiguration::from_arguments(&arguments)?;
-    let version = current_gamescope_version()?;
     let executable = env::current_exe()
         .map_err(|error| format!("current scorepeek executable could not be resolved: {error}"))?;
     let mut command = Command::new("gamescope");
@@ -235,15 +227,7 @@ fn setup_gamescope(name: &OsStr, arguments: &[OsString], bundle: &Path) -> Resul
         ));
     }
     let guided = capture_calibration::capture_guided_gamescope_profile(
-        capture_calibration::GuidedGamescopeProfileInput {
-            gamescope_arguments: arguments,
-            gamescope_version: version,
-            backend_id: effective.backend,
-            nested_width: effective.nested_width,
-            nested_height: effective.nested_height,
-            nested_refresh_hz: effective.refresh,
-            scaler: effective.scaler,
-            filter: effective.filter,
+        &capture_calibration::GuidedGamescopeProfileInput {
             expected_marker_rgb8: &calibration_marker::rgb8(),
         },
     );
@@ -252,13 +236,14 @@ fn setup_gamescope(name: &OsStr, arguments: &[OsString], bundle: &Path) -> Resul
     let guided = guided?;
     publish_create_only(&output, &guided.binding.bytes)?;
     let summary = SetupSummary {
-        schema: "scorepeek-gamescope-profile-setup-v1",
+        schema: "scorepeek-gamescope-profile-setup-v2",
         profile: name,
         path: output,
-        binding_sha256: guided.binding.artifact_sha256,
-        capture_profile_sha256: guided.binding.capture_profile_sha256,
-        exact_pixel_count: guided.exact_pixel_count,
-        mean_absolute_error: guided.mean_absolute_error,
+        profile_sha256: guided.binding.artifact_sha256,
+        observed_width: guided.observed_width,
+        observed_height: guided.observed_height,
+        source_rectangle: guided.geometry,
+        verified_fiducial_count: guided.verified_fiducial_count,
     };
     println!(
         "{}",
@@ -275,20 +260,10 @@ fn list_profiles() -> Result<(), String> {
         .map(|(name, profile)| ProfileSummary {
             name,
             path: &profile.path,
-            binding_sha256: &profile.digest,
-            capture_profile_sha256: profile.binding.capture_profile_sha256(),
-            gamescope_version: profile.binding.gamescope_version(),
-            gamescope_arguments: profile
-                .binding
-                .gamescope_arguments()
-                .expect("local profile requires Gamescope arguments"),
-            output_width: profile.binding.output_width(),
-            output_height: profile.binding.output_height(),
-            nested_width: profile.binding.nested_width(),
-            nested_height: profile.binding.nested_height(),
-            nested_refresh_hz: profile.binding.nested_refresh_hz(),
-            scaler: profile.binding.scaler(),
-            filter: profile.binding.filter(),
+            profile_sha256: &profile.digest,
+            observed_width: profile.binding.observed_width(),
+            observed_height: profile.binding.observed_height(),
+            source_rectangle: profile.binding.source_rectangle(),
         })
         .collect::<Vec<_>>();
     println!(
@@ -340,9 +315,9 @@ fn load_profiles_from(directory: &Path) -> Result<Vec<(String, SelectedProfile)>
         let digest = sha256(&bytes);
         let binding = GamescopeProfileBinding::parse(&bytes, &digest)
             .map_err(|error| format!("capture profile {} is invalid: {error:?}", path.display()))?;
-        if binding.gamescope_arguments().is_none() {
+        if !binding.is_measured() {
             return Err(format!(
-                "capture profile {} is not a local profile",
+                "capture profile {} uses an obsolete schema; recreate it with `scorepeek setup gamescope`",
                 path.display()
             ));
         }
@@ -453,114 +428,6 @@ fn gamescope_arguments(arguments: &[OsString]) -> Result<Vec<String>, String> {
         result.push(argument.to_owned());
     }
     Ok(result)
-}
-
-struct EffectiveGamescopeConfiguration {
-    backend: String,
-    nested_width: u32,
-    nested_height: u32,
-    refresh: u32,
-    scaler: String,
-    filter: String,
-}
-
-impl EffectiveGamescopeConfiguration {
-    fn from_arguments(arguments: &[String]) -> Result<Self, String> {
-        Ok(Self {
-            backend: last_value(arguments, &["--backend"])
-                .unwrap_or("auto")
-                .to_owned(),
-            nested_width: parse_value(arguments, &["-w", "--nested-width"], 1_920, "nested width")?,
-            nested_height: parse_value(
-                arguments,
-                &["-h", "--nested-height"],
-                1_080,
-                "nested height",
-            )?,
-            refresh: parse_value(arguments, &["-r", "--nested-refresh"], 60, "nested refresh")?,
-            scaler: last_value(arguments, &["-S", "--scaler"])
-                .unwrap_or("auto")
-                .to_owned(),
-            filter: last_value(arguments, &["-F", "--filter"])
-                .unwrap_or("linear")
-                .to_owned(),
-        })
-    }
-}
-
-fn parse_value(
-    arguments: &[String],
-    names: &[&str],
-    default: u32,
-    label: &str,
-) -> Result<u32, String> {
-    let value = last_value(arguments, names).unwrap_or("");
-    if value.is_empty() {
-        return Ok(default);
-    }
-    value
-        .parse::<u32>()
-        .ok()
-        .filter(|value| *value > 0)
-        .ok_or_else(|| format!("Gamescope {label} must be a positive integer"))
-}
-
-fn last_value<'a>(arguments: &'a [String], names: &[&str]) -> Option<&'a str> {
-    let mut selected = None;
-    let mut index = 0;
-    while index < arguments.len() {
-        let argument = &arguments[index];
-        if names.contains(&argument.as_str()) {
-            selected = arguments.get(index + 1).map(String::as_str);
-            index += 2;
-            continue;
-        }
-        for name in names {
-            if let Some(value) = argument.strip_prefix(&format!("{name}=")) {
-                selected = Some(value);
-            } else if name.len() == 2 && argument.starts_with(name) && argument.len() > 2 {
-                selected = Some(&argument[2..]);
-            }
-        }
-        index += 1;
-    }
-    selected
-}
-
-pub fn current_gamescope_version() -> Result<String, String> {
-    let output = Command::new("gamescope")
-        .arg("--version")
-        .output()
-        .map_err(|error| format!("Gamescope version command failed: {error}"))?;
-    let text = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let plain = strip_ansi(&text);
-    plain
-        .split_once("gamescope version ")
-        .and_then(|(_, rest)| rest.split_whitespace().next())
-        .filter(|version| !version.is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| "Gamescope version could not be parsed".to_owned())
-}
-
-fn strip_ansi(value: &str) -> String {
-    let mut result = String::new();
-    let mut escape = false;
-    for character in value.chars() {
-        if escape {
-            if character.is_ascii_alphabetic() {
-                escape = false;
-            }
-        } else if character == '\u{1b}' {
-            escape = true;
-        } else {
-            result.push(character);
-        }
-    }
-    result
 }
 
 fn ensure_directory_tree(path: &Path) -> Result<(), String> {
@@ -682,12 +549,16 @@ fn sha256(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        EffectiveGamescopeConfiguration, MAX_RECOGNITION_GENERATIONS, ensure_directory_tree,
-        ensure_recognition_capacity, gamescope_arguments, profile_name, publish_create_only,
-        read_profile,
+        MAX_RECOGNITION_GENERATIONS, ensure_directory_tree, ensure_recognition_capacity,
+        gamescope_arguments, load_profiles_from, profile_name, publish_create_only, read_profile,
     };
     use std::ffi::{OsStr, OsString};
     use std::os::unix::fs::symlink;
+
+    use scorepeek::capture::{
+        FractionalRectangle, GamescopeProfileBinding, GamescopeProfileBindingAuthoringInput,
+        RationalCoordinate, UncalibratedMemoryType, UncalibratedVideoContract,
+    };
 
     #[test]
     fn profile_names_are_path_safe() {
@@ -699,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_arguments_are_retained_and_effective_values_are_parsed() {
+    fn gamescope_arguments_are_passed_to_the_calibration_process() {
         let raw = [
             "--backend",
             "wayland",
@@ -715,13 +586,12 @@ mod tests {
         .map(OsString::from);
         let arguments = gamescope_arguments(&raw).unwrap();
         assert_eq!(arguments.last().unwrap(), "--hdr-enabled");
-        let effective = EffectiveGamescopeConfiguration::from_arguments(&arguments).unwrap();
-        assert_eq!(effective.backend, "wayland");
-        assert_eq!(effective.nested_width, 1_920);
-        assert_eq!(effective.nested_height, 1_080);
-        assert_eq!(effective.refresh, 120);
-        assert_eq!(effective.scaler, "fit");
-        assert_eq!(effective.filter, "linear");
+        assert_eq!(
+            arguments,
+            raw.iter()
+                .map(|value| value.to_string_lossy())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -768,6 +638,58 @@ mod tests {
         symlink(&actual, &alias).unwrap();
 
         assert_eq!(read_profile(&alias).unwrap(), b"profile");
+    }
+
+    #[test]
+    fn obsolete_local_profile_requires_setup_recreation() {
+        let temporary = tempfile::tempdir().unwrap();
+        let video = UncalibratedVideoContract {
+            width: 4,
+            height: 2,
+            framerate_num: 0,
+            framerate_denom: 1,
+            maximum_framerate_num: 0,
+            maximum_framerate_denom: 0,
+            pixel_aspect_num: 0,
+            pixel_aspect_denom: 0,
+            chroma_site: 0,
+            color_range: 0,
+            color_matrix: 0,
+            transfer_function: 0,
+            color_primaries: 0,
+        };
+        let authored = GamescopeProfileBinding::author_local(
+            GamescopeProfileBindingAuthoringInput {
+                calibration_evidence_sha256: "1".repeat(64),
+                environment_id: "local".to_owned(),
+                gamescope_version: "3.16.19".to_owned(),
+                backend_id: "wayland".to_owned(),
+                output_width: 4,
+                output_height: 2,
+                nested_width: 4,
+                nested_height: 2,
+                nested_refresh_hz: 60,
+                scaler: "auto".to_owned(),
+                filter: "linear".to_owned(),
+                observed_video_contract: video,
+                memory_type: UncalibratedMemoryType::MemoryPointer,
+                stride: 16,
+                geometry: FractionalRectangle::new(
+                    RationalCoordinate::new(0, 1).unwrap(),
+                    RationalCoordinate::new(0, 1).unwrap(),
+                    RationalCoordinate::new(4, 1).unwrap(),
+                    RationalCoordinate::new(2, 1).unwrap(),
+                ),
+            },
+            vec!["--backend".to_owned(), "wayland".to_owned()],
+        )
+        .unwrap();
+        std::fs::write(temporary.path().join("old.json"), authored.bytes).unwrap();
+        let Err(error) = load_profiles_from(temporary.path()) else {
+            panic!("obsolete profile was accepted");
+        };
+        assert!(error.contains("obsolete schema"));
+        assert!(error.contains("setup gamescope"));
     }
 
     #[test]

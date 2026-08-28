@@ -39,11 +39,18 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   ADR 0053 removes blanket symlink rejection from operator-selected local roots and inputs while
   retaining resolved content validation, create-only no-clobber publication, and non-following
   owned cleanup. This includes Bazzite's standard `/home -> /var/home` layout.
+  ADR 0054 replaces guided setup's aspect-fit assumption and complete-pixel marker threshold with
+  a measured positive axis-aligned X/Y transform. The machine-local v3 profile stores only actual
+  BGRx dimensions, the measured rational source rectangle, canonical contract, and normalizer
+  identity; ordinary admission no longer compares launch metadata or Gamescope version.
   The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
   machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
-  model. The first guided setup exposed the now-fixed `/home` symlink rejection before Gamescope
-  calibration began. The corrected binary has not yet been transferred and no target profile has
-  been authored, so target lifecycle acceptance remains unverified.
+  model. After the `/home` symlink fix, retained synthetic target evidence showed the 1920x1080
+  marker in a 3840x2160 BGRx frame with intact fiducial interiors and only bounded scaling-filter
+  boundary differences. The measured-transform implementation then authored a target v3 profile
+  from nine fiducials: its source rectangle is `(0, 0, 3839.5, 2159.5)` in the observed 3840x2160
+  frame. This proves calibration and production normalization for the marker, but ordinary-run
+  recognition and lifecycle acceptance remain unverified.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -93,20 +100,24 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - Live and repeated-lifecycle gates expose bounded typed facts and aggregate counters without pixels
   or arbitrary PipeWire properties. Uncalibrated frames cannot enter recognition or canonical
   diagnostic recording.
-- Create-only calibration sampling records exact bounded environment, Gamescope version, backend,
+- Developer create-only calibration sampling records exact bounded environment, Gamescope version, backend,
   output size, nested size/refresh, scaler/filter, complete observed BGRx contract, frame digest,
   receiver sequence, monotonic receive time, and typed capture facts. Hashing, serialization,
   filesystem publication, and fsync occur after receiver/provider shutdown.
-- `scorepeek-gamescope-profile-binding-v1` is canonical JSON selected by an independent SHA-256. It
-  binds calibration evidence, exact Gamescope provenance/configuration, full observed contract,
-  opaque profile digest, fixed canonical contract, normalizer implementation, and explicit rational
-  geometry. Parsing and contract comparison are pure, bounded, filesystem-free, and fail closed.
-- Binding validation requires provider output width/height to equal the observed video width/height;
-  internally valid but cross-field-inconsistent artifacts are rejected as invalid profiles.
-- A new Gamescope acquisition can carry explicit launcher/operator-owned session provenance. It is
-  promoted to `CalibratedGamescopeLease` only when every provenance field and every negotiated
-  video/memory/stride field exactly match the selected immutable binding. Missing or drifting data
-  fails closed, and the rejected receiver remains explicitly shut down by its owner.
+- Machine-local `scorepeek-gamescope-profile-binding-v3` is canonical JSON selected by an
+  independent SHA-256. It binds default Gamescope source kind, observed BGRx width/height, the
+  measured 1/2048-pixel rational source rectangle, fixed canonical contract, and normalizer
+  implementation. It contains no launch arguments, Gamescope version/backend/scaler/filter,
+  refresh/color metadata, calibration stride/memory type, or discarded frame digest.
+- Setup fits nine redundant marker fiducials to independent positive X/Y scale and translation,
+  rejects residual above one observed pixel and an extrapolated rectangle outside the frame, then
+  verifies fiducial and cell interiors through the production normalizer. Correctable padding,
+  offset, fractional phase, non-integer/anisotropic scale, aspect distortion and bounded filter
+  edges are accepted; crop and non-axis-aligned transforms fail closed.
+- Runtime admission requires actual BGRx dimensions to match the profile and the receiver to have a
+  valid current memory/stride/byte layout with in-bounds saved geometry. Launch provenance,
+  Gamescope version, filter, scaler, refresh/color metadata, and calibration-time allocation do not
+  participate. A rejected receiver remains explicitly shut down by its owner.
 - The bounded capture diagnostic sink receives exactly one compact typed admission fact. The
   live `gamescope-binding-admission-gate` report exposes stable acceptance/rejection categories and
   bounded capture facts, but not binding bodies, session strings, paths, pixels, arbitrary
@@ -526,8 +537,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   recording simulation, but its first three-result live run was partial under field-observer
   backpressure. A later longest-title run completed its foreground recognition artifact under the
   revised result text regions, but predated the current music-select crop and resolver.
-- Session provenance is explicit launcher/operator input, not an automatic observation of the
-  Gamescope process. Process discovery or attestation is not implemented or claimed.
+- Historical developer samples may retain launcher metadata, but ordinary source lifetimes and
+  profile admission do not accept or compare operator-declared session provenance. Process
+  discovery or attestation is not implemented or claimed.
 - The identity-geometry 1920x1080 Wayland binding has controlled-marker evidence and admitted
   user-started INFINITAS foreground sessions. The first three-result run was partial and used the
   superseded text regions; later runs do not yet constitute a supported-profile gate.
@@ -575,11 +587,13 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   size/digest checks, a writer lock, durable atomic publication and the existing 8-generation,
   192-MiB-object and 512-MiB-total limits. A completed cache avoids network; the fixed loader still
   verifies bytes when used. Catalogs remain separately managed under XDG data.
-- `scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...` authors binding v2 from a
-  deterministic RGB8 marker and production fractional normalizer, retaining the exact bounded
-  Gamescope argument vector under XDG config. `scorepeek profile list` and profile-selected
-  `scorepeek run` remove binding paths, digests and repeated provenance from ordinary operation.
-  Existing raw commands remain developer gates.
+- `scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...` authors minimal binding v3 from
+  measured marker correspondences and the production fractional normalizer. Gamescope arguments
+  launch only the dedicated calibration process and are not saved. `scorepeek profile list` reports
+  only profile identity, observed dimensions, and measured rectangle; profile-selected `scorepeek
+  run` removes binding paths, digests, launch metadata, and repeated provenance from ordinary
+  operation. Old local schemas require setup recreation. Existing raw calibration sampling remains
+  a developer evidence surface, not runtime identity.
   Each admitted Gamescope lifetime uses a distinct create-only recognition artifact directory;
   `--no-recording` disables watcher status, diagnostic, and recognition artifact persistence.
   Diagnostic resource provenance
@@ -603,12 +617,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Build and transfer the corrected cargo-dist archive, then rerun guided setup on the operator's
-   4K Bazzite machine to verify the normal `/home -> /var/home` path and author one exact Wayland
-   profile. Then exercise the watcher with scorepeek-first and Gamescope-first startup,
+1. Exercise the measured target profile against actual INFINITAS music-select and result scenes,
+   then exercise the watcher with scorepeek-first and Gamescope-first startup,
    two sequential Gamescope lifetimes, simultaneous sources, and idle/active SIGINT and SIGTERM.
-   This target-machine mutation and deployment remain separate operator-authority boundaries; do
-   not claim lifecycle support before it passes.
+   Confirm scene detection and OCR without changing the measured geometry. These live game and
+   lifecycle checks remain separate operator-authority boundaries; do not claim recognition or
+   lifecycle support before they pass.
 2. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
 3. Use ADR 0043's existing bounded retention and existing-bytes-only freeze/export surface to

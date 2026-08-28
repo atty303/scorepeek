@@ -104,6 +104,11 @@ pub struct FractionalLinearGeometry {
 }
 
 impl FractionalLinearGeometry {
+    #[must_use]
+    pub const fn source_rectangle(self) -> FractionalRectangle {
+        self.source
+    }
+
     /// Validates an explicit fractional source rectangle within the observed frame.
     ///
     /// # Errors

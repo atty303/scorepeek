@@ -3,7 +3,7 @@
 ## 状態
 
 - 初回決定日: 2026-08-15
-- 最終更新日: 2026-08-26
+- 最終更新日: 2026-08-28
 - repository bootstrapとtarget inventory probe: 完了
 - M1.1 catalog contractとlocal federation core: 完了
 - M1.2 live acquisitionとsync orchestration: manual/scheduled syncまで完了
@@ -34,11 +34,11 @@
   normalizerで既知marker geometryを再確認し、fresh Wayland sessionでbinding一致を受理した後、別のfresh
   Wayland sessionのgeneration 23で同じbindingからcanonical frameを生成した。以前のSDL marker artifactは
   そのbackend固有のcontrolled evidenceとして残すが、Wayland sessionのbindingまたは検証根拠には使用しない。
-  新規leaseへlauncher/operatorが明示したsession provenanceを保持し、
-  bindingの全provenance fieldとreceiverが実negotiationしたvideo/memory/stride contractが一致した場合だけ
-  calibrated leaseへ昇格する境界まで実装済み。受理・拒否は値を持たないtyped factとしてbounded capture
-  diagnosticへ記録する。nested refresh不一致拒否は以前のSDL固有profileで確認済みであり、Wayland profileでは
-  exact一致の受理だけを確認済み。
+  これらの旧bindingではlauncher/operatorが明示したsession provenanceとreceiverが実negotiationした
+  video/memory/stride contractのexact一致を要求していたが、ADR 0054により通常runのadmission contractから
+  削除した。現在のmeasured v3 profileはobserved BGRx width/heightと保存geometry boundsだけを照合し、現在frameの
+  stride、memory layout、byte lengthはreceiver自身のcontractで検証する。旧nested refresh不一致拒否とWayland
+  exact一致はdeveloper calibration artifactの歴史的証拠であり、現在のruntime admission条件ではない。
   calibrated leaseだけがcapture generation/profile/normalizer identity付き`ObservedFrame`を生成し、同じleaseの
   binding-selected fractional normalizerだけがRGB8 1920x1080の`NormalizedCanonicalFrame`へ変換できる境界も
   実装済み。generation/profile/normalizer mixingはfail closedで、最初のnormalization success/failureだけを
@@ -467,11 +467,21 @@ read-only local inputはsymlinkを辿り、resolved targetへ既存のtype、siz
 contractを適用する。create-only destinationは既存entryを上書きせず、自動cleanup/deleteは所有を確認した
 entryだけをsymlink先へ追従せず処理する。
 
-target machineでは、scorepeek-ownedな既知の1920x1080 markerをexact Gamescope Wayland configで
-明示的に校正し、observed BGRx contractとmarker geometryが一致した場合だけmachine-local profileを
-create-onlyで発行する。これはsetup時にoperatorが要求するguided calibrationであり、通常session中の
-自動測定、自動profile切替、threshold緩和またはfallbackではない。4K、FSR/NIS、HDR、Reshade、異なる
-Gamescope version/configはそれぞれ別profileとする。
+target machineでは、scorepeek-ownedな既知の1920x1080 markerを専用Gamescopeで表示し、raw BGRx上の
+冗長なcorner/edge/center fiducialから正のX/Y scaleとtranslationを実測する。全対応点が1 observed pixel
+以内で一つのaxis-aligned transformへ整合し、外挿したcanonical rectangleがframe内に完全に収まり、
+production normalizer後のfiducial/cell内部、向き、channel orderが保たれる場合だけmachine-local profileを
+create-onlyで発行する。padding、offset、fractional phase、X/Y別scaleおよびaspect distortionは補正して
+受理し、crop、rotation、mirror、shear、perspective、欠落・重複fiducialは拒否する。filter境界、ringing、
+外周1pxまたは全pixelの完全一致は合否に使わない。これはsetup時だけの測定であり、通常session中の
+自動測定、自動profile切替、threshold緩和またはfallbackではない。
+
+profileはdefault Gamescope source、observed BGRx width/height、1/2048 observed pixel単位のsource
+rectangle、canonical RGB8 1920x1080 contractおよびnormalizer identityだけを保持する。calibrationを起動した
+Gamescope引数、version、backend、filter、scaler、refresh、stride、memory typeおよびframe digestは保持しない。
+runtime admissionはactual BGRx dimension、現在frameのreceiver byte-layout contractと保存geometry boundsだけを
+確認する。setupはtransformだけを証明し、実INFINITASのmusic-select/result scene detectionとOCRがsupportの
+権威である。
 
 通常操作は`scorepeek run --profile NAME`とし、profile省略はlocal profileが一つだけの場合に限る。
 scorepeekはoperatorが起動したGamescopeへattachし、INFINITASまたは通常Gamescopeを起動、signal、終了、
@@ -499,8 +509,8 @@ delivery checkpointは次の順序とする。
 
 1. cargo-dist 0.32.0で`scorepeek`だけのLinux x86-64 archiveとSHA-256 checksumをlocal生成し、private
    resourceを別途転送したclean compatible Bazzite環境でrepository checkoutなしにverify/loadできることを確認する。
-2. `scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...`、`scorepeek profile list`、
-   profile名だけのroutine runを実装し、target 4K Wayland profileをauthorしてmarker validationを通す。
+2. `scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...`で実測transform profileをauthorし、
+   `scorepeek profile list`とprofile名だけのroutine runをtarget 4K Wayland環境で通す。
 3. status、ADR 0043の既存retention、既存bytesのfreeze/export、
    scorepeek-only ordered teardownを通す。
 4. 既存retentionが選択したevidenceをexportし、development replay、修正、replacement
