@@ -48,11 +48,8 @@ impl SourceLifetimes {
         }
     }
 
-    pub fn consume(&mut self, node_id: u32) {
+    pub fn admitted(&mut self, node_id: u32) {
         self.consumed_node = Some(node_id);
-    }
-
-    pub fn admitted(&mut self) {
         self.next_generation = self.next_generation.saturating_add(1);
     }
 }
@@ -121,10 +118,12 @@ impl StatusRecorder {
         active_session_id: Option<&str>,
         outcome: Option<&'static str>,
     ) -> Result<(), String> {
-        if !self.transitions.is_empty()
-            && self.state == state
+        if self.state == state
             && self.active_session_id.as_deref() == active_session_id
-            && outcome.is_none()
+            && self
+                .transitions
+                .back()
+                .is_some_and(|transition| transition.outcome == outcome)
         {
             return Ok(());
         }
@@ -207,8 +206,7 @@ mod tests {
                 generation: 1
             }
         );
-        lifetimes.consume(41);
-        lifetimes.admitted();
+        lifetimes.admitted(41);
         assert_eq!(
             lifetimes.observe(GamescopeSourceSnapshot::Unique { node_id: 41 }),
             WatchDecision::WaitConsumed
@@ -233,8 +231,10 @@ mod tests {
             lifetimes.observe(GamescopeSourceSnapshot::Unique { node_id: 1 }),
             WatchDecision::Admit { generation: 1, .. }
         ));
-        lifetimes.consume(1);
-        lifetimes.observe(GamescopeSourceSnapshot::Absent);
+        assert!(matches!(
+            lifetimes.observe(GamescopeSourceSnapshot::Unique { node_id: 1 }),
+            WatchDecision::Admit { generation: 1, .. }
+        ));
         assert!(matches!(
             lifetimes.observe(GamescopeSourceSnapshot::Unique { node_id: 2 }),
             WatchDecision::Admit { generation: 1, .. }
@@ -283,5 +283,29 @@ mod tests {
             .transition(WatcherState::WaitingForSource, None, None)
             .unwrap();
         assert_eq!(temporary.path().read_dir().unwrap().count(), 0);
+    }
+
+    #[test]
+    fn repeated_retry_state_is_recorded_once() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("watcher-status.json");
+        let mut recorder = StatusRecorder::new(Some(path.clone()), "invocation-1".to_owned());
+        recorder
+            .transition(
+                WatcherState::AdmissionRejected,
+                None,
+                Some("capture_admission_failed"),
+            )
+            .unwrap();
+        recorder
+            .transition(
+                WatcherState::AdmissionRejected,
+                None,
+                Some("capture_admission_failed"),
+            )
+            .unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(value["transitions"].as_array().unwrap().len(), 1);
     }
 }

@@ -50,14 +50,24 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   streams and bounded deduplicated QOI evidence is now the only capture-regression corpus input;
   operator review, immutable labels, suite publication, and production frame replay are separate
   stages. Video is auxiliary and the former recording-dataset CLI routes have been removed. The
-  active frame-first suite contains two verified diagnostics and seven operator-reviewed episodes:
-  the retained three-episode video and the four-song target session. `mise run corpus:test` replays
-  all 908 stored canonical frame references through the production predicate and all seven stable
+  active frame-first suite contains three verified diagnostics and nine operator-reviewed episodes:
+  the retained three-episode video, the four-song target session, and the latest two-play target
+  session. `mise run corpus:test` replays all 1,232 stored canonical frame references through the
+  production predicate and all nine stable
   QOIs through OCR, catalog resolution, and clear-type resolution successfully. The current
   suite also contains one operator-confirmed black startup frame as an explicit negative predicate
   expectation. The current four-song legacy diagnostic was normalized to v3 with 636
   canonical QOIs and 32,768 facts in one NDJSON stream; the video diagnostic deterministically
   processed 4,584 10 Hz observations and retained 272 deduplicated canonical QOIs.
+  ADR 0057 separates retryable pre-admission failure from an admitted session's terminal failure.
+  A target scorepeek-first run observed one startup admission rejection and then remained stuck on
+  the consumed numeric node; restarting scorepeek after Gamescope stabilized admitted immediately.
+  The watcher now consumes a node only after session start and retries a unique not-yet-ready source
+  every 500 ms without repeated output. The same target run retained two visually reviewed
+  `EXH-CLEAR` results (`The Commanders` and `Forgetting Machine`) as a verified partial v3 diagnostic
+  with 324 canonical QOIs. Its independently bounded fact stream omitted predicates retained by the
+  recognition stream, so v3 publication now uses each self-contained recognition timestamp and
+  scene when that partial join input is absent.
   The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
   machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
   model. After the `/home` symlink fix, retained synthetic target evidence showed the 1920x1080
@@ -67,9 +77,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   rectangle check misclassified as crop. After ADR 0055 aligned admission with the normalizer's
   sampling footprint, the same target command authored `gamescope-4k` from nine fiducials with
   rectangle `(-0.5, -0.5, 3840, 2160)` in the observed 3840x2160 frame. This proves calibration and
-  production normalization for the marker. One ordinary watcher run retained four reviewed result
-  episodes, but prospective v3 live publication and the full startup/lifetime/signal matrix remain
-  unverified.
+  production normalization for the marker. Two ordinary watcher runs have retained six reviewed
+  result episodes, but the fixed pre-admission retry, automatic partial v3 publication, and the
+  remaining lifetime/signal matrix require a fresh target run.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -646,11 +656,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Exercise the measured target `gamescope-4k` watcher with scorepeek-first/Gamescope-first startup,
-   sequential and simultaneous source lifetimes, and idle/active signals. Do not claim target
-   lifecycle support before those separate checks pass.
-2. Run one prospective ordinary session with the committed v3 live publisher, verify its complete
-   per-tick observation stream, and add only operator-reviewed episodes to the active suite.
+1. Exercise the fixed measured target `gamescope-4k` watcher with scorepeek-first startup through the
+   transient INFINITAS source sequence, then cover Gamescope-first, sequential and simultaneous
+   source lifetimes, and idle/active signals. Do not claim target lifecycle support before those
+   separate checks pass.
+2. Verify that the next partial or complete ordinary session publishes v3 automatically without
+   component reconstruction, and add only operator-reviewed episodes to the active suite.
 3. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
 

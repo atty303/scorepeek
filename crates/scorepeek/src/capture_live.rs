@@ -144,6 +144,12 @@ pub enum LiveSessionStopReason {
     TerminalFailure,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LiveSessionStartupRetry {
+    Admission,
+    Catalog,
+}
+
 #[derive(Clone, Copy)]
 pub enum GamescopeLiveSessionEvent<'a> {
     Started {
@@ -444,6 +450,30 @@ impl GamescopeFieldObservationGateReport {
             self.error_type,
             Some(FieldObservationGateErrorType::ResultOutputFailed)
         )
+    }
+
+    pub const fn startup_retry(&self) -> Option<LiveSessionStartupRetry> {
+        match self.error_type {
+            Some(
+                FieldObservationGateErrorType::CaptureFailed
+                | FieldObservationGateErrorType::AdmissionRejected,
+            ) => Some(LiveSessionStartupRetry::Admission),
+            Some(
+                FieldObservationGateErrorType::CatalogUnavailable
+                | FieldObservationGateErrorType::CatalogBindingMismatch
+                | FieldObservationGateErrorType::CatalogLoadFailed,
+            ) => Some(LiveSessionStartupRetry::Catalog),
+            _ => None,
+        }
+    }
+
+    pub fn startup_failure_summary(&self) -> String {
+        self.failure_detail.clone().unwrap_or_else(|| {
+            format!(
+                "Gamescope live session startup failed: {:?}",
+                self.error_type
+            )
+        })
     }
 
     pub fn diagnostic_manifest_sha256(&self) -> Option<&str> {
@@ -3132,6 +3162,77 @@ mod tests {
         assert!(encoded.contains("scorepeek-gamescope-field-observation-gate-v1"));
         assert!(!encoded.contains("result_observations"));
         assert!(!encoded.contains("recognition_artifact"));
+    }
+
+    #[test]
+    fn startup_retry_classification_distinguishes_transient_boundaries() {
+        for error_type in [
+            FieldObservationGateErrorType::CaptureFailed,
+            FieldObservationGateErrorType::AdmissionRejected,
+        ] {
+            let report = field_observation_report(
+                Some(error_type),
+                None,
+                CaptureGeneration::new(1).unwrap(),
+                FieldObservationCounters::default(),
+                FieldObservationFinishOutcomes {
+                    field_observer: None,
+                    diagnostic: None,
+                    recognition_artifact: None,
+                    artifact_requested: false,
+                },
+                BoundedDiagnosticSink::default(),
+            );
+            assert_eq!(
+                report.startup_retry(),
+                Some(super::LiveSessionStartupRetry::Admission)
+            );
+        }
+
+        for error_type in [
+            FieldObservationGateErrorType::CatalogUnavailable,
+            FieldObservationGateErrorType::CatalogBindingMismatch,
+            FieldObservationGateErrorType::CatalogLoadFailed,
+        ] {
+            let report = field_observation_report(
+                Some(error_type),
+                None,
+                CaptureGeneration::new(1).unwrap(),
+                FieldObservationCounters::default(),
+                FieldObservationFinishOutcomes {
+                    field_observer: None,
+                    diagnostic: None,
+                    recognition_artifact: None,
+                    artifact_requested: false,
+                },
+                BoundedDiagnosticSink::default(),
+            );
+            assert_eq!(
+                report.startup_retry(),
+                Some(super::LiveSessionStartupRetry::Catalog)
+            );
+        }
+
+        let mut report = field_observation_report(
+            Some(FieldObservationGateErrorType::DiagnosticConfigurationInvalid),
+            None,
+            CaptureGeneration::new(1).unwrap(),
+            FieldObservationCounters::default(),
+            FieldObservationFinishOutcomes {
+                field_observer: None,
+                diagnostic: None,
+                recognition_artifact: None,
+                artifact_requested: false,
+            },
+            BoundedDiagnosticSink::default(),
+        );
+        report.failure_detail = Some("catalog binding does not match".to_owned());
+
+        assert_eq!(report.startup_retry(), None);
+        assert_eq!(
+            report.startup_failure_summary(),
+            "catalog binding does not match"
+        );
     }
 
     #[test]

@@ -211,11 +211,15 @@ fn rewrite_recognition_stream(
             let tick = observation["tick_sequence"]
                 .as_u64()
                 .ok_or_else(|| "recognition observation lacks a tick sequence".to_owned())?;
-            let Some(base) = by_tick.get(&tick) else {
-                return Err("recognition observation has no predicate fact".to_owned());
+            let (source_timestamp_ms, screen) = match by_tick.get(&tick) {
+                Some(base) => (base["source_timestamp_ms"].clone(), base["screen"].clone()),
+                None if request.completeness == "partial" => {
+                    recognition_observation_context(&observation)?
+                }
+                None => return Err("recognition observation has no predicate fact".to_owned()),
             };
-            observation["source_timestamp_ms"] = base["source_timestamp_ms"].clone();
-            observation["screen"] = base["screen"].clone();
+            observation["source_timestamp_ms"] = source_timestamp_ms;
+            observation["screen"] = screen;
             by_tick.insert(tick, observation);
             Ok(())
         },
@@ -263,6 +267,19 @@ fn rewrite_recognition_stream(
         bytes: manifest_bytes.len() as u64,
     });
     Ok(manifest_sha256)
+}
+
+fn recognition_observation_context(observation: &Value) -> Result<(Value, Value), String> {
+    let timestamp = observation["timing"]["monotonic_start_ms"]
+        .as_u64()
+        .ok_or_else(|| "recognition observation has no predicate fact or timestamp".to_owned())?;
+    let screen = observation["fields"]["screen"]
+        .as_str()
+        .ok_or_else(|| "recognition observation has no predicate fact or screen".to_owned())?;
+    if !matches!(screen, "music_select" | "result" | "unknown") {
+        return Err("recognition observation has an invalid screen".to_owned());
+    }
+    Ok((Value::from(timestamp), Value::from(screen)))
 }
 
 fn write_merged_observations(
@@ -481,5 +498,92 @@ mod tests {
         assert_eq!(records[0]["source_timestamp_ms"], 100);
         assert_eq!(records[1]["screen"], "result");
         assert_eq!(records[1]["fields"]["title"], "measured");
+    }
+
+    #[test]
+    fn partial_publication_retains_recognition_when_its_predicate_fact_was_dropped() {
+        let root = tempfile::tempdir().unwrap();
+        let capture = root.path().join("capture-input");
+        let recognition = root.path().join("recognition-input");
+        let sessions = root.path().join("sessions");
+        fs::create_dir(&capture).unwrap();
+        fs::create_dir(&recognition).unwrap();
+        fs::create_dir(&sessions).unwrap();
+        fs::write(capture.join("facts.ndjson"), b"").unwrap();
+        fs::write(capture.join("manifest.json"), b"{}\n").unwrap();
+        fs::write(
+            recognition.join("observations.ndjson"),
+            b"{\"schema\":\"scorepeek-recognition-observation-v5\",\"tick_sequence\":7,\"timing\":{\"monotonic_start_ms\":800},\"fields\":{\"screen\":\"result\"}}\n",
+        )
+        .unwrap();
+        fs::write(recognition.join("manifest.json"), b"{}\n").unwrap();
+        let profile = root.path().join("profile.json");
+        fs::write(&profile, b"{}\n").unwrap();
+        let recognition_manifest_sha256 = digest_file(&recognition.join("manifest.json")).unwrap();
+        let published = publish(&PublishRequest {
+            root: &sessions,
+            session_id: "session",
+            capture_generation: 1,
+            profile_sha256: &"1".repeat(64),
+            catalog_sha256: &"2".repeat(64),
+            processed_ticks: 1,
+            busy_skips: 7,
+            maximum_consecutive_busy_skips: 7,
+            completeness: "partial",
+            capture_directory: &capture,
+            capture_manifest_sha256: &digest_file(&capture.join("manifest.json")).unwrap(),
+            recognition_directory: &recognition,
+            recognition_manifest_sha256: &recognition_manifest_sha256,
+            profile_path: &profile,
+        })
+        .unwrap();
+        let observation: Value = serde_json::from_str(
+            fs::read_to_string(published.join("recognition/observations.ndjson"))
+                .unwrap()
+                .trim(),
+        )
+        .unwrap();
+        assert_eq!(observation["source_timestamp_ms"], 800);
+        assert_eq!(observation["screen"], "result");
+    }
+
+    #[test]
+    fn complete_publication_rejects_recognition_without_its_predicate_fact() {
+        let root = tempfile::tempdir().unwrap();
+        let capture = root.path().join("capture-input");
+        let recognition = root.path().join("recognition-input");
+        let sessions = root.path().join("sessions");
+        fs::create_dir(&capture).unwrap();
+        fs::create_dir(&recognition).unwrap();
+        fs::create_dir(&sessions).unwrap();
+        fs::write(capture.join("facts.ndjson"), b"").unwrap();
+        fs::write(capture.join("manifest.json"), b"{}\n").unwrap();
+        fs::write(
+            recognition.join("observations.ndjson"),
+            b"{\"tick_sequence\":0,\"timing\":{\"monotonic_start_ms\":100},\"fields\":{\"screen\":\"result\"}}\n",
+        )
+        .unwrap();
+        fs::write(recognition.join("manifest.json"), b"{}\n").unwrap();
+        let profile = root.path().join("profile.json");
+        fs::write(&profile, b"{}\n").unwrap();
+        let recognition_manifest_sha256 = digest_file(&recognition.join("manifest.json")).unwrap();
+        let error = publish(&PublishRequest {
+            root: &sessions,
+            session_id: "session",
+            capture_generation: 1,
+            profile_sha256: &"1".repeat(64),
+            catalog_sha256: &"2".repeat(64),
+            processed_ticks: 1,
+            busy_skips: 0,
+            maximum_consecutive_busy_skips: 0,
+            completeness: "complete",
+            capture_directory: &capture,
+            capture_manifest_sha256: &digest_file(&capture.join("manifest.json")).unwrap(),
+            recognition_directory: &recognition,
+            recognition_manifest_sha256: &recognition_manifest_sha256,
+            profile_path: &profile,
+        })
+        .unwrap_err();
+        assert_eq!(error, "recognition observation has no predicate fact");
     }
 }

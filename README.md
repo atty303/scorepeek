@@ -138,7 +138,9 @@ When exactly one profile exists, `scorepeek run` selects it automatically. Multi
 `--profile NAME`. Recording is bounded and enabled by default; add `--no-recording` to suppress
 watcher status, diagnostic, and recognition artifact persistence. The watcher waits when no source
 exists, attaches only when exactly one Gamescope video source exists, and stays running across
-sequential Gamescope lifetimes. Stop scorepeek with SIGINT (normally Ctrl-C) or SIGTERM. Scorepeek
+sequential Gamescope lifetimes. A unique startup source that is not ready for admission is retried at
+a bounded interval, so scorepeek can remain running while Gamescope and the game finish starting.
+Stop scorepeek with SIGINT (normally Ctrl-C) or SIGTERM. Scorepeek
 does not start, signal, stop, or restart ordinary Gamescope, Steam, or INFINITAS processes.
 Each Gamescope session is admitted from the actual source format, dimensions, current byte layout,
 and saved geometry. Music-select/result scene detection and OCR during ordinary `run` are the

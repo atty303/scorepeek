@@ -679,8 +679,6 @@ fn run_routine_live_session(
                 if stop.load(std::sync::atomic::Ordering::Acquire) {
                     break;
                 }
-                lifetimes.consume(node_id);
-                announced = None;
                 let mut started = false;
                 let mut on_started = || {
                     started = true;
@@ -738,7 +736,8 @@ fn run_routine_live_session(
                     }
                 }
                 if started {
-                    lifetimes.admitted();
+                    lifetimes.admitted(node_id);
+                    announced = None;
                     let outcome = match report.stop_reason() {
                         Some(capture_live::LiveSessionStopReason::RequestedSignal) => "stopped",
                         Some(capture_live::LiveSessionStopReason::SourceEnded) => "source_ended",
@@ -763,16 +762,38 @@ fn run_routine_live_session(
                         &mut status_failed,
                     );
                 } else {
-                    eprintln!(
-                        "scorepeek: Gamescope source could not be admitted; waiting for this source lifetime to end"
-                    );
-                    record_watcher_status(
-                        &mut status,
-                        routine_watcher::WatcherState::AdmissionRejected,
-                        None,
-                        Some("capture_admission_failed"),
-                        &mut status_failed,
-                    );
+                    match report.startup_retry() {
+                        Some(capture_live::LiveSessionStartupRetry::Admission) => {
+                            announce_watcher_state(
+                                &mut announced,
+                                routine_watcher::WatcherState::AdmissionRejected,
+                                "Gamescope source is not ready; scorepeek will keep waiting",
+                            );
+                            record_watcher_status(
+                                &mut status,
+                                routine_watcher::WatcherState::AdmissionRejected,
+                                None,
+                                Some("capture_admission_failed"),
+                                &mut status_failed,
+                            );
+                        }
+                        Some(capture_live::LiveSessionStartupRetry::Catalog) => {
+                            announce_watcher_state(
+                                &mut announced,
+                                routine_watcher::WatcherState::CatalogUnavailable,
+                                "active catalog changed or is temporarily unavailable; scorepeek will retry",
+                            );
+                            record_watcher_status(
+                                &mut status,
+                                routine_watcher::WatcherState::CatalogUnavailable,
+                                None,
+                                Some("catalog_temporarily_unavailable"),
+                                &mut status_failed,
+                            );
+                        }
+                        None => return Err(report.startup_failure_summary()),
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
                 }
             }
         }

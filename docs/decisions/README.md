@@ -157,6 +157,10 @@ authoritative.
 - [ADR 0056: Use 10 Hz diagnostics as the frame-corpus boundary](0056-use-10-hz-diagnostics-as-the-frame-corpus-boundary.md)
   makes verified diagnostic sessions the only capture-regression input, fixes recognition at 10 Hz,
   stores bounded QOI evidence plus session NDJSON streams, and makes video optional auxiliary input.
+- [ADR 0057: Retry pre-admission and preserve partial live evidence](0057-retry-pre-admission-and-preserve-partial-live-evidence.md)
+  retries a unique source until session admission succeeds while retaining the no-reconnect rule
+  after session start, and preserves self-contained recognition observations when partial recording
+  omitted their predicate facts.
 
 ## Historical
 

@@ -95,7 +95,9 @@
   通常運用はGamescopeを所有しない常駐watcherとして同じproviderとpost-canonical経路を継続利用する。
   先起動・後起動のどちらでもsourceを待ち、sequentialなsource lifetimeを独立generation/sessionとして扱い、
   SIGINT/SIGTERMだけで順序付き終了する。multi-session exact-value NDJSON、sessionごとのcreate-only
-  recognition artifact、unknownを含むnumeric screen-predicate diagnosticを持つ。
+  recognition artifact、unknownを含むnumeric screen-predicate diagnosticを持つ。起動途中のunique sourceが
+  admission前に失敗した場合はlifetimeを消費せずbounded intervalで再試行し、session開始後のterminal failure
+  だけを同一lifetimeで再接続しない。
   registered resourceとcandidate domainをcapture開始前にloadし、Gamescope capture loopからfield submit、inference、全song scoring、
   capture/worker/diagnosticの順序付き終了までを一つのbounded gateへ統合済み。private INFINITAS frameによる実submit、実行cost、
   queue behavior、candidate内容は未検証で、accepted resultは未実装。
