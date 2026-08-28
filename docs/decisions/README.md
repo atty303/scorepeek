@@ -164,6 +164,10 @@ authoritative.
 - [ADR 0058: Separate run observations from terminal presentation](0058-separate-run-observations-from-terminal-presentation.md)
   supersedes ADR 0052's stdout contract by moving provisional recognition observations to a bounded
   Unix socket while TTY stdout renders watcher state and catalog-backed song resolution.
+- [ADR 0059: Stabilize provisional result observations over time](0059-stabilize-result-observations-over-time.md)
+  supersedes ADR 0024 only for excluding result-local temporal state and ADR 0038 only for excluding
+  a provisional post-resolver result state. Raw observations remain unchanged; music-select dwell
+  and accepted event authority remain unimplemented.
 
 ## Historical
 

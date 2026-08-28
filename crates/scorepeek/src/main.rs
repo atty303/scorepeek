@@ -1202,6 +1202,26 @@ fn live_session_event_value(
             }
             value
         }
+        capture_live::GamescopeLiveSessionEvent::ScreenChanged {
+            sequence,
+            monotonic_start_ms,
+            monotonic_end_ms,
+            screen,
+        } => {
+            let mut value = serde_json::json!({
+                "schema": schema,
+                "event": "screen_changed",
+                "sequence": sequence,
+                "monotonic_start_ms": monotonic_start_ms,
+                "monotonic_end_ms": monotonic_end_ms,
+                "screen": screen,
+            });
+            if let Some(session_id) = session_id {
+                value["session_id"] = session_id.into();
+                value["capture_generation"] = routine_generation.into();
+            }
+            value
+        }
         capture_live::GamescopeLiveSessionEvent::Observation {
             sequence,
             monotonic_start_ms,
@@ -3461,6 +3481,27 @@ mod tests {
         assert_eq!(preflight.status, "ready");
         assert_eq!(preflight.error_type, None);
         assert!(root.is_dir());
+    }
+
+    #[test]
+    fn routine_screen_change_binds_raw_screen_boundary() {
+        let value = live_session_event_value(
+            Some("invocation-session-2"),
+            Some(2),
+            GamescopeLiveSessionEvent::ScreenChanged {
+                sequence: 41,
+                monotonic_start_ms: 100,
+                monotonic_end_ms: 125,
+                screen: scorepeek::recognition::ScreenClass::Unknown,
+            },
+        )
+        .unwrap();
+        assert_eq!(value["schema"], "scorepeek-run-event-v2");
+        assert_eq!(value["event"], "screen_changed");
+        assert_eq!(value["session_id"], "invocation-session-2");
+        assert_eq!(value["capture_generation"], 2);
+        assert_eq!(value["sequence"], 41);
+        assert_eq!(value["screen"], "unknown");
     }
 
     #[test]

@@ -50,11 +50,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   streams and bounded deduplicated QOI evidence is now the only capture-regression corpus input;
   operator review, immutable labels, suite publication, and production frame replay are separate
   stages. Video is auxiliary and the former recording-dataset CLI routes have been removed. The
-  active frame-first suite contains three verified diagnostics and nine operator-reviewed episodes:
-  the retained three-episode video, the four-song target session, and the latest two-play target
-  session. `mise run corpus:test` replays all 1,232 stored canonical frame references through the
-  production predicate and all nine stable
-  QOIs through OCR, catalog resolution, and clear-type resolution successfully. The current
+  active frame-first suite generation
+  `133d408c074951a6f150e4da529a48a68c1f66e05250d78c2e6c55adae8fad9f` contains four verified
+  diagnostics and fourteen operator-reviewed episodes. `mise run corpus:test` replays all 1,870
+  stored canonical frame references through the production predicate and all fourteen stable QOIs
+  through OCR, catalog resolution, and clear-type resolution successfully. The current
   suite also contains one operator-confirmed black startup frame as an explicit negative predicate
   expectation. The current four-song legacy diagnostic was normalized to v3 with 636
   canonical QOIs and 32,768 facts in one NDJSON stream; the video diagnostic deterministically
@@ -74,6 +74,15 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   TTY stdout renders watcher state, separate OCR and catalog-backed song presentation, resolver
   evidence, and channel health without raw mode; non-TTY stdout reports only deduplicated human
   state changes. This does not implement the accepted `/v1.sock` event API or event authority.
+  ADR 0059 adds a deterministic result-local temporal reducer after the frame resolver. Song and
+  clear type stabilize independently after two equal observations within 250 ms; stable values
+  survive a transient unknown, while a different accepted value becomes a typed conflict. Raw
+  field observations remain unchanged and precede bounded `temporal_result_changed` transition
+  records; synchronous `screen_changed` records reset the reducer across non-result boundaries.
+  Ten temporally analyzable reviewed episodes contain 430 correct song accepts, ten
+  unknowns, no wrong accepts, 420 correct clear values, twenty unknowns, and no wrong clear values;
+  four sparse legacy episodes are excluded from temporal calibration. Music-select dwell remains
+  unimplemented pending operator-reviewed stationary and scrolling spans.
   The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
   machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
   model. After the `/home` symlink fix, retained synthetic target evidence showed the 1920x1080
@@ -460,7 +469,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   official-model execution, and native PipeWire build have each passed their dedicated development
   gates. These do not substitute for target-machine capture, recognition, or performance evidence.
 - Repository validation at this checkpoint includes formatting/static checks, workspace all-target
-  clippy with warnings denied, 287 library tests, 213 binary tests, 54 corpus tests, 77 offline OCR
+  clippy with warnings denied, 296 library tests, 215 binary tests, 54 corpus tests, 77 offline OCR
   tests, and native PipeWire build verification. Focused session tests also verify descriptor/layout rejection,
   frame-generation rejection, diagnostic opt-out non-interference, and manifest-backed ordered
   binding rollover.
@@ -564,11 +573,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Unverified boundaries
 
-- The result-song resolver is grounded by two song identities and three result episodes from one
-  recording. It has no title-disjoint holdout, broader clear-type/background coverage, calibrated
-  false-accept denominator, or release-accuracy authority. The screen-local music-select resolver
-  is grounded by four recording-visible selections and two separate long-title live observations,
-  but stable-selection dwell, charts, digits, temporal event emission, and deduplication remain
+- The result temporal reducer is grounded by ten reviewed episodes with complete enough ordered
+  observations; four legacy episodes are too sparse for temporal calibration. It has no wrong-accept
+  challenge set, title-disjoint holdout, calibrated false-accept denominator, or release-accuracy
+  authority. The screen-local music-select resolver is grounded by recording-visible selections and
+  separate long-title live observations, but operator-reviewed stationary/scrolling spans,
+  stable-selection dwell, charts, digits, accepted event emission, and deduplication remain
   unimplemented.
 - A true live music-select screen has passed the fixed-label predicate and retained values now pass
   the screen-local song resolver, but stable-selection and event acceptance remain unimplemented.
@@ -673,12 +683,15 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 1. Exercise the fixed measured target `gamescope-4k` watcher with scorepeek-first startup through the
    transient INFINITAS source sequence, then cover Gamescope-first, sequential and simultaneous
    source lifetimes, idle/active signals, TTY restoration, redirected plain output, and a
-   mid-session observation-socket client. Do not claim target lifecycle or presentation support
-   before those separate checks pass.
+   mid-session observation-socket client. Confirm that raw result events precede temporal
+   transitions and that one-tick unknowns do not erase the stable TUI result. Do not claim target
+   lifecycle or presentation support before those separate checks pass.
 2. Verify that the next partial or complete ordinary session publishes v3 automatically without
    component reconstruction, and add only operator-reviewed episodes to the active suite.
 3. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
+4. Add immutable stationary, scrolling, and selection-change review spans before choosing or
+   implementing music-select dwell.
 
 Do not add transform replay without an independent oracle, broaden routine raw retention, silently
 calibrate or switch profiles, request play solely to

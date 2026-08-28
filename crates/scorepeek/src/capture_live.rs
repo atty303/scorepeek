@@ -157,6 +157,12 @@ pub enum GamescopeLiveSessionEvent<'a> {
         capture_profile_sha256: &'a str,
         normalizer_artifact_sha256: &'a str,
     },
+    ScreenChanged {
+        sequence: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+        screen: ScreenClass,
+    },
     Observation {
         sequence: u64,
         monotonic_start_ms: u64,
@@ -1425,6 +1431,7 @@ fn offer_live_field_observation_frames(
     emit: &mut LiveEventEmitter<'_>,
 ) -> Option<(FieldObservationGateErrorType, Option<CaptureErrorType>)> {
     let mut cadence = RecognitionCadence::default();
+    let mut last_emitted_screen = None;
     let mut source = GamescopeCanonicalFrameSource {
         lease,
         counters,
@@ -1470,6 +1477,20 @@ fn offer_live_field_observation_frames(
                 ScreenClass::Unknown => &mut source.counters.unknown_frames,
             };
             *screen_counter = screen_counter.saturating_add(1);
+            let screen = result.observation.screen();
+            if last_emitted_screen != Some(screen) {
+                if emit(GamescopeLiveSessionEvent::ScreenChanged {
+                    sequence: frame.sequence(),
+                    monotonic_start_ms: frame.monotonic_start_ms(),
+                    monotonic_end_ms: frame.monotonic_end_ms(),
+                    screen,
+                })
+                .is_err()
+                {
+                    return Some((FieldObservationGateErrorType::ResultOutputFailed, None));
+                }
+                last_emitted_screen = Some(screen);
+            }
             match result.field_submission {
                 FieldObservationSubmission::NotApplicable => {
                     source.counters.field_not_applicable =

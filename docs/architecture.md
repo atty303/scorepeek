@@ -137,14 +137,17 @@ to the model. Training and Rust inference use the same preprocessing contract.
 Fields are represented as `known`, `unknown(reason)`, or `not_applicable`.
 PP-OCRv6 small native-dynamic is the selected v1 text observer for title and
 artist; each field keeps its own ROI and preprocessing contract. OCR output is
-an observation rather than an authoritative value. Full-catalog resolution
-requires temporal agreement and screen-specific context. Result uses title,
-artist, play mode, difficulty, level, and notes. Music select uses central
+an observation rather than an authoritative value. Frame-local full-catalog resolution keeps
+screen-specific evidence separate. Result uses title and artist today; later result fields remain
+explicitly unobserved. A deterministic post-resolver reducer stabilizes result song and clear type
+after two equal observations within 250 ms, preserves stable values across a transient unknown, and
+fails closed on a different accepted value. Music select uses central
 title, artist, play mode, selected difficulty and level, and the active
 right-list title. The two title presentations are not counted as independent
-metadata votes, and readable conflict rejects. Version participates only when it is
-independently recognized. Detected events require every mandatory field to be
-known and cross-field validation to succeed. Rejection is preferable to a guess.
+metadata votes, and readable conflict rejects; stable-selection dwell is still unimplemented.
+Version participates only when it is independently recognized. Raw frame observations and derived
+temporal transitions remain separate from future accepted domain events. Rejection is preferable
+to a guess.
 
 Python is an offline training/export dependency only. The game-session runtime
 uses a pinned ONNX model in Rust and has no model or catalog network fallback.
@@ -360,6 +363,8 @@ The ordinary foreground runtime currently exposes provisional recognition observ
 `$XDG_RUNTIME_DIR/scorepeek/observations-v2.sock`. A connection begins with a bounded current-state
 snapshot and then receives sequenced `scorepeek-run-event-v2` NDJSON. This local observation surface
 may include raw OCR, catalog-backed selected and runner-up song presentations, and resolver metrics;
+bounded `screen_changed` records expose synchronous predicate boundaries without repeating every
+frame;
 `next_channel_sequence` marks the first event not represented by the snapshot so a client can
 discard an already-represented live record and detect later gaps. It is intentionally separate from
 accepted domain events. TTY stdout renders the same typed run state as a TUI, while non-TTY stdout

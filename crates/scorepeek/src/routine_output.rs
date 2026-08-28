@@ -18,6 +18,10 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use scorepeek::temporal_recognition::{
+    ResultTemporalReducer, ResultTemporalState, TemporalFieldTransition, TemporalPolicy,
+    TemporalTransitionReason,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -46,6 +50,16 @@ pub enum RunEventKind {
         capture_profile_sha256: String,
         normalizer_artifact_sha256: String,
     },
+    ScreenChanged {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        capture_generation: Option<u64>,
+        sequence: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+        screen: String,
+    },
     FieldObservation {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
@@ -59,6 +73,18 @@ pub enum RunEventKind {
         result_song_resolution: Value,
         music_select_song_resolution: Value,
         song_resolution_presentation: Box<SongResolutionPresentation>,
+    },
+    TemporalResultChanged {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        capture_generation: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        source_sequence: Option<u64>,
+        transitions: Vec<TemporalFieldTransition>,
+        state: ResultTemporalState<scorepeek::catalog::ScorepeekSongId>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stable_song: Option<SongPresentation>,
     },
     SessionFinished {
         session_id: String,
@@ -117,7 +143,9 @@ pub struct RunViewState {
     session_count: u64,
     active_session_id: Option<String>,
     capture_generation: Option<u64>,
+    current_screen: Option<String>,
     latest_observation: Option<Value>,
+    latest_stabilized_result: Option<Value>,
     latest_report: Option<Value>,
     status_recording: &'static str,
     next_channel_sequence: u64,
@@ -138,7 +166,9 @@ impl RunViewState {
             session_count: 0,
             active_session_id: None,
             capture_generation: None,
+            current_screen: None,
             latest_observation: None,
+            latest_stabilized_result: None,
             latest_report: None,
             status_recording: if recording_enabled {
                 "ready"
@@ -162,12 +192,20 @@ impl RunViewState {
                 self.session_count = self.session_count.saturating_add(1);
                 self.active_session_id.clone_from(session_id);
                 self.capture_generation = Some(*capture_generation);
+                self.current_screen = None;
                 self.latest_observation = None;
+                self.latest_stabilized_result = None;
                 self.latest_report = None;
                 "Gamescope session admitted".clone_into(&mut self.message);
             }
+            RunEventKind::ScreenChanged { screen, .. } => {
+                self.current_screen = Some(screen.clone());
+            }
             RunEventKind::FieldObservation { .. } => {
                 self.latest_observation = Some(serialized.clone());
+            }
+            RunEventKind::TemporalResultChanged { .. } => {
+                self.latest_stabilized_result = Some(serialized.clone());
             }
             RunEventKind::SessionFinished {
                 outcome, report, ..
@@ -175,6 +213,7 @@ impl RunViewState {
                 "session_finished".clone_into(&mut self.watcher_state);
                 self.active_session_id = None;
                 self.capture_generation = None;
+                self.current_screen = None;
                 self.latest_report = Some(report.clone());
                 self.message = format!("session finished: {outcome}");
             }
@@ -182,6 +221,7 @@ impl RunViewState {
                 "stopped".clone_into(&mut self.watcher_state);
                 self.active_session_id = None;
                 self.capture_generation = None;
+                self.current_screen = None;
                 "scorepeek stopped by signal".clone_into(&mut self.message);
             }
         }
@@ -516,6 +556,8 @@ pub struct RoutineOutput {
     channel: ObservationChannel,
     display: Display,
     next_sequence: u64,
+    temporal_result: ResultTemporalReducer<scorepeek::catalog::ScorepeekSongId>,
+    stable_result_song: Option<SongPresentation>,
 }
 
 impl RoutineOutput {
@@ -543,12 +585,162 @@ impl RoutineOutput {
             channel,
             display,
             next_sequence: 1,
+            temporal_result: ResultTemporalReducer::new(
+                TemporalPolicy::new(2, 250).expect("fixed result temporal policy is valid"),
+            ),
+            stable_result_song: None,
         };
         output.refresh()?;
         Ok(output)
     }
 
     pub fn publish(&mut self, event: &RunEvent) -> Result<(), String> {
+        match &event.kind {
+            RunEventKind::SessionStarted { .. } | RunEventKind::WatcherStopped { .. } => {
+                self.temporal_result
+                    .reset(TemporalTransitionReason::ResetBySessionBoundary);
+                self.stable_result_song = None;
+                self.publish_one(event)
+            }
+            RunEventKind::FieldObservation { .. } => self.publish_field_observation(event),
+            RunEventKind::ScreenChanged { .. } => self.publish_screen_change(event),
+            RunEventKind::SessionFinished { .. } => self.publish_session_finished(event),
+            RunEventKind::WatcherStarted { .. } | RunEventKind::TemporalResultChanged { .. } => {
+                self.publish_one(event)
+            }
+        }
+    }
+
+    fn publish_field_observation(&mut self, event: &RunEvent) -> Result<(), String> {
+        let RunEventKind::FieldObservation {
+            session_id,
+            capture_generation,
+            sequence,
+            monotonic_end_ms,
+            screen,
+            fields,
+            song_resolution_presentation,
+            ..
+        } = &event.kind
+        else {
+            unreachable!("field observation dispatcher preserves event kind");
+        };
+        self.publish_one(event)?;
+        if screen != "result" {
+            return Ok(());
+        }
+        let song = match song_resolution_presentation.as_ref() {
+            SongResolutionPresentation::Accepted { selected, .. } => {
+                Some(selected.scorepeek_song_id)
+            }
+            SongResolutionPresentation::Unknown { .. } => None,
+        };
+        let clear_type = fields
+            .get("clear_type")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let Some(update) =
+            self.temporal_result
+                .observe_result(*sequence, *monotonic_end_ms, song, clear_type)
+        else {
+            return Ok(());
+        };
+        if let Some(stable_song_id) = update.state.song.stable_value() {
+            if let SongResolutionPresentation::Accepted { selected, .. } =
+                song_resolution_presentation.as_ref()
+                && selected.scorepeek_song_id == *stable_song_id
+            {
+                self.stable_result_song = Some(selected.clone());
+            }
+        } else {
+            self.stable_result_song = None;
+        }
+        self.publish_temporal_update(
+            session_id.clone(),
+            *capture_generation,
+            Some(*sequence),
+            update,
+        )
+    }
+
+    fn publish_screen_change(&mut self, event: &RunEvent) -> Result<(), String> {
+        let RunEventKind::ScreenChanged {
+            session_id,
+            capture_generation,
+            sequence,
+            screen,
+            ..
+        } = &event.kind
+        else {
+            unreachable!("screen change dispatcher preserves event kind");
+        };
+        self.publish_one(event)?;
+        if screen == "result" {
+            return Ok(());
+        }
+        let Some(update) = self
+            .temporal_result
+            .reset(TemporalTransitionReason::ResetByScreenChange)
+        else {
+            return Ok(());
+        };
+        self.stable_result_song = None;
+        self.publish_temporal_update(
+            session_id.clone(),
+            *capture_generation,
+            Some(*sequence),
+            update,
+        )
+    }
+
+    fn publish_session_finished(&mut self, event: &RunEvent) -> Result<(), String> {
+        let RunEventKind::SessionFinished {
+            session_id,
+            capture_generation,
+            ..
+        } = &event.kind
+        else {
+            unreachable!("session-finished dispatcher preserves event kind");
+        };
+        self.publish_one(event)?;
+        let Some(update) = self
+            .temporal_result
+            .reset(TemporalTransitionReason::ResetBySessionBoundary)
+        else {
+            return Ok(());
+        };
+        self.stable_result_song = None;
+        self.publish_temporal_update(
+            Some(session_id.clone()),
+            Some(*capture_generation),
+            None,
+            update,
+        )
+    }
+
+    fn publish_temporal_update(
+        &mut self,
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        source_sequence: Option<u64>,
+        update: scorepeek::temporal_recognition::ResultTemporalUpdate<
+            scorepeek::catalog::ScorepeekSongId,
+        >,
+    ) -> Result<(), String> {
+        self.publish_one(&RunEvent {
+            schema: "scorepeek-run-event-v2".to_owned(),
+            kind: RunEventKind::TemporalResultChanged {
+                session_id,
+                capture_generation,
+                source_sequence,
+                transitions: update.transitions,
+                state: update.state,
+                stable_song: self.stable_result_song.clone(),
+            },
+        })
+    }
+
+    fn publish_one(&mut self, event: &RunEvent) -> Result<(), String> {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
         let mut value = event.to_value()?;
@@ -677,7 +869,9 @@ fn render(
     );
 
     let observation = observation_lines(
+        state.current_screen.as_deref(),
         state.latest_observation.as_ref(),
+        state.latest_stabilized_result.as_ref(),
         compact,
         rows[1].width.saturating_sub(2) as usize,
     );
@@ -831,20 +1025,28 @@ fn channel_lines(
 }
 
 fn observation_lines(
+    current_screen: Option<&str>,
     observation: Option<&Value>,
+    stabilized_result: Option<&Value>,
     compact: bool,
     available_width: usize,
 ) -> Vec<Line<'static>> {
     let Some(observation) = observation else {
-        return vec![Line::from("No field observation yet")];
+        return vec![Line::from(format!(
+            "screen={}  No field observation yet",
+            current_screen.unwrap_or("-")
+        ))];
     };
+    let raw_screen = text_at(observation, "/screen");
     let mut lines = vec![Line::from(format!(
-        "screen={}  sequence={}  interval={}..{} ms",
-        text_at(observation, "/screen"),
+        "current screen={}  raw screen={}  sequence={}  interval={}..{} ms",
+        current_screen.unwrap_or(&raw_screen),
+        raw_screen,
         text_at(observation, "/sequence"),
         text_at(observation, "/monotonic_start_ms"),
         text_at(observation, "/monotonic_end_ms"),
     ))];
+    lines.extend(stabilized_result_lines(stabilized_result, available_width));
     let ocr_lines = ocr_lines(observation, available_width);
     let resolution = observation
         .get("song_resolution_presentation")
@@ -902,6 +1104,73 @@ fn observation_lines(
         "Runner-up: {}",
         joined_at(resolution, "/runner_up/display_titles")
     )));
+    lines
+}
+
+fn stabilized_result_lines(
+    stabilized: Option<&Value>,
+    available_width: usize,
+) -> Vec<Line<'static>> {
+    let Some(stabilized) = stabilized else {
+        return Vec::new();
+    };
+    let song_status = text_at(stabilized, "/state/song/status");
+    let clear_status = text_at(stabilized, "/state/clear_type/status");
+    let status = if song_status == "conflict" || clear_status == "conflict" {
+        "CONFLICT"
+    } else if song_status == "stable" && clear_status == "stable" {
+        "STABLE"
+    } else if song_status == "pending" || clear_status == "pending" {
+        "PENDING"
+    } else {
+        "EMPTY"
+    };
+    let color = match status {
+        "STABLE" => Color::Green,
+        "CONFLICT" => Color::Red,
+        _ => Color::Yellow,
+    };
+    let song_progress = if song_status == "pending" || song_status == "stable" {
+        format!(
+            "{}/{}",
+            text_at(stabilized, "/state/song/evidence/count"),
+            text_at(stabilized, "/state/song/evidence/required")
+        )
+    } else {
+        song_status.clone()
+    };
+    let clear_progress = if clear_status == "pending" || clear_status == "stable" {
+        format!(
+            "{}/{}",
+            text_at(stabilized, "/state/clear_type/evidence/count"),
+            text_at(stabilized, "/state/clear_type/evidence/required")
+        )
+    } else {
+        clear_status.clone()
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            format!("Stabilized result: {status}"),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!("  song={song_progress} clear={clear_progress}")),
+    ])];
+    if status == "STABLE" {
+        lines.push(Line::from(fitted_value(
+            "Stable title: ",
+            &joined_at(stabilized, "/stable_song/display_titles"),
+            available_width,
+        )));
+        lines.push(Line::from(fitted_value(
+            "Stable artist: ",
+            &text_at(stabilized, "/stable_song/artist"),
+            available_width,
+        )));
+        lines.push(Line::from(format!(
+            "Stable clear: {}",
+            text_at(stabilized, "/state/clear_type/value")
+        )));
+    }
     lines
 }
 
@@ -1009,6 +1278,87 @@ mod tests {
         )))
     }
 
+    fn accepted_result_event(sequence: u64) -> RunEvent {
+        let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
+        RunEvent {
+            schema: "scorepeek-run-event-v2".to_owned(),
+            kind: RunEventKind::FieldObservation {
+                session_id: Some("invocation-1-session-1".to_owned()),
+                capture_generation: Some(1),
+                sequence,
+                monotonic_start_ms: sequence.saturating_mul(100),
+                monotonic_end_ms: sequence.saturating_mul(100).saturating_add(25),
+                screen: "result".to_owned(),
+                fields: json!({
+                    "title": "OCR TITLE",
+                    "artist": "OCR ARTIST",
+                    "clear_type": "CLEAR",
+                    "clear_type_ocr": "CLEAR"
+                }),
+                result_song_resolution: json!({ "status": "accepted" }),
+                music_select_song_resolution: Value::Null,
+                song_resolution_presentation: Box::new(SongResolutionPresentation::Accepted {
+                    reason: None,
+                    selected: SongPresentation {
+                        scorepeek_song_id: song_id,
+                        display_titles: vec!["CATALOG TITLE".to_owned()],
+                        artist: "CATALOG ARTIST".to_owned(),
+                    },
+                    runner_up: SongPresentation {
+                        scorepeek_song_id: serde_json::from_str(
+                            "\"00000000-0000-0000-0000-000000000002\"",
+                        )
+                        .unwrap(),
+                        display_titles: vec!["RUNNER UP".to_owned()],
+                        artist: "RUNNER ARTIST".to_owned(),
+                    },
+                    evidence_summary: "title edit=0; runner-up margin=4".to_owned(),
+                }),
+            },
+        }
+    }
+
+    fn unknown_result_event(sequence: u64) -> RunEvent {
+        let mut event = accepted_result_event(sequence);
+        let RunEventKind::FieldObservation {
+            fields,
+            result_song_resolution,
+            song_resolution_presentation,
+            ..
+        } = &mut event.kind
+        else {
+            unreachable!();
+        };
+        fields["clear_type"] = Value::Null;
+        *result_song_resolution = json!({ "status": "unknown" });
+        **song_resolution_presentation = SongResolutionPresentation::Unknown {
+            reason: json!("artist_similarity_too_low"),
+            selected: None,
+            runner_up: None,
+            evidence_summary: None,
+        };
+        event
+    }
+
+    fn read_events(reader: &mut BufReader<UnixStream>, count: usize) -> Vec<Value> {
+        (0..count)
+            .map(|_| {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                serde_json::from_str::<Value>(&line).unwrap()
+            })
+            .collect()
+    }
+
+    fn assert_stabilized_fields(state: &RunViewState, expected: &str) {
+        let stabilized = state.latest_stabilized_result.as_ref().unwrap();
+        assert_eq!(stabilized.pointer("/state/song/status").unwrap(), expected);
+        assert_eq!(
+            stabilized.pointer("/state/clear_type/status").unwrap(),
+            expected
+        );
+    }
+
     #[derive(Default)]
     struct FailFirstWrite {
         failed: bool,
@@ -1068,6 +1418,103 @@ mod tests {
         assert_eq!(event["event"], "watcher_started");
         drop(channel);
         assert!(!socket_path.exists());
+    }
+
+    #[test]
+    fn raw_result_events_are_followed_by_bounded_temporal_transitions() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = state();
+        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
+        let stream = UnixStream::connect(&channel.socket_path).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut snapshot = String::new();
+        reader.read_line(&mut snapshot).unwrap();
+        let mut output = RoutineOutput {
+            state,
+            channel,
+            display: Display::Plain {
+                output: BufWriter::new(io::stdout()),
+                last_line: None,
+            },
+            next_sequence: 1,
+            temporal_result: ResultTemporalReducer::new(TemporalPolicy::new(2, 250).unwrap()),
+            stable_result_song: None,
+        };
+
+        output.publish(&accepted_result_event(1)).unwrap();
+        output.publish(&accepted_result_event(2)).unwrap();
+        let events = read_events(&mut reader, 4);
+        assert_eq!(events[0]["event"], "field_observation");
+        assert_eq!(events[1]["event"], "temporal_result_changed");
+        assert_eq!(events[1]["state"]["song"]["status"], "pending");
+        assert_eq!(events[2]["event"], "field_observation");
+        assert_eq!(events[3]["event"], "temporal_result_changed");
+        assert_eq!(events[3]["state"]["song"]["status"], "stable");
+        assert_eq!(events[3]["state"]["clear_type"]["status"], "stable");
+        assert_eq!(
+            events[3]["stable_song"]["display_titles"][0],
+            "CATALOG TITLE"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event["channel_sequence"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+
+        output.publish(&unknown_result_event(3)).unwrap();
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let raw_unknown: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(raw_unknown["event"], "field_observation");
+        assert_eq!(raw_unknown["channel_sequence"], 5);
+        let state = output.state.lock().unwrap();
+        assert_stabilized_fields(&state, "stable");
+        drop(state);
+
+        output
+            .publish(&RunEvent {
+                schema: "scorepeek-run-event-v2".to_owned(),
+                kind: RunEventKind::ScreenChanged {
+                    session_id: Some("invocation-1-session-1".to_owned()),
+                    capture_generation: Some(1),
+                    sequence: 4,
+                    monotonic_start_ms: 400,
+                    monotonic_end_ms: 425,
+                    screen: "unknown".to_owned(),
+                },
+            })
+            .unwrap();
+        let boundary_events = read_events(&mut reader, 2);
+        assert_eq!(boundary_events[0]["event"], "screen_changed");
+        assert_eq!(boundary_events[1]["event"], "temporal_result_changed");
+        assert_eq!(boundary_events[1]["state"]["song"]["status"], "empty");
+        assert_eq!(boundary_events[1]["channel_sequence"], 7);
+
+        output.publish(&accepted_result_event(5)).unwrap();
+        let after_boundary = read_events(&mut reader, 2);
+        assert_eq!(after_boundary[0]["event"], "field_observation");
+        assert_eq!(after_boundary[1]["state"]["song"]["status"], "pending");
+
+        output
+            .publish(&RunEvent {
+                schema: "scorepeek-run-event-v2".to_owned(),
+                kind: RunEventKind::SessionFinished {
+                    session_id: "invocation-1-session-1".to_owned(),
+                    capture_generation: 1,
+                    outcome: "stopped".to_owned(),
+                    report: json!({}),
+                },
+            })
+            .unwrap();
+        let session_events = read_events(&mut reader, 2);
+        assert_eq!(session_events[0]["event"], "session_finished");
+        assert_eq!(session_events[1]["event"], "temporal_result_changed");
+        assert_eq!(session_events[1]["channel_sequence"], 11);
     }
 
     #[test]
@@ -1343,6 +1790,7 @@ mod tests {
     fn tui_keeps_catalog_presentation_separate_from_ocr_values() {
         let mut state = RunViewState::new("invocation-1".to_owned(), "b".repeat(64), true);
         state.watcher_state = "session_active".to_owned();
+        state.current_screen = Some("unknown".to_owned());
         state.latest_observation = Some(json!({
             "event": "field_observation",
             "screen": "result",
@@ -1368,6 +1816,40 @@ mod tests {
                 "evidence_summary": "title edit=0; runner-up margin=4"
             }
         }));
+        state.latest_stabilized_result = Some(json!({
+            "event": "temporal_result_changed",
+            "state": {
+                "song": {
+                    "status": "stable",
+                    "value": "00000000-0000-0000-0000-000000000001",
+                    "evidence": {
+                        "count": 2,
+                        "required": 2,
+                        "first_sequence": 41,
+                        "last_sequence": 42,
+                        "first_monotonic_ms": 25,
+                        "last_monotonic_ms": 125
+                    }
+                },
+                "clear_type": {
+                    "status": "stable",
+                    "value": "CLEAR",
+                    "evidence": {
+                        "count": 2,
+                        "required": 2,
+                        "first_sequence": 41,
+                        "last_sequence": 42,
+                        "first_monotonic_ms": 25,
+                        "last_monotonic_ms": 125
+                    }
+                }
+            },
+            "stable_song": {
+                "scorepeek_song_id": "00000000-0000-0000-0000-000000000001",
+                "display_titles": ["STABLE CATALOG TITLE"],
+                "artist": "STABLE CATALOG ARTIST"
+            }
+        }));
         let health = ChannelHealth::default();
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1382,10 +1864,16 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(rendered.contains("OCR title: OCR TITLE"));
+        assert!(rendered.contains("current screen=unknown"));
+        assert!(rendered.contains("raw screen=result"));
         assert!(rendered.contains("invocation=invocation-1"));
         assert!(rendered.contains("Catalog title: CATALOG TITLE / CATALOG ALT"));
         assert!(rendered.contains("Catalog artist: CATALOG ARTIST"));
         assert!(rendered.contains("ACCEPTED"));
+        assert!(rendered.contains("Stabilized result: STABLE"));
+        assert!(rendered.contains("Stable title: STABLE CATALOG TITLE"));
+        assert!(rendered.contains("Stable artist: STABLE CATALOG ARTIST"));
+        assert!(rendered.contains("Stable clear: CLEAR"));
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub mod recognition_cadence;
 #[allow(dead_code)]
 pub mod recognition_live;
 pub mod song_context;
+pub mod temporal_recognition;
 
 use std::fs;
 use std::io::Write as _;
