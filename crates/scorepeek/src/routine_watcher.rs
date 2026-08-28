@@ -68,6 +68,22 @@ pub enum WatcherState {
     Stopped,
 }
 
+impl WatcherState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::WaitingForSource => "waiting_for_source",
+            Self::AmbiguousSources => "ambiguous_sources",
+            Self::RemoteUnavailable => "remote_unavailable",
+            Self::CatalogUnavailable => "catalog_unavailable",
+            Self::AdmissionRejected => "admission_rejected",
+            Self::SessionActive => "session_active",
+            Self::SessionFinished => "session_finished",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct Transition {
     sequence: u64,

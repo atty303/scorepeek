@@ -356,6 +356,15 @@ final identity check is outside the operator-trusted private-artifact boundary.
 
 ### Event API
 
+The ordinary foreground runtime currently exposes provisional recognition observations at
+`$XDG_RUNTIME_DIR/scorepeek/observations-v2.sock`. A connection begins with a bounded current-state
+snapshot and then receives sequenced `scorepeek-run-event-v2` NDJSON. This local observation surface
+may include raw OCR, catalog-backed selected and runner-up song presentations, and resolver metrics;
+`next_channel_sequence` marks the first event not represented by the snapshot so a client can
+discard an already-represented live record and detect later gaps. It is intentionally separate from
+accepted domain events. TTY stdout renders the same typed run state as a TUI, while non-TTY stdout
+reports only human-readable state changes.
+
 The first public interface is a same-user Unix socket at
 `$XDG_RUNTIME_DIR/scorepeek/v1.sock`. It streams versioned NDJSON accepted
 domain events, never pixels, OCR candidate text, source snapshots, or stored

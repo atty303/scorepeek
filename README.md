@@ -147,6 +147,14 @@ and saved geometry. Music-select/result scene detection and OCR during ordinary 
 authority for recognition support; scorepeek does not re-estimate geometry or switch profiles at
 runtime.
 
+On a terminal, `run` uses a full-screen status view. It keeps the latest OCR text separate from the
+catalog-backed song resolution, which includes display title, artist, song ID, decision reason, and
+the principal resolver evidence. Redirected stdout contains only deduplicated human-readable state
+changes. Provisional machine-readable observations are available from
+`$XDG_RUNTIME_DIR/scorepeek/observations-v2.sock`: each client receives a current snapshot followed
+by `scorepeek-run-event-v2` NDJSON. This observation socket contains raw OCR evidence and is not the
+future accepted-event API at `$XDG_RUNTIME_DIR/scorepeek/v1.sock`.
+
 Ordinary recognition artifacts are stored per Gamescope session below
 `$XDG_STATE_HOME/scorepeek/recognition`; the bounded watcher status is stored at
 `$XDG_STATE_HOME/scorepeek/watcher-status.json`.

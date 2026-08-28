@@ -13,6 +13,7 @@ mod local_profiles;
 mod recognition_artifact;
 pub mod recognition_live;
 mod recording_simulation;
+mod routine_output;
 mod routine_watcher;
 mod session_artifact;
 
@@ -553,8 +554,11 @@ fn run_routine_live_session(
     let build_sha256 = current_executable_sha256()?;
     let monitor = live_control::SignalStopMonitor::start()?;
     let stop = monitor.stop_token();
-    let stdout = io::stdout();
-    let mut output = BufWriter::new(stdout.lock());
+    let mut output = routine_output::RoutineOutput::start(
+        invocation_id.clone(),
+        selected.binding.capture_profile_sha256().to_owned(),
+        recording_enabled,
+    )?;
     let mut status = routine_watcher::StatusRecorder::new(
         recording_enabled.then(|| state.watcher_status.clone()),
         invocation_id.clone(),
@@ -566,16 +570,15 @@ fn run_routine_live_session(
         None,
         None,
         &mut status_failed,
-    );
-    write_ndjson(
         &mut output,
-        &serde_json::json!({
-            "schema": "scorepeek-run-event-v2",
-            "event": "watcher_started",
-            "invocation_id": invocation_id,
-            "profile_sha256": selected.binding.capture_profile_sha256(),
-        }),
     )?;
+    output.publish(&routine_output::RunEvent {
+        schema: "scorepeek-run-event-v2".to_owned(),
+        kind: routine_output::RunEventKind::WatcherStarted {
+            invocation_id: invocation_id.clone(),
+            profile_sha256: selected.binding.capture_profile_sha256().to_owned(),
+        },
+    })?;
 
     let mut lifetimes = routine_watcher::SourceLifetimes::new();
     let mut announced = None;
@@ -587,14 +590,16 @@ fn run_routine_live_session(
                 &mut announced,
                 routine_watcher::WatcherState::RemoteUnavailable,
                 "PipeWire is unavailable; scorepeek will keep waiting",
-            );
+                &mut output,
+            )?;
             record_watcher_status(
                 &mut status,
                 routine_watcher::WatcherState::RemoteUnavailable,
                 None,
                 None,
                 &mut status_failed,
-            );
+                &mut output,
+            )?;
             std::thread::sleep(std::time::Duration::from_millis(500));
             continue;
         };
@@ -609,14 +614,16 @@ fn run_routine_live_session(
                     &mut announced,
                     routine_watcher::WatcherState::WaitingForSource,
                     "waiting for a Gamescope PipeWire source",
-                );
+                    &mut output,
+                )?;
                 record_watcher_status(
                     &mut status,
                     routine_watcher::WatcherState::WaitingForSource,
                     None,
                     None,
                     &mut status_failed,
-                );
+                    &mut output,
+                )?;
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
             routine_watcher::WatchDecision::WaitAmbiguous => {
@@ -624,14 +631,16 @@ fn run_routine_live_session(
                     &mut announced,
                     routine_watcher::WatcherState::AmbiguousSources,
                     "multiple Gamescope sources are present; waiting for exactly one",
-                );
+                    &mut output,
+                )?;
                 record_watcher_status(
                     &mut status,
                     routine_watcher::WatcherState::AmbiguousSources,
                     None,
                     None,
                     &mut status_failed,
-                );
+                    &mut output,
+                )?;
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
             routine_watcher::WatchDecision::Admit {
@@ -643,14 +652,16 @@ fn run_routine_live_session(
                         &mut announced,
                         routine_watcher::WatcherState::CatalogUnavailable,
                         "active catalog is temporarily unavailable; scorepeek will retry",
-                    );
+                        &mut output,
+                    )?;
                     record_watcher_status(
                         &mut status,
                         routine_watcher::WatcherState::CatalogUnavailable,
                         None,
                         None,
                         &mut status_failed,
-                    );
+                        &mut output,
+                    )?;
                     std::thread::sleep(std::time::Duration::from_millis(500));
                     continue;
                 };
@@ -658,9 +669,9 @@ fn run_routine_live_session(
                 let recognition_root = match state.recognition_root(&session_id) {
                     Ok(root) => root,
                     Err(error) => {
-                        eprintln!(
-                            "scorepeek: recognition artifact recording degraded for this session: {error}"
-                        );
+                        output.warning(format!(
+                            "recognition artifact recording degraded for this session: {error}"
+                        ))?;
                         None
                     }
                 };
@@ -680,15 +691,27 @@ fn run_routine_live_session(
                     break;
                 }
                 let mut started = false;
-                let mut on_started = || {
-                    started = true;
-                    record_watcher_status(
-                        &mut status,
-                        routine_watcher::WatcherState::SessionActive,
-                        Some(&session_id),
-                        None,
-                        &mut status_failed,
-                    );
+                let mut emit = |value| {
+                    let event = routine_output::RunEvent::from_value(value)?;
+                    if matches!(
+                        &event.kind,
+                        routine_output::RunEventKind::SessionStarted { .. }
+                    ) {
+                        started = true;
+                        if !status_failed
+                            && let Err(error) = status.transition(
+                                routine_watcher::WatcherState::SessionActive,
+                                Some(&session_id),
+                                None,
+                            )
+                        {
+                            status_failed = true;
+                            output.status_recording_degraded()?;
+                            output
+                                .warning(format!("watcher status recording disabled: {error}"))?;
+                        }
+                    }
+                    output.publish(&event)
                 };
                 let report = execute_live_session(
                     &references,
@@ -697,8 +720,7 @@ fn run_routine_live_session(
                     Some(&session_id),
                     Some(node_id),
                     &stop,
-                    &mut on_started,
-                    &mut output,
+                    &mut emit,
                 )?;
                 if report.output_failed() {
                     return Err("live result output failed".to_owned());
@@ -732,7 +754,8 @@ fn run_routine_live_session(
                             profile_path: &selected.path,
                         })
                     {
-                        eprintln!("scorepeek: diagnostic session publication degraded: {error}");
+                        output
+                            .warning(format!("diagnostic session publication degraded: {error}"))?;
                     }
                 }
                 if started {
@@ -743,24 +766,25 @@ fn run_routine_live_session(
                         Some(capture_live::LiveSessionStopReason::SourceEnded) => "source_ended",
                         _ => "error",
                     };
-                    write_ndjson(
-                        &mut output,
-                        &serde_json::json!({
-                            "schema": "scorepeek-run-event-v2",
-                            "event": "session_finished",
-                            "session_id": session_id,
-                            "capture_generation": generation,
-                            "outcome": outcome,
-                            "report": report,
-                        }),
-                    )?;
+                    output.publish(&routine_output::RunEvent {
+                        schema: "scorepeek-run-event-v2".to_owned(),
+                        kind: routine_output::RunEventKind::SessionFinished {
+                            session_id: session_id.clone(),
+                            capture_generation: generation,
+                            outcome: outcome.to_owned(),
+                            report: serde_json::to_value(&report).map_err(|error| {
+                                format!("live report serialization failed: {error}")
+                            })?,
+                        },
+                    })?;
                     record_watcher_status(
                         &mut status,
                         routine_watcher::WatcherState::SessionFinished,
                         None,
                         Some(outcome),
                         &mut status_failed,
-                    );
+                        &mut output,
+                    )?;
                 } else {
                     match report.startup_retry() {
                         Some(capture_live::LiveSessionStartupRetry::Admission) => {
@@ -768,28 +792,32 @@ fn run_routine_live_session(
                                 &mut announced,
                                 routine_watcher::WatcherState::AdmissionRejected,
                                 "Gamescope source is not ready; scorepeek will keep waiting",
-                            );
+                                &mut output,
+                            )?;
                             record_watcher_status(
                                 &mut status,
                                 routine_watcher::WatcherState::AdmissionRejected,
                                 None,
                                 Some("capture_admission_failed"),
                                 &mut status_failed,
-                            );
+                                &mut output,
+                            )?;
                         }
                         Some(capture_live::LiveSessionStartupRetry::Catalog) => {
                             announce_watcher_state(
                                 &mut announced,
                                 routine_watcher::WatcherState::CatalogUnavailable,
                                 "active catalog changed or is temporarily unavailable; scorepeek will retry",
-                            );
+                                &mut output,
+                            )?;
                             record_watcher_status(
                                 &mut status,
                                 routine_watcher::WatcherState::CatalogUnavailable,
                                 None,
                                 Some("catalog_temporarily_unavailable"),
                                 &mut status_failed,
-                            );
+                                &mut output,
+                            )?;
                         }
                         None => return Err(report.startup_failure_summary()),
                     }
@@ -804,16 +832,15 @@ fn run_routine_live_session(
         None,
         Some("signal"),
         &mut status_failed,
-    );
-    write_ndjson(
         &mut output,
-        &serde_json::json!({
-            "schema": "scorepeek-run-event-v2",
-            "event": "watcher_stopped",
-            "invocation_id": invocation_id,
-            "reason": "signal",
-        }),
-    )
+    )?;
+    output.publish(&routine_output::RunEvent {
+        schema: "scorepeek-run-event-v2".to_owned(),
+        kind: routine_output::RunEventKind::WatcherStopped {
+            invocation_id,
+            reason: "signal".to_owned(),
+        },
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -850,11 +877,13 @@ fn announce_watcher_state(
     announced: &mut Option<routine_watcher::WatcherState>,
     state: routine_watcher::WatcherState,
     message: &str,
-) {
+    output: &mut routine_output::RoutineOutput,
+) -> Result<(), String> {
+    output.watcher_state(state.as_str(), None, None, message)?;
     if *announced != Some(state) {
-        eprintln!("scorepeek: {message}");
         *announced = Some(state);
     }
+    Ok(())
 }
 
 fn record_watcher_status(
@@ -863,14 +892,17 @@ fn record_watcher_status(
     session_id: Option<&str>,
     outcome: Option<&'static str>,
     failed: &mut bool,
-) {
+    output: &mut routine_output::RoutineOutput,
+) -> Result<(), String> {
     if *failed {
-        return;
+        return Ok(());
     }
     if let Err(error) = recorder.transition(state, session_id, outcome) {
-        eprintln!("scorepeek: watcher status recording disabled: {error}");
         *failed = true;
+        output.status_recording_degraded()?;
+        output.warning(format!("watcher status recording disabled: {error}"))?;
     }
+    Ok(())
 }
 
 fn try_live_session(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
@@ -957,6 +989,7 @@ fn run_live_session(
     let stop = monitor.stop_token();
     let stdout = io::stdout();
     let mut output = BufWriter::new(stdout.lock());
+    let mut emit = |event: serde_json::Value| write_ndjson(&mut output, &event);
     let report = execute_live_session(
         values,
         bundle_root,
@@ -964,8 +997,7 @@ fn run_live_session(
         None,
         None,
         &stop,
-        &mut || {},
-        &mut output,
+        &mut emit,
     )?;
     write_ndjson(&mut output, &report)?;
     report.succeeded().then_some(()).ok_or_else(|| {
@@ -984,8 +1016,7 @@ fn execute_live_session(
     session_id: Option<&str>,
     expected_source_node_id: Option<u32>,
     stop: &std::sync::atomic::AtomicBool,
-    on_started: &mut impl FnMut(),
-    output: &mut impl io::Write,
+    emit: &mut impl FnMut(serde_json::Value) -> Result<(), String>,
 ) -> Result<capture_live::GamescopeFieldObservationGateReport, String> {
     let [
         binding,
@@ -1028,7 +1059,10 @@ fn execute_live_session(
     policy.retention = diagnostic_recording::DiagnosticRetention::ForegroundFailureWindowV1;
     let diagnostic_preflight = prepare_live_diagnostic_root(Path::new(diagnostic_root), &policy);
     if session_id.is_none() {
-        write_ndjson(output, &diagnostic_preflight)?;
+        emit(
+            serde_json::to_value(&diagnostic_preflight)
+                .map_err(|error| format!("live result serialization failed: {error}"))?,
+        )?;
     }
     let report = capture_live::run_gamescope_live_session(
         capture_live::GamescopeFieldObservationGateConfig {
@@ -1053,18 +1087,11 @@ fn execute_live_session(
         },
         stop,
         &mut |event| {
-            if matches!(
-                event,
-                capture_live::GamescopeLiveSessionEvent::Started { .. }
-            ) {
-                on_started();
-            }
-            write_live_session_event(
-                output,
+            emit(live_session_event_value(
                 session_id,
                 session_id.map(|_| generation.get()),
                 event,
-            )
+            )?)
         },
     );
     Ok(report)
@@ -1147,12 +1174,11 @@ fn prepare_private_directory(path: &Path) -> bool {
     }
 }
 
-fn write_live_session_event(
-    output: &mut impl io::Write,
+fn live_session_event_value(
     session_id: Option<&str>,
     routine_generation: Option<u64>,
     event: capture_live::GamescopeLiveSessionEvent<'_>,
-) -> Result<(), String> {
+) -> Result<serde_json::Value, String> {
     let schema = if session_id.is_some() {
         "scorepeek-run-event-v2"
     } else {
@@ -1221,10 +1247,129 @@ fn write_live_session_event(
                 value["session_id"] = session_id.into();
                 value["capture_generation"] = routine_generation.into();
             }
+            value["song_resolution_presentation"] =
+                serde_json::to_value(song_resolution_presentation(observation)?)
+                    .map_err(|error| format!("song presentation serialization failed: {error}"))?;
             value
         }
     };
-    write_ndjson(output, &value)
+    Ok(value)
+}
+
+fn song_resolution_presentation(
+    observation: &recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+) -> Result<routine_output::SongResolutionPresentation, String> {
+    use scorepeek::recognition::{MusicSelectSongResolution, ResultSongResolution};
+
+    match observation.song_resolution() {
+        scorepeek::recognition::ScreenSongResolution::Result(resolution) => match resolution {
+            ResultSongResolution::Accepted {
+                selected,
+                runner_up,
+                title_edit_margin,
+                ..
+            } => Ok(routine_output::SongResolutionPresentation::Accepted {
+                reason: None,
+                selected: song_presentation(observation, selected.song_id)?,
+                runner_up: song_presentation(observation, runner_up.song_id)?,
+                evidence_summary: format!(
+                    "title edit={} similarity={}/{}; artist similarity={}/{}; runner-up margin={}",
+                    selected.title.minimum_edit_distance,
+                    selected.title.maximum_normalized_similarity.matching_units,
+                    selected.title.maximum_normalized_similarity.compared_units,
+                    selected.artist.maximum_normalized_similarity.matching_units,
+                    selected.artist.maximum_normalized_similarity.compared_units,
+                    title_edit_margin,
+                ),
+            }),
+            ResultSongResolution::Unknown {
+                reason,
+                selected,
+                runner_up,
+                title_edit_margin,
+                ..
+            } => Ok(routine_output::SongResolutionPresentation::Unknown {
+                reason: serde_json::to_value(reason).map_err(|error| format!("result resolution reason serialization failed: {error}"))?,
+                selected: selected.as_ref().map(|candidate| song_presentation(observation, candidate.song_id)).transpose()?,
+                runner_up: runner_up.as_ref().map(|candidate| song_presentation(observation, candidate.song_id)).transpose()?,
+                evidence_summary: selected.as_ref().map(|candidate| format!(
+                    "title edit={} similarity={}/{}; artist similarity={}/{}; runner-up margin={}",
+                    candidate.title.minimum_edit_distance,
+                    candidate.title.maximum_normalized_similarity.matching_units,
+                    candidate.title.maximum_normalized_similarity.compared_units,
+                    candidate.artist.maximum_normalized_similarity.matching_units,
+                    candidate.artist.maximum_normalized_similarity.compared_units,
+                    title_edit_margin.map_or_else(|| "-".to_owned(), |margin| margin.to_string()),
+                )),
+            }),
+        },
+        scorepeek::recognition::ScreenSongResolution::MusicSelect(resolution) => match resolution {
+            MusicSelectSongResolution::Accepted {
+                selected,
+                runner_up,
+                active_prefix_edit_margin,
+                corroboration,
+                ..
+            } => Ok(routine_output::SongResolutionPresentation::Accepted {
+                reason: None,
+                selected: song_presentation(observation, selected.song_id)?,
+                runner_up: song_presentation(observation, runner_up.song_id)?,
+                evidence_summary: format!(
+                    "active-prefix edit={} similarity={}/{}; runner-up margin={}; corroboration central-title={} artist={}",
+                    selected.active_list_title_prefix.minimum_edit_distance,
+                    selected.active_list_title_prefix.maximum_normalized_similarity.matching_units,
+                    selected.active_list_title_prefix.maximum_normalized_similarity.compared_units,
+                    active_prefix_edit_margin,
+                    corroboration.central_title,
+                    corroboration.artist,
+                ),
+            }),
+            MusicSelectSongResolution::Unknown {
+                reason,
+                selected,
+                runner_up,
+                active_prefix_edit_margin,
+                ..
+            } => Ok(routine_output::SongResolutionPresentation::Unknown {
+                reason: serde_json::to_value(reason).map_err(|error| format!("music-select resolution reason serialization failed: {error}"))?,
+                selected: selected.as_ref().map(|candidate| song_presentation(observation, candidate.song_id)).transpose()?,
+                runner_up: runner_up.as_ref().map(|candidate| song_presentation(observation, candidate.song_id)).transpose()?,
+                evidence_summary: selected.as_ref().map(|candidate| format!(
+                    "active-prefix edit={} similarity={}/{}; runner-up margin={}",
+                    candidate.active_list_title_prefix.minimum_edit_distance,
+                    candidate.active_list_title_prefix.maximum_normalized_similarity.matching_units,
+                    candidate.active_list_title_prefix.maximum_normalized_similarity.compared_units,
+                    active_prefix_edit_margin.map_or_else(|| "-".to_owned(), |margin| margin.to_string()),
+                )),
+            }),
+        },
+    }
+}
+
+fn song_presentation(
+    observation: &recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+    song_id: scorepeek::catalog::ScorepeekSongId,
+) -> Result<routine_output::SongPresentation, String> {
+    let evidence = observation
+        .candidates()
+        .catalog_evidence()
+        .songs
+        .iter()
+        .find(|song| song.song_id == song_id)
+        .ok_or_else(|| {
+            format!("resolved song {song_id:?} is absent from the session catalog evidence")
+        })?;
+    let artists = &evidence.artist.display;
+    let [artist] = artists.as_slice() else {
+        return Err(format!(
+            "resolved song {song_id:?} does not have exactly one display artist"
+        ));
+    };
+    Ok(routine_output::SongPresentation {
+        scorepeek_song_id: song_id,
+        display_titles: evidence.title.display.clone(),
+        artist: artist.clone(),
+    })
 }
 
 fn not_observed_field() -> serde_json::Value {
@@ -3068,15 +3213,16 @@ mod tests {
     use super::{
         CAPTURE_FIELD_OBSERVATION_FLAGS, CAPTURE_HANDOFF_FLAGS, CAPTURE_RESULT_RECOGNITION_FLAGS,
         LIVE_SESSION_FLAGS, PrivatePublicationPoint, catalog_paths, catalog_sync_error,
-        command_flag_values, optional_recognition_root, prepare_live_diagnostic_root,
-        publish_private_file, publish_private_file_with, run_with_model_initializer,
-        write_live_session_event,
+        command_flag_values, live_session_event_value, optional_recognition_root,
+        prepare_live_diagnostic_root, publish_private_file, publish_private_file_with,
+        run_with_model_initializer,
     };
     use crate::capture_live::GamescopeLiveSessionEvent;
     use crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation;
     use scorepeek::catalog::{
         AdapterError, Catalog, CatalogStoreError, CatalogSyncError, DqnAcquisitionError,
-        TachiAcquisitionError, TachiResource, TextageAcquisitionError, TextageResource,
+        FederationInput, SourceRevision, TachiAcquisitionError, TachiFixtureAdapter, TachiResource,
+        TextageAcquisitionError, TextageResource,
     };
     use scorepeek::recognition::{
         CatalogCandidateDomain, DynamicTextObservation, FieldNotObserved, FieldNotObservedReason,
@@ -3332,9 +3478,7 @@ mod tests {
                 current_score: not_observed(),
             }),
         );
-        let mut bytes = Vec::new();
-        write_live_session_event(
-            &mut bytes,
+        let value = live_session_event_value(
             None,
             None,
             GamescopeLiveSessionEvent::Observation {
@@ -3345,7 +3489,6 @@ mod tests {
             },
         )
         .unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["event"], "field_observation");
         assert_eq!(value["sequence"], 42);
         assert_eq!(value["fields"]["title"], "TITLE EXACT");
@@ -3372,9 +3515,7 @@ mod tests {
                 current_score: not_observed(),
             }),
         );
-        let mut bytes = Vec::new();
-        write_live_session_event(
-            &mut bytes,
+        let value = live_session_event_value(
             Some("invocation-session-2"),
             Some(2),
             GamescopeLiveSessionEvent::Observation {
@@ -3385,11 +3526,95 @@ mod tests {
             },
         )
         .unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["schema"], "scorepeek-run-event-v2");
         assert_eq!(value["session_id"], "invocation-session-2");
         assert_eq!(value["capture_generation"], 2);
         assert_eq!(value["sequence"], 1);
+    }
+
+    #[test]
+    fn accepted_resolution_includes_catalog_title_artist_and_evidence() {
+        let catalog = catalog_from_records(&[
+            tachi_record("song-1", "CATALOG TITLE", "CATALOG ARTIST"),
+            tachi_record("song-2", "OTHER SONG", "OTHER ARTIST"),
+        ]);
+        let domain = CatalogCandidateDomain::from_catalog(&catalog).unwrap();
+        let output = RegisteredScreenFieldObservation::from_fields(
+            &domain,
+            ScreenFieldObservations::Result(ResultScreenFieldObservations {
+                title: text("CATALOG TITLE"),
+                artist: text("CATALOG ARTIST"),
+                clear_type: text("CLEAR"),
+                difficulty: not_observed(),
+                level: not_observed(),
+                notes: not_observed(),
+                current_score: not_observed(),
+            }),
+        );
+        let value = live_session_event_value(
+            Some("invocation-session-1"),
+            Some(1),
+            GamescopeLiveSessionEvent::Observation {
+                sequence: 1,
+                monotonic_start_ms: 10,
+                monotonic_end_ms: 20,
+                output: &output,
+            },
+        )
+        .unwrap();
+        let presentation = &value["song_resolution_presentation"];
+        assert_eq!(presentation["status"], "accepted");
+        assert_eq!(
+            presentation["selected"]["display_titles"][0],
+            "CATALOG TITLE"
+        );
+        assert_eq!(presentation["selected"]["artist"], "CATALOG ARTIST");
+        assert!(presentation["selected"]["scorepeek_song_id"].is_string());
+        assert!(
+            presentation["evidence_summary"]
+                .as_str()
+                .unwrap()
+                .contains("runner-up margin=")
+        );
+    }
+
+    fn catalog_from_records(records: &[serde_json::Value]) -> Catalog {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schema": "scorepeek-tachi-fixture-v1",
+            "records": records,
+        }))
+        .unwrap();
+        let snapshot = TachiFixtureAdapter::parse(
+            &bytes,
+            SourceRevision::git_commit("0123456789abcdef0123456789abcdef01234567").unwrap(),
+        )
+        .unwrap();
+        Catalog::default()
+            .federate(FederationInput {
+                tachi: Some(snapshot),
+                ..FederationInput::default()
+            })
+            .catalog
+    }
+
+    fn tachi_record(id: &str, title: &str, artist: &str) -> serde_json::Value {
+        serde_json::json!({
+            "source_song_id": id,
+            "title": title,
+            "title_kind": "in_game_display",
+            "artist": artist,
+            "version": "SYNTHETIC",
+            "charts": [{
+                "play_type": "single",
+                "difficulty": "normal",
+                "level": 1,
+                "notes": 1,
+                "source_chart_id": "spn",
+                "product_versions": ["synthetic-v1"],
+                "primary": true
+            }],
+            "primary_infinitas": true
+        })
     }
 
     fn text(value: &str) -> DynamicTextObservation {

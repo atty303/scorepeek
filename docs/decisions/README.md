@@ -161,6 +161,9 @@ authoritative.
   retries a unique source until session admission succeeds while retaining the no-reconnect rule
   after session start, and preserves self-contained recognition observations when partial recording
   omitted their predicate facts.
+- [ADR 0058: Separate run observations from terminal presentation](0058-separate-run-observations-from-terminal-presentation.md)
+  supersedes ADR 0052's stdout contract by moving provisional recognition observations to a bounded
+  Unix socket while TTY stdout renders watcher state and catalog-backed song resolution.
 
 ## Historical
 

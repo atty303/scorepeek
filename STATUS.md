@@ -68,6 +68,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   with 324 canonical QOIs. Its independently bounded fact stream omitted predicates retained by the
   recognition stream, so v3 publication now uses each self-contained recognition timestamp and
   scene when that partial join input is absent.
+  ADR 0058 separates the provisional run observation transport from terminal presentation.
+  `$XDG_RUNTIME_DIR/scorepeek/observations-v2.sock` now sends a current snapshot followed by
+  sequenced `scorepeek-run-event-v2` records through a bounded non-blocking multi-client worker.
+  TTY stdout renders watcher state, separate OCR and catalog-backed song presentation, resolver
+  evidence, and channel health without raw mode; non-TTY stdout reports only deduplicated human
+  state changes. This does not implement the accepted `/v1.sock` event API or event authority.
   The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
   machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
   model. After the `/home` symlink fix, retained synthetic target evidence showed the 1920x1080
@@ -312,7 +318,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   command uses a distinct v1 schema. Compact JSON links by status/count/digest rather than duplicating its
   OCR, song IDs, catalog strings, candidate metrics, or decisions.
 - ADR 0040 adds the developer `scorepeek run gamescope` gate. ADR 0052 supersedes its ordinary
-  single-session and stdin-control lifecycle with a signal-stopped multi-session watcher. It emits exact bounded field/resolver NDJSON,
+  single-session and stdin-control lifecycle with a signal-stopped multi-session watcher. ADR 0058
+  moves its exact bounded field/resolver NDJSON from stdout to the provisional observation socket,
   preflights an enabled private diagnostic root, records full numeric screen-predicate evidence for
   unknown as well as recognized screens, and finalizes the existing field, diagnostic, and
   recognition-artifact workers in order. Its control path does not signal Gamescope, INFINITAS, or
@@ -453,9 +460,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   official-model execution, and native PipeWire build have each passed their dedicated development
   gates. These do not substitute for target-machine capture, recognition, or performance evidence.
 - Repository validation at this checkpoint includes formatting/static checks, workspace all-target
-  clippy with warnings denied, 161 library tests, 163 binary tests, 55 corpus tests, 75 offline OCR
-  tests, dataset E2E, and
-  native PipeWire build verification. Focused session tests also verify descriptor/layout rejection,
+  clippy with warnings denied, 287 library tests, 213 binary tests, 54 corpus tests, 77 offline OCR
+  tests, and native PipeWire build verification. Focused session tests also verify descriptor/layout rejection,
   frame-generation rejection, diagnostic opt-out non-interference, and manifest-backed ordered
   binding rollover.
 - Focused routing tests exercise synthetic result and music-select inputs, title-bearing exact
@@ -471,6 +477,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - Focused resource-loader tests verify the canonical runtime manifest, pre-I/O model/runtime
   mismatch, location-specific I/O source preservation, absent active catalog, active-catalog digest
   mismatch, and that the resource-owning observer type satisfies the ADR 0030 `Send` boundary.
+- Focused run-output tests verify snapshot-before-live socket delivery, owned-socket cleanup,
+  stale-socket replacement without overwriting a non-socket entry, multiple/no/slow-client behavior,
+  queue-drop accounting, typed state reduction, separate OCR/catalog rendering, narrow-terminal
+  title/artist priority and ellipsis, and accepted song presentation with resolver evidence.
 - On the development machine, the read-only resource gate loaded active catalog
   `ceabe2931815c492b9eb088282ab6df55cabff2545fd9d8de3e0ae11b1b2b541`, registered model
   `5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634`, and runtime
@@ -570,6 +580,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - The bounded CLI gate is not an ordinary long-running application loop. Live queue-full or worker
   loss was not forced on the development machine; bounded unit tests cover queue drop, worker loss,
   generation rejection, opt-out, and diagnostic non-interference. Target-host cost remains unknown.
+- Ratatui rendering and the observation socket are covered by deterministic development-host tests,
+  but an installed target archive has not yet exercised alternate-screen restoration, redirected
+  plain output, mid-session socket attachment, slow-client disconnection, or a real long-title
+  observation. These checks grant neither event authority nor target capture support.
 - The live recognition-artifact worker is covered by exact-value/timing, create-only, unavailable,
   compact-link, clippy, and workspace tests and the earlier complete-cadence path has retained
   Gamescope frames. The foreground-compacted retention has retained three live results and complete
@@ -658,8 +672,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 1. Exercise the fixed measured target `gamescope-4k` watcher with scorepeek-first startup through the
    transient INFINITAS source sequence, then cover Gamescope-first, sequential and simultaneous
-   source lifetimes, and idle/active signals. Do not claim target lifecycle support before those
-   separate checks pass.
+   source lifetimes, idle/active signals, TTY restoration, redirected plain output, and a
+   mid-session observation-socket client. Do not claim target lifecycle or presentation support
+   before those separate checks pass.
 2. Verify that the next partial or complete ordinary session publishes v3 automatically without
    component reconstruction, and add only operator-reviewed episodes to the active suite.
 3. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
