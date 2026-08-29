@@ -179,6 +179,13 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   result-to-play retry as a new child attempt. The observation snapshot, additive
   `play_attempt_changed` records and a dedicated TUI panel derive from the same state. This does not
   rescue result resolution, create accepted events, persist history or infer mode/course progress.
+  ADR 0071 makes the handoff observable as `armed` with its causal sequence and updates it before
+  the stable presentation is published, so a visible stable selection is already available to the
+  following decision transition. Unknown screens preserve that handoff.
+  ADR 0069 separates diagnostic expiry priority from capacity admission: normal and priority age
+  windows remain, but exact capacity reclamation removes the oldest inactive run regardless of
+  priority so stale partial evidence cannot prevent a fresh run. Active runs remain protected and
+  evidence requiring a capacity pin must be exported.
   The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
   machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
   model. After the `/home` symlink fix, retained synthetic target evidence showed the 1920x1080
@@ -191,17 +198,13 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   production normalization for the marker. Two ordinary watcher runs have retained six reviewed
   result episodes, but the fixed pre-admission retry, automatic partial v3 publication, and the
   remaining lifetime/signal matrix require a fresh target run.
-  That target also exposed a receiver scheduling defect: while the Gamescope producer remained at
-  zero `pw-top` errors, the asynchronous scorepeek follower increased from 13,738 to 14,052 errors
-  over four adjacent samples, spent 4.4--4.6 ms copying each mapped 3840x2160 BGRx frame, and
-  reported `B/Q` 3.31--3.47 plus one incomplete `BUSY +++` sample. The receiver now coalesces the
-  PipeWire process event into one pending flag and drains/copies mapped buffers only after the
-  event-loop dispatch returns. This preserves the bounded latest-frame and failure contracts while
-  removing the 31.6 MiB copy from the process callback. Repository validation passes. The resulting
-  cargo-dist binary was installed at `/home/atty/.local/bin/scorepeek` on the target with SHA-256
-  `d3a8eaeb09ab362e8fad891d6808db63952e0ea2bf315fd4fd9fa5a8b4327c2b`; target-side `--version`,
-  `doctor`, and digest readback passed while scorepeek remained stopped. The target `pw-top` error
-  delta and capture behavior still require an ordinary run.
+  That target also exposed a receiver scheduling defect. The asynchronous scorepeek follower
+  accumulated about 100 `pw-top` errors per second with negotiated rate `0/1`, and Gamescope stderr
+  repeatedly reported an out-of-buffers consumer. Deferring dequeue until after event-loop dispatch
+  did not fix it. ADR 0070 instead fixes the consumer offer at 10/1 fps and returns all superseded
+  buffers within the PipeWire process event while copying only the newest mapped frame. Repository
+  checks, complete tests, and the cargo-dist artifact test pass. Installation, the target error
+  delta, negotiated rate, and Gamescope stderr still require a fresh ordinary run.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -251,8 +254,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   provider and receiver failure ownership distinct.
 - The common receiver accepts only bounded raw BGRx, disables conversion and reconnection, retains
   one owned latest frame, detects caps/memory/stride drift, and tears down before the provider.
-  The PipeWire process callback only coalesces a pending notification; mapped-buffer validation,
-  latest-frame replacement, and the required owned pixel copy run after event-loop dispatch.
+  It requests exactly 10/1 fps and, within each PipeWire process event, returns superseded buffers
+  before validating and copying only the newest mapped frame into application-owned memory.
 - Live and repeated-lifecycle gates expose bounded typed facts and aggregate counters without pixels
   or arbitrary PipeWire properties. Uncalibrated frames cannot enter recognition or canonical
   diagnostic recording.
@@ -684,8 +687,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Unverified boundaries
 
-- The target has the deferred-buffer build installed but has not yet run it. An ordinary
-  `gamescope-4k` run must show no increasing scorepeek `pw-top` error count while retaining ordinary
+- The target still has the failed deferred-buffer build installed. After installing ADR 0070, an
+  ordinary `gamescope-4k` run must show no increasing scorepeek `pw-top` error count or Gamescope
+  out-of-buffers warnings while retaining ordinary
   session admission, 10 Hz latest-frame recognition, diagnostic sequencing, and clean shutdown.
   Development-host compile and replay tests cannot establish this realtime PipeWire boundary.
 - The result temporal reducer is grounded by ten reviewed episodes with complete enough ordered

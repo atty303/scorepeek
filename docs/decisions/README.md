@@ -201,6 +201,14 @@ authoritative.
   supersedes ADR 0024 only for application-level provisional attempt composition, adds fail-closed
   decision/play screen facts, and links selection, gameplay, result, and retry without feeding state
   back into recognition.
+- [ADR 0069: Evict the oldest inactive diagnostic run at capacity](0069-evict-oldest-diagnostic-run-at-capacity.md)
+  supersedes ADR 0025 only for capacity eviction eligibility while retaining separate normal and
+  priority expiry periods.
+- [ADR 0070: Fixate the PipeWire consumer at the recognition rate](0070-fixate-pipewire-consumer-rate.md)
+  supersedes ADR 0056 only for its unconstrained PipeWire stream offer and returns superseded
+  buffers within the 10 Hz process event.
+- [ADR 0071: Observe play-attempt arming before decision](0071-observe-play-attempt-arming.md)
+  supersedes ADR 0068 only for keeping the stable-selection handoff implicit before an attempt.
 
 ## Historical
 

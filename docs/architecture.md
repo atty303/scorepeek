@@ -46,6 +46,9 @@ handling, sequence/timing, and source-loss notification. Gamescope against the
 default PipeWire remote is the first provider. Portal later supplies a
 session-scoped remote FD and node ID through the same boundary; registered
 custom providers may follow. No provider silently falls back to another.
+The common receiver requests delivery at the fixed 10/1 recognition cadence,
+returns superseded buffers within each PipeWire process event, and copies only
+the newest mapped frame into application-owned memory.
 
 Every backend produces an owned `ObservedFrame` containing its exact input
 contract, capture generation, sequence number, monotonic timing, and immutable
@@ -193,7 +196,9 @@ The application also composes a provisional observed play path without changing 
 core. Independent canonical predicates classify a complete song-decision splash as
 `decide_transition` and the fixed gameplay cabinet as `play`; loading, blank, stage-failed, partial,
 and overlapping evidence stays unknown. Only a stable or explicitly held music-select presentation
-can arm the path. The reducer then records observed decide/play/result steps, matching or conflicting
+can arm the path. That handoff is set before the stable presentation is published and is observable
+as an `armed` state with its causal source sequence. The reducer then records observed
+decide/play/result steps, matching or conflicting
 stable result identity, and result-to-play retry parentage. Missing steps remain typed incomplete or
 unlinked. This state is emitted as `play_attempt_changed` and shown in the TUI, but it is not a
 resolver input, accepted event, persisted score, or session-history authority.
@@ -391,10 +396,11 @@ diagnostic run; the durable zero-byte root marker is only an inventory sentinel
 and is not the lease identity. This is an advisory cooperative-writer contract,
 not a defense against deliberate same-UID replacement of both root and anchor.
 Under that lease, retention removes expired runs and then the
-oldest non-priority normal runs only as exact new publications require space;
+oldest inactive run, regardless of priority, as exact new publications require space;
 it proves the publication can fit after all eligible reclamation before the
 first capacity deletion, and rolls back uncommitted byte reservations.
-an active or unexpired priority run is never removed. Completed-run age uses
+An active run is never removed. Priority keeps its longer expiry period but is not a capacity pin;
+operators export evidence that must outlive the bounded store. Completed-run age uses
 manifest publication time, while a crash-left partial uses its directory-entry
 publication time. Deletion is rename-first and recoverable through a durable
 scorepeek-owned marker that binds the run ID and exact pre-delete file
@@ -420,8 +426,8 @@ The ordinary foreground runtime currently exposes provisional recognition observ
 snapshot and then receives sequenced `scorepeek-run-event-v2` NDJSON. This local observation surface
 may include raw OCR, catalog-backed selected and runner-up song presentations, and resolver metrics;
 bounded `screen_changed` records expose synchronous predicate boundaries without repeating every
-frame; additive `play_attempt_changed` records expose the latest provisional selection-to-result
-path and retry link without altering raw recognition;
+frame; additive `play_attempt_changed` records expose selection arming before decision plus the
+latest provisional selection-to-result path and retry link without altering raw recognition;
 `next_channel_sequence` marks the first event not represented by the snapshot so a client can
 discard an already-represented live record and detect later gaps. It is intentionally separate from
 accepted domain events. TTY stdout renders the same typed run state as a TUI, while non-TTY stdout

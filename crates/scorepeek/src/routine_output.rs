@@ -841,6 +841,23 @@ impl RoutineOutput {
             }
         }
         let temporal_state = update.state.clone();
+        let play_attempt_update = match &temporal_state {
+            MusicSelectTemporalState::Stable { .. } => self.play_attempt.observe_selection(
+                self.retained_music_select_song.clone(),
+                Some(SelectionSource::Stable),
+                sequence,
+            ),
+            MusicSelectTemporalState::HeldUnknown { .. } => self.play_attempt.observe_selection(
+                self.retained_music_select_song.clone(),
+                Some(SelectionSource::LastConfirmedHeld),
+                sequence,
+            ),
+            MusicSelectTemporalState::Empty
+            | MusicSelectTemporalState::Pending { .. }
+            | MusicSelectTemporalState::Changing { .. } => {
+                self.play_attempt.observe_selection(None, None, sequence)
+            }
+        };
         self.publish_one(&RunEvent {
             schema: "scorepeek-run-event-v2".to_owned(),
             kind: RunEventKind::TemporalMusicSelectChanged {
@@ -853,20 +870,13 @@ impl RoutineOutput {
                 candidate_song: self.candidate_music_select_song.clone(),
             },
         })?;
-        match &temporal_state {
-            MusicSelectTemporalState::Stable { .. } => self.play_attempt.observe_selection(
-                self.retained_music_select_song.clone(),
-                Some(SelectionSource::Stable),
-            ),
-            MusicSelectTemporalState::HeldUnknown { .. } => self.play_attempt.observe_selection(
-                self.retained_music_select_song.clone(),
-                Some(SelectionSource::LastConfirmedHeld),
-            ),
-            MusicSelectTemporalState::Empty
-            | MusicSelectTemporalState::Pending { .. }
-            | MusicSelectTemporalState::Changing { .. } => {
-                self.play_attempt.observe_selection(None, None);
-            }
+        if let Some(state) = play_attempt_update {
+            self.publish_play_attempt_update(
+                session_id.cloned(),
+                capture_generation,
+                Some(sequence),
+                state,
+            )?;
         }
         Ok(())
     }
@@ -1241,6 +1251,34 @@ fn play_attempt_lines(
     };
     let state = event.get("state").unwrap_or(&Value::Null);
     match text_at(state, "/status").as_str() {
+        "armed" => {
+            let selected = state.get("selected_song").unwrap_or(&Value::Null);
+            let mut lines = vec![Line::from(Span::styled(
+                "SELECTION ARMED",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ))];
+            lines.push(Line::from(fitted_value(
+                "Song: ",
+                &joined_at(selected, "/display_titles"),
+                available_width,
+            )));
+            lines.push(Line::from(fitted_value(
+                "Artist: ",
+                &text_at(selected, "/artist"),
+                available_width,
+            )));
+            if !compact {
+                lines.push(Line::from(format!(
+                    "source={}  sequence={}  song-id={}",
+                    text_at(state, "/selection_source"),
+                    text_at(state, "/source_sequence"),
+                    text_at(selected, "/scorepeek_song_id")
+                )));
+            }
+            lines
+        }
         "unlinked_result" => {
             let mut lines = vec![Line::from(Span::styled(
                 "UNLINKED RESULT",
@@ -1916,6 +1954,17 @@ mod tests {
             .collect()
     }
 
+    fn read_snapshot(socket_path: &Path) -> Value {
+        let stream = UnixStream::connect(socket_path).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut snapshot = String::new();
+        reader.read_line(&mut snapshot).unwrap();
+        serde_json::from_str(&snapshot).unwrap()
+    }
+
     fn assert_stabilized_fields(state: &RunViewState, expected: &str) {
         let stabilized = state.latest_stabilized_result.as_ref().unwrap();
         assert_eq!(stabilized.pointer("/state/song/status").unwrap(), expected);
@@ -2124,8 +2173,8 @@ mod tests {
                 .publish(&accepted_music_select_event(sequence))
                 .unwrap();
         }
-        let events = read_events(&mut reader, 6);
-        for pair in events.chunks_exact(2) {
+        let events = read_events(&mut reader, 7);
+        for pair in events[..6].chunks_exact(2) {
             assert_eq!(pair[0]["event"], "field_observation");
             assert_eq!(pair[1]["event"], "temporal_music_select_changed");
         }
@@ -2134,19 +2183,23 @@ mod tests {
             events[5]["retained_song"]["display_titles"][0],
             "CATALOG TITLE"
         );
+        assert_eq!(events[6]["event"], "play_attempt_changed");
+        assert_eq!(events[6]["state"]["status"], "armed");
+        assert_eq!(events[6]["state"]["selection_source"], "stable");
 
         output.publish(&unknown_music_select_event(4)).unwrap();
-        let held = read_events(&mut reader, 2);
+        let held = read_events(&mut reader, 3);
         assert_eq!(held[0]["event"], "field_observation");
         assert_eq!(held[1]["state"]["status"], "held_unknown");
         assert_eq!(held[1]["retained_song"]["artist"], "CATALOG ARTIST");
         assert!(held[1].get("candidate_song").is_none());
+        assert_eq!(held[2]["state"]["selection_source"], "last_confirmed_held");
 
         output.publish(&accepted_music_select_event(5)).unwrap();
-        let recovered = read_events(&mut reader, 2);
+        let recovered = read_events(&mut reader, 3);
         assert_eq!(recovered[1]["state"]["status"], "stable");
         assert_eq!(recovered[1]["reasons"][0], "change_cancelled");
-        assert_eq!(recovered[1]["channel_sequence"], 10);
+        assert_eq!(recovered[2]["state"]["selection_source"], "stable");
 
         output
             .publish(&RunEvent {
@@ -2157,10 +2210,12 @@ mod tests {
                 },
             })
             .unwrap();
-        let stopped = read_events(&mut reader, 2);
-        assert_eq!(stopped[0]["event"], "watcher_stopped");
-        assert_eq!(stopped[1]["event"], "temporal_music_select_changed");
-        assert_eq!(stopped[1]["state"]["status"], "empty");
+        let stopped = read_events(&mut reader, 3);
+        assert_eq!(stopped[0]["event"], "play_attempt_changed");
+        assert_eq!(stopped[0]["state"]["status"], "idle");
+        assert_eq!(stopped[1]["event"], "watcher_stopped");
+        assert_eq!(stopped[2]["event"], "temporal_music_select_changed");
+        assert_eq!(stopped[2]["state"]["status"], "empty");
         let state = output.state.lock().unwrap();
         assert!(state.latest_observation.is_none());
         assert_eq!(
@@ -2204,7 +2259,9 @@ mod tests {
                 .publish(&accepted_music_select_event(sequence))
                 .unwrap();
         }
-        let _ = read_events(&mut reader, 6);
+        let armed = read_events(&mut reader, 7);
+        assert_eq!(armed[6]["event"], "play_attempt_changed");
+        assert_eq!(armed[6]["state"]["status"], "armed");
 
         output
             .publish(&screen_event(4, "decide_transition"))
@@ -2242,24 +2299,32 @@ mod tests {
             "confirmed"
         );
 
-        let late = UnixStream::connect(&output.channel.socket_path).unwrap();
-        late.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
-        let mut late = BufReader::new(late);
-        let mut snapshot = String::new();
-        late.read_line(&mut snapshot).unwrap();
-        let snapshot: Value = serde_json::from_str(&snapshot).unwrap();
+        let snapshot = read_snapshot(&output.channel.socket_path);
         assert_eq!(
             snapshot["state"]["latest_play_attempt"]["state"]["attempt"]["result_relation"],
             "confirmed"
         );
 
-        output.publish(&screen_event(9, "play")).unwrap();
-        let retry = read_events(&mut reader, 2);
-        assert_eq!(retry[1]["state"]["attempt"]["attempt_id"], 2);
-        assert_eq!(retry[1]["state"]["attempt"]["parent_attempt_id"], 1);
+        output.publish(&screen_event(9, "music_select")).unwrap();
+        let snapshot = read_snapshot(&output.channel.socket_path);
         assert_eq!(
-            retry[1]["state"]["attempt"]["selection_source"],
-            "retry_inherited"
+            snapshot["state"]["latest_play_attempt"]["state"]["attempt"]["result_relation"],
+            "confirmed"
+        );
+
+        for sequence in 10..=12 {
+            output
+                .publish(&accepted_music_select_event(sequence))
+                .unwrap();
+        }
+        let snapshot = read_snapshot(&output.channel.socket_path);
+        assert_eq!(
+            snapshot["state"]["latest_play_attempt"]["state"]["status"],
+            "armed"
+        );
+        assert_eq!(
+            snapshot["state"]["latest_play_attempt"]["state"]["source_sequence"],
+            12
         );
     }
 

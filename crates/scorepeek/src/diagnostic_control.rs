@@ -139,7 +139,7 @@ pub(crate) struct DiagnosticStoreLease {
     _anchor_lock: File,
     _root_lock: File,
     managed_bytes: u64,
-    normal_candidates: Vec<DiagnosticRunSummary>,
+    eviction_candidates: Vec<DiagnosticRunSummary>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -898,7 +898,7 @@ impl DiagnosticStoreLease {
             _anchor_lock: anchor_lock,
             _root_lock: root_lock,
             managed_bytes,
-            normal_candidates: Vec::new(),
+            eviction_candidates: Vec::new(),
         })
     }
 
@@ -963,7 +963,7 @@ impl DiagnosticStoreLease {
                 .cmp(&right.retention_time)
                 .then_with(|| left.run_id.cmp(&right.run_id))
         });
-        let mut normal_candidates = Vec::new();
+        let mut eviction_candidates = Vec::new();
         for run in runs {
             let retention_hours = if run.priority {
                 PRIORITY_RETENTION_HOURS
@@ -978,8 +978,8 @@ impl DiagnosticStoreLease {
                 managed_bytes = managed_bytes
                     .checked_sub(run.managed_bytes)
                     .ok_or(DiagnosticErrorType::StoreUnavailable)?;
-            } else if !run.priority {
-                normal_candidates.push(run);
+            } else {
+                eviction_candidates.push(run);
             }
         }
         let mut lease = Self {
@@ -989,7 +989,7 @@ impl DiagnosticStoreLease {
             _anchor_lock: anchor_lock,
             _root_lock: root_lock,
             managed_bytes,
-            normal_candidates,
+            eviction_candidates,
         };
         lease.reserve(required_bytes)?;
         Ok(lease)
@@ -1004,7 +1004,7 @@ impl DiagnosticStoreLease {
         if required_total > DEFAULT_AGGREGATE_BYTES {
             let required_reclaim = required_total - DEFAULT_AGGREGATE_BYTES;
             let reclaimable = self
-                .normal_candidates
+                .eviction_candidates
                 .iter()
                 .try_fold(0_u64, |total, run| total.checked_add(run.managed_bytes));
             if reclaimable.is_none_or(|bytes| bytes < required_reclaim) {
@@ -1020,10 +1020,10 @@ impl DiagnosticStoreLease {
                 self.managed_bytes += additional_bytes;
                 return Ok(());
             }
-            if self.normal_candidates.is_empty() {
+            if self.eviction_candidates.is_empty() {
                 return Err(DiagnosticErrorType::CapacityExceeded);
             }
-            let run = self.normal_candidates.remove(0);
+            let run = self.eviction_candidates.remove(0);
             delete_run(&self.root, &run)?;
             self.managed_bytes = self
                 .managed_bytes
@@ -2541,7 +2541,7 @@ mod tests {
     }
 
     #[test]
-    fn retention_expires_runs_and_capacity_removes_only_normal_runs() {
+    fn retention_expires_runs_and_capacity_removes_the_oldest_inactive_run() {
         let expired = tempfile::tempdir().unwrap();
         let recorder = DiagnosticRecorder::start(
             expired.path(),
@@ -2583,17 +2583,11 @@ mod tests {
         .unwrap()
         .set_len(DEFAULT_AGGREGATE_BYTES - current_bytes)
         .unwrap();
-        assert_eq!(
-            DiagnosticStoreLease::acquire_at(capacity.path(), normal_bytes + 1, SystemTime::now(),)
-                .err(),
-            Some(DiagnosticErrorType::CapacityExceeded)
-        );
-        assert!(capacity.path().join("normal-run").exists());
         let _lease =
-            DiagnosticStoreLease::acquire_at(capacity.path(), normal_bytes, SystemTime::now())
+            DiagnosticStoreLease::acquire_at(capacity.path(), normal_bytes + 1, SystemTime::now())
                 .unwrap();
         assert!(!capacity.path().join("normal-run").exists());
-        assert!(capacity.path().join("priority-run").exists());
+        assert!(!capacity.path().join("priority-run").exists());
     }
 
     #[test]
@@ -2888,7 +2882,7 @@ mod tests {
     }
 
     #[test]
-    fn priority_capacity_prevents_a_new_run_without_changing_the_store() {
+    fn priority_capacity_evicts_the_oldest_inactive_run_for_a_new_run() {
         let root = tempfile::tempdir().unwrap();
         let partial = DiagnosticRecorder::start(
             root.path(),
@@ -2907,20 +2901,18 @@ mod tests {
         .set_len(DEFAULT_AGGREGATE_BYTES - run_bytes)
         .unwrap();
 
-        let blocked = DiagnosticRecorder::start(
+        let admitted = DiagnosticRecorder::start(
             root.path(),
-            &descriptor("blocked-run"),
+            &descriptor("admitted-run"),
             DiagnosticPolicy::default(),
         );
-        let outcome = blocked.finish(DiagnosticRunStatus::Cancel, 0);
-        assert_eq!(
-            outcome.error_type,
-            Some(DiagnosticErrorType::CapacityExceeded)
-        );
-        assert!(!root.path().join("blocked-run").exists());
+        let outcome = admitted.finish(DiagnosticRunStatus::Cancel, 0);
+        assert_eq!(outcome.error_type, None);
+        assert!(!root.path().join("priority-run").exists());
+        assert!(root.path().join("admitted-run").exists());
         let status = diagnostic_store_status(root.path()).unwrap();
-        assert_eq!(status.managed_bytes, DEFAULT_AGGREGATE_BYTES);
-        assert_eq!(status.priority_count, 1);
+        assert!(status.managed_bytes < DEFAULT_AGGREGATE_BYTES);
+        assert_eq!(status.priority_count, 0);
     }
 
     #[test]

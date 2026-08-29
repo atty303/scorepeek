@@ -81,6 +81,11 @@ pub struct PlayAttempt<S> {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum PlayAttemptState<S> {
     Idle,
+    Armed {
+        source_sequence: u64,
+        selection_source: SelectionSource,
+        selected_song: S,
+    },
     Attempt {
         attempt: PlayAttempt<S>,
     },
@@ -126,10 +131,40 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
         *self = Self::default();
     }
 
-    pub fn observe_selection(&mut self, song: Option<S>, source: Option<SelectionSource>) {
+    pub fn observe_selection(
+        &mut self,
+        song: Option<S>,
+        source: Option<SelectionSource>,
+        source_sequence: u64,
+    ) -> Option<PlayAttemptState<S>> {
+        let previous = self.state.clone();
         self.selection_handoff = song
             .zip(source)
             .map(|(song, source)| SelectionHandoff { song, source });
+        match self.selection_handoff.as_ref() {
+            Some(handoff)
+                if !matches!(
+                    self.state,
+                    PlayAttemptState::Attempt {
+                        attempt: PlayAttempt {
+                            phase: PlayAttemptPhase::Decided | PlayAttemptPhase::Playing,
+                            ..
+                        }
+                    }
+                ) =>
+            {
+                self.state = PlayAttemptState::Armed {
+                    source_sequence,
+                    selection_source: handoff.source,
+                    selected_song: handoff.song.clone(),
+                };
+            }
+            None if matches!(self.state, PlayAttemptState::Armed { .. }) => {
+                self.state = PlayAttemptState::Idle;
+            }
+            Some(_) | None => {}
+        }
+        (self.state != previous).then(|| self.state.clone())
     }
 
     pub fn observe_screen(
@@ -162,7 +197,9 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
             PlayAttemptState::UnlinkedResult { result_song, .. } => {
                 *result_song = Some(song);
             }
-            PlayAttemptState::Idle | PlayAttemptState::Attempt { .. } => {}
+            PlayAttemptState::Idle
+            | PlayAttemptState::Armed { .. }
+            | PlayAttemptState::Attempt { .. } => {}
         }
         (self.state != previous).then(|| self.state.clone())
     }
@@ -179,19 +216,35 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
             push_reason(&mut attempt.reasons, PlayAttemptReason::SessionEnded);
         }
         self.selection_handoff = None;
+        if matches!(self.state, PlayAttemptState::Armed { .. }) {
+            self.state = PlayAttemptState::Idle;
+        }
         (self.state != previous).then(|| self.state.clone())
     }
 
     fn return_to_select(&mut self) {
         self.selection_handoff = None;
-        if let PlayAttemptState::Attempt { attempt } = &mut self.state
-            && matches!(
-                attempt.phase,
-                PlayAttemptPhase::Decided | PlayAttemptPhase::Playing
-            )
-        {
-            attempt.phase = PlayAttemptPhase::Abandoned;
-            push_reason(&mut attempt.reasons, PlayAttemptReason::ReturnedToSelect);
+        match &mut self.state {
+            PlayAttemptState::Attempt {
+                attempt:
+                    attempt @ PlayAttempt {
+                        phase: PlayAttemptPhase::Decided | PlayAttemptPhase::Playing,
+                        ..
+                    },
+            } => {
+                attempt.phase = PlayAttemptPhase::Abandoned;
+                push_reason(&mut attempt.reasons, PlayAttemptReason::ReturnedToSelect);
+            }
+            PlayAttemptState::Armed { .. } => self.state = PlayAttemptState::Idle,
+            PlayAttemptState::Idle
+            | PlayAttemptState::UnlinkedResult { .. }
+            | PlayAttemptState::Attempt {
+                attempt:
+                    PlayAttempt {
+                        phase: PlayAttemptPhase::Result | PlayAttemptPhase::Abandoned,
+                        ..
+                    },
+            } => {}
         }
     }
 
@@ -363,9 +416,33 @@ mod tests {
     }
 
     #[test]
+    fn stable_selection_is_observable_before_decision_and_survives_unknown() {
+        let mut reducer = PlayAttemptReducer::default();
+        let armed = reducer
+            .observe_selection(Some(7), Some(SelectionSource::Stable), 9)
+            .unwrap();
+        assert_eq!(
+            armed,
+            PlayAttemptState::Armed {
+                source_sequence: 9,
+                selection_source: SelectionSource::Stable,
+                selected_song: 7,
+            }
+        );
+        assert_eq!(reducer.observe_screen(PlayAttemptScreen::Unknown, 10), None);
+
+        reducer.observe_screen(PlayAttemptScreen::DecideTransition, 11);
+
+        let attempt = attempt(reducer.state());
+        assert_eq!(attempt.selected_song, Some(7));
+        assert_eq!(attempt.selection_source, Some(SelectionSource::Stable));
+        assert!(attempt.path.select_observed);
+    }
+
+    #[test]
     fn normal_path_confirms_the_selected_song() {
         let mut reducer = PlayAttemptReducer::default();
-        reducer.observe_selection(Some(7), Some(SelectionSource::Stable));
+        reducer.observe_selection(Some(7), Some(SelectionSource::Stable), 9);
         reducer.observe_screen(PlayAttemptScreen::DecideTransition, 10);
         reducer.observe_screen(PlayAttemptScreen::Play, 11);
         reducer.observe_screen(PlayAttemptScreen::Unknown, 12);
@@ -393,7 +470,7 @@ mod tests {
     #[test]
     fn held_selection_is_distinct_and_result_conflict_preserves_both_songs() {
         let mut reducer = PlayAttemptReducer::default();
-        reducer.observe_selection(Some(7), Some(SelectionSource::LastConfirmedHeld));
+        reducer.observe_selection(Some(7), Some(SelectionSource::LastConfirmedHeld), 9);
         reducer.observe_screen(PlayAttemptScreen::DecideTransition, 10);
         reducer.observe_screen(PlayAttemptScreen::Play, 11);
         reducer.observe_screen(PlayAttemptScreen::Result, 12);
@@ -410,9 +487,39 @@ mod tests {
     }
 
     #[test]
+    fn result_survives_select_and_pending_until_the_next_selection_is_armed() {
+        let mut reducer = PlayAttemptReducer::default();
+        reducer.observe_selection(Some(7), Some(SelectionSource::Stable), 9);
+        reducer.observe_screen(PlayAttemptScreen::DecideTransition, 10);
+        reducer.observe_screen(PlayAttemptScreen::Play, 11);
+        reducer.observe_screen(PlayAttemptScreen::Result, 12);
+        reducer.observe_stable_result(7);
+        let result = reducer.state().clone();
+
+        assert_eq!(
+            reducer.observe_screen(PlayAttemptScreen::MusicSelect, 13),
+            None
+        );
+        assert_eq!(reducer.observe_selection(None, None, 14), None);
+        assert_eq!(reducer.state(), &result);
+
+        let armed = reducer
+            .observe_selection(Some(8), Some(SelectionSource::Stable), 15)
+            .unwrap();
+        assert_eq!(
+            armed,
+            PlayAttemptState::Armed {
+                source_sequence: 15,
+                selection_source: SelectionSource::Stable,
+                selected_song: 8,
+            }
+        );
+    }
+
+    #[test]
     fn missing_decide_and_result_only_stay_explicitly_incomplete() {
         let mut reducer = PlayAttemptReducer::default();
-        reducer.observe_selection(Some(7), Some(SelectionSource::Stable));
+        reducer.observe_selection(Some(7), Some(SelectionSource::Stable), 19);
         reducer.observe_screen(PlayAttemptScreen::Play, 20);
         let attempt = attempt(reducer.state());
         assert!(!attempt.path.decide_observed);
@@ -437,7 +544,7 @@ mod tests {
     #[test]
     fn retry_is_a_new_child_attempt_with_inherited_result_song() {
         let mut reducer = PlayAttemptReducer::default();
-        reducer.observe_selection(Some(7), Some(SelectionSource::Stable));
+        reducer.observe_selection(Some(7), Some(SelectionSource::Stable), 9);
         reducer.observe_screen(PlayAttemptScreen::DecideTransition, 10);
         reducer.observe_screen(PlayAttemptScreen::Play, 11);
         reducer.observe_screen(PlayAttemptScreen::Result, 12);
@@ -459,7 +566,7 @@ mod tests {
     #[test]
     fn unknown_between_repeated_decide_does_not_replace_the_active_attempt() {
         let mut reducer = PlayAttemptReducer::default();
-        reducer.observe_selection(Some(7), Some(SelectionSource::Stable));
+        reducer.observe_selection(Some(7), Some(SelectionSource::Stable), 9);
         reducer.observe_screen(PlayAttemptScreen::DecideTransition, 10);
         reducer.observe_screen(PlayAttemptScreen::Unknown, 11);
         reducer.observe_screen(PlayAttemptScreen::DecideTransition, 12);
