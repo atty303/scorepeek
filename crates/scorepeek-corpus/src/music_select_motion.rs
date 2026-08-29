@@ -17,6 +17,10 @@ use scorepeek::recognition::{
     ScreenCatalogCandidateObservations, ScreenClass, ScreenFieldObservations,
     resolve_music_select_song,
 };
+use scorepeek::temporal_recognition::{
+    MusicSelectTemporalPolicy, MusicSelectTemporalReducer, MusicSelectTemporalState,
+    MusicSelectTemporalTransitionReason,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -37,10 +41,9 @@ const DWELL_EVALUATION_SUMMARY_SCHEMA: &str =
     "scorepeek-private-music-select-dwell-evaluation-summary-v2";
 const CORRECTNESS_LABEL_SCHEMA: &str = "scorepeek-private-music-select-correct-song-labels-v1";
 const CORRECTNESS_EVALUATION_SCHEMA: &str =
-    "scorepeek-private-music-select-correctness-evaluation-v1";
+    "scorepeek-private-music-select-correctness-evaluation-v2";
 const CORRECTNESS_EVALUATION_SUMMARY_SCHEMA: &str =
-    "scorepeek-private-music-select-correctness-evaluation-summary-v1";
-const LEADING_DWELL_MS: u64 = 200;
+    "scorepeek-private-music-select-correctness-evaluation-summary-v2";
 const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_OBSERVATION_RECORD_BYTES: usize = 1024 * 1024;
@@ -129,9 +132,40 @@ pub struct MusicSelectCorrectnessEvaluationSummary {
     stationary_run_count: usize,
     expected_song_run_count: usize,
     non_song_selection_run_count: usize,
-    candidate_policy: MusicSelectDwellPolicy,
+    candidate_count: usize,
     runtime_policy_selected: bool,
     authority: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MusicSelectTemporalCandidatePolicy {
+    pub dwell_ms: u64,
+    pub unknown_grace_ms: u64,
+}
+
+impl MusicSelectTemporalCandidatePolicy {
+    /// Constructs one bounded hold-and-replace candidate.
+    ///
+    /// # Errors
+    /// Returns [`CorpusError::InvalidRequest`] when either duration is zero or exceeds one minute.
+    pub fn new(dwell_ms: u64, unknown_grace_ms: u64) -> Result<Self, CorpusError> {
+        if dwell_ms == 0 || dwell_ms > 60_000 || unknown_grace_ms == 0 || unknown_grace_ms > 60_000
+        {
+            return Err(CorpusError::InvalidRequest(
+                "music-select temporal durations must be between 1 and 60000 ms".to_owned(),
+            ));
+        }
+        Ok(Self {
+            dwell_ms,
+            unknown_grace_ms,
+        })
+    }
+
+    fn production(self) -> MusicSelectTemporalPolicy {
+        MusicSelectTemporalPolicy::new(self.dwell_ms, self.unknown_grace_ms, MAX_CONTIGUOUS_GAP_MS)
+            .expect("validated temporal candidate is a valid production policy")
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -353,13 +387,12 @@ struct MusicSelectCorrectnessEvaluation {
     sampling_interval_ms: u64,
     denominators: CorrectnessDenominators,
     raw: CorrectnessAggregate,
-    candidate: CorrectnessCandidateEvaluation,
-    runs: Vec<CorrectnessRunEvaluation>,
+    candidates: Vec<CorrectnessCandidateEvaluation>,
     runtime_policy_selected: bool,
     authority: &'static str,
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 struct CorrectnessDenominators {
     stationary_runs: usize,
     expected_song_runs: usize,
@@ -367,7 +400,7 @@ struct CorrectnessDenominators {
     observations: usize,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 struct CorrectnessAggregate {
     outcomes: CorrectnessOutcomes,
     accepted_identity_transitions: usize,
@@ -386,7 +419,7 @@ struct CorrectnessOutcomes {
 
 #[derive(Debug, Serialize)]
 struct CorrectnessCandidateEvaluation {
-    policy: MusicSelectDwellPolicy,
+    policy: MusicSelectTemporalCandidatePolicy,
     candidate_status: &'static str,
     aggregate: CorrectnessAggregate,
     expected_song_runs_stabilized_correct: usize,
@@ -394,6 +427,29 @@ struct CorrectnessCandidateEvaluation {
     non_song_selection_runs_stabilized: usize,
     correct_stabilization_latency_ms: DwellDistribution,
     wrong_stable_streak_duration_ms: DwellDistribution,
+    state_observations: TemporalStateObservationCounts,
+    transitions: TemporalTransitionCounts,
+    non_song_runs_retained_at_end: usize,
+    runs: Vec<CorrectnessRunEvaluation>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+struct TemporalStateObservationCounts {
+    empty: usize,
+    pending: usize,
+    stable: usize,
+    held_unknown: usize,
+    changing: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+struct TemporalTransitionCounts {
+    pending_cleared_by_unknown: usize,
+    unknown_held: usize,
+    unknown_grace_expired: usize,
+    change_pending_started: usize,
+    change_cancelled: usize,
+    stable_replaced: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -435,7 +491,11 @@ struct CorrectnessEvaluationParts {
     denominators: CorrectnessDenominators,
     raw: CorrectnessAggregate,
     candidate: CorrectnessCandidateEvaluation,
-    runs: Vec<CorrectnessRunEvaluation>,
+}
+
+struct TemporalReplay {
+    states: BTreeMap<(String, u64), MusicSelectTemporalState<ScorepeekSongId>>,
+    transitions: TemporalTransitionCounts,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
@@ -942,6 +1002,7 @@ pub fn evaluate_music_select_correctness(
     reviewed_path: &Path,
     labels_path: &Path,
     output_path: &Path,
+    policies: &[MusicSelectTemporalCandidatePolicy],
 ) -> Result<MusicSelectCorrectnessEvaluationSummary, CorpusError> {
     if !store.is_absolute()
         || !catalog_store.is_absolute()
@@ -975,12 +1036,14 @@ pub fn evaluate_music_select_correctness(
         &runs,
         &inputs.catalog_song_ids,
     )?;
-    let policy = MusicSelectDwellPolicy {
-        stationary_dwell_ms: LEADING_DWELL_MS,
-    };
-    let stable = replay_dwell_states(&reviewed, &inputs.observations, policy)?;
-    let parts =
-        evaluate_correctness_runs(&runs, &labels.labels, &inputs.observations, &stable, policy)?;
+    let policies = validate_temporal_candidate_policies(policies)?;
+    let (denominators, raw, candidates) = evaluate_temporal_candidates(
+        &reviewed,
+        &runs,
+        &labels.labels,
+        &inputs.observations,
+        &policies,
+    )?;
     let report = MusicSelectCorrectnessEvaluation {
         schema: CORRECTNESS_EVALUATION_SCHEMA,
         source_reviewed_sha256: source_reviewed_sha256.clone(),
@@ -989,10 +1052,9 @@ pub fn evaluate_music_select_correctness(
         source_session_sha256: reviewed.session_sha256,
         source_catalog_sha256: inputs.source_catalog_sha256,
         sampling_interval_ms: reviewed.sampling_interval_ms,
-        denominators: parts.denominators,
-        raw: parts.raw,
-        candidate: parts.candidate,
-        runs: parts.runs,
+        denominators,
+        raw,
+        candidates,
         runtime_policy_selected: false,
         authority: "offline_descriptive_only",
     };
@@ -1008,13 +1070,85 @@ pub fn evaluate_music_select_correctness(
         evaluation_sha256,
         source_reviewed_sha256,
         source_labels_sha256,
-        stationary_run_count: parts.denominators.stationary_runs,
-        expected_song_run_count: parts.denominators.expected_song_runs,
-        non_song_selection_run_count: parts.denominators.non_song_selection_runs,
-        candidate_policy: policy,
+        stationary_run_count: denominators.stationary_runs,
+        expected_song_run_count: denominators.expected_song_runs,
+        non_song_selection_run_count: denominators.non_song_selection_runs,
+        candidate_count: policies.len(),
         runtime_policy_selected: false,
         authority: "offline_descriptive_only",
     })
+}
+
+fn evaluate_temporal_candidates(
+    reviewed: &ReviewedMotionSet,
+    runs: &[StationaryRun],
+    labels: &[CorrectSongLabel],
+    observations: &BTreeMap<u64, DwellObservation>,
+    policies: &[MusicSelectTemporalCandidatePolicy],
+) -> Result<
+    (
+        CorrectnessDenominators,
+        CorrectnessAggregate,
+        Vec<CorrectnessCandidateEvaluation>,
+    ),
+    CorpusError,
+> {
+    let mut candidates = Vec::with_capacity(policies.len());
+    let mut common_denominators = None;
+    let mut common_raw = None;
+    for policy in policies.iter().copied() {
+        let replay = replay_temporal_states(reviewed, observations, policy)?;
+        let confirmed = replay
+            .states
+            .iter()
+            .map(|(key, state)| (key.clone(), state.confirmed_value().copied()))
+            .collect::<BTreeMap<_, _>>();
+        let parts =
+            evaluate_correctness_runs(runs, labels, observations, &confirmed, policy, &replay)?;
+        if let Some(expected) = common_denominators {
+            if expected != parts.denominators {
+                return invalid("music-select temporal candidate denominators differ");
+            }
+        } else {
+            common_denominators = Some(parts.denominators);
+        }
+        if let Some(expected) = &common_raw {
+            if expected != &parts.raw {
+                return invalid("music-select temporal candidate raw results differ");
+            }
+        } else {
+            common_raw = Some(parts.raw.clone());
+        }
+        candidates.push(parts.candidate);
+    }
+    let denominators = common_denominators
+        .ok_or_else(|| CorpusError::InvalidRequest("temporal policy set is empty".to_owned()))?;
+    let raw = common_raw
+        .ok_or_else(|| CorpusError::InvalidRequest("temporal policy set is empty".to_owned()))?;
+    Ok((denominators, raw, candidates))
+}
+
+fn validate_temporal_candidate_policies(
+    policies: &[MusicSelectTemporalCandidatePolicy],
+) -> Result<Vec<MusicSelectTemporalCandidatePolicy>, CorpusError> {
+    if policies.is_empty() || policies.len() > MAX_DWELL_POLICIES {
+        return Err(CorpusError::InvalidRequest(
+            "music-select correctness evaluation requires one to sixteen temporal policies"
+                .to_owned(),
+        ));
+    }
+    let unique = policies.iter().copied().collect::<BTreeSet<_>>();
+    if unique.len() != policies.len()
+        || unique.iter().any(|policy| {
+            MusicSelectTemporalCandidatePolicy::new(policy.dwell_ms, policy.unknown_grace_ms)
+                .is_err()
+        })
+    {
+        return Err(CorpusError::InvalidRequest(
+            "music-select temporal policies must be unique and bounded".to_owned(),
+        ));
+    }
+    Ok(unique.into_iter().collect())
 }
 
 fn validate_dwell_policies(
@@ -1104,12 +1238,13 @@ fn validate_correct_song_labels(
     Ok(())
 }
 
-fn replay_dwell_states(
+fn replay_temporal_states(
     reviewed: &ReviewedMotionSet,
     observations: &BTreeMap<u64, DwellObservation>,
-    policy: MusicSelectDwellPolicy,
-) -> Result<BTreeMap<(String, u64), Option<ScorepeekSongId>>, CorpusError> {
-    let mut result = BTreeMap::new();
+    policy: MusicSelectTemporalCandidatePolicy,
+) -> Result<TemporalReplay, CorpusError> {
+    let mut states = BTreeMap::new();
+    let mut transitions = TemporalTransitionCounts::default();
     for span in &reviewed.spans {
         let first_pair = span
             .pairs
@@ -1121,11 +1256,12 @@ fn replay_dwell_states(
             first_pair.previous_timestamp_ms,
             first_pair.previous_screen,
         )?;
-        let mut pending = first
-            .accepted_song_id
-            .map(|song_id| (song_id, first.timestamp_ms));
-        let mut stable = None;
-        result.insert((span.span_id.clone(), first.sequence), stable);
+        let mut reducer = MusicSelectTemporalReducer::new(policy.production());
+        advance_temporal_replay(&mut reducer, first, &mut transitions);
+        states.insert(
+            (span.span_id.clone(), first.sequence),
+            reducer.state().clone(),
+        );
         for pair in &span.pairs {
             let current = bound_dwell_observation(
                 observations,
@@ -1133,11 +1269,70 @@ fn replay_dwell_states(
                 pair.source_timestamp_ms,
                 pair.screen,
             )?;
-            advance_dwell(&mut pending, &mut stable, current, policy);
-            result.insert((span.span_id.clone(), current.sequence), stable);
+            advance_temporal_replay(&mut reducer, current, &mut transitions);
+            states.insert(
+                (span.span_id.clone(), current.sequence),
+                reducer.state().clone(),
+            );
         }
     }
-    Ok(result)
+    Ok(TemporalReplay {
+        states,
+        transitions,
+    })
+}
+
+fn advance_temporal_replay(
+    reducer: &mut MusicSelectTemporalReducer<ScorepeekSongId>,
+    observation: &DwellObservation,
+    transitions: &mut TemporalTransitionCounts,
+) {
+    let update = if observation.screen == ScreenClass::MusicSelect {
+        reducer.observe(
+            observation.sequence,
+            observation.timestamp_ms,
+            observation.accepted_song_id,
+        )
+    } else {
+        reducer.reset(MusicSelectTemporalTransitionReason::ResetByScreenChange)
+    };
+    record_temporal_update(update, transitions);
+}
+
+fn record_temporal_update(
+    update: Option<scorepeek::temporal_recognition::MusicSelectTemporalUpdate<ScorepeekSongId>>,
+    counts: &mut TemporalTransitionCounts,
+) {
+    let Some(update) = update else {
+        return;
+    };
+    for reason in update.reasons {
+        match reason {
+            MusicSelectTemporalTransitionReason::PendingClearedByUnknown => {
+                counts.pending_cleared_by_unknown += 1;
+            }
+            MusicSelectTemporalTransitionReason::UnknownHeld => counts.unknown_held += 1,
+            MusicSelectTemporalTransitionReason::UnknownGraceExpired => {
+                counts.unknown_grace_expired += 1;
+            }
+            MusicSelectTemporalTransitionReason::ChangePendingStarted => {
+                counts.change_pending_started += 1;
+            }
+            MusicSelectTemporalTransitionReason::ChangeCancelled => {
+                counts.change_cancelled += 1;
+            }
+            MusicSelectTemporalTransitionReason::StableReplaced => counts.stable_replaced += 1,
+            MusicSelectTemporalTransitionReason::PendingStarted
+            | MusicSelectTemporalTransitionReason::PendingAdvanced
+            | MusicSelectTemporalTransitionReason::PendingReplaced
+            | MusicSelectTemporalTransitionReason::Stabilized
+            | MusicSelectTemporalTransitionReason::ChangePendingAdvanced
+            | MusicSelectTemporalTransitionReason::ChangePendingReplaced
+            | MusicSelectTemporalTransitionReason::ResetByGap
+            | MusicSelectTemporalTransitionReason::ResetByScreenChange
+            | MusicSelectTemporalTransitionReason::ResetBySessionBoundary => {}
+        }
+    }
 }
 
 fn evaluate_correctness_runs(
@@ -1145,7 +1340,8 @@ fn evaluate_correctness_runs(
     labels: &[CorrectSongLabel],
     observations: &BTreeMap<u64, DwellObservation>,
     stable: &BTreeMap<(String, u64), Option<ScorepeekSongId>>,
-    policy: MusicSelectDwellPolicy,
+    policy: MusicSelectTemporalCandidatePolicy,
+    replay: &TemporalReplay,
 ) -> Result<CorrectnessEvaluationParts, CorpusError> {
     let mut truth = CorrectnessDenominators {
         stationary_runs: runs.len(),
@@ -1158,6 +1354,7 @@ fn evaluate_correctness_runs(
     let mut candidate_correct_runs = 0;
     let mut candidate_incorrect_song_runs = 0;
     let mut candidate_non_song_runs = 0;
+    let mut non_song_runs_retained_at_end = 0;
     let mut results = Vec::with_capacity(runs.len());
     for (run, label) in runs.iter().zip(labels) {
         let expected_song = record_correctness_expectation(label.expected, &mut truth);
@@ -1207,12 +1404,12 @@ fn evaluate_correctness_runs(
             wrong_stable_streaks(run, &stable_ids, expected_song, observations)?;
         let maximum_wrong_streak = run_wrong_streaks.iter().max().copied();
         wrong_streaks.extend(run_wrong_streaks);
-        match expected_song {
-            Some(_) => {
-                candidate_correct_runs += usize::from(correct_latency.is_some());
-                candidate_incorrect_song_runs += usize::from(candidate_run.outcomes.incorrect > 0);
-            }
-            None => candidate_non_song_runs += usize::from(candidate_run.outcomes.incorrect > 0),
+        if expected_song.is_some() {
+            candidate_correct_runs += usize::from(correct_latency.is_some());
+            candidate_incorrect_song_runs += usize::from(candidate_run.outcomes.incorrect > 0);
+        } else {
+            candidate_non_song_runs += usize::from(candidate_run.outcomes.incorrect > 0);
+            non_song_runs_retained_at_end += usize::from(retained_at_run_end(replay, run));
         }
         results.push(CorrectnessRunEvaluation {
             span_id: run.span_id.clone(),
@@ -1231,16 +1428,43 @@ fn evaluate_correctness_runs(
         raw,
         candidate: CorrectnessCandidateEvaluation {
             policy,
-            candidate_status: "leading_motion_candidate",
+            candidate_status: "evaluated_candidate",
             aggregate: candidate_aggregate,
             expected_song_runs_stabilized_correct: candidate_correct_runs,
             expected_song_runs_stabilized_incorrect: candidate_incorrect_song_runs,
             non_song_selection_runs_stabilized: candidate_non_song_runs,
             correct_stabilization_latency_ms: dwell_distribution(correct_latencies),
             wrong_stable_streak_duration_ms: dwell_distribution(wrong_streaks),
+            state_observations: temporal_state_observation_counts(&replay.states),
+            transitions: replay.transitions,
+            non_song_runs_retained_at_end,
+            runs: results,
         },
-        runs: results,
     })
+}
+
+fn retained_at_run_end(replay: &TemporalReplay, run: &StationaryRun) -> bool {
+    replay
+        .states
+        .get(&(run.span_id.clone(), run.last_sequence))
+        .and_then(MusicSelectTemporalState::retained_value)
+        .is_some()
+}
+
+fn temporal_state_observation_counts(
+    states: &BTreeMap<(String, u64), MusicSelectTemporalState<ScorepeekSongId>>,
+) -> TemporalStateObservationCounts {
+    let mut counts = TemporalStateObservationCounts::default();
+    for state in states.values() {
+        match state {
+            MusicSelectTemporalState::Empty => counts.empty += 1,
+            MusicSelectTemporalState::Pending { .. } => counts.pending += 1,
+            MusicSelectTemporalState::Stable { .. } => counts.stable += 1,
+            MusicSelectTemporalState::HeldUnknown { .. } => counts.held_unknown += 1,
+            MusicSelectTemporalState::Changing { .. } => counts.changing += 1,
+        }
+    }
+    counts
 }
 
 fn record_correctness_expectation(
@@ -2946,13 +3170,14 @@ mod tests {
     use super::{
         CorrectSongExpectation, CorrectSongLabel, CorrectSongLabels, MAX_PROCESS_STDERR_BYTES,
         MotionEvidence, MotionReviewDecision, MotionReviewDecisions, MusicSelectDwellPolicy,
-        ObservationRecord, OperatorReviewState, RegionMotion, ReviewCompleteness, ReviewState,
-        ReviewedMotionPair, ReviewedMotionSet, ReviewedMotionSpan, VideoIdentity,
-        apply_music_select_motion_review, canonical_line, digest_bytes, evaluate_correctness_runs,
-        evaluate_dwell_policy, parse_showinfo_pts, plan_music_select_motion_review,
-        read_bounded_stream, region_motion_packed, replay_dwell_states, review_windows,
-        run_bounded_output, select_expression, selected_frame_targets, stationary_runs,
-        validate_correct_song_labels, validate_reviewed_motion_set, verify_video_unchanged,
+        MusicSelectTemporalCandidatePolicy, ObservationRecord, OperatorReviewState, RegionMotion,
+        ReviewCompleteness, ReviewState, ReviewedMotionPair, ReviewedMotionSet, ReviewedMotionSpan,
+        VideoIdentity, apply_music_select_motion_review, canonical_line, digest_bytes,
+        evaluate_correctness_runs, evaluate_dwell_policy, parse_showinfo_pts,
+        plan_music_select_motion_review, read_bounded_stream, region_motion_packed,
+        replay_temporal_states, review_windows, run_bounded_output, select_expression,
+        selected_frame_targets, stationary_runs, validate_correct_song_labels,
+        validate_reviewed_motion_set, verify_video_unchanged,
     };
 
     #[test]
@@ -3051,10 +3276,12 @@ mod tests {
                 expected: CorrectSongExpectation::NotSongSelection,
             },
         ];
-        let policy = MusicSelectDwellPolicy::new(200).unwrap();
-        let stable = replay_dwell_states(&reviewed, &observations, policy).unwrap();
+        let policy = MusicSelectTemporalCandidatePolicy::new(200, 200).unwrap();
+        let replay = replay_temporal_states(&reviewed, &observations, policy).unwrap();
+        let stable = confirmed_temporal_states(&replay);
         let evaluation =
-            evaluate_correctness_runs(&runs, &labels, &observations, &stable, policy).unwrap();
+            evaluate_correctness_runs(&runs, &labels, &observations, &stable, policy, &replay)
+                .unwrap();
 
         assert_eq!(evaluation.denominators.stationary_runs, 3);
         assert_eq!(evaluation.denominators.expected_song_runs, 2);
@@ -3071,10 +3298,10 @@ mod tests {
             Some(0)
         );
         assert_eq!(
-            evaluation.runs[2].expected,
+            evaluation.candidate.runs[2].expected,
             CorrectSongExpectation::NotSongSelection
         );
-        assert_eq!(evaluation.runs[2].candidate.outcomes.incorrect, 1);
+        assert_eq!(evaluation.candidate.runs[2].candidate.outcomes.incorrect, 1);
         assert_eq!(song_b, observations[&8].accepted_song_id.unwrap());
     }
 
@@ -3154,17 +3381,26 @@ mod tests {
                 },
             })
             .collect::<Vec<_>>();
-        let policy = MusicSelectDwellPolicy::new(200).unwrap();
-        let stable = replay_dwell_states(&reviewed, &observations, policy).unwrap();
+        let policy = MusicSelectTemporalCandidatePolicy::new(200, 200).unwrap();
+        let replay = replay_temporal_states(&reviewed, &observations, policy).unwrap();
+        let stable = confirmed_temporal_states(&replay);
         let evaluation =
-            evaluate_correctness_runs(&runs, &labels, &observations, &stable, policy).unwrap();
+            evaluate_correctness_runs(&runs, &labels, &observations, &stable, policy, &replay)
+                .unwrap();
 
-        assert_eq!(evaluation.runs[0].raw.accepted_identity_transitions, 2);
         assert_eq!(
-            evaluation.runs[0].candidate.accepted_identity_transitions,
+            evaluation.candidate.runs[0]
+                .raw
+                .accepted_identity_transitions,
+            2
+        );
+        assert_eq!(
+            evaluation.candidate.runs[0]
+                .candidate
+                .accepted_identity_transitions,
             0
         );
-        assert_eq!(evaluation.runs[0].candidate.outcomes.incorrect, 0);
+        assert_eq!(evaluation.candidate.runs[0].candidate.outcomes.incorrect, 0);
         assert_eq!(evaluation.raw.accepted_identity_transitions, 2);
         assert_eq!(
             evaluation.candidate.aggregate.accepted_identity_transitions,
@@ -3172,8 +3408,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn temporal_replay_resets_at_predicate_screen_context() {
+        let reviewed = synthetic_reviewed_set();
+        let observations = synthetic_dwell_observations(&reviewed);
+        let replay = replay_temporal_states(
+            &reviewed,
+            &observations,
+            MusicSelectTemporalCandidatePolicy::new(200, 200).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            replay
+                .states
+                .get(&("music-select-span-0001".to_owned(), 9))
+                .unwrap(),
+            scorepeek::temporal_recognition::MusicSelectTemporalState::Empty
+        ));
+    }
+
     fn song_id(value: u8) -> scorepeek::catalog::ScorepeekSongId {
         serde_json::from_str(&format!("\"00000000-0000-0000-0000-{value:012}\"")).unwrap()
+    }
+
+    fn confirmed_temporal_states(
+        replay: &super::TemporalReplay,
+    ) -> BTreeMap<(String, u64), Option<scorepeek::catalog::ScorepeekSongId>> {
+        replay
+            .states
+            .iter()
+            .map(|(key, state)| (key.clone(), state.confirmed_value().copied()))
+            .collect()
     }
 
     fn synthetic_dwell_observations(

@@ -144,12 +144,15 @@ after two equal observations within 250 ms, preserves stable values across a tra
 fails closed on a different accepted value. Music select uses central
 title, artist, play mode, selected difficulty and level, and the active
 right-list title. The two title presentations are not counted as independent
-metadata votes, and readable conflict rejects; stable-selection dwell is still unimplemented.
+metadata votes, and readable conflict rejects. A separate 200 ms hold-and-replace reducer derives
+typed `pending`, `stable`, `held_unknown`, and `changing` presentation state from accepted song IDs.
+Held and changing identities are retained context rather than current accepted values; unknown
+retention expires after 200 ms. Raw OCR and frame-local resolution remain unchanged.
 Version participates only when it is independently recognized. Raw frame observations and derived
 temporal transitions remain separate from future accepted domain events. Rejection is preferable
 to a guess.
 
-Before a music-select dwell policy is introduced, the active-suite video-replay path can produce an
+The active-suite video-replay path can produce an
 immutable operator-review draft. It reproduces 10 Hz packet-order sampling and measures the right
 list, active row, and central title independently through the production normalizer. Full-frame
 animation is deliberately excluded, 500 ms transition context is retained, and all spans remain
@@ -161,24 +164,26 @@ When selection identity changes while the right list also moves, operator review
 `selection_change`; motion with the same active identity is `scrolling`, and only unchanged
 identity plus unchanged list placement is `stationary`. Non-list animation does not affect this
 classification.
-Partial reviewed sets expose completeness and cannot become dwell truth. The corrected complete
+Partial reviewed sets expose completeness and cannot become temporal-policy truth. The corrected complete
 bound set contains 713 stationary, 83 scrolling, 30 selection-change, 12 operator-context, and 133
-predicate-context adjacent pairs. It is sufficient to evaluate candidate dwell policies, but does
-not itself select one or establish stable-selection accuracy.
-The offline dwell evaluator joins that complete truth with the bound observation stream and exact
+predicate-context adjacent pairs. It supplies motion evidence for temporal-policy evaluation but
+does not itself establish song correctness.
+The historical equal-ID dwell evaluator joins that complete truth with the bound observation stream and exact
 catalog generation, replays the production frame-local resolver, and compares equal accepted-song
 durations of 100--500 ms. After correcting two prematurely authored identity boundaries, every
 tested duration resets all selection changes with prior stability. Stable output during
 same-identity list scrolling is recorded as neutral nonstationary activity, not a false song
 decision. Longer dwell still reduces stationary-run coverage, and motion truth alone cannot select
-a runtime dwell. A separate complete correct-song set labels all 27 maximal stationary runs as 18
+a runtime dwell by itself. A separate complete correct-song set labels all 27 maximal stationary runs as 18
 songs and nine category/filter selections. Against those 740 observations the frame resolver has
 no wrong accept or accepted-ID transition; the leading 200 ms candidate preserves 16/18 song-run
-coverage and zero wrong/non-song stability, but increases unknown observations from 11 to 35. It
-therefore remains an offline candidate rather than runtime state. Raw central-title text variation
-is not song-ID variation and requires a separate presentation evaluation.
-Operator truth remains evaluation-only.
-This offline evidence surface has no runtime or event authority.
+coverage and zero wrong/non-song stability, but the rejected clear-on-unknown reducer increases
+unknown observations from 11 to 35. ADR 0067 supersedes that reducer with the production
+hold-and-replace state machine and evaluates the 100/200/300/500 ms dwell by 100/200/300 ms grace
+matrix. Combined with the corrected motion truth, it selects the 200/200 ms provisional runtime
+presentation described above. Operator truth remains evaluation-only and never enters runtime;
+raw central-title text variation remains separate from song-ID state. Neither the offline evidence
+surface nor `temporal_music_select_changed` grants accepted event authority.
 
 The offline corpus tool can replay this exact production reducer over ordered, operator-reviewed
 result intervals and compare bounded observation-count/gap policies. Its versioned JSON report

@@ -442,7 +442,7 @@ motion truth does not label correct songs and therefore cannot measure OCR smoot
 acceptance. The report is descriptive motion/reset evidence, not a correct-song label set,
 stable-selection accuracy result, or event authority.
 
-Evaluate the leading 200 ms candidate against complete correct-song truth:
+Evaluate the bounded hold-and-replace candidate matrix against complete correct-song truth:
 
 ```text
 mise run corpus:music-select:dwell:evaluate-correctness -- --reviewed /absolute/private/music-select-motion-reviewed.json --labels /absolute/private/music-select-correct-song-labels.json --output /absolute/private/music-select-correctness-evaluation.json
@@ -456,15 +456,17 @@ sequence, and last sequence and uses either
 negative denominator instead of silently excluding them. The evaluator rejects missing, extra,
 reordered, partial, or non-catalog labels.
 
-The create-only `scorepeek-private-music-select-correctness-evaluation-v1` report replays complete
-spans but scores only labeled stationary observations. It compares frame-local resolution with the
-fixed 200 ms `leading_motion_candidate`, including correct/incorrect/unknown counts, identity and
-outcome transitions, song-run coverage, non-song output, stabilization latency, wrong stable
-streaks, and per-run outcomes. The current 18 song and nine non-song runs contain 740 observations.
-Raw resolution is 729 correct / 0 incorrect / 11 unknown with no accepted-ID transition; 200 ms is
-705 / 0 / 35 and covers the same 16/18 song runs, with no wrong or non-song stability. It therefore
-remains a leading offline candidate but is not selected for runtime use. Operator truth never
-becomes a resolver input.
+The create-only `scorepeek-private-music-select-correctness-evaluation-v2` report replays complete
+spans through the production hold-and-replace reducer. By default it compares 100/200/300/500 ms
+dwell with 100/200/300 ms unknown grace; `--policy DWELL_MS:UNKNOWN_GRACE_MS` selects an explicit
+bounded subset. It records confirmed correctness separately from `held_unknown` and `changing`
+presentation, transition counts, song-run coverage, non-song final retention, stabilization
+latency, wrong stable streaks, and per-run outcomes. The selected 200/200 ms policy is 705 correct /
+0 incorrect / 35 unconfirmed over 740 stationary observations, covers the same 16/18 song runs,
+and retains no song at the end of any of the nine non-song runs. Across the complete replay it has
+ten held and five changing observations; three pending candidates clear on unknown without being
+counted as grace expiry. Operator truth never becomes a resolver input or runtime
+signal.
 
 Python 3.12.13 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
 PaddlePaddle CPU 3.3.1, Apache-2.0 `paddle2onnx` 2.1.0, and their complete

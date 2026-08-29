@@ -33,8 +33,9 @@ pub use music_list::{
 pub use music_select_motion::{
     MusicSelectCorrectnessEvaluationSummary, MusicSelectDwellEvaluationSummary,
     MusicSelectDwellPolicy, MusicSelectMotionReviewApplySummary, MusicSelectMotionReviewSummary,
-    apply_music_select_motion_review, evaluate_music_select_correctness,
-    evaluate_music_select_dwell, plan_music_select_motion_review,
+    MusicSelectTemporalCandidatePolicy, apply_music_select_motion_review,
+    evaluate_music_select_correctness, evaluate_music_select_dwell,
+    plan_music_select_motion_review,
 };
 pub use temporal_evaluation::{
     TemporalEvaluationPolicy, TemporalEvaluationSummary, evaluate_temporal_corpus,

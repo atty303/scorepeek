@@ -193,7 +193,10 @@ authoritative.
 - [ADR 0066: Evaluate the leading music-select dwell with correct-song truth](0066-evaluate-leading-music-select-dwell-with-correct-song-truth.md)
   ranks 200 ms as the leading motion candidate, binds every stationary run to an operator-reviewed
   song or non-song selection, and finds no wrong ID to suppress but additional unresolved latency.
-  Runtime selection remains deferred.
+  ADR 0067 supersedes its reducer and runtime conclusion.
+- [ADR 0067: Stabilize music-select with bounded hold and replacement](0067-stabilize-music-select-with-hold-and-replace.md)
+  uses one production reducer for offline evaluation and runtime presentation, retains a typed
+  last-confirmed song across bounded unknowns, and replaces a changed selection after 200 ms.
 
 ## Historical
 

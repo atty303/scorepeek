@@ -461,7 +461,7 @@ exec cargo run --locked --quiet -p scorepeek-corpus -- music-select dwell evalua
 '''
 
 [tasks."corpus:music-select:dwell:evaluate-correctness"]
-description = "Compare frame-local music-select resolution with the leading 200 ms candidate"
+description = "Evaluate music-select hold-and-replace candidates against correct-song truth"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail

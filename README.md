@@ -150,13 +150,18 @@ runtime.
 On a terminal, `run` uses a full-screen status view. It keeps the latest OCR text and frame-local
 catalog resolution separate from a provisional stabilized result. Two equal result song and clear
 type observations within 250 ms stabilize independently; a later unknown preserves the stable
-value, while a different accepted value is shown as a conflict. Music-select remains frame-local.
+value, while a different accepted value is shown as a conflict. Music-select song presentation
+stabilizes after 200 ms. A transient unknown retains the prior catalog identity as explicitly
+`HELD`, while a different accepted ID is `CHANGING` until it persists for 200 ms; retained unknown
+state expires after a 200 ms grace. Raw active-list and central-title OCR remain separate and are
+not rewritten by this presentation state.
 Redirected stdout contains only deduplicated human-readable state changes. Provisional
 machine-readable observations are available from
 `$XDG_RUNTIME_DIR/scorepeek/observations-v2.sock`: each client receives a current snapshot followed
 by `scorepeek-run-event-v2` NDJSON. Raw field observations remain unchanged and any derived
 `temporal_result_changed` record follows the observation that caused it. This observation socket is
-also the source of bounded raw `screen_changed` records used to reset result-local temporal state.
+also the source of derived `temporal_music_select_changed` records and bounded raw `screen_changed`
+records used to reset screen-local temporal state.
 It is not the future accepted-event API at `$XDG_RUNTIME_DIR/scorepeek/v1.sock`.
 
 Ordinary recognition artifacts are stored per Gamescope session below

@@ -580,16 +580,17 @@ flush timeoutは`partial | dropped` evidenceとして残すが、play、capture 
    list移動を`scrolling`、identityとlist配置がともに不変なpairを`stationary`とする。中央背景animationだけでは
    motion stateを変えない。identity境界を再確認したcorrected complete setは713 stationary、
    83 scrolling、30 selection-change、
-   12 operator-context、133 predicate-context pairを保持し、未判断pairは0である。このsetからcandidate dwellを
-   offline評価してからpolicyを選び、評価前にdwellを実装しない。ADR 0065はADR 0064で早すぎた2つの
+   12 operator-context、133 predicate-context pairを保持し、未判断pairは0である。ADR 0065はADR 0064で早すぎた2つの
    `selection_change`境界をvisible active identityが実際に変わる次pairへ移した。同じcatalog generationとproduction
    resolverを用いた100/200/300/500 ms再評価では、prior stabilityのあるchangeを4/4、4/4、3/3、3/3 resetし、missは0である。
    ADR 0066では200 msをleading motion candidateとし、全27 stationary runを18 songと9 category/filterへ
    operator labelした。740観測のframe-local resolutionはcorrect 729、incorrect 0、unknown 11、accepted-ID transition
    0であり、200 msはcorrect 705、incorrect 0、unknown 35、同じ16/18 song-run coverage、wrong/non-song stability 0だった。
-   wrong IDを抑える利得は観測されず初期latencyだけが増えるため、runtime policyはまだ選択しない。central-titleのraw OCR
-   文字列揺れはsong-ID stateと分離して後続評価する。chart、music-select stable-selection temporal stateおよびevent authorityは
-   後続の独立contractとする。
+   この最後の数値はstableをunknownで消す旧reducerの歴史的結果である。ADR 0067はproduction hold-and-replace reducerで
+   100/200/300/500 ms dwellと100/200/300 ms unknown graceを再評価し、correct-song truthとmotion truthを合わせて
+   200/200 msをprovisional runtime presentationに選択した。`held_unknown`と`changing`は旧IDをcurrent acceptedとして扱わず、
+   raw observationの後に`temporal_music_select_changed`を出す。operator truthはruntime入力にせず、central-titleのraw OCRは
+   song-ID stateと分離する。chartとaccepted event authorityは後続の独立contractとする。
 10. **M7**: 少数scenario replayから最小selection song contextとrecognition-trigger非依存のbounded
     live diagnosticsを検証し、その後versioned event schemaとNDJSON daemonを統合する。ゲーム全体の
     state machine、attempt、modeまたはretry回数は実装しない。

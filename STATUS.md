@@ -88,10 +88,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   conflicts, gap resets, or pending replacements. The 2-observation policy reaches joint stability
   at p50 591 ms / p95 796 ms versus p50 782 ms / p95 1,003 ms for 3 observations, so the retained
   evidence does not justify adding the third observation. Three sparse episodes expose one retained
-  result observation and one has no bindable result interval. Music-select dwell remained
-  unimplemented pending operator-reviewed stationary and scrolling spans; ADR 0063 now completes
-  that review evidence, while candidate policy evaluation and policy selection remain pending.
-  ADR 0060 adds the preceding music-select motion-review surface without changing that boundary.
+  result observation and one has no bindable result interval. At the ADR 0063 checkpoint,
+  music-select dwell remained unimplemented even though operator-reviewed stationary and scrolling
+  evidence had become complete. ADR 0067 subsequently completed the candidate evaluation and
+  selected the 200/200 ms provisional presentation policy described below. ADR 0060 supplied the
+  preceding music-select motion-review surface without itself changing that earlier boundary.
   The create-only offline command verifies one active-suite 10 Hz FFV1 video-replay session and
   measures adjacent frame movement separately for the twenty-row right-list union, active-list
   title, and central title while retaining 500 ms of screen-transition context. Its first complete
@@ -144,7 +145,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   correct-song labels, so that report alone selects no runtime policy. The canonical v2 evaluation
   SHA-256 is
   `0ed18a0f4dd2787e3808f382966d4b30c5e4ece1b957e792fcee0ba3c7048071`.
-  ADR 0066 promotes 200 ms only to `leading_motion_candidate`: it keeps the same 16/27 coverage and
+  ADR 0066 promoted 200 ms only to `leading_motion_candidate`: it keeps the same 16/27 coverage and
   4/4 reset result as 100 ms while reducing nonstationary stabilizations from six to one. A new
   canonical complete correct-song set binds every maximal stationary run to 18 visible songs or
   nine non-song category/filter selections. Its SHA-256 is
@@ -154,10 +155,19 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   200 ms candidate is 705 correct, zero incorrect and 35 unknown, keeps 16/18 coverage, and has no
   wrong or non-song stability. Its correct stabilization latency is p50 200 ms, p95 300 ms and
   maximum 300 ms. The canonical correctness evaluation SHA-256 is
-  `53f7afe0cb548f5c847baa53cc333e2fbf9f25353f5739b323198c7b9789f23b`. This evidence finds no
-  accepted song-ID jitter to remove and shows only added unresolved latency, so runtime policy,
-  stable-selection state and event authority remain unselected. Raw central-title OCR variation
-  shown by the TUI is a separate presentation signal.
+  `53f7afe0cb548f5c847baa53cc333e2fbf9f25353f5739b323198c7b9789f23b`. ADR 0067 supersedes that
+  report's clear-on-unknown reducer and runtime conclusion. A production hold-and-replace reducer
+  now distinguishes `pending`, current `stable`, non-authoritative `held_unknown`, and
+  non-authoritative `changing` state. The v2 correctness evaluator applies that exact reducer to a
+  100/200/300/500 ms dwell by 100/200/300 ms grace matrix. Its canonical SHA-256 is
+  `328a6476eafa71c4e79796112088814b318306d8a1037ad5e4c723e1fc05bb38`. The selected 200/200 ms
+  candidate remains zero-wrong with 16/18 song-run coverage and no retained song at the end of any
+  of nine non-song runs. Across all 982 observations it has 661 stable, ten held and five changing
+  states; three pending candidates cleared by unknown remain distinct from five grace expirations.
+  It retains catalog presentation across a bounded unknown without claiming a current
+  acceptance, and replaces a changed ID only after 200 ms. Raw `field_observation` still precedes
+  `temporal_music_select_changed`; snapshot and TUI show the same state while raw central-title OCR
+  remains a separate evidence line. This is provisional presentation, not event authority.
   The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
   machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
   model. After the `/home` symlink fix, retained synthetic target evidence showed the 1920x1080
@@ -544,8 +554,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   official-model execution, and native PipeWire build have each passed their dedicated development
   gates. These do not substitute for target-machine capture, recognition, or performance evidence.
 - Repository validation at this checkpoint includes formatting/static checks, workspace all-target
-  clippy with warnings denied, 297 library tests, 215 binary tests, 69 corpus library tests, 3 corpus
-  binary tests, 77 offline OCR tests, and native PipeWire build verification. Focused session tests also verify descriptor/layout rejection,
+  clippy with warnings denied, 303 library tests, 217 binary tests, 76 corpus library tests, 4 corpus
+  binary tests, 77 offline OCR tests, native PipeWire build verification, and the packaged
+  distribution artifact test. Focused session tests also verify descriptor/layout rejection,
   frame-generation rejection, diagnostic opt-out non-interference, and manifest-backed ordered
   binding rollover.
 - Focused routing tests exercise synthetic result and music-select inputs, title-bearing exact
@@ -774,10 +785,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    component reconstruction, and add only operator-reviewed episodes to the active suite.
 3. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
-4. Measure `central_title` and `active_list_title` open-text variation inside the 27 reviewed
-   stationary runs, keeping OCR strings separate from accepted song identity. Determine whether the
-   TUI should retain a short-lived presentation value or prioritize catalog-backed resolution;
-   do not implement the 200 ms song-ID candidate merely to hide raw OCR text variation.
+4. In the next real music-select session, verify that a one-tick frame-local unknown renders the
+   catalog identity as `HELD`, a real selection change renders `CHANGING` and replaces after 200 ms,
+   and a category/filter selection clears after the bounded grace. Keep raw central-title OCR
+   visible and separate; this live check qualifies presentation behavior, not event authority.
 
 Do not add transform replay without an independent oracle, broaden routine raw retention, silently
 calibrate or switch profiles, request play solely to

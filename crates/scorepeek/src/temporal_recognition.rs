@@ -39,6 +39,411 @@ impl TemporalPolicy {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TemporalPolicyError;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MusicSelectTemporalPolicy {
+    dwell: u64,
+    unknown_grace: u64,
+    maximum_gap: u64,
+}
+
+impl MusicSelectTemporalPolicy {
+    /// Creates a bounded music-select temporal policy.
+    ///
+    /// # Errors
+    /// Returns [`TemporalPolicyError`] when any duration is zero.
+    pub const fn new(
+        dwell_ms: u64,
+        unknown_grace_ms: u64,
+        maximum_gap_ms: u64,
+    ) -> Result<Self, TemporalPolicyError> {
+        if dwell_ms == 0 || unknown_grace_ms == 0 || maximum_gap_ms == 0 {
+            return Err(TemporalPolicyError);
+        }
+        Ok(Self {
+            dwell: dwell_ms,
+            unknown_grace: unknown_grace_ms,
+            maximum_gap: maximum_gap_ms,
+        })
+    }
+
+    #[must_use]
+    pub const fn dwell_ms(self) -> u64 {
+        self.dwell
+    }
+
+    #[must_use]
+    pub const fn unknown_grace_ms(self) -> u64 {
+        self.unknown_grace
+    }
+
+    #[must_use]
+    pub const fn maximum_gap_ms(self) -> u64 {
+        self.maximum_gap
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MusicSelectTemporalEvidence {
+    pub first_sequence: u64,
+    pub last_sequence: u64,
+    pub first_monotonic_ms: u64,
+    pub last_monotonic_ms: u64,
+}
+
+impl MusicSelectTemporalEvidence {
+    #[must_use]
+    pub const fn elapsed_ms(self) -> u64 {
+        self.last_monotonic_ms
+            .saturating_sub(self.first_monotonic_ms)
+    }
+
+    fn advance(&mut self, sequence: u64, monotonic_ms: u64) {
+        self.last_sequence = sequence;
+        self.last_monotonic_ms = monotonic_ms;
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum MusicSelectTemporalState<T> {
+    Empty,
+    Pending {
+        candidate: T,
+        evidence: MusicSelectTemporalEvidence,
+    },
+    Stable {
+        value: T,
+        evidence: MusicSelectTemporalEvidence,
+    },
+    HeldUnknown {
+        value: T,
+        evidence: MusicSelectTemporalEvidence,
+        unknown_since_sequence: u64,
+        unknown_since_monotonic_ms: u64,
+    },
+    Changing {
+        previous: T,
+        previous_evidence: MusicSelectTemporalEvidence,
+        candidate: T,
+        candidate_evidence: MusicSelectTemporalEvidence,
+    },
+}
+
+impl<T> MusicSelectTemporalState<T> {
+    #[must_use]
+    pub const fn confirmed_value(&self) -> Option<&T> {
+        match self {
+            Self::Stable { value, .. } => Some(value),
+            Self::Empty
+            | Self::Pending { .. }
+            | Self::HeldUnknown { .. }
+            | Self::Changing { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn retained_value(&self) -> Option<&T> {
+        match self {
+            Self::Stable { value, .. } | Self::HeldUnknown { value, .. } => Some(value),
+            Self::Changing { previous, .. } => Some(previous),
+            Self::Empty | Self::Pending { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn candidate_value(&self) -> Option<&T> {
+        match self {
+            Self::Pending { candidate, .. } | Self::Changing { candidate, .. } => Some(candidate),
+            Self::Empty | Self::Stable { .. } | Self::HeldUnknown { .. } => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MusicSelectTemporalTransitionReason {
+    PendingStarted,
+    PendingAdvanced,
+    PendingReplaced,
+    PendingClearedByUnknown,
+    Stabilized,
+    UnknownHeld,
+    UnknownGraceExpired,
+    ChangePendingStarted,
+    ChangePendingAdvanced,
+    ChangePendingReplaced,
+    ChangeCancelled,
+    StableReplaced,
+    ResetByGap,
+    ResetByScreenChange,
+    ResetBySessionBoundary,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MusicSelectTemporalUpdate<T> {
+    pub state: MusicSelectTemporalState<T>,
+    pub reasons: Vec<MusicSelectTemporalTransitionReason>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MusicSelectTemporalReducer<T> {
+    policy: MusicSelectTemporalPolicy,
+    state: MusicSelectTemporalState<T>,
+    last_observation_monotonic_ms: Option<u64>,
+}
+
+impl<T: Clone + Eq> MusicSelectTemporalReducer<T> {
+    #[must_use]
+    pub const fn new(policy: MusicSelectTemporalPolicy) -> Self {
+        Self {
+            policy,
+            state: MusicSelectTemporalState::Empty,
+            last_observation_monotonic_ms: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn state(&self) -> &MusicSelectTemporalState<T> {
+        &self.state
+    }
+
+    pub fn observe(
+        &mut self,
+        sequence: u64,
+        monotonic_ms: u64,
+        observed: Option<T>,
+    ) -> Option<MusicSelectTemporalUpdate<T>> {
+        let mut reasons = Vec::new();
+        if self.last_observation_monotonic_ms.is_some_and(|previous| {
+            monotonic_ms < previous
+                || monotonic_ms.saturating_sub(previous) > self.policy.maximum_gap
+        }) && !matches!(self.state, MusicSelectTemporalState::Empty)
+        {
+            self.state = MusicSelectTemporalState::Empty;
+            reasons.push(MusicSelectTemporalTransitionReason::ResetByGap);
+        }
+        self.last_observation_monotonic_ms = Some(monotonic_ms);
+        reduce_music_select(
+            &mut self.state,
+            self.policy,
+            sequence,
+            monotonic_ms,
+            observed,
+            &mut reasons,
+        );
+        (!reasons.is_empty()).then(|| MusicSelectTemporalUpdate {
+            state: self.state.clone(),
+            reasons,
+        })
+    }
+
+    pub fn reset(
+        &mut self,
+        reason: MusicSelectTemporalTransitionReason,
+    ) -> Option<MusicSelectTemporalUpdate<T>> {
+        debug_assert!(matches!(
+            reason,
+            MusicSelectTemporalTransitionReason::ResetByScreenChange
+                | MusicSelectTemporalTransitionReason::ResetBySessionBoundary
+        ));
+        self.last_observation_monotonic_ms = None;
+        if matches!(self.state, MusicSelectTemporalState::Empty) {
+            return None;
+        }
+        self.state = MusicSelectTemporalState::Empty;
+        Some(MusicSelectTemporalUpdate {
+            state: self.state.clone(),
+            reasons: vec![reason],
+        })
+    }
+}
+
+fn music_select_evidence(sequence: u64, monotonic_ms: u64) -> MusicSelectTemporalEvidence {
+    MusicSelectTemporalEvidence {
+        first_sequence: sequence,
+        last_sequence: sequence,
+        first_monotonic_ms: monotonic_ms,
+        last_monotonic_ms: monotonic_ms,
+    }
+}
+
+fn reduce_music_select<T: Clone + Eq>(
+    state: &mut MusicSelectTemporalState<T>,
+    policy: MusicSelectTemporalPolicy,
+    sequence: u64,
+    monotonic_ms: u64,
+    observed: Option<T>,
+    reasons: &mut Vec<MusicSelectTemporalTransitionReason>,
+) {
+    match observed {
+        Some(observed) => {
+            reduce_music_select_accepted(state, policy, sequence, monotonic_ms, observed, reasons);
+        }
+        None => reduce_music_select_unknown(state, policy, sequence, monotonic_ms, reasons),
+    }
+}
+
+fn reduce_music_select_unknown<T: Clone>(
+    state: &mut MusicSelectTemporalState<T>,
+    policy: MusicSelectTemporalPolicy,
+    sequence: u64,
+    monotonic_ms: u64,
+    reasons: &mut Vec<MusicSelectTemporalTransitionReason>,
+) {
+    match state {
+        MusicSelectTemporalState::Pending { .. } => {
+            *state = MusicSelectTemporalState::Empty;
+            reasons.push(MusicSelectTemporalTransitionReason::PendingClearedByUnknown);
+        }
+        MusicSelectTemporalState::Stable { value, evidence } => {
+            *state = MusicSelectTemporalState::HeldUnknown {
+                value: value.clone(),
+                evidence: *evidence,
+                unknown_since_sequence: sequence,
+                unknown_since_monotonic_ms: monotonic_ms,
+            };
+            reasons.push(MusicSelectTemporalTransitionReason::UnknownHeld);
+        }
+        MusicSelectTemporalState::HeldUnknown {
+            unknown_since_monotonic_ms,
+            ..
+        } if monotonic_ms.saturating_sub(*unknown_since_monotonic_ms) >= policy.unknown_grace => {
+            *state = MusicSelectTemporalState::Empty;
+            reasons.push(MusicSelectTemporalTransitionReason::UnknownGraceExpired);
+        }
+        MusicSelectTemporalState::Changing {
+            previous,
+            previous_evidence,
+            candidate_evidence,
+            ..
+        } => {
+            let unknown_since_monotonic_ms = candidate_evidence.first_monotonic_ms;
+            let unknown_since_sequence = candidate_evidence.first_sequence;
+            if monotonic_ms.saturating_sub(unknown_since_monotonic_ms) >= policy.unknown_grace {
+                *state = MusicSelectTemporalState::Empty;
+                reasons.push(MusicSelectTemporalTransitionReason::UnknownGraceExpired);
+            } else {
+                *state = MusicSelectTemporalState::HeldUnknown {
+                    value: previous.clone(),
+                    evidence: *previous_evidence,
+                    unknown_since_sequence,
+                    unknown_since_monotonic_ms,
+                };
+                reasons.push(MusicSelectTemporalTransitionReason::UnknownHeld);
+            }
+        }
+        MusicSelectTemporalState::Empty | MusicSelectTemporalState::HeldUnknown { .. } => {}
+    }
+}
+
+fn reduce_music_select_accepted<T: Clone + Eq>(
+    state: &mut MusicSelectTemporalState<T>,
+    policy: MusicSelectTemporalPolicy,
+    sequence: u64,
+    monotonic_ms: u64,
+    observed: T,
+    reasons: &mut Vec<MusicSelectTemporalTransitionReason>,
+) {
+    match state {
+        MusicSelectTemporalState::Empty => {
+            *state = MusicSelectTemporalState::Pending {
+                candidate: observed,
+                evidence: music_select_evidence(sequence, monotonic_ms),
+            };
+            reasons.push(MusicSelectTemporalTransitionReason::PendingStarted);
+        }
+        MusicSelectTemporalState::Pending {
+            candidate,
+            evidence,
+        } if *candidate == observed => {
+            evidence.advance(sequence, monotonic_ms);
+            if evidence.elapsed_ms() >= policy.dwell {
+                *state = MusicSelectTemporalState::Stable {
+                    value: candidate.clone(),
+                    evidence: *evidence,
+                };
+                reasons.push(MusicSelectTemporalTransitionReason::Stabilized);
+            } else {
+                reasons.push(MusicSelectTemporalTransitionReason::PendingAdvanced);
+            }
+        }
+        MusicSelectTemporalState::Pending { .. } => {
+            *state = MusicSelectTemporalState::Pending {
+                candidate: observed,
+                evidence: music_select_evidence(sequence, monotonic_ms),
+            };
+            reasons.push(MusicSelectTemporalTransitionReason::PendingReplaced);
+        }
+        MusicSelectTemporalState::Stable { value, evidence } if *value == observed => {
+            evidence.advance(sequence, monotonic_ms);
+        }
+        MusicSelectTemporalState::HeldUnknown {
+            value, evidence, ..
+        } if *value == observed => {
+            evidence.advance(sequence, monotonic_ms);
+            *state = MusicSelectTemporalState::Stable {
+                value: value.clone(),
+                evidence: *evidence,
+            };
+            reasons.push(MusicSelectTemporalTransitionReason::ChangeCancelled);
+        }
+        MusicSelectTemporalState::Stable { value, evidence }
+        | MusicSelectTemporalState::HeldUnknown {
+            value, evidence, ..
+        } => {
+            *state = MusicSelectTemporalState::Changing {
+                previous: value.clone(),
+                previous_evidence: *evidence,
+                candidate: observed,
+                candidate_evidence: music_select_evidence(sequence, monotonic_ms),
+            };
+            reasons.push(MusicSelectTemporalTransitionReason::ChangePendingStarted);
+        }
+        MusicSelectTemporalState::Changing {
+            previous,
+            previous_evidence,
+            candidate,
+            candidate_evidence,
+        } if *previous == observed => {
+            previous_evidence.advance(sequence, monotonic_ms);
+            *state = MusicSelectTemporalState::Stable {
+                value: previous.clone(),
+                evidence: *previous_evidence,
+            };
+            reasons.push(MusicSelectTemporalTransitionReason::ChangeCancelled);
+        }
+        MusicSelectTemporalState::Changing {
+            candidate,
+            candidate_evidence,
+            ..
+        } if *candidate == observed => {
+            candidate_evidence.advance(sequence, monotonic_ms);
+            if candidate_evidence.elapsed_ms() >= policy.dwell {
+                *state = MusicSelectTemporalState::Stable {
+                    value: candidate.clone(),
+                    evidence: *candidate_evidence,
+                };
+                reasons.push(MusicSelectTemporalTransitionReason::StableReplaced);
+            } else {
+                reasons.push(MusicSelectTemporalTransitionReason::ChangePendingAdvanced);
+            }
+        }
+        MusicSelectTemporalState::Changing {
+            previous,
+            previous_evidence,
+            ..
+        } => {
+            *state = MusicSelectTemporalState::Changing {
+                previous: previous.clone(),
+                previous_evidence: *previous_evidence,
+                candidate: observed,
+                candidate_evidence: music_select_evidence(sequence, monotonic_ms),
+            };
+            reasons.push(MusicSelectTemporalTransitionReason::ChangePendingReplaced);
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TemporalEvidence {
     pub count: u8,
@@ -473,5 +878,109 @@ mod tests {
     fn invalid_policy_is_rejected() {
         assert_eq!(TemporalPolicy::new(1, 250), Err(TemporalPolicyError));
         assert_eq!(TemporalPolicy::new(2, 0), Err(TemporalPolicyError));
+    }
+
+    fn music_select_reducer() -> MusicSelectTemporalReducer<u8> {
+        MusicSelectTemporalReducer::new(MusicSelectTemporalPolicy::new(200, 200, 250).unwrap())
+    }
+
+    fn stabilize_music_select(reducer: &mut MusicSelectTemporalReducer<u8>, value: u8) {
+        reducer.observe(1, 100, Some(value));
+        reducer.observe(2, 200, Some(value));
+        reducer.observe(3, 300, Some(value));
+        assert_eq!(reducer.state().confirmed_value(), Some(&value));
+    }
+
+    #[test]
+    fn music_select_holds_one_unknown_and_recovers_without_reacquisition() {
+        let mut reducer = music_select_reducer();
+        stabilize_music_select(&mut reducer, 7);
+        let held = reducer.observe(4, 400, None).unwrap();
+        assert!(matches!(
+            held.state,
+            MusicSelectTemporalState::HeldUnknown { value: 7, .. }
+        ));
+        assert_eq!(held.state.confirmed_value(), None);
+        assert_eq!(held.state.retained_value(), Some(&7));
+        let recovered = reducer.observe(5, 500, Some(7)).unwrap();
+        assert_eq!(recovered.state.confirmed_value(), Some(&7));
+        assert_eq!(
+            recovered.reasons,
+            vec![MusicSelectTemporalTransitionReason::ChangeCancelled]
+        );
+    }
+
+    #[test]
+    fn music_select_unknown_clears_an_unconfirmed_candidate_without_grace() {
+        let mut reducer = music_select_reducer();
+        reducer.observe(1, 100, Some(7));
+        let cleared = reducer.observe(2, 200, None).unwrap();
+        assert_eq!(cleared.state, MusicSelectTemporalState::Empty);
+        assert_eq!(
+            cleared.reasons,
+            vec![MusicSelectTemporalTransitionReason::PendingClearedByUnknown]
+        );
+    }
+
+    #[test]
+    fn music_select_replaces_only_after_the_new_identity_dwells() {
+        let mut reducer = music_select_reducer();
+        stabilize_music_select(&mut reducer, 7);
+        let changing = reducer.observe(4, 400, Some(8)).unwrap();
+        assert!(matches!(
+            changing.state,
+            MusicSelectTemporalState::Changing {
+                previous: 7,
+                candidate: 8,
+                ..
+            }
+        ));
+        assert_eq!(changing.state.confirmed_value(), None);
+        assert_eq!(changing.state.retained_value(), Some(&7));
+        reducer.observe(5, 500, Some(8));
+        let replaced = reducer.observe(6, 600, Some(8)).unwrap();
+        assert_eq!(replaced.state.confirmed_value(), Some(&8));
+        assert_eq!(
+            replaced.reasons,
+            vec![MusicSelectTemporalTransitionReason::StableReplaced]
+        );
+    }
+
+    #[test]
+    fn music_select_cancels_a_short_change_and_bounds_unknown_retention() {
+        let mut reducer = music_select_reducer();
+        stabilize_music_select(&mut reducer, 7);
+        reducer.observe(4, 400, Some(8));
+        let cancelled = reducer.observe(5, 500, Some(7)).unwrap();
+        assert_eq!(cancelled.state.confirmed_value(), Some(&7));
+        reducer.observe(6, 600, None);
+        let expired = reducer.observe(7, 800, None).unwrap();
+        assert_eq!(expired.state, MusicSelectTemporalState::Empty);
+        assert_eq!(
+            expired.reasons,
+            vec![MusicSelectTemporalTransitionReason::UnknownGraceExpired]
+        );
+    }
+
+    #[test]
+    fn music_select_gap_and_explicit_boundaries_reset_state() {
+        let mut reducer = music_select_reducer();
+        stabilize_music_select(&mut reducer, 7);
+        let gap = reducer.observe(4, 551, Some(8)).unwrap();
+        assert!(matches!(
+            gap.state,
+            MusicSelectTemporalState::Pending { candidate: 8, .. }
+        ));
+        assert_eq!(
+            gap.reasons,
+            vec![
+                MusicSelectTemporalTransitionReason::ResetByGap,
+                MusicSelectTemporalTransitionReason::PendingStarted,
+            ]
+        );
+        let reset = reducer
+            .reset(MusicSelectTemporalTransitionReason::ResetByScreenChange)
+            .unwrap();
+        assert_eq!(reset.state, MusicSelectTemporalState::Empty);
     }
 }
