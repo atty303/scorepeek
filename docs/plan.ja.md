@@ -578,12 +578,14 @@ flush timeoutは`partial | dropped` evidenceとして残すが、play、capture 
    operator由来のscreen contextはtyped unknownとして別集計し、未判断pairのあるpartial reviewed setをdwell truthに
    しない。ADR 0063ではactive selection identityの変化をlist移動より優先して`selection_change`、identity不変の
    list移動を`scrolling`、identityとlist配置がともに不変なpairを`stationary`とする。中央背景animationだけでは
-   motion stateを変えない。最初のcomplete setは712 stationary、84 scrolling、30 selection-change、
+   motion stateを変えない。identity境界を再確認したcorrected complete setは713 stationary、
+   83 scrolling、30 selection-change、
    12 operator-context、133 predicate-context pairを保持し、未判断pairは0である。このsetからcandidate dwellを
-   offline評価してからpolicyを選び、評価前にdwellを実装しない。ADR 0064のexact catalog generationとproduction
-   resolverを用いた100/200/300/500 ms比較では全候補がselection-change resetを2件missし、nonstationary stableを
-   24/18/17/16 pair残したため、time-only policyは選択しない。独立したreset signalを設計して再評価するまでruntime
-   dwellを追加しない。chart、music-select stable-selection temporal stateおよびevent authorityは後続の
+   offline評価してからpolicyを選び、評価前にdwellを実装しない。ADR 0065はADR 0064で早すぎた2つの
+   `selection_change`境界をvisible active identityが実際に変わる次pairへ移した。同じcatalog generationとproduction
+   resolverを用いた100/200/300/500 ms再評価では、prior stabilityのあるchangeを4/4、4/4、3/3、3/3 resetし、missは0である。
+   ただしmotion truthはstationary runのcorrect song IDを持たず、OCR揺れの低減とwrong acceptanceを比較できないため、
+   runtime policyはまだ選択しない。chart、music-select stable-selection temporal stateおよびevent authorityは後続の
    独立contractとする。
 10. **M7**: 少数scenario replayから最小selection song contextとrecognition-trigger非依存のbounded
     live diagnosticsを検証し、その後versioned event schemaとNDJSON daemonを統合する。ゲーム全体の

@@ -32,9 +32,9 @@ const SUMMARY_SCHEMA: &str = "scorepeek-private-music-select-motion-review-summa
 const DECISIONS_SCHEMA: &str = "scorepeek-private-music-select-motion-review-decisions-v2";
 const REVIEWED_SCHEMA: &str = "scorepeek-private-music-select-motion-reviewed-v2";
 const APPLY_SUMMARY_SCHEMA: &str = "scorepeek-private-music-select-motion-review-apply-summary-v2";
-const DWELL_EVALUATION_SCHEMA: &str = "scorepeek-private-music-select-dwell-evaluation-v1";
+const DWELL_EVALUATION_SCHEMA: &str = "scorepeek-private-music-select-dwell-evaluation-v2";
 const DWELL_EVALUATION_SUMMARY_SCHEMA: &str =
-    "scorepeek-private-music-select-dwell-evaluation-summary-v1";
+    "scorepeek-private-music-select-dwell-evaluation-summary-v2";
 const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_OBSERVATION_RECORD_BYTES: usize = 1024 * 1024;
@@ -325,15 +325,15 @@ struct DwellPolicyEvaluation {
     unresolved_stationary_runs: usize,
     stabilization_latency_ms: DwellDistribution,
     resets: DwellResetSummary,
-    false_stable_nonstationary_pairs: DwellFalseStabilitySummary,
-    false_stabilizations: DwellFalseStabilitySummary,
+    stable_nonstationary_pairs: DwellNonstationarySummary,
+    stabilizations_on_nonstationary_pairs: DwellNonstationarySummary,
     accepted_observations: usize,
     unknown_observations: usize,
     candidate_replacements: usize,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
-struct DwellFalseStabilitySummary {
+struct DwellNonstationarySummary {
     total: usize,
     scrolling: usize,
     selection_change: usize,
@@ -710,8 +710,9 @@ pub fn apply_music_select_motion_review(
 /// Evaluates bounded stationary-dwell candidates against one complete operator-reviewed set.
 ///
 /// The evaluator consumes motion truth only. It measures when a stationary run would become
-/// stable and whether scrolling, selection-change, or screen-context boundaries reset pending and
-/// stable state. It cannot measure song-resolution correctness and never selects a runtime policy.
+/// stable, records stability during other reviewed activity, and measures whether observed
+/// selection changes reset prior stability. It cannot measure song-resolution correctness and
+/// never selects a runtime policy.
 ///
 /// # Errors
 /// Returns an error when paths are not absolute, policies are empty, duplicated, or unbounded, the
@@ -1037,8 +1038,8 @@ fn evaluate_dwell_policy(
     let mut latencies = Vec::new();
     let mut resets = DwellResetSummary::default();
     let mut stabilized_runs = BTreeSet::new();
-    let mut false_stable_nonstationary_pairs = DwellFalseStabilitySummary::default();
-    let mut false_stabilizations = DwellFalseStabilitySummary::default();
+    let mut stable_nonstationary_pairs = DwellNonstationarySummary::default();
+    let mut stabilizations_on_nonstationary_pairs = DwellNonstationarySummary::default();
     let mut accepted_observations = 0;
     let mut unknown_observations = 0;
     let mut candidate_replacements = 0;
@@ -1046,19 +1047,12 @@ fn evaluate_dwell_policy(
         let Some(first_pair) = span.pairs.first() else {
             continue;
         };
-        let first = observations
-            .get(&first_pair.previous_sequence)
-            .ok_or_else(|| {
-                CorpusError::InvalidReplay(
-                    "music-select dwell source observation is missing".to_owned(),
-                )
-            })?;
-        if first.sequence != first_pair.previous_sequence
-            || first.timestamp_ms != first_pair.previous_timestamp_ms
-            || first.screen != first_pair.previous_screen
-        {
-            return invalid("music-select dwell observation binding differs");
-        }
+        let first = bound_dwell_observation(
+            observations,
+            first_pair.previous_sequence,
+            first_pair.previous_timestamp_ms,
+            first_pair.previous_screen,
+        )?;
         let mut pending = first
             .accepted_song_id
             .map(|song_id| (song_id, first.timestamp_ms));
@@ -1068,17 +1062,12 @@ fn evaluate_dwell_policy(
         let mut stationary_run = 0_usize;
         let mut previous_truth_stationary = false;
         for pair in &span.pairs {
-            let current = observations.get(&pair.sequence).ok_or_else(|| {
-                CorpusError::InvalidReplay(
-                    "music-select dwell source observation is missing".to_owned(),
-                )
-            })?;
-            if current.sequence != pair.sequence
-                || current.timestamp_ms != pair.source_timestamp_ms
-                || current.screen != pair.screen
-            {
-                return invalid("music-select dwell observation binding differs");
-            }
+            let current = bound_dwell_observation(
+                observations,
+                pair.sequence,
+                pair.source_timestamp_ms,
+                pair.screen,
+            )?;
             let prior_stable = stable;
             let mut entered_stability = None;
             if let Some(song_id) = current.accepted_song_id {
@@ -1112,14 +1101,17 @@ fn evaluate_dwell_policy(
                 if truth_stationary {
                     latencies.push(latency);
                 } else {
-                    record_false_stability(&mut false_stabilizations, pair);
+                    record_nonstationary_stability(
+                        &mut stabilizations_on_nonstationary_pairs,
+                        pair,
+                    );
                 }
             }
             if truth_stationary && stable.is_some() {
                 stabilized_runs.insert(run_key);
             }
             if !truth_stationary && stable.is_some() {
-                record_false_stability(&mut false_stable_nonstationary_pairs, pair);
+                record_nonstationary_stability(&mut stable_nonstationary_pairs, pair);
             }
             record_observed_dwell_reset(&mut resets, pair, prior_stable, stable);
             previous_truth_stationary = truth_stationary;
@@ -1133,15 +1125,36 @@ fn evaluate_dwell_policy(
         unresolved_stationary_runs: stationary_runs.saturating_sub(stabilized_run_count),
         stabilization_latency_ms: dwell_distribution(latencies),
         resets,
-        false_stable_nonstationary_pairs,
-        false_stabilizations,
+        stable_nonstationary_pairs,
+        stabilizations_on_nonstationary_pairs,
         accepted_observations,
         unknown_observations,
         candidate_replacements,
     })
 }
 
-fn record_false_stability(summary: &mut DwellFalseStabilitySummary, pair: &ReviewedMotionPair) {
+fn bound_dwell_observation(
+    observations: &BTreeMap<u64, DwellObservation>,
+    sequence: u64,
+    timestamp_ms: u64,
+    screen: ScreenClass,
+) -> Result<&DwellObservation, CorpusError> {
+    let observation = observations.get(&sequence).ok_or_else(|| {
+        CorpusError::InvalidReplay("music-select dwell source observation is missing".to_owned())
+    })?;
+    if observation.sequence != sequence
+        || observation.timestamp_ms != timestamp_ms
+        || observation.screen != screen
+    {
+        return invalid("music-select dwell observation binding differs");
+    }
+    Ok(observation)
+}
+
+fn record_nonstationary_stability(
+    summary: &mut DwellNonstationarySummary,
+    pair: &ReviewedMotionPair,
+) {
     summary.total += 1;
     match (
         pair.review_state.state.as_str(),
@@ -2351,7 +2364,7 @@ mod tests {
     };
 
     #[test]
-    fn dwell_candidate_stabilizes_only_stationary_runs_and_resets_immediately() {
+    fn dwell_candidate_records_nonstationary_stability_and_resets_on_identity_change() {
         let reviewed = synthetic_reviewed_set();
         let observations = synthetic_dwell_observations(&reviewed);
         let result = evaluate_dwell_policy(
@@ -2372,9 +2385,9 @@ mod tests {
         assert_eq!(result.resets.selection_change_resets, 1);
         assert_eq!(result.resets.missed_selection_change_resets, 0);
         assert_eq!(result.resets.predicate_context_resets, 1);
-        assert_eq!(result.false_stable_nonstationary_pairs.total, 1);
-        assert_eq!(result.false_stable_nonstationary_pairs.scrolling, 1);
-        assert_eq!(result.false_stabilizations.total, 0);
+        assert_eq!(result.stable_nonstationary_pairs.total, 1);
+        assert_eq!(result.stable_nonstationary_pairs.scrolling, 1);
+        assert_eq!(result.stabilizations_on_nonstationary_pairs.total, 0);
         assert_eq!(result.candidate_replacements, 1);
     }
 

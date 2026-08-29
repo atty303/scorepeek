@@ -415,11 +415,11 @@ production predicate. ADR 0063 fixes authoring precedence: visible active-select
 is `selection_change` even when the list also moves; same-selection list translation or settling is
 `scrolling`; unchanged selection and list placement is `stationary`. Central/background animation
 alone is ignored. Motion values may direct visual inspection but never create a label.
-The first complete application of that precedence is bound to draft
-`f7d205cb38f9f29848f7b11261da0e0dee491fa172189d27997ce6cc68b36b5e`: 712 pairs are
-`stationary`, 84 are `scrolling`, 30 are `selection_change`, 12 are operator-excluded screen
+The corrected complete application of that precedence is bound to draft
+`f7d205cb38f9f29848f7b11261da0e0dee491fa172189d27997ce6cc68b36b5e`: 713 pairs are
+`stationary`, 83 are `scrolling`, 30 are `selection_change`, 12 are operator-excluded screen
 context, and 133 are predicate screen context. Its reviewed-set digest is
-`aa59dc31a678c4db633db0391747642de49a48e466bf53421c2054f9c68b912e`, with zero remaining
+`e61341576367ee43ada17fcfb78c42f18a0cb4fe60a1cc1fb016c43b429a24a0`, with zero remaining
 review pairs and `complete=true`. This establishes bounded motion-review truth only; choosing a
 dwell policy and measuring stable-selection correctness remain separate work.
 
@@ -432,12 +432,15 @@ mise run corpus:music-select:dwell:evaluate -- --reviewed /absolute/private/musi
 The evaluator verifies the reviewed-set, active-suite, session, observation-object, and exact
 content-addressed catalog-generation bindings. It replays retained OCR strings through the
 production music-select resolver; operator motion labels classify its temporal output and never
-become runtime inputs. The create-only `scorepeek-private-music-select-dwell-evaluation-v1` report
-contains no OCR or catalog strings and keeps all five truth denominators separate. The registered
-100/200/300/500 ms comparison found 24/18/17/16 nonstationary stable pairs and two missed
-selection-change resets for every policy, while stationary-run coverage fell from 16/27 to 13/27.
-It therefore selects no runtime policy. The report is descriptive motion/reset evidence, not a
-correct-song label set, stable-selection accuracy result, or event authority.
+become runtime inputs. The create-only `scorepeek-private-music-select-dwell-evaluation-v2` report
+contains no OCR or catalog strings and keeps all five truth denominators separate. It records
+stability during nonstationary activity without calling same-identity scrolling a false song
+decision. The corrected 100/200/300/500 ms comparison resets 4/4, 4/4, 3/3, and 3/3 selection
+changes with prior stability and misses none. Stable nonstationary pairs are 23/17/16/15, while
+stationary-run coverage remains 16/27, 16/27, 13/27, and 13/27. It selects no runtime policy because
+motion truth does not label correct songs and therefore cannot measure OCR smoothing or wrong
+acceptance. The report is descriptive motion/reset evidence, not a correct-song label set,
+stable-selection accuracy result, or event authority.
 
 Python 3.12.13 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
 PaddlePaddle CPU 3.3.1, Apache-2.0 `paddle2onnx` 2.1.0, and their complete

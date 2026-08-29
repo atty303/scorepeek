@@ -185,7 +185,11 @@ authoritative.
 - [ADR 0064: Reject time-only music-select dwell](0064-reject-time-only-music-select-dwell.md)
   replays session-bound OCR through the exact catalog generation and production resolver, then
   rejects all 100--500 ms candidates because each retains false stability and misses selection
-  resets. No runtime policy is selected.
+  resets. ADR 0065 supersedes its reviewed-set, evaluation artifacts, and those conclusions.
+- [ADR 0065: Correct selection boundaries before dwell selection](0065-correct-selection-boundaries-before-dwell-selection.md)
+  moves two prematurely labeled selection changes to the adjacent pair where the visible active
+  identity actually changes, replaces false-stability naming with neutral nonstationary activity,
+  and finds zero missed resets. Motion truth still cannot select a runtime dwell policy.
 
 ## Historical
 

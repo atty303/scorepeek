@@ -161,16 +161,18 @@ When selection identity changes while the right list also moves, operator review
 `selection_change`; motion with the same active identity is `scrolling`, and only unchanged
 identity plus unchanged list placement is `stationary`. Non-list animation does not affect this
 classification.
-Partial reviewed sets expose completeness and cannot become dwell truth. The first complete bound
-set contains 712 stationary, 84 scrolling, 30 selection-change, 12 operator-context, and 133
+Partial reviewed sets expose completeness and cannot become dwell truth. The corrected complete
+bound set contains 713 stationary, 83 scrolling, 30 selection-change, 12 operator-context, and 133
 predicate-context adjacent pairs. It is sufficient to evaluate candidate dwell policies, but does
 not itself select one or establish stable-selection accuracy.
 The offline dwell evaluator joins that complete truth with the bound observation stream and exact
 catalog generation, replays the production frame-local resolver, and compares equal accepted-song
-durations of 100--500 ms. Every tested duration retains two missed selection-change resets and
-nonstationary stability; longer dwell reduces stationary-run coverage without eliminating the
-failure. A time-only runtime dwell is therefore rejected. Operator truth remains evaluation-only,
-and a later runtime design needs an independent reset signal before another policy comparison.
+durations of 100--500 ms. After correcting two prematurely authored identity boundaries, every
+tested duration resets all selection changes with prior stability. Stable output during
+same-identity list scrolling is recorded as neutral nonstationary activity, not a false song
+decision. Longer dwell still reduces stationary-run coverage, and motion truth has no correct-song
+labels with which to measure OCR smoothing or wrong acceptance, so no runtime dwell is selected.
+Operator truth remains evaluation-only; a later temporal comparison requires correct-song labels.
 This offline evidence surface has no runtime or event authority.
 
 The offline corpus tool can replay this exact production reducer over ordered, operator-reviewed

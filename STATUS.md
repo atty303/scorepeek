@@ -126,21 +126,24 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   production predicate, motion thresholds, dwell, and event authority remain unchanged.
   ADR 0063 fixes deterministic authoring precedence for the remaining visual review: visible active
   selection identity changes take precedence over concurrent list motion, same-selection row
-  translation or settling is scrolling, and non-list animation is ignored. The complete
-  digest-bound application now covers all 971 adjacent pairs: 712 stationary, 84 scrolling, 30
-  selection-change, 12 operator-context, and 133 predicate-context pairs, with no remaining review
-  pair and `complete=true`. The reviewed-set digest is
-  `aa59dc31a678c4db633db0391747642de49a48e466bf53421c2054f9c68b912e`, bound to draft
+  translation or settling is scrolling, and non-list animation is ignored. Re-review found two
+  `selection_change` labels one sample before the visible active identity actually changed. ADR
+  0065 corrects those boundaries. The corrected complete digest-bound application covers all 971
+  adjacent pairs: 713 stationary, 83 scrolling, 30 selection-change, 12 operator-context, and 133
+  predicate-context pairs, with no remaining review pair and `complete=true`. The reviewed-set
+  digest is
+  `e61341576367ee43ada17fcfb78c42f18a0cb4fe60a1cc1fb016c43b429a24a0`, bound to draft
   `f7d205cb38f9f29848f7b11261da0e0dee491fa172189d27997ce6cc68b36b5e`. This establishes motion
   review truth only. ADR 0064 adds a create-only offline dwell evaluator which verifies the bound
   active suite, session observation object, and exact content-addressed catalog generation, then
   replays the retained OCR strings through the production music-select resolver. The default
-  100/200/300/500 ms equal-accepted-ID candidates cover 16/27, 16/27, 13/27, and 13/27 stationary
-  runs, retain 24/18/17/16 nonstationary stable pairs, and each miss two selection-change resets.
-  The 500 ms candidate loses coverage without eliminating false stability, so no time-only runtime
-  policy, stable-selection accuracy, runtime state, or event authority has been selected. The
-  canonical evaluation SHA-256 is
-  `5c7954152b95ed6f14b58b7992643df62ef0879841997680fa59cb24318c8a8c`.
+  corrected 100/200/300/500 ms equal-accepted-ID candidates cover 16/27, 16/27, 13/27, and 13/27
+  stationary runs and reset 4/4, 4/4, 3/3, and 3/3 selection changes with prior stability, with no
+  miss. Stable nonstationary pairs are 23/17/16/15; same-identity scrolling accounts for all but
+  one 100 ms pair. This activity is no longer mislabeled as false stability. Motion truth has no
+  correct-song labels, so no runtime policy, stable-selection accuracy, runtime state, or event
+  authority has been selected. The canonical v2 evaluation SHA-256 is
+  `0ed18a0f4dd2787e3808f382966d4b30c5e4ece1b957e792fcee0ba3c7048071`.
   The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
   machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
   model. After the `/home` symlink fix, retained synthetic target evidence showed the 1920x1080
@@ -682,13 +685,14 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   the absence of a transform inspector is not a current execution blocker.
 - Current recordings and provisional labels do not establish title-disjoint result accuracy,
   calibrated thresholds, result dwell, miss denominator, deduplication, or release accuracy.
-- The complete music-select motion review and ADR 0064 evaluation are descriptive evidence only. Of the 838
-  predicate-eligible adjacent pairs, 712 are stationary, 84 are scrolling, 30 are selection
-  changes, and 12 are operator-confirmed non-music-select context; the separate 133
-  predicate-context pairs remain unknown context. Replaying equal accepted song IDs shows that
-  100--500 ms time-only dwell cannot clear two observed selection changes. The motion truth does
-  not label the correct song ID, so it establishes neither stable-selection accuracy nor a usable
-  reset classifier; the observed predicate false positives have not been recalibrated.
+- The corrected music-select motion review and ADR 0065 evaluation are descriptive evidence only.
+  Of the 838 predicate-eligible adjacent pairs, 713 are stationary, 83 are scrolling, 30 are
+  selection changes, and 12 are operator-confirmed non-music-select context; the separate 133
+  predicate-context pairs remain unknown context. Replaying equal accepted song IDs shows zero
+  missed selection-change resets at 100--500 ms. The motion truth does not label the correct song
+  ID, so it establishes neither stable-selection accuracy nor whether dwell improves OCR jitter
+  without preserving a wrong acceptance; the observed predicate false positives have not been
+  recalibrated.
 - Persistent scheduler installation was verified in isolation but not applied to the operator's
   actual configuration. Real S3 credentials/provider behavior and remote bucket lifecycle remain
   untested.
@@ -756,10 +760,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    component reconstruction, and add only operator-reviewed episodes to the active suite.
 3. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
-4. Evaluate a bounded runtime-observable music-select reset signal against the complete reviewed
-   set. Start with the retained active-row and right-list motion evidence, keep operator truth out
-   of runtime input, and report missed selection-change resets, false resets during stationary
-   runs, nonstationary stability, and coverage before selecting or implementing any policy.
+4. Add correct-song labels for bounded stationary music-select runs and compare frame-local output
+   with equal-ID dwell on OCR jitter, wrong acceptance, stabilization latency, and coverage. Keep
+   operator truth out of runtime input and do not select or implement a policy from motion labels
+   alone.
 
 Do not add transform replay without an independent oracle, broaden routine raw retention, silently
 calibrate or switch profiles, request play solely to
