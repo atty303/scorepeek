@@ -197,8 +197,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   reported `B/Q` 3.31--3.47 plus one incomplete `BUSY +++` sample. The receiver now coalesces the
   PipeWire process event into one pending flag and drains/copies mapped buffers only after the
   event-loop dispatch returns. This preserves the bounded latest-frame and failure contracts while
-  removing the 31.6 MiB copy from the process callback. Repository validation passes; the target
-  `pw-top` error delta and capture behavior remain to be rechecked with a newly installed build.
+  removing the 31.6 MiB copy from the process callback. Repository validation passes. The resulting
+  cargo-dist binary was installed at `/home/atty/.local/bin/scorepeek` on the target with SHA-256
+  `d3a8eaeb09ab362e8fad891d6808db63952e0ea2bf315fd4fd9fa5a8b4327c2b`; target-side `--version`,
+  `doctor`, and digest readback passed while scorepeek remained stopped. The target `pw-top` error
+  delta and capture behavior still require an ordinary run.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -681,8 +684,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Unverified boundaries
 
-- The target `gamescope-4k` watcher has not yet rerun the deferred-buffer implementation. A fresh
-  installed run must show no increasing scorepeek `pw-top` error count while retaining ordinary
+- The target has the deferred-buffer build installed but has not yet run it. An ordinary
+  `gamescope-4k` run must show no increasing scorepeek `pw-top` error count while retaining ordinary
   session admission, 10 Hz latest-frame recognition, diagnostic sequencing, and clean shutdown.
   Development-host compile and replay tests cannot establish this realtime PipeWire boundary.
 - The result temporal reducer is grounded by ten reviewed episodes with complete enough ordered
@@ -801,8 +804,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. After an explicitly authorized target install, run `scorepeek run` against the fixed measured
-   `gamescope-4k` profile and sample `pw-top` before and during the session. Require a zero scorepeek
+1. Run the installed `scorepeek` against the fixed measured `gamescope-4k` profile and sample
+   `pw-top` before and during the session. Require a zero scorepeek
    error delta, no `BUSY +++`, continued 10 Hz observations, and clean receiver shutdown; retain the
    run as failure evidence if any condition regresses.
 2. Exercise one ordinary target flow through music select, song decision, gameplay and result.
