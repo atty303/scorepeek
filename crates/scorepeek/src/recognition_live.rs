@@ -286,6 +286,16 @@ impl RecognitionSession {
         );
     }
 
+    pub(crate) fn record_recognition_busy_skip(
+        &mut self,
+        sequence: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+    ) -> DiagnosticEnqueueOutcome {
+        self.bridge
+            .record_recognition_busy_skip(sequence, monotonic_start_ms, monotonic_end_ms)
+    }
+
     pub(crate) fn reject_pending_field_observation(&mut self) {
         self.bridge.record_unbound_field_observer_degradation(
             DiagnosticErrorType::InvalidConfiguration,

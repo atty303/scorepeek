@@ -16,6 +16,7 @@ pub mod recognition_live;
 mod recording_simulation;
 mod routine_output;
 mod routine_watcher;
+mod run_event_artifact;
 mod session_artifact;
 
 use std::env;
@@ -559,6 +560,7 @@ fn run_routine_live_session(
         invocation_id.clone(),
         selected.binding.capture_profile_sha256().to_owned(),
         recording_enabled,
+        recording_enabled.then(|| state.run_event_store.clone()),
     )?;
     let mut status = routine_watcher::StatusRecorder::new(
         recording_enabled.then(|| state.watcher_status.clone()),
@@ -726,39 +728,6 @@ fn run_routine_live_session(
                 if report.output_failed() {
                     return Err("live result output failed".to_owned());
                 }
-                if let (
-                    Some(recognition_root),
-                    Some(capture_manifest_sha256),
-                    Some(recognition_manifest_sha256),
-                ) = (
-                    recognition_root.as_deref(),
-                    report.diagnostic_manifest_sha256(),
-                    report.recognition_artifact_manifest_sha256(),
-                ) {
-                    let (processed_ticks, busy_skips, maximum_consecutive_busy_skips) =
-                        report.recognition_sampling();
-                    if let Err(error) =
-                        session_artifact::publish(&session_artifact::PublishRequest {
-                            root: &state.diagnostic_session_store,
-                            session_id: &session_id,
-                            capture_generation: generation,
-                            profile_sha256: selected.binding.capture_profile_sha256(),
-                            catalog_sha256: &active.digest,
-                            processed_ticks,
-                            busy_skips,
-                            maximum_consecutive_busy_skips,
-                            completeness: report.diagnostic_completeness_name(),
-                            capture_directory: &state.diagnostic_root.join(&session_id),
-                            capture_manifest_sha256,
-                            recognition_directory: recognition_root,
-                            recognition_manifest_sha256,
-                            profile_path: &selected.path,
-                        })
-                    {
-                        output
-                            .warning(format!("diagnostic session publication degraded: {error}"))?;
-                    }
-                }
                 if started {
                     lifetimes.admitted(node_id);
                     announced = None;
@@ -778,6 +747,97 @@ fn run_routine_live_session(
                             })?,
                         },
                     })?;
+                    let event_artifact = output.take_completed_event_artifact();
+                    if let (
+                        Some(recognition_root),
+                        Some(capture_manifest_sha256),
+                        Some(recognition_manifest_sha256),
+                        Some(event_artifact),
+                    ) = (
+                        recognition_root.as_deref(),
+                        report.diagnostic_manifest_sha256(),
+                        report.recognition_artifact_manifest_sha256(),
+                        event_artifact.as_ref(),
+                    ) && let Some(event_manifest_sha256) =
+                        event_artifact.manifest_sha256.as_deref()
+                    {
+                        let (processed_ticks, busy_skips, maximum_consecutive_busy_skips) =
+                            report.recognition_sampling();
+                        let completeness = if report.diagnostic_completeness_name() == "complete"
+                            && event_artifact.complete
+                        {
+                            "complete"
+                        } else {
+                            "partial"
+                        };
+                        match session_artifact::publish(&session_artifact::PublishRequest {
+                            root: &state.diagnostic_session_store,
+                            session_id: &session_id,
+                            capture_generation: generation,
+                            profile_sha256: selected.binding.capture_profile_sha256(),
+                            catalog_sha256: &active.digest,
+                            processed_ticks,
+                            busy_skips,
+                            maximum_consecutive_busy_skips,
+                            completeness,
+                            capture_directory: &state.diagnostic_root.join(&session_id),
+                            capture_manifest_sha256,
+                            recognition_directory: recognition_root,
+                            recognition_manifest_sha256,
+                            event_directory: &event_artifact.root,
+                            event_manifest_sha256,
+                            profile_path: &selected.path,
+                        }) {
+                            Ok(_) => {
+                                if let Err(error) = fs::remove_dir_all(recognition_root) {
+                                    output.warning(format!(
+                                        "published recognition staging cleanup failed: {error}"
+                                    ))?;
+                                }
+                                if let Err(error) = fs::remove_dir_all(&event_artifact.root) {
+                                    output.warning(format!(
+                                        "published event staging cleanup failed: {error}"
+                                    ))?;
+                                }
+                            }
+                            Err(error) => output.warning(format!(
+                                "diagnostic session publication degraded: {error}"
+                            ))?,
+                        }
+                    }
+                    if state.recording_enabled {
+                        if report.diagnostic_manifest_sha256().is_none() {
+                            output.warning(
+                                "diagnostic session was not published: capture component has no manifest",
+                            )?;
+                        }
+                        if recognition_root.is_some()
+                            && report.recognition_artifact_manifest_sha256().is_none()
+                        {
+                            output.warning(
+                                "diagnostic session was not published: recognition component has no manifest",
+                            )?;
+                        }
+                        match event_artifact.as_ref() {
+                            None => output.warning(
+                                "diagnostic session was not published: run-event component did not finish",
+                            )?,
+                            Some(artifact) if artifact.manifest_sha256.is_none() => output.warning(
+                                format!(
+                                    "diagnostic session was not published: run-event component has no manifest{}",
+                                    artifact
+                                        .error
+                                        .as_deref()
+                                        .map_or_else(String::new, |error| format!(": {error}"))
+                                ),
+                            )?,
+                            Some(artifact) if !artifact.complete => output.warning(format!(
+                                "diagnostic run-event recording is partial: {} events were dropped",
+                                artifact.dropped
+                            ))?,
+                            Some(_) => {}
+                        }
+                    }
                     record_watcher_status(
                         &mut status,
                         routine_watcher::WatcherState::SessionFinished,

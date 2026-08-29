@@ -1465,10 +1465,15 @@ fn offer_live_field_observation_frames(
         if let Some(mut frame) = frame {
             match cadence.observe(frame.monotonic_end_ms(), !pending.is_empty()) {
                 CadenceDecision::SkipCadence => continue,
-                CadenceDecision::SkipBusy { .. } => {
+                CadenceDecision::SkipBusy { tick_sequence } => {
                     source.counters.recognition_busy_skips = cadence.busy_skips();
                     source.counters.maximum_consecutive_busy_skips =
                         cadence.maximum_consecutive_busy_skips();
+                    let _ = session.record_recognition_busy_skip(
+                        tick_sequence,
+                        frame.monotonic_start_ms(),
+                        frame.monotonic_end_ms(),
+                    );
                     continue;
                 }
                 CadenceDecision::Process { tick_sequence } => {

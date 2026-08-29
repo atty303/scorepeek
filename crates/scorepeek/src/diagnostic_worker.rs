@@ -12,6 +12,7 @@ use crate::diagnostic_recording::{
 use scorepeek::capture::{UncalibratedMemoryType, UncalibratedVideoContract};
 
 pub const DEFAULT_DIAGNOSTIC_QUEUE_CAPACITY: usize = 2;
+const DIAGNOSTIC_FACT_QUEUE_CAPACITY: usize = 256;
 pub const DEFAULT_DIAGNOSTIC_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PENDING_QUEUE_DROPS: usize = 4_096;
 
@@ -69,7 +70,8 @@ enum DiagnosticWorkerState {
     Disabled,
     Unavailable,
     Active {
-        sender: SyncSender<DiagnosticWorkerMessage>,
+        frame_sender: SyncSender<DiagnosticWorkerMessage>,
+        fact_sender: SyncSender<DiagnosticWorkerMessage>,
         worker: JoinHandle<()>,
         cancellation: Arc<AtomicBool>,
     },
@@ -188,7 +190,8 @@ impl DiagnosticWorkerHandle {
         let sample_interval_ms = policy.sample_interval_ms;
         let cancellation = Arc::new(AtomicBool::new(false));
         let worker_cancellation = Arc::clone(&cancellation);
-        let (sender, receiver) = mpsc::sync_channel(capacity);
+        let (frame_sender, frame_receiver) = mpsc::sync_channel(capacity);
+        let (fact_sender, fact_receiver) = mpsc::sync_channel(DIAGNOSTIC_FACT_QUEUE_CAPACITY);
         let worker = thread::Builder::new()
             .name("scorepeek-diagnostic-writer".to_owned())
             .spawn(move || {
@@ -197,7 +200,8 @@ impl DiagnosticWorkerHandle {
                     gate.wait();
                 }
                 run_worker(
-                    &receiver,
+                    &frame_receiver,
+                    &fact_receiver,
                     &root,
                     &descriptor,
                     policy,
@@ -214,7 +218,8 @@ impl DiagnosticWorkerHandle {
         match worker {
             Ok(worker) => Self::with_state(
                 DiagnosticWorkerState::Active {
-                    sender,
+                    frame_sender,
+                    fact_sender,
                     worker,
                     cancellation,
                 },
@@ -310,6 +315,42 @@ impl DiagnosticWorkerHandle {
         self.try_send(DiagnosticWorkerMessage::Fact(fact), sequence)
     }
 
+    pub fn record_recognition_busy_skip(
+        &mut self,
+        sequence: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+    ) -> DiagnosticEnqueueOutcome {
+        if self
+            .last_offered_sequence
+            .is_some_and(|previous| sequence <= previous)
+            || self
+                .last_offered_monotonic_ms
+                .is_some_and(|previous| monotonic_start_ms <= previous)
+            || monotonic_end_ms < monotonic_start_ms
+        {
+            self.record_queue_drop(DiagnosticErrorType::TimingNonmonotonic, sequence);
+            return DiagnosticEnqueueOutcome::Rejected;
+        }
+        if let Some(previous) = self.last_offered_sequence
+            && sequence > previous.saturating_add(1)
+        {
+            self.record_sequence_gap(previous + 1, sequence - 1);
+        }
+        self.last_offered_sequence = Some(sequence);
+        self.last_offered_monotonic_ms = Some(monotonic_start_ms);
+        self.last_offered_monotonic_end_ms = Some(monotonic_end_ms);
+        self.try_record_fact(DiagnosticFact {
+            sequence,
+            monotonic_start_ms,
+            monotonic_end_ms,
+            operation: crate::diagnostic_recording::DiagnosticOperation::SampleRecognition,
+            status: crate::diagnostic_recording::DiagnosticOperationStatus::Success,
+            error_type: None,
+            detail: crate::diagnostic_recording::DiagnosticDetail::RecognitionBusySkip,
+        })
+    }
+
     pub fn record_external_error(&mut self, error_type: DiagnosticErrorType, sequence: u64) {
         self.record_queue_drop(error_type, sequence);
     }
@@ -341,10 +382,10 @@ impl DiagnosticWorkerHandle {
         }
         loop {
             let sequence = frame.sequence;
-            let DiagnosticWorkerState::Active { sender, .. } = &self.state else {
+            let DiagnosticWorkerState::Active { frame_sender, .. } = &self.state else {
                 return self.inactive_outcome();
             };
-            match sender.try_send(DiagnosticWorkerMessage::Frame(frame)) {
+            match frame_sender.try_send(DiagnosticWorkerMessage::Frame(frame)) {
                 Ok(()) => return DiagnosticEnqueueOutcome::Enqueued,
                 Err(TrySendError::Full(DiagnosticWorkerMessage::Frame(returned)))
                     if Instant::now() < deadline =>
@@ -392,11 +433,13 @@ impl DiagnosticWorkerHandle {
             },
             DiagnosticWorkerState::Unavailable => unavailable_finish(),
             DiagnosticWorkerState::Active {
-                sender,
+                frame_sender,
+                fact_sender,
                 worker,
                 cancellation,
             } => finish_active(
-                sender,
+                frame_sender,
+                fact_sender,
                 worker,
                 &cancellation,
                 DiagnosticFinishRequest {
@@ -417,8 +460,18 @@ impl DiagnosticWorkerHandle {
         message: DiagnosticWorkerMessage,
         sequence: u64,
     ) -> DiagnosticEnqueueOutcome {
-        let DiagnosticWorkerState::Active { sender, .. } = &self.state else {
+        let DiagnosticWorkerState::Active {
+            frame_sender,
+            fact_sender,
+            ..
+        } = &self.state
+        else {
             return self.inactive_outcome();
+        };
+        let sender = if matches!(message, DiagnosticWorkerMessage::Fact(_)) {
+            fact_sender
+        } else {
+            frame_sender
         };
         match sender.try_send(message) {
             Ok(()) => DiagnosticEnqueueOutcome::Enqueued,
@@ -438,10 +491,10 @@ impl DiagnosticWorkerHandle {
         message: DiagnosticWorkerMessage,
         sequences: &[u64],
     ) -> DiagnosticEnqueueOutcome {
-        let DiagnosticWorkerState::Active { sender, .. } = &self.state else {
+        let DiagnosticWorkerState::Active { frame_sender, .. } = &self.state else {
             return self.inactive_outcome();
         };
-        match sender.try_send(message) {
+        match frame_sender.try_send(message) {
             Ok(()) => DiagnosticEnqueueOutcome::Enqueued,
             Err(TrySendError::Full(_)) => {
                 for &sequence in sequences {
@@ -546,7 +599,8 @@ impl DiagnosticWorkerHandle {
 }
 
 fn finish_active(
-    sender: SyncSender<DiagnosticWorkerMessage>,
+    frame_sender: SyncSender<DiagnosticWorkerMessage>,
+    fact_sender: SyncSender<DiagnosticWorkerMessage>,
     worker: JoinHandle<()>,
     cancellation: &AtomicBool,
     request: DiagnosticFinishRequest,
@@ -569,7 +623,7 @@ fn finish_active(
         response,
     };
     loop {
-        match sender.try_send(message) {
+        match fact_sender.try_send(message) {
             Ok(()) => break,
             Err(TrySendError::Full(returned)) if Instant::now() < deadline => {
                 message = returned;
@@ -577,13 +631,15 @@ fn finish_active(
             }
             Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
                 cancellation.store(true, Ordering::Release);
-                drop(sender);
+                drop(frame_sender);
+                drop(fact_sender);
                 drop(worker);
                 return timeout_finish();
             }
         }
     }
-    drop(sender);
+    drop(frame_sender);
+    drop(fact_sender);
     let remaining = deadline.saturating_duration_since(Instant::now());
     let Ok(outcome) = receiver.recv_timeout(remaining) else {
         cancellation.store(true, Ordering::Release);
@@ -595,7 +651,8 @@ fn finish_active(
 }
 
 fn run_worker(
-    receiver: &Receiver<DiagnosticWorkerMessage>,
+    frame_receiver: &Receiver<DiagnosticWorkerMessage>,
+    fact_receiver: &Receiver<DiagnosticWorkerMessage>,
     root: &std::path::Path,
     descriptor: &DiagnosticRunDescriptor,
     policy: DiagnosticPolicy,
@@ -603,7 +660,26 @@ fn run_worker(
     supervisor_token: &mut Option<Arc<()>>,
 ) {
     let mut recorder = DiagnosticRecorder::start(root, descriptor, policy);
-    while let Ok(message) = receiver.recv() {
+    loop {
+        let message = match fact_receiver.try_recv() {
+            Ok(message) => message,
+            Err(mpsc::TryRecvError::Empty) => {
+                match frame_receiver.recv_timeout(Duration::from_millis(1)) {
+                    Ok(message) => message,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        match fact_receiver.recv_timeout(Duration::from_millis(1)) {
+                            Ok(message) => message,
+                            Err(_) => return,
+                        }
+                    }
+                }
+            }
+            Err(mpsc::TryRecvError::Disconnected) => match frame_receiver.recv() {
+                Ok(message) => message,
+                Err(_) => return,
+            },
+        };
         match message {
             DiagnosticWorkerMessage::Frame(frame) => {
                 let _ = recorder.record_sampled_frame(DiagnosticFrameInput {
@@ -636,6 +712,9 @@ fn run_worker(
                 last_error_type,
                 response,
             } => {
+                for pending in frame_receiver.try_iter() {
+                    record_worker_message(&mut recorder, pending);
+                }
                 recorder.record_external_degradations(
                     &degradations,
                     &unbound_drops,
@@ -649,6 +728,29 @@ fn run_worker(
                 return;
             }
         }
+    }
+}
+
+fn record_worker_message(recorder: &mut DiagnosticRecorder, message: DiagnosticWorkerMessage) {
+    match message {
+        DiagnosticWorkerMessage::Frame(frame) => {
+            let _ = recorder.record_sampled_frame(DiagnosticFrameInput {
+                sequence: frame.sequence,
+                monotonic_start_ms: frame.monotonic_start_ms,
+                monotonic_end_ms: frame.monotonic_end_ms,
+                pixels: &frame.pixels,
+                source: source_input(frame.source.as_ref()),
+            });
+        }
+        DiagnosticWorkerMessage::Frames(frames) => {
+            for frame in frames {
+                record_worker_message(recorder, DiagnosticWorkerMessage::Frame(frame));
+            }
+        }
+        DiagnosticWorkerMessage::Fact(fact) => {
+            let _ = recorder.record_fact(&fact);
+        }
+        DiagnosticWorkerMessage::Finish { .. } => {}
     }
 }
 
@@ -784,6 +886,59 @@ mod tests {
     }
 
     #[test]
+    fn frame_backpressure_does_not_consume_the_fact_queue() {
+        let root = tempfile::tempdir().unwrap();
+        let gate = Arc::new(Barrier::new(2));
+        let mut worker = DiagnosticWorkerHandle::start_inner(
+            root.path().to_owned(),
+            descriptor("split-queue-run"),
+            DiagnosticPolicy::default(),
+            1,
+            None,
+            DiagnosticWorkerHooks {
+                start_gate: Some(Arc::clone(&gate)),
+                ..DiagnosticWorkerHooks::default()
+            },
+        );
+        assert_eq!(
+            worker.try_record_frame(frame(1, 0)),
+            DiagnosticEnqueueOutcome::Enqueued
+        );
+        assert_eq!(
+            worker.try_record_fact(DiagnosticFact {
+                sequence: 1,
+                monotonic_start_ms: 0,
+                monotonic_end_ms: 16,
+                operation: crate::diagnostic_recording::DiagnosticOperation::SampleRecognition,
+                status: crate::diagnostic_recording::DiagnosticOperationStatus::Success,
+                error_type: None,
+                detail: crate::diagnostic_recording::DiagnosticDetail::SamplingSummary {
+                    processed_ticks: 1,
+                    busy_skips: 0,
+                    maximum_consecutive_busy_skips: 0,
+                },
+            }),
+            DiagnosticEnqueueOutcome::Enqueued
+        );
+        gate.wait();
+        let outcome = worker.finish(DiagnosticRunStatus::Success, 16, Duration::from_secs(5));
+        let manifest =
+            fs::read_to_string(root.path().join("split-queue-run/manifest.json")).unwrap();
+        assert_eq!(
+            outcome.completeness,
+            Some(DiagnosticCompleteness::Complete),
+            "{manifest}"
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("split-queue-run/facts.ndjson"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn rejected_frame_batch_records_every_selected_sequence() {
         let root = tempfile::tempdir().unwrap();
         let gate = Arc::new(Barrier::new(2));
@@ -901,6 +1056,52 @@ mod tests {
         .unwrap();
         assert_eq!(manifest["dropped_count"], 0);
         assert_eq!(manifest["frames"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn recognition_busy_skip_is_explicit_and_does_not_create_a_capture_gap() {
+        let root = tempfile::tempdir().unwrap();
+        let mut worker = DiagnosticWorkerHandle::start_inner(
+            root.path().to_owned(),
+            descriptor("recognition-busy-run"),
+            DiagnosticPolicy::default(),
+            2,
+            None,
+            DiagnosticWorkerHooks::default(),
+        );
+        assert_eq!(
+            worker.try_record_frame(frame(1, 0)),
+            DiagnosticEnqueueOutcome::Enqueued
+        );
+        assert_eq!(
+            worker.record_recognition_busy_skip(2, 50, 66),
+            DiagnosticEnqueueOutcome::Enqueued
+        );
+        assert_eq!(
+            worker.record_frame_until(frame(3, 1_000), Instant::now() + Duration::from_secs(1)),
+            DiagnosticEnqueueOutcome::Enqueued
+        );
+        let outcome = worker.finish(DiagnosticRunStatus::Success, 1_016, Duration::from_secs(5));
+        let manifest_bytes =
+            fs::read(root.path().join("recognition-busy-run/manifest.json")).unwrap();
+        assert_eq!(
+            outcome.completeness,
+            Some(DiagnosticCompleteness::Complete),
+            "{}",
+            String::from_utf8_lossy(&manifest_bytes)
+        );
+        let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes).unwrap();
+        assert_eq!(manifest["dropped_count"], 0);
+        let fact: serde_json::Value = serde_json::from_str(
+            fs::read_to_string(root.path().join("recognition-busy-run/facts.ndjson"))
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(fact["fact"]["tick_sequence"], 2);
+        assert_eq!(fact["fact"]["detail"]["kind"], "recognition_busy_skip");
     }
 
     #[test]

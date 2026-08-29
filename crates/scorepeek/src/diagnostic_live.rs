@@ -605,6 +605,16 @@ impl DiagnosticBridge {
         })
     }
 
+    pub(crate) fn record_recognition_busy_skip(
+        &mut self,
+        sequence: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+    ) -> DiagnosticEnqueueOutcome {
+        self.worker
+            .record_recognition_busy_skip(sequence, monotonic_start_ms, monotonic_end_ms)
+    }
+
     /// Records the explicit end of this immutable binding before the application starts another.
     pub fn record_binding_change(
         &mut self,

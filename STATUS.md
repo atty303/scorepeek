@@ -222,7 +222,21 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   installed at `/home/atty/.local/bin/scorepeek` on the target with SHA-256
   `c426d17a658f09f4f1fe732f397fee22f4c3841a2d04ec2e3a1dfc7cb193f08b`; target-side version,
   digest, and `doctor` with PipeWire 1.6.8 pass while scorepeek is stopped. Live allocation and
-  buffer behavior remain unverified.
+  buffer behavior remain unverified. A later ordinary target session did capture and recognize,
+  but its retained diagnostic exposed a separate evidence failure: 1,449 recognition ticks were
+  processed, 71 due ticks were skipped busy with a maximum consecutive run of one, and the capture
+  manifest misreported those skips as 71 capture-sequence gaps while also recording four shared
+  queue-full drops. The two specifically inspected absent sequences, 938 and 1,195, were busy skips,
+  so no recognition ran on those ticks. The value-free field summary cannot determine whether the
+  preceding processed observations changed song identity, and the eight-generation recognition
+  staging store had disabled exact observation recording for later runs.
+  ADR 0075 makes an ordinary joined session reconstructable by retaining the exact recognition
+  observation stream and every sequenced raw, temporal, play-attempt, and boundary run event. Busy
+  skips are explicit facts rather than inferred capture loss. Large frame batches keep a dedicated
+  capacity-two queue; small facts and serialized run events use separate capacity-256 queues. Old
+  inactive recognition and run-event staging generations are reclaimed before a new component is
+  admitted, while the joined session remains the retained artifact. Repository verification is in
+  progress and no ADR 0075 binary has been installed or exercised on the target.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -255,9 +269,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   preprocessing, CTC decoding, exact-first comparison keys, catalog search, and private replay
   tooling are digest-bound and reproducible. Custom training/export is deferred until integrated
   evidence isolates a residual that requires it.
-- Application-owned v3 diagnostic sessions retain full 10 Hz fact and observation NDJSON streams
+- Application-owned v3 diagnostic sessions retain full 10 Hz fact and exact recognition-observation
+  NDJSON streams, every ordered routine run event needed to replay temporal and play-attempt state,
   plus bounded content-deduplicated canonical QOI evidence. Live sampling uses only the latest
-  frame and counts busy ticks without backlog; video sampling uses source timestamps. Optional
+  frame and records busy ticks explicitly without backlog; video sampling uses source timestamps. Optional
   observed QOI pairs preserve normalization evidence without storing uncompressed BGRx in new
   diagnostics. A session records at most 250,000 fact or observation records, and each NDJSON
   record is bounded to 1 MiB. Pixels and recognition facts remain separate from public result
@@ -811,9 +826,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   `--no-recording` disables watcher status, diagnostic, and recognition artifact persistence.
   Diagnostic resource provenance
   uses the executing binary inode's SHA-256 without changing the CLI version or archive identity.
-  One ordinary-run lock serializes admission to the XDG recognition store. At eight generations or
-  when the next maximum reservation would exceed 1 GiB, the affected session continues recognition
-  without an artifact; scorepeek never deletes an existing run automatically. A single atomically
+  One ordinary-run lock serializes admission to the XDG component stores. Recognition and run-event
+  directories are staging for joined diagnostic publication; before admitting a new component,
+  scorepeek removes the oldest inactive staging generation when eight generations or the aggregate
+  byte reserve would otherwise be exceeded. A single atomically
   replaced watcher record retains only current state, invocation/session links and the last 32
   low-cardinality transitions.
 
@@ -846,8 +862,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    mid-session observation-socket client. Confirm that raw result events precede temporal
    transitions and that one-tick unknowns do not erase the stable TUI result. Do not claim target
    lifecycle or presentation support before those separate checks pass.
-4. Verify that the next partial or complete ordinary session publishes v3 automatically without
-   component reconstruction, and add only operator-reviewed episodes to the active suite.
+4. After explicitly installing the ADR 0075 build, verify that the next partial or complete ordinary
+   session publishes v3 automatically with exact `recognition/observations.ndjson`, ordered
+   `events.ndjson`, and explicit `recognition_busy_skip` facts. Confirm that a visible `armed`
+   selection can be reconstructed through decide/play without relying on terminal output or missing
+   component state, and add only operator-reviewed episodes to the active suite.
 5. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
 6. In the next real music-select session, verify that a one-tick frame-local unknown renders the

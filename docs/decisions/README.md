@@ -219,6 +219,9 @@ authoritative.
 - [ADR 0074: Allow padded PipeWire buffer allocation](0074-allow-padded-pipewire-buffer-allocation.md)
   supersedes ADR 0073 only for its exact buffer size and stride, retaining the bounded dedicated
   receiver while allowing producer alignment and padding.
+- [ADR 0075: Record reconstructable routine diagnostics](0075-record-reconstructable-routine-diagnostics.md)
+  supersedes ADR 0026 only for sharing one capacity-two queue between large frames and small facts,
+  and makes exact routine state transitions part of the joined diagnostic session.
 
 ## Historical
 

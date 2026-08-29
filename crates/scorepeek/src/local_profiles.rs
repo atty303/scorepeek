@@ -19,6 +19,9 @@ const PROFILE_STAGING_SUFFIX: &str = ".scorepeek-staging";
 const MAX_RECOGNITION_GENERATIONS: usize = 8;
 const MAX_RECOGNITION_AGGREGATE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_RECOGNITION_RUN_BYTES: u64 = 273 * 1024 * 1024;
+const MAX_RUN_EVENT_GENERATIONS: usize = 8;
+const MAX_RUN_EVENT_AGGREGATE_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_RUN_EVENT_BYTES: u64 = 512 * 1024 * 1024;
 
 pub struct SelectedProfile {
     pub path: PathBuf,
@@ -107,6 +110,7 @@ pub struct RoutineStatePaths {
     pub diagnostic_root: PathBuf,
     pub diagnostic_session_store: PathBuf,
     pub recognition_store: PathBuf,
+    pub run_event_store: PathBuf,
     pub watcher_status: PathBuf,
     pub recording_enabled: bool,
     _run_lock: File,
@@ -132,14 +136,17 @@ pub fn state_paths(recording_enabled: bool) -> Result<RoutineStatePaths, String>
         .try_lock()
         .map_err(|error| format!("ordinary run lock could not be acquired: {error}"))?;
     let recognition = scorepeek.join("recognition");
+    let run_events = scorepeek.join("run-events");
     if recording_enabled {
         ensure_directory_tree(&recognition)?;
+        ensure_directory_tree(&run_events)?;
         ensure_directory_tree(&scorepeek.join("diagnostic-sessions"))?;
     }
     Ok(RoutineStatePaths {
         diagnostic_root: scorepeek.join("diagnostics"),
         diagnostic_session_store: scorepeek.join("diagnostic-sessions"),
         recognition_store: recognition,
+        run_event_store: run_events,
         watcher_status: scorepeek.join("watcher-status.json"),
         recording_enabled,
         _run_lock: run_lock,
@@ -157,41 +164,81 @@ impl RoutineStatePaths {
 }
 
 fn ensure_recognition_capacity(root: &Path) -> Result<(), String> {
-    let mut generations = 0usize;
-    let mut bytes = 0u64;
-    for entry in fs::read_dir(root)
-        .map_err(|error| format!("recognition artifact store could not be read: {error}"))?
+    ensure_component_capacity(
+        root,
+        "recognition artifact",
+        MAX_RECOGNITION_GENERATIONS,
+        MAX_RECOGNITION_AGGREGATE_BYTES,
+        MAX_RECOGNITION_RUN_BYTES,
+    )
+}
+
+pub(crate) fn ensure_run_event_capacity(root: &Path) -> Result<(), String> {
+    ensure_component_capacity(
+        root,
+        "run event artifact",
+        MAX_RUN_EVENT_GENERATIONS,
+        MAX_RUN_EVENT_AGGREGATE_BYTES,
+        MAX_RUN_EVENT_BYTES,
+    )
+}
+
+fn ensure_component_capacity(
+    root: &Path,
+    label: &str,
+    maximum_generations: usize,
+    maximum_aggregate_bytes: u64,
+    maximum_run_bytes: u64,
+) -> Result<(), String> {
+    let mut entries = Vec::new();
+    for entry in
+        fs::read_dir(root).map_err(|error| format!("{label} store could not be read: {error}"))?
     {
-        let entry = entry.map_err(|error| format!("recognition artifact entry failed: {error}"))?;
-        let metadata = entry.path().metadata().map_err(|error| {
-            format!("recognition artifact entry could not be inspected: {error}")
-        })?;
+        let entry = entry.map_err(|error| format!("{label} entry failed: {error}"))?;
+        let metadata = entry
+            .path()
+            .metadata()
+            .map_err(|error| format!("{label} entry could not be inspected: {error}"))?;
         if !metadata.is_dir() {
-            return Err("recognition artifact store contains an unexpected entry".to_owned());
+            return Err(format!("{label} store contains an unexpected entry"));
         }
-        generations += 1;
+        let modified = metadata
+            .modified()
+            .map_err(|error| format!("{label} mtime failed: {error}"))?;
+        let mut entry_bytes = 0u64;
         for file in fs::read_dir(entry.path())
-            .map_err(|error| format!("recognition artifact could not be read: {error}"))?
+            .map_err(|error| format!("{label} could not be read: {error}"))?
         {
-            let file =
-                file.map_err(|error| format!("recognition artifact file failed: {error}"))?;
-            let metadata = file.path().metadata().map_err(|error| {
-                format!("recognition artifact file could not be inspected: {error}")
-            })?;
+            let file = file.map_err(|error| format!("{label} file failed: {error}"))?;
+            let metadata = file
+                .path()
+                .metadata()
+                .map_err(|error| format!("{label} file could not be inspected: {error}"))?;
             if !metadata.is_file() {
-                return Err("recognition artifact contains an unexpected entry".to_owned());
+                return Err(format!("{label} contains an unexpected entry"));
             }
-            bytes = bytes
+            entry_bytes = entry_bytes
                 .checked_add(metadata.len())
-                .ok_or_else(|| "recognition artifact byte count overflowed".to_owned())?;
+                .ok_or_else(|| format!("{label} byte count overflowed"))?;
         }
+        entries.push((modified, entry.path(), entry_bytes));
     }
-    if generations >= MAX_RECOGNITION_GENERATIONS
-        || bytes > MAX_RECOGNITION_AGGREGATE_BYTES - MAX_RECOGNITION_RUN_BYTES
+    entries.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    let mut bytes = entries.iter().try_fold(0u64, |total, entry| {
+        total
+            .checked_add(entry.2)
+            .ok_or_else(|| format!("{label} byte count overflowed"))
+    })?;
+    while entries.len() >= maximum_generations
+        || bytes > maximum_aggregate_bytes - maximum_run_bytes
     {
-        return Err(format!(
-            "recognition artifact store is at capacity ({generations} generations, {bytes} bytes)"
-        ));
+        let (_, oldest, removed_bytes) = entries.remove(0);
+        fs::remove_dir_all(&oldest)
+            .map_err(|error| format!("old {label} removal failed: {error}"))?;
+        bytes = bytes.saturating_sub(removed_bytes);
+        File::open(root)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("{label} store sync failed: {error}"))?;
     }
     Ok(())
 }
@@ -552,8 +599,9 @@ fn sha256(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_RECOGNITION_GENERATIONS, ensure_directory_tree, ensure_recognition_capacity,
-        gamescope_arguments, load_profiles_from, profile_name, publish_create_only, read_profile,
+        MAX_RECOGNITION_GENERATIONS, MAX_RUN_EVENT_GENERATIONS, ensure_directory_tree,
+        ensure_recognition_capacity, ensure_run_event_capacity, gamescope_arguments,
+        load_profiles_from, profile_name, publish_create_only, read_profile,
     };
     use std::ffi::{OsStr, OsString};
     use std::os::unix::fs::symlink;
@@ -696,13 +744,34 @@ mod tests {
     }
 
     #[test]
-    fn recognition_store_rejects_a_new_generation_at_capacity() {
+    fn recognition_store_reclaims_the_oldest_generation_at_capacity() {
         let temporary = tempfile::tempdir().unwrap();
         for index in 0..MAX_RECOGNITION_GENERATIONS {
             let generation = temporary.path().join(format!("run-{index}"));
             std::fs::create_dir(&generation).unwrap();
             std::fs::write(generation.join("manifest.json"), b"complete").unwrap();
         }
-        assert!(ensure_recognition_capacity(temporary.path()).is_err());
+        ensure_recognition_capacity(temporary.path()).unwrap();
+        assert_eq!(
+            std::fs::read_dir(temporary.path()).unwrap().count(),
+            MAX_RECOGNITION_GENERATIONS - 1
+        );
+        assert!(!temporary.path().join("run-0").exists());
+    }
+
+    #[test]
+    fn run_event_store_reclaims_the_oldest_generation_at_capacity() {
+        let temporary = tempfile::tempdir().unwrap();
+        for index in 0..MAX_RUN_EVENT_GENERATIONS {
+            let generation = temporary.path().join(format!("run-{index}"));
+            std::fs::create_dir(&generation).unwrap();
+            std::fs::write(generation.join("manifest.json"), b"partial").unwrap();
+        }
+        ensure_run_event_capacity(temporary.path()).unwrap();
+        assert_eq!(
+            std::fs::read_dir(temporary.path()).unwrap().count(),
+            MAX_RUN_EVENT_GENERATIONS - 1
+        );
+        assert!(!temporary.path().join("run-0").exists());
     }
 }

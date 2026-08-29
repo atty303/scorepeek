@@ -307,6 +307,7 @@ pub enum DiagnosticDetail {
         busy_skips: u64,
         maximum_consecutive_busy_skips: u64,
     },
+    RecognitionBusySkip,
     ScreenObservation {
         screen: DiagnosticScreen,
     },
@@ -1297,7 +1298,7 @@ fn valid_fact(fact: &DiagnosticFact) -> bool {
             DiagnosticDetail::Operation
         ) | (
             DiagnosticOperation::SampleRecognition,
-            DiagnosticDetail::SamplingSummary { .. }
+            DiagnosticDetail::SamplingSummary { .. } | DiagnosticDetail::RecognitionBusySkip
         ) | (
             DiagnosticOperation::InspectRecognition,
             DiagnosticDetail::ScreenObservation { .. }

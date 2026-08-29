@@ -318,6 +318,19 @@ impl<O: FieldObserver> FieldObservationSession<O> {
         self.poll_owned_field_observation(pending, Some(timeout))
     }
 
+    pub fn record_recognition_busy_skip(
+        &mut self,
+        sequence: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+    ) -> DiagnosticEnqueueOutcome {
+        self.recognition.record_recognition_busy_skip(
+            sequence,
+            monotonic_start_ms,
+            monotonic_end_ms,
+        )
+    }
+
     fn poll_owned_field_observation<T, E>(
         &mut self,
         pending: &PendingSessionFieldObservation<O::Output>,

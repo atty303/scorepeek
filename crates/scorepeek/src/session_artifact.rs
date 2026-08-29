@@ -29,6 +29,7 @@ struct SessionManifest<'a> {
     completeness: &'a str,
     capture_manifest_sha256: &'a str,
     recognition_manifest_sha256: &'a str,
+    event_manifest_sha256: &'a str,
     artifacts: Vec<Artifact>,
 }
 
@@ -54,6 +55,8 @@ pub struct PublishRequest<'a> {
     pub capture_manifest_sha256: &'a str,
     pub recognition_directory: &'a Path,
     pub recognition_manifest_sha256: &'a str,
+    pub event_directory: &'a Path,
+    pub event_manifest_sha256: &'a str,
     pub profile_path: &'a Path,
 }
 
@@ -102,23 +105,7 @@ pub fn publish(request: &PublishRequest<'_>) -> Result<PathBuf, String> {
     )?;
     let recognition_manifest_sha256 =
         rewrite_recognition_stream(request, &recognition, &mut artifacts)?;
-    let events = format!(
-        "{{\"schema\":\"scorepeek-private-diagnostic-event-v1\",\"event\":\"session_started\",\"session_id\":{:?},\"capture_generation\":{}}}\n{{\"schema\":\"scorepeek-private-diagnostic-event-v1\",\"event\":\"session_finished\",\"session_id\":{:?},\"capture_generation\":{},\"processed_ticks\":{},\"busy_skips\":{}}}\n",
-        request.session_id,
-        request.capture_generation,
-        request.session_id,
-        request.capture_generation,
-        request.processed_ticks,
-        request.busy_skips,
-    );
-    let events_path = staging.join("events.ndjson");
-    write_file(&events_path, events.as_bytes())?;
-    artifacts.push(Artifact {
-        kind: "events",
-        path: "events.ndjson".to_owned(),
-        sha256: digest_file(&events_path)?,
-        bytes: events.len() as u64,
-    });
+    link_event_component(request, &staging, &mut artifacts)?;
     if artifacts.len() > MAX_FILES {
         return Err("diagnostic session file capacity exceeded".to_owned());
     }
@@ -136,6 +123,7 @@ pub fn publish(request: &PublishRequest<'_>) -> Result<PathBuf, String> {
         completeness: request.completeness,
         capture_manifest_sha256: request.capture_manifest_sha256,
         recognition_manifest_sha256: &recognition_manifest_sha256,
+        event_manifest_sha256: request.event_manifest_sha256,
         artifacts,
     };
     let mut bytes = serde_json::to_vec(&manifest)
@@ -153,6 +141,44 @@ pub fn publish(request: &PublishRequest<'_>) -> Result<PathBuf, String> {
         .and_then(|directory| directory.sync_all())
         .map_err(|error| format!("diagnostic session store sync failed: {error}"))?;
     Ok(destination)
+}
+
+fn link_event_component(
+    request: &PublishRequest<'_>,
+    staging: &Path,
+    artifacts: &mut Vec<Artifact>,
+) -> Result<(), String> {
+    if digest_file(&request.event_directory.join("manifest.json"))? != request.event_manifest_sha256
+    {
+        return Err("event component manifest changed before publication".to_owned());
+    }
+    for (source, destination, digest) in [
+        (
+            "manifest.json",
+            "event-manifest.json",
+            request.event_manifest_sha256.to_owned(),
+        ),
+        (
+            "events.ndjson",
+            "events.ndjson",
+            digest_file(&request.event_directory.join("events.ndjson"))?,
+        ),
+    ] {
+        let destination_path = staging.join(destination);
+        fs::hard_link(request.event_directory.join(source), &destination_path)
+            .map_err(|error| format!("event artifact link failed: {error}"))?;
+        let bytes = destination_path
+            .metadata()
+            .map_err(|error| format!("event artifact metadata failed: {error}"))?
+            .len();
+        artifacts.push(Artifact {
+            kind: "events",
+            path: destination.to_owned(),
+            sha256: digest,
+            bytes,
+        });
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -441,10 +467,24 @@ fn digest_file(path: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::{Path, PathBuf};
 
     use serde_json::Value;
 
     use super::{PublishRequest, digest_file, publish};
+
+    fn write_event_component(root: &Path) -> (PathBuf, String) {
+        let events = root.join("event-input");
+        fs::create_dir(&events).unwrap();
+        fs::write(
+            events.join("events.ndjson"),
+            b"{\"schema\":\"scorepeek-run-event-v2\",\"channel_sequence\":1,\"event\":\"session_started\"}\n",
+        )
+        .unwrap();
+        fs::write(events.join("manifest.json"), b"{}\n").unwrap();
+        let manifest_sha256 = digest_file(&events.join("manifest.json")).unwrap();
+        (events, manifest_sha256)
+    }
 
     #[test]
     fn publication_expands_predicates_and_overlays_retained_recognition() {
@@ -475,6 +515,7 @@ mod tests {
         let profile = root.path().join("profile.json");
         fs::write(&profile, b"{}\n").unwrap();
         let recognition_manifest_sha256 = digest_file(&recognition.join("manifest.json")).unwrap();
+        let (events, event_manifest_sha256) = write_event_component(root.path());
         let published = publish(&PublishRequest {
             root: &sessions,
             session_id: "session",
@@ -489,6 +530,8 @@ mod tests {
             capture_manifest_sha256: &digest_file(&capture.join("manifest.json")).unwrap(),
             recognition_directory: &recognition,
             recognition_manifest_sha256: &recognition_manifest_sha256,
+            event_directory: &events,
+            event_manifest_sha256: &event_manifest_sha256,
             profile_path: &profile,
         })
         .unwrap();
@@ -504,6 +547,10 @@ mod tests {
         assert_eq!(records[2]["screen"], "play");
         assert_eq!(records[3]["screen"], "result");
         assert_eq!(records[3]["fields"]["title"], "measured");
+        assert_eq!(
+            fs::read(published.join("events.ndjson")).unwrap(),
+            fs::read(events.join("events.ndjson")).unwrap()
+        );
     }
 
     #[test]
@@ -526,6 +573,7 @@ mod tests {
         let profile = root.path().join("profile.json");
         fs::write(&profile, b"{}\n").unwrap();
         let recognition_manifest_sha256 = digest_file(&recognition.join("manifest.json")).unwrap();
+        let (events, event_manifest_sha256) = write_event_component(root.path());
         let published = publish(&PublishRequest {
             root: &sessions,
             session_id: "session",
@@ -540,6 +588,8 @@ mod tests {
             capture_manifest_sha256: &digest_file(&capture.join("manifest.json")).unwrap(),
             recognition_directory: &recognition,
             recognition_manifest_sha256: &recognition_manifest_sha256,
+            event_directory: &events,
+            event_manifest_sha256: &event_manifest_sha256,
             profile_path: &profile,
         })
         .unwrap();
@@ -573,6 +623,7 @@ mod tests {
         let profile = root.path().join("profile.json");
         fs::write(&profile, b"{}\n").unwrap();
         let recognition_manifest_sha256 = digest_file(&recognition.join("manifest.json")).unwrap();
+        let (events, event_manifest_sha256) = write_event_component(root.path());
         let error = publish(&PublishRequest {
             root: &sessions,
             session_id: "session",
@@ -587,6 +638,8 @@ mod tests {
             capture_manifest_sha256: &digest_file(&capture.join("manifest.json")).unwrap(),
             recognition_directory: &recognition,
             recognition_manifest_sha256: &recognition_manifest_sha256,
+            event_directory: &events,
+            event_manifest_sha256: &event_manifest_sha256,
             profile_path: &profile,
         })
         .unwrap_err();

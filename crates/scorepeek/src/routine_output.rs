@@ -15,6 +15,7 @@ use std::time::Duration;
 use crate::play_attempt::{
     PlayAttemptReducer, PlayAttemptScreen, PlayAttemptState, SelectionSource,
 };
+use crate::run_event_artifact::{FinishOutcome as RunEventArtifactOutcome, RunEventArtifactWorker};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -604,6 +605,9 @@ pub struct RoutineOutput {
     retained_music_select_song: Option<SongPresentation>,
     candidate_music_select_song: Option<SongPresentation>,
     play_attempt: PlayAttemptReducer<SongPresentation>,
+    event_store: Option<PathBuf>,
+    event_worker: Option<RunEventArtifactWorker>,
+    completed_event_artifact: Option<RunEventArtifactOutcome>,
 }
 
 impl RoutineOutput {
@@ -611,6 +615,7 @@ impl RoutineOutput {
         invocation_id: String,
         profile_sha256: String,
         recording_enabled: bool,
+        event_store: Option<PathBuf>,
     ) -> Result<Self, String> {
         let state = Arc::new(Mutex::new(RunViewState::new(
             invocation_id,
@@ -642,6 +647,9 @@ impl RoutineOutput {
             retained_music_select_song: None,
             candidate_music_select_song: None,
             play_attempt: PlayAttemptReducer::default(),
+            event_store,
+            event_worker: None,
+            completed_event_artifact: None,
         };
         output.refresh()?;
         Ok(output)
@@ -649,7 +657,7 @@ impl RoutineOutput {
 
     pub fn publish(&mut self, event: &RunEvent) -> Result<(), String> {
         match &event.kind {
-            RunEventKind::SessionStarted { .. } => {
+            RunEventKind::SessionStarted { session_id, .. } => {
                 self.temporal_result
                     .reset(TemporalTransitionReason::ResetBySessionBoundary);
                 self.stable_result_song = None;
@@ -658,6 +666,11 @@ impl RoutineOutput {
                 self.retained_music_select_song = None;
                 self.candidate_music_select_song = None;
                 self.play_attempt.reset_session();
+                self.completed_event_artifact = None;
+                self.event_worker =
+                    self.event_store.as_deref().zip(session_id.as_deref()).map(
+                        |(store, session_id)| RunEventArtifactWorker::start(store, session_id),
+                    );
                 self.publish_one(event)
             }
             RunEventKind::WatcherStopped { .. } => self.publish_watcher_stopped(event),
@@ -703,6 +716,8 @@ impl RoutineOutput {
                 update,
             )?;
         }
+        self.completed_event_artifact =
+            self.event_worker.take().map(RunEventArtifactWorker::finish);
         Ok(())
     }
 
@@ -976,6 +991,8 @@ impl RoutineOutput {
                 update,
             )?;
         }
+        self.completed_event_artifact =
+            self.event_worker.take().map(RunEventArtifactWorker::finish);
         Ok(())
     }
 
@@ -1049,6 +1066,9 @@ impl RoutineOutput {
         if let Some(object) = value.as_object_mut() {
             object.insert("channel_sequence".to_owned(), sequence.into());
         }
+        if let Some(worker) = &mut self.event_worker {
+            worker.try_record(&value);
+        }
         {
             let mut state = self
                 .state
@@ -1059,6 +1079,10 @@ impl RoutineOutput {
         }
         self.channel.publish(&value)?;
         self.refresh()
+    }
+
+    pub fn take_completed_event_artifact(&mut self) -> Option<RunEventArtifactOutcome> {
+        self.completed_event_artifact.take()
     }
 
     pub fn watcher_state(
@@ -2063,6 +2087,9 @@ mod tests {
             retained_music_select_song: None,
             candidate_music_select_song: None,
             play_attempt: PlayAttemptReducer::default(),
+            event_store: None,
+            event_worker: None,
+            completed_event_artifact: None,
         };
 
         output.publish(&accepted_result_event(1)).unwrap();
@@ -2166,6 +2193,9 @@ mod tests {
             retained_music_select_song: None,
             candidate_music_select_song: None,
             play_attempt: PlayAttemptReducer::default(),
+            event_store: None,
+            event_worker: None,
+            completed_event_artifact: None,
         };
 
         for sequence in 1..=3 {
@@ -2252,6 +2282,9 @@ mod tests {
             retained_music_select_song: None,
             candidate_music_select_song: None,
             play_attempt: PlayAttemptReducer::default(),
+            event_store: None,
+            event_worker: None,
+            completed_event_artifact: None,
         };
 
         for sequence in 1..=3 {
