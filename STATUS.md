@@ -218,8 +218,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   31,512,096-byte, 15,312-byte-stride footprint derived from visible 3828x2058 BGRx while Gamescope
   offered a padded 33,177,600-byte, 15,360-byte-stride 3840x2160 backing store. ADR 0074 keeps the
   bounded four-buffer MemFd contract but changes size and stride to lower-bounded ranges, matching
-  PipeWire's allocation semantics. Repository verification passes; this correction is not yet
-  installed or exercised on the target.
+  PipeWire's allocation semantics. Repository verification passes. The corrected binary is
+  installed at `/home/atty/.local/bin/scorepeek` on the target with SHA-256
+  `c426d17a658f09f4f1fe732f397fee22f4c3841a2d04ec2e3a1dfc7cb193f08b`; target-side version,
+  digest, and `doctor` with PipeWire 1.6.8 pass while scorepeek is stopped. Live allocation and
+  buffer behavior remain unverified.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -705,7 +708,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Unverified boundaries
 
-- The ADR 0074 correction is not yet installed or run. An ordinary `gamescope-4k` run must connect
+- The ADR 0074 correction is installed but has not yet run. An ordinary `gamescope-4k` run must connect
   across both the observed padded allocation transition and steady 3840x2160 capture, show no
   increasing scorepeek `pw-top` error count and no Gamescope `out of buffers` or
   `Already had a buffer?!` warnings, and retain ordinary
