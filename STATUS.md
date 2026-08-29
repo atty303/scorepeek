@@ -191,6 +191,14 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   production normalization for the marker. Two ordinary watcher runs have retained six reviewed
   result episodes, but the fixed pre-admission retry, automatic partial v3 publication, and the
   remaining lifetime/signal matrix require a fresh target run.
+  That target also exposed a receiver scheduling defect: while the Gamescope producer remained at
+  zero `pw-top` errors, the asynchronous scorepeek follower increased from 13,738 to 14,052 errors
+  over four adjacent samples, spent 4.4--4.6 ms copying each mapped 3840x2160 BGRx frame, and
+  reported `B/Q` 3.31--3.47 plus one incomplete `BUSY +++` sample. The receiver now coalesces the
+  PipeWire process event into one pending flag and drains/copies mapped buffers only after the
+  event-loop dispatch returns. This preserves the bounded latest-frame and failure contracts while
+  removing the 31.6 MiB copy from the process callback. Repository validation passes; the target
+  `pw-top` error delta and capture behavior remain to be rechecked with a newly installed build.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -240,7 +248,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   provider and receiver failure ownership distinct.
 - The common receiver accepts only bounded raw BGRx, disables conversion and reconnection, retains
   one owned latest frame, detects caps/memory/stride drift, and tears down before the provider.
-  Callback work is limited to bounded state changes and the required pixel copy.
+  The PipeWire process callback only coalesces a pending notification; mapped-buffer validation,
+  latest-frame replacement, and the required owned pixel copy run after event-loop dispatch.
 - Live and repeated-lifecycle gates expose bounded typed facts and aggregate counters without pixels
   or arbitrary PipeWire properties. Uncalibrated frames cannot enter recognition or canonical
   diagnostic recording.
@@ -567,7 +576,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   official-model execution, and native PipeWire build have each passed their dedicated development
   gates. These do not substitute for target-machine capture, recognition, or performance evidence.
 - Repository validation at this checkpoint includes formatting/static checks, workspace all-target
-  clippy with warnings denied, 303 library tests, 217 binary tests, 76 corpus library tests, 4 corpus
+  clippy with warnings denied, 304 library tests, 225 binary tests, 78 corpus library tests, 4 corpus
   binary tests, 77 offline OCR tests, native PipeWire build verification, and the packaged
   distribution artifact test. Focused session tests also verify descriptor/layout rejection,
   frame-generation rejection, diagnostic opt-out non-interference, and manifest-backed ordered
@@ -672,6 +681,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Unverified boundaries
 
+- The target `gamescope-4k` watcher has not yet rerun the deferred-buffer implementation. A fresh
+  installed run must show no increasing scorepeek `pw-top` error count while retaining ordinary
+  session admission, 10 Hz latest-frame recognition, diagnostic sequencing, and clean shutdown.
+  Development-host compile and replay tests cannot establish this realtime PipeWire boundary.
 - The result temporal reducer is grounded by ten reviewed episodes with complete enough ordered
   observations; four legacy episodes are too sparse for temporal calibration. The offline policy
   comparison confirms retained-corpus coverage and latency only; it has no wrong-accept challenge
@@ -788,23 +801,27 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Exercise one ordinary target flow through music select, song decision, gameplay and result.
+1. After an explicitly authorized target install, run `scorepeek run` against the fixed measured
+   `gamescope-4k` profile and sample `pw-top` before and during the session. Require a zero scorepeek
+   error delta, no `BUSY +++`, continued 10 Hz observations, and clean receiver shutdown; retain the
+   run as failure evidence if any condition regresses.
+2. Exercise one ordinary target flow through music select, song decision, gameplay and result.
    Confirm that the TUI keeps the catalog title and artist visible as one attempt, advances
    `SELECTED` to `PLAYING` to `CONFIRMED`, and leaves raw OCR separate. If a natural result-to-play
    retry is available, verify a new attempt ID with the prior parent; do not request extra play only
    for retry tuning. Treat missing decide/play, an unlinked result or conflict as evidence rather
    than repairing it.
-2. Exercise the fixed measured target `gamescope-4k` watcher with scorepeek-first startup through the
+3. Exercise the fixed measured target `gamescope-4k` watcher with scorepeek-first startup through the
    transient INFINITAS source sequence, then cover Gamescope-first, sequential and simultaneous
    source lifetimes, idle/active signals, TTY restoration, redirected plain output, and a
    mid-session observation-socket client. Confirm that raw result events precede temporal
    transitions and that one-tick unknowns do not erase the stable TUI result. Do not claim target
    lifecycle or presentation support before those separate checks pass.
-3. Verify that the next partial or complete ordinary session publishes v3 automatically without
+4. Verify that the next partial or complete ordinary session publishes v3 automatically without
    component reconstruction, and add only operator-reviewed episodes to the active suite.
-4. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
+5. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
-5. In the next real music-select session, verify that a one-tick frame-local unknown renders the
+6. In the next real music-select session, verify that a one-tick frame-local unknown renders the
    catalog identity as `HELD`, a real selection change renders `CHANGING` and replaces after 200 ms,
    and a category/filter selection clears after the bounded grace. Keep raw central-title OCR
    visible and separate; this live check qualifies presentation behavior, not event authority.

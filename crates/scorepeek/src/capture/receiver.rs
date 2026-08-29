@@ -23,7 +23,7 @@ use super::{
 const MAX_WIDTH: u32 = 7_680;
 const MAX_HEIGHT: u32 = 4_320;
 const MAX_FRAME_BYTES: usize = 128 * 1024 * 1024;
-const MAX_BUFFERS_PER_CALLBACK: usize = 64;
+const MAX_BUFFERS_PER_POLL: usize = 64;
 const REQUESTED_FRAMERATE_NUM: u32 = 10;
 const REQUESTED_FRAMERATE_DENOM: u32 = 1;
 
@@ -162,6 +162,7 @@ struct ReceiverState {
     active_seen: bool,
     shutting_down: bool,
     terminal: Option<ReceiverTerminal>,
+    process_pending: bool,
 }
 
 impl ReceiverState {
@@ -182,6 +183,7 @@ impl ReceiverState {
             active_seen: false,
             shutting_down: false,
             terminal: None,
+            process_pending: false,
         }
     }
 
@@ -707,6 +709,7 @@ impl UncalibratedPipeWireReceiver {
             return Err(CaptureError::without_source(CaptureErrorType::StreamLost));
         };
         lease.poll(timeout.min(ITERATION_SLICE), sink)?;
+        self.process_pending_buffers();
         self.flush_observations(sink);
         let terminal = self.state.borrow().terminal;
         if let Some(terminal) = terminal {
@@ -714,6 +717,68 @@ impl UncalibratedPipeWireReceiver {
             return Err(CaptureError::without_source(terminal.error_type));
         }
         Ok(())
+    }
+
+    fn process_pending_buffers(&mut self) {
+        if !std::mem::take(&mut self.state.borrow_mut().process_pending) {
+            return;
+        }
+        let Some(stream) = self.stream.as_ref() else {
+            return;
+        };
+        for _ in 0..MAX_BUFFERS_PER_POLL {
+            let Some(mut buffer) = stream.dequeue_buffer() else {
+                return;
+            };
+            let received_ns =
+                u64::try_from(self.state.borrow().started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            let datas = buffer.datas_mut();
+            if datas.len() != 1 {
+                fail_frame(&self.state, CaptureErrorType::FrameMalformed);
+                return;
+            }
+            let data = &mut datas[0];
+            let memory_type = match data.type_() {
+                DataType::MemPtr => UncalibratedMemoryType::MemoryPointer,
+                DataType::MemFd => UncalibratedMemoryType::MemoryFileDescriptor,
+                DataType::DmaBuf => UncalibratedMemoryType::DmaBuf,
+                _ => {
+                    fail_frame(&self.state, CaptureErrorType::UnsupportedMemoryType);
+                    return;
+                }
+            };
+            if data.as_raw().chunk.is_null() {
+                fail_frame(&self.state, CaptureErrorType::FrameMalformed);
+                return;
+            }
+            let chunk = data.chunk();
+            if chunk.flags().contains(ChunkFlags::CORRUPTED) || chunk.stride() <= 0 {
+                fail_frame(&self.state, CaptureErrorType::FrameMalformed);
+                return;
+            }
+            let offset = chunk.offset() as usize;
+            let size = chunk.size() as usize;
+            let stride = chunk.stride().cast_unsigned();
+            let Some(mapped) = data.data() else {
+                fail_frame(&self.state, CaptureErrorType::UnsupportedMemoryType);
+                return;
+            };
+            let Some(end) = offset.checked_add(size) else {
+                fail_frame(&self.state, CaptureErrorType::FrameMalformed);
+                return;
+            };
+            let Some(bytes) = mapped.get(offset..end) else {
+                fail_frame(&self.state, CaptureErrorType::FrameMalformed);
+                return;
+            };
+            self.state
+                .borrow_mut()
+                .accept_frame(memory_type, stride, bytes, received_ns);
+        }
+        self.state.borrow_mut().fail(
+            CaptureErrorType::ReceiverFailed,
+            CaptureDiagnosticOperation::SteadyReception,
+        );
     }
 
     #[must_use]
@@ -1261,7 +1326,9 @@ fn register_stream_listener(
         .add_local_listener_with_user_data(state)
         .state_changed(|_, state, _, new| handle_stream_state(state, &new))
         .param_changed(|_, state, id, param| handle_format(state, id, param))
-        .process(process_buffers)
+        // A mapped 4K frame copy exceeds the PipeWire graph quantum on the target machine. The
+        // callback only coalesces work; `poll` drains and copies buffers after loop dispatch.
+        .process(|_, state| state.borrow_mut().process_pending = true)
         .register()
 }
 
@@ -1310,62 +1377,6 @@ fn fail_format(state: &Rc<RefCell<ReceiverState>>) {
     let mut state = state.borrow_mut();
     let operation = state.reception_operation();
     state.fail(CaptureErrorType::UnsupportedFormat, operation);
-}
-
-fn process_buffers(stream: &pw::stream::Stream, state: &mut Rc<RefCell<ReceiverState>>) {
-    for _ in 0..MAX_BUFFERS_PER_CALLBACK {
-        let Some(mut buffer) = stream.dequeue_buffer() else {
-            return;
-        };
-        let received_ns =
-            u64::try_from(state.borrow().started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        let datas = buffer.datas_mut();
-        if datas.len() != 1 {
-            fail_frame(state, CaptureErrorType::FrameMalformed);
-            return;
-        }
-        let data = &mut datas[0];
-        let memory_type = match data.type_() {
-            DataType::MemPtr => UncalibratedMemoryType::MemoryPointer,
-            DataType::MemFd => UncalibratedMemoryType::MemoryFileDescriptor,
-            DataType::DmaBuf => UncalibratedMemoryType::DmaBuf,
-            _ => {
-                fail_frame(state, CaptureErrorType::UnsupportedMemoryType);
-                return;
-            }
-        };
-        if data.as_raw().chunk.is_null() {
-            fail_frame(state, CaptureErrorType::FrameMalformed);
-            return;
-        }
-        let chunk = data.chunk();
-        if chunk.flags().contains(ChunkFlags::CORRUPTED) || chunk.stride() <= 0 {
-            fail_frame(state, CaptureErrorType::FrameMalformed);
-            return;
-        }
-        let offset = chunk.offset() as usize;
-        let size = chunk.size() as usize;
-        let stride = chunk.stride().cast_unsigned();
-        let Some(mapped) = data.data() else {
-            fail_frame(state, CaptureErrorType::UnsupportedMemoryType);
-            return;
-        };
-        let Some(end) = offset.checked_add(size) else {
-            fail_frame(state, CaptureErrorType::FrameMalformed);
-            return;
-        };
-        let Some(bytes) = mapped.get(offset..end) else {
-            fail_frame(state, CaptureErrorType::FrameMalformed);
-            return;
-        };
-        state
-            .borrow_mut()
-            .accept_frame(memory_type, stride, bytes, received_ns);
-    }
-    state.borrow_mut().fail(
-        CaptureErrorType::ReceiverFailed,
-        CaptureDiagnosticOperation::SteadyReception,
-    );
 }
 
 fn fail_frame(state: &Rc<RefCell<ReceiverState>>, error_type: CaptureErrorType) {
