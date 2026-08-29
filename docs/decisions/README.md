@@ -190,6 +190,10 @@ authoritative.
   moves two prematurely labeled selection changes to the adjacent pair where the visible active
   identity actually changes, replaces false-stability naming with neutral nonstationary activity,
   and finds zero missed resets. Motion truth still cannot select a runtime dwell policy.
+- [ADR 0066: Evaluate the leading music-select dwell with correct-song truth](0066-evaluate-leading-music-select-dwell-with-correct-song-truth.md)
+  ranks 200 ms as the leading motion candidate, binds every stationary run to an operator-reviewed
+  song or non-song selection, and finds no wrong ID to suppress but additional unresolved latency.
+  Runtime selection remains deferred.
 
 ## Historical
 

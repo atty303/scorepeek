@@ -141,9 +141,23 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   stationary runs and reset 4/4, 4/4, 3/3, and 3/3 selection changes with prior stability, with no
   miss. Stable nonstationary pairs are 23/17/16/15; same-identity scrolling accounts for all but
   one 100 ms pair. This activity is no longer mislabeled as false stability. Motion truth has no
-  correct-song labels, so no runtime policy, stable-selection accuracy, runtime state, or event
-  authority has been selected. The canonical v2 evaluation SHA-256 is
+  correct-song labels, so that report alone selects no runtime policy. The canonical v2 evaluation
+  SHA-256 is
   `0ed18a0f4dd2787e3808f382966d4b30c5e4ece1b957e792fcee0ba3c7048071`.
+  ADR 0066 promotes 200 ms only to `leading_motion_candidate`: it keeps the same 16/27 coverage and
+  4/4 reset result as 100 ms while reducing nonstationary stabilizations from six to one. A new
+  canonical complete correct-song set binds every maximal stationary run to 18 visible songs or
+  nine non-song category/filter selections. Its SHA-256 is
+  `ad9e2e0c8ea4b1d90a303d0e70c5fb1dd74b64c0dbac186673ad04f868bd7299`. Across 740 stationary
+  observations, frame-local resolution is 729 correct, zero incorrect and 11 unknown, with zero
+  accepted-ID transition and coverage of 16/18 song runs; no non-song run produces a song. The
+  200 ms candidate is 705 correct, zero incorrect and 35 unknown, keeps 16/18 coverage, and has no
+  wrong or non-song stability. Its correct stabilization latency is p50 200 ms, p95 300 ms and
+  maximum 300 ms. The canonical correctness evaluation SHA-256 is
+  `53f7afe0cb548f5c847baa53cc333e2fbf9f25353f5739b323198c7b9789f23b`. This evidence finds no
+  accepted song-ID jitter to remove and shows only added unresolved latency, so runtime policy,
+  stable-selection state and event authority remain unselected. Raw central-title OCR variation
+  shown by the TUI is a separate presentation signal.
   The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
   machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
   model. After the `/home` symlink fix, retained synthetic target evidence showed the 1920x1080
@@ -760,10 +774,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    component reconstruction, and add only operator-reviewed episodes to the active suite.
 3. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
-4. Add correct-song labels for bounded stationary music-select runs and compare frame-local output
-   with equal-ID dwell on OCR jitter, wrong acceptance, stabilization latency, and coverage. Keep
-   operator truth out of runtime input and do not select or implement a policy from motion labels
-   alone.
+4. Measure `central_title` and `active_list_title` open-text variation inside the 27 reviewed
+   stationary runs, keeping OCR strings separate from accepted song identity. Determine whether the
+   TUI should retain a short-lived presentation value or prioritize catalog-backed resolution;
+   do not implement the 200 ms song-ID candidate merely to hide raw OCR text variation.
 
 Do not add transform replay without an independent oracle, broaden routine raw retention, silently
 calibrate or switch profiles, request play solely to

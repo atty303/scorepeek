@@ -35,6 +35,12 @@ const APPLY_SUMMARY_SCHEMA: &str = "scorepeek-private-music-select-motion-review
 const DWELL_EVALUATION_SCHEMA: &str = "scorepeek-private-music-select-dwell-evaluation-v2";
 const DWELL_EVALUATION_SUMMARY_SCHEMA: &str =
     "scorepeek-private-music-select-dwell-evaluation-summary-v2";
+const CORRECTNESS_LABEL_SCHEMA: &str = "scorepeek-private-music-select-correct-song-labels-v1";
+const CORRECTNESS_EVALUATION_SCHEMA: &str =
+    "scorepeek-private-music-select-correctness-evaluation-v1";
+const CORRECTNESS_EVALUATION_SUMMARY_SCHEMA: &str =
+    "scorepeek-private-music-select-correctness-evaluation-summary-v1";
+const LEADING_DWELL_MS: u64 = 200;
 const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_OBSERVATION_RECORD_BYTES: usize = 1024 * 1024;
@@ -109,6 +115,21 @@ pub struct MusicSelectDwellEvaluationSummary {
     evaluation_sha256: String,
     source_reviewed_sha256: String,
     policy_count: usize,
+    runtime_policy_selected: bool,
+    authority: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MusicSelectCorrectnessEvaluationSummary {
+    schema: &'static str,
+    output: PathBuf,
+    evaluation_sha256: String,
+    source_reviewed_sha256: String,
+    source_labels_sha256: String,
+    stationary_run_count: usize,
+    expected_song_run_count: usize,
+    non_song_selection_run_count: usize,
+    candidate_policy: MusicSelectDwellPolicy,
     runtime_policy_selected: bool,
     authority: &'static str,
 }
@@ -271,6 +292,31 @@ struct ReviewedMotionPair {
     review_state: ReviewState,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CorrectSongLabels {
+    schema: String,
+    source_reviewed_sha256: String,
+    labels: Vec<CorrectSongLabel>,
+    authority: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CorrectSongLabel {
+    span_id: String,
+    first_sequence: u64,
+    last_sequence: u64,
+    expected: CorrectSongExpectation,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+enum CorrectSongExpectation {
+    Song { scorepeek_song_id: ScorepeekSongId },
+    NotSongSelection,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ReviewCompleteness {
@@ -294,6 +340,102 @@ struct MusicSelectDwellEvaluation {
     policies: Vec<DwellPolicyEvaluation>,
     runtime_policy_selected: bool,
     authority: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct MusicSelectCorrectnessEvaluation {
+    schema: &'static str,
+    source_reviewed_sha256: String,
+    source_labels_sha256: String,
+    source_active_suite_sha256: String,
+    source_session_sha256: String,
+    source_catalog_sha256: String,
+    sampling_interval_ms: u64,
+    denominators: CorrectnessDenominators,
+    raw: CorrectnessAggregate,
+    candidate: CorrectnessCandidateEvaluation,
+    runs: Vec<CorrectnessRunEvaluation>,
+    runtime_policy_selected: bool,
+    authority: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+struct CorrectnessDenominators {
+    stationary_runs: usize,
+    expected_song_runs: usize,
+    non_song_selection_runs: usize,
+    observations: usize,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+struct CorrectnessAggregate {
+    outcomes: CorrectnessOutcomes,
+    accepted_identity_transitions: usize,
+    outcome_transitions: usize,
+    expected_song_runs_with_correct_output: usize,
+    expected_song_runs_with_incorrect_output: usize,
+    non_song_selection_runs_with_output: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+struct CorrectnessOutcomes {
+    correct: usize,
+    incorrect: usize,
+    unknown: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct CorrectnessCandidateEvaluation {
+    policy: MusicSelectDwellPolicy,
+    candidate_status: &'static str,
+    aggregate: CorrectnessAggregate,
+    expected_song_runs_stabilized_correct: usize,
+    expected_song_runs_stabilized_incorrect: usize,
+    non_song_selection_runs_stabilized: usize,
+    correct_stabilization_latency_ms: DwellDistribution,
+    wrong_stable_streak_duration_ms: DwellDistribution,
+}
+
+#[derive(Debug, Serialize)]
+struct CorrectnessRunEvaluation {
+    span_id: String,
+    first_sequence: u64,
+    last_sequence: u64,
+    expected: CorrectSongExpectation,
+    observation_count: usize,
+    raw: RunCorrectness,
+    candidate: RunCorrectness,
+    candidate_correct_stabilization_latency_ms: Option<u64>,
+    candidate_maximum_wrong_stable_streak_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+struct RunCorrectness {
+    outcomes: CorrectnessOutcomes,
+    accepted_identity_transitions: usize,
+    outcome_transitions: usize,
+}
+
+#[derive(Debug)]
+struct StationaryRun {
+    span_id: String,
+    first_sequence: u64,
+    last_sequence: u64,
+    first_timestamp_ms: u64,
+    sequences: Vec<u64>,
+}
+
+struct DwellInputs {
+    source_catalog_sha256: String,
+    catalog_song_ids: BTreeSet<ScorepeekSongId>,
+    observations: BTreeMap<u64, DwellObservation>,
+}
+
+struct CorrectnessEvaluationParts {
+    denominators: CorrectnessDenominators,
+    raw: CorrectnessAggregate,
+    candidate: CorrectnessCandidateEvaluation,
+    runs: Vec<CorrectnessRunEvaluation>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
@@ -741,15 +883,14 @@ pub fn evaluate_music_select_dwell(
     if active.generation_sha256 != reviewed.active_suite_sha256 {
         return invalid("music-select dwell reviewed suite binding differs");
     }
-    let (source_catalog_sha256, observations) =
-        load_dwell_observations(store, catalog_store, &session)?;
+    let inputs = load_dwell_observations(store, catalog_store, &session)?;
     let evaluations = policies
         .iter()
         .copied()
         .map(|policy| {
             evaluate_dwell_policy(
                 &reviewed,
-                &observations,
+                &inputs.observations,
                 denominators.stationary_runs,
                 policy,
             )
@@ -760,7 +901,7 @@ pub fn evaluate_music_select_dwell(
         source_reviewed_sha256: source_reviewed_sha256.clone(),
         source_active_suite_sha256: reviewed.active_suite_sha256,
         source_session_sha256: reviewed.session_sha256,
-        source_catalog_sha256,
+        source_catalog_sha256: inputs.source_catalog_sha256,
         sampling_interval_ms: reviewed.sampling_interval_ms,
         denominators,
         policies: evaluations,
@@ -779,6 +920,98 @@ pub fn evaluate_music_select_dwell(
         evaluation_sha256,
         source_reviewed_sha256,
         policy_count: policies.len(),
+        runtime_policy_selected: false,
+        authority: "offline_descriptive_only",
+    })
+}
+
+/// Compares frame-local song resolution with the leading 200 ms equal-ID candidate against
+/// complete operator-authored correct-song truth for every stationary run.
+///
+/// Correct-song labels are evaluation-only and never become resolver or runtime inputs. A label
+/// may explicitly identify a stationary category/filter selection as `not_song_selection`; an
+/// accepted or stable song in such a run is incorrect rather than silently excluded.
+///
+/// # Errors
+/// Returns an error when paths are not absolute, either input is non-canonical or incompletely
+/// bound, a label does not name exactly one maximal stationary run, an expected song is absent from
+/// the session catalog, or the create-only report cannot be published.
+pub fn evaluate_music_select_correctness(
+    store: &Path,
+    catalog_store: &Path,
+    reviewed_path: &Path,
+    labels_path: &Path,
+    output_path: &Path,
+) -> Result<MusicSelectCorrectnessEvaluationSummary, CorpusError> {
+    if !store.is_absolute()
+        || !catalog_store.is_absolute()
+        || !reviewed_path.is_absolute()
+        || !labels_path.is_absolute()
+        || !output_path.is_absolute()
+    {
+        return invalid("music-select correctness evaluation paths must be absolute");
+    }
+    let reviewed_bytes =
+        read_bounded_regular(reviewed_path, MAX_DOCUMENT_BYTES, ErrorContext::Replay)?;
+    let reviewed: ReviewedMotionSet = serde_json::from_slice(&reviewed_bytes)?;
+    let denominators = validate_reviewed_motion_set(&reviewed, &reviewed_bytes)?;
+    let source_reviewed_sha256 = digest_bytes(&reviewed_bytes);
+    let labels_bytes = read_bounded_regular(labels_path, MAX_DOCUMENT_BYTES, ErrorContext::Replay)?;
+    let labels: CorrectSongLabels = serde_json::from_slice(&labels_bytes)?;
+    let source_labels_sha256 = digest_bytes(&labels_bytes);
+    let runs = stationary_runs(&reviewed);
+    if runs.len() != denominators.stationary_runs {
+        return invalid("music-select correctness stationary-run count differs");
+    }
+    let (active, session) = load_bound_session(store, &reviewed.session_sha256)?;
+    if active.generation_sha256 != reviewed.active_suite_sha256 {
+        return invalid("music-select correctness reviewed suite binding differs");
+    }
+    let inputs = load_dwell_observations(store, catalog_store, &session)?;
+    validate_correct_song_labels(
+        &labels,
+        &labels_bytes,
+        &source_reviewed_sha256,
+        &runs,
+        &inputs.catalog_song_ids,
+    )?;
+    let policy = MusicSelectDwellPolicy {
+        stationary_dwell_ms: LEADING_DWELL_MS,
+    };
+    let stable = replay_dwell_states(&reviewed, &inputs.observations, policy)?;
+    let parts =
+        evaluate_correctness_runs(&runs, &labels.labels, &inputs.observations, &stable, policy)?;
+    let report = MusicSelectCorrectnessEvaluation {
+        schema: CORRECTNESS_EVALUATION_SCHEMA,
+        source_reviewed_sha256: source_reviewed_sha256.clone(),
+        source_labels_sha256: source_labels_sha256.clone(),
+        source_active_suite_sha256: reviewed.active_suite_sha256,
+        source_session_sha256: reviewed.session_sha256,
+        source_catalog_sha256: inputs.source_catalog_sha256,
+        sampling_interval_ms: reviewed.sampling_interval_ms,
+        denominators: parts.denominators,
+        raw: parts.raw,
+        candidate: parts.candidate,
+        runs: parts.runs,
+        runtime_policy_selected: false,
+        authority: "offline_descriptive_only",
+    };
+    let bytes = canonical_line(&report)?;
+    if bytes.len() > MAX_DOCUMENT_BYTES {
+        return invalid("music-select correctness evaluation exceeds its bound");
+    }
+    let evaluation_sha256 = digest_bytes(&bytes);
+    publish_create_only(output_path, &bytes)?;
+    Ok(MusicSelectCorrectnessEvaluationSummary {
+        schema: CORRECTNESS_EVALUATION_SUMMARY_SCHEMA,
+        output: output_path.to_owned(),
+        evaluation_sha256,
+        source_reviewed_sha256,
+        source_labels_sha256,
+        stationary_run_count: parts.denominators.stationary_runs,
+        expected_song_run_count: parts.denominators.expected_song_runs,
+        non_song_selection_run_count: parts.denominators.non_song_selection_runs,
+        candidate_policy: policy,
         runtime_policy_selected: false,
         authority: "offline_descriptive_only",
     })
@@ -803,6 +1036,347 @@ fn validate_dwell_policies(
         ));
     }
     Ok(unique.into_iter().collect())
+}
+
+fn stationary_runs(reviewed: &ReviewedMotionSet) -> Vec<StationaryRun> {
+    let mut runs = Vec::new();
+    for span in &reviewed.spans {
+        let mut current: Option<StationaryRun> = None;
+        for pair in &span.pairs {
+            if pair.review_state.state == "stationary" {
+                if let Some(run) = &mut current {
+                    run.last_sequence = pair.sequence;
+                    run.sequences.push(pair.sequence);
+                } else {
+                    current = Some(StationaryRun {
+                        span_id: span.span_id.clone(),
+                        first_sequence: pair.previous_sequence,
+                        last_sequence: pair.sequence,
+                        first_timestamp_ms: pair.previous_timestamp_ms,
+                        sequences: vec![pair.previous_sequence, pair.sequence],
+                    });
+                }
+            } else if let Some(run) = current.take() {
+                runs.push(run);
+            }
+        }
+        if let Some(run) = current {
+            runs.push(run);
+        }
+    }
+    runs
+}
+
+fn validate_correct_song_labels(
+    labels: &CorrectSongLabels,
+    bytes: &[u8],
+    source_reviewed_sha256: &str,
+    runs: &[StationaryRun],
+    catalog_song_ids: &BTreeSet<ScorepeekSongId>,
+) -> Result<(), CorpusError> {
+    if canonical_line(labels)? != bytes
+        || labels.schema != CORRECTNESS_LABEL_SCHEMA
+        || labels.source_reviewed_sha256 != source_reviewed_sha256
+        || labels.authority != "operator_review"
+        || labels.labels.len() != runs.len()
+    {
+        return invalid(
+            "music-select correct-song labels are not canonical, complete, and reviewed-set-bound",
+        );
+    }
+    for (label, run) in labels.labels.iter().zip(runs) {
+        if label.span_id != run.span_id
+            || label.first_sequence != run.first_sequence
+            || label.last_sequence != run.last_sequence
+        {
+            return invalid(
+                "music-select correct-song label does not name the next stationary run",
+            );
+        }
+        if let CorrectSongExpectation::Song { scorepeek_song_id } = label.expected
+            && !catalog_song_ids.contains(&scorepeek_song_id)
+        {
+            return invalid(
+                "music-select correct-song label song is absent from the bound catalog",
+            );
+        }
+    }
+    Ok(())
+}
+
+fn replay_dwell_states(
+    reviewed: &ReviewedMotionSet,
+    observations: &BTreeMap<u64, DwellObservation>,
+    policy: MusicSelectDwellPolicy,
+) -> Result<BTreeMap<(String, u64), Option<ScorepeekSongId>>, CorpusError> {
+    let mut result = BTreeMap::new();
+    for span in &reviewed.spans {
+        let first_pair = span
+            .pairs
+            .first()
+            .ok_or_else(|| CorpusError::InvalidReplay("music-select span is empty".to_owned()))?;
+        let first = bound_dwell_observation(
+            observations,
+            first_pair.previous_sequence,
+            first_pair.previous_timestamp_ms,
+            first_pair.previous_screen,
+        )?;
+        let mut pending = first
+            .accepted_song_id
+            .map(|song_id| (song_id, first.timestamp_ms));
+        let mut stable = None;
+        result.insert((span.span_id.clone(), first.sequence), stable);
+        for pair in &span.pairs {
+            let current = bound_dwell_observation(
+                observations,
+                pair.sequence,
+                pair.source_timestamp_ms,
+                pair.screen,
+            )?;
+            advance_dwell(&mut pending, &mut stable, current, policy);
+            result.insert((span.span_id.clone(), current.sequence), stable);
+        }
+    }
+    Ok(result)
+}
+
+fn evaluate_correctness_runs(
+    runs: &[StationaryRun],
+    labels: &[CorrectSongLabel],
+    observations: &BTreeMap<u64, DwellObservation>,
+    stable: &BTreeMap<(String, u64), Option<ScorepeekSongId>>,
+    policy: MusicSelectDwellPolicy,
+) -> Result<CorrectnessEvaluationParts, CorpusError> {
+    let mut truth = CorrectnessDenominators {
+        stationary_runs: runs.len(),
+        ..CorrectnessDenominators::default()
+    };
+    let mut raw = CorrectnessAggregate::default();
+    let mut candidate_aggregate = CorrectnessAggregate::default();
+    let mut correct_latencies = Vec::new();
+    let mut wrong_streaks = Vec::new();
+    let mut candidate_correct_runs = 0;
+    let mut candidate_incorrect_song_runs = 0;
+    let mut candidate_non_song_runs = 0;
+    let mut results = Vec::with_capacity(runs.len());
+    for (run, label) in runs.iter().zip(labels) {
+        let expected_song = record_correctness_expectation(label.expected, &mut truth);
+        truth.observations += run.sequences.len();
+        let raw_ids = run
+            .sequences
+            .iter()
+            .map(|sequence| {
+                observations
+                    .get(sequence)
+                    .map(|observation| observation.accepted_song_id)
+                    .ok_or_else(|| {
+                        CorpusError::InvalidReplay(
+                            "music-select correctness observation is missing".to_owned(),
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let stable_ids = run
+            .sequences
+            .iter()
+            .map(|sequence| {
+                stable
+                    .get(&(run.span_id.clone(), *sequence))
+                    .copied()
+                    .ok_or_else(|| {
+                        CorpusError::InvalidReplay(
+                            "music-select correctness dwell state is missing".to_owned(),
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let raw_run = summarize_run(&raw_ids, expected_song);
+        let candidate_run = summarize_run(&stable_ids, expected_song);
+        add_run_to_aggregate(&mut raw, raw_run, expected_song, &raw_ids);
+        add_run_to_aggregate(
+            &mut candidate_aggregate,
+            candidate_run,
+            expected_song,
+            &stable_ids,
+        );
+        let correct_latency = first_correct_latency(run, &stable_ids, expected_song, observations)?;
+        if let Some(latency) = correct_latency {
+            correct_latencies.push(latency);
+        }
+        let run_wrong_streaks =
+            wrong_stable_streaks(run, &stable_ids, expected_song, observations)?;
+        let maximum_wrong_streak = run_wrong_streaks.iter().max().copied();
+        wrong_streaks.extend(run_wrong_streaks);
+        match expected_song {
+            Some(_) => {
+                candidate_correct_runs += usize::from(correct_latency.is_some());
+                candidate_incorrect_song_runs += usize::from(candidate_run.outcomes.incorrect > 0);
+            }
+            None => candidate_non_song_runs += usize::from(candidate_run.outcomes.incorrect > 0),
+        }
+        results.push(CorrectnessRunEvaluation {
+            span_id: run.span_id.clone(),
+            first_sequence: run.first_sequence,
+            last_sequence: run.last_sequence,
+            expected: label.expected,
+            observation_count: run.sequences.len(),
+            raw: raw_run,
+            candidate: candidate_run,
+            candidate_correct_stabilization_latency_ms: correct_latency,
+            candidate_maximum_wrong_stable_streak_ms: maximum_wrong_streak,
+        });
+    }
+    Ok(CorrectnessEvaluationParts {
+        denominators: truth,
+        raw,
+        candidate: CorrectnessCandidateEvaluation {
+            policy,
+            candidate_status: "leading_motion_candidate",
+            aggregate: candidate_aggregate,
+            expected_song_runs_stabilized_correct: candidate_correct_runs,
+            expected_song_runs_stabilized_incorrect: candidate_incorrect_song_runs,
+            non_song_selection_runs_stabilized: candidate_non_song_runs,
+            correct_stabilization_latency_ms: dwell_distribution(correct_latencies),
+            wrong_stable_streak_duration_ms: dwell_distribution(wrong_streaks),
+        },
+        runs: results,
+    })
+}
+
+fn record_correctness_expectation(
+    expected: CorrectSongExpectation,
+    denominators: &mut CorrectnessDenominators,
+) -> Option<ScorepeekSongId> {
+    match expected {
+        CorrectSongExpectation::Song { scorepeek_song_id } => {
+            denominators.expected_song_runs += 1;
+            Some(scorepeek_song_id)
+        }
+        CorrectSongExpectation::NotSongSelection => {
+            denominators.non_song_selection_runs += 1;
+            None
+        }
+    }
+}
+
+fn summarize_run(
+    ids: &[Option<ScorepeekSongId>],
+    expected: Option<ScorepeekSongId>,
+) -> RunCorrectness {
+    let classes = ids
+        .iter()
+        .map(|id| classify_correctness(*id, expected))
+        .collect::<Vec<_>>();
+    let mut result = RunCorrectness::default();
+    for class in &classes {
+        match class {
+            CorrectnessClass::Correct => result.outcomes.correct += 1,
+            CorrectnessClass::Incorrect => result.outcomes.incorrect += 1,
+            CorrectnessClass::Unknown => result.outcomes.unknown += 1,
+        }
+    }
+    result.accepted_identity_transitions = ids
+        .windows(2)
+        .filter(|pair| matches!(pair, [Some(left), Some(right)] if left != right))
+        .count();
+    result.outcome_transitions = classes.windows(2).filter(|pair| pair[0] != pair[1]).count();
+    result
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CorrectnessClass {
+    Correct,
+    Incorrect,
+    Unknown,
+}
+
+fn classify_correctness(
+    observed: Option<ScorepeekSongId>,
+    expected: Option<ScorepeekSongId>,
+) -> CorrectnessClass {
+    match (observed, expected) {
+        (None, None) => CorrectnessClass::Correct,
+        (None, Some(_)) => CorrectnessClass::Unknown,
+        (Some(observed), Some(expected)) if observed == expected => CorrectnessClass::Correct,
+        (Some(_), _) => CorrectnessClass::Incorrect,
+    }
+}
+
+fn add_run_to_aggregate(
+    aggregate: &mut CorrectnessAggregate,
+    run: RunCorrectness,
+    expected: Option<ScorepeekSongId>,
+    ids: &[Option<ScorepeekSongId>],
+) {
+    aggregate.outcomes.correct += run.outcomes.correct;
+    aggregate.outcomes.incorrect += run.outcomes.incorrect;
+    aggregate.outcomes.unknown += run.outcomes.unknown;
+    aggregate.accepted_identity_transitions += run.accepted_identity_transitions;
+    aggregate.outcome_transitions += run.outcome_transitions;
+    if expected.is_some() {
+        aggregate.expected_song_runs_with_correct_output += usize::from(run.outcomes.correct > 0);
+        aggregate.expected_song_runs_with_incorrect_output +=
+            usize::from(run.outcomes.incorrect > 0);
+    } else {
+        aggregate.non_song_selection_runs_with_output +=
+            usize::from(ids.iter().any(Option::is_some));
+    }
+}
+
+fn first_correct_latency(
+    run: &StationaryRun,
+    ids: &[Option<ScorepeekSongId>],
+    expected: Option<ScorepeekSongId>,
+    observations: &BTreeMap<u64, DwellObservation>,
+) -> Result<Option<u64>, CorpusError> {
+    let Some(expected) = expected else {
+        return Ok(None);
+    };
+    run.sequences
+        .iter()
+        .zip(ids)
+        .find(|(_, id)| **id == Some(expected))
+        .map_or(Ok(None), |(sequence, _)| {
+            observations
+                .get(sequence)
+                .map(|observation| Some(observation.timestamp_ms - run.first_timestamp_ms))
+                .ok_or_else(|| {
+                    CorpusError::InvalidReplay(
+                        "music-select correctness latency observation is missing".to_owned(),
+                    )
+                })
+        })
+}
+
+fn wrong_stable_streaks(
+    run: &StationaryRun,
+    ids: &[Option<ScorepeekSongId>],
+    expected: Option<ScorepeekSongId>,
+    observations: &BTreeMap<u64, DwellObservation>,
+) -> Result<Vec<u64>, CorpusError> {
+    let mut streaks = Vec::new();
+    let mut started = None;
+    let mut last = None;
+    for (sequence, id) in run.sequences.iter().zip(ids) {
+        let timestamp = observations
+            .get(sequence)
+            .map(|observation| observation.timestamp_ms)
+            .ok_or_else(|| {
+                CorpusError::InvalidReplay(
+                    "music-select correctness streak observation is missing".to_owned(),
+                )
+            })?;
+        if classify_correctness(*id, expected) == CorrectnessClass::Incorrect {
+            started.get_or_insert(timestamp);
+            last = Some(timestamp);
+        } else if let (Some(start), Some(end)) = (started.take(), last.take()) {
+            streaks.push(end - start);
+        }
+    }
+    if let (Some(start), Some(end)) = (started, last) {
+        streaks.push(end - start);
+    }
+    Ok(streaks)
 }
 
 fn validate_reviewed_motion_set(
@@ -913,7 +1487,7 @@ fn load_dwell_observations(
     store: &Path,
     catalog_store: &Path,
     session: &CaptureSession,
-) -> Result<(String, BTreeMap<u64, DwellObservation>), CorpusError> {
+) -> Result<DwellInputs, CorpusError> {
     let binding = bound_artifact(session, "recognition/catalog.json")?;
     let binding_bytes = read_bound_object(store, binding, MAX_DOCUMENT_BYTES as u64)?;
     let binding: Value = serde_json::from_slice(&binding_bytes)?;
@@ -935,6 +1509,7 @@ fn load_dwell_observations(
             "music-select dwell catalog domain is invalid: {error}"
         ))
     })?;
+    let catalog_song_ids = active.catalog.songs().keys().copied().collect();
     let artifact = bound_artifact(session, "recognition/observations.ndjson")?;
     let bytes = read_bound_object(store, artifact, MAX_OBSERVATION_BYTES)?;
     let mut observations = BTreeMap::new();
@@ -985,7 +1560,11 @@ fn load_dwell_observations(
             return invalid("music-select dwell observation sequence is duplicated");
         }
     }
-    Ok((catalog_sha256.to_owned(), observations))
+    Ok(DwellInputs {
+        source_catalog_sha256: catalog_sha256.to_owned(),
+        catalog_song_ids,
+        observations,
+    })
 }
 
 fn resolve_stored_music_select(
@@ -1069,35 +1648,16 @@ fn evaluate_dwell_policy(
                 pair.screen,
             )?;
             let prior_stable = stable;
-            let mut entered_stability = None;
-            if let Some(song_id) = current.accepted_song_id {
-                accepted_observations += 1;
-                match pending {
-                    Some((pending_id, since)) if pending_id == song_id => {
-                        let latency = current.timestamp_ms - since;
-                        if stable.is_none() && latency >= policy.stationary_dwell_ms {
-                            stable = Some(song_id);
-                            entered_stability = Some(latency);
-                        }
-                    }
-                    Some(_) => {
-                        candidate_replacements += 1;
-                        pending = Some((song_id, current.timestamp_ms));
-                        stable = None;
-                    }
-                    None => pending = Some((song_id, current.timestamp_ms)),
-                }
-            } else {
-                unknown_observations += 1;
-                pending = None;
-                stable = None;
-            }
+            accepted_observations += usize::from(current.accepted_song_id.is_some());
+            unknown_observations += usize::from(current.accepted_song_id.is_none());
+            let (entered, replaced) = advance_dwell(&mut pending, &mut stable, current, policy);
+            candidate_replacements += usize::from(replaced);
             let truth_stationary = pair.review_state.state == "stationary";
             if truth_stationary && !previous_truth_stationary {
                 stationary_run += 1;
             }
             let run_key = (span.span_id.as_str(), stationary_run);
-            if let Some(latency) = entered_stability {
+            if let Some(latency) = entered {
                 if truth_stationary {
                     latencies.push(latency);
                 } else {
@@ -1131,6 +1691,37 @@ fn evaluate_dwell_policy(
         unknown_observations,
         candidate_replacements,
     })
+}
+
+fn advance_dwell(
+    pending: &mut Option<(ScorepeekSongId, u64)>,
+    stable: &mut Option<ScorepeekSongId>,
+    current: &DwellObservation,
+    policy: MusicSelectDwellPolicy,
+) -> (Option<u64>, bool) {
+    let mut entered_stability = None;
+    let mut replaced = false;
+    if let Some(song_id) = current.accepted_song_id {
+        match *pending {
+            Some((pending_id, since)) if pending_id == song_id => {
+                let latency = current.timestamp_ms - since;
+                if stable.is_none() && latency >= policy.stationary_dwell_ms {
+                    *stable = Some(song_id);
+                    entered_stability = Some(latency);
+                }
+            }
+            Some(_) => {
+                replaced = true;
+                *pending = Some((song_id, current.timestamp_ms));
+                *stable = None;
+            }
+            None => *pending = Some((song_id, current.timestamp_ms)),
+        }
+    } else {
+        *pending = None;
+        *stable = None;
+    }
+    (entered_stability, replaced)
 }
 
 fn bound_dwell_observation(
@@ -2343,7 +2934,7 @@ mod tests {
     };
     use scorepeek::recognition::{CanonicalLayout, Roi, ScreenClass};
 
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs::{self, File};
     use std::os::unix::fs::MetadataExt as _;
     use std::process::{Command, Stdio};
@@ -2353,14 +2944,15 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        MAX_PROCESS_STDERR_BYTES, MotionEvidence, MotionReviewDecision, MotionReviewDecisions,
-        MusicSelectDwellPolicy, ObservationRecord, OperatorReviewState, RegionMotion,
-        ReviewCompleteness, ReviewState, ReviewedMotionPair, ReviewedMotionSet, ReviewedMotionSpan,
-        VideoIdentity, apply_music_select_motion_review, canonical_line, digest_bytes,
+        CorrectSongExpectation, CorrectSongLabel, CorrectSongLabels, MAX_PROCESS_STDERR_BYTES,
+        MotionEvidence, MotionReviewDecision, MotionReviewDecisions, MusicSelectDwellPolicy,
+        ObservationRecord, OperatorReviewState, RegionMotion, ReviewCompleteness, ReviewState,
+        ReviewedMotionPair, ReviewedMotionSet, ReviewedMotionSpan, VideoIdentity,
+        apply_music_select_motion_review, canonical_line, digest_bytes, evaluate_correctness_runs,
         evaluate_dwell_policy, parse_showinfo_pts, plan_music_select_motion_review,
-        read_bounded_stream, region_motion_packed, review_windows, run_bounded_output,
-        select_expression, selected_frame_targets, validate_reviewed_motion_set,
-        verify_video_unchanged,
+        read_bounded_stream, region_motion_packed, replay_dwell_states, review_windows,
+        run_bounded_output, select_expression, selected_frame_targets, stationary_runs,
+        validate_correct_song_labels, validate_reviewed_motion_set, verify_video_unchanged,
     };
 
     #[test]
@@ -2428,17 +3020,167 @@ mod tests {
         );
     }
 
+    #[test]
+    fn correctness_keeps_non_song_selection_out_of_coverage_and_counts_stability_as_wrong() {
+        let reviewed = synthetic_reviewed_set();
+        let observations = synthetic_dwell_observations(&reviewed);
+        let runs = stationary_runs(&reviewed);
+        let song_a = song_id(1);
+        let song_b = song_id(2);
+        let labels = [
+            CorrectSongLabel {
+                span_id: runs[0].span_id.clone(),
+                first_sequence: runs[0].first_sequence,
+                last_sequence: runs[0].last_sequence,
+                expected: CorrectSongExpectation::Song {
+                    scorepeek_song_id: song_a,
+                },
+            },
+            CorrectSongLabel {
+                span_id: runs[1].span_id.clone(),
+                first_sequence: runs[1].first_sequence,
+                last_sequence: runs[1].last_sequence,
+                expected: CorrectSongExpectation::Song {
+                    scorepeek_song_id: song_a,
+                },
+            },
+            CorrectSongLabel {
+                span_id: runs[2].span_id.clone(),
+                first_sequence: runs[2].first_sequence,
+                last_sequence: runs[2].last_sequence,
+                expected: CorrectSongExpectation::NotSongSelection,
+            },
+        ];
+        let policy = MusicSelectDwellPolicy::new(200).unwrap();
+        let stable = replay_dwell_states(&reviewed, &observations, policy).unwrap();
+        let evaluation =
+            evaluate_correctness_runs(&runs, &labels, &observations, &stable, policy).unwrap();
+
+        assert_eq!(evaluation.denominators.stationary_runs, 3);
+        assert_eq!(evaluation.denominators.expected_song_runs, 2);
+        assert_eq!(evaluation.denominators.non_song_selection_runs, 1);
+        assert_eq!(evaluation.raw.non_song_selection_runs_with_output, 1);
+        assert_eq!(
+            evaluation.candidate.expected_song_runs_stabilized_correct,
+            2
+        );
+        assert_eq!(evaluation.candidate.non_song_selection_runs_stabilized, 1);
+        assert_eq!(evaluation.candidate.aggregate.outcomes.incorrect, 1);
+        assert_eq!(
+            evaluation.candidate.wrong_stable_streak_duration_ms.maximum,
+            Some(0)
+        );
+        assert_eq!(
+            evaluation.runs[2].expected,
+            CorrectSongExpectation::NotSongSelection
+        );
+        assert_eq!(evaluation.runs[2].candidate.outcomes.incorrect, 1);
+        assert_eq!(song_b, observations[&8].accepted_song_id.unwrap());
+    }
+
+    #[test]
+    fn correctness_requires_one_ordered_catalog_bound_label_per_stationary_run() {
+        let reviewed = synthetic_reviewed_set();
+        let reviewed_sha256 = digest_bytes(&canonical_line(&reviewed).unwrap());
+        let runs = stationary_runs(&reviewed);
+        let song = song_id(1);
+        let make_labels = |runs: &[super::StationaryRun]| CorrectSongLabels {
+            schema: super::CORRECTNESS_LABEL_SCHEMA.to_owned(),
+            source_reviewed_sha256: reviewed_sha256.clone(),
+            labels: runs
+                .iter()
+                .map(|run| CorrectSongLabel {
+                    span_id: run.span_id.clone(),
+                    first_sequence: run.first_sequence,
+                    last_sequence: run.last_sequence,
+                    expected: CorrectSongExpectation::Song {
+                        scorepeek_song_id: song,
+                    },
+                })
+                .collect(),
+            authority: "operator_review".to_owned(),
+        };
+        let labels = make_labels(&runs);
+        let bytes = canonical_line(&labels).unwrap();
+        assert!(
+            validate_correct_song_labels(
+                &labels,
+                &bytes,
+                &reviewed_sha256,
+                &runs,
+                &BTreeSet::from([song]),
+            )
+            .is_ok()
+        );
+        let mut incomplete = make_labels(&runs);
+        incomplete.labels.pop();
+        assert!(
+            validate_correct_song_labels(
+                &incomplete,
+                &canonical_line(&incomplete).unwrap(),
+                &reviewed_sha256,
+                &runs,
+                &BTreeSet::from([song]),
+            )
+            .is_err()
+        );
+        assert!(
+            validate_correct_song_labels(
+                &labels,
+                &bytes,
+                &reviewed_sha256,
+                &runs,
+                &BTreeSet::new(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn correctness_reports_frame_identity_jitter_that_dwell_does_not_promote() {
+        let reviewed = synthetic_reviewed_set();
+        let mut observations = synthetic_dwell_observations(&reviewed);
+        observations.get_mut(&2).unwrap().accepted_song_id = Some(song_id(2));
+        let runs = stationary_runs(&reviewed);
+        let labels = runs
+            .iter()
+            .enumerate()
+            .map(|(index, run)| CorrectSongLabel {
+                span_id: run.span_id.clone(),
+                first_sequence: run.first_sequence,
+                last_sequence: run.last_sequence,
+                expected: CorrectSongExpectation::Song {
+                    scorepeek_song_id: if index == 2 { song_id(2) } else { song_id(1) },
+                },
+            })
+            .collect::<Vec<_>>();
+        let policy = MusicSelectDwellPolicy::new(200).unwrap();
+        let stable = replay_dwell_states(&reviewed, &observations, policy).unwrap();
+        let evaluation =
+            evaluate_correctness_runs(&runs, &labels, &observations, &stable, policy).unwrap();
+
+        assert_eq!(evaluation.runs[0].raw.accepted_identity_transitions, 2);
+        assert_eq!(
+            evaluation.runs[0].candidate.accepted_identity_transitions,
+            0
+        );
+        assert_eq!(evaluation.runs[0].candidate.outcomes.incorrect, 0);
+        assert_eq!(evaluation.raw.accepted_identity_transitions, 2);
+        assert_eq!(
+            evaluation.candidate.aggregate.accepted_identity_transitions,
+            0
+        );
+    }
+
+    fn song_id(value: u8) -> scorepeek::catalog::ScorepeekSongId {
+        serde_json::from_str(&format!("\"00000000-0000-0000-0000-{value:012}\"")).unwrap()
+    }
+
     fn synthetic_dwell_observations(
         reviewed: &ReviewedMotionSet,
     ) -> BTreeMap<u64, super::DwellObservation> {
-        let song_a = serde_json::from_str::<scorepeek::catalog::ScorepeekSongId>(
-            "\"00000000-0000-0000-0000-000000000001\"",
-        )
-        .unwrap();
-        let song_b = serde_json::from_str::<scorepeek::catalog::ScorepeekSongId>(
-            "\"00000000-0000-0000-0000-000000000002\"",
-        )
-        .unwrap();
+        let song_a = song_id(1);
+        let song_b = song_id(2);
         let span = &reviewed.spans[0];
         let first = &span.pairs[0];
         let mut result = BTreeMap::from([(

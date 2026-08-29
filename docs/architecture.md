@@ -170,9 +170,14 @@ catalog generation, replays the production frame-local resolver, and compares eq
 durations of 100--500 ms. After correcting two prematurely authored identity boundaries, every
 tested duration resets all selection changes with prior stability. Stable output during
 same-identity list scrolling is recorded as neutral nonstationary activity, not a false song
-decision. Longer dwell still reduces stationary-run coverage, and motion truth has no correct-song
-labels with which to measure OCR smoothing or wrong acceptance, so no runtime dwell is selected.
-Operator truth remains evaluation-only; a later temporal comparison requires correct-song labels.
+decision. Longer dwell still reduces stationary-run coverage, and motion truth alone cannot select
+a runtime dwell. A separate complete correct-song set labels all 27 maximal stationary runs as 18
+songs and nine category/filter selections. Against those 740 observations the frame resolver has
+no wrong accept or accepted-ID transition; the leading 200 ms candidate preserves 16/18 song-run
+coverage and zero wrong/non-song stability, but increases unknown observations from 11 to 35. It
+therefore remains an offline candidate rather than runtime state. Raw central-title text variation
+is not song-ID variation and requires a separate presentation evaluation.
+Operator truth remains evaluation-only.
 This offline evidence surface has no runtime or event authority.
 
 The offline corpus tool can replay this exact production reducer over ordered, operator-reviewed

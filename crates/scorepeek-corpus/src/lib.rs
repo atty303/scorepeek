@@ -31,9 +31,10 @@ pub use music_list::{
     verify_music_list_row_observation_draft,
 };
 pub use music_select_motion::{
-    MusicSelectDwellEvaluationSummary, MusicSelectDwellPolicy, MusicSelectMotionReviewApplySummary,
-    MusicSelectMotionReviewSummary, apply_music_select_motion_review, evaluate_music_select_dwell,
-    plan_music_select_motion_review,
+    MusicSelectCorrectnessEvaluationSummary, MusicSelectDwellEvaluationSummary,
+    MusicSelectDwellPolicy, MusicSelectMotionReviewApplySummary, MusicSelectMotionReviewSummary,
+    apply_music_select_motion_review, evaluate_music_select_correctness,
+    evaluate_music_select_dwell, plan_music_select_motion_review,
 };
 pub use temporal_evaluation::{
     TemporalEvaluationPolicy, TemporalEvaluationSummary, evaluate_temporal_corpus,
