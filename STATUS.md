@@ -203,8 +203,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   repeatedly reported an out-of-buffers consumer. Deferring dequeue until after event-loop dispatch
   did not fix it. ADR 0070 instead fixes the consumer offer at 10/1 fps and returns all superseded
   buffers within the PipeWire process event while copying only the newest mapped frame. Repository
-  checks, complete tests, and the cargo-dist artifact test pass. Installation, the target error
-  delta, negotiated rate, and Gamescope stderr still require a fresh ordinary run.
+  checks, complete tests, and the cargo-dist artifact test pass. The resulting binary is installed
+  at `/home/atty/.local/bin/scorepeek` on the target with SHA-256
+  `a42c8d4c7ecd90207abfd2f9b200b0f234319534a85e5aa46631cf6472246c0a`; target-side version,
+  digest, and `doctor` with PipeWire 1.6.8 pass while scorepeek is stopped. The target error delta,
+  negotiated rate, and Gamescope stderr still require a fresh ordinary run.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -687,8 +690,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Unverified boundaries
 
-- The target still has the failed deferred-buffer build installed. After installing ADR 0070, an
-  ordinary `gamescope-4k` run must show no increasing scorepeek `pw-top` error count or Gamescope
+- The ADR 0070 build is installed on the target but has not yet run. An ordinary `gamescope-4k` run
+  must show no increasing scorepeek `pw-top` error count or Gamescope
   out-of-buffers warnings while retaining ordinary
   session admission, 10 Hz latest-frame recognition, diagnostic sequencing, and clean shutdown.
   Development-host compile and replay tests cannot establish this realtime PipeWire boundary.
