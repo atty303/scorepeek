@@ -107,6 +107,13 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   selection retained the same list and title while central animation continued, whereas the
   103.4--103.5 s high-list-motion pair crossed from the difficulty category into actual titles.
   No observed metric has been promoted to a label or threshold.
+  ADR 0061 adds a create-only digest-bound review-application contract at adjacent-pair granularity;
+  one label per original span was rejected because the longest span is 23.4 seconds and mixes
+  behavior. Of the 971 pairs, 838 whose two screens are music-select are eligible for operator
+  decisions and 133 remain typed screen context. Bounded inclusive sequence intervals expand to
+  exact pair identities, overlap or context crossing fails closed, and omitted eligible pairs stay
+  unknown. An empty-decision application reproduced those counts with `complete=false`; no actual
+  operator decision or dwell truth has been added.
   The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
   machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
   model. After the `/home` symlink fix, retained synthetic target evidence showed the 1920x1080
@@ -493,8 +500,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   official-model execution, and native PipeWire build have each passed their dedicated development
   gates. These do not substitute for target-machine capture, recognition, or performance evidence.
 - Repository validation at this checkpoint includes formatting/static checks, workspace all-target
-  clippy with warnings denied, 296 library tests, 215 binary tests, 54 corpus tests, 77 offline OCR
-  tests, and native PipeWire build verification. Focused session tests also verify descriptor/layout rejection,
+  clippy with warnings denied, 297 library tests, 215 binary tests, 69 corpus library tests, 3 corpus
+  binary tests, 77 offline OCR tests, and native PipeWire build verification. Focused session tests also verify descriptor/layout rejection,
   frame-generation rejection, diagnostic opt-out non-interference, and manifest-backed ordered
   binding rollover.
 - Focused routing tests exercise synthetic result and music-select inputs, title-bearing exact
@@ -648,10 +655,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   the absence of a transform inspector is not a current execution blocker.
 - Current recordings and provisional labels do not establish title-disjoint result accuracy,
   calibrated thresholds, result dwell, miss denominator, deduplication, or release accuracy.
-- The music-select motion draft is immutable measurement and review material only. Its eleven spans
-  still need operator labels for stationary, scrolling, or selection change, with overlays and
-  screen transitions inspected as retained context; it does not establish a dwell policy or
-  stable-selection accuracy.
+- The music-select motion draft and partial reviewed artifact remain measurement and review
+  material only. The 838 eligible adjacent pairs still need operator decisions for stationary,
+  scrolling, or selection change; 133 transition-context pairs cannot be labeled. This does not
+  establish a dwell policy or stable-selection accuracy.
 - Persistent scheduler installation was verified in isolation but not applied to the operator's
   actual configuration. Real S3 credentials/provider behavior and remote bucket lifecycle remain
   untested.
@@ -719,9 +726,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    component reconstruction, and add only operator-reviewed episodes to the active suite.
 3. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
-4. Review the eleven generated music-select motion spans against their bound video, then add a
-   digest-bound label-application contract for stationary, scrolling, and selection-change truth.
-   Evaluate candidate dwell policies only after that immutable reviewed set exists.
+4. Review the 838 eligible music-select adjacent pairs against their bound video, author contiguous
+   stationary, scrolling, and selection-change decision intervals, and publish a `complete=true`
+   immutable reviewed set through ADR 0061. Evaluate candidate dwell policies only after it exists.
 
 Do not add transform replay without an independent oracle, broaden routine raw retention, silently
 calibrate or switch profiles, request play solely to

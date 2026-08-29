@@ -391,6 +391,20 @@ selection transitions; overlapping pads are merged. Every span remains `unknown`
 `selection_change`. Motion values and OCR agreement never create those labels, and the draft does
 not implement dwell or become accepted corpus truth.
 
+Apply human decisions without rewriting the measurement draft:
+
+```text
+mise run corpus:music-select:motion:review-apply -- --output /absolute/private/music-select-motion-reviewed.json /absolute/private/music-select-motion-draft.json /absolute/private/music-select-motion-decisions.json
+```
+
+The canonical `scorepeek-private-music-select-motion-review-decisions-v1` binds
+`source_draft_sha256` and contains `decisions` with `span_id`, inclusive `first_sequence` and
+`last_sequence`, and `state` (`stationary`, `scrolling`, or `selection_change`). A range expands to
+exact adjacent pairs and cannot cross an absent pair, a pair touching non-music-select context, or
+another decision. Omitted eligible pairs stay `unknown/operator_review_required`; context pairs
+stay `unknown/screen_context`. The create-only reviewed artifact reports `complete=false` until
+every eligible pair is decided and cannot be used as complete dwell-evaluation truth before then.
+
 Python 3.12.13 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
 PaddlePaddle CPU 3.3.1, Apache-2.0 `paddle2onnx` 2.1.0, and their complete
 dependency graph. `models/manifests/paddleocr-v3.7.0-training-source.json`

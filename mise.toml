@@ -442,6 +442,14 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek-corpus -- music-select motion review-plan "$@"
 '''
 
+[tasks."corpus:music-select:motion:review-apply"]
+description = "Apply digest-bound operator intervals to a music-select motion draft"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek-corpus -- music-select motion review-apply "$@"
+'''
+
 [tasks."ocr:sync"]
 description = "Synchronize the locked offline OCR development environment"
 run = "uv sync --locked --no-dev"

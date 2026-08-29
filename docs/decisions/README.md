@@ -171,6 +171,10 @@ authoritative.
 - [ADR 0060: Measure music-select motion before adding dwell](0060-measure-music-select-motion-before-dwell.md)
   adds an immutable operator-review draft with separate right-list, active-row, and central-title
   motion evidence. It does not label spans or implement music-select temporal state.
+- [ADR 0061: Label music-select motion by adjacent pair](0061-label-music-select-motion-by-adjacent-pair.md)
+  supersedes ADR 0060 only for its span-level label unit, applying digest-bound operator intervals
+  to exact eligible adjacent pairs while retaining predicate transitions as context. Partial review
+  remains explicitly incomplete and adds no dwell.
 
 ## Historical
 

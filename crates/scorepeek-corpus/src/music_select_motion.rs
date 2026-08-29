@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write as _};
@@ -23,6 +23,8 @@ const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v1";
 const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v5";
 const DRAFT_SCHEMA: &str = "scorepeek-private-music-select-motion-review-draft-v1";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-music-select-motion-review-summary-v1";
+const DECISIONS_SCHEMA: &str = "scorepeek-private-music-select-motion-review-decisions-v1";
+const REVIEWED_SCHEMA: &str = "scorepeek-private-music-select-motion-reviewed-v1";
 const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_OBSERVATION_RECORD_BYTES: usize = 1024 * 1024;
@@ -52,8 +54,23 @@ pub struct MusicSelectMotionReviewSummary {
 }
 
 #[derive(Debug, Serialize)]
-struct MotionReviewDraft {
+pub struct MusicSelectMotionReviewApplySummary {
     schema: &'static str,
+    output: PathBuf,
+    reviewed_sha256: String,
+    source_draft_sha256: String,
+    decision_interval_count: usize,
+    applied_pair_count: usize,
+    remaining_review_pair_count: usize,
+    context_pair_count: usize,
+    complete: bool,
+    authority: &'static str,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MotionReviewDraft {
+    schema: String,
     active_suite_sha256: String,
     session_sha256: String,
     source_session_id: String,
@@ -65,11 +82,12 @@ struct MotionReviewDraft {
     review_padding_ms: u64,
     regions: MusicSelectMotionRegions,
     spans: Vec<MotionSpan>,
-    allowed_review_states: [&'static str; 4],
-    authority: &'static str,
+    allowed_review_states: [String; 4],
+    authority: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct MotionSpan {
     span_id: String,
     observed_first_sequence: u64,
@@ -82,13 +100,15 @@ struct MotionSpan {
     samples: Vec<MotionSample>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ReviewState {
-    state: &'static str,
-    reason: &'static str,
+    state: String,
+    reason: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct MotionSample {
     sequence: u64,
     source_timestamp_ms: u64,
@@ -103,7 +123,8 @@ struct MotionRegionPixels {
     central_title: Box<[u8]>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct MotionEvidence {
     gap_ms: u64,
     list_titles: RegionMotion,
@@ -111,12 +132,108 @@ struct MotionEvidence {
     central_title: RegionMotion,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct RegionMotion {
     rgb_l1: u64,
     changed_pixels: u64,
     compared_pixels: u64,
     normalized_l1_ppm: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MotionReviewDecisions {
+    schema: String,
+    source_draft_sha256: String,
+    decisions: Vec<MotionReviewDecision>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct MotionReviewDecision {
+    span_id: String,
+    first_sequence: u64,
+    last_sequence: u64,
+    state: OperatorMotionState,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum OperatorMotionState {
+    Stationary,
+    Scrolling,
+    SelectionChange,
+}
+
+impl OperatorMotionState {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stationary => "stationary",
+            Self::Scrolling => "scrolling",
+            Self::SelectionChange => "selection_change",
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewedMotionSet {
+    schema: &'static str,
+    source_draft_sha256: String,
+    active_suite_sha256: String,
+    session_sha256: String,
+    source_session_id: String,
+    video_sha256: String,
+    capture_profile_sha256: String,
+    normalizer_artifact_sha256: String,
+    canonical_layout_sha256: String,
+    sampling_interval_ms: u64,
+    review_padding_ms: u64,
+    regions: MusicSelectMotionRegions,
+    spans: Vec<ReviewedMotionSpan>,
+    completeness: ReviewCompleteness,
+    authority: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewedMotionSpan {
+    span_id: String,
+    observed_first_sequence: u64,
+    observed_last_sequence: u64,
+    observed_first_timestamp_ms: u64,
+    observed_last_timestamp_ms: u64,
+    review_first_timestamp_ms: u64,
+    review_last_timestamp_ms: u64,
+    pairs: Vec<ReviewedMotionPair>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewedMotionPair {
+    previous_sequence: u64,
+    sequence: u64,
+    previous_timestamp_ms: u64,
+    source_timestamp_ms: u64,
+    previous_screen: ScreenClass,
+    screen: ScreenClass,
+    source_frame_index: usize,
+    motion: MotionEvidence,
+    review_state: ReviewState,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+struct ReviewCompleteness {
+    decision_interval_count: usize,
+    applied_pair_count: usize,
+    remaining_review_pair_count: usize,
+    context_pair_count: usize,
+    complete: bool,
+}
+
+struct AppliedMotionReview {
+    spans: Vec<ReviewedMotionSpan>,
+    applied_pair_count: usize,
+    remaining_review_pair_count: usize,
+    context_pair_count: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -321,8 +438,8 @@ pub fn plan_music_select_motion_review(
             review_first_timestamp_ms: window.review_first_timestamp_ms,
             review_last_timestamp_ms: window.review_last_timestamp_ms,
             review_state: ReviewState {
-                state: "unknown",
-                reason: "operator_review_required",
+                state: "unknown".to_owned(),
+                reason: "operator_review_required".to_owned(),
             },
             samples: Vec::new(),
         })
@@ -340,7 +457,7 @@ pub fn plan_music_select_motion_review(
         return invalid("music-select motion review span has no decoded sample");
     }
     let draft = MotionReviewDraft {
-        schema: DRAFT_SCHEMA,
+        schema: DRAFT_SCHEMA.to_owned(),
         active_suite_sha256: active.generation_sha256.clone(),
         session_sha256: session_sha256.to_owned(),
         source_session_id: session.source_session_id,
@@ -352,8 +469,13 @@ pub fn plan_music_select_motion_review(
         review_padding_ms: REVIEW_PADDING_MS,
         regions,
         spans,
-        allowed_review_states: ["stationary", "scrolling", "selection_change", "unknown"],
-        authority: "operator_review_required",
+        allowed_review_states: [
+            "stationary".to_owned(),
+            "scrolling".to_owned(),
+            "selection_change".to_owned(),
+            "unknown".to_owned(),
+        ],
+        authority: "operator_review_required".to_owned(),
     };
     let mut bytes = serde_json::to_vec(&draft)?;
     bytes.push(b'\n');
@@ -380,6 +502,268 @@ pub fn plan_music_select_motion_review(
         motion_pair_count,
         authority: "operator_review_required",
     })
+}
+
+/// Applies explicit operator-reviewed sequence intervals to one immutable motion draft.
+///
+/// Labels bind adjacent pairs whose previous and current samples are both `music_select`.
+/// Omitted eligible pairs remain typed unknown; context pairs can never receive a decision.
+///
+/// # Errors
+/// Returns an error when the draft or decisions are non-canonical, their digest binding differs,
+/// an interval is empty, overlapping, unbounded, or names a context pair, or the create-only
+/// output cannot be published.
+pub fn apply_music_select_motion_review(
+    draft_path: &Path,
+    decisions_path: &Path,
+    output_path: &Path,
+) -> Result<MusicSelectMotionReviewApplySummary, CorpusError> {
+    if !draft_path.is_absolute() || !decisions_path.is_absolute() || !output_path.is_absolute() {
+        return invalid("music-select motion review apply paths must be absolute");
+    }
+    let draft_bytes = read_bounded_regular(draft_path, MAX_DOCUMENT_BYTES, ErrorContext::Replay)?;
+    let draft: MotionReviewDraft = serde_json::from_slice(&draft_bytes)?;
+    validate_motion_review_draft(&draft, &draft_bytes)?;
+    let source_draft_sha256 = digest_bytes(&draft_bytes);
+
+    let decisions = read_motion_review_decisions(decisions_path, &source_draft_sha256)?;
+    let labels = expand_motion_review_decisions(&draft, &decisions)?;
+    let applied = apply_pair_labels(&draft, labels)?;
+    let complete = applied.remaining_review_pair_count == 0;
+    let completeness = ReviewCompleteness {
+        decision_interval_count: decisions.decisions.len(),
+        applied_pair_count: applied.applied_pair_count,
+        remaining_review_pair_count: applied.remaining_review_pair_count,
+        context_pair_count: applied.context_pair_count,
+        complete,
+    };
+    let reviewed = ReviewedMotionSet {
+        schema: REVIEWED_SCHEMA,
+        source_draft_sha256: source_draft_sha256.clone(),
+        active_suite_sha256: draft.active_suite_sha256,
+        session_sha256: draft.session_sha256,
+        source_session_id: draft.source_session_id,
+        video_sha256: draft.video_sha256,
+        capture_profile_sha256: draft.capture_profile_sha256,
+        normalizer_artifact_sha256: draft.normalizer_artifact_sha256,
+        canonical_layout_sha256: draft.canonical_layout_sha256,
+        sampling_interval_ms: draft.sampling_interval_ms,
+        review_padding_ms: draft.review_padding_ms,
+        regions: draft.regions,
+        spans: applied.spans,
+        completeness,
+        authority: "operator_review",
+    };
+    let bytes = canonical_line(&reviewed)?;
+    if bytes.len() > MAX_DOCUMENT_BYTES {
+        return invalid("music-select motion reviewed set exceeds its bound");
+    }
+    let reviewed_sha256 = digest_bytes(&bytes);
+    publish_create_only(output_path, &bytes)?;
+    Ok(MusicSelectMotionReviewApplySummary {
+        schema: "scorepeek-private-music-select-motion-review-apply-summary-v1",
+        output: output_path.to_owned(),
+        reviewed_sha256,
+        source_draft_sha256,
+        decision_interval_count: decisions.decisions.len(),
+        applied_pair_count: completeness.applied_pair_count,
+        remaining_review_pair_count: completeness.remaining_review_pair_count,
+        context_pair_count: completeness.context_pair_count,
+        complete,
+        authority: "operator_review",
+    })
+}
+
+fn read_motion_review_decisions(
+    path: &Path,
+    source_draft_sha256: &str,
+) -> Result<MotionReviewDecisions, CorpusError> {
+    let bytes = read_bounded_regular(path, MAX_DOCUMENT_BYTES, ErrorContext::Replay)?;
+    let decisions: MotionReviewDecisions = serde_json::from_slice(&bytes)?;
+    if canonical_line(&decisions)? != bytes
+        || decisions.schema != DECISIONS_SCHEMA
+        || decisions.source_draft_sha256 != source_draft_sha256
+        || decisions.decisions.len() > MAX_REVIEW_SAMPLES
+    {
+        return invalid("music-select motion decisions are not canonical and draft-bound");
+    }
+    Ok(decisions)
+}
+
+fn expand_motion_review_decisions(
+    draft: &MotionReviewDraft,
+    decisions: &MotionReviewDecisions,
+) -> Result<BTreeMap<(String, u64), OperatorMotionState>, CorpusError> {
+    let eligible_pairs = draft
+        .spans
+        .iter()
+        .flat_map(|span| {
+            span.samples
+                .windows(2)
+                .filter(|samples| {
+                    samples[0].screen == ScreenClass::MusicSelect
+                        && samples[1].screen == ScreenClass::MusicSelect
+                })
+                .map(|samples| (span.span_id.clone(), samples[1].sequence))
+        })
+        .collect::<BTreeSet<_>>();
+    let mut labels = BTreeMap::new();
+    for decision in &decisions.decisions {
+        let interval_len = decision
+            .last_sequence
+            .checked_sub(decision.first_sequence)
+            .and_then(|difference| difference.checked_add(1))
+            .and_then(|count| usize::try_from(count).ok())
+            .filter(|count| *count <= MAX_REVIEW_SAMPLES)
+            .ok_or_else(|| {
+                CorpusError::InvalidReplay(
+                    "music-select motion decision interval is invalid or unbounded".to_owned(),
+                )
+            })?;
+        if decision.span_id.is_empty() {
+            return invalid("music-select motion decision span is empty");
+        }
+        for offset in 0..interval_len {
+            let sequence = decision.first_sequence + u64::try_from(offset).unwrap_or(u64::MAX);
+            let key = (decision.span_id.clone(), sequence);
+            if !eligible_pairs.contains(&key) {
+                return invalid("music-select motion decision names a context or absent pair");
+            }
+            if labels.insert(key, decision.state).is_some() {
+                return invalid("music-select motion decision intervals overlap");
+            }
+        }
+    }
+    Ok(labels)
+}
+
+fn apply_pair_labels(
+    draft: &MotionReviewDraft,
+    mut labels: BTreeMap<(String, u64), OperatorMotionState>,
+) -> Result<AppliedMotionReview, CorpusError> {
+    let mut result = AppliedMotionReview {
+        spans: Vec::with_capacity(draft.spans.len()),
+        applied_pair_count: 0,
+        remaining_review_pair_count: 0,
+        context_pair_count: 0,
+    };
+    for span in &draft.spans {
+        let mut pairs = Vec::with_capacity(span.samples.len().saturating_sub(1));
+        for samples in span.samples.windows(2) {
+            pairs.push(review_motion_pair(span, samples, &mut labels, &mut result)?);
+        }
+        result.spans.push(ReviewedMotionSpan {
+            span_id: span.span_id.clone(),
+            observed_first_sequence: span.observed_first_sequence,
+            observed_last_sequence: span.observed_last_sequence,
+            observed_first_timestamp_ms: span.observed_first_timestamp_ms,
+            observed_last_timestamp_ms: span.observed_last_timestamp_ms,
+            review_first_timestamp_ms: span.review_first_timestamp_ms,
+            review_last_timestamp_ms: span.review_last_timestamp_ms,
+            pairs,
+        });
+    }
+    if !labels.is_empty() {
+        return invalid("music-select motion decisions were not consumed exactly once");
+    }
+    Ok(result)
+}
+
+fn review_motion_pair(
+    span: &MotionSpan,
+    samples: &[MotionSample],
+    labels: &mut BTreeMap<(String, u64), OperatorMotionState>,
+    result: &mut AppliedMotionReview,
+) -> Result<ReviewedMotionPair, CorpusError> {
+    let previous = &samples[0];
+    let current = &samples[1];
+    let motion = current.motion_from_previous.clone().ok_or_else(|| {
+        CorpusError::InvalidReplay(
+            "music-select motion draft pair lacks motion evidence".to_owned(),
+        )
+    })?;
+    let eligible =
+        previous.screen == ScreenClass::MusicSelect && current.screen == ScreenClass::MusicSelect;
+    let review_state = if eligible {
+        if let Some(state) = labels.remove(&(span.span_id.clone(), current.sequence)) {
+            result.applied_pair_count += 1;
+            ReviewState {
+                state: state.as_str().to_owned(),
+                reason: "operator_reviewed".to_owned(),
+            }
+        } else {
+            result.remaining_review_pair_count += 1;
+            ReviewState {
+                state: "unknown".to_owned(),
+                reason: "operator_review_required".to_owned(),
+            }
+        }
+    } else {
+        result.context_pair_count += 1;
+        ReviewState {
+            state: "unknown".to_owned(),
+            reason: "screen_context".to_owned(),
+        }
+    };
+    Ok(ReviewedMotionPair {
+        previous_sequence: previous.sequence,
+        sequence: current.sequence,
+        previous_timestamp_ms: previous.source_timestamp_ms,
+        source_timestamp_ms: current.source_timestamp_ms,
+        previous_screen: previous.screen,
+        screen: current.screen,
+        source_frame_index: current.source_frame_index,
+        motion,
+        review_state,
+    })
+}
+
+fn validate_motion_review_draft(
+    draft: &MotionReviewDraft,
+    bytes: &[u8],
+) -> Result<(), CorpusError> {
+    let expected_states = ["stationary", "scrolling", "selection_change", "unknown"];
+    if canonical_line(draft)? != bytes
+        || draft.schema != DRAFT_SCHEMA
+        || draft.allowed_review_states.each_ref().map(String::as_str) != expected_states
+        || draft.authority != "operator_review_required"
+        || draft.sampling_interval_ms != 100
+        || draft.review_padding_ms != REVIEW_PADDING_MS
+        || draft.spans.is_empty()
+    {
+        return invalid("music-select motion draft is not canonical and versioned");
+    }
+    let mut span_ids = BTreeSet::new();
+    let mut sample_count = 0_usize;
+    for span in &draft.spans {
+        if !span_ids.insert(&span.span_id)
+            || span.samples.is_empty()
+            || span.review_state.state != "unknown"
+            || span.review_state.reason != "operator_review_required"
+            || span.samples[0].motion_from_previous.is_some()
+            || span.samples[1..]
+                .iter()
+                .any(|sample| sample.motion_from_previous.is_none())
+            || span.samples.windows(2).any(|samples| {
+                samples[0].sequence >= samples[1].sequence
+                    || samples[0].source_timestamp_ms >= samples[1].source_timestamp_ms
+                    || samples[0].source_frame_index > samples[1].source_frame_index
+            })
+        {
+            return invalid("music-select motion draft span is invalid");
+        }
+        sample_count = sample_count.saturating_add(span.samples.len());
+    }
+    if sample_count > MAX_REVIEW_SAMPLES {
+        return invalid("music-select motion draft sample count exceeds its bound");
+    }
+    Ok(())
+}
+
+fn canonical_line(value: &impl Serialize) -> Result<Vec<u8>, CorpusError> {
+    let mut bytes = serde_json::to_vec(value)?;
+    bytes.push(b'\n');
+    Ok(bytes)
 }
 
 fn load_bound_session(
@@ -1314,8 +1698,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        MAX_PROCESS_STDERR_BYTES, ObservationRecord, VideoIdentity, digest_bytes,
-        parse_showinfo_pts, plan_music_select_motion_review, read_bounded_stream,
+        MAX_PROCESS_STDERR_BYTES, MotionReviewDecision, MotionReviewDecisions, ObservationRecord,
+        OperatorMotionState, VideoIdentity, apply_music_select_motion_review, canonical_line,
+        digest_bytes, parse_showinfo_pts, plan_music_select_motion_review, read_bounded_stream,
         region_motion_packed, review_windows, run_bounded_output, select_expression,
         selected_frame_targets, verify_video_unchanged,
     };
@@ -1535,6 +1920,91 @@ mod tests {
         assert_eq!(summary.sample_count, 3);
         assert_eq!(summary.motion_pair_count, 2);
         assert!(output.is_file());
+        let decisions = MotionReviewDecisions {
+            schema: super::DECISIONS_SCHEMA.to_owned(),
+            source_draft_sha256: digest_bytes(&fs::read(&output).unwrap()),
+            decisions: vec![MotionReviewDecision {
+                span_id: "music-select-span-0001".to_owned(),
+                first_sequence: 2,
+                last_sequence: 2,
+                state: OperatorMotionState::Stationary,
+            }],
+        };
+        let decisions_path = temporary.path().join("decisions.json");
+        fs::write(&decisions_path, canonical_line(&decisions).unwrap()).unwrap();
+        let reviewed_path = temporary.path().join("reviewed.json");
+        let applied =
+            apply_music_select_motion_review(&output, &decisions_path, &reviewed_path).unwrap();
+        assert_eq!(applied.decision_interval_count, 1);
+        assert_eq!(applied.applied_pair_count, 1);
+        assert_eq!(applied.remaining_review_pair_count, 0);
+        assert_eq!(applied.context_pair_count, 1);
+        assert!(applied.complete);
+        let reviewed: serde_json::Value =
+            serde_json::from_slice(&fs::read(&reviewed_path).unwrap()).unwrap();
+        assert_eq!(reviewed["schema"], super::REVIEWED_SCHEMA);
+        assert_eq!(
+            reviewed["spans"][0]["pairs"][0]["review_state"]["state"],
+            "stationary"
+        );
+        assert_eq!(
+            reviewed["spans"][0]["pairs"][1]["review_state"]["reason"],
+            "screen_context"
+        );
+        assert!(
+            apply_music_select_motion_review(&output, &decisions_path, &reviewed_path).is_err(),
+            "review application must not replace an existing set"
+        );
+        let invalid_context = MotionReviewDecisions {
+            schema: super::DECISIONS_SCHEMA.to_owned(),
+            source_draft_sha256: digest_bytes(&fs::read(&output).unwrap()),
+            decisions: vec![MotionReviewDecision {
+                span_id: "music-select-span-0001".to_owned(),
+                first_sequence: 3,
+                last_sequence: 3,
+                state: OperatorMotionState::SelectionChange,
+            }],
+        };
+        let invalid_path = temporary.path().join("invalid-context.json");
+        fs::write(&invalid_path, canonical_line(&invalid_context).unwrap()).unwrap();
+        assert!(
+            apply_music_select_motion_review(
+                &output,
+                &invalid_path,
+                &temporary.path().join("invalid-reviewed.json")
+            )
+            .is_err(),
+            "context pairs cannot receive an operator decision"
+        );
+        let overlapping = MotionReviewDecisions {
+            schema: super::DECISIONS_SCHEMA.to_owned(),
+            source_draft_sha256: digest_bytes(&fs::read(&output).unwrap()),
+            decisions: vec![
+                MotionReviewDecision {
+                    span_id: "music-select-span-0001".to_owned(),
+                    first_sequence: 2,
+                    last_sequence: 2,
+                    state: OperatorMotionState::Stationary,
+                },
+                MotionReviewDecision {
+                    span_id: "music-select-span-0001".to_owned(),
+                    first_sequence: 2,
+                    last_sequence: 2,
+                    state: OperatorMotionState::Scrolling,
+                },
+            ],
+        };
+        let overlapping_path = temporary.path().join("overlapping.json");
+        fs::write(&overlapping_path, canonical_line(&overlapping).unwrap()).unwrap();
+        assert!(
+            apply_music_select_motion_review(
+                &output,
+                &overlapping_path,
+                &temporary.path().join("overlapping-reviewed.json")
+            )
+            .is_err(),
+            "overlapping decision intervals must fail closed"
+        );
         assert!(plan_music_select_motion_review(&store, &session_sha256, &video, &output).is_err());
     }
 

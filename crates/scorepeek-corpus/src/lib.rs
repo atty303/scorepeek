@@ -30,7 +30,10 @@ pub use music_list::{
     plan_music_list_motion_review, verify_music_list_motion,
     verify_music_list_row_observation_draft,
 };
-pub use music_select_motion::{MusicSelectMotionReviewSummary, plan_music_select_motion_review};
+pub use music_select_motion::{
+    MusicSelectMotionReviewApplySummary, MusicSelectMotionReviewSummary,
+    apply_music_select_motion_review, plan_music_select_motion_review,
+};
 pub use temporal_evaluation::{
     TemporalEvaluationPolicy, TemporalEvaluationSummary, evaluate_temporal_corpus,
 };

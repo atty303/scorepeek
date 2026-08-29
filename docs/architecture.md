@@ -153,7 +153,10 @@ Before a music-select dwell policy is introduced, the active-suite video-replay 
 immutable operator-review draft. It reproduces 10 Hz packet-order sampling and measures the right
 list, active row, and central title independently through the production normalizer. Full-frame
 animation is deliberately excluded, 500 ms transition context is retained, and all spans remain
-unknown until operator review. This offline evidence surface has no runtime or event authority.
+unknown until operator review. Digest-bound operator intervals are expanded to exact adjacent
+sample pairs; only pairs whose two screens are music-select are eligible, while transition context
+remains typed unknown. Partial reviewed sets expose completeness and cannot become dwell truth.
+This offline evidence surface has no runtime or event authority.
 
 The offline corpus tool can replay this exact production reducer over ordered, operator-reviewed
 result intervals and compare bounded observation-count/gap policies. Its versioned JSON report

@@ -675,7 +675,8 @@ struct MusicSelectContextLayout {
 
 /// Canonical regions whose motion must be reviewed separately before music-select dwell is
 /// calibrated.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MusicSelectMotionRegions {
     pub list_titles: Roi,
     pub active_list_title: Roi,

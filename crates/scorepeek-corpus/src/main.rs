@@ -4,11 +4,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use scorepeek_corpus::{
-    TemporalEvaluationPolicy, apply_music_list_motion_review, apply_review, convert_v2_diagnostic,
-    evaluate_temporal_corpus, import_diagnostic, inspect_music_list_row_observation_draft,
-    inspect_review, measure_music_list_motion, plan_music_list_motion_review,
-    plan_music_select_motion_review, render_synthetic_title_set, replay_corpus, replay_video,
-    verify_diagnostic, verify_music_list_motion, verify_music_list_row_observation_draft,
+    TemporalEvaluationPolicy, apply_music_list_motion_review, apply_music_select_motion_review,
+    apply_review, convert_v2_diagnostic, evaluate_temporal_corpus, import_diagnostic,
+    inspect_music_list_row_observation_draft, inspect_review, measure_music_list_motion,
+    plan_music_list_motion_review, plan_music_select_motion_review, render_synthetic_title_set,
+    replay_corpus, replay_video, verify_diagnostic, verify_music_list_motion,
+    verify_music_list_row_observation_draft,
 };
 
 fn main() -> ExitCode {
@@ -109,6 +110,31 @@ fn run(args: &[OsString]) -> Result<(), String> {
 }
 
 fn run_music_select_motion(args: &[OsString]) -> Option<Result<(), String>> {
+    if let [
+        music_select,
+        motion,
+        review_apply,
+        output_flag,
+        output,
+        draft,
+        decisions,
+    ] = args
+        && music_select == "music-select"
+        && motion == "motion"
+        && review_apply == "review-apply"
+        && output_flag == "--output"
+    {
+        let summary = apply_music_select_motion_review(
+            &PathBuf::from(draft),
+            &PathBuf::from(decisions),
+            &PathBuf::from(output),
+        )
+        .map_err(|error| format!("music-select motion review application failed: {error}"));
+        return Some(
+            summary
+                .and_then(|summary| print_json(&summary, "music-select motion review application")),
+        );
+    }
     let [
         music_select,
         motion,
@@ -338,7 +364,7 @@ fn run_remaining(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "usage: scorepeek-corpus <diagnostic replay-video --video FILE --profile NAME --output DIRECTORY|diagnostic verify DIRECTORY|diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY|corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE|review show --draft FILE|review apply --store ROOT --draft FILE --labels FILE|corpus replay --store ROOT|temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|music-list motion review-plan --output PLAN ARTIFACT|music-list motion review-apply --output REQUEST ARTIFACT PLAN DECISIONS|music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE>"
+            "usage: scorepeek-corpus <diagnostic replay-video --video FILE --profile NAME --output DIRECTORY|diagnostic verify DIRECTORY|diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY|corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE|review show --draft FILE|review apply --store ROOT --draft FILE --labels FILE|corpus replay --store ROOT|temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|music-list motion review-plan --output PLAN ARTIFACT|music-list motion review-apply --output REQUEST ARTIFACT PLAN DECISIONS|music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE|music-select motion review-apply --output REVIEWED DRAFT DECISIONS>"
                 .to_owned(),
         ),
     }
@@ -354,17 +380,29 @@ fn print_json(value: &impl serde::Serialize, context: &str) -> Result<(), String
 }
 
 fn print_usage() {
-    println!(
-        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus diagnostic replay-video --video FILE --profile NAME --output DIRECTORY\n  scorepeek-corpus diagnostic verify DIRECTORY\n  scorepeek-corpus diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY\n  scorepeek-corpus corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE\n  scorepeek-corpus review show --draft FILE\n  scorepeek-corpus review apply --store ROOT --draft FILE --labels FILE\n  scorepeek-corpus corpus replay --store ROOT\n  scorepeek-corpus temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]\n  scorepeek-corpus music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE",
+    println!("{}", usage_text());
+}
+
+fn usage_text() -> String {
+    format!(
+        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus diagnostic replay-video --video FILE --profile NAME --output DIRECTORY\n  scorepeek-corpus diagnostic verify DIRECTORY\n  scorepeek-corpus diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY\n  scorepeek-corpus corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE\n  scorepeek-corpus review show --draft FILE\n  scorepeek-corpus review apply --store ROOT --draft FILE --labels FILE\n  scorepeek-corpus corpus replay --store ROOT\n  scorepeek-corpus temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]\n  scorepeek-corpus music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE\n  scorepeek-corpus music-select motion review-apply --output REVIEWED DRAFT DECISIONS",
         env!("CARGO_PKG_VERSION")
-    );
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
 
-    use super::{parse_temporal_policy, run};
+    use super::{parse_temporal_policy, run, usage_text};
+
+    #[test]
+    fn help_lists_music_select_motion_review_apply() {
+        assert!(
+            usage_text()
+                .contains("music-select motion review-apply --output REVIEWED DRAFT DECISIONS")
+        );
+    }
 
     #[test]
     fn temporal_policy_requires_bounded_observation_and_gap_pair() {
