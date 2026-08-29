@@ -154,14 +154,20 @@ value, while a different accepted value is shown as a conflict. Music-select son
 stabilizes after 200 ms. A transient unknown retains the prior catalog identity as explicitly
 `HELD`, while a different accepted ID is `CHANGING` until it persists for 200 ms; retained unknown
 state expires after a 200 ms grace. Raw active-list and central-title OCR remain separate and are
-not rewritten by this presentation state.
+not rewritten by this presentation state. A separate play-attempt panel carries only a stable or
+explicitly held selection through observed `decide_transition`, `play`, and `result` screens. It
+shows matching results as `CONFIRMED`, mismatches as `CONFLICT`, missing path steps as incomplete,
+and result-to-play retries as a new child attempt. This is observational presentation and never
+changes result acceptance.
 Redirected stdout contains only deduplicated human-readable state changes. Provisional
 machine-readable observations are available from
 `$XDG_RUNTIME_DIR/scorepeek/observations-v2.sock`: each client receives a current snapshot followed
 by `scorepeek-run-event-v2` NDJSON. Raw field observations remain unchanged and any derived
 `temporal_result_changed` record follows the observation that caused it. This observation socket is
 also the source of derived `temporal_music_select_changed` records and bounded raw `screen_changed`
-records used to reset screen-local temporal state.
+records used to reset screen-local temporal state. Additive `play_attempt_changed` records expose
+the same latest path and song state shown by the TUI; the connection snapshot carries that state for
+late clients.
 It is not the future accepted-event API at `$XDG_RUNTIME_DIR/scorepeek/v1.sock`.
 
 Ordinary recognition artifacts are stored per Gamescope session below

@@ -193,7 +193,7 @@ impl RecognitionSession {
         };
         let diagnostic_frame = self.bridge.record_frame_for_observation(&observation);
         let field_inputs = match observation.screen() {
-            ScreenClass::Unknown => None,
+            ScreenClass::DecideTransition | ScreenClass::Play | ScreenClass::Unknown => None,
             screen @ (ScreenClass::Result | ScreenClass::MusicSelect) => {
                 let Ok(routed) = route_screen_rgb8_crops(frame.pixels(), screen) else {
                     let _ = self.bridge.record_recognition_failure(frame);

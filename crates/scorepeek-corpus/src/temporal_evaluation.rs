@@ -711,6 +711,8 @@ fn parse_record(value: &Value) -> Result<TemporalRecord, CorpusError> {
     let screen = match screen_name {
         "result" => ScreenClass::Result,
         "music_select" => ScreenClass::MusicSelect,
+        "decide_transition" => ScreenClass::DecideTransition,
+        "play" => ScreenClass::Play,
         "unknown" => ScreenClass::Unknown,
         _ => return invalid("temporal observation screen is unsupported"),
     };
@@ -966,6 +968,26 @@ mod tests {
             "song_id": null
         });
         assert!(!parse_record(&placeholder).unwrap().has_result_observation);
+    }
+
+    #[test]
+    fn path_screens_are_non_result_interval_boundaries() {
+        for (sequence, screen, expected) in [
+            (1, "decide_transition", ScreenClass::DecideTransition),
+            (2, "play", ScreenClass::Play),
+        ] {
+            let parsed = parse_record(&serde_json::json!({
+                "schema": OBSERVATION_SCHEMA,
+                "tick_sequence": sequence,
+                "source_timestamp_ms": sequence * 100,
+                "screen": screen,
+                "fields": null,
+                "song_id": null
+            }))
+            .unwrap();
+            assert_eq!(parsed.screen, expected);
+            assert!(!parsed.has_result_observation);
+        }
     }
 
     #[test]

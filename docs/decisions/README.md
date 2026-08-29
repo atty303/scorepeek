@@ -197,6 +197,10 @@ authoritative.
 - [ADR 0067: Stabilize music-select with bounded hold and replacement](0067-stabilize-music-select-with-hold-and-replace.md)
   uses one production reducer for offline evaluation and runtime presentation, retains a typed
   last-confirmed song across bounded unknowns, and replaces a changed selection after 200 ms.
+- [ADR 0068: Observe play attempts without changing recognition authority](0068-observe-play-attempts-without-changing-recognition-authority.md)
+  supersedes ADR 0024 only for application-level provisional attempt composition, adds fail-closed
+  decision/play screen facts, and links selection, gameplay, result, and retry without feeding state
+  back into recognition.
 
 ## Historical
 

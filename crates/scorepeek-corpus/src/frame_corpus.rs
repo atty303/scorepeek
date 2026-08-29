@@ -518,13 +518,18 @@ pub fn replay_video(
         let screen = match snapshot.screen {
             scorepeek::recognition::ScreenClass::Result => "result",
             scorepeek::recognition::ScreenClass::MusicSelect => "music_select",
+            scorepeek::recognition::ScreenClass::DecideTransition => "decide_transition",
+            scorepeek::recognition::ScreenClass::Play => "play",
             scorepeek::recognition::ScreenClass::Unknown => "unknown",
         };
         facts.extend_from_slice(&canonical_json(&serde_json::json!({
             "schema":"scorepeek-private-diagnostic-fact-v3", "tick_sequence":sequence,
             "source_timestamp_ms":source_timestamp_ms, "screen":screen,
+            "screen_path_layout_sha256":snapshot.screen_path_layout_sha256,
             "result_presence":snapshot.result_presence,
-            "music_select_presence":snapshot.music_select_presence
+            "music_select_presence":snapshot.music_select_presence,
+            "decide_transition_presence":snapshot.decide_transition_presence,
+            "play_presence":snapshot.play_presence
         }))?);
         let should_save = previous_screen != Some(snapshot.screen)
             || matches!(snapshot.screen, scorepeek::recognition::ScreenClass::Result);

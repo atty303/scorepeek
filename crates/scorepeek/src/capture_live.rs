@@ -324,6 +324,8 @@ pub struct GamescopeRecognitionHandoffGateReport {
     inspected_frames: u64,
     result_frames: u64,
     music_select_frames: u64,
+    decide_transition_frames: u64,
+    play_frames: u64,
     unknown_frames: u64,
     recognition_failures: u64,
     diagnostic_fact_enqueued: u64,
@@ -355,6 +357,8 @@ pub struct GamescopeFieldObservationGateReport {
     inspected_frames: u64,
     result_frames: u64,
     music_select_frames: u64,
+    decide_transition_frames: u64,
+    play_frames: u64,
     unknown_frames: u64,
     field_not_applicable: u64,
     field_submitted: u64,
@@ -526,6 +530,8 @@ struct RecognitionHandoffCounters {
     inspected_frames: u64,
     result_frames: u64,
     music_select_frames: u64,
+    decide_transition_frames: u64,
+    play_frames: u64,
     unknown_frames: u64,
     recognition_failures: u64,
     fact_outcomes: EnqueueOutcomeCounters,
@@ -542,6 +548,8 @@ struct FieldObservationCounters {
     inspected_frames: u64,
     result_frames: u64,
     music_select_frames: u64,
+    decide_transition_frames: u64,
+    play_frames: u64,
     unknown_frames: u64,
     field_not_applicable: u64,
     field_submitted: u64,
@@ -1374,6 +1382,8 @@ fn offer_field_observation_frames(
             let screen_counter = match result.observation.screen() {
                 ScreenClass::Result => &mut source.counters.result_frames,
                 ScreenClass::MusicSelect => &mut source.counters.music_select_frames,
+                ScreenClass::DecideTransition => &mut source.counters.decide_transition_frames,
+                ScreenClass::Play => &mut source.counters.play_frames,
                 ScreenClass::Unknown => &mut source.counters.unknown_frames,
             };
             *screen_counter = screen_counter.saturating_add(1);
@@ -1474,6 +1484,8 @@ fn offer_live_field_observation_frames(
             let screen_counter = match result.observation.screen() {
                 ScreenClass::Result => &mut source.counters.result_frames,
                 ScreenClass::MusicSelect => &mut source.counters.music_select_frames,
+                ScreenClass::DecideTransition => &mut source.counters.decide_transition_frames,
+                ScreenClass::Play => &mut source.counters.play_frames,
                 ScreenClass::Unknown => &mut source.counters.unknown_frames,
             };
             *screen_counter = screen_counter.saturating_add(1);
@@ -1818,6 +1830,8 @@ fn field_observation_report(
         inspected_frames: counters.inspected_frames,
         result_frames: counters.result_frames,
         music_select_frames: counters.music_select_frames,
+        decide_transition_frames: counters.decide_transition_frames,
+        play_frames: counters.play_frames,
         unknown_frames: counters.unknown_frames,
         field_not_applicable: counters.field_not_applicable,
         field_submitted: counters.field_submitted,
@@ -2165,6 +2179,8 @@ fn offer_diagnostic_handoff_frames(
                 let screen_counter = match result.observation.screen() {
                     ScreenClass::Result => &mut recognition.result_frames,
                     ScreenClass::MusicSelect => &mut recognition.music_select_frames,
+                    ScreenClass::DecideTransition => &mut recognition.decide_transition_frames,
+                    ScreenClass::Play => &mut recognition.play_frames,
                     ScreenClass::Unknown => &mut recognition.unknown_frames,
                 };
                 *screen_counter = screen_counter.saturating_add(1);
@@ -2288,6 +2304,8 @@ fn recognition_handoff_report(run: HandoffGateRun) -> GamescopeRecognitionHandof
         inspected_frames: recognition.inspected_frames,
         result_frames: recognition.result_frames,
         music_select_frames: recognition.music_select_frames,
+        decide_transition_frames: recognition.decide_transition_frames,
+        play_frames: recognition.play_frames,
         unknown_frames: recognition.unknown_frames,
         recognition_failures: recognition.recognition_failures,
         diagnostic_fact_enqueued: recognition.fact_outcomes.enqueued,

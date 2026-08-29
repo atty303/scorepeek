@@ -187,6 +187,8 @@ fn rewrite_recognition_stream(
             }
             let screen = match document.fact.detail["screen"].as_str() {
                 Some("music_selection") => "music_select",
+                Some("decide_transition") => "decide_transition",
+                Some("gameplay") => "play",
                 Some(screen @ ("result" | "unknown")) => screen,
                 _ => return Err("screen predicate fact has an invalid screen".to_owned()),
             };
@@ -457,14 +459,16 @@ mod tests {
             capture.join("facts.ndjson"),
             concat!(
                 "{\"fact\":{\"tick_sequence\":0,\"monotonic_start_ms\":100,\"detail\":{\"kind\":\"screen_predicate_observation\",\"screen\":\"unknown\"}}}\n",
-                "{\"fact\":{\"tick_sequence\":1,\"monotonic_start_ms\":200,\"detail\":{\"kind\":\"screen_predicate_observation\",\"screen\":\"result\"}}}\n"
+                "{\"fact\":{\"tick_sequence\":1,\"monotonic_start_ms\":200,\"detail\":{\"kind\":\"screen_predicate_observation\",\"screen\":\"decide_transition\"}}}\n",
+                "{\"fact\":{\"tick_sequence\":2,\"monotonic_start_ms\":300,\"detail\":{\"kind\":\"screen_predicate_observation\",\"screen\":\"gameplay\"}}}\n",
+                "{\"fact\":{\"tick_sequence\":3,\"monotonic_start_ms\":400,\"detail\":{\"kind\":\"screen_predicate_observation\",\"screen\":\"result\"}}}\n"
             ),
         )
         .unwrap();
         fs::write(capture.join("manifest.json"), b"{}\n").unwrap();
         fs::write(
             recognition.join("observations.ndjson"),
-            b"{\"schema\":\"scorepeek-recognition-observation-v5\",\"tick_sequence\":1,\"fields\":{\"title\":\"measured\"},\"song_id\":null}\n",
+            b"{\"schema\":\"scorepeek-recognition-observation-v5\",\"tick_sequence\":3,\"fields\":{\"title\":\"measured\"},\"song_id\":null}\n",
         )
         .unwrap();
         fs::write(recognition.join("manifest.json"), b"{}\n").unwrap();
@@ -477,7 +481,7 @@ mod tests {
             capture_generation: 1,
             profile_sha256: &"1".repeat(64),
             catalog_sha256: &"2".repeat(64),
-            processed_ticks: 2,
+            processed_ticks: 4,
             busy_skips: 0,
             maximum_consecutive_busy_skips: 0,
             completeness: "complete",
@@ -493,11 +497,13 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str::<Value>(line).unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(records.len(), 2);
+        assert_eq!(records.len(), 4);
         assert_eq!(records[0]["screen"], "unknown");
         assert_eq!(records[0]["source_timestamp_ms"], 100);
-        assert_eq!(records[1]["screen"], "result");
-        assert_eq!(records[1]["fields"]["title"], "measured");
+        assert_eq!(records[1]["screen"], "decide_transition");
+        assert_eq!(records[2]["screen"], "play");
+        assert_eq!(records[3]["screen"], "result");
+        assert_eq!(records[3]["fields"]["title"], "measured");
     }
 
     #[test]

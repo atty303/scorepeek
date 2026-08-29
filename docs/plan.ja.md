@@ -592,8 +592,10 @@ flush timeoutは`partial | dropped` evidenceとして残すが、play、capture 
    raw observationの後に`temporal_music_select_changed`を出す。operator truthはruntime入力にせず、central-titleのraw OCRは
    song-ID stateと分離する。chartとaccepted event authorityは後続の独立contractとする。
 10. **M7**: 少数scenario replayから最小selection song contextとrecognition-trigger非依存のbounded
-    live diagnosticsを検証し、その後versioned event schemaとNDJSON daemonを統合する。ゲーム全体の
-    state machine、attempt、modeまたはretry回数は実装しない。
+    live diagnosticsを検証し、その後versioned event schemaとNDJSON daemonを統合する。ADR 0068の
+    application-level暫定観測に限り、独立predicateで`decide_transition`と`play`を識別し、stableまたは
+    held selectionをobserved resultへ接続する。result-to-playはparent link付きの新attemptとして表示するが、
+    recognition core、accepted event、永続履歴、mode/course進行またはretry回数のauthorityにはしない。
 11. **M8**: catalog update replay、full private holdout、Bazzite live flowをrelease gateへ統合する。
 
 M3/M4からM7へ進む間は、ADR 0049で通常のRust CLI配布へ置き換えたcross-machine delivery checkpointを縦に通す。event authorityや

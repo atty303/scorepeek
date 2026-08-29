@@ -382,6 +382,10 @@ impl DiagnosticBridge {
         let screen = match observation.screen() {
             scorepeek::recognition::ScreenClass::Result => DiagnosticScreen::Result,
             scorepeek::recognition::ScreenClass::MusicSelect => DiagnosticScreen::MusicSelection,
+            scorepeek::recognition::ScreenClass::DecideTransition => {
+                DiagnosticScreen::DecideTransition
+            }
+            scorepeek::recognition::ScreenClass::Play => DiagnosticScreen::Gameplay,
             scorepeek::recognition::ScreenClass::Unknown => DiagnosticScreen::Unknown,
         };
         let predicate = observation.predicate();
@@ -394,6 +398,7 @@ impl DiagnosticBridge {
             error_type: None,
             detail: DiagnosticDetail::ScreenPredicateObservation {
                 screen,
+                screen_path_layout_sha256: predicate.screen_path_layout_sha256.clone(),
                 result_warm_pixels: predicate.result_presence.warm_pixels,
                 result_warm_pixels_min: predicate.result_presence.warm_pixels_min,
                 result_upper_panel_edge_pixels: predicate.result_presence.upper_panel_edge_pixels,
@@ -417,6 +422,24 @@ impl DiagnosticBridge {
                 music_select_bright_label_pixels_min: predicate
                     .music_select_presence
                     .bright_label_pixels_min,
+                decide_transition_cyan_pixels: predicate.decide_transition_presence.cyan_pixels,
+                decide_transition_cyan_pixels_min: predicate
+                    .decide_transition_presence
+                    .cyan_pixels_min,
+                decide_transition_bright_pixels: predicate.decide_transition_presence.bright_pixels,
+                decide_transition_bright_pixels_min: predicate
+                    .decide_transition_presence
+                    .bright_pixels_min,
+                decide_transition_saturated_pixels: predicate
+                    .decide_transition_presence
+                    .saturated_pixels,
+                decide_transition_saturated_pixels_min: predicate
+                    .decide_transition_presence
+                    .saturated_pixels_min,
+                play_cyan_lane_edge_pixels: predicate.play_presence.cyan_lane_edge_pixels,
+                play_cyan_lane_edge_pixels_min: predicate.play_presence.cyan_lane_edge_pixels_min,
+                play_warm_header_pixels: predicate.play_presence.warm_header_pixels,
+                play_warm_header_pixels_min: predicate.play_presence.warm_header_pixels_min,
             },
         })
     }
@@ -475,7 +498,7 @@ impl DiagnosticBridge {
         let diagnostic_screen = match screen {
             ScreenClass::Result => DiagnosticScreen::Result,
             ScreenClass::MusicSelect => DiagnosticScreen::MusicSelection,
-            ScreenClass::Unknown => {
+            ScreenClass::DecideTransition | ScreenClass::Play | ScreenClass::Unknown => {
                 self.worker
                     .record_external_error(DiagnosticErrorType::InvalidConfiguration, sequence);
                 return DiagnosticEnqueueOutcome::Rejected;
@@ -511,7 +534,11 @@ impl DiagnosticBridge {
                     match screen {
                         ScreenClass::Result => 4,
                         ScreenClass::MusicSelect => 1,
-                        ScreenClass::Unknown => unreachable!("unknown screen was rejected above"),
+                        ScreenClass::DecideTransition
+                        | ScreenClass::Play
+                        | ScreenClass::Unknown => {
+                            unreachable!("non-field screen was rejected above")
+                        }
                     },
                     Some(field),
                 )

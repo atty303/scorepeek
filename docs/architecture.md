@@ -84,6 +84,10 @@ versioned normalizer has produced canonical frames. That profile is calibration
 evidence, not a pixel reference. Later peer profiles calibrate their own
 normalizers to the same layout rather than creating route-local coordinates.
 
+Screen-path-only evidence for `decide_transition` and `play` is stored in a separate,
+digest-bound canonical-coordinate layout artifact. Adding those predicates does not change the
+canonical field-layout digest bound by existing machine profiles.
+
 ### Catalog federation
 
 Source adapters turn immutable Tachi, Textage, and INFINITAS-roster snapshots
@@ -184,6 +188,15 @@ matrix. Combined with the corrected motion truth, it selects the 200/200 ms prov
 presentation described above. Operator truth remains evaluation-only and never enters runtime;
 raw central-title text variation remains separate from song-ID state. Neither the offline evidence
 surface nor `temporal_music_select_changed` grants accepted event authority.
+
+The application also composes a provisional observed play path without changing the recognition
+core. Independent canonical predicates classify a complete song-decision splash as
+`decide_transition` and the fixed gameplay cabinet as `play`; loading, blank, stage-failed, partial,
+and overlapping evidence stays unknown. Only a stable or explicitly held music-select presentation
+can arm the path. The reducer then records observed decide/play/result steps, matching or conflicting
+stable result identity, and result-to-play retry parentage. Missing steps remain typed incomplete or
+unlinked. This state is emitted as `play_attempt_changed` and shown in the TUI, but it is not a
+resolver input, accepted event, persisted score, or session-history authority.
 
 The offline corpus tool can replay this exact production reducer over ordered, operator-reviewed
 result intervals and compare bounded observation-count/gap policies. Its versioned JSON report
@@ -407,7 +420,8 @@ The ordinary foreground runtime currently exposes provisional recognition observ
 snapshot and then receives sequenced `scorepeek-run-event-v2` NDJSON. This local observation surface
 may include raw OCR, catalog-backed selected and runner-up song presentations, and resolver metrics;
 bounded `screen_changed` records expose synchronous predicate boundaries without repeating every
-frame;
+frame; additive `play_attempt_changed` records expose the latest provisional selection-to-result
+path and retry link without altering raw recognition;
 `next_channel_sequence` marks the first event not represented by the snapshot so a client can
 discard an already-represented live record and detect later gaps. It is intentionally separate from
 accepted domain events. TTY stdout renders the same typed run state as a TUI, while non-TTY stdout

@@ -12,6 +12,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use crate::play_attempt::{
+    PlayAttemptReducer, PlayAttemptScreen, PlayAttemptState, SelectionSource,
+};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -101,6 +104,14 @@ pub enum RunEventKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         candidate_song: Option<SongPresentation>,
     },
+    PlayAttemptChanged {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        capture_generation: Option<u64>,
+        source_sequence: Option<u64>,
+        state: PlayAttemptState<SongPresentation>,
+    },
     SessionFinished {
         session_id: String,
         capture_generation: u64,
@@ -113,7 +124,7 @@ pub enum RunEventKind {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SongPresentation {
     pub scorepeek_song_id: scorepeek::catalog::ScorepeekSongId,
     pub display_titles: Vec<String>,
@@ -162,6 +173,7 @@ pub struct RunViewState {
     latest_observation: Option<Value>,
     latest_stabilized_result: Option<Value>,
     latest_temporal_music_select: Option<Value>,
+    latest_play_attempt: Option<Value>,
     latest_report: Option<Value>,
     status_recording: &'static str,
     next_channel_sequence: u64,
@@ -186,6 +198,7 @@ impl RunViewState {
             latest_observation: None,
             latest_stabilized_result: None,
             latest_temporal_music_select: None,
+            latest_play_attempt: None,
             latest_report: None,
             status_recording: if recording_enabled {
                 "ready"
@@ -213,6 +226,7 @@ impl RunViewState {
                 self.latest_observation = None;
                 self.latest_stabilized_result = None;
                 self.latest_temporal_music_select = None;
+                self.latest_play_attempt = None;
                 self.latest_report = None;
                 "Gamescope session admitted".clone_into(&mut self.message);
             }
@@ -227,6 +241,9 @@ impl RunViewState {
             }
             RunEventKind::TemporalMusicSelectChanged { .. } => {
                 self.latest_temporal_music_select = Some(serialized.clone());
+            }
+            RunEventKind::PlayAttemptChanged { .. } => {
+                self.latest_play_attempt = Some(serialized.clone());
             }
             RunEventKind::SessionFinished {
                 outcome, report, ..
@@ -246,6 +263,7 @@ impl RunViewState {
                 self.latest_observation = None;
                 self.latest_stabilized_result = None;
                 self.latest_temporal_music_select = None;
+                self.latest_play_attempt = None;
                 "scorepeek stopped by signal".clone_into(&mut self.message);
             }
         }
@@ -585,6 +603,7 @@ pub struct RoutineOutput {
     temporal_music_select: MusicSelectTemporalReducer<scorepeek::catalog::ScorepeekSongId>,
     retained_music_select_song: Option<SongPresentation>,
     candidate_music_select_song: Option<SongPresentation>,
+    play_attempt: PlayAttemptReducer<SongPresentation>,
 }
 
 impl RoutineOutput {
@@ -622,6 +641,7 @@ impl RoutineOutput {
             ),
             retained_music_select_song: None,
             candidate_music_select_song: None,
+            play_attempt: PlayAttemptReducer::default(),
         };
         output.refresh()?;
         Ok(output)
@@ -637,6 +657,7 @@ impl RoutineOutput {
                     .reset(MusicSelectTemporalTransitionReason::ResetBySessionBoundary);
                 self.retained_music_select_song = None;
                 self.candidate_music_select_song = None;
+                self.play_attempt.reset_session();
                 self.publish_one(event)
             }
             RunEventKind::WatcherStopped { .. } => self.publish_watcher_stopped(event),
@@ -645,7 +666,8 @@ impl RoutineOutput {
             RunEventKind::SessionFinished { .. } => self.publish_session_finished(event),
             RunEventKind::WatcherStarted { .. }
             | RunEventKind::TemporalResultChanged { .. }
-            | RunEventKind::TemporalMusicSelectChanged { .. } => self.publish_one(event),
+            | RunEventKind::TemporalMusicSelectChanged { .. }
+            | RunEventKind::PlayAttemptChanged { .. } => self.publish_one(event),
         }
     }
 
@@ -657,6 +679,9 @@ impl RoutineOutput {
                 .map_err(|_| "run view state lock was poisoned".to_owned())?;
             (state.active_session_id.clone(), state.capture_generation)
         };
+        if let Some(state) = self.play_attempt.finish_session() {
+            self.publish_play_attempt_update(session_id.clone(), capture_generation, None, state)?;
+        }
         self.publish_one(event)?;
         if let Some(update) = self
             .temporal_result
@@ -756,7 +781,18 @@ impl RoutineOutput {
             capture_generation,
             Some(sequence),
             update,
-        )
+        )?;
+        if let Some(song) = self.stable_result_song.clone()
+            && let Some(state) = self.play_attempt.observe_stable_result(song)
+        {
+            self.publish_play_attempt_update(
+                session_id.cloned(),
+                capture_generation,
+                Some(sequence),
+                state,
+            )?;
+        }
+        Ok(())
     }
 
     fn reduce_music_select_observation(
@@ -804,6 +840,7 @@ impl RoutineOutput {
                     .cloned();
             }
         }
+        let temporal_state = update.state.clone();
         self.publish_one(&RunEvent {
             schema: "scorepeek-run-event-v2".to_owned(),
             kind: RunEventKind::TemporalMusicSelectChanged {
@@ -815,7 +852,23 @@ impl RoutineOutput {
                 retained_song: self.retained_music_select_song.clone(),
                 candidate_song: self.candidate_music_select_song.clone(),
             },
-        })
+        })?;
+        match &temporal_state {
+            MusicSelectTemporalState::Stable { .. } => self.play_attempt.observe_selection(
+                self.retained_music_select_song.clone(),
+                Some(SelectionSource::Stable),
+            ),
+            MusicSelectTemporalState::HeldUnknown { .. } => self.play_attempt.observe_selection(
+                self.retained_music_select_song.clone(),
+                Some(SelectionSource::LastConfirmedHeld),
+            ),
+            MusicSelectTemporalState::Empty
+            | MusicSelectTemporalState::Pending { .. }
+            | MusicSelectTemporalState::Changing { .. } => {
+                self.play_attempt.observe_selection(None, None);
+            }
+        }
+        Ok(())
     }
 
     fn publish_screen_change(&mut self, event: &RunEvent) -> Result<(), String> {
@@ -830,6 +883,16 @@ impl RoutineOutput {
             unreachable!("screen change dispatcher preserves event kind");
         };
         self.publish_one(event)?;
+        if let Some(attempt_screen) = play_attempt_screen(screen)
+            && let Some(state) = self.play_attempt.observe_screen(attempt_screen, *sequence)
+        {
+            self.publish_play_attempt_update(
+                session_id.clone(),
+                *capture_generation,
+                Some(*sequence),
+                state,
+            )?;
+        }
         if screen != "result"
             && let Some(update) = self
                 .temporal_result
@@ -870,6 +933,14 @@ impl RoutineOutput {
             unreachable!("session-finished dispatcher preserves event kind");
         };
         self.publish_one(event)?;
+        if let Some(state) = self.play_attempt.finish_session() {
+            self.publish_play_attempt_update(
+                Some(session_id.clone()),
+                Some(*capture_generation),
+                None,
+                state,
+            )?;
+        }
         if let Some(update) = self
             .temporal_result
             .reset(TemporalTransitionReason::ResetBySessionBoundary)
@@ -939,6 +1010,24 @@ impl RoutineOutput {
                 state: update.state,
                 retained_song: self.retained_music_select_song.clone(),
                 candidate_song: self.candidate_music_select_song.clone(),
+            },
+        })
+    }
+
+    fn publish_play_attempt_update(
+        &mut self,
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        source_sequence: Option<u64>,
+        state: PlayAttemptState<SongPresentation>,
+    ) -> Result<(), String> {
+        self.publish_one(&RunEvent {
+            schema: "scorepeek-run-event-v2".to_owned(),
+            kind: RunEventKind::PlayAttemptChanged {
+                session_id,
+                capture_generation,
+                source_sequence,
+                state,
             },
         })
     }
@@ -1022,6 +1111,17 @@ impl RoutineOutput {
     }
 }
 
+fn play_attempt_screen(screen: &str) -> Option<PlayAttemptScreen> {
+    match screen {
+        "music_select" => Some(PlayAttemptScreen::MusicSelect),
+        "decide_transition" => Some(PlayAttemptScreen::DecideTransition),
+        "play" => Some(PlayAttemptScreen::Play),
+        "result" => Some(PlayAttemptScreen::Result),
+        "unknown" => Some(PlayAttemptScreen::Unknown),
+        _ => None,
+    }
+}
+
 fn plain_status_line(state: &RunViewState, health: &ChannelHealth) -> String {
     let channel = health.value();
     format!(
@@ -1047,8 +1147,16 @@ fn render(
     health: &ChannelHealth,
 ) {
     let area = frame.area();
-    let compact = area.width < 80 || area.height < 22;
-    let constraints = if compact {
+    let compact = area.width < 80 || area.height < 32;
+    let show_attempt = !compact || state.latest_play_attempt.is_some();
+    let constraints = if compact && show_attempt {
+        vec![
+            Constraint::Length(6),
+            Constraint::Length(6),
+            Constraint::Min(5),
+            Constraint::Length(3),
+        ]
+    } else if compact {
         vec![
             Constraint::Length(8),
             Constraint::Min(7),
@@ -1057,6 +1165,7 @@ fn render(
     } else {
         vec![
             Constraint::Length(7),
+            Constraint::Length(9),
             Constraint::Min(10),
             Constraint::Length(8),
         ]
@@ -1071,13 +1180,29 @@ fn render(
         rows[0],
     );
 
+    let mut row = 1;
+    if show_attempt {
+        let attempt = play_attempt_lines(
+            state.latest_play_attempt.as_ref(),
+            compact,
+            rows[row].width.saturating_sub(2) as usize,
+        );
+        frame.render_widget(
+            Paragraph::new(attempt)
+                .wrap(Wrap { trim: false })
+                .block(Block::default().borders(Borders::ALL).title("Play attempt")),
+            rows[row],
+        );
+        row += 1;
+    }
+
     let observation = observation_lines(
         state.current_screen.as_deref(),
         state.latest_observation.as_ref(),
         state.latest_stabilized_result.as_ref(),
         state.latest_temporal_music_select.as_ref(),
         compact,
-        rows[1].width.saturating_sub(2) as usize,
+        rows[row].width.saturating_sub(2) as usize,
     );
     frame.render_widget(
         Paragraph::new(observation)
@@ -1087,8 +1212,9 @@ fn render(
                     .borders(Borders::ALL)
                     .title("Latest recognition"),
             ),
-        rows[1],
+        rows[row],
     );
+    row += 1;
 
     let footer = channel_lines(state, socket_path, health, compact);
     frame.render_widget(
@@ -1097,8 +1223,121 @@ fn render(
                 .borders(Borders::ALL)
                 .title("Observation channel"),
         ),
-        rows[2],
+        rows[row],
     );
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the bounded TUI panel keeps all play-attempt display priorities in one formatter"
+)]
+fn play_attempt_lines(
+    event: Option<&Value>,
+    compact: bool,
+    available_width: usize,
+) -> Vec<Line<'static>> {
+    let Some(event) = event else {
+        return vec![Line::from("No play attempt yet")];
+    };
+    let state = event.get("state").unwrap_or(&Value::Null);
+    match text_at(state, "/status").as_str() {
+        "unlinked_result" => {
+            let mut lines = vec![Line::from(Span::styled(
+                "UNLINKED RESULT",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ))];
+            lines.push(Line::from(format!(
+                "reason={}  sequence={}",
+                text_at(state, "/reason"),
+                text_at(state, "/source_sequence")
+            )));
+            if !state["result_song"].is_null() {
+                lines.push(Line::from(fitted_value(
+                    "Result title: ",
+                    &joined_at(state, "/result_song/display_titles"),
+                    available_width,
+                )));
+                lines.push(Line::from(fitted_value(
+                    "Result artist: ",
+                    &text_at(state, "/result_song/artist"),
+                    available_width,
+                )));
+            }
+            lines
+        }
+        "attempt" => {
+            let attempt = state.get("attempt").unwrap_or(&Value::Null);
+            let phase = text_at(attempt, "/phase");
+            let relation = text_at(attempt, "/result_relation");
+            let reasons = joined_at(attempt, "/reasons");
+            let (label, color) = match relation.as_str() {
+                "confirmed" => ("CONFIRMED", Color::Green),
+                "conflict" => ("CONFLICT", Color::Red),
+                "pending" => ("RESULT PENDING", Color::Yellow),
+                _ if phase == "playing" => ("PLAYING", Color::Cyan),
+                _ if phase == "decided" && attempt["selected_song"].is_object() => {
+                    ("SELECTED", Color::Cyan)
+                }
+                _ => ("INCOMPLETE", Color::Yellow),
+            };
+            let mut lines = vec![Line::from(vec![
+                Span::styled(
+                    label,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!("  phase={phase}")),
+            ])];
+            let selected = attempt.get("selected_song").unwrap_or(&Value::Null);
+            if selected.is_object() {
+                lines.push(Line::from(fitted_value(
+                    "Song: ",
+                    &joined_at(selected, "/display_titles"),
+                    available_width,
+                )));
+                lines.push(Line::from(fitted_value(
+                    "Artist: ",
+                    &text_at(selected, "/artist"),
+                    available_width,
+                )));
+            } else {
+                lines.push(Line::from("Song: unknown"));
+            }
+            if relation == "conflict" {
+                lines.push(Line::from(fitted_value(
+                    "Result: ",
+                    &joined_at(attempt, "/result_song/display_titles"),
+                    available_width,
+                )));
+            }
+            if !compact {
+                lines.push(Line::from(format!(
+                    "attempt=#{}  parent=#{}  source={}  song-id={}",
+                    text_at(attempt, "/attempt_id"),
+                    text_at(attempt, "/parent_attempt_id"),
+                    text_at(attempt, "/selection_source"),
+                    text_at(selected, "/scorepeek_song_id")
+                )));
+                lines.push(Line::from(format!(
+                    "path select={} decide={} play={} result={}",
+                    text_at(attempt, "/path/select_observed"),
+                    text_at(attempt, "/path/decide_observed"),
+                    text_at(attempt, "/path/play_observed"),
+                    text_at(attempt, "/path/result_observed")
+                )));
+            }
+            if !reasons.is_empty() && reasons != "-" {
+                lines.push(Line::from(fitted_value(
+                    "reason=",
+                    &reasons,
+                    available_width,
+                )));
+            }
+            lines
+        }
+        _ => vec![Line::from("No play attempt yet")],
+    }
 }
 
 fn watcher_lines(
@@ -1653,6 +1892,20 @@ mod tests {
         event
     }
 
+    fn screen_event(sequence: u64, screen: &str) -> RunEvent {
+        RunEvent {
+            schema: "scorepeek-run-event-v2".to_owned(),
+            kind: RunEventKind::ScreenChanged {
+                session_id: Some("invocation-1-session-1".to_owned()),
+                capture_generation: Some(1),
+                sequence,
+                monotonic_start_ms: sequence.saturating_mul(100),
+                monotonic_end_ms: sequence.saturating_mul(100).saturating_add(25),
+                screen: screen.to_owned(),
+            },
+        }
+    }
+
     fn read_events(reader: &mut BufReader<UnixStream>, count: usize) -> Vec<Value> {
         (0..count)
             .map(|_| {
@@ -1760,6 +2013,7 @@ mod tests {
             ),
             retained_music_select_song: None,
             candidate_music_select_song: None,
+            play_attempt: PlayAttemptReducer::default(),
         };
 
         output.publish(&accepted_result_event(1)).unwrap();
@@ -1862,6 +2116,7 @@ mod tests {
             ),
             retained_music_select_song: None,
             candidate_music_select_song: None,
+            play_attempt: PlayAttemptReducer::default(),
         };
 
         for sequence in 1..=3 {
@@ -1911,6 +2166,100 @@ mod tests {
         assert_eq!(
             state.latest_temporal_music_select.as_ref().unwrap()["state"]["status"],
             "empty"
+        );
+    }
+
+    #[test]
+    fn play_attempt_events_follow_raw_causes_and_snapshot_retains_confirmation() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = state();
+        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
+        let stream = UnixStream::connect(&channel.socket_path).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut snapshot = String::new();
+        reader.read_line(&mut snapshot).unwrap();
+        let mut output = RoutineOutput {
+            state,
+            channel,
+            display: Display::Plain {
+                output: BufWriter::new(io::stdout()),
+                last_line: None,
+            },
+            next_sequence: 1,
+            temporal_result: ResultTemporalReducer::new(TemporalPolicy::new(2, 250).unwrap()),
+            stable_result_song: None,
+            temporal_music_select: MusicSelectTemporalReducer::new(
+                MusicSelectTemporalPolicy::new(200, 200, 250).unwrap(),
+            ),
+            retained_music_select_song: None,
+            candidate_music_select_song: None,
+            play_attempt: PlayAttemptReducer::default(),
+        };
+
+        for sequence in 1..=3 {
+            output
+                .publish(&accepted_music_select_event(sequence))
+                .unwrap();
+        }
+        let _ = read_events(&mut reader, 6);
+
+        output
+            .publish(&screen_event(4, "decide_transition"))
+            .unwrap();
+        let decide = read_events(&mut reader, 3);
+        assert_eq!(decide[0]["event"], "screen_changed");
+        assert_eq!(decide[1]["event"], "play_attempt_changed");
+        assert_eq!(decide[1]["state"]["attempt"]["phase"], "decided");
+        assert_eq!(decide[1]["state"]["attempt"]["selection_source"], "stable");
+        assert_eq!(decide[2]["event"], "temporal_music_select_changed");
+
+        output.publish(&screen_event(5, "play")).unwrap();
+        let play = read_events(&mut reader, 2);
+        assert_eq!(play[0]["event"], "screen_changed");
+        assert_eq!(play[1]["state"]["attempt"]["phase"], "playing");
+
+        output.publish(&screen_event(6, "result")).unwrap();
+        let result_screen = read_events(&mut reader, 2);
+        assert_eq!(result_screen[0]["event"], "screen_changed");
+        assert_eq!(
+            result_screen[1]["state"]["attempt"]["result_relation"],
+            "pending"
+        );
+
+        output.publish(&accepted_result_event(7)).unwrap();
+        output.publish(&accepted_result_event(8)).unwrap();
+        let result = read_events(&mut reader, 5);
+        assert_eq!(result[0]["event"], "field_observation");
+        assert_eq!(result[1]["event"], "temporal_result_changed");
+        assert_eq!(result[2]["event"], "field_observation");
+        assert_eq!(result[3]["event"], "temporal_result_changed");
+        assert_eq!(result[4]["event"], "play_attempt_changed");
+        assert_eq!(
+            result[4]["state"]["attempt"]["result_relation"],
+            "confirmed"
+        );
+
+        let late = UnixStream::connect(&output.channel.socket_path).unwrap();
+        late.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let mut late = BufReader::new(late);
+        let mut snapshot = String::new();
+        late.read_line(&mut snapshot).unwrap();
+        let snapshot: Value = serde_json::from_str(&snapshot).unwrap();
+        assert_eq!(
+            snapshot["state"]["latest_play_attempt"]["state"]["attempt"]["result_relation"],
+            "confirmed"
+        );
+
+        output.publish(&screen_event(9, "play")).unwrap();
+        let retry = read_events(&mut reader, 2);
+        assert_eq!(retry[1]["state"]["attempt"]["attempt_id"], 2);
+        assert_eq!(retry[1]["state"]["attempt"]["parent_attempt_id"], 1);
+        assert_eq!(
+            retry[1]["state"]["attempt"]["selection_source"],
+            "retry_inherited"
         );
     }
 
@@ -2380,6 +2729,68 @@ mod tests {
         assert!(rendered.contains("Last confirmed title: STABLE CATALOG TITLE"));
         assert!(rendered.contains("Last confirmed artist: STABLE CATALOG ARTIST"));
         assert!(rendered.contains("OCR central title: OCR CENTRAL JITTER"));
+    }
+
+    #[test]
+    fn play_attempt_tui_prioritizes_song_and_exposes_conflict_path() {
+        let mut state = RunViewState::new("invocation-1".to_owned(), "f".repeat(64), true);
+        state.latest_play_attempt = Some(json!({
+            "event": "play_attempt_changed",
+            "state": {
+                "status": "attempt",
+                "attempt": {
+                    "attempt_id": 2,
+                    "parent_attempt_id": 1,
+                    "phase": "result",
+                    "path": {
+                        "select_observed": true,
+                        "decide_observed": true,
+                        "play_observed": true,
+                        "result_observed": true
+                    },
+                    "selection_source": "stable",
+                    "selected_song": {
+                        "scorepeek_song_id": "00000000-0000-0000-0000-000000000001",
+                        "display_titles": ["SELECTED TITLE"],
+                        "artist": "SELECTED ARTIST"
+                    },
+                    "result_song": {
+                        "scorepeek_song_id": "00000000-0000-0000-0000-000000000002",
+                        "display_titles": ["RESULT TITLE"],
+                        "artist": "RESULT ARTIST"
+                    },
+                    "result_relation": "conflict",
+                    "reasons": []
+                }
+            }
+        }));
+        let health = ChannelHealth::default();
+        for (width, height, compact) in [(100, 36, false), (60, 24, true)] {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| render(frame, &state, Path::new("/run/scorepeek.sock"), &health))
+                .unwrap();
+            let rendered = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>();
+            assert!(rendered.contains("Play attempt"));
+            assert!(rendered.contains("CONFLICT"));
+            assert!(rendered.contains("Song: SELECTED TITLE"));
+            assert!(rendered.contains("Artist: SELECTED ARTIST"));
+            assert!(rendered.contains("Result: RESULT TITLE"));
+            if compact {
+                assert!(!rendered.contains("00000000-0000-0000-0000-000000000001"));
+            } else {
+                assert!(rendered.contains("attempt=#2"));
+                assert!(rendered.contains("parent=#1"));
+                assert!(rendered.contains("path select=true decide=true play=true result=true"));
+            }
+        }
     }
 
     #[test]

@@ -10,6 +10,7 @@ pub mod diagnostic_worker;
 mod inventory;
 mod live_control;
 mod local_profiles;
+mod play_attempt;
 mod recognition_artifact;
 pub mod recognition_live;
 mod recording_simulation;

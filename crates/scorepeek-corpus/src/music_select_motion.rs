@@ -1754,16 +1754,7 @@ fn load_dwell_observations(
         let timestamp_ms = value["source_timestamp_ms"].as_u64().ok_or_else(|| {
             CorpusError::InvalidReplay("music-select dwell timestamp is invalid".to_owned())
         })?;
-        let screen = match value["screen"]
-            .as_str()
-            .or_else(|| value.pointer("/decision/screen").and_then(Value::as_str))
-            .or_else(|| value.pointer("/fields/screen").and_then(Value::as_str))
-        {
-            Some("result") => ScreenClass::Result,
-            Some("music_select") => ScreenClass::MusicSelect,
-            Some("unknown") => ScreenClass::Unknown,
-            _ => return invalid("music-select dwell observation screen is invalid"),
-        };
+        let screen = stored_screen(&value, "music-select dwell observation screen is invalid")?;
         let accepted_song_id = if screen == ScreenClass::MusicSelect {
             resolve_stored_music_select(&domain, &value)?
         } else {
@@ -2294,16 +2285,7 @@ fn read_observations(
         let timestamp_ms = value["source_timestamp_ms"].as_u64().ok_or_else(|| {
             CorpusError::InvalidReplay("motion-review timestamp is invalid".to_owned())
         })?;
-        let screen = match value["screen"]
-            .as_str()
-            .or_else(|| value.pointer("/decision/screen").and_then(Value::as_str))
-            .or_else(|| value.pointer("/fields/screen").and_then(Value::as_str))
-        {
-            Some("result") => ScreenClass::Result,
-            Some("music_select") => ScreenClass::MusicSelect,
-            Some("unknown") => ScreenClass::Unknown,
-            _ => return invalid("motion-review screen is invalid"),
-        };
+        let screen = stored_screen(&value, "motion-review screen is invalid")?;
         records.push(ObservationRecord {
             sequence,
             timestamp_ms,
@@ -2318,6 +2300,21 @@ fn read_observations(
         return invalid("motion-review observations are unordered");
     }
     Ok(records)
+}
+
+fn stored_screen(value: &Value, error: &str) -> Result<ScreenClass, CorpusError> {
+    match value["screen"]
+        .as_str()
+        .or_else(|| value.pointer("/decision/screen").and_then(Value::as_str))
+        .or_else(|| value.pointer("/fields/screen").and_then(Value::as_str))
+    {
+        Some("result") => Ok(ScreenClass::Result),
+        Some("music_select") => Ok(ScreenClass::MusicSelect),
+        Some("decide_transition") => Ok(ScreenClass::DecideTransition),
+        Some("play") => Ok(ScreenClass::Play),
+        Some("unknown") => Ok(ScreenClass::Unknown),
+        _ => invalid(error),
+    }
 }
 
 fn review_windows(records: &[ObservationRecord]) -> Vec<ReviewWindow> {
@@ -3176,7 +3173,7 @@ mod tests {
         evaluate_correctness_runs, evaluate_dwell_policy, parse_showinfo_pts,
         plan_music_select_motion_review, read_bounded_stream, region_motion_packed,
         replay_temporal_states, review_windows, run_bounded_output, select_expression,
-        selected_frame_targets, stationary_runs, validate_correct_song_labels,
+        selected_frame_targets, stationary_runs, stored_screen, validate_correct_song_labels,
         validate_reviewed_motion_set, verify_video_unchanged,
     };
 
@@ -3578,6 +3575,17 @@ mod tests {
         assert_eq!(windows[0].observed_last_sequence, 8);
         assert_eq!(windows[0].review_first_timestamp_ms, 0);
         assert_eq!(windows[0].review_last_timestamp_ms, 1_300);
+    }
+
+    #[test]
+    fn stored_screen_accepts_non_music_path_contexts() {
+        let decide = serde_json::json!({"screen": "decide_transition"});
+        let play = serde_json::json!({"screen": "play"});
+        assert_eq!(
+            stored_screen(&decide, "invalid").unwrap(),
+            ScreenClass::DecideTransition
+        );
+        assert_eq!(stored_screen(&play, "invalid").unwrap(), ScreenClass::Play);
     }
 
     #[test]

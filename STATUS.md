@@ -168,6 +168,17 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   acceptance, and replaces a changed ID only after 200 ms. Raw `field_observation` still precedes
   `temporal_music_select_changed`; snapshot and TUI show the same state while raw central-title OCR
   remains a separate evidence line. This is provisional presentation, not event authority.
+  ADR 0068 adds the next application-level observation slice without changing that authority:
+  independent canonical predicates now classify the reviewed full-screen song-decision splash as
+  `decide_transition` and the complete gameplay cabinet as `play`, while loading, blank,
+  stage-failed and incomplete cabinet frames remain unknown. Production replay over the retained
+  target QOIs classifies two reviewed decision frames, five reviewed play frames, three
+  music-select frames and six hard-negative transition frames as intended. A pure session-local
+  reducer carries only `stable` or explicitly `held_unknown` catalog presentation across observed
+  decide/play/result steps, exposes missing steps and stable-result conflicts, and represents
+  result-to-play retry as a new child attempt. The observation snapshot, additive
+  `play_attempt_changed` records and a dedicated TUI panel derive from the same state. This does not
+  rescue result resolution, create accepted events, persist history or infer mode/course progress.
   The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
   machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
   model. After the `/home` symlink fix, retained synthetic target evidence showed the 1920x1080
@@ -202,7 +213,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 ### Canonical recognition and diagnostics
 
 - Fixed contiguous RGB8 1920x1080 canonical-frame contract with one shared layout, fail-closed
-  result/music-select crops, contextual title recognition, and selection-song context. Music-select
+  result/music-select crops, contextual title recognition, and selection-song context. Independent
+  decision-splash and gameplay-cabinet predicates add screen facts but route no OCR fields.
+  Music-select
   presence requires the fixed label structure in addition to the existing header and level-column
   palette evidence. Result title and artist use measured text-tight regions; dependent context
   layout bytes bind the same canonical layout digest.
@@ -775,17 +788,23 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Exercise the fixed measured target `gamescope-4k` watcher with scorepeek-first startup through the
+1. Exercise one ordinary target flow through music select, song decision, gameplay and result.
+   Confirm that the TUI keeps the catalog title and artist visible as one attempt, advances
+   `SELECTED` to `PLAYING` to `CONFIRMED`, and leaves raw OCR separate. If a natural result-to-play
+   retry is available, verify a new attempt ID with the prior parent; do not request extra play only
+   for retry tuning. Treat missing decide/play, an unlinked result or conflict as evidence rather
+   than repairing it.
+2. Exercise the fixed measured target `gamescope-4k` watcher with scorepeek-first startup through the
    transient INFINITAS source sequence, then cover Gamescope-first, sequential and simultaneous
    source lifetimes, idle/active signals, TTY restoration, redirected plain output, and a
    mid-session observation-socket client. Confirm that raw result events precede temporal
    transitions and that one-tick unknowns do not erase the stable TUI result. Do not claim target
    lifecycle or presentation support before those separate checks pass.
-2. Verify that the next partial or complete ordinary session publishes v3 automatically without
+3. Verify that the next partial or complete ordinary session publishes v3 automatically without
    component reconstruction, and add only operator-reviewed episodes to the active suite.
-3. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
+4. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
-4. In the next real music-select session, verify that a one-tick frame-local unknown renders the
+5. In the next real music-select session, verify that a one-tick frame-local unknown renders the
    catalog identity as `HELD`, a real selection change renders `CHANGING` and replaces after 200 ms,
    and a category/filter selection clears after the bounded grace. Keep raw central-title OCR
    visible and separate; this live check qualifies presentation behavior, not event authority.

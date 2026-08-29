@@ -58,6 +58,7 @@ const CANONICAL_HEIGHT: u32 = 1_080;
 const CANONICAL_BYTES: usize = CANONICAL_WIDTH as usize * CANONICAL_HEIGHT as usize * 3;
 const CANONICAL_FRAME_CONTRACT_ID: &str = "scorepeek-canonical-rgb8-1920x1080-v1";
 const LAYOUT_SCHEMA: &str = "scorepeek-canonical-layout-v1";
+const SCREEN_PATH_LAYOUT_SCHEMA: &str = "scorepeek-screen-path-layout-v1";
 const NORMALIZER_SCHEMA: &str = "scorepeek-domain-normalizer-artifact-v1";
 const EXTRACTION_SCHEMA: &str = "scorepeek-private-canonical-frame-extraction-v1";
 const NORMALIZER_IMPLEMENTATION: &str = "ffmpeg-swscale-bt709-limited-to-rgb24-v1";
@@ -74,6 +75,7 @@ const MAX_NORMALIZER_BYTES: u64 = 64 * 1024;
 const PPM_HEADER: &[u8] = b"P6\n1920 1080\n255\n";
 const CANONICAL_FILE_BYTES: u64 = CANONICAL_BYTES as u64 + PPM_HEADER.len() as u64;
 const LAYOUT_BYTES: &[u8] = include_bytes!("canonical-layout-v1.json");
+const SCREEN_PATH_LAYOUT_BYTES: &[u8] = include_bytes!("screen-path-layout-v1.json");
 const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v2.json");
 const INTEGRATED_CONTEXT_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
 
@@ -506,6 +508,21 @@ pub struct MusicSelectLayout {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DecideTransitionLayout {
+    presence: DecideTransitionPresencePredicate,
+    pub splash: Roi,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlayLayout {
+    presence: PlayPresencePredicate,
+    pub lane_edge: Roi,
+    pub header: Roi,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[allow(
     clippy::struct_field_names,
     reason = "field names intentionally match the canonical layout contract"
@@ -514,6 +531,25 @@ struct MusicSelectPresencePredicate {
     cyan_header_pixels_min: u32,
     colored_level_pixels_min: u32,
     bright_label_pixels_min: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "field names intentionally match the screen-path layout contract"
+)]
+struct DecideTransitionPresencePredicate {
+    cyan_pixels_min: u32,
+    bright_pixels_min: u32,
+    saturated_pixels_min: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlayPresencePredicate {
+    cyan_lane_edge_pixels_min: u32,
+    warm_header_pixels_min: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
@@ -550,6 +586,8 @@ struct ResultPresencePredicate {
 pub enum ScreenClass {
     Result,
     MusicSelect,
+    DecideTransition,
+    Play,
     Unknown,
 }
 
@@ -560,9 +598,12 @@ pub struct RecognitionSnapshot {
     pub normalizer_artifact_sha256: String,
     pub frame_extraction_sha256: String,
     pub canonical_layout_sha256: String,
+    pub screen_path_layout_sha256: String,
     pub screen: ScreenClass,
     pub result_presence: ResultPresenceEvidence,
     pub music_select_presence: MusicSelectPresenceEvidence,
+    pub decide_transition_presence: DecideTransitionPresenceEvidence,
+    pub play_presence: PlayPresenceEvidence,
 }
 
 /// A pure canonical-RGB8 screen-predicate result without capture or extraction provenance.
@@ -571,9 +612,12 @@ pub struct RecognitionSnapshot {
 /// profile- and generation-bearing live frame before recording or accepting the observation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ScreenPredicateObservation {
+    pub screen_path_layout_sha256: String,
     pub screen: ScreenClass,
     pub result_presence: ResultPresenceEvidence,
     pub music_select_presence: MusicSelectPresenceEvidence,
+    pub decide_transition_presence: DecideTransitionPresenceEvidence,
+    pub play_presence: PlayPresenceEvidence,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1086,6 +1130,24 @@ pub struct MusicSelectPresenceEvidence {
     pub bright_label_pixels_min: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct DecideTransitionPresenceEvidence {
+    pub cyan_pixels: u32,
+    pub cyan_pixels_min: u32,
+    pub bright_pixels: u32,
+    pub bright_pixels_min: u32,
+    pub saturated_pixels: u32,
+    pub saturated_pixels_min: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct PlayPresenceEvidence {
+    pub cyan_lane_edge_pixels: u32,
+    pub cyan_lane_edge_pixels_min: u32,
+    pub warm_header_pixels: u32,
+    pub warm_header_pixels_min: u32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CanonicalLayout {
@@ -1216,6 +1278,73 @@ impl CanonicalLayout {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScreenPathLayout {
+    schema: String,
+    canonical_frame_contract_id: String,
+    width: u32,
+    height: u32,
+    decide_transition: DecideTransitionLayout,
+    play: PlayLayout,
+}
+
+impl ScreenPathLayout {
+    fn load() -> Result<Self, RecognitionError> {
+        let layout: Self = serde_json::from_slice(SCREEN_PATH_LAYOUT_BYTES)?;
+        if layout.schema != SCREEN_PATH_LAYOUT_SCHEMA
+            || layout.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID
+            || layout.width != CANONICAL_WIDTH
+            || layout.height != CANONICAL_HEIGHT
+        {
+            return Err(RecognitionError::InvalidCanonicalLayout);
+        }
+        for roi in [
+            layout.decide_transition.splash,
+            layout.play.lane_edge,
+            layout.play.header,
+        ] {
+            roi.validate(layout.width, layout.height)?;
+        }
+        let decide_pixels = layout
+            .decide_transition
+            .splash
+            .width
+            .checked_mul(layout.decide_transition.splash.height)
+            .ok_or(RecognitionError::InvalidCanonicalLayout)?;
+        let lane_edge_pixels = layout
+            .play
+            .lane_edge
+            .width
+            .checked_mul(layout.play.lane_edge.height)
+            .ok_or(RecognitionError::InvalidCanonicalLayout)?;
+        let play_header_pixels = layout
+            .play
+            .header
+            .width
+            .checked_mul(layout.play.header.height)
+            .ok_or(RecognitionError::InvalidCanonicalLayout)?;
+        if layout.decide_transition.presence.cyan_pixels_min == 0
+            || layout.decide_transition.presence.bright_pixels_min == 0
+            || layout.decide_transition.presence.saturated_pixels_min == 0
+            || layout.decide_transition.presence.cyan_pixels_min > decide_pixels
+            || layout.decide_transition.presence.bright_pixels_min > decide_pixels
+            || layout.decide_transition.presence.saturated_pixels_min > decide_pixels
+            || layout.play.presence.cyan_lane_edge_pixels_min == 0
+            || layout.play.presence.warm_header_pixels_min == 0
+            || layout.play.presence.cyan_lane_edge_pixels_min > lane_edge_pixels
+            || layout.play.presence.warm_header_pixels_min > play_header_pixels
+        {
+            return Err(RecognitionError::InvalidCanonicalLayout);
+        }
+        Ok(layout)
+    }
+
+    fn sha256() -> String {
+        encode_sha256(SCREEN_PATH_LAYOUT_BYTES)
+    }
+}
+
 /// Inspects one canonical frame without accepting an observed-frame representation.
 ///
 /// # Errors
@@ -1228,9 +1357,12 @@ pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, Recognitio
         normalizer_artifact_sha256: frame.normalizer_artifact_sha256.clone(),
         frame_extraction_sha256: frame.frame_extraction_sha256.clone(),
         canonical_layout_sha256: CanonicalLayout::sha256(),
+        screen_path_layout_sha256: observation.screen_path_layout_sha256,
         screen: observation.screen,
         result_presence: observation.result_presence,
         music_select_presence: observation.music_select_presence,
+        decide_transition_presence: observation.decide_transition_presence,
+        play_presence: observation.play_presence,
     })
 }
 
@@ -1243,6 +1375,10 @@ pub fn inspect(frame: &CanonicalFrame) -> Result<RecognitionSnapshot, Recognitio
 /// # Errors
 /// Returns an error when the pixels do not satisfy the fixed canonical byte contract or the
 /// committed layout is invalid.
+#[allow(
+    clippy::too_many_lines,
+    reason = "all four independent predicates remain together so classification is based on one measurement pass"
+)]
 pub fn inspect_canonical_rgb8(
     pixels: &[u8],
 ) -> Result<ScreenPredicateObservation, RecognitionError> {
@@ -1250,6 +1386,7 @@ pub fn inspect_canonical_rgb8(
         return Err(RecognitionError::InvalidCanonicalFrame);
     }
     let layout = CanonicalLayout::load()?;
+    let screen_path_layout = ScreenPathLayout::load()?;
     let header = crop_canonical_pixels(pixels, layout.result.header)?;
     let mut warm = 0_u32;
     for pixel in header.chunks_exact(3) {
@@ -1289,18 +1426,78 @@ pub fn inspect_canonical_rgb8(
         .chunks_exact(3)
         .filter(|pixel| pixel[0] > 178 && pixel[1] > 178 && pixel[2] > 178)
         .fold(0_u32, |count, _| count + 1);
+    let decide_splash = crop_canonical_pixels(pixels, screen_path_layout.decide_transition.splash)?;
+    let mut decide_cyan_pixels = 0_u32;
+    let mut decide_bright_pixels = 0_u32;
+    let mut decide_saturated_pixels = 0_u32;
+    for pixel in decide_splash.chunks_exact(3) {
+        let [r, g, b] = [pixel[0], pixel[1], pixel[2]];
+        if g > 120 && b > 150 && u16::from(b) * 2 > u16::from(r) * 3 {
+            decide_cyan_pixels += 1;
+        }
+        if r > 178 && g > 178 && b > 178 {
+            decide_bright_pixels += 1;
+        }
+        if r.max(g).max(b) > 130 && r.max(g).max(b) - r.min(g).min(b) > 60 {
+            decide_saturated_pixels += 1;
+        }
+    }
+    let play_lane_edge = crop_canonical_pixels(pixels, screen_path_layout.play.lane_edge)?;
+    let cyan_lane_edge_pixels = play_lane_edge
+        .chunks_exact(3)
+        .filter(|pixel| {
+            let [r, g, b] = [pixel[0], pixel[1], pixel[2]];
+            g > 120 && b > 150 && u16::from(b) * 2 > u16::from(r) * 3
+        })
+        .fold(0_u32, |count, _| count + 1);
+    let play_header = crop_canonical_pixels(pixels, screen_path_layout.play.header)?;
+    let warm_header_pixels = play_header
+        .chunks_exact(3)
+        .filter(|pixel| {
+            let [r, g, b] = [pixel[0], pixel[1], pixel[2]];
+            r > 120 && g > 70 && b < 100 && r > g && g > b
+        })
+        .fold(0_u32, |count, _| count + 1);
     let result_present = warm >= layout.result.presence.warm_pixels_min
         && upper_panel_edge_pixels >= layout.result.presence.horizontal_edge_pixels_min;
     let music_select_present = cyan_header_pixels
         >= layout.music_select.presence.cyan_header_pixels_min
         && colored_level_pixels >= layout.music_select.presence.colored_level_pixels_min
         && bright_label_pixels >= layout.music_select.presence.bright_label_pixels_min;
-    let screen = match (result_present, music_select_present) {
-        (true, false) => ScreenClass::Result,
-        (false, true) => ScreenClass::MusicSelect,
-        (false, false) | (true, true) => ScreenClass::Unknown,
+    let decide_transition_present = decide_cyan_pixels
+        >= screen_path_layout
+            .decide_transition
+            .presence
+            .cyan_pixels_min
+        && decide_bright_pixels
+            >= screen_path_layout
+                .decide_transition
+                .presence
+                .bright_pixels_min
+        && decide_saturated_pixels
+            >= screen_path_layout
+                .decide_transition
+                .presence
+                .saturated_pixels_min;
+    let play_present = cyan_lane_edge_pixels
+        >= screen_path_layout.play.presence.cyan_lane_edge_pixels_min
+        && warm_header_pixels >= screen_path_layout.play.presence.warm_header_pixels_min;
+    let screen = match [
+        (result_present, ScreenClass::Result),
+        (music_select_present, ScreenClass::MusicSelect),
+        (decide_transition_present, ScreenClass::DecideTransition),
+        (play_present, ScreenClass::Play),
+    ]
+    .into_iter()
+    .filter_map(|(present, screen)| present.then_some(screen))
+    .collect::<Vec<_>>()
+    .as_slice()
+    {
+        [screen] => *screen,
+        [] | [_, _, ..] => ScreenClass::Unknown,
     };
     Ok(ScreenPredicateObservation {
+        screen_path_layout_sha256: ScreenPathLayout::sha256(),
         screen,
         result_presence: ResultPresenceEvidence {
             warm_pixels: warm,
@@ -1316,6 +1513,29 @@ pub fn inspect_canonical_rgb8(
             colored_level_pixels_min: layout.music_select.presence.colored_level_pixels_min,
             bright_label_pixels,
             bright_label_pixels_min: layout.music_select.presence.bright_label_pixels_min,
+        },
+        decide_transition_presence: DecideTransitionPresenceEvidence {
+            cyan_pixels: decide_cyan_pixels,
+            cyan_pixels_min: screen_path_layout
+                .decide_transition
+                .presence
+                .cyan_pixels_min,
+            bright_pixels: decide_bright_pixels,
+            bright_pixels_min: screen_path_layout
+                .decide_transition
+                .presence
+                .bright_pixels_min,
+            saturated_pixels: decide_saturated_pixels,
+            saturated_pixels_min: screen_path_layout
+                .decide_transition
+                .presence
+                .saturated_pixels_min,
+        },
+        play_presence: PlayPresenceEvidence {
+            cyan_lane_edge_pixels,
+            cyan_lane_edge_pixels_min: screen_path_layout.play.presence.cyan_lane_edge_pixels_min,
+            warm_header_pixels,
+            warm_header_pixels_min: screen_path_layout.play.presence.warm_header_pixels_min,
         },
     })
 }
@@ -1635,7 +1855,9 @@ pub fn route_screen_rgb8_crops(
             selected_chart: crop(pixels, context.music_select.selected_chart)?,
             active_list_title: crop(pixels, context.music_select.active_list_title)?,
         })),
-        ScreenClass::Unknown => Err(RecognitionError::InvalidCanonicalFrame),
+        ScreenClass::DecideTransition | ScreenClass::Play | ScreenClass::Unknown => {
+            Err(RecognitionError::InvalidCanonicalFrame)
+        }
     }
 }
 
@@ -1819,7 +2041,9 @@ fn read_integrated_context_crop_artifact(
                 layout.music_select.active_list_title,
             ),
         ],
-        ScreenClass::Unknown => return Err(RecognitionError::InvalidCanonicalFrame),
+        ScreenClass::DecideTransition | ScreenClass::Play | ScreenClass::Unknown => {
+            return Err(RecognitionError::InvalidCanonicalFrame);
+        }
     };
     if artifact.crops.len() != expected.len() {
         return Err(RecognitionError::InvalidCanonicalFrame);
@@ -2012,6 +2236,50 @@ mod tests {
                 pixels[upper..upper + 3].copy_from_slice(&[0, 0, 0]);
                 pixels[lower..lower + 3].copy_from_slice(&[255, 255, 255]);
             }
+        }
+    }
+
+    fn paint_decide_transition_presence(pixels: &mut [u8], layout: &ScreenPathLayout) {
+        let roi = layout.decide_transition.splash;
+        let paint = |pixels: &mut [u8], index: usize, color: [u8; 3]| {
+            let x = roi.x as usize + index % roi.width as usize;
+            let y = roi.y as usize + index / roi.width as usize;
+            pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&color);
+        };
+        for index in 0..layout.decide_transition.presence.cyan_pixels_min as usize {
+            paint(pixels, index, [20, 160, 220]);
+        }
+        let saturated_remainder = layout
+            .decide_transition
+            .presence
+            .saturated_pixels_min
+            .saturating_sub(layout.decide_transition.presence.cyan_pixels_min);
+        for index in 0..saturated_remainder as usize {
+            paint(
+                pixels,
+                layout.decide_transition.presence.cyan_pixels_min as usize + index,
+                [220, 40, 40],
+            );
+        }
+        for index in 0..layout.decide_transition.presence.bright_pixels_min as usize {
+            paint(
+                pixels,
+                layout.decide_transition.presence.saturated_pixels_min as usize + index,
+                [220, 220, 220],
+            );
+        }
+    }
+
+    fn paint_play_presence(pixels: &mut [u8], layout: &ScreenPathLayout) {
+        for index in 0..layout.play.presence.cyan_lane_edge_pixels_min as usize {
+            let x = layout.play.lane_edge.x as usize + index % layout.play.lane_edge.width as usize;
+            let y = layout.play.lane_edge.y as usize + index / layout.play.lane_edge.width as usize;
+            pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&[20, 160, 220]);
+        }
+        for index in 0..layout.play.presence.warm_header_pixels_min as usize {
+            let x = layout.play.header.x as usize + index % layout.play.header.width as usize;
+            let y = layout.play.header.y as usize + index / layout.play.header.width as usize;
+            pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&[200, 120, 40]);
         }
     }
 
@@ -2265,6 +2533,44 @@ mod tests {
                 ScreenClass::Result
             );
         }
+    }
+
+    #[test]
+    fn decide_transition_and_play_presence_are_exactly_one_fail_closed() {
+        let layout = ScreenPathLayout::load().unwrap();
+        let mut decide = vec![0_u8; CANONICAL_BYTES];
+        paint_decide_transition_presence(&mut decide, &layout);
+        let decide = inspect(&test_frame(decide)).unwrap();
+        assert_eq!(decide.screen, ScreenClass::DecideTransition);
+        assert_eq!(
+            decide.decide_transition_presence.cyan_pixels,
+            layout.decide_transition.presence.cyan_pixels_min
+        );
+        assert_eq!(
+            decide.decide_transition_presence.bright_pixels,
+            layout.decide_transition.presence.bright_pixels_min
+        );
+
+        let mut play = vec![0_u8; CANONICAL_BYTES];
+        paint_play_presence(&mut play, &layout);
+        let play = inspect(&test_frame(play)).unwrap();
+        assert_eq!(play.screen, ScreenClass::Play);
+        assert_eq!(
+            play.play_presence.cyan_lane_edge_pixels,
+            layout.play.presence.cyan_lane_edge_pixels_min
+        );
+        assert_eq!(
+            play.play_presence.warm_header_pixels,
+            layout.play.presence.warm_header_pixels_min
+        );
+
+        let mut overlap = vec![0_u8; CANONICAL_BYTES];
+        paint_decide_transition_presence(&mut overlap, &layout);
+        paint_play_presence(&mut overlap, &layout);
+        assert_eq!(
+            inspect(&test_frame(overlap)).unwrap().screen,
+            ScreenClass::Unknown
+        );
     }
 
     #[test]

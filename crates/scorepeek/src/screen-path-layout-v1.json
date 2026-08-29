@@ -1,0 +1,22 @@
+{
+  "schema": "scorepeek-screen-path-layout-v1",
+  "canonical_frame_contract_id": "scorepeek-canonical-rgb8-1920x1080-v1",
+  "width": 1920,
+  "height": 1080,
+  "decide_transition": {
+    "presence": {
+      "cyan_pixels_min": 115000,
+      "bright_pixels_min": 50000,
+      "saturated_pixels_min": 150000
+    },
+    "splash": { "x": 700, "y": 300, "width": 520, "height": 460 }
+  },
+  "play": {
+    "presence": {
+      "cyan_lane_edge_pixels_min": 10000,
+      "warm_header_pixels_min": 7000
+    },
+    "lane_edge": { "x": 0, "y": 100, "width": 50, "height": 850 },
+    "header": { "x": 1550, "y": 0, "width": 370, "height": 60 }
+  }
+}
