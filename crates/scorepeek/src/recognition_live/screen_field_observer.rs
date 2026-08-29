@@ -1,10 +1,13 @@
+use scorepeek::catalog::Catalog;
 use scorepeek::recognition::{
     CatalogCandidateDomain, CatalogCandidateDomainError, MusicSelectSongResolution,
-    OnnxParityError, RegisteredRecognitionResources, RegisteredResourceLoadError,
-    ResultSongResolution, ScreenCatalogCandidateObservations, ScreenFieldObservationError,
-    ScreenFieldObservations, ScreenSongResolution, observe_screen_fields,
-    resolve_music_select_song, resolve_result_song,
+    OnnxParityError, ParsedResultFields, RegisteredRecognitionResources,
+    RegisteredResourceLoadError, ResultChartResolution, ResultSongResolution,
+    ScreenCatalogCandidateObservations, ScreenFieldObservationError, ScreenFieldObservations,
+    ScreenSongResolution, assist_unknown_result_song_with_chart, matching_single_play_songs,
+    observe_screen_fields, resolve_music_select_song, resolve_result_chart, resolve_result_song,
 };
+use serde::Serialize;
 use std::error::Error;
 use std::fmt;
 
@@ -68,23 +71,85 @@ pub struct RegisteredScreenFieldObservation {
     candidates: ScreenCatalogCandidateObservations,
     song_resolution: ScreenSongResolution,
     clear_type: Option<&'static str>,
+    parsed_result_fields: Option<ParsedResultFields>,
+    result_chart_resolution: Option<ResultChartResolution>,
+    current_score_ocr_resolution: Option<CurrentScoreOcrResolution>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CurrentScoreOcrSelection {
+    Primary,
+    CyanRetry,
+    CyanRetryTrailingEight,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CurrentScoreOcrResolution {
+    pub primary: CurrentScoreOcrAttempt,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cyan_retry: Option<CurrentScoreOcrAttempt>,
+    pub selection: CurrentScoreOcrSelection,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CurrentScoreOcrAttempt {
+    pub input_width: usize,
+    pub output_timesteps: usize,
+    pub open_text: String,
+}
+
+impl From<&scorepeek::recognition::DynamicTextObservation> for CurrentScoreOcrAttempt {
+    fn from(value: &scorepeek::recognition::DynamicTextObservation) -> Self {
+        Self {
+            input_width: value.input_width,
+            output_timesteps: value.output_timesteps,
+            open_text: value.open_text.clone(),
+        }
+    }
 }
 
 impl RegisteredScreenFieldObservation {
+    #[cfg(test)]
     pub(crate) fn from_fields(
         candidate_domain: &CatalogCandidateDomain,
         fields: ScreenFieldObservations,
     ) -> Self {
+        Self::from_fields_with_catalog(candidate_domain, &Catalog::default(), fields)
+    }
+
+    pub(crate) fn from_fields_with_catalog(
+        candidate_domain: &CatalogCandidateDomain,
+        catalog: &Catalog,
+        fields: ScreenFieldObservations,
+    ) -> Self {
         let candidates = candidate_domain.observe(&fields);
+        let parsed_result_fields = match &fields {
+            ScreenFieldObservations::Result(fields) => {
+                Some(ParsedResultFields::from_observations(fields))
+            }
+            ScreenFieldObservations::MusicSelect(_) => None,
+        };
         let song_resolution = match (&fields, &candidates) {
             (
                 ScreenFieldObservations::Result(fields),
                 ScreenCatalogCandidateObservations::Result { candidates, .. },
-            ) => ScreenSongResolution::Result(resolve_result_song(
-                &fields.title.open_text,
-                &fields.artist.open_text,
-                candidates,
-            )),
+            ) => {
+                let primary = resolve_result_song(
+                    &fields.title.open_text,
+                    &fields.artist.open_text,
+                    candidates,
+                );
+                let matching_song_ids = parsed_result_fields
+                    .as_ref()
+                    .map_or_else(Vec::new, |parsed| {
+                        matching_single_play_songs(catalog, parsed)
+                    });
+                ScreenSongResolution::Result(assist_unknown_result_song_with_chart(
+                    primary,
+                    &matching_song_ids,
+                ))
+            }
             (
                 ScreenFieldObservations::MusicSelect(fields),
                 ScreenCatalogCandidateObservations::MusicSelect { candidates, .. },
@@ -102,11 +167,20 @@ impl RegisteredScreenFieldObservation {
             }
             ScreenFieldObservations::MusicSelect(_) => None,
         };
+        let result_chart_resolution = match (&song_resolution, &parsed_result_fields) {
+            (ScreenSongResolution::Result(resolution), Some(parsed)) => resolution
+                .accepted_song_id()
+                .map(|song_id| resolve_result_chart(catalog, song_id, parsed)),
+            _ => None,
+        };
         Self {
             fields,
             candidates,
             song_resolution,
             clear_type,
+            parsed_result_fields,
+            result_chart_resolution,
+            current_score_ocr_resolution: None,
         }
     }
 
@@ -144,6 +218,21 @@ impl RegisteredScreenFieldObservation {
     #[must_use]
     pub const fn clear_type(&self) -> Option<&'static str> {
         self.clear_type
+    }
+
+    #[must_use]
+    pub const fn parsed_result_fields(&self) -> Option<&ParsedResultFields> {
+        self.parsed_result_fields.as_ref()
+    }
+
+    #[must_use]
+    pub const fn result_chart_resolution(&self) -> Option<&ResultChartResolution> {
+        self.result_chart_resolution.as_ref()
+    }
+
+    #[must_use]
+    pub const fn current_score_ocr_resolution(&self) -> Option<&CurrentScoreOcrResolution> {
+        self.current_score_ocr_resolution.as_ref()
     }
 }
 
@@ -204,27 +293,101 @@ impl FieldObserver for RegisteredScreenFieldObserver {
         Result<RegisteredScreenFieldObservation, ScreenFieldObservationError<OnnxParityError>>;
 
     fn observe(&mut self, input: &FieldObserverInput) -> Self::Output {
-        let fields = observe_screen_fields(input.crops(), |crop| {
-            self.resources.title_runtime().observe_open_text(crop)
+        let mut current_score_ocr_resolution = None;
+        let fields = observe_screen_fields(input.crops(), |field, crop| {
+            let primary = self.resources.title_runtime().observe_open_text(crop)?;
+            if field != scorepeek::recognition::ScreenTextField::ResultCurrentScore
+                || (!primary.open_text.is_empty() && !primary.open_text.ends_with('0'))
+            {
+                if field == scorepeek::recognition::ScreenTextField::ResultCurrentScore {
+                    current_score_ocr_resolution = Some(CurrentScoreOcrResolution {
+                        primary: (&primary).into(),
+                        cyan_retry: None,
+                        selection: CurrentScoreOcrSelection::Primary,
+                    });
+                }
+                return Ok(primary);
+            }
+            let Some(content) = crop.cyan_content_crop() else {
+                current_score_ocr_resolution = Some(CurrentScoreOcrResolution {
+                    primary: (&primary).into(),
+                    cyan_retry: None,
+                    selection: CurrentScoreOcrSelection::Primary,
+                });
+                return Ok(primary);
+            };
+            let retry = self.resources.title_runtime().observe_open_text(&content)?;
+            let (selected, selection) = select_current_score_observation(&primary, &retry);
+            current_score_ocr_resolution = Some(CurrentScoreOcrResolution {
+                primary: (&primary).into(),
+                cyan_retry: Some((&retry).into()),
+                selection,
+            });
+            Ok(selected)
         })?;
-        Ok(RegisteredScreenFieldObservation::from_fields(
+        let mut observation = RegisteredScreenFieldObservation::from_fields_with_catalog(
             &self.candidate_domain,
+            self.resources.catalog(),
             fields,
-        ))
+        );
+        observation.current_score_ocr_resolution = current_score_ocr_resolution;
+        Ok(observation)
     }
+}
+
+fn select_current_score_observation(
+    primary: &scorepeek::recognition::DynamicTextObservation,
+    retry: &scorepeek::recognition::DynamicTextObservation,
+) -> (
+    scorepeek::recognition::DynamicTextObservation,
+    CurrentScoreOcrSelection,
+) {
+    if primary.open_text.is_empty() {
+        return (retry.clone(), CurrentScoreOcrSelection::CyanRetry);
+    }
+    if let (Some(primary_prefix), Some(retry_prefix)) = (
+        primary.open_text.strip_suffix('0'),
+        retry.open_text.strip_suffix('日'),
+    ) && primary_prefix == retry_prefix
+    {
+        let mut selected = retry.clone();
+        selected.open_text = format!("{retry_prefix}8");
+        return (selected, CurrentScoreOcrSelection::CyanRetryTrailingEight);
+    }
+    (primary.clone(), CurrentScoreOcrSelection::Primary)
 }
 
 #[cfg(test)]
 mod tests {
     use scorepeek::catalog::Catalog;
     use scorepeek::recognition::{
-        DynamicTextObservation, FieldNotObserved, FieldNotObservedReason,
-        MusicSelectScreenFieldObservations, MusicSelectSongResolution,
+        DynamicTextObservation, MusicSelectScreenFieldObservations, MusicSelectSongResolution,
         MusicSelectSongUnknownReason, ResultScreenFieldObservations, ResultSongResolution,
         ResultSongUnknownReason,
     };
 
     use super::*;
+
+    fn dynamic(value: &str) -> DynamicTextObservation {
+        DynamicTextObservation {
+            input_width: 1,
+            output_timesteps: 1,
+            open_text: value.to_owned(),
+        }
+    }
+
+    #[test]
+    fn current_score_retry_is_bounded_and_preserves_both_attempts() {
+        let (selected, selection) =
+            select_current_score_observation(&dynamic("1130"), &dynamic("113日"));
+        assert_eq!(selected.open_text, "1138");
+        assert_eq!(selection, CurrentScoreOcrSelection::CyanRetryTrailingEight);
+
+        let (selected, selection) =
+            select_current_score_observation(&dynamic("1286"), &dynamic("1206"));
+        assert_eq!(selected.open_text, "1286");
+        assert_eq!(selection, CurrentScoreOcrSelection::Primary);
+    }
 
     #[test]
     fn clear_type_resolution_accepts_only_a_unique_one_edit_registered_value() {
@@ -254,17 +417,25 @@ mod tests {
                 output_timesteps: 1,
                 open_text: "FAILED".to_owned(),
             },
-            difficulty: FieldNotObserved {
-                reason: FieldNotObservedReason::ObserverNotImplemented,
+            difficulty: DynamicTextObservation {
+                input_width: 1,
+                output_timesteps: 1,
+                open_text: "HYPER".to_owned(),
             },
-            level: FieldNotObserved {
-                reason: FieldNotObservedReason::ObserverNotImplemented,
+            level: DynamicTextObservation {
+                input_width: 1,
+                output_timesteps: 1,
+                open_text: "8".to_owned(),
             },
-            notes: FieldNotObserved {
-                reason: FieldNotObservedReason::ObserverNotImplemented,
+            notes: DynamicTextObservation {
+                input_width: 1,
+                output_timesteps: 1,
+                open_text: "127".to_owned(),
             },
-            current_score: FieldNotObserved {
-                reason: FieldNotObservedReason::ObserverNotImplemented,
+            current_score: DynamicTextObservation {
+                input_width: 1,
+                output_timesteps: 1,
+                open_text: "1".to_owned(),
             },
         });
         let output = RegisteredScreenFieldObservation::from_fields(&domain, fields.clone());
@@ -291,9 +462,7 @@ mod tests {
         let fields = ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
             central_title: text("texture"),
             artist: text("artist"),
-            selected_chart: FieldNotObserved {
-                reason: FieldNotObservedReason::ObserverNotImplemented,
-            },
+            selected_chart: text("HYPER 8"),
             active_list_title: text("TITLE"),
         });
         let output = RegisteredScreenFieldObservation::from_fields(&domain, fields.clone());

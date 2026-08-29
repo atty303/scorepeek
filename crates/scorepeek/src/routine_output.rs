@@ -22,6 +22,8 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use scorepeek::catalog::{Difficulty, PlayType, ScorepeekSongId};
+use scorepeek::recognition::{ParsedResultFields, ResultChartResolution};
 use scorepeek::temporal_recognition::{
     MusicSelectTemporalPolicy, MusicSelectTemporalReducer, MusicSelectTemporalState,
     MusicSelectTemporalTransitionReason, ResultTemporalReducer, ResultTemporalState,
@@ -77,7 +79,19 @@ pub enum RunEventKind {
         fields: Value,
         result_song_resolution: Value,
         music_select_song_resolution: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parsed_result_fields: Option<ParsedResultFields>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result_chart_resolution: Option<ResultChartResolution>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        current_score_ocr_resolution: Option<Value>,
         song_resolution_presentation: Box<SongResolutionPresentation>,
+    },
+    ResultDetected {
+        session_id: String,
+        capture_generation: u64,
+        source_sequence: u64,
+        result: ResultDomainEvent,
     },
     TemporalResultChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -123,6 +137,21 @@ pub enum RunEventKind {
         invocation_id: String,
         reason: String,
     },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ResultDomainEvent {
+    pub contract: String,
+    pub scorepeek_song_id: ScorepeekSongId,
+    pub savable: bool,
+    pub play_side: String,
+    pub play_mode: String,
+    pub play_type: PlayType,
+    pub difficulty: Difficulty,
+    pub level: u8,
+    pub notes: u32,
+    pub current_score: u32,
+    pub clear_type: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -175,6 +204,7 @@ pub struct RunViewState {
     latest_stabilized_result: Option<Value>,
     latest_temporal_music_select: Option<Value>,
     latest_play_attempt: Option<Value>,
+    latest_result_detected: Option<Value>,
     latest_report: Option<Value>,
     status_recording: &'static str,
     next_channel_sequence: u64,
@@ -200,6 +230,7 @@ impl RunViewState {
             latest_stabilized_result: None,
             latest_temporal_music_select: None,
             latest_play_attempt: None,
+            latest_result_detected: None,
             latest_report: None,
             status_recording: if recording_enabled {
                 "ready"
@@ -228,6 +259,7 @@ impl RunViewState {
                 self.latest_stabilized_result = None;
                 self.latest_temporal_music_select = None;
                 self.latest_play_attempt = None;
+                self.latest_result_detected = None;
                 self.latest_report = None;
                 "Gamescope session admitted".clone_into(&mut self.message);
             }
@@ -245,6 +277,9 @@ impl RunViewState {
             }
             RunEventKind::PlayAttemptChanged { .. } => {
                 self.latest_play_attempt = Some(serialized.clone());
+            }
+            RunEventKind::ResultDetected { .. } => {
+                self.latest_result_detected = Some(serialized.clone());
             }
             RunEventKind::SessionFinished {
                 outcome, report, ..
@@ -265,6 +300,7 @@ impl RunViewState {
                 self.latest_stabilized_result = None;
                 self.latest_temporal_music_select = None;
                 self.latest_play_attempt = None;
+                self.latest_result_detected = None;
                 "scorepeek stopped by signal".clone_into(&mut self.message);
             }
         }
@@ -605,6 +641,7 @@ pub struct RoutineOutput {
     retained_music_select_song: Option<SongPresentation>,
     candidate_music_select_song: Option<SongPresentation>,
     play_attempt: PlayAttemptReducer<SongPresentation>,
+    result_event_emitted: bool,
     event_store: Option<PathBuf>,
     event_worker: Option<RunEventArtifactWorker>,
     completed_event_artifact: Option<RunEventArtifactOutcome>,
@@ -647,6 +684,7 @@ impl RoutineOutput {
             retained_music_select_song: None,
             candidate_music_select_song: None,
             play_attempt: PlayAttemptReducer::default(),
+            result_event_emitted: false,
             event_store,
             event_worker: None,
             completed_event_artifact: None,
@@ -666,6 +704,7 @@ impl RoutineOutput {
                 self.retained_music_select_song = None;
                 self.candidate_music_select_song = None;
                 self.play_attempt.reset_session();
+                self.result_event_emitted = false;
                 self.completed_event_artifact = None;
                 self.event_worker =
                     self.event_store.as_deref().zip(session_id.as_deref()).map(
@@ -680,7 +719,8 @@ impl RoutineOutput {
             RunEventKind::WatcherStarted { .. }
             | RunEventKind::TemporalResultChanged { .. }
             | RunEventKind::TemporalMusicSelectChanged { .. }
-            | RunEventKind::PlayAttemptChanged { .. } => self.publish_one(event),
+            | RunEventKind::PlayAttemptChanged { .. }
+            | RunEventKind::ResultDetected { .. } => self.publish_one(event),
         }
     }
 
@@ -729,6 +769,7 @@ impl RoutineOutput {
             monotonic_end_ms,
             screen,
             fields,
+            result_chart_resolution,
             song_resolution_presentation,
             ..
         } = &event.kind
@@ -743,6 +784,7 @@ impl RoutineOutput {
                 *sequence,
                 *monotonic_end_ms,
                 fields,
+                result_chart_resolution.as_ref(),
                 song_resolution_presentation,
             ),
             "music_select" => self.reduce_music_select_observation(
@@ -756,6 +798,7 @@ impl RoutineOutput {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn reduce_result_observation(
         &mut self,
         session_id: Option<&String>,
@@ -763,49 +806,94 @@ impl RoutineOutput {
         sequence: u64,
         monotonic_end_ms: u64,
         fields: &Value,
+        result_chart_resolution: Option<&ResultChartResolution>,
         song_resolution_presentation: &SongResolutionPresentation,
     ) -> Result<(), String> {
-        let song = match song_resolution_presentation {
+        let observed_song = match song_resolution_presentation {
             SongResolutionPresentation::Accepted { selected, .. } => {
                 Some(selected.scorepeek_song_id)
             }
             SongResolutionPresentation::Unknown { .. } => None,
         };
-        let clear_type = fields
+        let observed_clear_type = fields
             .get("clear_type")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned);
-        let Some(update) =
-            self.temporal_result
-                .observe_result(sequence, monotonic_end_ms, song, clear_type)
-        else {
-            return Ok(());
-        };
-        if let Some(stable_song_id) = update.state.song.stable_value() {
-            if let SongResolutionPresentation::Accepted { selected, .. } =
-                song_resolution_presentation
-                && selected.scorepeek_song_id == *stable_song_id
-            {
-                self.stable_result_song = Some(selected.clone());
+        if let Some(update) = self.temporal_result.observe_result(
+            sequence,
+            monotonic_end_ms,
+            observed_song,
+            observed_clear_type.clone(),
+        ) {
+            if let Some(stable_song_id) = update.state.song.stable_value() {
+                if let SongResolutionPresentation::Accepted { selected, .. } =
+                    song_resolution_presentation
+                    && selected.scorepeek_song_id == *stable_song_id
+                {
+                    self.stable_result_song = Some(selected.clone());
+                }
+            } else {
+                self.stable_result_song = None;
             }
-        } else {
-            self.stable_result_song = None;
-        }
-        self.publish_temporal_update(
-            session_id.cloned(),
-            capture_generation,
-            Some(sequence),
-            update,
-        )?;
-        if let Some(song) = self.stable_result_song.clone()
-            && let Some(state) = self.play_attempt.observe_stable_result(song)
-        {
-            self.publish_play_attempt_update(
+            self.publish_temporal_update(
                 session_id.cloned(),
                 capture_generation,
                 Some(sequence),
-                state,
+                update,
             )?;
+            if let Some(song) = self.stable_result_song.clone()
+                && let Some(state) = self.play_attempt.observe_stable_result(song)
+            {
+                self.publish_play_attempt_update(
+                    session_id.cloned(),
+                    capture_generation,
+                    Some(sequence),
+                    state,
+                )?;
+            }
+        }
+        if !self.result_event_emitted
+            && let (Some(session_id), Some(capture_generation)) =
+                (session_id.cloned(), capture_generation)
+            && let (
+                Some(stable_song),
+                Some(stable_clear_type),
+                Some(ResultChartResolution::Accepted {
+                    chart,
+                    current_score,
+                    ..
+                }),
+            ) = (
+                self.stable_result_song.as_ref(),
+                self.temporal_result.state().clear_type.stable_value(),
+                result_chart_resolution,
+            )
+            && Some(stable_song.scorepeek_song_id) == observed_song
+            && Some(stable_clear_type.as_str()) == observed_clear_type.as_deref()
+        {
+            let result = ResultDomainEvent {
+                contract: "scorepeek-result-detected-v1".to_owned(),
+                scorepeek_song_id: stable_song.scorepeek_song_id,
+                savable: true,
+                play_side: "one_player".to_owned(),
+                play_mode: "single_play".to_owned(),
+                play_type: chart.key.play_type,
+                difficulty: chart.key.difficulty,
+                level: chart.level,
+                notes: chart.notes,
+                current_score: *current_score,
+                clear_type: stable_clear_type.clone(),
+            };
+            self.publish_one(&RunEvent {
+                schema: "scorepeek-run-event-v2".to_owned(),
+                kind: RunEventKind::ResultDetected {
+                    session_id,
+                    capture_generation,
+                    source_sequence: sequence,
+                    result,
+                },
+            })?;
+            self.result_event_emitted = true;
         }
         Ok(())
     }
@@ -928,6 +1016,7 @@ impl RoutineOutput {
                 .reset(TemporalTransitionReason::ResetByScreenChange)
         {
             self.stable_result_song = None;
+            self.result_event_emitted = false;
             self.publish_temporal_update(
                 session_id.clone(),
                 *capture_generation,
@@ -1853,6 +1942,30 @@ mod tests {
         )))
     }
 
+    fn test_output(state: Arc<Mutex<RunViewState>>, channel: ObservationChannel) -> RoutineOutput {
+        RoutineOutput {
+            state,
+            channel,
+            display: Display::Plain {
+                output: BufWriter::new(io::stdout()),
+                last_line: None,
+            },
+            next_sequence: 1,
+            temporal_result: ResultTemporalReducer::new(TemporalPolicy::new(2, 250).unwrap()),
+            stable_result_song: None,
+            temporal_music_select: MusicSelectTemporalReducer::new(
+                MusicSelectTemporalPolicy::new(200, 200, 250).unwrap(),
+            ),
+            retained_music_select_song: None,
+            candidate_music_select_song: None,
+            play_attempt: PlayAttemptReducer::default(),
+            result_event_emitted: false,
+            event_store: None,
+            event_worker: None,
+            completed_event_artifact: None,
+        }
+    }
+
     fn accepted_result_event(sequence: u64) -> RunEvent {
         let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
         RunEvent {
@@ -1872,6 +1985,20 @@ mod tests {
                 }),
                 result_song_resolution: json!({ "status": "accepted" }),
                 music_select_song_resolution: Value::Null,
+                parsed_result_fields: None,
+                result_chart_resolution: Some(ResultChartResolution::Accepted {
+                    resolver_id: "scorepeek-result-fields-catalog-constrained-v1".to_owned(),
+                    chart: scorepeek::catalog::Chart {
+                        key: scorepeek::catalog::ChartKey {
+                            play_type: PlayType::Single,
+                            difficulty: Difficulty::Hyper,
+                        },
+                        level: 8,
+                        notes: 764,
+                    },
+                    current_score: 1_286,
+                }),
+                current_score_ocr_resolution: None,
                 song_resolution_presentation: Box::new(SongResolutionPresentation::Accepted {
                     reason: None,
                     selected: SongPresentation {
@@ -1912,6 +2039,19 @@ mod tests {
             runner_up: None,
             evidence_summary: None,
         };
+        event
+    }
+
+    fn accepted_result_without_chart(sequence: u64) -> RunEvent {
+        let mut event = accepted_result_event(sequence);
+        let RunEventKind::FieldObservation {
+            result_chart_resolution,
+            ..
+        } = &mut event.kind
+        else {
+            unreachable!();
+        };
+        *result_chart_resolution = None;
         event
     }
 
@@ -2113,30 +2253,11 @@ mod tests {
         let mut reader = BufReader::new(stream);
         let mut snapshot = String::new();
         reader.read_line(&mut snapshot).unwrap();
-        let mut output = RoutineOutput {
-            state,
-            channel,
-            display: Display::Plain {
-                output: BufWriter::new(io::stdout()),
-                last_line: None,
-            },
-            next_sequence: 1,
-            temporal_result: ResultTemporalReducer::new(TemporalPolicy::new(2, 250).unwrap()),
-            stable_result_song: None,
-            temporal_music_select: MusicSelectTemporalReducer::new(
-                MusicSelectTemporalPolicy::new(200, 200, 250).unwrap(),
-            ),
-            retained_music_select_song: None,
-            candidate_music_select_song: None,
-            play_attempt: PlayAttemptReducer::default(),
-            event_store: None,
-            event_worker: None,
-            completed_event_artifact: None,
-        };
+        let mut output = test_output(state, channel);
 
         output.publish(&accepted_result_event(1)).unwrap();
         output.publish(&accepted_result_event(2)).unwrap();
-        let events = read_events(&mut reader, 4);
+        let events = read_events(&mut reader, 5);
         assert_eq!(events[0]["event"], "field_observation");
         assert_eq!(events[1]["event"], "temporal_result_changed");
         assert_eq!(events[1]["state"]["song"]["status"], "pending");
@@ -2144,6 +2265,11 @@ mod tests {
         assert_eq!(events[3]["event"], "temporal_result_changed");
         assert_eq!(events[3]["state"]["song"]["status"], "stable");
         assert_eq!(events[3]["state"]["clear_type"]["status"], "stable");
+        assert_eq!(events[4]["event"], "result_detected");
+        assert_eq!(events[4]["result"]["play_side"], "one_player");
+        assert_eq!(events[4]["result"]["play_mode"], "single_play");
+        assert_eq!(events[4]["result"]["difficulty"], "hyper");
+        assert_eq!(events[4]["result"]["current_score"], 1_286);
         assert_eq!(
             events[3]["stable_song"]["display_titles"][0],
             "CATALOG TITLE"
@@ -2153,7 +2279,7 @@ mod tests {
                 .iter()
                 .map(|event| event["channel_sequence"].as_u64().unwrap())
                 .collect::<Vec<_>>(),
-            vec![1, 2, 3, 4]
+            vec![1, 2, 3, 4, 5]
         );
 
         output.publish(&unknown_result_event(3)).unwrap();
@@ -2161,7 +2287,7 @@ mod tests {
         reader.read_line(&mut line).unwrap();
         let raw_unknown: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(raw_unknown["event"], "field_observation");
-        assert_eq!(raw_unknown["channel_sequence"], 5);
+        assert_eq!(raw_unknown["channel_sequence"], 6);
         let state = output.state.lock().unwrap();
         assert_stabilized_fields(&state, "stable");
         drop(state);
@@ -2183,7 +2309,7 @@ mod tests {
         assert_eq!(boundary_events[0]["event"], "screen_changed");
         assert_eq!(boundary_events[1]["event"], "temporal_result_changed");
         assert_eq!(boundary_events[1]["state"]["song"]["status"], "empty");
-        assert_eq!(boundary_events[1]["channel_sequence"], 7);
+        assert_eq!(boundary_events[1]["channel_sequence"], 8);
 
         output.publish(&accepted_result_event(5)).unwrap();
         let after_boundary = read_events(&mut reader, 2);
@@ -2204,7 +2330,41 @@ mod tests {
         let session_events = read_events(&mut reader, 2);
         assert_eq!(session_events[0]["event"], "session_finished");
         assert_eq!(session_events[1]["event"], "temporal_result_changed");
-        assert_eq!(session_events[1]["channel_sequence"], 11);
+        assert_eq!(session_events[1]["channel_sequence"], 12);
+    }
+
+    #[test]
+    fn complete_context_after_temporal_stability_emits_once() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = state();
+        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
+        let stream = UnixStream::connect(&channel.socket_path).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut snapshot = String::new();
+        reader.read_line(&mut snapshot).unwrap();
+        let mut output = test_output(state, channel);
+
+        output.publish(&accepted_result_without_chart(1)).unwrap();
+        output.publish(&accepted_result_without_chart(2)).unwrap();
+        let stabilization = read_events(&mut reader, 4);
+        assert!(
+            stabilization
+                .iter()
+                .all(|event| event["event"] != "result_detected")
+        );
+        assert_eq!(stabilization[3]["state"]["song"]["status"], "stable");
+
+        output.publish(&accepted_result_event(3)).unwrap();
+        let completed = read_events(&mut reader, 2);
+        assert_eq!(completed[0]["event"], "field_observation");
+        assert_eq!(completed[1]["event"], "result_detected");
+        assert_eq!(completed[1]["source_sequence"], 3);
+
+        output.publish(&accepted_result_event(4)).unwrap();
+        assert_eq!(read_events(&mut reader, 1)[0]["event"], "field_observation");
     }
 
     #[test]
@@ -2219,26 +2379,7 @@ mod tests {
         let mut reader = BufReader::new(stream);
         let mut snapshot = String::new();
         reader.read_line(&mut snapshot).unwrap();
-        let mut output = RoutineOutput {
-            state,
-            channel,
-            display: Display::Plain {
-                output: BufWriter::new(io::stdout()),
-                last_line: None,
-            },
-            next_sequence: 1,
-            temporal_result: ResultTemporalReducer::new(TemporalPolicy::new(2, 250).unwrap()),
-            stable_result_song: None,
-            temporal_music_select: MusicSelectTemporalReducer::new(
-                MusicSelectTemporalPolicy::new(200, 200, 250).unwrap(),
-            ),
-            retained_music_select_song: None,
-            candidate_music_select_song: None,
-            play_attempt: PlayAttemptReducer::default(),
-            event_store: None,
-            event_worker: None,
-            completed_event_artifact: None,
-        };
+        let mut output = test_output(state, channel);
 
         for sequence in 1..=3 {
             output
@@ -2308,26 +2449,7 @@ mod tests {
         let mut reader = BufReader::new(stream);
         let mut snapshot = String::new();
         reader.read_line(&mut snapshot).unwrap();
-        let mut output = RoutineOutput {
-            state,
-            channel,
-            display: Display::Plain {
-                output: BufWriter::new(io::stdout()),
-                last_line: None,
-            },
-            next_sequence: 1,
-            temporal_result: ResultTemporalReducer::new(TemporalPolicy::new(2, 250).unwrap()),
-            stable_result_song: None,
-            temporal_music_select: MusicSelectTemporalReducer::new(
-                MusicSelectTemporalPolicy::new(200, 200, 250).unwrap(),
-            ),
-            retained_music_select_song: None,
-            candidate_music_select_song: None,
-            play_attempt: PlayAttemptReducer::default(),
-            event_store: None,
-            event_worker: None,
-            completed_event_artifact: None,
-        };
+        let mut output = test_output(state, channel);
 
         for sequence in 1..=3 {
             output

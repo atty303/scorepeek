@@ -12,10 +12,9 @@ use std::time::{Duration, Instant};
 
 use scorepeek::catalog::{CatalogStore, ScorepeekSongId};
 use scorepeek::recognition::{
-    CanonicalLayout, CatalogCandidateDomain, DynamicTextObservation, FieldNotObserved,
-    FieldNotObservedReason, MusicSelectMotionRegions, MusicSelectScreenFieldObservations, Roi,
-    ScreenCatalogCandidateObservations, ScreenClass, ScreenFieldObservations,
-    resolve_music_select_song,
+    CanonicalLayout, CatalogCandidateDomain, DynamicTextObservation, MusicSelectMotionRegions,
+    MusicSelectScreenFieldObservations, Roi, ScreenCatalogCandidateObservations, ScreenClass,
+    ScreenFieldObservations, resolve_music_select_song,
 };
 use scorepeek::temporal_recognition::{
     MusicSelectTemporalPolicy, MusicSelectTemporalReducer, MusicSelectTemporalState,
@@ -31,6 +30,7 @@ const ACTIVE_SCHEMA: &str = "scorepeek-private-regression-suite-active-v1";
 const SUITE_SCHEMA: &str = "scorepeek-private-regression-suite-v1";
 const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v1";
 const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v5";
+const CURRENT_OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v6";
 const DRAFT_SCHEMA: &str = "scorepeek-private-music-select-motion-review-draft-v1";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-music-select-motion-review-summary-v1";
 const DECISIONS_SCHEMA: &str = "scorepeek-private-music-select-motion-review-decisions-v2";
@@ -1745,7 +1745,7 @@ fn load_dwell_observations(
             return invalid("music-select dwell observation stream exceeds its bound");
         }
         let value: Value = serde_json::from_slice(line)?;
-        if value["schema"] != OBSERVATION_SCHEMA {
+        if value["schema"] != OBSERVATION_SCHEMA && value["schema"] != CURRENT_OBSERVATION_SCHEMA {
             return invalid("music-select dwell observation schema differs");
         }
         let sequence = value["tick_sequence"].as_u64().ok_or_else(|| {
@@ -1802,9 +1802,7 @@ fn resolve_stored_music_select(
     let observations = ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
         central_title: dynamic(text("central_title")),
         artist: dynamic(text("artist")),
-        selected_chart: FieldNotObserved {
-            reason: FieldNotObservedReason::ObserverNotImplemented,
-        },
+        selected_chart: dynamic(String::new()),
         active_list_title: dynamic(text("active_list_title")),
     });
     let candidates = domain.observe(&observations);
@@ -2276,7 +2274,7 @@ fn read_observations(
             return invalid("motion-review observation count exceeds its bound");
         }
         let value: Value = serde_json::from_slice(line)?;
-        if value["schema"] != OBSERVATION_SCHEMA {
+        if value["schema"] != OBSERVATION_SCHEMA && value["schema"] != CURRENT_OBSERVATION_SCHEMA {
             return invalid("motion-review observation schema differs");
         }
         let sequence = value["tick_sequence"].as_u64().ok_or_else(|| {

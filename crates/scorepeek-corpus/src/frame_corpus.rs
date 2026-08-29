@@ -9,6 +9,8 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use scorepeek::catalog::{Difficulty, PlayType};
+use scorepeek::recognition::ResultChartResolution;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -18,7 +20,7 @@ use crate::CorpusError;
 const DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v3";
 const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v1";
 const DRAFT_SCHEMA: &str = "scorepeek-private-session-review-draft-v1";
-const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v1";
+const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v2";
 const SUITE_SCHEMA: &str = "scorepeek-private-regression-suite-v1";
 const ACTIVE_SCHEMA: &str = "scorepeek-private-regression-suite-active-v1";
 const MAX_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
@@ -233,7 +235,21 @@ struct RegressionEpisode {
     episode_id: String,
     expected_song_id: String,
     expected_clear_type: String,
+    expected_result: ExpectedResult,
     stable_sequences: Vec<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ExpectedResult {
+    savable: bool,
+    play_side: String,
+    play_mode: String,
+    play_type: PlayType,
+    difficulty: Difficulty,
+    level: u8,
+    notes: u32,
+    current_score: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1399,6 +1415,7 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
         .map_err(|error| CorpusError::InvalidReplay(format!("model cache failed: {error}")))?;
     let catalog_root = default_catalog_root()?;
     let diagnostic_root = tempfile::tempdir()?;
+    let mut replay_failures = Vec::new();
     for (session_index, entry) in suite.entries.iter().enumerate() {
         let (session, session_bytes) = read_json::<CaptureSession>(
             &store
@@ -1546,7 +1563,7 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
                 if output.clear_type() != Some(episode.expected_clear_type.as_str())
                     || observed_song.as_deref() != Some(&episode.expected_song_id)
                 {
-                    return Err(CorpusError::InvalidReplay(format!(
+                    replay_failures.push(format!(
                         "episode {} tick {} differs: expected song={} clear_type={:?}, observed song={} clear_type={:?} title_ocr={:?} artist_ocr={:?} resolution={:?}",
                         episode.episode_id,
                         sequence,
@@ -1557,7 +1574,42 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
                         fields.title.open_text,
                         fields.artist.open_text,
                         output.result_resolution(),
-                    )));
+                    ));
+                }
+                let expected = &episode.expected_result;
+                match output.result_chart_resolution() {
+                    Some(ResultChartResolution::Accepted {
+                        chart,
+                        current_score,
+                        ..
+                    }) => {
+                        if !expected.savable
+                            || expected.play_side != "one_player"
+                            || expected.play_mode != "single_play"
+                            || chart.key.play_type != expected.play_type
+                            || chart.key.difficulty != expected.difficulty
+                            || chart.level != expected.level
+                            || chart.notes != expected.notes
+                            || *current_score != expected.current_score
+                        {
+                            replay_failures.push(format!(
+                                "episode {} tick {} result context differs: expected={:?}, observed_chart={:?}, observed_score={}",
+                                episode.episode_id, sequence, expected, chart, current_score,
+                            ));
+                        }
+                    }
+                    resolution => replay_failures.push(format!(
+                        "episode {} tick {} result context unresolved: expected={:?}, raw difficulty={:?} level={:?} notes={:?} score={:?}, parsed={:?}, resolution={:?}",
+                        episode.episode_id,
+                        sequence,
+                        expected,
+                        fields.difficulty.open_text,
+                        fields.level.open_text,
+                        fields.notes.open_text,
+                        fields.current_score.open_text,
+                        output.parsed_result_fields(),
+                        resolution,
+                    )),
                 }
             }
             episodes += 1;
@@ -1572,6 +1624,9 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
         {
             return invalid_replay("production recognizer did not finish cleanly");
         }
+    }
+    if !replay_failures.is_empty() {
+        return Err(CorpusError::InvalidReplay(replay_failures.join("; ")));
     }
     Ok(CorpusReplaySummary {
         schema: "scorepeek-private-corpus-replay-v1",
@@ -1967,6 +2022,14 @@ fn validate_label(draft: &ReviewDraft, label: &RegressionLabel) -> Result<(), Co
         if episode.episode_id.is_empty()
             || episode.expected_song_id.is_empty()
             || episode.expected_clear_type.is_empty()
+            || !episode.expected_result.savable
+            || episode.expected_result.play_side != "one_player"
+            || episode.expected_result.play_mode != "single_play"
+            || episode.expected_result.play_type != PlayType::Single
+            || !(1..=12).contains(&episode.expected_result.level)
+            || episode.expected_result.notes == 0
+            || episode.expected_result.current_score
+                > episode.expected_result.notes.saturating_mul(2)
             || episode.stable_sequences.is_empty()
             || episode
                 .stable_sequences

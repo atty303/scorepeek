@@ -69,8 +69,8 @@
   PP-OCRv6-small model digest、固定CPU runtime manifest digestを照合し、catalog/dictionary/ONNX sessionをworker開始前に
   1回だけ保持するproduction resource loaderとread-only gateを実装した。gateはresourceをproduction field workerへ移し、cropを
   submitせずbounded teardownまで確認する。さらにcomplete crop setをworker thread上で登録済みruntimeへ通すproduction
-  screen-field observerを実装した。resultはtitle/artist/clear type textとdifficulty/level/notes/current scoreの明示的な未実装状態、
-  music-selectはcentral title/artist/active-list title textとselected chartの明示的な未実装状態を持つcompleteなscreen別型だけを
+  screen-field observerを実装した。ADR 0078によりresultのtitle/artist/clear type/difficulty/level/notes/current scoreと、
+  music-selectのcentral title/artist/active-list title/selected chartを登録済みruntimeで観測するcompleteなscreen別型だけを
   出力し、単一field失敗もfield ID付きwhole-screen errorにする。diagnosticはscreen、固定field count、失敗field IDを保持し、
   opt-out/rejectionは認識結果を変えない。認識判断を実装する段階ではoperator-owned local artifactへboundedなexact OCR text、
   run単位のexact catalog display/comparison string table、song ID、string reference、全candidate metric、判断と理由も保持する。さらに同一immutable descriptorのrecognition sessionと
@@ -100,7 +100,8 @@
   だけを同一lifetimeで再接続しない。
   registered resourceとcandidate domainをcapture開始前にloadし、Gamescope capture loopからfield submit、inference、全song scoring、
   capture/worker/diagnosticの順序付き終了までを一つのbounded gateへ統合済み。private INFINITAS frameによる実submit、実行cost、
-  queue behavior、candidate内容は未検証で、accepted resultは未実装。
+  queue behaviorとtarget上のfield性能は未検証。ADR 0078のadmitted SP/1P corpus sliceでは、catalog-constrained chart、score、clearを
+  temporal stable songへ結合したprovisional `result_detected`を生成する。public `/v1.sock` event authorityとSP/DP・1P/2P・savability detectorは未実装。
   さらにcorpus録画由来の全canonical frameをsource adapterから同じapplication sessionへ供給するrecording simulationを実装した。
   profileはrecording/recording manifest/source manifest/probe/coverage label/extraction/normalizer/layout/catalog/model/runtime、全frame span、source pacing、diagnostic
   sampling、coverage labelの全resultを一対一で覆うepisode windowとexact `CLEAR TYPE`をbindする。result presenceは固定headerと2本のpanel境界で判定し、可変な背景色や

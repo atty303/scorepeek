@@ -18,8 +18,11 @@ be established, the field is `unknown`.
 - A number is `known` only when every visible slot is accepted and the complete
   value passes its domain and cross-field constraints. Partial digits do not
   form a value.
-- A song is `known` only when full-catalog resolution has one accepted identity
-  and all independent image context available on that screen is compatible.
+- A song is `known` only when full-catalog resolution has one accepted identity.
+  An already accepted primary song remains known when auxiliary chart evidence is missing or
+  contradictory; the chart and complete event become unknown instead of downgrading the song.
+  When the primary result is still ambiguous only at its margin or artist-corroboration gate, a
+  catalog-unique chart may narrow it to the selected primary candidate.
   Result uses title, artist, play mode, difficulty, level, and notes; music
   select uses central title, artist, play mode, selected difficulty, selected
   level, and the active right-list title. The two music-select title
@@ -38,12 +41,12 @@ be established, the field is `unknown`.
 | Field | Applicability predicate | Evidence required for `known` |
 | --- | --- | --- |
 | result state | Precondition for every result event | Unique result-screen anchors; transition, cut-in, overlay, and unknown classes reject |
-| savable | Always for a result candidate; must be `known(true)` to emit | Unique positive or negative state; unknown background, animation, overlay, and corruption remain unknown |
-| playside | Always | Unique 1P or 2P layout anchors |
-| play mode | Always | Unique SP or DP evidence |
+| savable | Always for a result candidate; must be `known(true)` to emit | Current admitted corpus slice provisionally fixes `true`; widening requires a unique positive or negative detector |
+| playside | Always | Current admitted corpus slice provisionally fixes 1P; widening requires unique 1P or 2P layout anchors |
+| play mode | Always | Current admitted corpus slice provisionally fixes SP; widening requires unique SP or DP evidence |
 | play type | Always | SP follows known SP mode; DP battle/non-battle needs explicit evidence and never defaults |
 | song | Always | Accepted title and artist consistent with independently recognized play mode, difficulty, level, and notes; a linked selection may corroborate identity but cannot establish result presence or result-only fields |
-| difficulty and level | Always | Unique closed difficulty and complete level value consistent with the accepted catalog chart |
+| difficulty and level | Always | Unique closed difficulty plus a catalog-unique chart; unreadable level may come from that chart, while a readable conflict rejects the chart |
 | notes | Always | Complete positive integer consistent with the recognized result layout |
 | current score | Always | Complete non-negative value satisfying `score <= 2 * notes` |
 | clear, DJ level, miss | Applicable after each field's presence predicate is independently calibrated | `clear` comes from the exact `CLEAR TYPE` field value, never the result background; each value must be unique and complete, and `miss <= notes` when present |

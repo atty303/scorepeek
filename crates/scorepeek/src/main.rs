@@ -1297,10 +1297,10 @@ fn live_session_event_value(
                         "artist": fields.artist.open_text,
                         "clear_type": observation.clear_type(),
                         "clear_type_ocr": fields.clear_type.open_text,
-                        "difficulty": not_observed_field(),
-                        "level": not_observed_field(),
-                        "notes": not_observed_field(),
-                        "current_score": not_observed_field(),
+                        "difficulty": fields.difficulty.open_text,
+                        "level": fields.level.open_text,
+                        "notes": fields.notes.open_text,
+                        "current_score": fields.current_score.open_text,
                     }),
                 ),
                 scorepeek::recognition::ScreenFieldObservations::MusicSelect(fields) => (
@@ -1308,7 +1308,7 @@ fn live_session_event_value(
                     serde_json::json!({
                         "central_title": fields.central_title.open_text,
                         "artist": fields.artist.open_text,
-                        "selected_chart": not_observed_field(),
+                        "selected_chart": fields.selected_chart.open_text,
                         "active_list_title": fields.active_list_title.open_text,
                     }),
                 ),
@@ -1323,6 +1323,9 @@ fn live_session_event_value(
                 "fields": fields,
                 "result_song_resolution": observation.result_resolution(),
                 "music_select_song_resolution": observation.music_select_resolution(),
+                "parsed_result_fields": observation.parsed_result_fields(),
+                "result_chart_resolution": observation.result_chart_resolution(),
+                "current_score_ocr_resolution": observation.current_score_ocr_resolution(),
             });
             if let Some(session_id) = session_id {
                 value["session_id"] = session_id.into();
@@ -1450,13 +1453,6 @@ fn song_presentation(
         scorepeek_song_id: song_id,
         display_titles: evidence.title.display.clone(),
         artist: artist.clone(),
-    })
-}
-
-fn not_observed_field() -> serde_json::Value {
-    serde_json::json!({
-        "status": "not_observed",
-        "reason": "observer_not_implemented",
     })
 }
 
@@ -3306,8 +3302,8 @@ mod tests {
         TextageAcquisitionError, TextageResource,
     };
     use scorepeek::recognition::{
-        CatalogCandidateDomain, DynamicTextObservation, FieldNotObserved, FieldNotObservedReason,
-        ResultScreenFieldObservations, ScreenFieldObservations,
+        CatalogCandidateDomain, DynamicTextObservation, ResultScreenFieldObservations,
+        ScreenFieldObservations,
     };
     use std::cell::Cell;
     use std::ffi::{OsStr, OsString};
@@ -3574,10 +3570,10 @@ mod tests {
                 title: text("TITLE EXACT"),
                 artist: text("ARTIST EXACT"),
                 clear_type: text("FAILED"),
-                difficulty: not_observed(),
-                level: not_observed(),
-                notes: not_observed(),
-                current_score: not_observed(),
+                difficulty: text("HYPER"),
+                level: text("8"),
+                notes: text("800"),
+                current_score: text("1200"),
             }),
         );
         let value = live_session_event_value(
@@ -3611,10 +3607,10 @@ mod tests {
                 title: text("TITLE"),
                 artist: text("ARTIST"),
                 clear_type: text("CLEAR"),
-                difficulty: not_observed(),
-                level: not_observed(),
-                notes: not_observed(),
-                current_score: not_observed(),
+                difficulty: text("HYPER"),
+                level: text("8"),
+                notes: text("800"),
+                current_score: text("1200"),
             }),
         );
         let value = live_session_event_value(
@@ -3647,10 +3643,10 @@ mod tests {
                 title: text("CATALOG TITLE"),
                 artist: text("CATALOG ARTIST"),
                 clear_type: text("CLEAR"),
-                difficulty: not_observed(),
-                level: not_observed(),
-                notes: not_observed(),
-                current_score: not_observed(),
+                difficulty: text("HYPER"),
+                level: text("8"),
+                notes: text("800"),
+                current_score: text("1200"),
             }),
         );
         let value = live_session_event_value(
@@ -3724,12 +3720,6 @@ mod tests {
             input_width: 1,
             output_timesteps: 1,
             open_text: value.to_owned(),
-        }
-    }
-
-    const fn not_observed() -> FieldNotObserved {
-        FieldNotObserved {
-            reason: FieldNotObservedReason::ObserverNotImplemented,
         }
     }
 }

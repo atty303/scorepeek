@@ -228,6 +228,9 @@ authoritative.
 - [ADR 0077: Require temporal selection before abandoning play](0077-require-temporal-selection-before-abandoning-play.md)
   supersedes ADR 0068 and ADR 0076 only for treating a raw music-select predicate as proof that an
   incomplete attempt returned to selection.
+- [ADR 0078: Emit catalog-constrained result domain events](0078-emit-catalog-constrained-result-domain-events.md)
+  observes and types the complete current result context, keeps accepted song identity monotonic
+  under auxiliary chart evidence, and emits one provisional domain event per stable result episode.
 
 ## Historical
 

@@ -51,7 +51,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   operator review, immutable labels, suite publication, and production frame replay are separate
   stages. Video is auxiliary and the former recording-dataset CLI routes have been removed. The
   active frame-first suite generation
-  `133d408c074951a6f150e4da529a48a68c1f66e05250d78c2e6c55adae8fad9f` contains four verified
+  `56ddaa1a9122c63c91a81f8276ef5e80a6e2e06962c5f9ab2fb6d90347dda75d` contains four verified
   diagnostics and fourteen operator-reviewed episodes. `mise run corpus:test` replays all 1,870
   stored canonical frame references through the production predicate and all fourteen stable QOIs
   through OCR, catalog resolution, and clear-type resolution successfully. The current
@@ -256,6 +256,16 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   stable or held temporal selection can abandon an incomplete attempt, after which the ordered
   stream records both `abandoned` and the new `armed` state. Repository verification passes; a fresh
   target run of ADR 0077 remains pending.
+  ADR 0078 measures and observes the remaining result context, records reconstructable primary and
+  score-color retry OCR attempts, and resolves an SP chart from the accepted song plus difficulty,
+  notes, and any readable level. Chart evidence cannot downgrade an accepted primary song; one
+  catalog-unique chart may only complete a margin- or artist-limited unknown primary. The active
+  create-only private suite generation
+  `56ddaa1a9122c63c91a81f8276ef5e80a6e2e06962c5f9ab2fb6d90347dda75d`
+  adds visually reviewed savable/SP/1P, difficulty, level, notes, and current score to all fourteen
+  episodes. Production replay passes all 1,870 QOI references, fourteen complete result contexts,
+  and one negative. The provisional run channel now emits one typed `result_detected` after the
+  existing two-observation/250 ms song and clear stabilization when the chart and score are known.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -753,8 +763,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   comparison confirms retained-corpus coverage and latency only; it has no wrong-accept challenge
   set, title-disjoint holdout, calibrated false-accept denominator, or release-accuracy authority.
   The screen-local music-select resolver is grounded by recording-visible selections and
-  separate long-title live observations, but stable-selection dwell, charts, digits, accepted
-  event emission, and deduplication remain unimplemented. The complete motion review is sufficient
+  separate long-title live observations. Result chart/digit recognition and provisional per-episode
+  event deduplication pass the active QOI suite, but target-live behavior, mode/side/savability
+  detection, and public accepted event authority remain unverified. The complete motion review is sufficient
   for candidate dwell evaluation but does not select a policy.
 - A true live music-select screen has passed the fixed-label predicate and retained values now pass
   the screen-local song resolver, but stable-selection and event acceptance remain unimplemented.
@@ -798,7 +809,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   retain a pair if a future observed transform mismatch or normalizer change requires comparison;
   the absence of a transform inspector is not a current execution blocker.
 - Current recordings and provisional labels do not establish title-disjoint result accuracy,
-  calibrated thresholds, result dwell, miss denominator, deduplication, or release accuracy.
+  calibrated thresholds, miss denominator, SP/DP, 1P/2P, savability detection, or release accuracy.
 - The corrected music-select motion review and ADR 0065 evaluation are descriptive evidence only.
   Of the 838 predicate-eligible adjacent pairs, 713 are stationary, 83 are scrolling, 30 are
   selection changes, and 12 are operator-confirmed non-music-select context; the separate 133
@@ -865,31 +876,34 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Run the installed `scorepeek` against the fixed measured `gamescope-4k` profile and sample
+1. Install the ADR 0078 binary on the target, then exercise one ordinary SP/1P result. Require the
+   raw `field_observation` to precede exactly one `result_detected` with the catalog chart and visible
+   score/clear values. Treat an unknown chart or score as evidence; do not alter the operator label.
+2. Run the installed `scorepeek` against the fixed measured `gamescope-4k` profile and sample
    `pw-top` before and during the session. Require a zero scorepeek
    error delta, no `BUSY +++`, continued 10 Hz observations, and clean receiver shutdown; retain the
    run as failure evidence if any condition regresses.
-2. Exercise one ordinary target flow through music select, song decision, gameplay and result.
+3. Exercise one ordinary target flow through music select, song decision, gameplay and result.
    Confirm that the TUI keeps the catalog title and artist visible as one attempt, advances
    `SELECTED` to `PLAYING` to `CONFIRMED`, and leaves raw OCR separate. If a natural result-to-play
    retry is available, verify a new attempt ID with the prior parent; do not request extra play only
    for retry tuning. Treat missing decide/play, an unlinked result or conflict as evidence rather
    than repairing it.
-3. Exercise the fixed measured target `gamescope-4k` watcher with scorepeek-first startup through the
+4. Exercise the fixed measured target `gamescope-4k` watcher with scorepeek-first startup through the
    transient INFINITAS source sequence, then cover Gamescope-first, sequential and simultaneous
    source lifetimes, idle/active signals, TTY restoration, redirected plain output, and a
    mid-session observation-socket client. Confirm that raw result events precede temporal
    transitions and that one-tick unknowns do not erase the stable TUI result. Do not claim target
    lifecycle or presentation support before those separate checks pass.
-4. After explicitly installing the ADR 0077 correction, repeat the observed
+5. After explicitly installing the ADR 0077 correction, repeat the observed
    `armed -> unknown -> music_select(unknown OCR) -> unknown -> decide -> play -> unknown ->
    music_select(unknown OCR) -> unknown -> result` path. Require one attempt to retain the armed song
    with `select_observed=true`, omit `no_stable_selection` and `returned_to_select`, and confirm the
    matching result. Then verify a real temporal selection return emits ordered `abandoned` and
    `armed` states. Add only operator-reviewed episodes to the active suite.
-5. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
+6. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
-6. In the next real music-select session, verify that a one-tick frame-local unknown renders the
+7. In the next real music-select session, verify that a one-tick frame-local unknown renders the
    catalog identity as `HELD`, a real selection change renders `CHANGING` and replaces after 200 ms,
    and a category/filter selection clears after the bounded grace. Keep raw central-title OCR
    visible and separate; this live check qualifies presentation behavior, not event authority.

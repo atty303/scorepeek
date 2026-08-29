@@ -262,13 +262,13 @@ pub enum Difficulty {
     Leggendaria,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct ChartKey {
     pub play_type: PlayType,
     pub difficulty: Difficulty,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Chart {
     pub key: ChartKey,
     pub level: u8,

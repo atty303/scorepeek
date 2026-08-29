@@ -764,9 +764,8 @@ mod tests {
     };
     use crate::recognition_live::RecognitionObservation;
     use scorepeek::recognition::{
-        CanonicalLayout, DynamicTextObservation, FieldNotObserved, FieldNotObservedReason,
-        ResultScreenFieldObservations, ScreenClass, ScreenFieldObservationError,
-        ScreenFieldObservations, ScreenTextField,
+        CanonicalLayout, DynamicTextObservation, ResultScreenFieldObservations, ScreenClass,
+        ScreenFieldObservationError, ScreenFieldObservations, ScreenTextField,
     };
     use std::fs;
 
@@ -854,17 +853,14 @@ mod tests {
             output_timesteps: 20,
             open_text: text.to_owned(),
         };
-        let unimplemented = FieldNotObserved {
-            reason: FieldNotObservedReason::ObserverNotImplemented,
-        };
         ScreenFieldObservations::Result(ResultScreenFieldObservations {
             title: text(),
             artist: text(),
             clear_type: text(),
-            difficulty: unimplemented,
-            level: unimplemented,
-            notes: unimplemented,
-            current_score: unimplemented,
+            difficulty: text(),
+            level: text(),
+            notes: text(),
+            current_score: text(),
         })
     }
 

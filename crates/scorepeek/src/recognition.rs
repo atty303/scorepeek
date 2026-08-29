@@ -9,6 +9,7 @@ use sha2::{Digest as _, Sha256};
 
 mod catalog_candidates;
 mod music_select_resolver;
+mod result_fields;
 mod result_resolver;
 mod title;
 mod title_decoder;
@@ -25,9 +26,14 @@ pub use music_select_resolver::{
     MUSIC_SELECT_SONG_RESOLVER_ID, MusicSelectCorroboration, MusicSelectSongResolution,
     MusicSelectSongUnknownReason, RankedMusicSelectSongCandidate, resolve_music_select_song,
 };
+pub use result_fields::{
+    ParsedResultFields, RESULT_FIELD_RESOLVER_ID, ResultChartResolution, ResultChartUnknownReason,
+    ResultFieldUnknownReason, ResultFieldValue, matching_single_play_songs, resolve_result_chart,
+};
 pub use result_resolver::{
-    RESULT_SONG_RESOLVER_ID, RankedResultSongCandidate, ResultSongResolution,
-    ResultSongUnknownReason, resolve_result_song,
+    RESULT_SONG_CHART_ASSISTED_RESOLVER_ID, RESULT_SONG_RESOLVER_ID, RankedResultSongCandidate,
+    ResultSongResolution, ResultSongUnknownReason, assist_unknown_result_song_with_chart,
+    resolve_result_song,
 };
 pub use title::{
     DIAGNOSTIC_TITLE_COMPARISON_KEY_ID, DIAGNOSTIC_TITLE_MINIMUM_CONFIDENCE,
@@ -823,6 +829,49 @@ impl Rgb8Crop {
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
+
+    /// Returns the tight score-colored content crop used by the numeric result recognizer.
+    #[must_use]
+    pub fn cyan_content_crop(&self) -> Option<Self> {
+        let width = usize::try_from(self.roi.width).ok()?;
+        let height = usize::try_from(self.roi.height).ok()?;
+        let mut bounds: Option<(usize, usize, usize, usize)> = None;
+        for y in 0..height {
+            for x in 0..width {
+                let offset = (y * width + x) * 3;
+                let [r, g, b] = self.pixels.get(offset..offset + 3)? else {
+                    return None;
+                };
+                if *g > 120 && *b > 150 && u16::from(*b) * 2 > u16::from(*r) * 3 {
+                    bounds = Some(bounds.map_or((x, y, x, y), |(min_x, min_y, max_x, max_y)| {
+                        (min_x.min(x), min_y.min(y), max_x.max(x), max_y.max(y))
+                    }));
+                }
+            }
+        }
+        let (min_x, min_y, max_x, max_y) = bounds?;
+        let min_x = min_x.saturating_sub(2);
+        let min_y = min_y.saturating_sub(2);
+        let max_x = max_x.saturating_add(2).min(width - 1);
+        let max_y = max_y.saturating_add(2).min(height - 1);
+        let crop_width = max_x - min_x + 1;
+        let crop_height = max_y - min_y + 1;
+        let mut pixels = Vec::with_capacity(crop_width * crop_height * 3);
+        for y in min_y..=max_y {
+            let start = (y * width + min_x) * 3;
+            let end = start + crop_width * 3;
+            pixels.extend_from_slice(self.pixels.get(start..end)?);
+        }
+        Some(Self {
+            roi: Roi {
+                x: self.roi.x + u32::try_from(min_x).ok()?,
+                y: self.roi.y + u32::try_from(min_y).ok()?,
+                width: u32::try_from(crop_width).ok()?,
+                height: u32::try_from(crop_height).ok()?,
+            },
+            pixels,
+        })
+    }
 }
 
 /// Every currently measured result-screen field crop.
@@ -862,8 +911,13 @@ pub enum ScreenTextField {
     ResultTitle,
     ResultArtist,
     ResultClearType,
+    ResultDifficulty,
+    ResultLevel,
+    ResultNotes,
+    ResultCurrentScore,
     MusicSelectCentralTitle,
     MusicSelectArtist,
+    MusicSelectSelectedChart,
     MusicSelectActiveListTitle,
 }
 
@@ -874,29 +928,16 @@ impl ScreenTextField {
             Self::ResultTitle => "result_title",
             Self::ResultArtist => "result_artist",
             Self::ResultClearType => "result_clear_type",
+            Self::ResultDifficulty => "result_difficulty",
+            Self::ResultLevel => "result_level",
+            Self::ResultNotes => "result_notes",
+            Self::ResultCurrentScore => "result_current_score",
             Self::MusicSelectCentralTitle => "music_select_central_title",
             Self::MusicSelectArtist => "music_select_artist",
+            Self::MusicSelectSelectedChart => "music_select_selected_chart",
             Self::MusicSelectActiveListTitle => "music_select_active_list_title",
         }
     }
-}
-
-/// Why a measured crop has no registered observer output in this runtime.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FieldNotObservedReason {
-    ObserverNotImplemented,
-}
-
-/// An explicit non-observation for a required screen-local field.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FieldNotObserved {
-    pub reason: FieldNotObservedReason,
-}
-
-impl FieldNotObserved {
-    const OBSERVER_NOT_IMPLEMENTED: Self = Self {
-        reason: FieldNotObservedReason::ObserverNotImplemented,
-    };
 }
 
 /// Complete result-screen field observations from the currently registered observers.
@@ -905,10 +946,10 @@ pub struct ResultScreenFieldObservations {
     pub title: DynamicTextObservation,
     pub artist: DynamicTextObservation,
     pub clear_type: DynamicTextObservation,
-    pub difficulty: FieldNotObserved,
-    pub level: FieldNotObserved,
-    pub notes: FieldNotObserved,
-    pub current_score: FieldNotObserved,
+    pub difficulty: DynamicTextObservation,
+    pub level: DynamicTextObservation,
+    pub notes: DynamicTextObservation,
+    pub current_score: DynamicTextObservation,
 }
 
 /// Complete music-select field observations from the currently registered observers.
@@ -916,7 +957,7 @@ pub struct ResultScreenFieldObservations {
 pub struct MusicSelectScreenFieldObservations {
     pub central_title: DynamicTextObservation,
     pub artist: DynamicTextObservation,
-    pub selected_chart: FieldNotObserved,
+    pub selected_chart: DynamicTextObservation,
     pub active_list_title: DynamicTextObservation,
 }
 
@@ -994,10 +1035,10 @@ impl<E: std::error::Error + 'static> std::error::Error for ScreenFieldObservatio
 /// Returns the exact failed field and observer error without constructing a partial screen output.
 pub fn observe_screen_fields<E>(
     crops: &ScreenRgb8Crops,
-    mut observe_text: impl FnMut(&Rgb8Crop) -> Result<DynamicTextObservation, E>,
+    mut observe_text: impl FnMut(ScreenTextField, &Rgb8Crop) -> Result<DynamicTextObservation, E>,
 ) -> Result<ScreenFieldObservations, ScreenFieldObservationError<E>> {
     let mut observe = |field, crop| {
-        observe_text(crop).map_err(|source| ScreenFieldObservationError::new(field, source))
+        observe_text(field, crop).map_err(|source| ScreenFieldObservationError::new(field, source))
     };
     Ok(match crops {
         ScreenRgb8Crops::Result(crops) => {
@@ -1005,10 +1046,10 @@ pub fn observe_screen_fields<E>(
                 title: observe(ScreenTextField::ResultTitle, &crops.title)?,
                 artist: observe(ScreenTextField::ResultArtist, &crops.artist)?,
                 clear_type: observe(ScreenTextField::ResultClearType, &crops.clear_type)?,
-                difficulty: FieldNotObserved::OBSERVER_NOT_IMPLEMENTED,
-                level: FieldNotObserved::OBSERVER_NOT_IMPLEMENTED,
-                notes: FieldNotObserved::OBSERVER_NOT_IMPLEMENTED,
-                current_score: FieldNotObserved::OBSERVER_NOT_IMPLEMENTED,
+                difficulty: observe(ScreenTextField::ResultDifficulty, &crops.difficulty)?,
+                level: observe(ScreenTextField::ResultLevel, &crops.level)?,
+                notes: observe(ScreenTextField::ResultNotes, &crops.notes)?,
+                current_score: observe(ScreenTextField::ResultCurrentScore, &crops.current_score)?,
             })
         }
         ScreenRgb8Crops::MusicSelect(crops) => {
@@ -1018,7 +1059,10 @@ pub fn observe_screen_fields<E>(
                     &crops.central_title,
                 )?,
                 artist: observe(ScreenTextField::MusicSelectArtist, &crops.artist)?,
-                selected_chart: FieldNotObserved::OBSERVER_NOT_IMPLEMENTED,
+                selected_chart: observe(
+                    ScreenTextField::MusicSelectSelectedChart,
+                    &crops.selected_chart,
+                )?,
                 active_list_title: observe(
                     ScreenTextField::MusicSelectActiveListTitle,
                     &crops.active_list_title,
@@ -2403,7 +2447,7 @@ mod tests {
         let result_crops =
             route_screen_rgb8_crops(&vec![0; CANONICAL_BYTES], ScreenClass::Result).unwrap();
         let mut result_calls = 0;
-        let result = observe_screen_fields(&result_crops, |crop| {
+        let result = observe_screen_fields(&result_crops, |_, crop| {
             result_calls += 1;
             Ok::<_, ()>(DynamicTextObservation {
                 input_width: crop.roi.width as usize,
@@ -2415,24 +2459,19 @@ mod tests {
         let ScreenFieldObservations::Result(result) = result else {
             panic!("result crops produced another screen output");
         };
-        assert_eq!(result_calls, 3);
+        assert_eq!(result_calls, 7);
         assert_eq!(result.title.open_text, "result-1");
         assert_eq!(result.artist.open_text, "result-2");
         assert_eq!(result.clear_type.open_text, "result-3");
-        assert_eq!(
-            [
-                result.difficulty,
-                result.level,
-                result.notes,
-                result.current_score,
-            ],
-            [FieldNotObserved::OBSERVER_NOT_IMPLEMENTED; 4]
-        );
+        assert_eq!(result.difficulty.open_text, "result-4");
+        assert_eq!(result.level.open_text, "result-5");
+        assert_eq!(result.notes.open_text, "result-6");
+        assert_eq!(result.current_score.open_text, "result-7");
 
         let music_crops =
             route_screen_rgb8_crops(&vec![0; CANONICAL_BYTES], ScreenClass::MusicSelect).unwrap();
         let mut music_calls = 0;
-        let music = observe_screen_fields(&music_crops, |crop| {
+        let music = observe_screen_fields(&music_crops, |_, crop| {
             music_calls += 1;
             Ok::<_, ()>(DynamicTextObservation {
                 input_width: crop.roi.width as usize,
@@ -2444,14 +2483,11 @@ mod tests {
         let ScreenFieldObservations::MusicSelect(music) = music else {
             panic!("music-select crops produced another screen output");
         };
-        assert_eq!(music_calls, 3);
+        assert_eq!(music_calls, 4);
         assert_eq!(music.central_title.open_text, "music-1");
         assert_eq!(music.artist.open_text, "music-2");
-        assert_eq!(music.active_list_title.open_text, "music-3");
-        assert_eq!(
-            music.selected_chart,
-            FieldNotObserved::OBSERVER_NOT_IMPLEMENTED
-        );
+        assert_eq!(music.selected_chart.open_text, "music-3");
+        assert_eq!(music.active_list_title.open_text, "music-4");
     }
 
     #[test]
@@ -2459,7 +2495,7 @@ mod tests {
         let crops =
             route_screen_rgb8_crops(&vec![0; CANONICAL_BYTES], ScreenClass::Result).unwrap();
         let mut calls = 0;
-        let error = observe_screen_fields(&crops, |_| {
+        let error = observe_screen_fields(&crops, |_, _| {
             calls += 1;
             if calls == 2 {
                 Err("runtime-failed")

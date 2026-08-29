@@ -466,8 +466,7 @@ mod tests {
     use super::*;
     use crate::catalog::{FederationInput, SourceRevision, TachiFixtureAdapter};
     use crate::recognition::{
-        DynamicTextObservation, FieldNotObserved, FieldNotObservedReason,
-        MusicSelectScreenFieldObservations, ResultScreenFieldObservations,
+        DynamicTextObservation, MusicSelectScreenFieldObservations, ResultScreenFieldObservations,
     };
 
     fn catalog() -> Catalog {
@@ -540,12 +539,6 @@ mod tests {
         }
     }
 
-    const fn unobserved() -> FieldNotObserved {
-        FieldNotObserved {
-            reason: FieldNotObservedReason::ObserverNotImplemented,
-        }
-    }
-
     #[test]
     fn result_keeps_every_song_and_does_not_reduce_conflicting_field_evidence() {
         let domain = CatalogCandidateDomain::from_catalog(&catalog()).unwrap();
@@ -553,10 +546,10 @@ mod tests {
             title: text("CAT"),
             artist: text("BETA"),
             clear_type: text("FAILED"),
-            difficulty: unobserved(),
-            level: unobserved(),
-            notes: unobserved(),
-            current_score: unobserved(),
+            difficulty: text("HYPER"),
+            level: text("8"),
+            notes: text("800"),
+            current_score: text("1200"),
         });
         let ScreenCatalogCandidateObservations::Result { candidates, .. } =
             domain.observe(&observations)
@@ -599,7 +592,7 @@ mod tests {
             ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
                 central_title: text("CAT"),
                 artist: text("ALPHA"),
-                selected_chart: unobserved(),
+                selected_chart: text("HYPER 8"),
                 active_list_title: text("BAT"),
             });
         let ScreenCatalogCandidateObservations::MusicSelect { candidates, .. } =
@@ -705,10 +698,10 @@ mod tests {
             title: text("CAT"),
             artist: text("ALPHA"),
             clear_type: text("FAILED"),
-            difficulty: unobserved(),
-            level: unobserved(),
-            notes: unobserved(),
-            current_score: unobserved(),
+            difficulty: text("HYPER"),
+            level: text("8"),
+            notes: text("800"),
+            current_score: text("1200"),
         });
         let candidate_observations = domain.observe(&observations);
         assert_eq!(candidate_observations.candidate_count(), 0);
@@ -751,10 +744,10 @@ mod tests {
             title: text("Ａ"),
             artist: text("ARTIST A"),
             clear_type: text("CLEAR"),
-            difficulty: unobserved(),
-            level: unobserved(),
-            notes: unobserved(),
-            current_score: unobserved(),
+            difficulty: text("HYPER"),
+            level: text("8"),
+            notes: text("800"),
+            current_score: text("1200"),
         });
         let ScreenCatalogCandidateObservations::Result { candidates, .. } =
             domain.observe(&observations)

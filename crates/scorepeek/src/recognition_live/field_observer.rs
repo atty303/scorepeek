@@ -869,7 +869,7 @@ mod tests {
         type Output = Result<ScreenFieldObservations, ScreenFieldObservationError<&'static str>>;
 
         fn observe(&mut self, input: &FieldObserverInput) -> Self::Output {
-            observe_screen_fields(input.crops(), |crop| {
+            observe_screen_fields(input.crops(), |_, crop| {
                 Ok(DynamicTextObservation {
                     input_width: crop.roi.width as usize,
                     output_timesteps: 1,

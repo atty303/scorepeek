@@ -6,6 +6,8 @@ use super::{CatalogTextCandidateScore, ResultSongCandidateObservation};
 
 pub const RESULT_SONG_RESOLVER_ID: &str =
     "scorepeek-result-song-title-primary-artist-corroborated-v2";
+pub const RESULT_SONG_CHART_ASSISTED_RESOLVER_ID: &str =
+    "scorepeek-result-song-title-primary-chart-assisted-v1";
 
 const MAXIMUM_TITLE_EDIT_DISTANCE: usize = 3;
 const MINIMUM_TITLE_MATCHING_UNITS: usize = 3;
@@ -163,6 +165,39 @@ pub fn resolve_result_song(
     }
 }
 
+/// Uses one catalog-unique SP chart only to complete an otherwise unknown primary decision.
+/// An already accepted primary decision is returned unchanged, even when chart evidence conflicts.
+#[must_use]
+pub fn assist_unknown_result_song_with_chart(
+    primary: ResultSongResolution,
+    matching_song_ids: &[ScorepeekSongId],
+) -> ResultSongResolution {
+    let ResultSongResolution::Unknown {
+        reason,
+        selected: Some(selected),
+        runner_up: Some(runner_up),
+        title_edit_margin: Some(title_edit_margin),
+        ..
+    } = &primary
+    else {
+        return primary;
+    };
+    if !matches!(
+        reason,
+        ResultSongUnknownReason::TitleEditMarginTooSmall
+            | ResultSongUnknownReason::ArtistSimilarityTooLow
+    ) || matching_song_ids != [selected.song_id]
+    {
+        return primary;
+    }
+    ResultSongResolution::Accepted {
+        resolver_id: RESULT_SONG_CHART_ASSISTED_RESOLVER_ID,
+        selected: *selected,
+        runner_up: *runner_up,
+        title_edit_margin: *title_edit_margin,
+    }
+}
+
 fn unknown(
     reason: ResultSongUnknownReason,
     selected: Option<RankedResultSongCandidate>,
@@ -252,6 +287,34 @@ mod tests {
             ],
         );
         assert_eq!(measured_result_ocr.accepted_song_id(), Some(id(1)));
+    }
+
+    #[test]
+    fn chart_assistance_completes_only_unknown_primary_decisions() {
+        let candidates = [
+            candidate(id(1), score(0, 8, 8), score(8, 1, 8)),
+            candidate(id(2), score(1, 7, 8), score(8, 1, 8)),
+        ];
+        let primary = resolve_result_song("TITLE", "artist", &candidates);
+        assert!(matches!(primary, ResultSongResolution::Unknown { .. }));
+        let assisted = assist_unknown_result_song_with_chart(primary, &[id(1)]);
+        assert_eq!(assisted.accepted_song_id(), Some(id(1)));
+        assert!(matches!(
+            assisted,
+            ResultSongResolution::Accepted {
+                resolver_id: RESULT_SONG_CHART_ASSISTED_RESOLVER_ID,
+                ..
+            }
+        ));
+
+        let accepted = ResultSongResolution::Accepted {
+            resolver_id: RESULT_SONG_RESOLVER_ID,
+            selected: RankedResultSongCandidate::from(&candidates[0]),
+            runner_up: RankedResultSongCandidate::from(&candidates[1]),
+            title_edit_margin: 2,
+        };
+        let retained = assist_unknown_result_song_with_chart(accepted.clone(), &[id(2)]);
+        assert_eq!(retained, accepted);
     }
 
     #[test]

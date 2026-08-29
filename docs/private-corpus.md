@@ -17,10 +17,17 @@ review aid, never ground truth. Video replay evidence stops at 1,024 frame refer
 unique QOI bytes without stopping recognition or the fact/observation streams. Each NDJSON record
 is bounded to 1 MiB and each session stream to 250,000 records; reaching the stream bound is
 recorded as degradation. Corpus replay runs the production predicate over every retained canonical
-frame, while OCR/catalog/clear-type expectations apply only to operator-labeled stable frames.
+frame, while OCR/catalog/result-field expectations apply only to operator-labeled stable frames.
 Value-bearing records keep exact OCR and resolver output but bind a candidate count to the separate
 exact catalog object instead of duplicating every recomputable per-song metric at every tick. The
 complete observation stream is bounded to 512 MiB.
+
+Current regression labels use `scorepeek-private-session-regression-label-v2`. Each included
+episode binds the accepted song and clear type plus the visually reviewed savable, play side, play
+mode/type, difficulty, level, notes, and current score. The current active generation admits only
+the provisional savable SP/1P slice. Replay requires every typed result value to agree with the
+catalog-constrained production observation; a new apply publishes immutable label and suite objects
+and atomically advances only the active generation pointer.
 
 ```text
 scorepeek-corpus diagnostic replay-video --video /absolute/input.mkv --profile gamescope-4k --output /absolute/new-diagnostic

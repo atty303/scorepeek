@@ -10,14 +10,15 @@ use std::time::Instant;
 
 use scorepeek::catalog::ScorepeekSongId;
 use scorepeek::recognition::{
-    CatalogCandidateEvidenceTable, MusicSelectSongResolution, ResultSongResolution,
-    ScreenCatalogCandidateObservations, ScreenFieldObservations, ScreenSongResolution,
+    CatalogCandidateEvidenceTable, MusicSelectSongResolution, ParsedResultFields,
+    ResultChartResolution, ResultSongResolution, ScreenCatalogCandidateObservations,
+    ScreenFieldObservations, ScreenSongResolution,
 };
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 const CATALOG_SCHEMA: &str = "scorepeek-recognition-catalog-evidence-v1";
-const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v5";
+const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v6";
 const MANIFEST_SCHEMA: &str = "scorepeek-recognition-evidence-manifest-v3";
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -52,6 +53,13 @@ struct StoredObservation<'a> {
     fields: StoredFields<'a>,
     candidates: StoredCandidates,
     decision: StoredDecision<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parsed_result_fields: Option<&'a ParsedResultFields>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result_chart_resolution: Option<&'a ResultChartResolution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_score_ocr_resolution:
+        Option<&'a crate::recognition_live::screen_field_observer::CurrentScoreOcrResolution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expected: Option<RecognitionArtifactExpected<'a>>,
 }
@@ -93,15 +101,15 @@ enum StoredFields<'a> {
         title: StoredText<'a>,
         artist: StoredText<'a>,
         clear_type: StoredText<'a>,
-        difficulty: &'static str,
-        level: &'static str,
-        notes: &'static str,
-        current_score: &'static str,
+        difficulty: StoredText<'a>,
+        level: StoredText<'a>,
+        notes: StoredText<'a>,
+        current_score: StoredText<'a>,
     },
     MusicSelect {
         central_title: StoredText<'a>,
         artist: StoredText<'a>,
-        selected_chart: &'static str,
+        selected_chart: StoredText<'a>,
         active_list_title: StoredText<'a>,
     },
 }
@@ -204,6 +212,40 @@ impl RecognitionArtifactWriter {
         song_resolution: &ScreenSongResolution,
         expected: Option<RecognitionArtifactExpected<'_>>,
     ) -> Result<(), String> {
+        let parsed = match fields {
+            ScreenFieldObservations::Result(fields) => {
+                Some(ParsedResultFields::from_observations(fields))
+            }
+            ScreenFieldObservations::MusicSelect(_) => None,
+        };
+        self.record_with_result_context(
+            sequence,
+            timing,
+            fields,
+            candidates,
+            song_resolution,
+            parsed.as_ref(),
+            None,
+            None,
+            expected,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_with_result_context(
+        &mut self,
+        sequence: u64,
+        timing: RecognitionArtifactTiming,
+        fields: &ScreenFieldObservations,
+        candidates: &ScreenCatalogCandidateObservations,
+        song_resolution: &ScreenSongResolution,
+        parsed_result_fields: Option<&ParsedResultFields>,
+        result_chart_resolution: Option<&ResultChartResolution>,
+        current_score_ocr_resolution: Option<
+            &crate::recognition_live::screen_field_observer::CurrentScoreOcrResolution,
+        >,
+        expected: Option<RecognitionArtifactExpected<'_>>,
+    ) -> Result<(), String> {
         if self.observation_count >= MAX_OBSERVATIONS {
             return Err("recognition artifact observation capacity exceeded".to_owned());
         }
@@ -225,6 +267,9 @@ impl RecognitionArtifactWriter {
             fields: StoredFields::from(fields),
             candidates: StoredCandidates::try_from(candidates)?,
             decision,
+            parsed_result_fields,
+            result_chart_resolution,
+            current_score_ocr_resolution,
             expected,
         };
         let mut bytes = serde_json::to_vec(&stored)
@@ -675,7 +720,7 @@ fn run_live_writer(
 
 fn record_live(writer: &mut RecognitionArtifactWriter, record: &LiveRecord) -> Result<(), String> {
     let output = &record.observation;
-    writer.record(
+    writer.record_with_result_context(
         record.sequence,
         RecognitionArtifactTiming::Live {
             monotonic_start_ms: record.monotonic_start_ms,
@@ -684,6 +729,9 @@ fn record_live(writer: &mut RecognitionArtifactWriter, record: &LiveRecord) -> R
         output.fields(),
         output.candidates(),
         output.song_resolution(),
+        output.parsed_result_fields(),
+        output.result_chart_resolution(),
+        output.current_score_ocr_resolution(),
         None,
     )
 }
@@ -717,15 +765,15 @@ impl<'a> From<&'a ScreenFieldObservations> for StoredFields<'a> {
                 title: StoredText::from(&fields.title),
                 artist: StoredText::from(&fields.artist),
                 clear_type: StoredText::from(&fields.clear_type),
-                difficulty: "observer_not_implemented",
-                level: "observer_not_implemented",
-                notes: "observer_not_implemented",
-                current_score: "observer_not_implemented",
+                difficulty: StoredText::from(&fields.difficulty),
+                level: StoredText::from(&fields.level),
+                notes: StoredText::from(&fields.notes),
+                current_score: StoredText::from(&fields.current_score),
             },
             ScreenFieldObservations::MusicSelect(fields) => Self::MusicSelect {
                 central_title: StoredText::from(&fields.central_title),
                 artist: StoredText::from(&fields.artist),
-                selected_chart: "observer_not_implemented",
+                selected_chart: StoredText::from(&fields.selected_chart),
                 active_list_title: StoredText::from(&fields.active_list_title),
             },
         }
@@ -842,10 +890,9 @@ mod tests {
 
     use scorepeek::recognition::{
         CatalogCandidateDomain, CatalogCandidateEvidenceTable, CatalogNormalizedSimilarity,
-        CatalogTextCandidateScore, DynamicTextObservation, FieldNotObserved,
-        FieldNotObservedReason, MusicSelectScreenFieldObservations, RESULT_SONG_RESOLVER_ID,
-        ResultScreenFieldObservations, ResultSongCandidateObservation, ResultSongResolution,
-        ResultSongUnknownReason,
+        CatalogTextCandidateScore, DynamicTextObservation, MusicSelectScreenFieldObservations,
+        RESULT_SONG_RESOLVER_ID, ResultScreenFieldObservations, ResultSongCandidateObservation,
+        ResultSongResolution, ResultSongUnknownReason,
     };
 
     use super::*;
@@ -856,17 +903,14 @@ mod tests {
             output_timesteps: 12,
             open_text: value.to_owned(),
         };
-        let missing = FieldNotObserved {
-            reason: FieldNotObservedReason::ObserverNotImplemented,
-        };
         ScreenFieldObservations::Result(ResultScreenFieldObservations {
             title: text("ABSOLUTE EVIL"),
             artist: text("Yuta Imai"),
             clear_type: text("FAILED"),
-            difficulty: missing,
-            level: missing,
-            notes: missing,
-            current_score: missing,
+            difficulty: text("HYPER"),
+            level: text("8"),
+            notes: text("127"),
+            current_score: text("1"),
         })
     }
 
@@ -879,9 +923,7 @@ mod tests {
         ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
             central_title: text("texture"),
             artist: text("artist"),
-            selected_chart: FieldNotObserved {
-                reason: FieldNotObservedReason::ObserverNotImplemented,
-            },
+            selected_chart: text("HYPER 8"),
             active_list_title: text("VISIBLE TITLE"),
         })
     }
@@ -1144,7 +1186,9 @@ mod tests {
         assert_eq!(outcome.status, RecognitionArtifactFinishStatus::Complete);
         assert_eq!(outcome.manifest_sha256.unwrap().len(), 64);
         let stored = fs::read_to_string(root.join("observations.ndjson")).unwrap();
-        assert!(stored.contains("scorepeek-recognition-observation-v5"));
+        assert!(stored.contains("scorepeek-recognition-observation-v6"));
+        assert!(stored.contains("\"difficulty\""));
+        assert!(!stored.contains("observer_not_implemented"));
         assert!(stored.contains("\"source\":\"live\""));
         assert!(stored.contains("\"monotonic_start_ms\":1000"));
         assert!(stored.contains("\"monotonic_end_ms\":1017"));
