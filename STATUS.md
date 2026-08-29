@@ -245,7 +245,17 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   `no_stable_selection`; the second play repeated the same ordering at 1090, 1121, and 1127.
   ADR 0076 therefore preserves an armed handoff across raw transitional music-select predicates
   while leaving temporal selection changes responsible for replacing or clearing it. Repository
-  verification passes; a fresh target run of that correction remains pending.
+  verification passed, and the corrected binary was installed. Its first target run retained
+  `Dreamship` from armed through decided and playing, but exposed the same predicate-authority error
+  on the result transition. The complete joined session
+  `run-1788021301-919855565-1096112-session-1` recorded playing at sequence 1491, then a raw
+  music-select predicate at 2759 whose OCR read active title `5`, central title `RANDOM`, no artist,
+  and an explicitly unknown song resolution. That single frame abandoned the attempt as
+  `returned_to_select`; the real result arrived at 2764 and stabilized the matching `Dreamship` at
+  2768 as unlinked. ADR 0077 therefore makes every raw music-select screen attempt-neutral. Only a
+  stable or held temporal selection can abandon an incomplete attempt, after which the ordered
+  stream records both `abandoned` and the new `armed` state. Repository verification passes; a fresh
+  target run of ADR 0077 remains pending.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -871,11 +881,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    mid-session observation-socket client. Confirm that raw result events precede temporal
    transitions and that one-tick unknowns do not erase the stable TUI result. Do not claim target
    lifecycle or presentation support before those separate checks pass.
-4. After explicitly installing the ADR 0076 correction, repeat the observed
-   `armed -> unknown -> music_select(empty OCR) -> unknown -> decide -> play -> result` path. Require
-   the decided attempt to retain the armed song with `select_observed=true`, omit
-   `no_stable_selection`, and confirm the matching result. Add only operator-reviewed episodes to
-   the active suite.
+4. After explicitly installing the ADR 0077 correction, repeat the observed
+   `armed -> unknown -> music_select(unknown OCR) -> unknown -> decide -> play -> unknown ->
+   music_select(unknown OCR) -> unknown -> result` path. Require one attempt to retain the armed song
+   with `select_observed=true`, omit `no_stable_selection` and `returned_to_select`, and confirm the
+   matching result. Then verify a real temporal selection return emits ordered `abandoned` and
+   `armed` states. Add only operator-reviewed episodes to the active suite.
 5. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
 6. In the next real music-select session, verify that a one-tick frame-local unknown renders the

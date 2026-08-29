@@ -225,6 +225,9 @@ authoritative.
 - [ADR 0076: Preserve armed selection through transitional predicates](0076-preserve-armed-selection-through-transitional-predicates.md)
   supersedes ADR 0071 only for treating one raw music-select predicate as proof that an armed
   selection was cleared.
+- [ADR 0077: Require temporal selection before abandoning play](0077-require-temporal-selection-before-abandoning-play.md)
+  supersedes ADR 0068 and ADR 0076 only for treating a raw music-select predicate as proof that an
+  incomplete attempt returned to selection.
 
 ## Historical
 

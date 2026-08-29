@@ -136,23 +136,25 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
         song: Option<S>,
         source: Option<SelectionSource>,
         source_sequence: u64,
-    ) -> Option<PlayAttemptState<S>> {
-        let previous = self.state.clone();
+    ) -> Vec<PlayAttemptState<S>> {
+        let mut updates = Vec::new();
         self.selection_handoff = song
             .zip(source)
             .map(|(song, source)| SelectionHandoff { song, source });
+        if self.selection_handoff.is_some()
+            && let PlayAttemptState::Attempt { attempt } = &mut self.state
+            && matches!(
+                attempt.phase,
+                PlayAttemptPhase::Decided | PlayAttemptPhase::Playing
+            )
+        {
+            attempt.phase = PlayAttemptPhase::Abandoned;
+            push_reason(&mut attempt.reasons, PlayAttemptReason::ReturnedToSelect);
+            updates.push(self.state.clone());
+        }
+        let previous = self.state.clone();
         match self.selection_handoff.as_ref() {
-            Some(handoff)
-                if !matches!(
-                    self.state,
-                    PlayAttemptState::Attempt {
-                        attempt: PlayAttempt {
-                            phase: PlayAttemptPhase::Decided | PlayAttemptPhase::Playing,
-                            ..
-                        }
-                    }
-                ) =>
-            {
+            Some(handoff) => {
                 self.state = PlayAttemptState::Armed {
                     source_sequence,
                     selection_source: handoff.source,
@@ -162,9 +164,12 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
             None if matches!(self.state, PlayAttemptState::Armed { .. }) => {
                 self.state = PlayAttemptState::Idle;
             }
-            Some(_) | None => {}
+            None => {}
         }
-        (self.state != previous).then(|| self.state.clone())
+        if self.state != previous {
+            updates.push(self.state.clone());
+        }
+        updates
     }
 
     pub fn observe_screen(
@@ -174,11 +179,10 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
     ) -> Option<PlayAttemptState<S>> {
         let previous = self.state.clone();
         match screen {
-            PlayAttemptScreen::MusicSelect => self.return_to_select(),
+            PlayAttemptScreen::MusicSelect | PlayAttemptScreen::Unknown => {}
             PlayAttemptScreen::DecideTransition => self.begin_decide_attempt(),
             PlayAttemptScreen::Play => self.observe_play(),
             PlayAttemptScreen::Result => self.observe_result(source_sequence),
-            PlayAttemptScreen::Unknown => {}
         }
         (self.state != previous).then(|| self.state.clone())
     }
@@ -234,32 +238,6 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
             self.state = PlayAttemptState::Idle;
         }
         (self.state != previous).then(|| self.state.clone())
-    }
-
-    fn return_to_select(&mut self) {
-        match &mut self.state {
-            PlayAttemptState::Attempt {
-                attempt:
-                    attempt @ PlayAttempt {
-                        phase: PlayAttemptPhase::Decided | PlayAttemptPhase::Playing,
-                        ..
-                    },
-            } => {
-                self.selection_handoff = None;
-                attempt.phase = PlayAttemptPhase::Abandoned;
-                push_reason(&mut attempt.reasons, PlayAttemptReason::ReturnedToSelect);
-            }
-            PlayAttemptState::Idle
-            | PlayAttemptState::Armed { .. }
-            | PlayAttemptState::UnlinkedResult { .. }
-            | PlayAttemptState::Attempt {
-                attempt:
-                    PlayAttempt {
-                        phase: PlayAttemptPhase::Result | PlayAttemptPhase::Abandoned,
-                        ..
-                    },
-            } => {}
-        }
     }
 
     fn begin_decide_attempt(&mut self) {
@@ -432,12 +410,11 @@ mod tests {
     #[test]
     fn stable_selection_is_observable_before_decision_and_survives_unknown() {
         let mut reducer = PlayAttemptReducer::default();
-        let armed = reducer
-            .observe_selection(Some(7), Some(SelectionSource::Stable), 9)
-            .unwrap();
+        let updates = reducer.observe_selection(Some(7), Some(SelectionSource::Stable), 9);
+        let armed = updates.last().unwrap();
         assert_eq!(
             armed,
-            PlayAttemptState::Armed {
+            &PlayAttemptState::Armed {
                 source_sequence: 9,
                 selection_source: SelectionSource::Stable,
                 selected_song: 7,
@@ -495,7 +472,12 @@ mod tests {
         reducer.observe_screen(PlayAttemptScreen::DecideTransition, 10);
         reducer.observe_screen(PlayAttemptScreen::Play, 11);
         reducer.observe_screen(PlayAttemptScreen::Unknown, 12);
-        reducer.observe_screen(PlayAttemptScreen::Result, 13);
+        assert_eq!(
+            reducer.observe_screen(PlayAttemptScreen::MusicSelect, 13),
+            None
+        );
+        reducer.observe_screen(PlayAttemptScreen::Unknown, 14);
+        reducer.observe_screen(PlayAttemptScreen::Result, 15);
         reducer.observe_stable_result(7);
 
         let attempt = attempt(reducer.state());
@@ -549,15 +531,14 @@ mod tests {
             reducer.observe_screen(PlayAttemptScreen::MusicSelect, 13),
             None
         );
-        assert_eq!(reducer.observe_selection(None, None, 14), None);
+        assert!(reducer.observe_selection(None, None, 14).is_empty());
         assert_eq!(reducer.state(), &result);
 
-        let armed = reducer
-            .observe_selection(Some(8), Some(SelectionSource::Stable), 15)
-            .unwrap();
+        let updates = reducer.observe_selection(Some(8), Some(SelectionSource::Stable), 15);
+        let armed = updates.last().unwrap();
         assert_eq!(
             armed,
-            PlayAttemptState::Armed {
+            &PlayAttemptState::Armed {
                 source_sequence: 15,
                 selection_source: SelectionSource::Stable,
                 selected_song: 8,
@@ -634,19 +615,34 @@ mod tests {
     }
 
     #[test]
-    fn returning_to_select_and_session_end_abandon_only_incomplete_attempts() {
+    fn temporal_selection_abandons_and_rearms_an_incomplete_attempt() {
         let mut reducer = PlayAttemptReducer::default();
         reducer.observe_screen(PlayAttemptScreen::DecideTransition, 10);
-        reducer.observe_screen(PlayAttemptScreen::MusicSelect, 11);
-        let abandoned = attempt(reducer.state());
+        assert_eq!(
+            reducer.observe_screen(PlayAttemptScreen::MusicSelect, 11),
+            None
+        );
+        assert_eq!(attempt(reducer.state()).phase, PlayAttemptPhase::Decided);
+
+        let updates = reducer.observe_selection(Some(7), Some(SelectionSource::Stable), 12);
+        assert_eq!(updates.len(), 2);
+        let abandoned = attempt(&updates[0]);
         assert_eq!(abandoned.phase, PlayAttemptPhase::Abandoned);
         assert!(
             abandoned
                 .reasons
                 .contains(&PlayAttemptReason::ReturnedToSelect)
         );
+        assert_eq!(
+            updates[1],
+            PlayAttemptState::Armed {
+                source_sequence: 12,
+                selection_source: SelectionSource::Stable,
+                selected_song: 7,
+            }
+        );
 
-        reducer.observe_screen(PlayAttemptScreen::DecideTransition, 12);
+        reducer.observe_screen(PlayAttemptScreen::DecideTransition, 13);
         reducer.finish_session();
         let abandoned = attempt(reducer.state());
         assert_eq!(abandoned.phase, PlayAttemptPhase::Abandoned);

@@ -856,7 +856,7 @@ impl RoutineOutput {
             }
         }
         let temporal_state = update.state.clone();
-        let play_attempt_update = match &temporal_state {
+        let play_attempt_updates = match &temporal_state {
             MusicSelectTemporalState::Stable { .. } => self.play_attempt.observe_selection(
                 self.retained_music_select_song.clone(),
                 Some(SelectionSource::Stable),
@@ -873,7 +873,9 @@ impl RoutineOutput {
             MusicSelectTemporalState::Pending { .. }
             | MusicSelectTemporalState::Changing { .. } => self
                 .play_attempt
-                .observe_selection_candidate(self.candidate_music_select_song.as_ref()),
+                .observe_selection_candidate(self.candidate_music_select_song.as_ref())
+                .into_iter()
+                .collect(),
         };
         self.publish_one(&RunEvent {
             schema: "scorepeek-run-event-v2".to_owned(),
@@ -887,7 +889,7 @@ impl RoutineOutput {
                 candidate_song: self.candidate_music_select_song.clone(),
             },
         })?;
-        if let Some(state) = play_attempt_update {
+        for state in play_attempt_updates {
             self.publish_play_attempt_update(
                 session_id.cloned(),
                 capture_generation,
@@ -2004,6 +2006,20 @@ mod tests {
         assert_eq!(transition_continues[0]["event"], "screen_changed");
     }
 
+    fn publish_transitional_result_false_positive(
+        output: &mut RoutineOutput,
+        reader: &mut BufReader<UnixStream>,
+    ) {
+        output.publish(&screen_event(9, "unknown")).unwrap();
+        assert_eq!(read_events(reader, 1)[0]["event"], "screen_changed");
+        output.publish(&screen_event(10, "music_select")).unwrap();
+        assert_eq!(read_events(reader, 1)[0]["event"], "screen_changed");
+        output.publish(&unknown_music_select_event(10)).unwrap();
+        assert_eq!(read_events(reader, 1)[0]["event"], "field_observation");
+        output.publish(&screen_event(11, "unknown")).unwrap();
+        assert_eq!(read_events(reader, 1)[0]["event"], "screen_changed");
+    }
+
     fn read_snapshot(socket_path: &Path) -> Value {
         let stream = UnixStream::connect(socket_path).unwrap();
         stream
@@ -2342,7 +2358,9 @@ mod tests {
         assert_eq!(play[0]["event"], "screen_changed");
         assert_eq!(play[1]["state"]["attempt"]["phase"], "playing");
 
-        output.publish(&screen_event(9, "result")).unwrap();
+        publish_transitional_result_false_positive(&mut output, &mut reader);
+
+        output.publish(&screen_event(12, "result")).unwrap();
         let result_screen = read_events(&mut reader, 2);
         assert_eq!(result_screen[0]["event"], "screen_changed");
         assert_eq!(
@@ -2350,8 +2368,8 @@ mod tests {
             "pending"
         );
 
-        output.publish(&accepted_result_event(10)).unwrap();
-        output.publish(&accepted_result_event(11)).unwrap();
+        output.publish(&accepted_result_event(13)).unwrap();
+        output.publish(&accepted_result_event(14)).unwrap();
         let result = read_events(&mut reader, 5);
         assert_eq!(result[0]["event"], "field_observation");
         assert_eq!(result[1]["event"], "temporal_result_changed");
@@ -2369,14 +2387,14 @@ mod tests {
             "confirmed"
         );
 
-        output.publish(&screen_event(12, "music_select")).unwrap();
+        output.publish(&screen_event(15, "music_select")).unwrap();
         let snapshot = read_snapshot(&output.channel.socket_path);
         assert_eq!(
             snapshot["state"]["latest_play_attempt"]["state"]["attempt"]["result_relation"],
             "confirmed"
         );
 
-        for sequence in 13..=15 {
+        for sequence in 16..=18 {
             output
                 .publish(&accepted_music_select_event(sequence))
                 .unwrap();
@@ -2388,7 +2406,7 @@ mod tests {
         );
         assert_eq!(
             snapshot["state"]["latest_play_attempt"]["state"]["source_sequence"],
-            15
+            18
         );
     }
 
