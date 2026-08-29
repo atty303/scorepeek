@@ -200,21 +200,17 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   remaining lifetime/signal matrix require a fresh target run.
   That target also exposed a receiver scheduling defect. The asynchronous scorepeek follower
   accumulated about 100 `pw-top` errors per second with negotiated rate `0/1`, and Gamescope stderr
-  repeatedly reported an out-of-buffers consumer. Deferring dequeue until after event-loop dispatch
-  did not fix it. ADR 0070 instead fixes the consumer offer at 10/1 fps and returns all superseded
-  buffers within the PipeWire process event while copying only the newest mapped frame. Repository
-  checks, complete tests, and the cargo-dist artifact test pass. The resulting binary is installed
-  at `/home/atty/.local/bin/scorepeek` on the target with SHA-256
-  `a42c8d4c7ecd90207abfd2f9b200b0f234319534a85e5aa46631cf6472246c0a`; target-side version,
-  digest, and `doctor` with PipeWire 1.6.8 pass. The first run proved that exact 10/1 was incompatible
-  with Gamescope's BGRx 3840x2160 `0/1` offer: PipeWire rejected the link with
-  `no more input formats (-22)`, no diagnostic session started, and scorepeek remained
-  `waiting_for_source`. ADR 0072 restores the compatible preferred 10/1, accepted 0/1--240/1 range
-  while retaining process-event buffer return. Repository checks, complete tests, and the
-  cargo-dist artifact test pass. The corrected binary is installed on the target with SHA-256
-  `f458b479c6d5ec747597732ead943b9638259d9c7d73d1f105797a38875d16ed`; target-side version,
-  digest, and `doctor` with PipeWire 1.6.8 pass while scorepeek is stopped. Live link and buffer
-  behavior still require revalidation.
+  repeatedly reported `out of buffers`. Exact 10/1 then proved incompatible with Gamescope's BGRx
+  3840x2160 `0/1` offer. ADR 0072 restored the compatible preferred 10/1, accepted 0/1--240/1 range;
+  its installed binary has SHA-256
+  `f458b479c6d5ec747597732ead943b9638259d9c7d73d1f105797a38875d16ed`. The subsequent target run
+  linked, negotiated BGRx 3840x2160 `0/1`, and received 33,826 frames, but Gamescope still repeatedly
+  reported `out of buffers` and `push_pipewire_buffer: Already had a buffer?!`. ADR 0073 therefore
+  moves the complete receiver PipeWire graph to a dedicated safe Rust thread, keeps provider
+  lifetime observation on its separate connection, and explicitly updates the negotiated four
+  buffer, one-block, exact BGRx size/stride, MemFd contract before recording negotiation success.
+  Repository checks, complete tests, and the cargo-dist artifact test pass; the resulting build has
+  not yet been installed or exercised on the target.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -263,10 +259,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   explicitly uncalibrated lifetime lease, latches selected-node loss without fallback, and keeps
   provider and receiver failure ownership distinct.
 - The common receiver accepts only bounded raw BGRx, disables conversion and reconnection, retains
-  one owned latest frame, detects caps/memory/stride drift, and tears down before the provider.
-  It prefers 10/1 fps while accepting 0/1 through 240/1 and, within each PipeWire process event,
-  returns superseded buffers before validating and copying only the newest mapped frame into
-  application-owned memory.
+  one owned latest frame, detects caps/memory/stride drift, and tears down before the provider. Its
+  complete PipeWire ownership graph runs on a dedicated receiver thread, independent of foreground
+  normalization and recognition. It prefers 10/1 fps while accepting 0/1 through 240/1, explicitly
+  negotiates four buffers with a one-through-eight range and exact BGRx MemFd layout, and within each
+  process event returns superseded buffers before validating and copying only the newest mapped
+  frame into application-owned memory.
 - Live and repeated-lifecycle gates expose bounded typed facts and aggregate counters without pixels
   or arbitrary PipeWire properties. Uncalibrated frames cannot enter recognition or canonical
   diagnostic recording.
@@ -593,7 +591,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   official-model execution, and native PipeWire build have each passed their dedicated development
   gates. These do not substitute for target-machine capture, recognition, or performance evidence.
 - Repository validation at this checkpoint includes formatting/static checks, workspace all-target
-  clippy with warnings denied, 305 library tests, 227 binary tests, 78 corpus library tests, 4 corpus
+  clippy with warnings denied, 314 library tests, 227 binary tests, 78 corpus library tests, 4 corpus
   binary tests, 77 offline OCR tests, native PipeWire build verification, and the packaged
   distribution artifact test. Focused session tests also verify descriptor/layout rejection,
   frame-generation rejection, diagnostic opt-out non-interference, and manifest-backed ordered
@@ -698,10 +696,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Unverified boundaries
 
-- The ADR 0072 build is installed but has not yet run. An ordinary `gamescope-4k` run must link with
-  the producer's unspecified rate and show no increasing
-  scorepeek `pw-top` error count or Gamescope
-  out-of-buffers warnings while retaining ordinary
+- The ADR 0073 build is not yet installed or run. An ordinary `gamescope-4k` run must show no
+  increasing scorepeek `pw-top` error count and no Gamescope `out of buffers` or
+  `Already had a buffer?!` warnings while retaining ordinary
   session admission, 10 Hz latest-frame recognition, diagnostic sequencing, and clean shutdown.
   Development-host compile and replay tests cannot establish this realtime PipeWire boundary.
 - The result temporal reducer is grounded by ten reviewed episodes with complete enough ordered

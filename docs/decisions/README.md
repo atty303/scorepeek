@@ -212,6 +212,10 @@ authoritative.
 - [ADR 0072: Accept the Gamescope unspecified PipeWire rate](0072-accept-unspecified-pipewire-rate.md)
   supersedes ADR 0070 only for its exact 10/1 stream offer while retaining process-event buffer
   return and the independent 10 Hz recognition cadence.
+- [ADR 0073: Service PipeWire on a dedicated loop](0073-service-pipewire-on-a-dedicated-loop.md)
+  supersedes ADR 0070 and ADR 0072 only for assuming the foreground-driven process callback is
+  timely, isolates all receiver PipeWire objects on a dedicated safe Rust thread, and completes the
+  negotiated buffer contract explicitly.
 
 ## Historical
 

@@ -273,8 +273,32 @@ impl UncalibratedGamescopeSourceLease {
         timeout: Duration,
         sink: &mut impl CaptureDiagnosticSink,
     ) -> Result<(), CaptureError> {
+        let terminal = match self.observe_lifetime(timeout) {
+            Ok(()) => return Ok(()),
+            Err(terminal) => terminal,
+        };
+
+        if !self.terminal_recorded {
+            sink.record(lifetime_fact(
+                self.next_diagnostic_sequence,
+                elapsed_ms(self.started),
+                self.node_id,
+                terminal.operation,
+                CaptureDiagnosticStatus::Error,
+                Some(terminal.error_type),
+            ));
+            self.next_diagnostic_sequence = self.next_diagnostic_sequence.saturating_add(1);
+            self.terminal_recorded = true;
+        }
+        Err(CaptureError::without_source(terminal.error_type))
+    }
+
+    pub(super) fn observe_lifetime(&mut self, timeout: Duration) -> Result<(), TerminalError> {
         let Some(runtime) = self.runtime.as_ref() else {
-            return Err(CaptureError::without_source(CaptureErrorType::SourceLost));
+            return Err(TerminalError {
+                error_type: CaptureErrorType::SourceLost,
+                operation: CaptureDiagnosticOperation::SourceLifetime,
+            });
         };
 
         if runtime
@@ -298,20 +322,7 @@ impl UncalibratedGamescopeSourceLease {
         let Some(terminal) = terminal else {
             return Ok(());
         };
-
-        if !self.terminal_recorded {
-            sink.record(lifetime_fact(
-                self.next_diagnostic_sequence,
-                elapsed_ms(self.started),
-                self.node_id,
-                terminal.operation,
-                CaptureDiagnosticStatus::Error,
-                Some(terminal.error_type),
-            ));
-            self.next_diagnostic_sequence = self.next_diagnostic_sequence.saturating_add(1);
-            self.terminal_recorded = true;
-        }
-        Err(CaptureError::without_source(terminal.error_type))
+        Err(terminal)
     }
 
     /// Releases the provider-owned registry, remote, context, and loop in deterministic order.
@@ -481,7 +492,7 @@ impl RegistryState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct TerminalError {
+pub(super) struct TerminalError {
     error_type: CaptureErrorType,
     operation: CaptureDiagnosticOperation,
 }
@@ -503,7 +514,7 @@ struct DefaultRemoteRuntime {
     _registry_listener: pw::registry::Listener,
     _core_listener: pw::core::Listener,
     _registry: pw::registry::RegistryRc,
-    core: pw::core::CoreRc,
+    _core: pw::core::CoreRc,
     _context: pw::context::ContextRc,
     main_loop: pw::main_loop::MainLoopRc,
     state: Rc<RefCell<RegistryState>>,
@@ -824,7 +835,7 @@ fn acquire_default_remote(
             _registry_listener: registry_listener,
             _core_listener: core_listener,
             _registry: registry,
-            core,
+            _core: core,
             _context: context,
             main_loop,
             state,

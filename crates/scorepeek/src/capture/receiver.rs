@@ -1,8 +1,9 @@
-use std::cell::RefCell;
 use std::fmt;
 use std::io::Cursor;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use pipewire as pw;
@@ -26,6 +27,8 @@ const MAX_FRAME_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BUFFERS_PER_PROCESS: usize = 64;
 const REQUESTED_FRAMERATE_NUM: u32 = 10;
 const REQUESTED_FRAMERATE_DENOM: u32 = 1;
+const WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+static RECEIVER_WORKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -146,6 +149,13 @@ struct ReceiverTerminal {
     operation: CaptureDiagnosticOperation,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StartupSnapshot {
+    Pending,
+    Ready,
+    Terminal(ReceiverTerminal),
+}
+
 struct ReceiverState {
     started: Instant,
     contract: Option<UncalibratedVideoContract>,
@@ -204,10 +214,42 @@ impl ReceiverState {
         }
     }
 
-    fn negotiate(&mut self, info: VideoInfoRaw) {
-        if self.terminal.is_some() {
-            return;
+    fn latch_startup_deadline(
+        &mut self,
+    ) -> Result<(), (ReceiverTerminal, CaptureDiagnosticStatus)> {
+        if let Some(terminal) = self.terminal {
+            return Err((terminal, CaptureDiagnosticStatus::Error));
         }
+        if self.contract.is_some() && self.received_frames > 0 {
+            return Ok(());
+        }
+        let operation = self.reception_operation();
+        let error_type = if operation == CaptureDiagnosticOperation::FirstFrame {
+            CaptureErrorType::FirstFrameTimedOut
+        } else {
+            CaptureErrorType::NegotiationTimedOut
+        };
+        self.fail(error_type, operation);
+        Err((
+            ReceiverTerminal {
+                error_type,
+                operation,
+            },
+            CaptureDiagnosticStatus::Timeout,
+        ))
+    }
+
+    fn startup_snapshot(&self) -> StartupSnapshot {
+        if let Some(terminal) = self.terminal {
+            StartupSnapshot::Terminal(terminal)
+        } else if self.contract.is_some() && self.received_frames > 0 {
+            StartupSnapshot::Ready
+        } else {
+            StartupSnapshot::Pending
+        }
+    }
+
+    fn validated_contract(&self, info: VideoInfoRaw) -> Result<UncalibratedVideoContract, ()> {
         let size = info.size();
         let framerate = info.framerate();
         let maximum_framerate = info.max_framerate();
@@ -225,9 +267,7 @@ impl ReceiverState {
             || info.multiview_mode() != 0
             || info.multiview_flags() != 0
         {
-            let operation = self.reception_operation();
-            self.fail(CaptureErrorType::UnsupportedFormat, operation);
-            return;
+            return Err(());
         }
         let contract = UncalibratedVideoContract {
             width: size.width,
@@ -244,17 +284,30 @@ impl ReceiverState {
             transfer_function: info.transfer_function(),
             color_primaries: info.color_primaries(),
         };
-        match self.contract {
-            None => {
-                self.contract = Some(contract);
-                self.contract_received_ns =
-                    Some(u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX));
-            }
-            Some(existing) if existing == contract => {}
-            Some(_) => {
-                let operation = self.reception_operation();
-                self.fail(CaptureErrorType::UnsupportedFormat, operation);
-            }
+        if self.contract.is_some_and(|existing| existing != contract) {
+            return Err(());
+        }
+        Ok(contract)
+    }
+
+    fn commit_contract(&mut self, contract: UncalibratedVideoContract) {
+        if self.terminal.is_none() && self.contract.is_none() {
+            self.contract = Some(contract);
+            self.contract_received_ns =
+                Some(u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+        }
+    }
+
+    #[cfg(test)]
+    fn negotiate(&mut self, info: VideoInfoRaw) {
+        if self.terminal.is_some() {
+            return;
+        }
+        if let Ok(contract) = self.validated_contract(info) {
+            self.commit_contract(contract);
+        } else {
+            let operation = self.reception_operation();
+            self.fail(CaptureErrorType::UnsupportedFormat, operation);
         }
     }
 
@@ -354,15 +407,160 @@ impl ReceiverState {
 /// The receiver owns stream negotiation, buffer lifetime, latest-frame replacement, sequencing,
 /// and receive timing. Provider lifetime remains owned by the enclosed source lease.
 pub struct UncalibratedPipeWireReceiver {
-    listener: Option<pw::stream::StreamListener<Rc<RefCell<ReceiverState>>>>,
-    stream: Option<pw::stream::StreamRc>,
+    worker: Option<ReceiverWorker>,
     lease: Option<UncalibratedGamescopeSourceLease>,
-    state: Rc<RefCell<ReceiverState>>,
+    state: Arc<Mutex<ReceiverState>>,
     receiver_started_ms: u64,
     shutdown_started_ms: Option<u64>,
     negotiation_recorded: bool,
     first_frame_recorded: bool,
     terminal_recorded: Option<CaptureDiagnosticOperation>,
+}
+
+enum ReceiverCommand {
+    Shutdown(mpsc::SyncSender<Result<(), ()>>),
+}
+
+struct ReceiverWorker {
+    commands: mpsc::SyncSender<ReceiverCommand>,
+    join: Option<JoinHandle<()>>,
+}
+
+struct ReceiverWorkerSupervisor;
+
+impl ReceiverWorkerSupervisor {
+    fn acquire() -> Result<Self, CaptureError> {
+        RECEIVER_WORKER_ACTIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Self)
+            .map_err(|_| CaptureError::without_source(CaptureErrorType::ReceiverFailed))
+    }
+}
+
+impl Drop for ReceiverWorkerSupervisor {
+    fn drop(&mut self) {
+        RECEIVER_WORKER_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+fn lock_state(state: &Mutex<ReceiverState>) -> MutexGuard<'_, ReceiverState> {
+    state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+trait LockedReceiverState {
+    fn borrow(&self) -> MutexGuard<'_, ReceiverState>;
+    fn borrow_mut(&self) -> MutexGuard<'_, ReceiverState>;
+}
+
+impl LockedReceiverState for Arc<Mutex<ReceiverState>> {
+    fn borrow(&self) -> MutexGuard<'_, ReceiverState> {
+        lock_state(self)
+    }
+
+    fn borrow_mut(&self) -> MutexGuard<'_, ReceiverState> {
+        lock_state(self)
+    }
+}
+
+impl ReceiverWorker {
+    fn start(node_id: u32, state: Arc<Mutex<ReceiverState>>) -> Result<Self, CaptureError> {
+        let supervisor = ReceiverWorkerSupervisor::acquire()?;
+        let (commands, command_rx) = mpsc::sync_channel(1);
+        let join = thread::Builder::new()
+            .name("scorepeek-pipewire".to_owned())
+            .spawn(move || {
+                let _supervisor = supervisor;
+                if run_receiver_worker(node_id, &state, &command_rx).is_err() {
+                    let mut state = state.borrow_mut();
+                    let operation = state.reception_operation();
+                    state.fail(CaptureErrorType::ReceiverFailed, operation);
+                }
+            })
+            .map_err(|_| CaptureError::without_source(CaptureErrorType::ReceiverFailed))?;
+        Ok(Self {
+            commands,
+            join: Some(join),
+        })
+    }
+
+    fn shutdown(mut self) -> Result<(), ()> {
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        if self
+            .commands
+            .send(ReceiverCommand::Shutdown(response_tx))
+            .is_err()
+        {
+            if let Some(join) = self.join.take() {
+                let _ = join.join();
+            }
+            return Err(());
+        }
+        let result = response_rx
+            .recv_timeout(WORKER_SHUTDOWN_TIMEOUT)
+            .map_err(|_| ())?;
+        let joined = self.join.take().is_none_or(|join| join.join().is_ok());
+        if result.is_ok() && joined {
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+}
+
+fn run_receiver_worker(
+    node_id: u32,
+    state: &Arc<Mutex<ReceiverState>>,
+    commands: &mpsc::Receiver<ReceiverCommand>,
+) -> Result<(), pw::Error> {
+    pw::init();
+    let main_loop = pw::main_loop::MainLoopRc::new(None)?;
+    let context = pw::context::ContextRc::new(&main_loop, None)?;
+    let core = context.connect_rc(None)?;
+    let stream = pw::stream::StreamRc::new(
+        core,
+        "scorepeek-uncalibrated-video-receiver",
+        properties! {
+            *pw::keys::MEDIA_TYPE => "Video",
+            *pw::keys::MEDIA_CATEGORY => "Capture",
+            *pw::keys::MEDIA_ROLE => "Screen",
+        },
+    )?;
+    let listener = register_stream_listener(&stream, Arc::clone(state))?;
+    let values = format_offer().map_err(|_| pw::Error::CreationFailed)?;
+    let param = Pod::from_bytes(&values).ok_or(pw::Error::CreationFailed)?;
+    let mut params = [param];
+    stream.connect(
+        spa::utils::Direction::Input,
+        Some(node_id),
+        pw::stream::StreamFlags::AUTOCONNECT
+            | pw::stream::StreamFlags::MAP_BUFFERS
+            | pw::stream::StreamFlags::NO_CONVERT
+            | pw::stream::StreamFlags::DONT_RECONNECT,
+        &mut params,
+    )?;
+
+    loop {
+        match commands.try_recv() {
+            Ok(ReceiverCommand::Shutdown(response)) => {
+                let result = stream.disconnect().map_err(|_| ());
+                drop(listener);
+                drop(stream);
+                let _ = response.send(result);
+                return Ok(());
+            }
+            Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        if main_loop
+            .loop_()
+            .iterate(pw::loop_::Timeout::Finite(ITERATION_SLICE))
+            < 0
+        {
+            return Err(pw::Error::CreationFailed);
+        }
+    }
 }
 
 /// A live Gamescope receiver admitted by one explicit session and immutable profile binding.
@@ -718,6 +916,15 @@ impl UncalibratedPipeWireReceiver {
 
     #[must_use]
     pub fn take_latest_frame(&mut self) -> Option<UncalibratedFrame> {
+        if self.worker.is_some()
+            && let Some(lease) = self.lease.as_mut()
+            && let Err(terminal) = lease.observe_lifetime(Duration::ZERO)
+        {
+            self.state
+                .borrow_mut()
+                .fail(terminal.error_type, terminal.operation);
+            return None;
+        }
         self.state.borrow_mut().latest.take()
     }
 
@@ -727,15 +934,33 @@ impl UncalibratedPipeWireReceiver {
     /// Returns `ReceiverFailed` if the explicit stream disconnect fails. Receiver and provider
     /// resources are still released and their shutdown facts are still attempted.
     pub fn shutdown(mut self, sink: &mut impl CaptureDiagnosticSink) -> Result<(), CaptureError> {
-        self.flush_observations(sink);
         self.shutdown_started_ms = self.lease.as_ref().map(|lease| elapsed_ms(lease.started));
+        let provider_error = self.lease.as_mut().and_then(|lease| {
+            lease.runtime.as_ref()?;
+            lease
+                .poll(Duration::ZERO, sink)
+                .err()
+                .map(|error| error.error_type())
+        });
+        if let Some(error_type) = provider_error {
+            latch_source_terminal(&self.state, error_type);
+        }
         self.state.borrow_mut().shutting_down = true;
         let disconnect_error = self
-            .stream
-            .as_ref()
-            .and_then(|stream| stream.disconnect().err());
-        self.listener.take();
-        self.stream.take();
+            .worker
+            .take()
+            .is_some_and(|worker| worker.shutdown().is_err());
+        self.flush_observations(sink);
+        let terminal = self.state.borrow().terminal;
+        if let Some(terminal) = terminal {
+            if terminal.operation == CaptureDiagnosticOperation::SourceLifetime {
+                if let Some(lease) = self.lease.as_mut() {
+                    let _ = lease.poll(Duration::ZERO, sink);
+                }
+            } else {
+                self.record_terminal(terminal, CaptureDiagnosticStatus::Error, sink);
+            }
+        }
         let received_frames = self.state.borrow().received_frames;
         if should_record_steady_summary(received_frames, self.terminal_recorded) {
             let summary = self.summary_detail();
@@ -747,14 +972,12 @@ impl UncalibratedPipeWireReceiver {
                 summary,
             );
         }
-        let shutdown_status = if disconnect_error.is_some() {
+        let shutdown_status = if disconnect_error {
             CaptureDiagnosticStatus::Error
         } else {
             CaptureDiagnosticStatus::Success
         };
-        let shutdown_error = disconnect_error
-            .as_ref()
-            .map(|_| CaptureErrorType::ReceiverFailed);
+        let shutdown_error = disconnect_error.then_some(CaptureErrorType::ReceiverFailed);
         let state = self.state.borrow();
         let detail = CaptureDiagnosticDetail::ReceiverShutdown {
             received_frames: state.received_frames,
@@ -771,12 +994,13 @@ impl UncalibratedPipeWireReceiver {
         if let Some(lease) = self.lease.take() {
             lease.shutdown(sink);
         }
-        disconnect_error.map_or(Ok(()), |source| {
-            Err(CaptureError::with_source(
+        if disconnect_error {
+            Err(CaptureError::without_source(
                 CaptureErrorType::ReceiverFailed,
-                source,
             ))
-        })
+        } else {
+            Ok(())
+        }
     }
 
     fn flush_observations(&mut self, sink: &mut impl CaptureDiagnosticSink) {
@@ -884,23 +1108,6 @@ impl UncalibratedPipeWireReceiver {
             detail,
         );
         self.terminal_recorded = Some(terminal.operation);
-    }
-
-    fn fail_start(
-        mut self,
-        error: CaptureError,
-        sink: &mut impl CaptureDiagnosticSink,
-    ) -> CaptureError {
-        self.record_terminal(
-            ReceiverTerminal {
-                error_type: error.error_type(),
-                operation: CaptureDiagnosticOperation::StreamNegotiation,
-            },
-            CaptureDiagnosticStatus::Error,
-            sink,
-        );
-        let _ = self.shutdown(sink);
-        error
     }
 
     fn summary_detail(&self) -> CaptureDiagnosticDetail {
@@ -1101,40 +1308,17 @@ pub fn start_uncalibrated_gamescope_receiver(
     timeout: Duration,
     sink: &mut impl CaptureDiagnosticSink,
 ) -> Result<UncalibratedPipeWireReceiver, CaptureError> {
-    let core = lease
-        .runtime
-        .as_ref()
-        .map(|runtime| runtime.core.clone())
-        .ok_or_else(|| CaptureError::without_source(CaptureErrorType::SourceLost))?;
-    let stream = match pw::stream::StreamRc::new(
-        core,
-        "scorepeek-uncalibrated-video-receiver",
-        properties! {
-            *pw::keys::MEDIA_TYPE => "Video",
-            *pw::keys::MEDIA_CATEGORY => "Capture",
-            *pw::keys::MEDIA_ROLE => "Screen",
-            *pw::keys::VIDEO_RATE => "60/1",
-        },
-    ) {
-        Ok(stream) => stream,
-        Err(source) => {
-            let error = CaptureError::with_source(CaptureErrorType::ReceiverFailed, source);
-            return Err(fail_before_receiver(lease, error, sink));
-        }
-    };
+    if lease.runtime.is_none() {
+        return Err(CaptureError::without_source(CaptureErrorType::SourceLost));
+    }
     let receiver_started_ms = elapsed_ms(lease.started);
-    let state = Rc::new(RefCell::new(ReceiverState::new(lease.started)));
-    let listener = match register_stream_listener(&stream, Rc::clone(&state)) {
-        Ok(listener) => listener,
-        Err(source) => {
-            drop(stream);
-            let error = CaptureError::with_source(CaptureErrorType::ReceiverFailed, source);
-            return Err(fail_before_receiver(lease, error, sink));
-        }
+    let state = Arc::new(Mutex::new(ReceiverState::new(lease.started)));
+    let worker = match ReceiverWorker::start(lease.node_id, Arc::clone(&state)) {
+        Ok(worker) => worker,
+        Err(error) => return Err(fail_before_receiver(lease, error, sink)),
     };
     let receiver = UncalibratedPipeWireReceiver {
-        listener: Some(listener),
-        stream: Some(stream),
+        worker: Some(worker),
         lease: Some(lease),
         state,
         receiver_started_ms,
@@ -1143,33 +1327,6 @@ pub fn start_uncalibrated_gamescope_receiver(
         first_frame_recorded: false,
         terminal_recorded: None,
     };
-    let Ok(values) = format_offer() else {
-        let error = CaptureError::without_source(CaptureErrorType::ReceiverFailed);
-        return Err(receiver.fail_start(error, sink));
-    };
-    let Some(param) = Pod::from_bytes(&values) else {
-        let error = CaptureError::without_source(CaptureErrorType::ReceiverFailed);
-        return Err(receiver.fail_start(error, sink));
-    };
-    let mut params = [param];
-    let Some(stream) = receiver.stream.as_ref() else {
-        let error = CaptureError::without_source(CaptureErrorType::ReceiverFailed);
-        return Err(receiver.fail_start(error, sink));
-    };
-    let connect_result = stream.connect(
-        spa::utils::Direction::Input,
-        receiver.lease.as_ref().map(|lease| lease.node_id),
-        pw::stream::StreamFlags::AUTOCONNECT
-            | pw::stream::StreamFlags::MAP_BUFFERS
-            | pw::stream::StreamFlags::NO_CONVERT
-            | pw::stream::StreamFlags::DONT_RECONNECT,
-        &mut params,
-    );
-    if let Err(source) = connect_result {
-        let error = CaptureError::with_source(CaptureErrorType::ReceiverFailed, source);
-        return Err(receiver.fail_start(error, sink));
-    }
-
     wait_for_first_frame(receiver, timeout, sink)
 }
 
@@ -1184,34 +1341,31 @@ fn wait_for_first_frame(
             let _ = receiver.shutdown(sink);
             return Err(error);
         }
-        let ready = {
-            let state = receiver.state.borrow();
-            state.contract.is_some() && state.received_frames > 0
-        };
-        if ready {
-            return Ok(receiver);
+        let startup = receiver.state.borrow().startup_snapshot();
+        match startup {
+            StartupSnapshot::Terminal(terminal) => {
+                receiver.record_terminal(terminal, CaptureDiagnosticStatus::Error, sink);
+                let _ = receiver.shutdown(sink);
+                return Err(CaptureError::without_source(terminal.error_type));
+            }
+            StartupSnapshot::Ready => {
+                receiver.flush_observations(sink);
+                return Ok(receiver);
+            }
+            StartupSnapshot::Pending => {}
         }
         if startup_started.elapsed() >= timeout {
-            let operation = if receiver.state.borrow().contract.is_some() {
-                CaptureDiagnosticOperation::FirstFrame
-            } else {
-                CaptureDiagnosticOperation::StreamNegotiation
+            let deadline = {
+                let mut state = receiver.state.borrow_mut();
+                state.latch_startup_deadline()
             };
-            let error_type = if operation == CaptureDiagnosticOperation::FirstFrame {
-                CaptureErrorType::FirstFrameTimedOut
-            } else {
-                CaptureErrorType::NegotiationTimedOut
+            let Err((terminal, status)) = deadline else {
+                receiver.flush_observations(sink);
+                return Ok(receiver);
             };
-            receiver.record_terminal(
-                ReceiverTerminal {
-                    error_type,
-                    operation,
-                },
-                CaptureDiagnosticStatus::Timeout,
-                sink,
-            );
+            receiver.record_terminal(terminal, status, sink);
             let _ = receiver.shutdown(sink);
-            return Err(CaptureError::without_source(error_type));
+            return Err(CaptureError::without_source(terminal.error_type));
         }
     }
 }
@@ -1255,17 +1409,17 @@ fn fail_before_receiver(
 
 fn register_stream_listener(
     stream: &pw::stream::StreamRc,
-    state: Rc<RefCell<ReceiverState>>,
-) -> Result<pw::stream::StreamListener<Rc<RefCell<ReceiverState>>>, pw::Error> {
+    state: Arc<Mutex<ReceiverState>>,
+) -> Result<pw::stream::StreamListener<Arc<Mutex<ReceiverState>>>, pw::Error> {
     stream
         .add_local_listener_with_user_data(state)
         .state_changed(|_, state, _, new| handle_stream_state(state, &new))
-        .param_changed(|_, state, id, param| handle_format(state, id, param))
+        .param_changed(|stream, state, id, param| handle_format(Some(stream), state, id, param))
         .process(handle_process)
         .register()
 }
 
-fn handle_process(stream: &pw::stream::Stream, state: &mut Rc<RefCell<ReceiverState>>) {
+fn handle_process(stream: &pw::stream::Stream, state: &mut Arc<Mutex<ReceiverState>>) {
     let mut newest = None;
     for _ in 0..MAX_BUFFERS_PER_PROCESS {
         let Some(buffer) = stream.dequeue_buffer() else {
@@ -1320,7 +1474,7 @@ fn handle_process(stream: &pw::stream::Stream, state: &mut Rc<RefCell<ReceiverSt
         .accept_frame(memory_type, stride, bytes, received_ns);
 }
 
-fn handle_stream_state(state: &Rc<RefCell<ReceiverState>>, new: &pw::stream::StreamState) {
+fn handle_stream_state(state: &Arc<Mutex<ReceiverState>>, new: &pw::stream::StreamState) {
     let mut state = state.borrow_mut();
     match new {
         pw::stream::StreamState::Connecting
@@ -1338,7 +1492,12 @@ fn handle_stream_state(state: &Rc<RefCell<ReceiverState>>, new: &pw::stream::Str
     }
 }
 
-fn handle_format(state: &Rc<RefCell<ReceiverState>>, id: u32, param: Option<&Pod>) {
+fn handle_format(
+    stream: Option<&pw::stream::Stream>,
+    state: &Arc<Mutex<ReceiverState>>,
+    id: u32,
+    param: Option<&Pod>,
+) {
     if id != spa::param::ParamType::Format.as_raw() {
         return;
     }
@@ -1358,19 +1517,104 @@ fn handle_format(state: &Rc<RefCell<ReceiverState>>, id: u32, param: Option<&Pod
         fail_format(state);
         return;
     }
-    state.borrow_mut().negotiate(info);
+    negotiate_format(state, info, |width, height| {
+        let values = buffer_offer(width, height).ok_or(())?;
+        let param = Pod::from_bytes(&values).ok_or(())?;
+        stream
+            .ok_or(())?
+            .update_params(&mut [param])
+            .map_err(|_| ())
+    });
 }
 
-fn fail_format(state: &Rc<RefCell<ReceiverState>>) {
+fn negotiate_format(
+    state: &Arc<Mutex<ReceiverState>>,
+    info: VideoInfoRaw,
+    update_buffers: impl FnOnce(u32, u32) -> Result<(), ()>,
+) {
+    let contract = {
+        let mut state = state.borrow_mut();
+        if state.terminal.is_some() {
+            return;
+        }
+        if let Ok(contract) = state.validated_contract(info) {
+            contract
+        } else {
+            let operation = state.reception_operation();
+            state.fail(CaptureErrorType::UnsupportedFormat, operation);
+            return;
+        }
+    };
+    if update_buffers(contract.width, contract.height).is_err() {
+        fail_receiver(state);
+        return;
+    }
+    state.borrow_mut().commit_contract(contract);
+}
+
+fn fail_format(state: &Arc<Mutex<ReceiverState>>) {
     let mut state = state.borrow_mut();
     let operation = state.reception_operation();
     state.fail(CaptureErrorType::UnsupportedFormat, operation);
 }
 
-fn fail_frame(state: &Rc<RefCell<ReceiverState>>, error_type: CaptureErrorType) {
+fn fail_frame(state: &Arc<Mutex<ReceiverState>>, error_type: CaptureErrorType) {
     let mut state = state.borrow_mut();
     let operation = state.reception_operation();
     state.fail(error_type, operation);
+}
+
+fn fail_receiver(state: &Arc<Mutex<ReceiverState>>) {
+    let mut state = state.borrow_mut();
+    let operation = state.reception_operation();
+    state.fail(CaptureErrorType::ReceiverFailed, operation);
+}
+
+fn latch_source_terminal(state: &Arc<Mutex<ReceiverState>>, error_type: CaptureErrorType) {
+    state
+        .borrow_mut()
+        .fail(error_type, CaptureDiagnosticOperation::SourceLifetime);
+}
+
+fn buffer_offer(width: u32, height: u32) -> Option<Vec<u8>> {
+    let stride = width.checked_mul(4)?;
+    let size = stride.checked_mul(height)?;
+    let stride = i32::try_from(stride).ok()?;
+    let size = i32::try_from(size).ok()?;
+    let memfd = 1_i32.checked_shl(DataType::MemFd.as_raw())?;
+    let object = spa::pod::Object {
+        type_: spa::utils::SpaTypes::ObjectParamBuffers.as_raw(),
+        id: spa::param::ParamType::Buffers.as_raw(),
+        properties: vec![
+            spa::pod::Property::new(
+                spa::sys::SPA_PARAM_BUFFERS_buffers,
+                Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
+                    spa::utils::ChoiceFlags::empty(),
+                    spa::utils::ChoiceEnum::Range {
+                        default: 4,
+                        min: 1,
+                        max: 8,
+                    },
+                ))),
+            ),
+            spa::pod::Property::new(spa::sys::SPA_PARAM_BUFFERS_blocks, Value::Int(1)),
+            spa::pod::Property::new(spa::sys::SPA_PARAM_BUFFERS_size, Value::Int(size)),
+            spa::pod::Property::new(spa::sys::SPA_PARAM_BUFFERS_stride, Value::Int(stride)),
+            spa::pod::Property::new(
+                spa::sys::SPA_PARAM_BUFFERS_dataType,
+                Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
+                    spa::utils::ChoiceFlags::empty(),
+                    spa::utils::ChoiceEnum::Flags {
+                        default: memfd,
+                        flags: vec![memfd],
+                    },
+                ))),
+            ),
+        ],
+    };
+    spa::pod::serialize::PodSerializer::serialize(Cursor::new(Vec::new()), &Value::Object(object))
+        .ok()
+        .map(|serialized| serialized.0.into_inner())
 }
 
 fn format_offer() -> Result<Vec<u8>, spa::pod::serialize::GenError> {
@@ -1487,8 +1731,7 @@ mod tests {
         let mut state = negotiated_state();
         state.accept_frame(UncalibratedMemoryType::MemoryPointer, 16, &[0; 32], 1);
         UncalibratedPipeWireReceiver {
-            listener: None,
-            stream: None,
+            worker: None,
             lease: Some(UncalibratedGamescopeSourceLease {
                 runtime: None,
                 node_id: 7,
@@ -1497,7 +1740,7 @@ mod tests {
                 next_diagnostic_sequence: 3,
                 terminal_recorded: false,
             }),
-            state: Rc::new(RefCell::new(state)),
+            state: Arc::new(Mutex::new(state)),
             receiver_started_ms: 0,
             shutdown_started_ms: None,
             negotiation_recorded: false,
@@ -1558,6 +1801,130 @@ mod tests {
         );
         assert_eq!(min, spa::utils::Fraction { num: 0, denom: 1 });
         assert_eq!(max, spa::utils::Fraction { num: 240, denom: 1 });
+    }
+
+    #[test]
+    fn buffer_offer_matches_the_mapped_bgrx_contract() {
+        let values = buffer_offer(3_840, 2_160).expect("buffer offer");
+        let (_, value) = spa::pod::deserialize::PodDeserializer::deserialize_any_from(&values)
+            .expect("buffer offer pod");
+        let Value::Object(object) = value else {
+            panic!("expected object");
+        };
+        assert_eq!(
+            object.type_,
+            spa::utils::SpaTypes::ObjectParamBuffers.as_raw()
+        );
+        assert_eq!(object.id, spa::param::ParamType::Buffers.as_raw());
+        let property = |key| {
+            object
+                .properties
+                .iter()
+                .find(|property| property.key == key)
+                .expect("buffer property")
+        };
+        assert_eq!(
+            property(spa::sys::SPA_PARAM_BUFFERS_size).value,
+            Value::Int(3_840 * 2_160 * 4)
+        );
+        assert_eq!(
+            property(spa::sys::SPA_PARAM_BUFFERS_stride).value,
+            Value::Int(3_840 * 4)
+        );
+        let Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
+            _,
+            spa::utils::ChoiceEnum::Range { default, min, max },
+        ))) = &property(spa::sys::SPA_PARAM_BUFFERS_buffers).value
+        else {
+            panic!("expected buffer-count range");
+        };
+        assert_eq!((*default, *min, *max), (4, 1, 8));
+    }
+
+    #[test]
+    fn startup_deadline_latches_one_terminal_cause_before_late_frames() {
+        let mut state = ReceiverState::new(Instant::now());
+        state.negotiate(video_info());
+
+        let (terminal, status) = state.latch_startup_deadline().unwrap_err();
+        assert_eq!(terminal.error_type, CaptureErrorType::FirstFrameTimedOut);
+        assert_eq!(status, CaptureDiagnosticStatus::Timeout);
+        state.accept_frame(UncalibratedMemoryType::MemoryPointer, 16, &[0; 32], 1);
+        assert_eq!(state.received_frames, 0);
+        assert_eq!(state.terminal, Some(terminal));
+    }
+
+    #[test]
+    fn startup_terminal_wins_over_an_already_received_frame() {
+        let mut state = negotiated_state();
+        state.accept_frame(UncalibratedMemoryType::MemoryPointer, 16, &[0; 32], 1);
+        state.fail(
+            CaptureErrorType::StreamLost,
+            CaptureDiagnosticOperation::SteadyReception,
+        );
+
+        assert_eq!(
+            state.startup_snapshot(),
+            StartupSnapshot::Terminal(ReceiverTerminal {
+                error_type: CaptureErrorType::StreamLost,
+                operation: CaptureDiagnosticOperation::SteadyReception,
+            })
+        );
+        assert_eq!(
+            state.latch_startup_deadline(),
+            Err((
+                ReceiverTerminal {
+                    error_type: CaptureErrorType::StreamLost,
+                    operation: CaptureDiagnosticOperation::SteadyReception,
+                },
+                CaptureDiagnosticStatus::Error,
+            ))
+        );
+    }
+
+    #[test]
+    fn buffer_parameter_failure_does_not_commit_negotiation() {
+        let state = Arc::new(Mutex::new(ReceiverState::new(Instant::now())));
+
+        negotiate_format(&state, video_info(), |_, _| Err(()));
+
+        let state = state.borrow();
+        assert_eq!(state.contract, None);
+        assert_eq!(state.contract_received_ns, None);
+        assert_eq!(
+            state.terminal,
+            Some(ReceiverTerminal {
+                error_type: CaptureErrorType::ReceiverFailed,
+                operation: CaptureDiagnosticOperation::StreamNegotiation,
+            })
+        );
+    }
+
+    #[test]
+    fn startup_success_facts_are_flushed_before_the_frame_can_be_taken() {
+        let mut receiver = receiver_for_admission();
+        let mut facts = Facts::default();
+
+        assert_eq!(
+            receiver.state.borrow().startup_snapshot(),
+            StartupSnapshot::Ready
+        );
+        receiver.flush_observations(&mut facts);
+        let frame = receiver.take_latest_frame().expect("latest frame");
+
+        assert_eq!(frame.sequence(), 1);
+        assert!(facts.0.iter().any(|fact| {
+            fact.operation == CaptureDiagnosticOperation::FirstFrame
+                && fact.status == CaptureDiagnosticStatus::Success
+        }));
+    }
+
+    #[test]
+    fn receiver_supervisor_rejects_overlap_until_the_worker_exits() {
+        let first = ReceiverWorkerSupervisor::acquire().unwrap();
+        assert!(ReceiverWorkerSupervisor::acquire().is_err());
+        drop(first);
+        assert!(ReceiverWorkerSupervisor::acquire().is_ok());
     }
 
     #[test]
@@ -1842,10 +2209,10 @@ mod tests {
 
     #[test]
     fn null_format_clear_does_not_replace_stream_loss_classification() {
-        let state = Rc::new(RefCell::new(negotiated_state()));
+        let state = Arc::new(Mutex::new(negotiated_state()));
         state.borrow_mut().active_seen = true;
 
-        handle_format(&state, spa::param::ParamType::Format.as_raw(), None);
+        handle_format(None, &state, spa::param::ParamType::Format.as_raw(), None);
         assert_eq!(state.borrow().terminal, None);
 
         handle_stream_state(&state, &pw::stream::StreamState::Unconnected);
@@ -1860,7 +2227,7 @@ mod tests {
 
     #[test]
     fn intentional_shutdown_does_not_latch_stream_loss() {
-        let state = Rc::new(RefCell::new(negotiated_state()));
+        let state = Arc::new(Mutex::new(negotiated_state()));
         {
             let mut state = state.borrow_mut();
             state.active_seen = true;
@@ -1922,6 +2289,61 @@ mod tests {
             2,
             Some(CaptureDiagnosticOperation::StreamNegotiation)
         ));
+    }
+
+    #[test]
+    fn shutdown_records_a_latched_stream_terminal() {
+        let receiver = receiver_for_admission();
+        receiver.state.borrow_mut().fail(
+            CaptureErrorType::StreamLost,
+            CaptureDiagnosticOperation::SteadyReception,
+        );
+        let mut facts = Facts::default();
+
+        receiver.shutdown(&mut facts).unwrap();
+
+        assert!(facts.0.iter().any(|fact| {
+            fact.operation == CaptureDiagnosticOperation::SteadyReception
+                && fact.status == CaptureDiagnosticStatus::Error
+                && fact.error_type == Some(CaptureErrorType::StreamLost)
+        }));
+    }
+
+    #[test]
+    fn shutdown_routes_a_source_terminal_through_the_provider_fact() {
+        let receiver = receiver_for_admission();
+        receiver.state.borrow_mut().fail(
+            CaptureErrorType::SourceLost,
+            CaptureDiagnosticOperation::SourceLifetime,
+        );
+        let mut facts = Facts::default();
+
+        receiver.shutdown(&mut facts).unwrap();
+
+        let lifetime: Vec<_> = facts
+            .0
+            .iter()
+            .filter(|fact| fact.operation == CaptureDiagnosticOperation::SourceLifetime)
+            .collect();
+        assert_eq!(lifetime.len(), 1);
+        assert_eq!(lifetime[0].status, CaptureDiagnosticStatus::Error);
+        assert_eq!(lifetime[0].error_type, Some(CaptureErrorType::SourceLost));
+    }
+
+    #[test]
+    fn provider_error_at_shutdown_latches_source_lifetime_before_receiver_teardown() {
+        let state = Arc::new(Mutex::new(ReceiverState::new(Instant::now())));
+
+        latch_source_terminal(&state, CaptureErrorType::SourceLost);
+        state.borrow_mut().shutting_down = true;
+
+        assert_eq!(
+            state.borrow().terminal,
+            Some(ReceiverTerminal {
+                error_type: CaptureErrorType::SourceLost,
+                operation: CaptureDiagnosticOperation::SourceLifetime,
+            })
+        );
     }
 
     #[test]
