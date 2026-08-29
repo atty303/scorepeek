@@ -157,7 +157,14 @@ unknown until operator review. Digest-bound operator intervals are expanded to e
 sample pairs. Pairs whose two retained predicates are music-select require an operator decision,
 but an operator can exclude a visibly different screen as typed context rather than inventing a
 motion state. Predicate-derived and operator-derived context remain distinct unknown states.
-Partial reviewed sets expose completeness and cannot become dwell truth.
+When selection identity changes while the right list also moves, operator review records
+`selection_change`; motion with the same active identity is `scrolling`, and only unchanged
+identity plus unchanged list placement is `stationary`. Non-list animation does not affect this
+classification.
+Partial reviewed sets expose completeness and cannot become dwell truth. The first complete bound
+set contains 712 stationary, 84 scrolling, 30 selection-change, 12 operator-context, and 133
+predicate-context adjacent pairs. It is sufficient to evaluate candidate dwell policies, but does
+not itself select one or establish stable-selection accuracy.
 This offline evidence surface has no runtime or event authority.
 
 The offline corpus tool can replay this exact production reducer over ordered, operator-reviewed

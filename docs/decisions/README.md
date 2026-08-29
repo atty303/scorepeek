@@ -178,6 +178,10 @@ authoritative.
 - [ADR 0062: Let operators exclude screen-predicate false positives from motion truth](0062-let-operators-exclude-screen-predicate-false-positives.md)
   supersedes ADR 0061 only for requiring every predicate-eligible pair to carry a motion state.
   Explicit operator screen context remains unknown and outside later motion or dwell denominators.
+- [ADR 0063: Prioritize selection identity in music-select motion review](0063-prioritize-selection-identity-in-motion-review.md)
+  fixes deterministic precedence when selection identity changes while the right list also moves:
+  selection change wins, then same-selection list motion is scrolling, then unchanged list and
+  identity are stationary.
 
 ## Historical
 

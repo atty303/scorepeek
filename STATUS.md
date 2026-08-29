@@ -88,8 +88,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   conflicts, gap resets, or pending replacements. The 2-observation policy reaches joint stability
   at p50 591 ms / p95 796 ms versus p50 782 ms / p95 1,003 ms for 3 observations, so the retained
   evidence does not justify adding the third observation. Three sparse episodes expose one retained
-  result observation and one has no bindable result interval. Music-select dwell remains
-  unimplemented pending operator-reviewed stationary and scrolling spans.
+  result observation and one has no bindable result interval. Music-select dwell remained
+  unimplemented pending operator-reviewed stationary and scrolling spans; ADR 0063 now completes
+  that review evidence, while candidate policy evaluation and policy selection remain pending.
   ADR 0060 adds the preceding music-select motion-review surface without changing that boundary.
   The create-only offline command verifies one active-suite 10 Hz FFV1 video-replay session and
   measures adjacent frame movement separately for the twenty-row right-list union, active-list
@@ -123,6 +124,16 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   Applying the visually reviewed sequence 899--907 interval produced nine operator-context pairs,
   133 predicate-context pairs, and 829 pairs still requiring review with `complete=false`. The
   production predicate, motion thresholds, dwell, and event authority remain unchanged.
+  ADR 0063 fixes deterministic authoring precedence for the remaining visual review: visible active
+  selection identity changes take precedence over concurrent list motion, same-selection row
+  translation or settling is scrolling, and non-list animation is ignored. The complete
+  digest-bound application now covers all 971 adjacent pairs: 712 stationary, 84 scrolling, 30
+  selection-change, 12 operator-context, and 133 predicate-context pairs, with no remaining review
+  pair and `complete=true`. The reviewed-set digest is
+  `aa59dc31a678c4db633db0391747642de49a48e466bf53421c2054f9c68b912e`, bound to draft
+  `f7d205cb38f9f29848f7b11261da0e0dee491fa172189d27997ce6cc68b36b5e`. This establishes motion
+  review truth only; no dwell policy, stable-selection accuracy, runtime state, or event authority
+  has been selected.
   The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
   machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
   model. After the `/home` symlink fix, retained synthetic target evidence showed the 1920x1080
@@ -618,9 +629,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   comparison confirms retained-corpus coverage and latency only; it has no wrong-accept challenge
   set, title-disjoint holdout, calibrated false-accept denominator, or release-accuracy authority.
   The screen-local music-select resolver is grounded by recording-visible selections and
-  separate long-title live observations, but operator-reviewed stationary/scrolling spans,
-  stable-selection dwell, charts, digits, accepted event emission, and deduplication remain
-  unimplemented.
+  separate long-title live observations, but stable-selection dwell, charts, digits, accepted
+  event emission, and deduplication remain unimplemented. The complete motion review is sufficient
+  for candidate dwell evaluation but does not select a policy.
 - A true live music-select screen has passed the fixed-label predicate and retained values now pass
   the screen-local song resolver, but stable-selection and event acceptance remain unimplemented.
   Exact live result QOIs classify as result and reproduce their
@@ -664,12 +675,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   the absence of a transform inspector is not a current execution blocker.
 - Current recordings and provisional labels do not establish title-disjoint result accuracy,
   calibrated thresholds, result dwell, miss denominator, deduplication, or release accuracy.
-- The music-select motion draft and partial reviewed artifact remain measurement and review
-  material only. Nine of the 838 predicate-eligible adjacent pairs are operator-confirmed MODE
-  SELECT screen context; the remaining 829 still need operator decisions for stationary,
-  scrolling, selection change, or additional screen context. The separate 133 predicate-context
-  pairs cannot receive decisions. This does not establish a dwell policy or stable-selection
-  accuracy, and the observed predicate false positive has not been recalibrated.
+- The complete music-select motion review is measurement evidence only. Of the 838
+  predicate-eligible adjacent pairs, 712 are stationary, 84 are scrolling, 30 are selection
+  changes, and 12 are operator-confirmed non-music-select context; the separate 133
+  predicate-context pairs remain unknown context. This does not establish a dwell policy or
+  stable-selection accuracy, and the observed predicate false positives have not been
+  recalibrated.
 - Persistent scheduler installation was verified in isolation but not applied to the operator's
   actual configuration. Real S3 credentials/provider behavior and remote bucket lifecycle remain
   untested.
@@ -737,10 +748,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    component reconstruction, and add only operator-reviewed episodes to the active suite.
 3. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
-4. Review the remaining 829 predicate-eligible music-select adjacent pairs against their bound
-   video, author contiguous stationary, scrolling, selection-change, and any additional
-   screen-context decision intervals, and publish a `complete=true` immutable reviewed set through
-   ADR 0062. Evaluate candidate dwell policies only after it exists.
+4. Evaluate bounded candidate music-select dwell policies offline against the complete reviewed
+   set, keeping stationary, scrolling, selection-change, operator-context, and predicate-context
+   denominators separate. Select no runtime policy until false-stability, reset behavior, and
+   stabilization latency are reported from that immutable evidence.
 
 Do not add transform replay without an independent oracle, broaden routine raw retention, silently
 calibrate or switch profiles, request play solely to

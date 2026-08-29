@@ -576,7 +576,11 @@ flush timeoutは`partial | dropped` evidenceとして残すが、play、capture 
    pairだけをstationary/scrolling/selection-changeの対象とする。ADR 0062では保持predicateのfalse positiveを
    operatorが`screen_context`として明示的に除外できるようにし、motion truthへ混入させない。predicate由来と
    operator由来のscreen contextはtyped unknownとして別集計し、未判断pairのあるpartial reviewed setをdwell truthに
-   しない。completeなoperator-reviewed setを得るまでdwellは実装しない。chart、music-select stable-selection temporal stateおよびevent authorityは後続の
+   しない。ADR 0063ではactive selection identityの変化をlist移動より優先して`selection_change`、identity不変の
+   list移動を`scrolling`、identityとlist配置がともに不変なpairを`stationary`とする。中央背景animationだけでは
+   motion stateを変えない。最初のcomplete setは712 stationary、84 scrolling、30 selection-change、
+   12 operator-context、133 predicate-context pairを保持し、未判断pairは0である。このsetからcandidate dwellを
+   offline評価してからpolicyを選び、評価前にdwellを実装しない。chart、music-select stable-selection temporal stateおよびevent authorityは後続の
    独立contractとする。
 10. **M7**: 少数scenario replayから最小selection song contextとrecognition-trigger非依存のbounded
     live diagnosticsを検証し、その後versioned event schemaとNDJSON daemonを統合する。ゲーム全体の

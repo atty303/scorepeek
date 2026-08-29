@@ -411,7 +411,17 @@ operator context, predicate context, and remaining pairs. It reports `complete=f
 predicate-eligible pair is either assigned motion or explicitly excluded, and cannot be used as
 complete dwell-evaluation truth before then. ADR 0062 records the observed MODE SELECT false
 positive that requires this fail-closed operator exclusion; review apply does not change the
-production predicate.
+production predicate. ADR 0063 fixes authoring precedence: visible active-selection identity change
+is `selection_change` even when the list also moves; same-selection list translation or settling is
+`scrolling`; unchanged selection and list placement is `stationary`. Central/background animation
+alone is ignored. Motion values may direct visual inspection but never create a label.
+The first complete application of that precedence is bound to draft
+`f7d205cb38f9f29848f7b11261da0e0dee491fa172189d27997ce6cc68b36b5e`: 712 pairs are
+`stationary`, 84 are `scrolling`, 30 are `selection_change`, 12 are operator-excluded screen
+context, and 133 are predicate screen context. Its reviewed-set digest is
+`aa59dc31a678c4db633db0391747642de49a48e466bf53421c2054f9c68b912e`, with zero remaining
+review pairs and `complete=true`. This establishes bounded motion-review truth only; choosing a
+dwell policy and measuring stable-selection correctness remain separate work.
 
 Python 3.12.13 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
 PaddlePaddle CPU 3.3.1, Apache-2.0 `paddle2onnx` 2.1.0, and their complete
