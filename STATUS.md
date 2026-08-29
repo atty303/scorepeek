@@ -209,8 +209,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   moves the complete receiver PipeWire graph to a dedicated safe Rust thread, keeps provider
   lifetime observation on its separate connection, and explicitly updates the negotiated four
   buffer, one-block, exact BGRx size/stride, MemFd contract before recording negotiation success.
-  Repository checks, complete tests, and the cargo-dist artifact test pass; the resulting build has
-  not yet been installed or exercised on the target.
+  Repository checks, complete tests, and the cargo-dist artifact test pass. The resulting binary is
+  installed at `/home/atty/.local/bin/scorepeek` on the target with SHA-256
+  `2751de4ceab60dfde10bd79f730876e2d31428eabc96384daee62a9fde63dc48`; target-side version,
+  digest, and `doctor` with PipeWire 1.6.8 pass. An already-running process retained the prior
+  `f458b479c6d5ec747597732ead943b9638259d9c7d73d1f105797a38875d16ed` inode, so the ADR 0073
+  receiver has not yet run.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -696,7 +700,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Unverified boundaries
 
-- The ADR 0073 build is not yet installed or run. An ordinary `gamescope-4k` run must show no
+- The ADR 0073 build is installed but has not yet run. An ordinary `gamescope-4k` run must show no
   increasing scorepeek `pw-top` error count and no Gamescope `out of buffers` or
   `Already had a buffer?!` warnings while retaining ordinary
   session admission, 10 Hz latest-frame recognition, diagnostic sequencing, and clean shutdown.
