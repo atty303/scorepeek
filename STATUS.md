@@ -210,7 +210,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   with Gamescope's BGRx 3840x2160 `0/1` offer: PipeWire rejected the link with
   `no more input formats (-22)`, no diagnostic session started, and scorepeek remained
   `waiting_for_source`. ADR 0072 restores the compatible preferred 10/1, accepted 0/1--240/1 range
-  while retaining process-event buffer return. Repository and target revalidation are required.
+  while retaining process-event buffer return. Repository checks, complete tests, and the
+  cargo-dist artifact test pass. The corrected binary is installed on the target with SHA-256
+  `f458b479c6d5ec747597732ead943b9638259d9c7d73d1f105797a38875d16ed`; target-side version,
+  digest, and `doctor` with PipeWire 1.6.8 pass while scorepeek is stopped. Live link and buffer
+  behavior still require revalidation.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -694,8 +698,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Unverified boundaries
 
-- The installed ADR 0070 build cannot negotiate the target source. After installing ADR 0072, an
-  ordinary `gamescope-4k` run must link with the producer's unspecified rate and show no increasing
+- The ADR 0072 build is installed but has not yet run. An ordinary `gamescope-4k` run must link with
+  the producer's unspecified rate and show no increasing
   scorepeek `pw-top` error count or Gamescope
   out-of-buffers warnings while retaining ordinary
   session admission, 10 Hz latest-frame recognition, diagnostic sequencing, and clean shutdown.
