@@ -200,6 +200,7 @@ cargo run --locked --quiet -p scorepeek-corpus -- corpus import-diagnostic --sto
 cargo run --locked --quiet -p scorepeek-corpus -- review apply --store /absolute/private-corpus-v1 --draft /absolute/review.json --labels /absolute/operator-labels.json
 mise run corpus:test
 mise run corpus:temporal:evaluate
+mise run corpus:music-select:dwell:evaluate -- --reviewed /absolute/private/music-select-motion-reviewed.json --output /absolute/private/music-select-dwell-evaluation.json
 mise run recognition:inspect -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID
 mise run recognition:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/crops
 mise run recognition:music-select:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/music-select-crops
@@ -223,6 +224,11 @@ mise run catalog:schedule:systemd:verify
 `corpus:temporal:evaluate` compares the production result reducer's default two-observation policy
 with a three-observation policy without changing the active suite. Its JSON is descriptive,
 generation-bound evidence; see [the offline temporal evaluation contract](docs/temporal-evaluation.md).
+
+`corpus:music-select:dwell:evaluate` replays session-bound music-select OCR through the exact
+content-addressed catalog generation and production resolver, then compares time-only dwell
+candidates with complete operator-reviewed motion truth. Its create-only JSON is descriptive and
+selects no runtime policy.
 
 The developer `run:gamescope` gate keeps one admitted provider connected until SIGINT or SIGTERM.
 Its control path does not signal Gamescope, INFINITAS, or the process group. Stdout is bounded

@@ -165,6 +165,12 @@ Partial reviewed sets expose completeness and cannot become dwell truth. The fir
 set contains 712 stationary, 84 scrolling, 30 selection-change, 12 operator-context, and 133
 predicate-context adjacent pairs. It is sufficient to evaluate candidate dwell policies, but does
 not itself select one or establish stable-selection accuracy.
+The offline dwell evaluator joins that complete truth with the bound observation stream and exact
+catalog generation, replays the production frame-local resolver, and compares equal accepted-song
+durations of 100--500 ms. Every tested duration retains two missed selection-change resets and
+nonstationary stability; longer dwell reduces stationary-run coverage without eliminating the
+failure. A time-only runtime dwell is therefore rejected. Operator truth remains evaluation-only,
+and a later runtime design needs an independent reset signal before another policy comparison.
 This offline evidence surface has no runtime or event authority.
 
 The offline corpus tool can replay this exact production reducer over ordered, operator-reviewed

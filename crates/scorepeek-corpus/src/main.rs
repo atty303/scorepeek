@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use scorepeek_corpus::{
-    TemporalEvaluationPolicy, apply_music_list_motion_review, apply_music_select_motion_review,
-    apply_review, convert_v2_diagnostic, evaluate_temporal_corpus, import_diagnostic,
+    MusicSelectDwellPolicy, TemporalEvaluationPolicy, apply_music_list_motion_review,
+    apply_music_select_motion_review, apply_review, convert_v2_diagnostic,
+    evaluate_music_select_dwell, evaluate_temporal_corpus, import_diagnostic,
     inspect_music_list_row_observation_draft, inspect_review, measure_music_list_motion,
     plan_music_list_motion_review, plan_music_select_motion_review, render_synthetic_title_set,
     replay_corpus, replay_video, verify_diagnostic, verify_music_list_motion,
@@ -110,6 +111,13 @@ fn run(args: &[OsString]) -> Result<(), String> {
 }
 
 fn run_music_select_motion(args: &[OsString]) -> Option<Result<(), String>> {
+    if args.starts_with(&[
+        OsString::from("music-select"),
+        OsString::from("dwell"),
+        OsString::from("evaluate"),
+    ]) {
+        return Some(run_music_select_dwell_evaluation(&args[3..]));
+    }
     if let [
         music_select,
         motion,
@@ -171,6 +179,54 @@ fn run_music_select_motion(args: &[OsString]) -> Option<Result<(), String>> {
         );
     }
     None
+}
+
+fn run_music_select_dwell_evaluation(args: &[OsString]) -> Result<(), String> {
+    let mut store = None;
+    let mut catalog_store = None;
+    let mut reviewed = None;
+    let mut output = None;
+    let mut policies = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let flag = &args[index];
+        let value = args.get(index + 1).ok_or_else(music_select_dwell_usage)?;
+        if flag == "--store" && store.is_none() {
+            store = Some(PathBuf::from(value));
+        } else if flag == "--catalog-store" && catalog_store.is_none() {
+            catalog_store = Some(PathBuf::from(value));
+        } else if flag == "--reviewed" && reviewed.is_none() {
+            reviewed = Some(PathBuf::from(value));
+        } else if flag == "--output" && output.is_none() {
+            output = Some(PathBuf::from(value));
+        } else if flag == "--policy" {
+            let dwell = value
+                .to_str()
+                .ok_or_else(music_select_dwell_usage)?
+                .parse::<u64>()
+                .map_err(|_| music_select_dwell_usage())?;
+            policies.push(MusicSelectDwellPolicy::new(dwell).map_err(|error| error.to_string())?);
+        } else {
+            return Err(music_select_dwell_usage());
+        }
+        index += 2;
+    }
+    let store = store.ok_or_else(music_select_dwell_usage)?;
+    let catalog_store = catalog_store.ok_or_else(music_select_dwell_usage)?;
+    let reviewed = reviewed.ok_or_else(music_select_dwell_usage)?;
+    let output = output.ok_or_else(music_select_dwell_usage)?;
+    if policies.is_empty() {
+        policies = [100, 200, 300, 500]
+            .map(|dwell| MusicSelectDwellPolicy::new(dwell).expect("default dwell is bounded"))
+            .to_vec();
+    }
+    evaluate_music_select_dwell(&store, &catalog_store, &reviewed, &policies, &output)
+        .map_err(|error| format!("music-select dwell evaluation failed: {error}"))
+        .and_then(|summary| print_json(&summary, "music-select dwell evaluation"))
+}
+
+fn music_select_dwell_usage() -> String {
+    "usage: scorepeek-corpus music-select dwell evaluate --store ROOT --catalog-store ROOT --reviewed REVIEWED --output REPORT [--policy DWELL_MS ...]".to_owned()
 }
 
 #[allow(clippy::too_many_lines)]
@@ -364,7 +420,7 @@ fn run_remaining(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "usage: scorepeek-corpus <diagnostic replay-video --video FILE --profile NAME --output DIRECTORY|diagnostic verify DIRECTORY|diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY|corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE|review show --draft FILE|review apply --store ROOT --draft FILE --labels FILE|corpus replay --store ROOT|temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|music-list motion review-plan --output PLAN ARTIFACT|music-list motion review-apply --output REQUEST ARTIFACT PLAN DECISIONS|music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE|music-select motion review-apply --output REVIEWED DRAFT DECISIONS>"
+            "usage: scorepeek-corpus <diagnostic replay-video --video FILE --profile NAME --output DIRECTORY|diagnostic verify DIRECTORY|diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY|corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE|review show --draft FILE|review apply --store ROOT --draft FILE --labels FILE|corpus replay --store ROOT|temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|music-list motion review-plan --output PLAN ARTIFACT|music-list motion review-apply --output REQUEST ARTIFACT PLAN DECISIONS|music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE|music-select motion review-apply --output REVIEWED DRAFT DECISIONS|music-select dwell evaluate --store ROOT --catalog-store ROOT --reviewed REVIEWED --output REPORT [--policy DWELL_MS ...]>"
                 .to_owned(),
         ),
     }
@@ -385,7 +441,7 @@ fn print_usage() {
 
 fn usage_text() -> String {
     format!(
-        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus diagnostic replay-video --video FILE --profile NAME --output DIRECTORY\n  scorepeek-corpus diagnostic verify DIRECTORY\n  scorepeek-corpus diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY\n  scorepeek-corpus corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE\n  scorepeek-corpus review show --draft FILE\n  scorepeek-corpus review apply --store ROOT --draft FILE --labels FILE\n  scorepeek-corpus corpus replay --store ROOT\n  scorepeek-corpus temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]\n  scorepeek-corpus music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE\n  scorepeek-corpus music-select motion review-apply --output REVIEWED DRAFT DECISIONS",
+        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus diagnostic replay-video --video FILE --profile NAME --output DIRECTORY\n  scorepeek-corpus diagnostic verify DIRECTORY\n  scorepeek-corpus diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY\n  scorepeek-corpus corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE\n  scorepeek-corpus review show --draft FILE\n  scorepeek-corpus review apply --store ROOT --draft FILE --labels FILE\n  scorepeek-corpus corpus replay --store ROOT\n  scorepeek-corpus temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]\n  scorepeek-corpus music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE\n  scorepeek-corpus music-select motion review-apply --output REVIEWED DRAFT DECISIONS\n  scorepeek-corpus music-select dwell evaluate --store ROOT --catalog-store ROOT --reviewed REVIEWED --output REPORT [--policy DWELL_MS ...]",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -402,6 +458,19 @@ mod tests {
             usage_text()
                 .contains("music-select motion review-apply --output REVIEWED DRAFT DECISIONS")
         );
+        assert!(usage_text().contains(
+            "music-select dwell evaluate --store ROOT --catalog-store ROOT --reviewed REVIEWED"
+        ));
+    }
+
+    #[test]
+    fn music_select_dwell_policy_is_bounded() {
+        for valid in [1, 100, 60_000] {
+            assert!(scorepeek_corpus::MusicSelectDwellPolicy::new(valid).is_ok());
+        }
+        for invalid in [0, 60_001] {
+            assert!(scorepeek_corpus::MusicSelectDwellPolicy::new(invalid).is_err());
+        }
     }
 
     #[test]

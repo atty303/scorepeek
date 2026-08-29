@@ -132,8 +132,15 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   pair and `complete=true`. The reviewed-set digest is
   `aa59dc31a678c4db633db0391747642de49a48e466bf53421c2054f9c68b912e`, bound to draft
   `f7d205cb38f9f29848f7b11261da0e0dee491fa172189d27997ce6cc68b36b5e`. This establishes motion
-  review truth only; no dwell policy, stable-selection accuracy, runtime state, or event authority
-  has been selected.
+  review truth only. ADR 0064 adds a create-only offline dwell evaluator which verifies the bound
+  active suite, session observation object, and exact content-addressed catalog generation, then
+  replays the retained OCR strings through the production music-select resolver. The default
+  100/200/300/500 ms equal-accepted-ID candidates cover 16/27, 16/27, 13/27, and 13/27 stationary
+  runs, retain 24/18/17/16 nonstationary stable pairs, and each miss two selection-change resets.
+  The 500 ms candidate loses coverage without eliminating false stability, so no time-only runtime
+  policy, stable-selection accuracy, runtime state, or event authority has been selected. The
+  canonical evaluation SHA-256 is
+  `5c7954152b95ed6f14b58b7992643df62ef0879841997680fa59cb24318c8a8c`.
   The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
   machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
   model. After the `/home` symlink fix, retained synthetic target evidence showed the 1920x1080
@@ -675,12 +682,13 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   the absence of a transform inspector is not a current execution blocker.
 - Current recordings and provisional labels do not establish title-disjoint result accuracy,
   calibrated thresholds, result dwell, miss denominator, deduplication, or release accuracy.
-- The complete music-select motion review is measurement evidence only. Of the 838
+- The complete music-select motion review and ADR 0064 evaluation are descriptive evidence only. Of the 838
   predicate-eligible adjacent pairs, 712 are stationary, 84 are scrolling, 30 are selection
   changes, and 12 are operator-confirmed non-music-select context; the separate 133
-  predicate-context pairs remain unknown context. This does not establish a dwell policy or
-  stable-selection accuracy, and the observed predicate false positives have not been
-  recalibrated.
+  predicate-context pairs remain unknown context. Replaying equal accepted song IDs shows that
+  100--500 ms time-only dwell cannot clear two observed selection changes. The motion truth does
+  not label the correct song ID, so it establishes neither stable-selection accuracy nor a usable
+  reset classifier; the observed predicate false positives have not been recalibrated.
 - Persistent scheduler installation was verified in isolation but not applied to the operator's
   actual configuration. Real S3 credentials/provider behavior and remote bucket lifecycle remain
   untested.
@@ -748,10 +756,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    component reconstruction, and add only operator-reviewed episodes to the active suite.
 3. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
-4. Evaluate bounded candidate music-select dwell policies offline against the complete reviewed
-   set, keeping stationary, scrolling, selection-change, operator-context, and predicate-context
-   denominators separate. Select no runtime policy until false-stability, reset behavior, and
-   stabilization latency are reported from that immutable evidence.
+4. Evaluate a bounded runtime-observable music-select reset signal against the complete reviewed
+   set. Start with the retained active-row and right-list motion evidence, keep operator truth out
+   of runtime input, and report missed selection-change resets, false resets during stationary
+   runs, nonstationary stability, and coverage before selecting or implementing any policy.
 
 Do not add transform replay without an independent oracle, broaden routine raw retention, silently
 calibrate or switch profiles, request play solely to

@@ -10,7 +10,13 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use scorepeek::recognition::{CanonicalLayout, MusicSelectMotionRegions, Roi, ScreenClass};
+use scorepeek::catalog::{CatalogStore, ScorepeekSongId};
+use scorepeek::recognition::{
+    CanonicalLayout, CatalogCandidateDomain, DynamicTextObservation, FieldNotObserved,
+    FieldNotObservedReason, MusicSelectMotionRegions, MusicSelectScreenFieldObservations, Roi,
+    ScreenCatalogCandidateObservations, ScreenClass, ScreenFieldObservations,
+    resolve_music_select_song,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -26,11 +32,15 @@ const SUMMARY_SCHEMA: &str = "scorepeek-private-music-select-motion-review-summa
 const DECISIONS_SCHEMA: &str = "scorepeek-private-music-select-motion-review-decisions-v2";
 const REVIEWED_SCHEMA: &str = "scorepeek-private-music-select-motion-reviewed-v2";
 const APPLY_SUMMARY_SCHEMA: &str = "scorepeek-private-music-select-motion-review-apply-summary-v2";
+const DWELL_EVALUATION_SCHEMA: &str = "scorepeek-private-music-select-dwell-evaluation-v1";
+const DWELL_EVALUATION_SUMMARY_SCHEMA: &str =
+    "scorepeek-private-music-select-dwell-evaluation-summary-v1";
 const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_OBSERVATION_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_OBSERVATIONS: usize = 250_000;
 const MAX_REVIEW_SAMPLES: usize = 10_000;
+const MAX_DWELL_POLICIES: usize = 16;
 const MAX_DECODE_GAP_FRAMES: usize = 60;
 const MAX_DECODE_SEGMENT_SAMPLES: usize = 256;
 const MAX_VIDEO_PACKETS: usize = 250_000;
@@ -66,6 +76,40 @@ pub struct MusicSelectMotionReviewApplySummary {
     remaining_review_pair_count: usize,
     predicate_context_pair_count: usize,
     complete: bool,
+    authority: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MusicSelectDwellPolicy {
+    pub stationary_dwell_ms: u64,
+}
+
+impl MusicSelectDwellPolicy {
+    /// Constructs one bounded offline music-select dwell candidate.
+    ///
+    /// # Errors
+    /// Returns [`CorpusError::InvalidRequest`] when the dwell is zero or exceeds one minute.
+    pub fn new(stationary_dwell_ms: u64) -> Result<Self, CorpusError> {
+        if stationary_dwell_ms == 0 || stationary_dwell_ms > 60_000 {
+            return Err(CorpusError::InvalidRequest(
+                "music-select dwell must be between 1 and 60000 ms".to_owned(),
+            ));
+        }
+        Ok(Self {
+            stationary_dwell_ms,
+        })
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct MusicSelectDwellEvaluationSummary {
+    schema: &'static str,
+    output: PathBuf,
+    evaluation_sha256: String,
+    source_reviewed_sha256: String,
+    policy_count: usize,
+    runtime_policy_selected: bool,
     authority: &'static str,
 }
 
@@ -180,9 +224,10 @@ impl OperatorReviewState {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ReviewedMotionSet {
-    schema: &'static str,
+    schema: String,
     source_draft_sha256: String,
     active_suite_sha256: String,
     session_sha256: String,
@@ -196,10 +241,11 @@ struct ReviewedMotionSet {
     regions: MusicSelectMotionRegions,
     spans: Vec<ReviewedMotionSpan>,
     completeness: ReviewCompleteness,
-    authority: &'static str,
+    authority: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ReviewedMotionSpan {
     span_id: String,
     observed_first_sequence: u64,
@@ -211,7 +257,8 @@ struct ReviewedMotionSpan {
     pairs: Vec<ReviewedMotionPair>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ReviewedMotionPair {
     previous_sequence: u64,
     sequence: u64,
@@ -224,7 +271,8 @@ struct ReviewedMotionPair {
     review_state: ReviewState,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ReviewCompleteness {
     decision_interval_count: usize,
     reviewed_motion_pair_count: usize,
@@ -232,6 +280,82 @@ struct ReviewCompleteness {
     remaining_review_pair_count: usize,
     predicate_context_pair_count: usize,
     complete: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct MusicSelectDwellEvaluation {
+    schema: &'static str,
+    source_reviewed_sha256: String,
+    source_active_suite_sha256: String,
+    source_session_sha256: String,
+    source_catalog_sha256: String,
+    sampling_interval_ms: u64,
+    denominators: DwellTruthDenominators,
+    policies: Vec<DwellPolicyEvaluation>,
+    runtime_policy_selected: bool,
+    authority: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+struct DwellTruthDenominators {
+    stationary_pairs: usize,
+    scrolling_pairs: usize,
+    selection_change_pairs: usize,
+    operator_context_pairs: usize,
+    predicate_context_pairs: usize,
+    stationary_runs: usize,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+struct DwellResetSummary {
+    selection_changes_with_prior_stability: usize,
+    selection_change_resets: usize,
+    missed_selection_change_resets: usize,
+    scrolling_pairs_with_prior_stability: usize,
+    scrolling_resets: usize,
+    operator_context_resets: usize,
+    predicate_context_resets: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct DwellPolicyEvaluation {
+    policy: MusicSelectDwellPolicy,
+    stationary_runs: usize,
+    stabilized_runs: usize,
+    unresolved_stationary_runs: usize,
+    stabilization_latency_ms: DwellDistribution,
+    resets: DwellResetSummary,
+    false_stable_nonstationary_pairs: DwellFalseStabilitySummary,
+    false_stabilizations: DwellFalseStabilitySummary,
+    accepted_observations: usize,
+    unknown_observations: usize,
+    candidate_replacements: usize,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+struct DwellFalseStabilitySummary {
+    total: usize,
+    scrolling: usize,
+    selection_change: usize,
+    operator_context: usize,
+    predicate_context: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DwellObservation {
+    sequence: u64,
+    timestamp_ms: u64,
+    screen: ScreenClass,
+    accepted_song_id: Option<ScorepeekSongId>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct DwellDistribution {
+    samples: usize,
+    minimum: Option<u64>,
+    p50: Option<u64>,
+    p95: Option<u64>,
+    maximum: Option<u64>,
 }
 
 struct AppliedMotionReview {
@@ -546,7 +670,7 @@ pub fn apply_music_select_motion_review(
         complete,
     };
     let reviewed = ReviewedMotionSet {
-        schema: REVIEWED_SCHEMA,
+        schema: REVIEWED_SCHEMA.to_owned(),
         source_draft_sha256: source_draft_sha256.clone(),
         active_suite_sha256: draft.active_suite_sha256,
         session_sha256: draft.session_sha256,
@@ -560,7 +684,7 @@ pub fn apply_music_select_motion_review(
         regions: draft.regions,
         spans: applied.spans,
         completeness,
-        authority: "operator_review",
+        authority: "operator_review".to_owned(),
     };
     let bytes = canonical_line(&reviewed)?;
     if bytes.len() > MAX_DOCUMENT_BYTES {
@@ -581,6 +705,504 @@ pub fn apply_music_select_motion_review(
         complete,
         authority: "operator_review",
     })
+}
+
+/// Evaluates bounded stationary-dwell candidates against one complete operator-reviewed set.
+///
+/// The evaluator consumes motion truth only. It measures when a stationary run would become
+/// stable and whether scrolling, selection-change, or screen-context boundaries reset pending and
+/// stable state. It cannot measure song-resolution correctness and never selects a runtime policy.
+///
+/// # Errors
+/// Returns an error when paths are not absolute, policies are empty, duplicated, or unbounded, the
+/// reviewed set is incomplete or non-canonical, or the create-only report cannot be published.
+pub fn evaluate_music_select_dwell(
+    store: &Path,
+    catalog_store: &Path,
+    reviewed_path: &Path,
+    policies: &[MusicSelectDwellPolicy],
+    output_path: &Path,
+) -> Result<MusicSelectDwellEvaluationSummary, CorpusError> {
+    if !store.is_absolute()
+        || !catalog_store.is_absolute()
+        || !reviewed_path.is_absolute()
+        || !output_path.is_absolute()
+    {
+        return invalid("music-select dwell evaluation paths must be absolute");
+    }
+    let policies = validate_dwell_policies(policies)?;
+    let reviewed_bytes =
+        read_bounded_regular(reviewed_path, MAX_DOCUMENT_BYTES, ErrorContext::Replay)?;
+    let reviewed: ReviewedMotionSet = serde_json::from_slice(&reviewed_bytes)?;
+    let denominators = validate_reviewed_motion_set(&reviewed, &reviewed_bytes)?;
+    let source_reviewed_sha256 = digest_bytes(&reviewed_bytes);
+    let (active, session) = load_bound_session(store, &reviewed.session_sha256)?;
+    if active.generation_sha256 != reviewed.active_suite_sha256 {
+        return invalid("music-select dwell reviewed suite binding differs");
+    }
+    let (source_catalog_sha256, observations) =
+        load_dwell_observations(store, catalog_store, &session)?;
+    let evaluations = policies
+        .iter()
+        .copied()
+        .map(|policy| {
+            evaluate_dwell_policy(
+                &reviewed,
+                &observations,
+                denominators.stationary_runs,
+                policy,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let report = MusicSelectDwellEvaluation {
+        schema: DWELL_EVALUATION_SCHEMA,
+        source_reviewed_sha256: source_reviewed_sha256.clone(),
+        source_active_suite_sha256: reviewed.active_suite_sha256,
+        source_session_sha256: reviewed.session_sha256,
+        source_catalog_sha256,
+        sampling_interval_ms: reviewed.sampling_interval_ms,
+        denominators,
+        policies: evaluations,
+        runtime_policy_selected: false,
+        authority: "offline_descriptive_only",
+    };
+    let bytes = canonical_line(&report)?;
+    if bytes.len() > MAX_DOCUMENT_BYTES {
+        return invalid("music-select dwell evaluation exceeds its bound");
+    }
+    let evaluation_sha256 = digest_bytes(&bytes);
+    publish_create_only(output_path, &bytes)?;
+    Ok(MusicSelectDwellEvaluationSummary {
+        schema: DWELL_EVALUATION_SUMMARY_SCHEMA,
+        output: output_path.to_owned(),
+        evaluation_sha256,
+        source_reviewed_sha256,
+        policy_count: policies.len(),
+        runtime_policy_selected: false,
+        authority: "offline_descriptive_only",
+    })
+}
+
+fn validate_dwell_policies(
+    policies: &[MusicSelectDwellPolicy],
+) -> Result<Vec<MusicSelectDwellPolicy>, CorpusError> {
+    if policies.is_empty() || policies.len() > MAX_DWELL_POLICIES {
+        return Err(CorpusError::InvalidRequest(
+            "music-select dwell evaluation requires one to sixteen policies".to_owned(),
+        ));
+    }
+    let unique = policies.iter().copied().collect::<BTreeSet<_>>();
+    if unique.len() != policies.len()
+        || unique
+            .iter()
+            .any(|policy| MusicSelectDwellPolicy::new(policy.stationary_dwell_ms).is_err())
+    {
+        return Err(CorpusError::InvalidRequest(
+            "music-select dwell policies must be unique and bounded".to_owned(),
+        ));
+    }
+    Ok(unique.into_iter().collect())
+}
+
+fn validate_reviewed_motion_set(
+    reviewed: &ReviewedMotionSet,
+    bytes: &[u8],
+) -> Result<DwellTruthDenominators, CorpusError> {
+    if canonical_line(reviewed)? != bytes
+        || reviewed.schema != REVIEWED_SCHEMA
+        || reviewed.authority != "operator_review"
+        || reviewed.sampling_interval_ms != 100
+        || reviewed.spans.is_empty()
+        || !reviewed.completeness.complete
+        || reviewed.completeness.remaining_review_pair_count != 0
+        || !valid_sha256(&reviewed.source_draft_sha256)
+        || !valid_sha256(&reviewed.active_suite_sha256)
+        || !valid_sha256(&reviewed.session_sha256)
+        || !valid_sha256(&reviewed.video_sha256)
+        || !valid_sha256(&reviewed.capture_profile_sha256)
+        || !valid_sha256(&reviewed.normalizer_artifact_sha256)
+        || !valid_sha256(&reviewed.canonical_layout_sha256)
+    {
+        return invalid("music-select dwell input is not a complete canonical reviewed set");
+    }
+    let mut denominators = DwellTruthDenominators::default();
+    let mut span_ids = BTreeSet::new();
+    for span in &reviewed.spans {
+        if span.span_id.is_empty()
+            || !span_ids.insert(&span.span_id)
+            || span.pairs.is_empty()
+            || span.pairs.len() > MAX_REVIEW_SAMPLES
+        {
+            return invalid("music-select dwell input span is invalid");
+        }
+        let mut previous_stationary = false;
+        for (index, pair) in span.pairs.iter().enumerate() {
+            if pair.previous_sequence >= pair.sequence
+                || pair.previous_timestamp_ms >= pair.source_timestamp_ms
+                || pair.motion.gap_ms != pair.source_timestamp_ms - pair.previous_timestamp_ms
+                || index > 0
+                    && (span.pairs[index - 1].sequence != pair.previous_sequence
+                        || span.pairs[index - 1].source_timestamp_ms != pair.previous_timestamp_ms)
+            {
+                return invalid("music-select dwell input pairs are not contiguous");
+            }
+            let stationary = match (
+                pair.review_state.state.as_str(),
+                pair.review_state.reason.as_str(),
+            ) {
+                ("stationary", "operator_reviewed")
+                    if pair.previous_screen == ScreenClass::MusicSelect
+                        && pair.screen == ScreenClass::MusicSelect =>
+                {
+                    denominators.stationary_pairs += 1;
+                    true
+                }
+                ("scrolling", "operator_reviewed")
+                    if pair.previous_screen == ScreenClass::MusicSelect
+                        && pair.screen == ScreenClass::MusicSelect =>
+                {
+                    denominators.scrolling_pairs += 1;
+                    false
+                }
+                ("selection_change", "operator_reviewed")
+                    if pair.previous_screen == ScreenClass::MusicSelect
+                        && pair.screen == ScreenClass::MusicSelect =>
+                {
+                    denominators.selection_change_pairs += 1;
+                    false
+                }
+                ("unknown", "operator_screen_context")
+                    if pair.previous_screen == ScreenClass::MusicSelect
+                        && pair.screen == ScreenClass::MusicSelect =>
+                {
+                    denominators.operator_context_pairs += 1;
+                    false
+                }
+                ("unknown", "predicate_screen_context")
+                    if pair.previous_screen != ScreenClass::MusicSelect
+                        || pair.screen != ScreenClass::MusicSelect =>
+                {
+                    denominators.predicate_context_pairs += 1;
+                    false
+                }
+                _ => return invalid("music-select dwell input contains unsupported review truth"),
+            };
+            if stationary && !previous_stationary {
+                denominators.stationary_runs += 1;
+            }
+            previous_stationary = stationary;
+        }
+    }
+    if denominators.stationary_pairs
+        != reviewed
+            .completeness
+            .reviewed_motion_pair_count
+            .saturating_sub(denominators.scrolling_pairs)
+            .saturating_sub(denominators.selection_change_pairs)
+        || denominators.operator_context_pairs != reviewed.completeness.operator_context_pair_count
+        || denominators.predicate_context_pairs
+            != reviewed.completeness.predicate_context_pair_count
+    {
+        return invalid("music-select dwell input completeness counts differ");
+    }
+    Ok(denominators)
+}
+
+fn load_dwell_observations(
+    store: &Path,
+    catalog_store: &Path,
+    session: &CaptureSession,
+) -> Result<(String, BTreeMap<u64, DwellObservation>), CorpusError> {
+    let binding = bound_artifact(session, "recognition/catalog.json")?;
+    let binding_bytes = read_bound_object(store, binding, MAX_DOCUMENT_BYTES as u64)?;
+    let binding: Value = serde_json::from_slice(&binding_bytes)?;
+    let catalog_sha256 = binding["catalog_sha256"]
+        .as_str()
+        .filter(|value| valid_sha256(value))
+        .ok_or_else(|| {
+            CorpusError::InvalidReplay("music-select dwell catalog binding is invalid".to_owned())
+        })?;
+    let active = CatalogStore::new(catalog_store)
+        .load_generation(catalog_sha256)
+        .map_err(|error| {
+            CorpusError::InvalidReplay(format!(
+                "music-select dwell catalog generation is unavailable: {error}"
+            ))
+        })?;
+    let domain = CatalogCandidateDomain::from_catalog(&active.catalog).map_err(|error| {
+        CorpusError::InvalidReplay(format!(
+            "music-select dwell catalog domain is invalid: {error}"
+        ))
+    })?;
+    let artifact = bound_artifact(session, "recognition/observations.ndjson")?;
+    let bytes = read_bound_object(store, artifact, MAX_OBSERVATION_BYTES)?;
+    let mut observations = BTreeMap::new();
+    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+        if line.len() > MAX_OBSERVATION_RECORD_BYTES
+            || line.last() != Some(&b'\n')
+            || observations.len() >= MAX_OBSERVATIONS
+        {
+            return invalid("music-select dwell observation stream exceeds its bound");
+        }
+        let value: Value = serde_json::from_slice(line)?;
+        if value["schema"] != OBSERVATION_SCHEMA {
+            return invalid("music-select dwell observation schema differs");
+        }
+        let sequence = value["tick_sequence"].as_u64().ok_or_else(|| {
+            CorpusError::InvalidReplay("music-select dwell sequence is invalid".to_owned())
+        })?;
+        let timestamp_ms = value["source_timestamp_ms"].as_u64().ok_or_else(|| {
+            CorpusError::InvalidReplay("music-select dwell timestamp is invalid".to_owned())
+        })?;
+        let screen = match value["screen"]
+            .as_str()
+            .or_else(|| value.pointer("/decision/screen").and_then(Value::as_str))
+            .or_else(|| value.pointer("/fields/screen").and_then(Value::as_str))
+        {
+            Some("result") => ScreenClass::Result,
+            Some("music_select") => ScreenClass::MusicSelect,
+            Some("unknown") => ScreenClass::Unknown,
+            _ => return invalid("music-select dwell observation screen is invalid"),
+        };
+        let accepted_song_id = if screen == ScreenClass::MusicSelect {
+            resolve_stored_music_select(&domain, &value)?
+        } else {
+            None
+        };
+        if observations
+            .insert(
+                sequence,
+                DwellObservation {
+                    sequence,
+                    timestamp_ms,
+                    screen,
+                    accepted_song_id,
+                },
+            )
+            .is_some()
+        {
+            return invalid("music-select dwell observation sequence is duplicated");
+        }
+    }
+    Ok((catalog_sha256.to_owned(), observations))
+}
+
+fn resolve_stored_music_select(
+    domain: &CatalogCandidateDomain,
+    value: &Value,
+) -> Result<Option<ScorepeekSongId>, CorpusError> {
+    let fields = value.get("fields").filter(|fields| !fields.is_null());
+    let text = |name: &str| {
+        fields
+            .and_then(|fields| fields.get(name))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let dynamic = |open_text: String| DynamicTextObservation {
+        input_width: 0,
+        output_timesteps: open_text.chars().count(),
+        open_text,
+    };
+    let observations = ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
+        central_title: dynamic(text("central_title")),
+        artist: dynamic(text("artist")),
+        selected_chart: FieldNotObserved {
+            reason: FieldNotObservedReason::ObserverNotImplemented,
+        },
+        active_list_title: dynamic(text("active_list_title")),
+    });
+    let candidates = domain.observe(&observations);
+    let ScreenCatalogCandidateObservations::MusicSelect { candidates, .. } = candidates else {
+        return invalid("music-select dwell candidate screen differs");
+    };
+    let ScreenFieldObservations::MusicSelect(fields) = observations else {
+        unreachable!("constructed music-select fields remain music-select")
+    };
+    Ok(resolve_music_select_song(
+        &fields.central_title.open_text,
+        &fields.artist.open_text,
+        &fields.active_list_title.open_text,
+        &candidates,
+    )
+    .accepted_song_id())
+}
+
+fn evaluate_dwell_policy(
+    reviewed: &ReviewedMotionSet,
+    observations: &BTreeMap<u64, DwellObservation>,
+    stationary_runs: usize,
+    policy: MusicSelectDwellPolicy,
+) -> Result<DwellPolicyEvaluation, CorpusError> {
+    let mut latencies = Vec::new();
+    let mut resets = DwellResetSummary::default();
+    let mut stabilized_runs = BTreeSet::new();
+    let mut false_stable_nonstationary_pairs = DwellFalseStabilitySummary::default();
+    let mut false_stabilizations = DwellFalseStabilitySummary::default();
+    let mut accepted_observations = 0;
+    let mut unknown_observations = 0;
+    let mut candidate_replacements = 0;
+    for span in &reviewed.spans {
+        let Some(first_pair) = span.pairs.first() else {
+            continue;
+        };
+        let first = observations
+            .get(&first_pair.previous_sequence)
+            .ok_or_else(|| {
+                CorpusError::InvalidReplay(
+                    "music-select dwell source observation is missing".to_owned(),
+                )
+            })?;
+        if first.sequence != first_pair.previous_sequence
+            || first.timestamp_ms != first_pair.previous_timestamp_ms
+            || first.screen != first_pair.previous_screen
+        {
+            return invalid("music-select dwell observation binding differs");
+        }
+        let mut pending = first
+            .accepted_song_id
+            .map(|song_id| (song_id, first.timestamp_ms));
+        let mut stable = None;
+        accepted_observations += usize::from(first.accepted_song_id.is_some());
+        unknown_observations += usize::from(first.accepted_song_id.is_none());
+        let mut stationary_run = 0_usize;
+        let mut previous_truth_stationary = false;
+        for pair in &span.pairs {
+            let current = observations.get(&pair.sequence).ok_or_else(|| {
+                CorpusError::InvalidReplay(
+                    "music-select dwell source observation is missing".to_owned(),
+                )
+            })?;
+            if current.sequence != pair.sequence
+                || current.timestamp_ms != pair.source_timestamp_ms
+                || current.screen != pair.screen
+            {
+                return invalid("music-select dwell observation binding differs");
+            }
+            let prior_stable = stable;
+            let mut entered_stability = None;
+            if let Some(song_id) = current.accepted_song_id {
+                accepted_observations += 1;
+                match pending {
+                    Some((pending_id, since)) if pending_id == song_id => {
+                        let latency = current.timestamp_ms - since;
+                        if stable.is_none() && latency >= policy.stationary_dwell_ms {
+                            stable = Some(song_id);
+                            entered_stability = Some(latency);
+                        }
+                    }
+                    Some(_) => {
+                        candidate_replacements += 1;
+                        pending = Some((song_id, current.timestamp_ms));
+                        stable = None;
+                    }
+                    None => pending = Some((song_id, current.timestamp_ms)),
+                }
+            } else {
+                unknown_observations += 1;
+                pending = None;
+                stable = None;
+            }
+            let truth_stationary = pair.review_state.state == "stationary";
+            if truth_stationary && !previous_truth_stationary {
+                stationary_run += 1;
+            }
+            let run_key = (span.span_id.as_str(), stationary_run);
+            if let Some(latency) = entered_stability {
+                if truth_stationary {
+                    latencies.push(latency);
+                } else {
+                    record_false_stability(&mut false_stabilizations, pair);
+                }
+            }
+            if truth_stationary && stable.is_some() {
+                stabilized_runs.insert(run_key);
+            }
+            if !truth_stationary && stable.is_some() {
+                record_false_stability(&mut false_stable_nonstationary_pairs, pair);
+            }
+            record_observed_dwell_reset(&mut resets, pair, prior_stable, stable);
+            previous_truth_stationary = truth_stationary;
+        }
+    }
+    let stabilized_run_count = stabilized_runs.len();
+    Ok(DwellPolicyEvaluation {
+        policy,
+        stationary_runs,
+        stabilized_runs: stabilized_run_count,
+        unresolved_stationary_runs: stationary_runs.saturating_sub(stabilized_run_count),
+        stabilization_latency_ms: dwell_distribution(latencies),
+        resets,
+        false_stable_nonstationary_pairs,
+        false_stabilizations,
+        accepted_observations,
+        unknown_observations,
+        candidate_replacements,
+    })
+}
+
+fn record_false_stability(summary: &mut DwellFalseStabilitySummary, pair: &ReviewedMotionPair) {
+    summary.total += 1;
+    match (
+        pair.review_state.state.as_str(),
+        pair.review_state.reason.as_str(),
+    ) {
+        ("scrolling", _) => summary.scrolling += 1,
+        ("selection_change", _) => summary.selection_change += 1,
+        ("unknown", "operator_screen_context") => summary.operator_context += 1,
+        ("unknown", "predicate_screen_context") => summary.predicate_context += 1,
+        _ => {}
+    }
+}
+
+fn record_observed_dwell_reset(
+    resets: &mut DwellResetSummary,
+    pair: &ReviewedMotionPair,
+    prior_stable: Option<ScorepeekSongId>,
+    stable: Option<ScorepeekSongId>,
+) {
+    let reset = prior_stable.is_some() && prior_stable != stable;
+    match (
+        pair.review_state.state.as_str(),
+        pair.review_state.reason.as_str(),
+    ) {
+        ("selection_change", _) if prior_stable.is_some() => {
+            resets.selection_changes_with_prior_stability += 1;
+            if reset {
+                resets.selection_change_resets += 1;
+            } else {
+                resets.missed_selection_change_resets += 1;
+            }
+        }
+        ("scrolling", _) if prior_stable.is_some() => {
+            resets.scrolling_pairs_with_prior_stability += 1;
+            resets.scrolling_resets += usize::from(reset);
+        }
+        ("unknown", "operator_screen_context") => {
+            resets.operator_context_resets += usize::from(reset);
+        }
+        ("unknown", "predicate_screen_context") => {
+            resets.predicate_context_resets += usize::from(reset);
+        }
+        _ => {}
+    }
+}
+
+fn dwell_distribution(mut samples: Vec<u64>) -> DwellDistribution {
+    samples.sort_unstable();
+    let percentile = |percent: usize| {
+        (!samples.is_empty()).then(|| {
+            let rank = (samples.len() * percent).div_ceil(100).max(1);
+            samples[rank - 1]
+        })
+    };
+    DwellDistribution {
+        samples: samples.len(),
+        minimum: samples.first().copied(),
+        p50: percentile(50),
+        p95: percentile(95),
+        maximum: samples.last().copied(),
+    }
 }
 
 fn read_motion_review_decisions(
@@ -1718,12 +2340,208 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        MAX_PROCESS_STDERR_BYTES, MotionReviewDecision, MotionReviewDecisions, ObservationRecord,
-        OperatorReviewState, VideoIdentity, apply_music_select_motion_review, canonical_line,
-        digest_bytes, parse_showinfo_pts, plan_music_select_motion_review, read_bounded_stream,
-        region_motion_packed, review_windows, run_bounded_output, select_expression,
-        selected_frame_targets, verify_video_unchanged,
+        MAX_PROCESS_STDERR_BYTES, MotionEvidence, MotionReviewDecision, MotionReviewDecisions,
+        MusicSelectDwellPolicy, ObservationRecord, OperatorReviewState, RegionMotion,
+        ReviewCompleteness, ReviewState, ReviewedMotionPair, ReviewedMotionSet, ReviewedMotionSpan,
+        VideoIdentity, apply_music_select_motion_review, canonical_line, digest_bytes,
+        evaluate_dwell_policy, parse_showinfo_pts, plan_music_select_motion_review,
+        read_bounded_stream, region_motion_packed, review_windows, run_bounded_output,
+        select_expression, selected_frame_targets, validate_reviewed_motion_set,
+        verify_video_unchanged,
     };
+
+    #[test]
+    fn dwell_candidate_stabilizes_only_stationary_runs_and_resets_immediately() {
+        let reviewed = synthetic_reviewed_set();
+        let observations = synthetic_dwell_observations(&reviewed);
+        let result = evaluate_dwell_policy(
+            &reviewed,
+            &observations,
+            3,
+            MusicSelectDwellPolicy::new(200).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result.stationary_runs, 3);
+        assert_eq!(result.stabilized_runs, 3);
+        assert_eq!(result.unresolved_stationary_runs, 0);
+        assert_eq!(result.stabilization_latency_ms.samples, 2);
+        assert_eq!(result.stabilization_latency_ms.minimum, Some(200));
+        assert_eq!(result.resets.scrolling_pairs_with_prior_stability, 1);
+        assert_eq!(result.resets.scrolling_resets, 0);
+        assert_eq!(result.resets.selection_changes_with_prior_stability, 1);
+        assert_eq!(result.resets.selection_change_resets, 1);
+        assert_eq!(result.resets.missed_selection_change_resets, 0);
+        assert_eq!(result.resets.predicate_context_resets, 1);
+        assert_eq!(result.false_stable_nonstationary_pairs.total, 1);
+        assert_eq!(result.false_stable_nonstationary_pairs.scrolling, 1);
+        assert_eq!(result.false_stabilizations.total, 0);
+        assert_eq!(result.candidate_replacements, 1);
+    }
+
+    #[test]
+    fn dwell_evaluation_requires_complete_canonical_review_truth() {
+        let reviewed = synthetic_reviewed_set();
+        let bytes = canonical_line(&reviewed).unwrap();
+        let denominators = validate_reviewed_motion_set(&reviewed, &bytes).unwrap();
+        assert_eq!(denominators.stationary_pairs, 5);
+        assert_eq!(denominators.scrolling_pairs, 1);
+        assert_eq!(denominators.selection_change_pairs, 1);
+        assert_eq!(denominators.operator_context_pairs, 1);
+        assert_eq!(denominators.predicate_context_pairs, 1);
+        let mut incomplete = synthetic_reviewed_set();
+        incomplete.completeness.complete = false;
+        assert!(
+            validate_reviewed_motion_set(&incomplete, &canonical_line(&incomplete).unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn dwell_evaluation_rejects_a_mismatched_first_pair_endpoint() {
+        let mut reviewed = synthetic_reviewed_set();
+        reviewed.spans[0].pairs[0].previous_timestamp_ms = 1;
+        reviewed.spans[0].pairs[0].motion.gap_ms = 99;
+        let bytes = canonical_line(&reviewed).unwrap();
+        assert!(validate_reviewed_motion_set(&reviewed, &bytes).is_ok());
+        let observations = synthetic_dwell_observations(&synthetic_reviewed_set());
+        assert!(
+            evaluate_dwell_policy(
+                &reviewed,
+                &observations,
+                3,
+                MusicSelectDwellPolicy::new(200).unwrap(),
+            )
+            .is_err()
+        );
+    }
+
+    fn synthetic_dwell_observations(
+        reviewed: &ReviewedMotionSet,
+    ) -> BTreeMap<u64, super::DwellObservation> {
+        let song_a = serde_json::from_str::<scorepeek::catalog::ScorepeekSongId>(
+            "\"00000000-0000-0000-0000-000000000001\"",
+        )
+        .unwrap();
+        let song_b = serde_json::from_str::<scorepeek::catalog::ScorepeekSongId>(
+            "\"00000000-0000-0000-0000-000000000002\"",
+        )
+        .unwrap();
+        let span = &reviewed.spans[0];
+        let first = &span.pairs[0];
+        let mut result = BTreeMap::from([(
+            first.previous_sequence,
+            super::DwellObservation {
+                sequence: first.previous_sequence,
+                timestamp_ms: first.previous_timestamp_ms,
+                screen: first.previous_screen,
+                accepted_song_id: Some(song_a),
+            },
+        )]);
+        for pair in &span.pairs {
+            let accepted_song_id = match pair.sequence {
+                1..=5 => Some(song_a),
+                6..=8 => Some(song_b),
+                _ => None,
+            };
+            result.insert(
+                pair.sequence,
+                super::DwellObservation {
+                    sequence: pair.sequence,
+                    timestamp_ms: pair.source_timestamp_ms,
+                    screen: pair.screen,
+                    accepted_song_id,
+                },
+            );
+        }
+        result
+    }
+
+    fn synthetic_reviewed_set() -> ReviewedMotionSet {
+        let states = [
+            ("stationary", "operator_reviewed"),
+            ("stationary", "operator_reviewed"),
+            ("scrolling", "operator_reviewed"),
+            ("stationary", "operator_reviewed"),
+            ("selection_change", "operator_reviewed"),
+            ("stationary", "operator_reviewed"),
+            ("stationary", "operator_reviewed"),
+            ("unknown", "predicate_screen_context"),
+            ("unknown", "operator_screen_context"),
+        ];
+        let pairs = states
+            .into_iter()
+            .enumerate()
+            .map(|(index, (state, reason))| {
+                let previous_sequence = u64::try_from(index).unwrap() + 1;
+                let context = reason == "predicate_screen_context";
+                ReviewedMotionPair {
+                    previous_sequence,
+                    sequence: previous_sequence + 1,
+                    previous_timestamp_ms: u64::try_from(index).unwrap() * 100,
+                    source_timestamp_ms: (u64::try_from(index).unwrap() + 1) * 100,
+                    previous_screen: ScreenClass::MusicSelect,
+                    screen: if context {
+                        ScreenClass::Unknown
+                    } else {
+                        ScreenClass::MusicSelect
+                    },
+                    source_frame_index: index + 1,
+                    motion: MotionEvidence {
+                        gap_ms: 100,
+                        list_titles: empty_region_motion(),
+                        active_list_title: empty_region_motion(),
+                        central_title: empty_region_motion(),
+                    },
+                    review_state: ReviewState {
+                        state: state.to_owned(),
+                        reason: reason.to_owned(),
+                    },
+                }
+            })
+            .collect();
+        ReviewedMotionSet {
+            schema: super::REVIEWED_SCHEMA.to_owned(),
+            source_draft_sha256: "a".repeat(64),
+            active_suite_sha256: "b".repeat(64),
+            session_sha256: "c".repeat(64),
+            source_session_id: "synthetic-session".to_owned(),
+            video_sha256: "d".repeat(64),
+            capture_profile_sha256: "e".repeat(64),
+            normalizer_artifact_sha256: "f".repeat(64),
+            canonical_layout_sha256: "1".repeat(64),
+            sampling_interval_ms: 100,
+            review_padding_ms: super::REVIEW_PADDING_MS,
+            regions: CanonicalLayout::music_select_motion_regions().unwrap(),
+            spans: vec![ReviewedMotionSpan {
+                span_id: "music-select-span-0001".to_owned(),
+                observed_first_sequence: 1,
+                observed_last_sequence: 10,
+                observed_first_timestamp_ms: 0,
+                observed_last_timestamp_ms: 900,
+                review_first_timestamp_ms: 0,
+                review_last_timestamp_ms: 900,
+                pairs,
+            }],
+            completeness: ReviewCompleteness {
+                decision_interval_count: 5,
+                reviewed_motion_pair_count: 7,
+                operator_context_pair_count: 1,
+                remaining_review_pair_count: 0,
+                predicate_context_pair_count: 1,
+                complete: true,
+            },
+            authority: "operator_review".to_owned(),
+        }
+    }
+
+    const fn empty_region_motion() -> RegionMotion {
+        RegionMotion {
+            rgb_l1: 0,
+            changed_pixels: 0,
+            compared_pixels: 1,
+            normalized_l1_ppm: 0,
+        }
+    }
 
     #[test]
     fn review_windows_merge_overlapping_padding_around_fast_screen_flicker() {

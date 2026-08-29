@@ -157,26 +157,34 @@ impl CatalogStore {
         let Some(manifest) = self.read_manifest()? else {
             return Ok(None);
         };
-        validate_digest(&manifest.catalog_digest)?;
         let expected_relative = format!("content/{}/{SNAPSHOT_FILE}", manifest.catalog_digest);
         if manifest.snapshot_path != expected_relative {
             return Err(CatalogStoreError::InvalidManifest(
                 "snapshot_path does not match catalog_digest".to_owned(),
             ));
         }
-        let snapshot_path = self.root.join(&manifest.snapshot_path);
+        self.load_generation(&manifest.catalog_digest).map(Some)
+    }
+
+    /// Loads and verifies one exact content-addressed catalog generation.
+    ///
+    /// # Errors
+    /// Returns an error when the digest is invalid or its snapshot is malformed, missing, or has
+    /// different content.
+    pub fn load_generation(&self, digest: &str) -> Result<ActiveCatalog, CatalogStoreError> {
+        validate_digest(digest)?;
+        let snapshot_path = self.root.join("content").join(digest).join(SNAPSHOT_FILE);
         let actual_digest = digest_file(&snapshot_path)?;
-        if actual_digest != manifest.catalog_digest {
+        if actual_digest != digest {
             return Err(CatalogStoreError::InvalidSnapshot(format!(
-                "content digest is {actual_digest}, expected {}",
-                manifest.catalog_digest
+                "content digest is {actual_digest}, expected {digest}"
             )));
         }
         let catalog = read_snapshot(&snapshot_path)?;
-        Ok(Some(ActiveCatalog {
-            digest: manifest.catalog_digest,
+        Ok(ActiveCatalog {
+            digest: digest.to_owned(),
             catalog,
-        }))
+        })
     }
 
     fn content_dir(&self) -> PathBuf {
@@ -1661,6 +1669,25 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, CatalogStoreError::CapacityExceeded));
         assert_eq!(store.load_active().unwrap().unwrap(), active);
+    }
+
+    #[test]
+    fn exact_generation_load_does_not_depend_on_the_active_manifest() {
+        let root = TempDir::new().unwrap();
+        let store = CatalogStore::new(root.path());
+        let first = store
+            .begin_update()
+            .unwrap()
+            .publish(&synthetic_catalog("ALPHA"))
+            .unwrap();
+        let second = store
+            .begin_update()
+            .unwrap()
+            .publish(&synthetic_catalog("BETA"))
+            .unwrap();
+        assert_ne!(first.digest, second.digest);
+        assert_eq!(store.load_active().unwrap(), Some(second));
+        assert_eq!(store.load_generation(&first.digest).unwrap(), first);
     }
 
     #[test]

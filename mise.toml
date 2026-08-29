@@ -450,6 +450,16 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek-corpus -- music-select motion review-apply "$@"
 '''
 
+[tasks."corpus:music-select:dwell:evaluate"]
+description = "Evaluate music-select dwell candidates against reviewed motion truth"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+root="${SCOREPEEK_CORPUS_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/private-corpus-v1}"
+catalog="${SCOREPEEK_CATALOG_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/catalog}"
+exec cargo run --locked --quiet -p scorepeek-corpus -- music-select dwell evaluate --store "$root" --catalog-store "$catalog" "$@"
+'''
+
 [tasks."ocr:sync"]
 description = "Synchronize the locked offline OCR development environment"
 run = "uv sync --locked --no-dev"

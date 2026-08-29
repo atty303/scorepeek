@@ -182,6 +182,10 @@ authoritative.
   fixes deterministic precedence when selection identity changes while the right list also moves:
   selection change wins, then same-selection list motion is scrolling, then unchanged list and
   identity are stationary.
+- [ADR 0064: Reject time-only music-select dwell](0064-reject-time-only-music-select-dwell.md)
+  replays session-bound OCR through the exact catalog generation and production resolver, then
+  rejects all 100--500 ms candidates because each retains false stability and misses selection
+  resets. No runtime policy is selected.
 
 ## Historical
 

@@ -423,6 +423,22 @@ context, and 133 are predicate screen context. Its reviewed-set digest is
 review pairs and `complete=true`. This establishes bounded motion-review truth only; choosing a
 dwell policy and measuring stable-selection correctness remain separate work.
 
+Evaluate frame-local accepted song IDs against that truth without changing the corpus or catalog:
+
+```text
+mise run corpus:music-select:dwell:evaluate -- --reviewed /absolute/private/music-select-motion-reviewed.json --output /absolute/private/music-select-dwell-evaluation.json
+```
+
+The evaluator verifies the reviewed-set, active-suite, session, observation-object, and exact
+content-addressed catalog-generation bindings. It replays retained OCR strings through the
+production music-select resolver; operator motion labels classify its temporal output and never
+become runtime inputs. The create-only `scorepeek-private-music-select-dwell-evaluation-v1` report
+contains no OCR or catalog strings and keeps all five truth denominators separate. The registered
+100/200/300/500 ms comparison found 24/18/17/16 nonstationary stable pairs and two missed
+selection-change resets for every policy, while stationary-run coverage fell from 16/27 to 13/27.
+It therefore selects no runtime policy. The report is descriptive motion/reset evidence, not a
+correct-song label set, stable-selection accuracy result, or event authority.
+
 Python 3.12.13 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
 PaddlePaddle CPU 3.3.1, Apache-2.0 `paddle2onnx` 2.1.0, and their complete
 dependency graph. `models/manifests/paddleocr-v3.7.0-training-source.json`
