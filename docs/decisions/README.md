@@ -216,6 +216,9 @@ authoritative.
   supersedes ADR 0070 and ADR 0072 only for assuming the foreground-driven process callback is
   timely, isolates all receiver PipeWire objects on a dedicated safe Rust thread, and completes the
   negotiated buffer contract explicitly.
+- [ADR 0074: Allow padded PipeWire buffer allocation](0074-allow-padded-pipewire-buffer-allocation.md)
+  supersedes ADR 0073 only for its exact buffer size and stride, retaining the bounded dedicated
+  receiver while allowing producer alignment and padding.
 
 ## Historical
 

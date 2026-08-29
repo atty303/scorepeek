@@ -212,9 +212,14 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   Repository checks, complete tests, and the cargo-dist artifact test pass. The resulting binary is
   installed at `/home/atty/.local/bin/scorepeek` on the target with SHA-256
   `2751de4ceab60dfde10bd79f730876e2d31428eabc96384daee62a9fde63dc48`; target-side version,
-  digest, and `doctor` with PipeWire 1.6.8 pass. An already-running process retained the prior
-  `f458b479c6d5ec747597732ead943b9638259d9c7d73d1f105797a38875d16ed` inode, so the ADR 0073
-  receiver has not yet run.
+  digest, and `doctor` with PipeWire 1.6.8 pass. The first ADR 0073 run connected, retained a complete
+  71-second diagnostic run with 588 processed ticks and no busy skips, and ended its first source
+  normally. A later source failed PipeWire link allocation with `-22`: scorepeek required the exact
+  31,512,096-byte, 15,312-byte-stride footprint derived from visible 3828x2058 BGRx while Gamescope
+  offered a padded 33,177,600-byte, 15,360-byte-stride 3840x2160 backing store. ADR 0074 keeps the
+  bounded four-buffer MemFd contract but changes size and stride to lower-bounded ranges, matching
+  PipeWire's allocation semantics. Repository verification passes; this correction is not yet
+  installed or exercised on the target.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -266,9 +271,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   one owned latest frame, detects caps/memory/stride drift, and tears down before the provider. Its
   complete PipeWire ownership graph runs on a dedicated receiver thread, independent of foreground
   normalization and recognition. It prefers 10/1 fps while accepting 0/1 through 240/1, explicitly
-  negotiates four buffers with a one-through-eight range and exact BGRx MemFd layout, and within each
-  process event returns superseded buffers before validating and copying only the newest mapped
-  frame into application-owned memory.
+  negotiates four buffers with a one-through-eight range, one MemFd block, a minimum visible BGRx
+  footprint, and bounded padding, and within each process event returns superseded buffers before
+  validating and copying only the newest mapped frame into application-owned memory.
 - Live and repeated-lifecycle gates expose bounded typed facts and aggregate counters without pixels
   or arbitrary PipeWire properties. Uncalibrated frames cannot enter recognition or canonical
   diagnostic recording.
@@ -700,9 +705,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Unverified boundaries
 
-- The ADR 0073 build is installed but has not yet run. An ordinary `gamescope-4k` run must show no
+- The ADR 0074 correction is not yet installed or run. An ordinary `gamescope-4k` run must connect
+  across both the observed padded allocation transition and steady 3840x2160 capture, show no
   increasing scorepeek `pw-top` error count and no Gamescope `out of buffers` or
-  `Already had a buffer?!` warnings while retaining ordinary
+  `Already had a buffer?!` warnings, and retain ordinary
   session admission, 10 Hz latest-frame recognition, diagnostic sequencing, and clean shutdown.
   Development-host compile and replay tests cannot establish this realtime PipeWire boundary.
 - The result temporal reducer is grounded by ten reviewed episodes with complete enough ordered

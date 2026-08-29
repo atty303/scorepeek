@@ -1577,10 +1577,11 @@ fn latch_source_terminal(state: &Arc<Mutex<ReceiverState>>, error_type: CaptureE
 }
 
 fn buffer_offer(width: u32, height: u32) -> Option<Vec<u8>> {
-    let stride = width.checked_mul(4)?;
-    let size = stride.checked_mul(height)?;
-    let stride = i32::try_from(stride).ok()?;
-    let size = i32::try_from(size).ok()?;
+    let minimum_stride = width.checked_mul(4)?;
+    let minimum_size = minimum_stride.checked_mul(height)?;
+    let minimum_stride = i32::try_from(minimum_stride).ok()?;
+    let minimum_size = i32::try_from(minimum_size).ok()?;
+    let maximum_size = i32::try_from(MAX_FRAME_BYTES).ok()?;
     let memfd = 1_i32.checked_shl(DataType::MemFd.as_raw())?;
     let object = spa::pod::Object {
         type_: spa::utils::SpaTypes::ObjectParamBuffers.as_raw(),
@@ -1598,8 +1599,28 @@ fn buffer_offer(width: u32, height: u32) -> Option<Vec<u8>> {
                 ))),
             ),
             spa::pod::Property::new(spa::sys::SPA_PARAM_BUFFERS_blocks, Value::Int(1)),
-            spa::pod::Property::new(spa::sys::SPA_PARAM_BUFFERS_size, Value::Int(size)),
-            spa::pod::Property::new(spa::sys::SPA_PARAM_BUFFERS_stride, Value::Int(stride)),
+            spa::pod::Property::new(
+                spa::sys::SPA_PARAM_BUFFERS_size,
+                Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
+                    spa::utils::ChoiceFlags::empty(),
+                    spa::utils::ChoiceEnum::Range {
+                        default: minimum_size,
+                        min: minimum_size,
+                        max: maximum_size,
+                    },
+                ))),
+            ),
+            spa::pod::Property::new(
+                spa::sys::SPA_PARAM_BUFFERS_stride,
+                Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
+                    spa::utils::ChoiceFlags::empty(),
+                    spa::utils::ChoiceEnum::Range {
+                        default: minimum_stride,
+                        min: minimum_stride,
+                        max: i32::MAX,
+                    },
+                ))),
+            ),
             spa::pod::Property::new(
                 spa::sys::SPA_PARAM_BUFFERS_dataType,
                 Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
@@ -1804,8 +1825,8 @@ mod tests {
     }
 
     #[test]
-    fn buffer_offer_matches_the_mapped_bgrx_contract() {
-        let values = buffer_offer(3_840, 2_160).expect("buffer offer");
+    fn buffer_offer_accepts_a_padded_gamescope_backing_allocation() {
+        let values = buffer_offer(3_828, 2_058).expect("buffer offer");
         let (_, value) = spa::pod::deserialize::PodDeserializer::deserialize_any_from(&values)
             .expect("buffer offer pod");
         let Value::Object(object) = value else {
@@ -1823,14 +1844,26 @@ mod tests {
                 .find(|property| property.key == key)
                 .expect("buffer property")
         };
-        assert_eq!(
-            property(spa::sys::SPA_PARAM_BUFFERS_size).value,
-            Value::Int(3_840 * 2_160 * 4)
-        );
-        assert_eq!(
-            property(spa::sys::SPA_PARAM_BUFFERS_stride).value,
-            Value::Int(3_840 * 4)
-        );
+        let Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
+            _,
+            spa::utils::ChoiceEnum::Range { default, min, max },
+        ))) = &property(spa::sys::SPA_PARAM_BUFFERS_size).value
+        else {
+            panic!("expected buffer-size range");
+        };
+        assert_eq!((*default, *min), (3_828 * 2_058 * 4, 3_828 * 2_058 * 4));
+        assert!(*max >= 3_840 * 2_160 * 4);
+        assert_eq!(*max, i32::try_from(MAX_FRAME_BYTES).unwrap());
+        let Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
+            _,
+            spa::utils::ChoiceEnum::Range { default, min, max },
+        ))) = &property(spa::sys::SPA_PARAM_BUFFERS_stride).value
+        else {
+            panic!("expected buffer-stride range");
+        };
+        assert_eq!((*default, *min), (3_828 * 4, 3_828 * 4));
+        assert!(*max >= 3_840 * 4);
+        assert_eq!(*max, i32::MAX);
         let Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
             _,
             spa::utils::ChoiceEnum::Range { default, min, max },
