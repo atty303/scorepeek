@@ -175,6 +175,9 @@ authoritative.
   supersedes ADR 0060 only for its span-level label unit, applying digest-bound operator intervals
   to exact eligible adjacent pairs while retaining predicate transitions as context. Partial review
   remains explicitly incomplete and adds no dwell.
+- [ADR 0062: Let operators exclude screen-predicate false positives from motion truth](0062-let-operators-exclude-screen-predicate-false-positives.md)
+  supersedes ADR 0061 only for requiring every predicate-eligible pair to carry a motion state.
+  Explicit operator screen context remains unknown and outside later motion or dwell denominators.
 
 ## Historical
 

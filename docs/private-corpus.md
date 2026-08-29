@@ -397,13 +397,21 @@ Apply human decisions without rewriting the measurement draft:
 mise run corpus:music-select:motion:review-apply -- --output /absolute/private/music-select-motion-reviewed.json /absolute/private/music-select-motion-draft.json /absolute/private/music-select-motion-decisions.json
 ```
 
-The canonical `scorepeek-private-music-select-motion-review-decisions-v1` binds
+The canonical `scorepeek-private-music-select-motion-review-decisions-v2` binds
 `source_draft_sha256` and contains `decisions` with `span_id`, inclusive `first_sequence` and
-`last_sequence`, and `state` (`stationary`, `scrolling`, or `selection_change`). A range expands to
-exact adjacent pairs and cannot cross an absent pair, a pair touching non-music-select context, or
-another decision. Omitted eligible pairs stay `unknown/operator_review_required`; context pairs
-stay `unknown/screen_context`. The create-only reviewed artifact reports `complete=false` until
-every eligible pair is decided and cannot be used as complete dwell-evaluation truth before then.
+`last_sequence`, and `state` (`stationary`, `scrolling`, `selection_change`, or
+`screen_context`). A range expands to exact adjacent pairs and cannot cross an absent pair, a pair
+touching non-music-select predicate context, or another decision. `screen_context` excludes a pair
+whose retained predicates are both music-select but whose bound video visibly shows another
+screen; it is stored as `unknown/operator_screen_context`, not motion truth. Omitted eligible pairs
+stay `unknown/operator_review_required`; predicate-context pairs stay
+`unknown/predicate_screen_context`. The create-only
+`scorepeek-private-music-select-motion-reviewed-v2` artifact separately counts reviewed motion,
+operator context, predicate context, and remaining pairs. It reports `complete=false` until every
+predicate-eligible pair is either assigned motion or explicitly excluded, and cannot be used as
+complete dwell-evaluation truth before then. ADR 0062 records the observed MODE SELECT false
+positive that requires this fail-closed operator exclusion; review apply does not change the
+production predicate.
 
 Python 3.12.13 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
 PaddlePaddle CPU 3.3.1, Apache-2.0 `paddle2onnx` 2.1.0, and their complete

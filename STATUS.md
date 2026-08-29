@@ -112,8 +112,17 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   behavior. Of the 971 pairs, 838 whose two screens are music-select are eligible for operator
   decisions and 133 remain typed screen context. Bounded inclusive sequence intervals expand to
   exact pair identities, overlap or context crossing fails closed, and omitted eligible pairs stay
-  unknown. An empty-decision application reproduced those counts with `complete=false`; no actual
-  operator decision or dwell truth has been added.
+  unknown. The initial empty-decision application reproduced those counts with `complete=false`;
+  it added no operator decision or dwell truth.
+  ADR 0062 corrects the review contract after the bound video exposed a production-predicate false
+  positive: sequences 898--907 visibly remain on MODE SELECT even though all retained predicates
+  say music-select. At sequence 898 the recorded header, level-column, and label counts were
+  8,740/7,000, 26,743/1,000, and 4,892/4,000 respectively, while the draft's packet, decoder, and
+  observation timestamps already agree. Review-decision and reviewed-set v2 therefore let the
+  operator exclude a predicate-eligible pair as typed screen context without inventing motion.
+  Applying the visually reviewed sequence 899--907 interval produced nine operator-context pairs,
+  133 predicate-context pairs, and 829 pairs still requiring review with `complete=false`. The
+  production predicate, motion thresholds, dwell, and event authority remain unchanged.
   The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
   machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
   model. After the `/home` symlink fix, retained synthetic target evidence showed the 1920x1080
@@ -656,9 +665,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - Current recordings and provisional labels do not establish title-disjoint result accuracy,
   calibrated thresholds, result dwell, miss denominator, deduplication, or release accuracy.
 - The music-select motion draft and partial reviewed artifact remain measurement and review
-  material only. The 838 eligible adjacent pairs still need operator decisions for stationary,
-  scrolling, or selection change; 133 transition-context pairs cannot be labeled. This does not
-  establish a dwell policy or stable-selection accuracy.
+  material only. Nine of the 838 predicate-eligible adjacent pairs are operator-confirmed MODE
+  SELECT screen context; the remaining 829 still need operator decisions for stationary,
+  scrolling, selection change, or additional screen context. The separate 133 predicate-context
+  pairs cannot receive decisions. This does not establish a dwell policy or stable-selection
+  accuracy, and the observed predicate false positive has not been recalibrated.
 - Persistent scheduler installation was verified in isolation but not applied to the operator's
   actual configuration. Real S3 credentials/provider behavior and remote bucket lifecycle remain
   untested.
@@ -726,9 +737,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    component reconstruction, and add only operator-reviewed episodes to the active suite.
 3. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
-4. Review the 838 eligible music-select adjacent pairs against their bound video, author contiguous
-   stationary, scrolling, and selection-change decision intervals, and publish a `complete=true`
-   immutable reviewed set through ADR 0061. Evaluate candidate dwell policies only after it exists.
+4. Review the remaining 829 predicate-eligible music-select adjacent pairs against their bound
+   video, author contiguous stationary, scrolling, selection-change, and any additional
+   screen-context decision intervals, and publish a `complete=true` immutable reviewed set through
+   ADR 0062. Evaluate candidate dwell policies only after it exists.
 
 Do not add transform replay without an independent oracle, broaden routine raw retention, silently
 calibrate or switch profiles, request play solely to

@@ -573,9 +573,10 @@ flush timeoutは`partial | dropped` evidenceとして残すが、play、capture 
    music-selectについては、active-suiteの10 Hz video replayから右list全体、active row、central titleを
    独立測定し、前後500 msのscreen遷移を保持するcreate-only review draftをADR 0060で追加済みとする。
    ADR 0061ではdigest-boundなoperator intervalをexact adjacent pairへ展開し、両frameがmusic-selectの
-   pairだけをstationary/scrolling/selection-changeの対象とする。screen遷移はtyped unknownのcontextとして
-   保持し、未判断pairのあるpartial reviewed setをdwell truthにしない。completeなoperator-reviewed setを得るまで
-   dwellは実装しない。chart、music-select stable-selection temporal stateおよびevent authorityは後続の
+   pairだけをstationary/scrolling/selection-changeの対象とする。ADR 0062では保持predicateのfalse positiveを
+   operatorが`screen_context`として明示的に除外できるようにし、motion truthへ混入させない。predicate由来と
+   operator由来のscreen contextはtyped unknownとして別集計し、未判断pairのあるpartial reviewed setをdwell truthに
+   しない。completeなoperator-reviewed setを得るまでdwellは実装しない。chart、music-select stable-selection temporal stateおよびevent authorityは後続の
    独立contractとする。
 10. **M7**: 少数scenario replayから最小selection song contextとrecognition-trigger非依存のbounded
     live diagnosticsを検証し、その後versioned event schemaとNDJSON daemonを統合する。ゲーム全体の

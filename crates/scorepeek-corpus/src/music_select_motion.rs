@@ -23,8 +23,9 @@ const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v1";
 const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v5";
 const DRAFT_SCHEMA: &str = "scorepeek-private-music-select-motion-review-draft-v1";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-music-select-motion-review-summary-v1";
-const DECISIONS_SCHEMA: &str = "scorepeek-private-music-select-motion-review-decisions-v1";
-const REVIEWED_SCHEMA: &str = "scorepeek-private-music-select-motion-reviewed-v1";
+const DECISIONS_SCHEMA: &str = "scorepeek-private-music-select-motion-review-decisions-v2";
+const REVIEWED_SCHEMA: &str = "scorepeek-private-music-select-motion-reviewed-v2";
+const APPLY_SUMMARY_SCHEMA: &str = "scorepeek-private-music-select-motion-review-apply-summary-v2";
 const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_OBSERVATION_RECORD_BYTES: usize = 1024 * 1024;
@@ -60,9 +61,10 @@ pub struct MusicSelectMotionReviewApplySummary {
     reviewed_sha256: String,
     source_draft_sha256: String,
     decision_interval_count: usize,
-    applied_pair_count: usize,
+    reviewed_motion_pair_count: usize,
+    operator_context_pair_count: usize,
     remaining_review_pair_count: usize,
-    context_pair_count: usize,
+    predicate_context_pair_count: usize,
     complete: bool,
     authority: &'static str,
 }
@@ -155,23 +157,25 @@ struct MotionReviewDecision {
     span_id: String,
     first_sequence: u64,
     last_sequence: u64,
-    state: OperatorMotionState,
+    state: OperatorReviewState,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum OperatorMotionState {
+enum OperatorReviewState {
     Stationary,
     Scrolling,
     SelectionChange,
+    ScreenContext,
 }
 
-impl OperatorMotionState {
+impl OperatorReviewState {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Stationary => "stationary",
             Self::Scrolling => "scrolling",
             Self::SelectionChange => "selection_change",
+            Self::ScreenContext => "screen_context",
         }
     }
 }
@@ -223,17 +227,19 @@ struct ReviewedMotionPair {
 #[derive(Clone, Copy, Debug, Serialize)]
 struct ReviewCompleteness {
     decision_interval_count: usize,
-    applied_pair_count: usize,
+    reviewed_motion_pair_count: usize,
+    operator_context_pair_count: usize,
     remaining_review_pair_count: usize,
-    context_pair_count: usize,
+    predicate_context_pair_count: usize,
     complete: bool,
 }
 
 struct AppliedMotionReview {
     spans: Vec<ReviewedMotionSpan>,
-    applied_pair_count: usize,
+    reviewed_motion_pair_count: usize,
+    operator_context_pair_count: usize,
     remaining_review_pair_count: usize,
-    context_pair_count: usize,
+    predicate_context_pair_count: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -506,12 +512,13 @@ pub fn plan_music_select_motion_review(
 
 /// Applies explicit operator-reviewed sequence intervals to one immutable motion draft.
 ///
-/// Labels bind adjacent pairs whose previous and current samples are both `music_select`.
-/// Omitted eligible pairs remain typed unknown; context pairs can never receive a decision.
+/// Decisions bind adjacent pairs whose previous and current predicates are both `music_select`.
+/// An operator may classify such a false-positive pair as screen context instead of motion.
+/// Omitted eligible pairs remain typed unknown; predicate-context pairs cannot receive a decision.
 ///
 /// # Errors
 /// Returns an error when the draft or decisions are non-canonical, their digest binding differs,
-/// an interval is empty, overlapping, unbounded, or names a context pair, or the create-only
+/// an interval is empty, overlapping, unbounded, or names a predicate-context pair, or the create-only
 /// output cannot be published.
 pub fn apply_music_select_motion_review(
     draft_path: &Path,
@@ -532,9 +539,10 @@ pub fn apply_music_select_motion_review(
     let complete = applied.remaining_review_pair_count == 0;
     let completeness = ReviewCompleteness {
         decision_interval_count: decisions.decisions.len(),
-        applied_pair_count: applied.applied_pair_count,
+        reviewed_motion_pair_count: applied.reviewed_motion_pair_count,
+        operator_context_pair_count: applied.operator_context_pair_count,
         remaining_review_pair_count: applied.remaining_review_pair_count,
-        context_pair_count: applied.context_pair_count,
+        predicate_context_pair_count: applied.predicate_context_pair_count,
         complete,
     };
     let reviewed = ReviewedMotionSet {
@@ -561,14 +569,15 @@ pub fn apply_music_select_motion_review(
     let reviewed_sha256 = digest_bytes(&bytes);
     publish_create_only(output_path, &bytes)?;
     Ok(MusicSelectMotionReviewApplySummary {
-        schema: "scorepeek-private-music-select-motion-review-apply-summary-v1",
+        schema: APPLY_SUMMARY_SCHEMA,
         output: output_path.to_owned(),
         reviewed_sha256,
         source_draft_sha256,
         decision_interval_count: decisions.decisions.len(),
-        applied_pair_count: completeness.applied_pair_count,
+        reviewed_motion_pair_count: completeness.reviewed_motion_pair_count,
+        operator_context_pair_count: completeness.operator_context_pair_count,
         remaining_review_pair_count: completeness.remaining_review_pair_count,
-        context_pair_count: completeness.context_pair_count,
+        predicate_context_pair_count: completeness.predicate_context_pair_count,
         complete,
         authority: "operator_review",
     })
@@ -593,7 +602,7 @@ fn read_motion_review_decisions(
 fn expand_motion_review_decisions(
     draft: &MotionReviewDraft,
     decisions: &MotionReviewDecisions,
-) -> Result<BTreeMap<(String, u64), OperatorMotionState>, CorpusError> {
+) -> Result<BTreeMap<(String, u64), OperatorReviewState>, CorpusError> {
     let eligible_pairs = draft
         .spans
         .iter()
@@ -627,7 +636,9 @@ fn expand_motion_review_decisions(
             let sequence = decision.first_sequence + u64::try_from(offset).unwrap_or(u64::MAX);
             let key = (decision.span_id.clone(), sequence);
             if !eligible_pairs.contains(&key) {
-                return invalid("music-select motion decision names a context or absent pair");
+                return invalid(
+                    "music-select motion decision names a predicate-context or absent pair",
+                );
             }
             if labels.insert(key, decision.state).is_some() {
                 return invalid("music-select motion decision intervals overlap");
@@ -639,13 +650,14 @@ fn expand_motion_review_decisions(
 
 fn apply_pair_labels(
     draft: &MotionReviewDraft,
-    mut labels: BTreeMap<(String, u64), OperatorMotionState>,
+    mut labels: BTreeMap<(String, u64), OperatorReviewState>,
 ) -> Result<AppliedMotionReview, CorpusError> {
     let mut result = AppliedMotionReview {
         spans: Vec::with_capacity(draft.spans.len()),
-        applied_pair_count: 0,
+        reviewed_motion_pair_count: 0,
+        operator_context_pair_count: 0,
         remaining_review_pair_count: 0,
-        context_pair_count: 0,
+        predicate_context_pair_count: 0,
     };
     for span in &draft.spans {
         let mut pairs = Vec::with_capacity(span.samples.len().saturating_sub(1));
@@ -672,7 +684,7 @@ fn apply_pair_labels(
 fn review_motion_pair(
     span: &MotionSpan,
     samples: &[MotionSample],
-    labels: &mut BTreeMap<(String, u64), OperatorMotionState>,
+    labels: &mut BTreeMap<(String, u64), OperatorReviewState>,
     result: &mut AppliedMotionReview,
 ) -> Result<ReviewedMotionPair, CorpusError> {
     let previous = &samples[0];
@@ -686,10 +698,18 @@ fn review_motion_pair(
         previous.screen == ScreenClass::MusicSelect && current.screen == ScreenClass::MusicSelect;
     let review_state = if eligible {
         if let Some(state) = labels.remove(&(span.span_id.clone(), current.sequence)) {
-            result.applied_pair_count += 1;
-            ReviewState {
-                state: state.as_str().to_owned(),
-                reason: "operator_reviewed".to_owned(),
+            if matches!(state, OperatorReviewState::ScreenContext) {
+                result.operator_context_pair_count += 1;
+                ReviewState {
+                    state: "unknown".to_owned(),
+                    reason: "operator_screen_context".to_owned(),
+                }
+            } else {
+                result.reviewed_motion_pair_count += 1;
+                ReviewState {
+                    state: state.as_str().to_owned(),
+                    reason: "operator_reviewed".to_owned(),
+                }
             }
         } else {
             result.remaining_review_pair_count += 1;
@@ -699,10 +719,10 @@ fn review_motion_pair(
             }
         }
     } else {
-        result.context_pair_count += 1;
+        result.predicate_context_pair_count += 1;
         ReviewState {
             state: "unknown".to_owned(),
-            reason: "screen_context".to_owned(),
+            reason: "predicate_screen_context".to_owned(),
         }
     };
     Ok(ReviewedMotionPair {
@@ -1699,7 +1719,7 @@ mod tests {
 
     use super::{
         MAX_PROCESS_STDERR_BYTES, MotionReviewDecision, MotionReviewDecisions, ObservationRecord,
-        OperatorMotionState, VideoIdentity, apply_music_select_motion_review, canonical_line,
+        OperatorReviewState, VideoIdentity, apply_music_select_motion_review, canonical_line,
         digest_bytes, parse_showinfo_pts, plan_music_select_motion_review, read_bounded_stream,
         region_motion_packed, review_windows, run_bounded_output, select_expression,
         selected_frame_targets, verify_video_unchanged,
@@ -1927,7 +1947,7 @@ mod tests {
                 span_id: "music-select-span-0001".to_owned(),
                 first_sequence: 2,
                 last_sequence: 2,
-                state: OperatorMotionState::Stationary,
+                state: OperatorReviewState::Stationary,
             }],
         };
         let decisions_path = temporary.path().join("decisions.json");
@@ -1936,9 +1956,10 @@ mod tests {
         let applied =
             apply_music_select_motion_review(&output, &decisions_path, &reviewed_path).unwrap();
         assert_eq!(applied.decision_interval_count, 1);
-        assert_eq!(applied.applied_pair_count, 1);
+        assert_eq!(applied.reviewed_motion_pair_count, 1);
+        assert_eq!(applied.operator_context_pair_count, 0);
         assert_eq!(applied.remaining_review_pair_count, 0);
-        assert_eq!(applied.context_pair_count, 1);
+        assert_eq!(applied.predicate_context_pair_count, 1);
         assert!(applied.complete);
         let reviewed: serde_json::Value =
             serde_json::from_slice(&fs::read(&reviewed_path).unwrap()).unwrap();
@@ -1949,11 +1970,45 @@ mod tests {
         );
         assert_eq!(
             reviewed["spans"][0]["pairs"][1]["review_state"]["reason"],
-            "screen_context"
+            "predicate_screen_context"
         );
         assert!(
             apply_music_select_motion_review(&output, &decisions_path, &reviewed_path).is_err(),
             "review application must not replace an existing set"
+        );
+        let operator_context = MotionReviewDecisions {
+            schema: super::DECISIONS_SCHEMA.to_owned(),
+            source_draft_sha256: digest_bytes(&fs::read(&output).unwrap()),
+            decisions: vec![MotionReviewDecision {
+                span_id: "music-select-span-0001".to_owned(),
+                first_sequence: 2,
+                last_sequence: 2,
+                state: OperatorReviewState::ScreenContext,
+            }],
+        };
+        let operator_context_path = temporary.path().join("operator-context.json");
+        fs::write(
+            &operator_context_path,
+            canonical_line(&operator_context).unwrap(),
+        )
+        .unwrap();
+        let operator_context_reviewed = temporary.path().join("operator-context-reviewed.json");
+        let applied = apply_music_select_motion_review(
+            &output,
+            &operator_context_path,
+            &operator_context_reviewed,
+        )
+        .unwrap();
+        assert_eq!(applied.reviewed_motion_pair_count, 0);
+        assert_eq!(applied.operator_context_pair_count, 1);
+        assert_eq!(applied.remaining_review_pair_count, 0);
+        assert_eq!(applied.predicate_context_pair_count, 1);
+        assert!(applied.complete);
+        let reviewed: serde_json::Value =
+            serde_json::from_slice(&fs::read(operator_context_reviewed).unwrap()).unwrap();
+        assert_eq!(
+            reviewed["spans"][0]["pairs"][0]["review_state"]["reason"],
+            "operator_screen_context"
         );
         let invalid_context = MotionReviewDecisions {
             schema: super::DECISIONS_SCHEMA.to_owned(),
@@ -1962,7 +2017,7 @@ mod tests {
                 span_id: "music-select-span-0001".to_owned(),
                 first_sequence: 3,
                 last_sequence: 3,
-                state: OperatorMotionState::SelectionChange,
+                state: OperatorReviewState::SelectionChange,
             }],
         };
         let invalid_path = temporary.path().join("invalid-context.json");
@@ -1984,13 +2039,13 @@ mod tests {
                     span_id: "music-select-span-0001".to_owned(),
                     first_sequence: 2,
                     last_sequence: 2,
-                    state: OperatorMotionState::Stationary,
+                    state: OperatorReviewState::Stationary,
                 },
                 MotionReviewDecision {
                     span_id: "music-select-span-0001".to_owned(),
                     first_sequence: 2,
                     last_sequence: 2,
-                    state: OperatorMotionState::Scrolling,
+                    state: OperatorReviewState::Scrolling,
                 },
             ],
         };
