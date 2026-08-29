@@ -209,6 +209,9 @@ authoritative.
   buffers within the 10 Hz process event.
 - [ADR 0071: Observe play-attempt arming before decision](0071-observe-play-attempt-arming.md)
   supersedes ADR 0068 only for keeping the stable-selection handoff implicit before an attempt.
+- [ADR 0072: Accept the Gamescope unspecified PipeWire rate](0072-accept-unspecified-pipewire-rate.md)
+  supersedes ADR 0070 only for its exact 10/1 stream offer while retaining process-event buffer
+  return and the independent 10 Hz recognition cadence.
 
 ## Historical
 

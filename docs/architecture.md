@@ -46,9 +46,10 @@ handling, sequence/timing, and source-loss notification. Gamescope against the
 default PipeWire remote is the first provider. Portal later supplies a
 session-scoped remote FD and node ID through the same boundary; registered
 custom providers may follow. No provider silently falls back to another.
-The common receiver requests delivery at the fixed 10/1 recognition cadence,
+The common receiver prefers 10/1 fps but accepts an unspecified producer rate,
 returns superseded buffers within each PipeWire process event, and copies only
-the newest mapped frame into application-owned memory.
+the newest mapped frame into application-owned memory. Recognition samples that
+latest frame at its independent fixed 10 Hz cadence.
 
 Every backend produces an owned `ObservedFrame` containing its exact input
 contract, capture generation, sequence number, monotonic timing, and immutable

@@ -1412,11 +1412,15 @@ fn format_offer() -> Result<Vec<u8>, spa::pod::serialize::GenError> {
         ),
         spa::pod::property!(
             spa::param::format::FormatProperties::VideoFramerate,
+            Choice,
+            Range,
             Fraction,
             spa::utils::Fraction {
                 num: REQUESTED_FRAMERATE_NUM,
                 denom: REQUESTED_FRAMERATE_DENOM
-            }
+            },
+            spa::utils::Fraction { num: 0, denom: 1 },
+            spa::utils::Fraction { num: 240, denom: 1 }
         ),
     );
     Ok(spa::pod::serialize::PodSerializer::serialize(
@@ -1524,20 +1528,36 @@ mod tests {
     }
 
     #[test]
-    fn stream_offer_fixates_the_application_sampling_rate() {
+    fn stream_offer_prefers_the_sampling_rate_and_accepts_unspecified_producers() {
         let values = format_offer().unwrap();
-        let pod = Pod::from_bytes(&values).unwrap();
-        let mut info = VideoInfoRaw::new();
-
-        info.parse(pod).unwrap();
-
+        let (_, value) = spa::pod::deserialize::PodDeserializer::deserialize_any_from(&values)
+            .expect("format offer");
+        let Value::Object(object) = value else {
+            panic!("expected object");
+        };
+        let framerate = object
+            .properties
+            .into_iter()
+            .find(|property| {
+                property.key == spa::param::format::FormatProperties::VideoFramerate.as_raw()
+            })
+            .expect("framerate");
+        let Value::Choice(spa::pod::ChoiceValue::Fraction(spa::utils::Choice(
+            _,
+            spa::utils::ChoiceEnum::Range { default, min, max },
+        ))) = framerate.value
+        else {
+            panic!("expected framerate range");
+        };
         assert_eq!(
-            info.framerate(),
+            default,
             spa::utils::Fraction {
                 num: REQUESTED_FRAMERATE_NUM,
                 denom: REQUESTED_FRAMERATE_DENOM,
             }
         );
+        assert_eq!(min, spa::utils::Fraction { num: 0, denom: 1 });
+        assert_eq!(max, spa::utils::Fraction { num: 240, denom: 1 });
     }
 
     #[test]
