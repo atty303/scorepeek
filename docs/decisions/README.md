@@ -222,6 +222,9 @@ authoritative.
 - [ADR 0075: Record reconstructable routine diagnostics](0075-record-reconstructable-routine-diagnostics.md)
   supersedes ADR 0026 only for sharing one capacity-two queue between large frames and small facts,
   and makes exact routine state transitions part of the joined diagnostic session.
+- [ADR 0076: Preserve armed selection through transitional predicates](0076-preserve-armed-selection-through-transitional-predicates.md)
+  supersedes ADR 0071 only for treating one raw music-select predicate as proof that an armed
+  selection was cleared.
 
 ## Historical
 

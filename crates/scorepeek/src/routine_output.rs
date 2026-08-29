@@ -867,11 +867,13 @@ impl RoutineOutput {
                 Some(SelectionSource::LastConfirmedHeld),
                 sequence,
             ),
-            MusicSelectTemporalState::Empty
-            | MusicSelectTemporalState::Pending { .. }
-            | MusicSelectTemporalState::Changing { .. } => {
+            MusicSelectTemporalState::Empty => {
                 self.play_attempt.observe_selection(None, None, sequence)
             }
+            MusicSelectTemporalState::Pending { .. }
+            | MusicSelectTemporalState::Changing { .. } => self
+                .play_attempt
+                .observe_selection_candidate(self.candidate_music_select_song.as_ref()),
         };
         self.publish_one(&RunEvent {
             schema: "scorepeek-run-event-v2".to_owned(),
@@ -1978,6 +1980,30 @@ mod tests {
             .collect()
     }
 
+    fn publish_transitional_music_select_false_positive(
+        output: &mut RoutineOutput,
+        reader: &mut BufReader<UnixStream>,
+    ) {
+        output.publish(&screen_event(4, "unknown")).unwrap();
+        let transition_start = read_events(reader, 2);
+        assert_eq!(transition_start[0]["event"], "screen_changed");
+        assert_eq!(
+            transition_start[1]["event"],
+            "temporal_music_select_changed"
+        );
+
+        output.publish(&screen_event(5, "music_select")).unwrap();
+        let false_positive = read_events(reader, 1);
+        assert_eq!(false_positive[0]["event"], "screen_changed");
+        output.publish(&unknown_music_select_event(5)).unwrap();
+        let empty_ocr = read_events(reader, 1);
+        assert_eq!(empty_ocr[0]["event"], "field_observation");
+
+        output.publish(&screen_event(6, "unknown")).unwrap();
+        let transition_continues = read_events(reader, 1);
+        assert_eq!(transition_continues[0]["event"], "screen_changed");
+    }
+
     fn read_snapshot(socket_path: &Path) -> Value {
         let stream = UnixStream::connect(socket_path).unwrap();
         stream
@@ -2296,22 +2322,27 @@ mod tests {
         assert_eq!(armed[6]["event"], "play_attempt_changed");
         assert_eq!(armed[6]["state"]["status"], "armed");
 
+        publish_transitional_music_select_false_positive(&mut output, &mut reader);
+
         output
-            .publish(&screen_event(4, "decide_transition"))
+            .publish(&screen_event(7, "decide_transition"))
             .unwrap();
-        let decide = read_events(&mut reader, 3);
+        let decide = read_events(&mut reader, 2);
         assert_eq!(decide[0]["event"], "screen_changed");
         assert_eq!(decide[1]["event"], "play_attempt_changed");
         assert_eq!(decide[1]["state"]["attempt"]["phase"], "decided");
         assert_eq!(decide[1]["state"]["attempt"]["selection_source"], "stable");
-        assert_eq!(decide[2]["event"], "temporal_music_select_changed");
+        assert_eq!(
+            decide[1]["state"]["attempt"]["path"]["select_observed"],
+            true
+        );
 
-        output.publish(&screen_event(5, "play")).unwrap();
+        output.publish(&screen_event(8, "play")).unwrap();
         let play = read_events(&mut reader, 2);
         assert_eq!(play[0]["event"], "screen_changed");
         assert_eq!(play[1]["state"]["attempt"]["phase"], "playing");
 
-        output.publish(&screen_event(6, "result")).unwrap();
+        output.publish(&screen_event(9, "result")).unwrap();
         let result_screen = read_events(&mut reader, 2);
         assert_eq!(result_screen[0]["event"], "screen_changed");
         assert_eq!(
@@ -2319,8 +2350,8 @@ mod tests {
             "pending"
         );
 
-        output.publish(&accepted_result_event(7)).unwrap();
-        output.publish(&accepted_result_event(8)).unwrap();
+        output.publish(&accepted_result_event(10)).unwrap();
+        output.publish(&accepted_result_event(11)).unwrap();
         let result = read_events(&mut reader, 5);
         assert_eq!(result[0]["event"], "field_observation");
         assert_eq!(result[1]["event"], "temporal_result_changed");
@@ -2338,14 +2369,14 @@ mod tests {
             "confirmed"
         );
 
-        output.publish(&screen_event(9, "music_select")).unwrap();
+        output.publish(&screen_event(12, "music_select")).unwrap();
         let snapshot = read_snapshot(&output.channel.socket_path);
         assert_eq!(
             snapshot["state"]["latest_play_attempt"]["state"]["attempt"]["result_relation"],
             "confirmed"
         );
 
-        for sequence in 10..=12 {
+        for sequence in 13..=15 {
             output
                 .publish(&accepted_music_select_event(sequence))
                 .unwrap();
@@ -2357,7 +2388,7 @@ mod tests {
         );
         assert_eq!(
             snapshot["state"]["latest_play_attempt"]["state"]["source_sequence"],
-            12
+            15
         );
     }
 

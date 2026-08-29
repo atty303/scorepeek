@@ -235,8 +235,17 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   skips are explicit facts rather than inferred capture loss. Large frame batches keep a dedicated
   capacity-two queue; small facts and serialized run events use separate capacity-256 queues. Old
   inactive recognition and run-event staging generations are reclaimed before a new component is
-  admitted, while the joined session remains the retained artifact. Repository verification is in
-  progress and no ADR 0075 binary has been installed or exercised on the target.
+  admitted, while the joined session remains the retained artifact. The ADR 0075 binary was
+  installed and exercised on the target. Its first joined session is complete with 2,155 processed
+  ticks, 75 explicit single busy skips, 77/77 exact recognition observations, no recognition
+  artifact queue loss, and a complete ordered event stream. That evidence localizes the remaining
+  play-attempt failure: `lowercase lifetime` armed at sequence 888, transition frames 911 and 913
+  passed the music-select color predicate with all OCR fields empty, and the first complete decision
+  predicate arrived at 916. The raw music-select re-entry cleared the handoff and produced
+  `no_stable_selection`; the second play repeated the same ordering at 1090, 1121, and 1127.
+  ADR 0076 therefore preserves an armed handoff across raw transitional music-select predicates
+  while leaving temporal selection changes responsible for replacing or clearing it. Repository
+  verification passes; a fresh target run of that correction remains pending.
   Release accuracy, event authority, target-host performance, and support remain later gates.
 
 ## Included deliverables
@@ -862,11 +871,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    mid-session observation-socket client. Confirm that raw result events precede temporal
    transitions and that one-tick unknowns do not erase the stable TUI result. Do not claim target
    lifecycle or presentation support before those separate checks pass.
-4. After explicitly installing the ADR 0075 build, verify that the next partial or complete ordinary
-   session publishes v3 automatically with exact `recognition/observations.ndjson`, ordered
-   `events.ndjson`, and explicit `recognition_busy_skip` facts. Confirm that a visible `armed`
-   selection can be reconstructed through decide/play without relying on terminal output or missing
-   component state, and add only operator-reviewed episodes to the active suite.
+4. After explicitly installing the ADR 0076 correction, repeat the observed
+   `armed -> unknown -> music_select(empty OCR) -> unknown -> decide -> play -> result` path. Require
+   the decided attempt to retain the armed song with `select_observed=true`, omit
+   `no_stable_selection`, and confirm the matching result. Add only operator-reviewed episodes to
+   the active suite.
 5. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
 6. In the next real music-select session, verify that a one-tick frame-local unknown renders the

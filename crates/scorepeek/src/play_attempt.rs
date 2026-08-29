@@ -183,6 +183,20 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
         (self.state != previous).then(|| self.state.clone())
     }
 
+    pub fn observe_selection_candidate(
+        &mut self,
+        candidate: Option<&S>,
+    ) -> Option<PlayAttemptState<S>> {
+        let previous = self.state.clone();
+        if let PlayAttemptState::Armed { selected_song, .. } = &self.state
+            && candidate.is_some_and(|candidate| candidate != selected_song)
+        {
+            self.selection_handoff = None;
+            self.state = PlayAttemptState::Idle;
+        }
+        (self.state != previous).then(|| self.state.clone())
+    }
+
     pub fn observe_stable_result(&mut self, song: S) -> Option<PlayAttemptState<S>> {
         let previous = self.state.clone();
         match &mut self.state {
@@ -223,7 +237,6 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
     }
 
     fn return_to_select(&mut self) {
-        self.selection_handoff = None;
         match &mut self.state {
             PlayAttemptState::Attempt {
                 attempt:
@@ -232,11 +245,12 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
                         ..
                     },
             } => {
+                self.selection_handoff = None;
                 attempt.phase = PlayAttemptPhase::Abandoned;
                 push_reason(&mut attempt.reasons, PlayAttemptReason::ReturnedToSelect);
             }
-            PlayAttemptState::Armed { .. } => self.state = PlayAttemptState::Idle,
             PlayAttemptState::Idle
+            | PlayAttemptState::Armed { .. }
             | PlayAttemptState::UnlinkedResult { .. }
             | PlayAttemptState::Attempt {
                 attempt:
@@ -437,6 +451,41 @@ mod tests {
         assert_eq!(attempt.selected_song, Some(7));
         assert_eq!(attempt.selection_source, Some(SelectionSource::Stable));
         assert!(attempt.path.select_observed);
+    }
+
+    #[test]
+    fn armed_selection_survives_a_transitional_music_select_false_positive() {
+        let mut reducer = PlayAttemptReducer::default();
+        reducer.observe_selection(Some(7), Some(SelectionSource::Stable), 9);
+        reducer.observe_screen(PlayAttemptScreen::Unknown, 10);
+        assert_eq!(
+            reducer.observe_screen(PlayAttemptScreen::MusicSelect, 11),
+            None
+        );
+        reducer.observe_screen(PlayAttemptScreen::Unknown, 12);
+        reducer.observe_screen(PlayAttemptScreen::DecideTransition, 13);
+
+        let attempt = attempt(reducer.state());
+        assert_eq!(attempt.selected_song, Some(7));
+        assert_eq!(attempt.selection_source, Some(SelectionSource::Stable));
+        assert!(attempt.path.select_observed);
+        assert!(
+            !attempt
+                .reasons
+                .contains(&PlayAttemptReason::NoStableSelection)
+        );
+    }
+
+    #[test]
+    fn only_a_different_pending_selection_clears_an_armed_handoff() {
+        let mut reducer = PlayAttemptReducer::default();
+        reducer.observe_selection(Some(7), Some(SelectionSource::Stable), 9);
+        assert_eq!(reducer.observe_selection_candidate(Some(&7)), None);
+        assert_eq!(reducer.observe_selection_candidate(None), None);
+        assert_eq!(
+            reducer.observe_selection_candidate(Some(&8)),
+            Some(PlayAttemptState::Idle)
+        );
     }
 
     #[test]
