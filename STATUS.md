@@ -90,6 +90,23 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   evidence does not justify adding the third observation. Three sparse episodes expose one retained
   result observation and one has no bindable result interval. Music-select dwell remains
   unimplemented pending operator-reviewed stationary and scrolling spans.
+  ADR 0060 adds the preceding music-select motion-review surface without changing that boundary.
+  The create-only offline command verifies one active-suite 10 Hz FFV1 video-replay session and
+  measures adjacent frame movement separately for the twenty-row right-list union, active-list
+  title, and central title while retaining 500 ms of screen-transition context. Its first complete
+  run over the bound ordinary-session video produced eleven unlabeled spans, 982 samples, and 971
+  adjacent pairs in a 442 KiB draft; every span remains typed `unknown/operator_review_required`.
+  That run independently matched every decoded-frame PTS against selected packet PTS and retained
+  observation timestamps after verifying the session's full video, profile, normalizer, and layout
+  binding. A release-review follow-up fixed the video to one open identity with a pre-publication
+  rehash, stops each decoder after its selected output count, retains ROI pixels only for the current
+  span, and supervises every probe/decode child with a wall-clock deadline and reap path. The same
+  982-sample draft was reproduced byte-for-byte from the real recording after those fixes, and its
+  worker exited successfully without a residual process.
+  Visual inspection confirmed why whole-frame motion is unsuitable: a stable 105.0--105.1 s
+  selection retained the same list and title while central animation continued, whereas the
+  103.4--103.5 s high-list-motion pair crossed from the difficulty category into actual titles.
+  No observed metric has been promoted to a label or threshold.
   The archive and active catalog have been transferred to the first operator-owned 4K Bazzite
   machine, where the installed CLI passed `--version` and `doctor` and fetched the registered small
   model. After the `/home` symlink fix, retained synthetic target evidence showed the 1920x1080
@@ -631,6 +648,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   the absence of a transform inspector is not a current execution blocker.
 - Current recordings and provisional labels do not establish title-disjoint result accuracy,
   calibrated thresholds, result dwell, miss denominator, deduplication, or release accuracy.
+- The music-select motion draft is immutable measurement and review material only. Its eleven spans
+  still need operator labels for stationary, scrolling, or selection change, with overlays and
+  screen transitions inspected as retained context; it does not establish a dwell policy or
+  stable-selection accuracy.
 - Persistent scheduler installation was verified in isolation but not applied to the operator's
   actual configuration. Real S3 credentials/provider behavior and remote bucket lifecycle remain
   untested.
@@ -698,8 +719,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    component reconstruction, and add only operator-reviewed episodes to the active suite.
 3. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
-4. Add immutable stationary, scrolling, and selection-change review spans before choosing or
-   implementing music-select dwell.
+4. Review the eleven generated music-select motion spans against their bound video, then add a
+   digest-bound label-application contract for stationary, scrolling, and selection-change truth.
+   Evaluate candidate dwell policies only after that immutable reviewed set exists.
 
 Do not add transform replay without an independent oracle, broaden routine raw retention, silently
 calibrate or switch profiles, request play solely to

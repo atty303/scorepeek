@@ -149,6 +149,12 @@ Version participates only when it is independently recognized. Raw frame observa
 temporal transitions remain separate from future accepted domain events. Rejection is preferable
 to a guess.
 
+Before a music-select dwell policy is introduced, the active-suite video-replay path can produce an
+immutable operator-review draft. It reproduces 10 Hz packet-order sampling and measures the right
+list, active row, and central title independently through the production normalizer. Full-frame
+animation is deliberately excluded, 500 ms transition context is retained, and all spans remain
+unknown until operator review. This offline evidence surface has no runtime or event authority.
+
 The offline corpus tool can replay this exact production reducer over ordered, operator-reviewed
 result intervals and compare bounded observation-count/gap policies. Its versioned JSON report
 keeps raw per-frame correctness, final temporal outcomes, transition counts, and stabilization

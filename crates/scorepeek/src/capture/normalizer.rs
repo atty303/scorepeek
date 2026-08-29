@@ -104,6 +104,14 @@ pub struct FractionalLinearGeometry {
     source: FractionalRectangle,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CanonicalRegion {
+    pub left: u32,
+    pub top: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
 impl FractionalLinearGeometry {
     #[must_use]
     pub const fn source_rectangle(self) -> FractionalRectangle {
@@ -213,6 +221,57 @@ impl FractionalLinearGeometry {
             normalize_bgrx(bytes, stride, observed_width, observed_height, self.source)
                 .into_boxed_slice(),
         )
+    }
+
+    /// Applies the production transform only within one canonical rectangle.
+    ///
+    /// This preserves the exact interpolation used by full-frame normalization while avoiding
+    /// unrelated pixels in offline measurement tools.
+    ///
+    /// # Errors
+    /// Returns a typed error when the observed frame contract or canonical region is invalid.
+    #[allow(clippy::too_many_arguments)]
+    pub fn normalize_bgrx_region(
+        &self,
+        bytes: &[u8],
+        width: u32,
+        height: u32,
+        stride: u32,
+        region: CanonicalRegion,
+    ) -> Result<Box<[u8]>, UnboundNormalizationError> {
+        if width != self.observed_width || height != self.observed_height {
+            return Err(UnboundNormalizationError::ObservedContractMismatch);
+        }
+        let stride =
+            usize::try_from(stride).map_err(|_| UnboundNormalizationError::StrideMismatch)?;
+        let observed_width =
+            usize::try_from(width).map_err(|_| UnboundNormalizationError::InvalidGeometry)?;
+        let observed_height =
+            usize::try_from(height).map_err(|_| UnboundNormalizationError::InvalidGeometry)?;
+        if stride < observed_width.saturating_mul(BGRX_BYTES_PER_PIXEL)
+            || stride.checked_mul(observed_height) != Some(bytes.len())
+            || region.width == 0
+            || region.height == 0
+            || region
+                .left
+                .checked_add(region.width)
+                .is_none_or(|right| right > 1_920)
+            || region
+                .top
+                .checked_add(region.height)
+                .is_none_or(|bottom| bottom > 1_080)
+        {
+            return Err(UnboundNormalizationError::InvalidGeometry);
+        }
+        Ok(normalize_bgrx_region(
+            bytes,
+            stride,
+            observed_width,
+            observed_height,
+            self.source,
+            region,
+        )
+        .into_boxed_slice())
     }
 }
 
@@ -418,6 +477,64 @@ fn normalize_bgrx(
     output
 }
 
+fn normalize_bgrx_region(
+    source: &[u8],
+    stride: usize,
+    observed_width: usize,
+    observed_height: usize,
+    rectangle: FractionalRectangle,
+    region: CanonicalRegion,
+) -> Vec<u8> {
+    let horizontal = interpolation_axis(
+        rectangle.left,
+        rectangle.width,
+        CANONICAL_WIDTH,
+        observed_width,
+    );
+    let vertical = interpolation_axis(
+        rectangle.top,
+        rectangle.height,
+        CANONICAL_HEIGHT,
+        observed_height,
+    );
+    let mut output = Vec::with_capacity(region.width as usize * region.height as usize * 3);
+    for &(source_y, vertical_weights) in vertical
+        .iter()
+        .take((region.top + region.height) as usize)
+        .skip(region.top as usize)
+    {
+        let next_y = (source_y + 1).min(observed_height - 1);
+        for &(source_x, horizontal_weights) in horizontal
+            .iter()
+            .take((region.left + region.width) as usize)
+            .skip(region.left as usize)
+        {
+            let next_x = (source_x + 1).min(observed_width - 1);
+            for source_channel in [2, 1, 0] {
+                let top = i32::from(
+                    source[source_y * stride + source_x * BGRX_BYTES_PER_PIXEL + source_channel],
+                ) * horizontal_weights[0]
+                    + i32::from(
+                        source[source_y * stride + next_x * BGRX_BYTES_PER_PIXEL + source_channel],
+                    ) * horizontal_weights[1];
+                let bottom = i32::from(
+                    source[next_y * stride + source_x * BGRX_BYTES_PER_PIXEL + source_channel],
+                ) * horizontal_weights[0]
+                    + i32::from(
+                        source[next_y * stride + next_x * BGRX_BYTES_PER_PIXEL + source_channel],
+                    ) * horizontal_weights[1];
+                let top_term = (vertical_weights[0] * (top >> 4)) >> 16;
+                let bottom_term = (vertical_weights[1] * (bottom >> 4)) >> 16;
+                output.push(
+                    u8::try_from(((top_term + bottom_term + 2) >> 2).clamp(0, 255))
+                        .expect("clamped normalization output must fit in u8"),
+                );
+            }
+        }
+    }
+    output
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
@@ -563,6 +680,36 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn region_normalization_matches_the_same_full_frame_pixels() {
+        let geometry = full_frame_geometry();
+        let mut source = vec![0_u8; 1_920 * 1_080 * 4];
+        for (index, pixel) in source.chunks_exact_mut(4).enumerate() {
+            pixel[0] = u8::try_from(index % 251).unwrap();
+            pixel[1] = u8::try_from(index % 241).unwrap();
+            pixel[2] = u8::try_from(index % 239).unwrap();
+        }
+        let region = CanonicalRegion {
+            left: 100,
+            top: 200,
+            width: 3,
+            height: 2,
+        };
+        let full = geometry
+            .normalize_bgrx_bytes(&source, 1_920, 1_080, 1_920 * 4)
+            .unwrap();
+        let selected = geometry
+            .normalize_bgrx_region(&source, 1_920, 1_080, 1_920 * 4, region)
+            .unwrap();
+        let expected = (region.top..region.top + region.height)
+            .flat_map(|y| {
+                let start = ((y * 1_920 + region.left) * 3) as usize;
+                full[start..start + (region.width * 3) as usize].to_vec()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(selected.as_ref(), expected);
     }
 
     #[test]

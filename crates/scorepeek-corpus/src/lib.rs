@@ -14,6 +14,7 @@ use tempfile::Builder;
 mod frame_corpus;
 mod media;
 mod music_list;
+mod music_select_motion;
 mod temporal_evaluation;
 pub use frame_corpus::{
     CorpusReplaySummary, DiagnosticConversionSummary, DiagnosticImportSummary,
@@ -29,6 +30,7 @@ pub use music_list::{
     plan_music_list_motion_review, verify_music_list_motion,
     verify_music_list_row_observation_draft,
 };
+pub use music_select_motion::{MusicSelectMotionReviewSummary, plan_music_select_motion_review};
 pub use temporal_evaluation::{
     TemporalEvaluationPolicy, TemporalEvaluationSummary, evaluate_temporal_corpus,
 };

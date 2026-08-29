@@ -7,8 +7,8 @@ use scorepeek_corpus::{
     TemporalEvaluationPolicy, apply_music_list_motion_review, apply_review, convert_v2_diagnostic,
     evaluate_temporal_corpus, import_diagnostic, inspect_music_list_row_observation_draft,
     inspect_review, measure_music_list_motion, plan_music_list_motion_review,
-    render_synthetic_title_set, replay_corpus, replay_video, verify_diagnostic,
-    verify_music_list_motion, verify_music_list_row_observation_draft,
+    plan_music_select_motion_review, render_synthetic_title_set, replay_corpus, replay_video,
+    verify_diagnostic, verify_music_list_motion, verify_music_list_row_observation_draft,
 };
 
 fn main() -> ExitCode {
@@ -24,6 +24,9 @@ fn main() -> ExitCode {
 
 fn run(args: &[OsString]) -> Result<(), String> {
     if let Some(result) = run_frame_corpus(args) {
+        return result;
+    }
+    if let Some(result) = run_music_select_motion(args) {
         return result;
     }
     if let [music_list, motion, measure, request, output, document] = args
@@ -103,6 +106,45 @@ fn run(args: &[OsString]) -> Result<(), String> {
         return print_json(&summary, "music-list row observation draft verification");
     }
     run_remaining(args)
+}
+
+fn run_music_select_motion(args: &[OsString]) -> Option<Result<(), String>> {
+    let [
+        music_select,
+        motion,
+        review_plan,
+        store_flag,
+        store,
+        session_flag,
+        session,
+        video_flag,
+        video,
+        output_flag,
+        output,
+    ] = args
+    else {
+        return None;
+    };
+    if music_select == "music-select"
+        && motion == "motion"
+        && review_plan == "review-plan"
+        && store_flag == "--store"
+        && session_flag == "--session-sha256"
+        && video_flag == "--video"
+        && output_flag == "--output"
+    {
+        let summary = plan_music_select_motion_review(
+            &PathBuf::from(store),
+            &session.to_string_lossy(),
+            &PathBuf::from(video),
+            &PathBuf::from(output),
+        )
+        .map_err(|error| format!("music-select motion review planning failed: {error}"));
+        return Some(
+            summary.and_then(|value| print_json(&value, "music-select motion review planning")),
+        );
+    }
+    None
 }
 
 #[allow(clippy::too_many_lines)]
@@ -296,7 +338,7 @@ fn run_remaining(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "usage: scorepeek-corpus <diagnostic replay-video --video FILE --profile NAME --output DIRECTORY|diagnostic verify DIRECTORY|diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY|corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE|review show --draft FILE|review apply --store ROOT --draft FILE --labels FILE|corpus replay --store ROOT|temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|music-list motion review-plan --output PLAN ARTIFACT|music-list motion review-apply --output REQUEST ARTIFACT PLAN DECISIONS>"
+            "usage: scorepeek-corpus <diagnostic replay-video --video FILE --profile NAME --output DIRECTORY|diagnostic verify DIRECTORY|diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY|corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE|review show --draft FILE|review apply --store ROOT --draft FILE --labels FILE|corpus replay --store ROOT|temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|music-list motion review-plan --output PLAN ARTIFACT|music-list motion review-apply --output REQUEST ARTIFACT PLAN DECISIONS|music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE>"
                 .to_owned(),
         ),
     }
@@ -313,7 +355,7 @@ fn print_json(value: &impl serde::Serialize, context: &str) -> Result<(), String
 
 fn print_usage() {
     println!(
-        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus diagnostic replay-video --video FILE --profile NAME --output DIRECTORY\n  scorepeek-corpus diagnostic verify DIRECTORY\n  scorepeek-corpus diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY\n  scorepeek-corpus corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE\n  scorepeek-corpus review show --draft FILE\n  scorepeek-corpus review apply --store ROOT --draft FILE --labels FILE\n  scorepeek-corpus corpus replay --store ROOT\n  scorepeek-corpus temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]",
+        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus diagnostic replay-video --video FILE --profile NAME --output DIRECTORY\n  scorepeek-corpus diagnostic verify DIRECTORY\n  scorepeek-corpus diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY\n  scorepeek-corpus corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE\n  scorepeek-corpus review show --draft FILE\n  scorepeek-corpus review apply --store ROOT --draft FILE --labels FILE\n  scorepeek-corpus corpus replay --store ROOT\n  scorepeek-corpus temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]\n  scorepeek-corpus music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE",
         env!("CARGO_PKG_VERSION")
     );
 }

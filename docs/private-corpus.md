@@ -124,6 +124,7 @@ mise run corpus:music-list:motion:measure -- --output /absolute/private/music-li
 mise run corpus:music-list:motion:verify -- /absolute/private/music-list-motion-artifact.json
 mise run corpus:music-list:motion:review-plan -- --output /absolute/private/music-list-motion-review-plan.json /absolute/private/music-list-motion-artifact.json
 mise run corpus:music-list:motion:review-apply -- --output /absolute/private/reviewed-motion-request.json /absolute/private/music-list-motion-artifact.json /absolute/private/music-list-motion-review-plan.json /absolute/private/music-list-motion-review-decisions.json
+mise run corpus:music-select:motion:review-plan -- --store /absolute/private-corpus-v1 --session-sha256 SESSION_SHA256 --video /absolute/original-session.mkv --output /absolute/private/music-select-motion-review.json
 mise run ocr:model:fetch
 mise run ocr:onnx:model:fetch
 mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --output /absolute/private/ocr-result.json
@@ -375,6 +376,20 @@ leaves omitted groups with their original annotations unchanged; initially these
 unknown. It neither reconstructs the plan nor re-adjudicates the preceding scorepeek-owned artifact.
 The explicit motion verify command remains the opt-in full pixel and L1 audit. None of these stages
 derives labels from luminance, color, OCR, or motion values.
+
+The separate `music-select motion review-plan` command reconstructs 10 Hz frame motion around every
+music-select interval in one active-suite video-replay session. It verifies the session, profile,
+observation object, full video digest, packet-order PTS, and no-B-frame contract before seeking to
+bounded frame runs. The session's full `capture/run.json` binding must match the current layout,
+profile, and normalizer. Each selected decoded PTS is obtained from an independent bounded decoder
+side channel and must equal both packet PTS and the retained observation timestamp. The create-only
+`scorepeek-private-music-select-motion-review-draft-v1` records the observation sequence, source
+packet index/PTS, screen class, and independent RGB L1/change metrics for the twenty-row list union,
+active-list title row, and central title. A 500 ms context pad preserves rapid screen flicker and
+selection transitions; overlapping pads are merged. Every span remains `unknown` with
+`operator_review_required` until a human distinguishes `stationary`, `scrolling`, and
+`selection_change`. Motion values and OCR agreement never create those labels, and the draft does
+not implement dwell or become accepted corpus truth.
 
 Python 3.12.13 and uv 0.11.7 are pinned by mise. `uv.lock` fixes PaddleOCR 3.7.0,
 PaddlePaddle CPU 3.3.1, Apache-2.0 `paddle2onnx` 2.1.0, and their complete

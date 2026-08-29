@@ -168,6 +168,9 @@ authoritative.
   supersedes ADR 0024 only for excluding result-local temporal state and ADR 0038 only for excluding
   a provisional post-resolver result state. Raw observations remain unchanged; music-select dwell
   and accepted event authority remain unimplemented.
+- [ADR 0060: Measure music-select motion before adding dwell](0060-measure-music-select-motion-before-dwell.md)
+  adds an immutable operator-review draft with separate right-list, active-row, and central-title
+  motion evidence. It does not label spans or implement music-select temporal state.
 
 ## Historical
 

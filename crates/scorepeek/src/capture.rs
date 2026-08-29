@@ -20,8 +20,8 @@ pub use binding::{
     ObservedContractMismatch,
 };
 pub use normalizer::{
-    FractionalLinearGeometry, FractionalRectangle, NormalizedCanonicalFrame, RationalCoordinate,
-    UnboundCanonicalFrame, UnboundNormalizationError,
+    CanonicalRegion, FractionalLinearGeometry, FractionalRectangle, NormalizedCanonicalFrame,
+    RationalCoordinate, UnboundCanonicalFrame, UnboundNormalizationError,
 };
 pub use receiver::{
     CalibratedGamescopeLease, CalibratedSourceFrameEvidence, GamescopeLeaseAdmissionFailure,

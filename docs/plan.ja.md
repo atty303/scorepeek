@@ -570,7 +570,11 @@ flush timeoutは`partial | dropped` evidenceとして残すが、play、capture 
    active private suiteのordered observationにproduction reducerを適用するoffline比較は
    `scorepeek-private-temporal-evaluation-v1`で行い、raw正誤、最終state、transition、安定化遅延を
    generationへ結び付ける。この結果だけでthreshold選択、event authorityまたはrelease精度を承認しない。
-   chart、music-select stable-selection temporal stateおよびevent authorityは後続の独立contractとする。
+   music-selectについては、active-suiteの10 Hz video replayから右list全体、active row、central titleを
+   独立測定し、前後500 msのscreen遷移を保持するcreate-only review draftをADR 0060で追加済みとする。
+   motion値からstationary/scrolling/selection-changeを自動labelせず、operator-reviewed spanを得るまで
+   dwellは実装しない。chart、music-select stable-selection temporal stateおよびevent authorityは後続の
+   独立contractとする。
 10. **M7**: 少数scenario replayから最小selection song contextとrecognition-trigger非依存のbounded
     live diagnosticsを検証し、その後versioned event schemaとNDJSON daemonを統合する。ゲーム全体の
     state machine、attempt、modeまたはretry回数は実装しない。
