@@ -4,7 +4,7 @@ use crate::catalog::{Catalog, Chart, Difficulty, PlayType, ScorepeekSongId};
 
 use super::{DynamicTextObservation, ResultScreenFieldObservations};
 
-pub const RESULT_FIELD_RESOLVER_ID: &str = "scorepeek-result-fields-catalog-constrained-v2";
+pub const RESULT_FIELD_RESOLVER_ID: &str = "scorepeek-result-fields-catalog-constrained-v3";
 pub const RESULT_PERFORMANCE_RESOLVER_ID: &str = "scorepeek-result-performance-v1";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

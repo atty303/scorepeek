@@ -254,6 +254,9 @@ authoritative.
 - [ADR 0085: Decouple screen observation and constrain numeric CTC decode](0085-decouple-screen-observation-and-constrain-numeric-ctc.md)
   keeps 10 Hz screen/session observation independent of the bounded field worker, makes result
   continuity episode-scoped, and decodes numeric fields from the same logits with fixed alphabets.
+- [ADR 0086: Score finite numeric CTC sequences exactly](0086-score-finite-numeric-ctc-sequences.md)
+  supersedes ADR 0085's field-local greedy decode, shares the exact catalog-title CTC trie with a
+  finite numeric language, and adopts the operator-reviewed result ROIs.
 
 ## Historical
 

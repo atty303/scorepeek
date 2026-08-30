@@ -56,8 +56,20 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   result event: field OCR busy widened consecutive result observations to about 500 ms, hid all
   intervening screen ticks, and unrestricted BAD decoded as `只`. ADR 0085 now keeps the 10 Hz screen
   predicate independent of field submission, records typed field-only busy skips, and makes result
-  temporal continuity episode-scoped. Numeric fields use fixed character-set CTC decoding of the
-  same inference logits while preserving unrestricted raw evidence; there is no `只` substitution.
+  temporal continuity episode-scoped. ADR 0086 replaces its locally greedy numeric decode with an
+  exact finite-sequence CTC trie shared with catalog-title scoring. It sums every valid alignment
+  for one- through four-digit display strings including observed leading zeroes and supported dash
+  displays, accepts a value only when it beats the all-blank path, and preserves unrestricted raw
+  evidence without a `只` substitution. Level is decoder-bounded to two digits and combo break to
+  three before their narrower typed checks.
+  Operator-reviewed ROIs now cover full clear type, two-digit level, four-digit judgments, and
+  three-digit combo break while reducing judgment crop height. The decoder-bound runtime advances
+  to a new immutable v2 manifest while v1 remains byte-identical, and the result field resolver
+  advances with it; recognition artifact v8 retains its raw/constrained/typed shape and immutable
+  older artifacts keep their recorded resources.
+  The unchanged active private suite passes all five sessions, seventeen episodes, 2,102 canonical
+  frames, and one negative frame with the reviewed ROIs and exact numeric decoder in about 191
+  seconds on the development host, versus the prior approximately 168 seconds.
   Complete diagnostic sessions advance to v4 and recognition observations to v8 while legacy v2/v3
   diagnostics and v5-v7 observations remain readable. Repository checks, the complete test suite,
   and the unchanged active private replay suite pass; target installation and live verification are

@@ -2481,7 +2481,7 @@ mod tests {
                 music_select_song_resolution: Value::Null,
                 parsed_result_fields: None,
                 result_chart_resolution: Some(ResultChartResolution::Accepted {
-                    resolver_id: "scorepeek-result-fields-catalog-constrained-v2".to_owned(),
+                    resolver_id: "scorepeek-result-fields-catalog-constrained-v3".to_owned(),
                     chart: scorepeek::catalog::Chart {
                         key: scorepeek::catalog::ChartKey {
                             play_type: PlayType::Single,

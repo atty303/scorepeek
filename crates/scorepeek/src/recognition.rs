@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 mod catalog_candidates;
+mod ctc_sequence;
 mod music_select_resolver;
 mod result_fields;
 mod result_resolver;
@@ -1012,8 +1013,8 @@ impl ScreenTextField {
     #[must_use]
     pub const fn ctc_character_set(self) -> Option<CtcCharacterSet> {
         match self {
-            Self::ResultLevel
-            | Self::ResultNotes
+            Self::ResultLevel => Some(CtcCharacterSet::DigitsUpToTwo),
+            Self::ResultNotes
             | Self::ResultCurrentScore
             | Self::ResultPgreat
             | Self::ResultGreat
@@ -1024,8 +1025,8 @@ impl ScreenTextField {
             | Self::ResultPreviousMissCount
             | Self::ResultMissCount
             | Self::ResultFast
-            | Self::ResultSlow
-            | Self::ResultComboBreak => Some(CtcCharacterSet::DigitsAndDashes),
+            | Self::ResultSlow => Some(CtcCharacterSet::DigitsAndDashes),
+            Self::ResultComboBreak => Some(CtcCharacterSet::DigitsAndDashesUpToThree),
             Self::ResultTitle
             | Self::ResultArtist
             | Self::ResultClearType
@@ -2856,7 +2857,6 @@ mod tests {
     #[test]
     fn every_numeric_field_routes_to_the_fixed_ctc_character_set() {
         for field in [
-            ScreenTextField::ResultLevel,
             ScreenTextField::ResultNotes,
             ScreenTextField::ResultCurrentScore,
             ScreenTextField::ResultPgreat,
@@ -2867,19 +2867,26 @@ mod tests {
         ] {
             assert_eq!(field.ctc_character_set(), Some(CtcCharacterSet::Digits));
         }
+        assert_eq!(
+            ScreenTextField::ResultLevel.ctc_character_set(),
+            Some(CtcCharacterSet::DigitsUpToTwo)
+        );
         for field in [
             ScreenTextField::ResultPreviousScore,
             ScreenTextField::ResultPreviousMissCount,
             ScreenTextField::ResultMissCount,
             ScreenTextField::ResultFast,
             ScreenTextField::ResultSlow,
-            ScreenTextField::ResultComboBreak,
         ] {
             assert_eq!(
                 field.ctc_character_set(),
                 Some(CtcCharacterSet::DigitsAndDashes)
             );
         }
+        assert_eq!(
+            ScreenTextField::ResultComboBreak.ctc_character_set(),
+            Some(CtcCharacterSet::DigitsAndDashesUpToThree)
+        );
         assert_eq!(ScreenTextField::ResultTitle.ctc_character_set(), None);
         assert_eq!(
             ScreenTextField::MusicSelectCentralTitle.ctc_character_set(),

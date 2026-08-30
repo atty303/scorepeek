@@ -6,6 +6,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::catalog::{Catalog, DisplayVariantKind, ScorepeekSongId};
+use crate::recognition::ctc_sequence::CtcSequenceTrie;
 use crate::recognition::title::ctc_candidate_sequences;
 
 pub const TITLE_DICTIONARY_SHA256: &str =
@@ -134,14 +135,6 @@ pub enum CatalogTitleDecision {
     },
 }
 
-#[derive(Default)]
-struct TrieNode {
-    token: u32,
-    parent: usize,
-    children: BTreeMap<u32, usize>,
-    songs: BTreeSet<ScorepeekSongId>,
-}
-
 /// Scores exact catalog titles and song-unique comparison-key aliases through one CTC prefix trie.
 ///
 /// This is an offline diagnostic boundary. Thresholds are explicit because the current profile
@@ -167,7 +160,7 @@ pub fn score_catalog_titles(
     }
     let dictionary = load_dictionary(inference_yml.as_ref())?;
     let indexes = dictionary_indexes(&dictionary)?;
-    let mut trie = vec![TrieNode::default()];
+    let mut trie = CtcSequenceTrie::default();
     let mut catalog_coverage_complete = true;
     for song in catalog.songs().values() {
         let mut has_non_search_variant = false;
@@ -193,39 +186,26 @@ pub fn score_catalog_titles(
             let Some(tokens) = tokenize(&sequence, &indexes) else {
                 continue;
             };
-            let mut node = 0;
-            for token in tokens {
-                node = if let Some(child) = trie[node].children.get(&token) {
-                    *child
-                } else {
-                    let child = trie.len();
-                    trie.push(TrieNode {
-                        token,
-                        parent: node,
-                        ..TrieNode::default()
-                    });
-                    trie[node].children.insert(token, child);
-                    child
-                };
+            if !trie.insert(&tokens, song_id) {
+                return Err(CatalogTitleDecoderError::InvalidDictionary);
             }
-            trie[node].songs.insert(song_id);
         }
     }
-    if trie.iter().all(|node| node.songs.is_empty()) {
+    if trie.is_empty() {
         return Ok(CatalogTitleDecision::Unknown {
             reason: CatalogTitleUnknownReason::NoEncodableCandidate,
         });
     }
 
-    let scores = score_trie(probabilities, &trie, OUTPUT_CLASSES);
+    let scores = trie
+        .score(probabilities, OUTPUT_CLASSES)
+        .ok_or(CatalogTitleDecoderError::InvalidProbabilities)?;
     let mut songs = BTreeMap::<ScorepeekSongId, f64>::new();
-    for (node, score) in trie.iter().zip(scores) {
-        for song_id in &node.songs {
-            songs
-                .entry(*song_id)
-                .and_modify(|existing| *existing = existing.max(score))
-                .or_insert(score);
-        }
+    for (song_id, score) in scores.values {
+        songs
+            .entry(*song_id)
+            .and_modify(|existing| *existing = existing.max(score))
+            .or_insert(score);
     }
     let mut ranked: Vec<_> = songs.into_iter().collect();
     ranked.sort_by(|left, right| {
@@ -583,78 +563,9 @@ fn tokenize(title: &str, indexes: &BTreeMap<char, u32>) -> Option<Vec<u32>> {
     (required_timesteps <= MAX_TITLE_TOKENS).then_some(tokens)
 }
 
-fn score_trie(probabilities: &[f32], trie: &[TrieNode], classes: usize) -> Vec<f64> {
-    let mut blank = vec![f64::NEG_INFINITY; trie.len()];
-    let mut nonblank = vec![f64::NEG_INFINITY; trie.len()];
-    blank[0] = 0.0;
-    for row in probabilities.chunks_exact(classes) {
-        let mut next_blank = vec![f64::NEG_INFINITY; trie.len()];
-        let mut next_nonblank = vec![f64::NEG_INFINITY; trie.len()];
-        let blank_probability = f64::from(row[0]).ln();
-        next_blank[0] = blank[0] + blank_probability;
-        for index in 1..trie.len() {
-            next_blank[index] = logsumexp([blank[index], nonblank[index]]) + blank_probability;
-            let node = &trie[index];
-            let parent = &trie[node.parent];
-            let mut sources = [f64::NEG_INFINITY; 3];
-            sources[0] = nonblank[index];
-            sources[1] = blank[node.parent];
-            if node.token != parent.token || node.parent == 0 {
-                sources[2] = nonblank[node.parent];
-            }
-            next_nonblank[index] = logsumexp(sources) + f64::from(row[node.token as usize]).ln();
-        }
-        blank = next_blank;
-        nonblank = next_nonblank;
-    }
-    blank
-        .into_iter()
-        .zip(nonblank)
-        .map(|(blank, nonblank)| logsumexp([blank, nonblank]))
-        .collect()
-}
-
-fn logsumexp<const N: usize>(values: [f64; N]) -> f64 {
-    let maximum = values.into_iter().fold(f64::NEG_INFINITY, f64::max);
-    if maximum == f64::NEG_INFINITY {
-        maximum
-    } else {
-        maximum
-            + values
-                .into_iter()
-                .map(|value| (value - maximum).exp())
-                .sum::<f64>()
-                .ln()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn build_trie(sequences: &[&[u32]]) -> (Vec<TrieNode>, Vec<usize>) {
-        let mut trie = vec![TrieNode::default()];
-        let mut terminals = Vec::new();
-        for sequence in sequences {
-            let mut node = 0;
-            for &token in *sequence {
-                node = if let Some(child) = trie[node].children.get(&token) {
-                    *child
-                } else {
-                    let child = trie.len();
-                    trie.push(TrieNode {
-                        token,
-                        parent: node,
-                        ..TrieNode::default()
-                    });
-                    trie[node].children.insert(token, child);
-                    child
-                };
-            }
-            terminals.push(node);
-        }
-        (trie, terminals)
-    }
 
     fn brute_force_ctc(probabilities: &[f32], classes: usize, expected: &[u32]) -> f64 {
         let timesteps = probabilities.len() / classes;
@@ -693,11 +604,17 @@ mod tests {
             0.55, 0.25, 0.20, // timestep 3
         ];
         let sequences: [&[u32]; 3] = [&[1], &[1, 2], &[1, 1]];
-        let (trie, terminals) = build_trie(&sequences);
-        let scores = score_trie(&probabilities, &trie, 3);
-        for (sequence, terminal) in sequences.into_iter().zip(terminals) {
+        let mut trie = CtcSequenceTrie::default();
+        for (index, sequence) in sequences.iter().enumerate() {
+            assert!(trie.insert(sequence, index));
+        }
+        let scores = trie.score(&probabilities, 3).unwrap();
+        for ((expected_index, sequence), (index, score)) in
+            sequences.into_iter().enumerate().zip(scores.values)
+        {
             let expected = brute_force_ctc(&probabilities, 3, sequence);
-            assert!((scores[terminal] - expected).abs() < 1e-12);
+            assert_eq!(*index, expected_index);
+            assert!((score - expected).abs() < 1e-12);
         }
     }
 

@@ -13,6 +13,7 @@ use ort::value::Tensor;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use super::ctc_sequence::CtcSequenceTrie;
 use super::title_decoder::{
     CatalogTitleDecision, CatalogTitleDecoderError, DiagnosticTitleThresholds,
     TITLE_DICTIONARY_SHA256, load_dictionary_contract, score_catalog_titles,
@@ -65,9 +66,9 @@ const V5_SERVER_BUNDLE_MANIFEST_BYTES: &[u8] =
 const V5_SERVER_BUNDLE_MANIFEST_SHA256: &str =
     "4fe22f41508ed31b86e86caa88d433a20702d0a6e95cea07bcaca577441594fe";
 const LIVE_RUNTIME_MANIFEST_BYTES: &[u8] =
-    include_bytes!("../../../../models/manifests/pp-ocrv6-small-live-runtime-v1.json");
+    include_bytes!("../../../../models/manifests/pp-ocrv6-small-live-runtime-v2.json");
 pub const LIVE_RUNTIME_SHA256: &str =
-    "4864f57937b6d57510e82234325f611df31521ff508767011de137bebdf531dc";
+    "faa3f6c718fc6298d7dc9a70558b833ec611b705e41a122eeb17f4fdee2c49e1";
 pub const LIVE_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
 pub const LIVE_MODEL_SHA256: &str =
     "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634";
@@ -301,7 +302,7 @@ impl LiveRuntimeManifest {
             return Err(OnnxParityError::InvalidArtifact);
         }
         let manifest: Self = serde_json::from_slice(LIVE_RUNTIME_MANIFEST_BYTES)?;
-        if manifest.schema != "scorepeek-field-text-runtime-v1"
+        if manifest.schema != "scorepeek-field-text-runtime-v2"
             || manifest.implementation_id != "scorepeek-pp-ocrv6-small-native-dynamic-cpu-v1"
             || manifest.ort_crate_version != "2.0.0-rc.13"
             || manifest.ort_api != 27
@@ -312,7 +313,7 @@ impl LiveRuntimeManifest {
             || manifest.parallel_execution
             || manifest.graph_optimization != "all"
             || manifest.preprocessor_id != DYNAMIC_TITLE_PREPROCESSOR_ID
-            || manifest.decoder_id != "scorepeek-ctc-greedy-collapse-v1"
+            || manifest.decoder_id != "scorepeek-ctc-open-greedy-numeric-exact-v1"
             || manifest.model_bundle_manifest_sha256 != LIVE_MODEL_BUNDLE_MANIFEST_SHA256
         {
             return Err(OnnxParityError::InvalidArtifact);
@@ -340,7 +341,112 @@ impl DynamicTextObservation {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CtcCharacterSet {
     Digits,
+    DigitsUpToTwo,
     DigitsAndDashes,
+    DigitsAndDashesUpToThree,
+}
+
+impl CtcCharacterSet {
+    const fn maximum_digits(self) -> usize {
+        match self {
+            Self::DigitsUpToTwo => 2,
+            Self::DigitsAndDashesUpToThree => 3,
+            Self::Digits | Self::DigitsAndDashes => 4,
+        }
+    }
+
+    const fn includes_dashes(self) -> bool {
+        matches!(self, Self::DigitsAndDashes | Self::DigitsAndDashesUpToThree)
+    }
+}
+
+impl NumericCtcDecoder {
+    fn new(dictionary: &[String], character_set: CtcCharacterSet) -> Result<Self, OnnxParityError> {
+        let mut digit_tokens = [None; 10];
+        let mut dash_tokens = Vec::new();
+        for (index, token) in dictionary.iter().enumerate().skip(1) {
+            let index = u32::try_from(index).map_err(|_| OnnxParityError::InvalidArtifact)?;
+            if token.len() == 1 && token.as_bytes()[0].is_ascii_digit() {
+                let digit = usize::from(token.as_bytes()[0] - b'0');
+                if digit_tokens[digit].replace(index).is_some() {
+                    return Err(OnnxParityError::InvalidArtifact);
+                }
+            } else if character_set.includes_dashes()
+                && matches!(token.as_str(), "-" | "―" | "ー" | "—")
+            {
+                dash_tokens.push((index, token.clone()));
+            }
+        }
+        let digit_tokens = digit_tokens
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(OnnxParityError::InvalidArtifact)?;
+        let mut candidates = CtcSequenceTrie::default();
+        let mut sequences = vec![(String::new(), Vec::new())];
+        for _ in 0..character_set.maximum_digits() {
+            let mut next = Vec::with_capacity(sequences.len() * 10);
+            for (prefix_text, prefix_tokens) in &sequences {
+                for (digit, token) in digit_tokens.iter().copied().enumerate() {
+                    let mut text = prefix_text.clone();
+                    let digit =
+                        u8::try_from(digit).map_err(|_| OnnxParityError::InvalidArtifact)?;
+                    text.push(char::from(b'0' + digit));
+                    let mut tokens = prefix_tokens.clone();
+                    tokens.push(token);
+                    if !candidates.insert(&tokens, text.clone()) {
+                        return Err(OnnxParityError::InvalidArtifact);
+                    }
+                    next.push((text, tokens));
+                }
+            }
+            sequences = next;
+        }
+        if character_set.includes_dashes() {
+            if dash_tokens.is_empty() {
+                return Err(OnnxParityError::InvalidArtifact);
+            }
+            for (first_token, first_text) in &dash_tokens {
+                if !candidates.insert(&[*first_token], first_text.clone()) {
+                    return Err(OnnxParityError::InvalidArtifact);
+                }
+                for (second_token, second_text) in &dash_tokens {
+                    if !candidates.insert(
+                        &[*first_token, *second_token],
+                        format!("{first_text}{second_text}"),
+                    ) {
+                        return Err(OnnxParityError::InvalidArtifact);
+                    }
+                }
+            }
+        }
+        if candidates.is_empty() {
+            return Err(OnnxParityError::InvalidArtifact);
+        }
+        Ok(Self { candidates })
+    }
+
+    fn decode(&self, probabilities: &[f32], classes: usize) -> Result<String, OnnxParityError> {
+        let scores = self
+            .candidates
+            .score(probabilities, classes)
+            .ok_or(OnnxParityError::InvalidArtifact)?;
+        let Some((text, score)) = scores.values.into_iter().max_by(
+            |(left_text, left_score), (right_text, right_score)| {
+                left_score
+                    .total_cmp(right_score)
+                    .then_with(|| right_text.cmp(left_text))
+            },
+        ) else {
+            return Err(OnnxParityError::InvalidArtifact);
+        };
+        Ok(
+            if score.total_cmp(&scores.blank_log_probability) == Ordering::Greater {
+                text.clone()
+            } else {
+                String::new()
+            },
+        )
+    }
 }
 
 /// The exact registered live text runtime, loaded once and owned by one observer worker.
@@ -348,6 +454,14 @@ pub struct RegisteredDynamicTitleRuntime {
     session: Session,
     dictionary: Vec<String>,
     output_classes: usize,
+    numeric_digits: NumericCtcDecoder,
+    numeric_digits_up_to_two: NumericCtcDecoder,
+    numeric_digits_and_dashes: NumericCtcDecoder,
+    numeric_digits_and_dashes_up_to_three: NumericCtcDecoder,
+}
+
+struct NumericCtcDecoder {
+    candidates: CtcSequenceTrie<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -540,6 +654,13 @@ impl RegisteredDynamicTitleRuntime {
             &dictionary_file.sha256,
             manifest.native_contract.output_classes,
         )?;
+        let numeric_digits = NumericCtcDecoder::new(&dictionary, CtcCharacterSet::Digits)?;
+        let numeric_digits_up_to_two =
+            NumericCtcDecoder::new(&dictionary, CtcCharacterSet::DigitsUpToTwo)?;
+        let numeric_digits_and_dashes =
+            NumericCtcDecoder::new(&dictionary, CtcCharacterSet::DigitsAndDashes)?;
+        let numeric_digits_and_dashes_up_to_three =
+            NumericCtcDecoder::new(&dictionary, CtcCharacterSet::DigitsAndDashesUpToThree)?;
         let session = Session::builder()?
             .with_execution_providers([ort::ep::CPU::default()
                 .with_arena_allocator(runtime.cpu_arena)
@@ -561,6 +682,10 @@ impl RegisteredDynamicTitleRuntime {
             session,
             dictionary,
             output_classes: manifest.native_contract.output_classes,
+            numeric_digits,
+            numeric_digits_up_to_two,
+            numeric_digits_and_dashes,
+            numeric_digits_and_dashes_up_to_three,
         })
     }
 
@@ -593,6 +718,14 @@ impl RegisteredDynamicTitleRuntime {
         crop: &Rgb8Crop,
         character_set: CtcCharacterSet,
     ) -> Result<DynamicTextObservation, OnnxParityError> {
+        let numeric_decoder = match character_set {
+            CtcCharacterSet::Digits => &self.numeric_digits,
+            CtcCharacterSet::DigitsUpToTwo => &self.numeric_digits_up_to_two,
+            CtcCharacterSet::DigitsAndDashes => &self.numeric_digits_and_dashes,
+            CtcCharacterSet::DigitsAndDashesUpToThree => {
+                &self.numeric_digits_and_dashes_up_to_three
+            }
+        };
         observe_dynamic_rgb8(
             &mut self.session,
             &self.dictionary,
@@ -600,7 +733,7 @@ impl RegisteredDynamicTitleRuntime {
             crop.pixels(),
             crop.roi.width as usize,
             crop.roi.height as usize,
-            Some(character_set),
+            Some(numeric_decoder),
         )
         .map(|(observation, _)| observation)
     }
@@ -1399,7 +1532,7 @@ fn observe_dynamic_rgb8(
     pixels: &[u8],
     source_width: usize,
     source_height: usize,
-    character_set: Option<CtcCharacterSet>,
+    numeric_decoder: Option<&NumericCtcDecoder>,
 ) -> Result<(DynamicTextObservation, String), OnnxParityError> {
     let input = preprocess_dynamic_title_image(pixels, source_width, source_height)?;
     let input_tensor_sha256 = encode_f32_sha256(&input.values);
@@ -1424,16 +1557,8 @@ fn observe_dynamic_rgb8(
     validate_argmax_probability_rows(probabilities, output_classes)?;
     let (_, collapsed) = argmax_tokens(probabilities, timesteps, output_classes)?;
     let open_text = decode_dictionary_tokens(dictionary, &collapsed)?;
-    let constrained_text = character_set
-        .map(|character_set| {
-            let allowed = dictionary
-                .iter()
-                .map(|token| character_set.allows(token))
-                .collect::<Vec<_>>();
-            let (_, collapsed) =
-                constrained_argmax_tokens(probabilities, timesteps, output_classes, &allowed)?;
-            decode_dictionary_tokens(dictionary, &collapsed)
-        })
+    let constrained_text = numeric_decoder
+        .map(|decoder| decoder.decode(probabilities, output_classes))
         .transpose()?;
     Ok((
         DynamicTextObservation {
@@ -1444,13 +1569,6 @@ fn observe_dynamic_rgb8(
         },
         input_tensor_sha256,
     ))
-}
-
-impl CtcCharacterSet {
-    fn allows(self, token: &str) -> bool {
-        token.len() == 1 && token.bytes().all(|byte| byte.is_ascii_digit())
-            || matches!(self, Self::DigitsAndDashes) && matches!(token, "-" | "―" | "ー" | "—")
-    }
 }
 
 fn decode_dictionary_tokens(
@@ -1748,36 +1866,6 @@ fn argmax_tokens(
     Ok((raw, collapsed))
 }
 
-fn constrained_argmax_tokens(
-    probabilities: &[f32],
-    timesteps: usize,
-    classes: usize,
-    allowed: &[bool],
-) -> Result<(Vec<u32>, Vec<u32>), OnnxParityError> {
-    if probabilities.len() != timesteps * classes || allowed.len() != classes || classes == 0 {
-        return Err(OnnxParityError::InvalidArtifact);
-    }
-    let mut raw = Vec::with_capacity(timesteps);
-    for row in probabilities.chunks_exact(classes) {
-        let mut token = 0_usize;
-        for (index, value) in row.iter().enumerate().skip(1) {
-            if allowed[index] && value.total_cmp(&row[token]) == Ordering::Greater {
-                token = index;
-            }
-        }
-        raw.push(u32::try_from(token).map_err(|_| OnnxParityError::InvalidArtifact)?);
-    }
-    let mut collapsed = Vec::new();
-    let mut previous = None;
-    for token in &raw {
-        if *token != 0 && Some(*token) != previous {
-            collapsed.push(*token);
-        }
-        previous = Some(*token);
-    }
-    Ok((raw, collapsed))
-}
-
 fn ctc_log_probability(
     probabilities: &[f32],
     timesteps: usize,
@@ -1871,10 +1959,10 @@ fn encode_f32_sha256(values: &[f32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DynamicBundleManifest, LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256, LiveRuntimeManifest,
-        RegisteredRecognitionResources, RegisteredResourceLoadError,
-        RegisteredResourceLoadErrorType, argmax_tokens, constrained_argmax_tokens,
-        ctc_log_probability, strict_p6, valid_presentation_transform_id,
+        CtcCharacterSet, DynamicBundleManifest, LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256,
+        LiveRuntimeManifest, NumericCtcDecoder, RegisteredRecognitionResources,
+        RegisteredResourceLoadError, RegisteredResourceLoadErrorType, argmax_tokens,
+        ctc_log_probability, encode_sha256, strict_p6, valid_presentation_transform_id,
         validate_argmax_probability_rows,
     };
     use crate::catalog::{Catalog, CatalogStore};
@@ -1895,6 +1983,12 @@ mod tests {
         assert_eq!(manifest.inter_threads, 1);
         assert!(!manifest.parallel_execution);
         assert_eq!(manifest.execution_provider, "CPUExecutionProvider");
+        let legacy_v1 =
+            include_bytes!("../../../../models/manifests/pp-ocrv6-small-live-runtime-v1.json");
+        assert_eq!(
+            encode_sha256(legacy_v1),
+            "4864f57937b6d57510e82234325f611df31521ff508767011de137bebdf531dc"
+        );
     }
 
     #[test]
@@ -2089,28 +2183,89 @@ mod tests {
     }
 
     #[test]
-    fn constrained_argmax_uses_the_allowed_digit_from_the_same_logits() {
-        let probabilities = [0.1_f32, 0.8, 0.7]; // blank, 只, 0
-        let (_, unrestricted) = argmax_tokens(&probabilities, 1, 3).unwrap();
-        let (_, constrained) =
-            constrained_argmax_tokens(&probabilities, 1, 3, &[false, false, true]).unwrap();
-        assert_eq!(unrestricted, [1]);
-        assert_eq!(constrained, [2]);
+    fn numeric_sequence_decode_sums_alignments_that_greedy_discards() {
+        let dictionary = numeric_test_dictionary();
+        let decoder = NumericCtcDecoder::new(&dictionary, CtcCharacterSet::Digits).unwrap();
+        let classes = dictionary.len();
+        let mut probabilities = vec![0.0_f32; classes * 2];
+        probabilities[0] = 0.6;
+        probabilities[1] = 0.4;
+        probabilities[classes] = 0.6;
+        probabilities[classes + 1] = 0.4;
+
+        let (_, greedy) = argmax_tokens(&probabilities, 2, classes).unwrap();
+        assert!(greedy.is_empty());
+        assert_eq!(decoder.decode(&probabilities, classes).unwrap(), "0");
     }
 
     #[test]
-    fn constrained_argmax_preserves_blank_repeat_and_deterministic_ties() {
-        let probabilities = [
-            0.9_f32, 0.1, 0.1, // blank
-            0.1, 0.8, 0.8, // equal allowed values choose the lower token
-            0.1, 0.7, 0.6, // repeated lower token
-            0.9, 0.1, 0.1, // blank
-            0.1, 0.7, 0.6, // lower token again
-        ];
-        let (raw, collapsed) =
-            constrained_argmax_tokens(&probabilities, 5, 3, &[false, true, true]).unwrap();
-        assert_eq!(raw, [0, 1, 1, 0, 1]);
-        assert_eq!(collapsed, [1, 1]);
+    fn numeric_sequence_decode_preserves_repeated_digits_and_dash_sequences() {
+        let dictionary = numeric_test_dictionary();
+        let classes = dictionary.len();
+        let digits = NumericCtcDecoder::new(&dictionary, CtcCharacterSet::Digits).unwrap();
+        let dashes = NumericCtcDecoder::new(&dictionary, CtcCharacterSet::DigitsAndDashes).unwrap();
+        let mut repeated_digit = vec![0.0_f32; classes * 3];
+        repeated_digit[2] = 1.0;
+        repeated_digit[classes] = 1.0;
+        repeated_digit[classes * 2 + 2] = 1.0;
+        assert_eq!(digits.decode(&repeated_digit, classes).unwrap(), "11");
+
+        let dash_token = classes - 1;
+        let mut repeated_dash = vec![0.0_f32; classes * 3];
+        repeated_dash[dash_token] = 1.0;
+        repeated_dash[classes] = 1.0;
+        repeated_dash[classes * 2 + dash_token] = 1.0;
+        assert_eq!(dashes.decode(&repeated_dash, classes).unwrap(), "--");
+    }
+
+    #[test]
+    fn numeric_sequence_decode_keeps_all_blank_and_ties_empty() {
+        let dictionary = numeric_test_dictionary();
+        let classes = dictionary.len();
+        let decoder = NumericCtcDecoder::new(&dictionary, CtcCharacterSet::Digits).unwrap();
+        let mut blank_wins = vec![0.0_f32; classes];
+        blank_wins[0] = 0.9;
+        blank_wins[1] = 0.1;
+        assert_eq!(decoder.decode(&blank_wins, classes).unwrap(), "");
+
+        let mut tie = vec![0.0_f32; classes];
+        tie[0] = 0.5;
+        tie[1] = 0.5;
+        assert_eq!(decoder.decode(&tie, classes).unwrap(), "");
+    }
+
+    #[test]
+    fn numeric_sequence_decode_preserves_zero_padding_and_field_widths() {
+        let dictionary = numeric_test_dictionary();
+        let classes = dictionary.len();
+        let digits = NumericCtcDecoder::new(&dictionary, CtcCharacterSet::Digits).unwrap();
+        let mut padded = vec![0.0_f32; classes * 4];
+        for (timestep, token) in [1_usize, 8, 7, 5].into_iter().enumerate() {
+            padded[timestep * classes + token] = 1.0;
+        }
+        assert_eq!(digits.decode(&padded, classes).unwrap(), "0764");
+
+        let level = NumericCtcDecoder::new(&dictionary, CtcCharacterSet::DigitsUpToTwo).unwrap();
+        let mut three_digits = vec![0.0_f32; classes * 3];
+        for (timestep, token) in [2_usize, 3, 4].into_iter().enumerate() {
+            three_digits[timestep * classes + token] = 1.0;
+        }
+        assert_eq!(level.decode(&three_digits, classes).unwrap(), "");
+
+        let combo =
+            NumericCtcDecoder::new(&dictionary, CtcCharacterSet::DigitsAndDashesUpToThree).unwrap();
+        let mut four_digits = vec![0.0_f32; classes * 7];
+        for (timestep, token) in [2_usize, 0, 2, 0, 2, 0, 3].into_iter().enumerate() {
+            four_digits[timestep * classes + token] = 1.0;
+        }
+        assert_eq!(combo.decode(&four_digits, classes).unwrap(), "");
+    }
+
+    fn numeric_test_dictionary() -> Vec<String> {
+        std::iter::once(String::new())
+            .chain((0..=9).map(|digit| digit.to_string()))
+            .chain(std::iter::once("-".to_owned()))
+            .collect()
     }
 
     #[test]
