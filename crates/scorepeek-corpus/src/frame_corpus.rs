@@ -48,6 +48,7 @@ struct DiagnosticManifest {
     completeness: String,
     capture_manifest_sha256: String,
     recognition_manifest_sha256: String,
+    event_manifest_sha256: String,
     artifacts: Vec<DiagnosticArtifact>,
 }
 
@@ -70,7 +71,9 @@ struct DiagnosticArtifact {
 #[derive(Debug, Deserialize)]
 struct CaptureComponentManifest {
     schema: String,
+    status: String,
     completeness: String,
+    start: CaptureStartReference,
     #[serde(default)]
     recognition_interval_ms: Option<u64>,
     #[serde(default)]
@@ -79,6 +82,28 @@ struct CaptureComponentManifest {
     busy_skips: Option<u64>,
     facts: NdjsonComponent,
     frames: Vec<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CaptureStartReference {
+    schema: String,
+    filename: String,
+    file_sha256: String,
+    bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct CaptureRun {
+    schema: String,
+    run_id: String,
+    binding: CaptureRunBinding,
+}
+
+#[derive(Debug, Deserialize)]
+struct CaptureRunBinding {
+    capture_generation: u64,
+    capture_profile_sha256: String,
+    catalog_sha256: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,6 +121,10 @@ struct NdjsonComponent {
 #[derive(Debug, Deserialize)]
 struct RecognitionComponentManifest {
     schema: String,
+    run_id: String,
+    profile_sha256: String,
+    catalog_sha256: String,
+    status: String,
     observations_sha256: String,
     #[serde(default)]
     observation_count: Option<u64>,
@@ -103,6 +132,96 @@ struct RecognitionComponentManifest {
     retained_observation_count: Option<u64>,
     #[serde(default)]
     observation_bytes: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct EventComponentManifest {
+    schema: String,
+    run_id: String,
+    status: String,
+    events_sha256: String,
+    event_count: u64,
+    event_bytes: u64,
+    dropped_events: u64,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+enum StoredRunEventPayload {
+    WatcherStarted {
+        invocation_id: String,
+        profile_sha256: String,
+    },
+    SessionStarted {
+        session_id: Option<String>,
+        capture_generation: u64,
+        capture_profile_sha256: String,
+        normalizer_artifact_sha256: String,
+    },
+    ScreenChanged {
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        sequence: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+        screen: String,
+    },
+    FieldObservation {
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        sequence: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+        screen: String,
+        fields: Value,
+        result_song_resolution: Value,
+        music_select_song_resolution: Value,
+        parsed_result_fields: Option<Value>,
+        result_chart_resolution: Option<Value>,
+        current_score_ocr_resolution: Option<Value>,
+        song_resolution_presentation: Value,
+    },
+    ResultDetected {
+        session_id: String,
+        capture_generation: u64,
+        source_sequence: u64,
+        result: Value,
+    },
+    TemporalResultChanged {
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        source_sequence: Option<u64>,
+        transitions: Vec<Value>,
+        state: Value,
+        stable_song: Option<Value>,
+    },
+    TemporalMusicSelectChanged {
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        source_sequence: Option<u64>,
+        reasons: Vec<Value>,
+        state: Value,
+        retained_song: Option<Value>,
+        candidate_song: Option<Value>,
+    },
+    PlayAttemptChanged {
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        source_sequence: Option<u64>,
+        state: Value,
+    },
+    SessionFinished {
+        session_id: String,
+        capture_generation: u64,
+        outcome: String,
+        report: Value,
+    },
+    WatcherStopped {
+        invocation_id: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -396,7 +515,8 @@ pub fn replay_video(
         },
         "source": {"kind": "video_replay", "video_sha256": video_sha256}
     });
-    write_new(&staging.join("capture/run.json"), &canonical_json(&run)?)?;
+    let run_bytes = canonical_json(&run)?;
+    write_new(&staging.join("capture/run.json"), &run_bytes)?;
     let descriptor = scorepeek::diagnostic_recording::DiagnosticRunDescriptor {
         run_id: session_id.clone(),
         monotonic_start_ms: 0,
@@ -735,8 +855,11 @@ pub fn replay_video(
     )?;
     let capture_manifest = serde_json::json!({
         "schema":"scorepeek-private-diagnostic-capture-v3", "run_id":session_id,
+        "status":"success",
         "recognition_interval_ms":100, "processed_ticks":sequence, "busy_skips":0,
         "completeness":"complete",
+        "start":{"schema":"scorepeek-private-diagnostic-artifact-v1","filename":"run.json",
+            "file_sha256":digest(&run_bytes),"bytes":run_bytes.len()},
         "frames":frames, "facts":{"filename":"facts.ndjson","record_count":sequence,
             "first_sequence":0,"last_sequence":sequence.saturating_sub(1),
             "file_sha256":digest(&facts),"bytes":facts.len()}
@@ -744,8 +867,10 @@ pub fn replay_video(
     let capture_bytes = canonical_json(&capture_manifest)?;
     write_new(&staging.join("capture/manifest.json"), &capture_bytes)?;
     let recognition_manifest = serde_json::json!({
-        "schema":"scorepeek-recognition-evidence-manifest-v3", "observation_count":sequence,
-        "observations_sha256":digest(&observations), "catalog_sha256":active.digest
+        "schema":"scorepeek-recognition-evidence-manifest-v3", "run_id":session_id,
+        "profile_sha256":profile.capture_profile_sha256(), "status":"complete",
+        "observation_count":sequence, "observations_sha256":digest(&observations),
+        "catalog_sha256":active.digest
     });
     let recognition_bytes = canonical_json(&recognition_manifest)?;
     write_new(
@@ -762,6 +887,8 @@ pub fn replay_video(
         event_bytes.extend_from_slice(&canonical_json(event)?);
     }
     write_new(&staging.join("events.ndjson"), &event_bytes)?;
+    let event_manifest_bytes =
+        write_event_manifest(&staging, &session_id, &event_bytes, events.len() as u64)?;
     let artifacts = enumerate_component_artifacts(&staging)?;
     let top = DiagnosticManifest {
         schema: DIAGNOSTIC_SCHEMA.to_owned(),
@@ -777,6 +904,7 @@ pub fn replay_video(
         completeness: "complete".to_owned(),
         capture_manifest_sha256: digest(&capture_bytes),
         recognition_manifest_sha256: digest(&recognition_bytes),
+        event_manifest_sha256: digest(&event_manifest_bytes),
         artifacts,
     };
     write_new(&staging.join("manifest.json"), &canonical_json(&top)?)?;
@@ -846,10 +974,8 @@ pub fn convert_v2_diagnostic(
     create_private_directory(&staging.join("capture"))?;
     create_private_directory(&staging.join("recognition"))?;
 
-    copy_file(
-        &source_directory.join("run.json"),
-        &staging.join("capture/run.json"),
-    )?;
+    let capture_run_bytes = fs::read(source_directory.join("run.json"))?;
+    write_new(&staging.join("capture/run.json"), &capture_run_bytes)?;
     let frames = diagnostic_value["frames"]
         .as_array()
         .ok_or_else(|| {
@@ -998,6 +1124,10 @@ pub fn convert_v2_diagnostic(
         "file_sha256": digest(&facts_bytes),
         "bytes": facts_bytes.len(),
     });
+    capture_manifest["start"] = serde_json::json!({
+        "schema":"scorepeek-private-diagnostic-artifact-v1", "filename":"run.json",
+        "file_sha256":digest(&capture_run_bytes), "bytes":capture_run_bytes.len()
+    });
     stabilize_capture_manifest(&mut capture_manifest, &staging.join("capture"))?;
     let capture_manifest_bytes = canonical_json(&capture_manifest)?;
     write_new(
@@ -1059,14 +1189,11 @@ pub fn convert_v2_diagnostic(
         Value::from(converted_observation_map.len() as u64);
     recognition_manifest["retained_observation_count"] =
         Value::from(converted_observation_map.len() as u64);
-    write_new(
-        &staging.join("recognition/manifest.json"),
-        &canonical_json(&recognition_manifest)?,
-    )?;
     let events = format!(
         "{{\"schema\":\"scorepeek-private-diagnostic-event-v1\",\"event\":\"session_started\",\"session_id\":{session_id:?},\"capture_generation\":1,\"conversion\":\"legacy_v2\"}}\n{{\"schema\":\"scorepeek-private-diagnostic-event-v1\",\"event\":\"session_finished\",\"session_id\":{session_id:?},\"capture_generation\":1,\"conversion\":\"legacy_v2\"}}\n",
     );
     write_new(&staging.join("events.ndjson"), events.as_bytes())?;
+    let event_manifest_bytes = write_event_manifest(&staging, &session_id, events.as_bytes(), 2)?;
     let observation_count = verify_ndjson(&staging.join("recognition/observations.ndjson"))?;
     if converted_observation_map
         .keys()
@@ -1083,6 +1210,14 @@ pub fn convert_v2_diagnostic(
         })?;
     let profile_bytes = find_profile_bytes(profile_sha256)?;
     write_new(&staging.join("capture/profile.json"), &profile_bytes)?;
+    recognition_manifest["run_id"] = Value::String(session_id.clone());
+    recognition_manifest["profile_sha256"] = Value::String(profile_sha256.to_owned());
+    recognition_manifest["catalog_sha256"] = run["binding"]["catalog_sha256"].clone();
+    recognition_manifest["status"] = capture_manifest["completeness"].clone();
+    write_new(
+        &staging.join("recognition/manifest.json"),
+        &canonical_json(&recognition_manifest)?,
+    )?;
     let artifacts = enumerate_component_artifacts(&staging)?;
     let manifest = DiagnosticManifest {
         schema: DIAGNOSTIC_SCHEMA.to_owned(),
@@ -1104,6 +1239,7 @@ pub fn convert_v2_diagnostic(
             .to_owned(),
         capture_manifest_sha256: digest(&capture_manifest_bytes),
         recognition_manifest_sha256: digest_file(&staging.join("recognition/manifest.json"))?,
+        event_manifest_sha256: digest(&event_manifest_bytes),
         artifacts,
     };
     write_new(&staging.join("manifest.json"), &canonical_json(&manifest)?)?;
@@ -1144,10 +1280,13 @@ pub fn verify_diagnostic(path: &Path) -> Result<DiagnosticVerificationSummary, C
     }
     let capture_manifest = manifest_artifact(&manifest, "capture/manifest.json")?;
     let recognition_manifest = manifest_artifact(&manifest, "recognition/manifest.json")?;
+    let event_manifest = manifest_artifact(&manifest, "event-manifest.json")?;
     let profile_artifact = manifest_artifact(&manifest, "capture/profile.json")?;
-    let _events = manifest_artifact(&manifest, "events.ndjson")?;
+    let run_artifact = manifest_artifact(&manifest, "capture/run.json")?;
+    let events = manifest_artifact(&manifest, "events.ndjson")?;
     if capture_manifest.sha256 != manifest.capture_manifest_sha256
         || recognition_manifest.sha256 != manifest.recognition_manifest_sha256
+        || event_manifest.sha256 != manifest.event_manifest_sha256
     {
         return invalid("diagnostic component manifest binding differs");
     }
@@ -1161,11 +1300,34 @@ pub fn verify_diagnostic(path: &Path) -> Result<DiagnosticVerificationSummary, C
         return invalid("diagnostic capture profile binding differs");
     }
     let (capture, _) = read_json::<CaptureComponentManifest>(&path.join("capture/manifest.json"))?;
+    let (run, _) = read_json::<CaptureRun>(&path.join("capture/run.json"))?;
     let (recognition, _) =
         read_json::<RecognitionComponentManifest>(&path.join("recognition/manifest.json"))?;
+    let (event, _) = read_json::<EventComponentManifest>(&path.join("event-manifest.json"))?;
     if capture.schema != "scorepeek-private-diagnostic-capture-v3"
         || recognition.schema != "scorepeek-recognition-evidence-manifest-v3"
+        || capture.start.schema != "scorepeek-private-diagnostic-artifact-v1"
+        || capture.start.filename != "run.json"
+        || capture.start.file_sha256 != run_artifact.sha256
+        || capture.start.bytes != run_artifact.bytes
+        || !matches!(
+            run.schema.as_str(),
+            "scorepeek-private-diagnostic-run-start-v2"
+                | "scorepeek-private-diagnostic-capture-start-v3"
+        )
+        || run.run_id != manifest.session_id
+        || run.binding.capture_generation != manifest.capture_generation
+        || run.binding.capture_profile_sha256 != manifest.profile_sha256
+        || run.binding.catalog_sha256 != manifest.catalog_sha256
+        || recognition.run_id != manifest.session_id
+        || recognition.profile_sha256 != manifest.profile_sha256
+        || recognition.catalog_sha256 != manifest.catalog_sha256
+        || recognition.status != manifest.completeness
         || capture.completeness != manifest.completeness
+        || !matches!(
+            capture.status.as_str(),
+            "success" | "error" | "cancel" | "timeout"
+        )
         || !matches!(
             capture.completeness.as_str(),
             "complete" | "partial" | "dropped"
@@ -1192,8 +1354,8 @@ pub fn verify_diagnostic(path: &Path) -> Result<DiagnosticVerificationSummary, C
     {
         return invalid("diagnostic sampling summary differs");
     }
-    let facts = verify_tick_ndjson(&path.join("capture/facts.ndjson"), true)?;
-    let observations = verify_tick_ndjson(&path.join("recognition/observations.ndjson"), false)?.0;
+    let facts = verify_tick_ndjson(&path.join("capture/facts.ndjson"), false)?;
+    let observations = verify_tick_ndjson(&path.join("recognition/observations.ndjson"), true)?.0;
     if facts.0 != capture.facts.record_count
         || facts.1 != capture.facts.first_sequence
         || facts.2 != capture.facts.last_sequence
@@ -1209,7 +1371,21 @@ pub fn verify_diagnostic(path: &Path) -> Result<DiagnosticVerificationSummary, C
     {
         return invalid("diagnostic NDJSON summary differs");
     }
-    verify_session_events(&path.join("events.ndjson"), &manifest)?;
+    let event_count = verify_session_events(&path.join("events.ndjson"), &manifest)?;
+    if event.schema != "scorepeek-run-event-artifact-v1"
+        || event.run_id != manifest.session_id
+        || !matches!(event.status.as_str(), "complete" | "partial")
+        || (event.status == "complete" && event.dropped_events != 0)
+        || event.events_sha256 != events.sha256
+        || event.event_bytes != events.bytes
+        || event.event_count != event_count
+        || (manifest.completeness == "complete"
+            && (capture.status != "success"
+                || recognition.status != "complete"
+                || event.status != "complete"))
+    {
+        return invalid("diagnostic event component contract differs");
+    }
     if manifest.completeness == "complete" && observations != manifest.processed_ticks {
         return invalid("diagnostic processed tick count differs from observations");
     }
@@ -1856,6 +2032,7 @@ fn validate_diagnostic_manifest(manifest: &DiagnosticManifest) -> Result<(), Cor
         || !valid_sha256(&manifest.catalog_sha256)
         || !valid_sha256(&manifest.capture_manifest_sha256)
         || !valid_sha256(&manifest.recognition_manifest_sha256)
+        || !valid_sha256(&manifest.event_manifest_sha256)
         || manifest.artifacts.is_empty()
         || manifest.artifacts.len() > MAX_ARTIFACTS
         || manifest.recognition_interval_ms != 100
@@ -1950,6 +2127,25 @@ fn stabilize_capture_manifest(manifest: &mut Value, directory: &Path) -> Result<
     invalid("converted manifest size did not stabilize")
 }
 
+fn write_event_manifest(
+    root: &Path,
+    session_id: &str,
+    events: &[u8],
+    event_count: u64,
+) -> Result<Vec<u8>, CorpusError> {
+    let bytes = canonical_json(&EventComponentManifest {
+        schema: "scorepeek-run-event-artifact-v1".to_owned(),
+        run_id: session_id.to_owned(),
+        status: "complete".to_owned(),
+        events_sha256: digest(events),
+        event_count,
+        event_bytes: events.len() as u64,
+        dropped_events: 0,
+    })?;
+    write_new(&root.join("event-manifest.json"), &bytes)?;
+    Ok(bytes)
+}
+
 fn enumerate_component_artifacts(root: &Path) -> Result<Vec<DiagnosticArtifact>, CorpusError> {
     let mut artifacts = Vec::new();
     for kind in ["capture", "recognition"] {
@@ -1970,13 +2166,16 @@ fn enumerate_component_artifacts(root: &Path) -> Result<Vec<DiagnosticArtifact>,
             });
         }
     }
-    let events = root.join("events.ndjson");
-    if events.is_file() {
-        let metadata = events.metadata()?;
+    for name in ["event-manifest.json", "events.ndjson"] {
+        let event_artifact = root.join(name);
+        if !event_artifact.is_file() {
+            continue;
+        }
+        let metadata = event_artifact.metadata()?;
         artifacts.push(DiagnosticArtifact {
             kind: "events".to_owned(),
-            path: "events.ndjson".to_owned(),
-            sha256: digest_file(&events)?,
+            path: name.to_owned(),
+            sha256: digest_file(&event_artifact)?,
             bytes: metadata.len(),
         });
     }
@@ -2250,7 +2449,7 @@ fn verify_ndjson(path: &Path) -> Result<u64, CorpusError> {
 
 fn verify_tick_ndjson(
     path: &Path,
-    allow_same_tick: bool,
+    require_strict_order: bool,
 ) -> Result<(u64, Option<u64>, Option<u64>), CorpusError> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
@@ -2267,13 +2466,7 @@ fn verify_tick_ndjson(
             .ok_or_else(|| {
                 CorpusError::InvalidRequest("diagnostic NDJSON lacks a tick sequence".to_owned())
             })?;
-        if last.is_some_and(|previous| {
-            if allow_same_tick {
-                tick < previous
-            } else {
-                tick <= previous
-            }
-        }) {
+        if require_strict_order && last.is_some_and(|previous| tick <= previous) {
             return invalid("diagnostic NDJSON tick ordering is invalid");
         }
         first.get_or_insert(tick);
@@ -2286,13 +2479,15 @@ fn verify_tick_ndjson(
     Ok((count, first, last))
 }
 
-fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<(), CorpusError> {
+fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u64, CorpusError> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
     let mut count = 0_usize;
     let mut first_event = None;
     let mut last_event = None;
+    let mut event_schema = None;
+    let mut last_channel_sequence = None;
     while read_bounded_ndjson_line(&mut reader, &mut line)? {
         let record = serde_json::from_slice::<Value>(&line).map_err(|_| {
             CorpusError::InvalidRequest("diagnostic event NDJSON is invalid".to_owned())
@@ -2301,6 +2496,33 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<(
             || record["capture_generation"].as_u64() != Some(manifest.capture_generation)
         {
             return invalid("diagnostic session event binding is invalid");
+        }
+        let schema = record["schema"].as_str().ok_or_else(|| {
+            CorpusError::InvalidRequest("diagnostic event lacks its schema".to_owned())
+        })?;
+        if !matches!(
+            schema,
+            "scorepeek-private-diagnostic-event-v1" | "scorepeek-run-event-v2"
+        ) || event_schema
+            .as_deref()
+            .is_some_and(|expected| expected != schema)
+        {
+            return invalid("diagnostic session event schema is invalid");
+        }
+        event_schema.get_or_insert(schema.to_owned());
+        if schema == "scorepeek-run-event-v2" {
+            serde_json::from_value::<StoredRunEventPayload>(record.clone()).map_err(|_| {
+                CorpusError::InvalidRequest("diagnostic run event payload is invalid".to_owned())
+            })?;
+            let channel_sequence = record["channel_sequence"].as_u64().ok_or_else(|| {
+                CorpusError::InvalidRequest(
+                    "diagnostic run event lacks its channel sequence".to_owned(),
+                )
+            })?;
+            if last_channel_sequence.is_some_and(|previous| channel_sequence <= previous) {
+                return invalid("diagnostic run event ordering is invalid");
+            }
+            last_channel_sequence = Some(channel_sequence);
         }
         let event = record["event"]
             .as_str()
@@ -2315,13 +2537,14 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<(
             return invalid("diagnostic event record capacity exceeded");
         }
     }
-    if count < 2
+    if count == 0
         || first_event.as_deref() != Some("session_started")
-        || last_event.as_deref() != Some("session_finished")
+        || (event_schema.as_deref() == Some("scorepeek-private-diagnostic-event-v1")
+            && (count < 2 || last_event.as_deref() != Some("session_finished")))
     {
         return invalid("diagnostic session event ordering or binding is invalid");
     }
-    Ok(())
+    Ok(count as u64)
 }
 
 fn manifest_artifact<'a>(
@@ -2423,6 +2646,26 @@ fn invalid_replay<T>(detail: &str) -> Result<T, CorpusError> {
 mod tests {
     use super::*;
 
+    fn diagnostic_manifest() -> DiagnosticManifest {
+        DiagnosticManifest {
+            schema: DIAGNOSTIC_SCHEMA.to_owned(),
+            source_kind: SourceKind::LiveRun,
+            session_id: "run-1-session-1".to_owned(),
+            capture_generation: 1,
+            profile_sha256: "1".repeat(64),
+            catalog_sha256: "2".repeat(64),
+            recognition_interval_ms: 100,
+            processed_ticks: 1,
+            busy_skips: 0,
+            maximum_consecutive_busy_skips: 0,
+            completeness: "complete".to_owned(),
+            capture_manifest_sha256: "3".repeat(64),
+            recognition_manifest_sha256: "4".repeat(64),
+            event_manifest_sha256: "5".repeat(64),
+            artifacts: Vec::new(),
+        }
+    }
+
     #[test]
     fn decimal_video_timestamps_are_converted_without_float_rounding() {
         assert_eq!(parse_timestamp_ms("0.000000").unwrap(), 0);
@@ -2432,7 +2675,7 @@ mod tests {
     }
 
     #[test]
-    fn tick_stream_requires_order_and_observations_require_uniqueness() {
+    fn fact_stream_allows_async_completion_order_but_observations_require_order() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("records.ndjson");
         fs::write(
@@ -2441,11 +2684,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            verify_tick_ndjson(&path, true).unwrap(),
+            verify_tick_ndjson(&path, false).unwrap(),
             (3, Some(1), Some(2))
         );
-        assert!(verify_tick_ndjson(&path, false).is_err());
+        assert!(verify_tick_ndjson(&path, true).is_err());
         fs::write(&path, b"{\"tick_sequence\":2}\n{\"tick_sequence\":1}\n").unwrap();
+        assert_eq!(
+            verify_tick_ndjson(&path, false).unwrap(),
+            (2, Some(2), Some(1))
+        );
         assert!(verify_tick_ndjson(&path, true).is_err());
 
         fs::write(
@@ -2454,7 +2701,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            verify_tick_ndjson(&path, true).unwrap(),
+            verify_tick_ndjson(&path, false).unwrap(),
             (2, Some(1), Some(2))
         );
     }
@@ -2465,6 +2712,60 @@ mod tests {
         let path = root.path().join("records.ndjson");
         fs::write(&path, vec![b' '; MAX_NDJSON_RECORD_BYTES + 1]).unwrap();
         assert!(verify_ndjson(&path).is_err());
+    }
+
+    #[test]
+    fn run_event_stream_requires_a_bound_start_and_increasing_channel_order() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events.ndjson");
+        let manifest = diagnostic_manifest();
+        fs::write(
+            &path,
+            concat!(
+                "{\"schema\":\"scorepeek-run-event-v2\",\"event\":\"session_started\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"capture_profile_sha256\":\"profile\",\"normalizer_artifact_sha256\":\"normalizer\",\"channel_sequence\":2}\n",
+                "{\"schema\":\"scorepeek-run-event-v2\",\"event\":\"screen_changed\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"sequence\":0,\"monotonic_start_ms\":0,\"monotonic_end_ms\":1,\"screen\":\"unknown\",\"channel_sequence\":3}\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(verify_session_events(&path, &manifest).unwrap(), 2);
+
+        fs::write(
+            &path,
+            concat!(
+                "{\"schema\":\"scorepeek-run-event-v2\",\"event\":\"session_started\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"capture_profile_sha256\":\"profile\",\"normalizer_artifact_sha256\":\"normalizer\",\"channel_sequence\":3}\n",
+                "{\"schema\":\"scorepeek-run-event-v2\",\"event\":\"screen_changed\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"sequence\":0,\"monotonic_start_ms\":0,\"monotonic_end_ms\":1,\"screen\":\"unknown\",\"channel_sequence\":2}\n",
+            ),
+        )
+        .unwrap();
+        assert!(verify_session_events(&path, &manifest).is_err());
+
+        fs::write(
+            &path,
+            concat!(
+                "{\"schema\":\"scorepeek-run-event-v2\",\"event\":\"session_started\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"capture_profile_sha256\":\"profile\",\"normalizer_artifact_sha256\":\"normalizer\",\"channel_sequence\":2}\n",
+                "{\"schema\":\"scorepeek-run-event-v2\",\"event\":\"screen_changed\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"channel_sequence\":3}\n",
+            ),
+        )
+        .unwrap();
+        assert!(verify_session_events(&path, &manifest).is_err());
+    }
+
+    #[test]
+    fn legacy_diagnostic_event_stream_still_requires_a_finished_session() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events.ndjson");
+        let manifest = diagnostic_manifest();
+        let started = "{\"schema\":\"scorepeek-private-diagnostic-event-v1\",\"event\":\"session_started\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1}\n";
+        fs::write(&path, started).unwrap();
+        assert!(verify_session_events(&path, &manifest).is_err());
+        fs::write(
+            &path,
+            format!(
+                "{started}{{\"schema\":\"scorepeek-private-diagnostic-event-v1\",\"event\":\"session_finished\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1}}\n"
+            ),
+        )
+        .unwrap();
+        assert_eq!(verify_session_events(&path, &manifest).unwrap(), 2);
     }
 
     #[test]

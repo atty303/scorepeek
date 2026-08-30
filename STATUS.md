@@ -298,6 +298,13 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   frame. Historical recording-store internals remain testable for OCR work but their direct
   capture-regression CLI routes are removed. Runtime code has no corpus or Python training
   dependency.
+- V3 corpus verification binds the capture, recognition, and run-event component manifests to the
+  top-level manifest and their NDJSON streams. Capture facts preserve append/completion order from
+  asynchronous field recognition, while recognition observations and v2 run-event channel
+  sequences retain strict ordering. Target session
+  `run-1788051374-895415156-1312881-session-1` was verified and imported as the unlabeled session
+  `a1ad7dbb2f7a220c9602afce34bd27bfc67d74d9d548d85a55370822983c878a` with 232 canonical QOI
+  frames and 5,838 observations; the active regression suite remains unchanged pending review.
 - Private frames, labels, recordings, source snapshots, generated catalogs, models, and environment
   artifacts remain outside the repository. Committed fixtures are synthetic or opaque and
   non-personal.
