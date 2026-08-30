@@ -25,7 +25,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use scorepeek::catalog::{Difficulty, PlayType, ScorepeekSongId};
 use scorepeek::recognition::{
-    ParsedResultFields, PreviousBest, ResultChartResolution, ResultJudgments,
+    ParsedResultFields, PreviousBest, PreviousBestValue, ResultChartResolution, ResultJudgments,
     ResultPerformanceResolution, ResultTiming, SupplementalResultValue,
 };
 use scorepeek::temporal_recognition::{
@@ -1362,37 +1362,54 @@ fn render(
     let area = frame.area();
     let compact = area.width < 80 || area.height < 32;
     let show_attempt = !compact || state.latest_play_attempt.is_some();
-    let show_results = !state.result_history.is_empty();
+    let has_results = !state.result_history.is_empty();
+    if compact && has_results {
+        let results = result_history_lines(
+            state,
+            true,
+            area.width.saturating_sub(2) as usize,
+            area.height.saturating_sub(2) as usize,
+        );
+        frame.render_widget(
+            Paragraph::new(results).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Accepted play events"),
+            ),
+            area,
+        );
+        return;
+    }
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(result_panel_constraints(
-            compact,
-            show_attempt,
-            show_results,
-        ))
+        .constraints(result_panel_constraints(compact, show_attempt, has_results))
         .split(area);
-    let header = watcher_lines(state, compact, rows[0].width.saturating_sub(2) as usize);
+    let results = result_history_lines(
+        state,
+        compact,
+        rows[0].width.saturating_sub(2) as usize,
+        rows[0].height.saturating_sub(2) as usize,
+    );
     frame.render_widget(
-        Paragraph::new(header).block(Block::default().borders(Borders::ALL).title("Watcher")),
+        Paragraph::new(results).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Accepted play events"),
+        ),
         rows[0],
     );
 
-    let mut row = 1;
-    if show_results {
-        let results = result_history_lines(
-            state,
-            compact,
-            rows[row].width.saturating_sub(2) as usize,
-            rows[row].height.saturating_sub(2) as usize,
-        );
-        frame.render_widget(
-            Paragraph::new(results)
-                .wrap(Wrap { trim: false })
-                .block(Block::default().borders(Borders::ALL).title("Play results")),
-            rows[row],
-        );
-        row += 1;
-    }
+    let header = watcher_lines(state, compact, rows[1].width.saturating_sub(2) as usize);
+    frame.render_widget(
+        Paragraph::new(header).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Debug: Watcher"),
+        ),
+        rows[1],
+    );
+
+    let mut row = 2;
     if show_attempt {
         let attempt = play_attempt_lines(
             state.latest_play_attempt.as_ref(),
@@ -1400,9 +1417,11 @@ fn render(
             rows[row].width.saturating_sub(2) as usize,
         );
         frame.render_widget(
-            Paragraph::new(attempt)
-                .wrap(Wrap { trim: false })
-                .block(Block::default().borders(Borders::ALL).title("Play attempt")),
+            Paragraph::new(attempt).wrap(Wrap { trim: false }).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Debug: Play attempt"),
+            ),
             rows[row],
         );
         row += 1;
@@ -1422,7 +1441,7 @@ fn render(
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Latest recognition"),
+                    .title("Debug: Latest recognition"),
             ),
         rows[row],
     );
@@ -1433,7 +1452,7 @@ fn render(
         Paragraph::new(footer).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Observation channel"),
+                .title("Debug: Observation channel"),
         ),
         rows[row],
     );
@@ -1442,50 +1461,67 @@ fn render(
 fn result_panel_constraints(
     compact: bool,
     show_attempt: bool,
-    show_results: bool,
+    has_results: bool,
 ) -> Vec<Constraint> {
-    if show_results && compact && show_attempt {
+    if !has_results && compact && show_attempt {
         vec![
-            Constraint::Length(6),
-            Constraint::Min(7),
-            Constraint::Length(6),
+            Constraint::Length(4),
             Constraint::Length(5),
+            Constraint::Length(6),
+            Constraint::Min(6),
             Constraint::Length(3),
         ]
-    } else if show_results && compact {
+    } else if !has_results && compact {
         vec![
-            Constraint::Length(6),
+            Constraint::Length(4),
+            Constraint::Length(5),
             Constraint::Min(8),
-            Constraint::Length(8),
+            Constraint::Length(3),
+        ]
+    } else if !has_results && show_attempt {
+        vec![
+            Constraint::Length(4),
+            Constraint::Length(5),
+            Constraint::Length(9),
+            Constraint::Min(13),
             Constraint::Length(5),
         ]
-    } else if show_results {
+    } else if !has_results {
         vec![
-            Constraint::Length(7),
-            Constraint::Min(12),
-            Constraint::Length(9),
-            Constraint::Length(10),
-            Constraint::Length(8),
+            Constraint::Length(4),
+            Constraint::Length(5),
+            Constraint::Min(14),
+            Constraint::Length(5),
         ]
     } else if compact && show_attempt {
         vec![
+            Constraint::Min(8),
+            Constraint::Length(5),
             Constraint::Length(6),
-            Constraint::Length(6),
-            Constraint::Min(5),
+            Constraint::Min(8),
             Constraint::Length(3),
         ]
     } else if compact {
         vec![
+            Constraint::Min(8),
+            Constraint::Length(5),
+            Constraint::Min(6),
+            Constraint::Length(3),
+        ]
+    } else if show_attempt {
+        vec![
+            Constraint::Min(14),
+            Constraint::Length(5),
             Constraint::Length(8),
-            Constraint::Min(7),
+            Constraint::Length(8),
             Constraint::Length(5),
         ]
     } else {
         vec![
-            Constraint::Length(7),
-            Constraint::Length(9),
-            Constraint::Min(10),
+            Constraint::Min(14),
+            Constraint::Length(5),
             Constraint::Length(8),
+            Constraint::Length(5),
         ]
     }
 }
@@ -1499,16 +1535,24 @@ fn result_history_lines(
     if state.result_history.is_empty() {
         return vec![
             Line::from(Span::styled(
-                "No completed plays yet",
+                "No accepted play event yet",
                 Style::default().fg(Color::DarkGray),
             )),
-            Line::from("A stable result will appear here."),
+            Line::from("Only scorepeek-result-detected-v2 events appear here."),
         ];
     }
 
-    let entry_height = 4;
-    let available_entries = available_height.saturating_sub(1) / entry_height;
-    let shown = available_entries.max(1).min(state.result_history.len());
+    let mut entries = Vec::new();
+    let mut used_lines = 1_usize;
+    for entry in state.result_history.iter().rev() {
+        let entry_lines = result_history_entry_lines(entry, compact, available_width);
+        if !entries.is_empty() && used_lines.saturating_add(entry_lines.len()) > available_height {
+            break;
+        }
+        used_lines = used_lines.saturating_add(entry_lines.len());
+        entries.push(entry_lines);
+    }
+    let shown = entries.len();
     let mut lines = vec![Line::from(format!(
         "{} completed  |  newest first  |  showing {}  |  retained {}/{}",
         state.result_count,
@@ -1516,16 +1560,151 @@ fn result_history_lines(
         state.result_history.len(),
         RESULT_HISTORY_CAPACITY
     ))];
+    lines.extend(entries.into_iter().flatten());
+    lines
+}
 
-    for entry in state.result_history.iter().rev().take(shown) {
-        let result = &entry.result;
-        let maximum_score = result.notes.saturating_mul(2);
-        let percentage_tenths = result
-            .current_score
-            .saturating_mul(1_000)
-            .checked_div(maximum_score)
-            .unwrap_or(0);
-        lines.push(Line::from(vec![
+fn result_history_entry_lines(
+    entry: &ResultHistoryEntry,
+    compact: bool,
+    available_width: usize,
+) -> Vec<Line<'static>> {
+    if compact {
+        compact_result_history_entry_lines(entry, available_width)
+    } else {
+        expanded_result_history_entry_lines(entry, available_width)
+    }
+}
+
+fn compact_result_history_entry_lines(
+    entry: &ResultHistoryEntry,
+    available_width: usize,
+) -> Vec<Line<'static>> {
+    let result = &entry.result;
+    let maximum_score = u64::from(result.notes) * 2;
+    let percentage_tenths = u64::from(result.current_score)
+        .checked_mul(1_000)
+        .and_then(|value| value.checked_div(maximum_score))
+        .unwrap_or(0);
+    let title = entry
+        .song
+        .as_ref()
+        .and_then(|song| song.display_titles.first())
+        .map_or_else(
+            || result.scorepeek_song_id.as_uuid().to_string(),
+            ToOwned::to_owned,
+        );
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            format!("#{} {}", entry.ordinal, result.clear_type),
+            Style::default()
+                .fg(clear_type_color(&result.clear_type))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(format!(
+            "  {} {} Lv{}",
+            play_type_label(result.play_type),
+            difficulty_label(result.difficulty),
+            result.level,
+        )),
+    ])];
+    lines.extend(packed_token_lines(
+        [
+            format!("EX {}", grouped_u32(result.current_score)),
+            format!("/ {}", grouped_u64(maximum_score)),
+            format!(
+                "({}.{:01}%)",
+                percentage_tenths / 10,
+                percentage_tenths % 10
+            ),
+        ],
+        available_width,
+    ));
+    lines.push(Line::from(fitted_value("Title: ", &title, available_width)));
+    lines.extend(packed_token_lines(
+        [
+            format!("PG {}", grouped_u32(result.judgments.pgreat)),
+            format!("GR {}", grouped_u32(result.judgments.great)),
+            format!("GD {}", grouped_u32(result.judgments.good)),
+            format!("BD {}", grouped_u32(result.judgments.bad)),
+            format!("PR {}", grouped_u32(result.judgments.poor)),
+        ],
+        available_width,
+    ));
+    lines.extend(packed_token_lines(
+        [
+            format!("MISS {}", supplemental_u32(&result.miss_count)),
+            format!("F {}", supplemental_u32(&result.timing.fast)),
+            format!("S {}", supplemental_u32(&result.timing.slow)),
+            format!("CB {}", supplemental_u32(&result.combo_break)),
+        ],
+        available_width,
+    ));
+    let previous_clear = previous_text(&result.previous_best.clear_type);
+    let previous_score = previous_u32(&result.previous_best.score);
+    let previous_miss = previous_u32(&result.previous_best.miss_count);
+    lines.extend(packed_token_lines(
+        [
+            "PREV".to_owned(),
+            format!("clear={previous_clear}"),
+            format!("EX={previous_score}"),
+            format!("MISS={previous_miss}"),
+        ],
+        available_width,
+    ));
+    lines
+}
+
+fn packed_token_lines<const N: usize>(
+    tokens: [String; N],
+    available_width: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for token in tokens {
+        let separator = usize::from(!current.is_empty());
+        if !current.is_empty()
+            && Line::raw(&current)
+                .width()
+                .saturating_add(separator)
+                .saturating_add(Line::raw(&token).width())
+                > available_width
+        {
+            lines.push(Line::from(current));
+            current = token;
+        } else {
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(&token);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(Line::from(current));
+    }
+    lines
+}
+
+fn expanded_result_history_entry_lines(
+    entry: &ResultHistoryEntry,
+    available_width: usize,
+) -> Vec<Line<'static>> {
+    let result = &entry.result;
+    let maximum_score = u64::from(result.notes) * 2;
+    let percentage_tenths = u64::from(result.current_score)
+        .checked_mul(1_000)
+        .and_then(|value| value.checked_div(maximum_score))
+        .unwrap_or(0);
+    let title = entry
+        .song
+        .as_ref()
+        .and_then(|song| song.display_titles.first())
+        .map_or_else(
+            || result.scorepeek_song_id.as_uuid().to_string(),
+            ToOwned::to_owned,
+        );
+    vec![
+        Line::from(vec![
             Span::styled(
                 format!("#{} {}", entry.ordinal, result.clear_type),
                 Style::default()
@@ -1538,38 +1717,50 @@ fn result_history_lines(
                 difficulty_label(result.difficulty),
                 result.level,
                 grouped_u32(result.current_score),
-                grouped_u32(maximum_score),
+                grouped_u64(maximum_score),
                 percentage_tenths / 10,
                 percentage_tenths % 10,
             )),
-        ]));
-        let title = entry
-            .song
-            .as_ref()
-            .and_then(|song| song.display_titles.first())
-            .map_or_else(
-                || result.scorepeek_song_id.as_uuid().to_string(),
-                ToOwned::to_owned,
-            );
-        lines.push(Line::from(fitted_value("Title: ", &title, available_width)));
-        lines.push(Line::from(fitted_value(
+        ]),
+        Line::from(fitted_value("Title: ", &title, available_width)),
+        Line::from(format!(
+            "PGREAT {}  GREAT {}  GOOD {}  BAD {}  POOR {}",
+            grouped_u32(result.judgments.pgreat),
+            grouped_u32(result.judgments.great),
+            grouped_u32(result.judgments.good),
+            grouped_u32(result.judgments.bad),
+            grouped_u32(result.judgments.poor),
+        )),
+        Line::from(format!(
+            "MISS {}  FAST {}  SLOW {}  COMBO BREAK {}",
+            supplemental_u32(&result.miss_count),
+            supplemental_u32(&result.timing.fast),
+            supplemental_u32(&result.timing.slow),
+            supplemental_u32(&result.combo_break),
+        )),
+        Line::from(format!(
+            "Previous: clear={}  EX SCORE {}  MISS {}",
+            previous_text(&result.previous_best.clear_type),
+            previous_u32(&result.previous_best.score),
+            previous_u32(&result.previous_best.miss_count),
+        )),
+        Line::from(fitted_value(
             "Artist: ",
             entry.song.as_ref().map_or("-", |song| song.artist.as_str()),
             available_width,
-        )));
-        if compact {
-            lines.push(Line::from(format!("Notes: {}", grouped_u32(result.notes))));
-        } else {
-            lines.push(Line::from(format!(
-                "Notes: {}  side={}  mode={}  sequence={}",
-                grouped_u32(result.notes),
-                result.play_side,
-                result.play_mode,
-                entry.source_sequence,
-            )));
-        }
-    }
-    lines
+        )),
+        Line::from(format!(
+            "attempt=#{} parent=#{}  notes={} side={} mode={} sequence={}",
+            result.attempt_id,
+            result
+                .parent_attempt_id
+                .map_or_else(|| "-".to_owned(), |value| format!("{value}")),
+            grouped_u32(result.notes),
+            result.play_side,
+            result.play_mode,
+            entry.source_sequence,
+        )),
+    ]
 }
 
 const fn clear_type_color(clear_type: &str) -> Color {
@@ -1599,6 +1790,10 @@ const fn difficulty_label(difficulty: Difficulty) -> &'static str {
 }
 
 fn grouped_u32(value: u32) -> String {
+    grouped_u64(u64::from(value))
+}
+
+fn grouped_u64(value: u64) -> String {
     let digits = value.to_string();
     let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, digit) in digits.chars().enumerate() {
@@ -1608,6 +1803,32 @@ fn grouped_u32(value: u32) -> String {
         grouped.push(digit);
     }
     grouped
+}
+
+fn supplemental_u32(value: &SupplementalResultValue<u32>) -> String {
+    match value {
+        SupplementalResultValue::Known { value } => grouped_u32(*value),
+        SupplementalResultValue::NotDisplayed => "--".to_owned(),
+        SupplementalResultValue::Unknown { .. } => "?".to_owned(),
+    }
+}
+
+fn previous_u32(value: &PreviousBestValue<u32>) -> String {
+    match value {
+        PreviousBestValue::Known { value } => grouped_u32(*value),
+        PreviousBestValue::NotPlayed => "NO PLAY".to_owned(),
+        PreviousBestValue::NotDisplayed => "--".to_owned(),
+        PreviousBestValue::Unknown { .. } => "?".to_owned(),
+    }
+}
+
+fn previous_text(value: &PreviousBestValue<String>) -> String {
+    match value {
+        PreviousBestValue::Known { value } => value.clone(),
+        PreviousBestValue::NotPlayed => "NO PLAY".to_owned(),
+        PreviousBestValue::NotDisplayed => "--".to_owned(),
+        PreviousBestValue::Unknown { .. } => "?".to_owned(),
+    }
 }
 
 #[allow(
@@ -1765,33 +1986,25 @@ fn watcher_lines(
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::raw(format!("  state={}", state.watcher_state)),
+                Span::raw(format!(
+                    "  state={} sessions={} generation={}",
+                    state.watcher_state,
+                    state.session_count,
+                    state
+                        .capture_generation
+                        .map_or_else(|| "-".to_owned(), |value| value.to_string())
+                )),
             ]),
-            Line::from(format!(
-                "sessions={}  generation={}",
-                state.session_count,
-                state
-                    .capture_generation
-                    .map_or_else(|| "-".to_owned(), |value| value.to_string())
-            )),
-            Line::from(fitted_value(
-                "session=",
-                state.active_session_id.as_deref().unwrap_or("-"),
-                available_width,
-            )),
             Line::from(fitted_value(
                 "invocation=",
                 &state.invocation_id,
                 available_width,
             )),
-            Line::from(fitted_value(
-                "profile=",
-                &state.profile_sha256,
-                available_width,
-            )),
             Line::from(format!(
-                "recording={}  status={}",
-                state.recording, state.status_recording
+                "session={}  recording={}  status={}",
+                state.active_session_id.as_deref().unwrap_or("-"),
+                state.recording,
+                state.status_recording
             )),
         ];
     }
@@ -3262,6 +3475,11 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(rendered.contains("OCR title: OCR TITLE"));
+        assert!(rendered.contains("Accepted play events"));
+        assert!(rendered.contains("No accepted play event yet"));
+        assert!(rendered.contains("Debug: Watcher"));
+        assert!(rendered.contains("Debug: Latest recognition"));
+        assert!(rendered.contains("Debug: Observation channel"));
         assert!(rendered.contains("current screen=unknown"));
         assert!(rendered.contains("raw screen=result"));
         assert!(rendered.contains("invocation=invocation-1"));
@@ -3498,7 +3716,13 @@ mod tests {
         state.reduce(&result, &result.to_value().unwrap());
 
         let health = ChannelHealth::default();
-        for (width, height) in [(100, 40), (70, 30), (100, 30)] {
+        for (width, height, compact) in [
+            (100, 40, false),
+            (70, 30, true),
+            (100, 30, true),
+            (70, 12, true),
+            (40, 30, true),
+        ] {
             let backend = TestBackend::new(width, height);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal
@@ -3511,16 +3735,78 @@ mod tests {
                 .iter()
                 .map(ratatui::buffer::Cell::symbol)
                 .collect::<String>();
-            assert!(rendered.contains("Play results"));
+            assert!(rendered.contains("Accepted play events"));
             assert!(rendered.contains("#1 HARD CLEAR"));
             assert!(rendered.contains("SP HYPER Lv8"));
-            assert!(rendered.contains("EX SCORE 1,286 / 1,528 (84.1%)"));
             assert!(rendered.contains("Title: HISTORY TITLE"));
-            assert!(rendered.contains("Artist: HISTORY ARTIST"));
-            assert!(rendered.contains("Notes: 764"));
+            if compact {
+                assert!(rendered.contains("EX 1,286 / 1,528 (84.1%)"));
+                assert!(rendered.contains("PG 600 GR 86 GD 10 BD 5 PR 3"));
+                assert!(rendered.contains("MISS 3 F 20 S 21 CB 2"));
+                assert!(rendered.contains("PREV clear=CLEAR EX=1,200 MISS=4"));
+                assert!(!rendered.contains("Artist: HISTORY ARTIST"));
+                assert!(!rendered.contains("attempt=#1"));
+                assert!(!rendered.contains("Debug:"));
+            } else {
+                assert!(rendered.contains("EX SCORE 1,286 / 1,528 (84.1%)"));
+                assert!(rendered.contains("PGREAT 600  GREAT 86  GOOD 10  BAD 5  POOR 3"));
+                assert!(rendered.contains("MISS 3  FAST 20  SLOW 21  COMBO BREAK 2"));
+                assert!(rendered.contains("Previous: clear=CLEAR  EX SCORE 1,200  MISS 4"));
+                assert!(rendered.contains("Artist: HISTORY ARTIST"));
+                assert!(rendered.contains(
+                    "attempt=#1 parent=#-  notes=764 side=one_player mode=single_play sequence=42"
+                ));
+            }
             assert!(!rendered.contains("scorepeek_song_id"));
             assert!(!rendered.contains("current_score"));
             assert!(!rendered.contains("HISTORY ALIAS"));
+        }
+
+        let mut upper_bound_entry = state.result_history.back().unwrap().clone();
+        upper_bound_entry.result.notes = 2_500;
+        upper_bound_entry.result.current_score = 2_500;
+        upper_bound_entry.result.judgments = ResultJudgments {
+            pgreat: 1_000,
+            great: 500,
+            good: 2_500,
+            bad: 2_500,
+            poor: 2_500,
+        };
+        upper_bound_entry.result.miss_count = SupplementalResultValue::Known { value: 2_500 };
+        upper_bound_entry.result.timing = ResultTiming {
+            fast: SupplementalResultValue::Known { value: 2_500 },
+            slow: SupplementalResultValue::Known { value: 2_500 },
+        };
+        upper_bound_entry.result.combo_break = SupplementalResultValue::Known { value: 2_500 };
+        upper_bound_entry.result.previous_best = PreviousBest {
+            clear_type: PreviousBestValue::Known {
+                value: "F-COMBO".to_owned(),
+            },
+            score: PreviousBestValue::Known { value: 5_000 },
+            miss_count: PreviousBestValue::Known { value: 2_500 },
+        };
+        let packed = compact_result_history_entry_lines(&upper_bound_entry, 38);
+        assert!(packed.iter().all(|line| line.width() <= 38));
+        let packed_text = packed
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        for expected in [
+            "PG 1,000",
+            "GR 500",
+            "GD 2,500",
+            "BD 2,500",
+            "PR 2,500",
+            "MISS 2,500",
+            "F 2,500",
+            "S 2,500",
+            "CB 2,500",
+            "clear=F-COMBO",
+            "EX=5,000",
+            "MISS=2,500",
+        ] {
+            assert!(packed_text.contains(expected));
         }
 
         let second_song_id =
@@ -3583,6 +3869,8 @@ mod tests {
         assert!(rendered.contains("2 completed"));
         assert!(rendered.contains("#2 FAILED"));
         assert!(rendered.contains("Title: SECOND TITLE"));
+        assert!(rendered.contains("MISS --  FAST 30  SLOW 31  COMBO BREAK 5"));
+        assert!(rendered.contains("Previous: clear=NO PLAY  EX SCORE NO PLAY  MISS NO PLAY"));
         assert!(rendered.contains("#1 HARD CLEAR"));
         assert!(rendered.contains("Title: HISTORY TITLE"));
         assert!(rendered.find("#2 FAILED") < rendered.find("#1 HARD CLEAR"));
@@ -3658,6 +3946,34 @@ mod tests {
         assert_eq!(state.result_history.len(), RESULT_HISTORY_CAPACITY);
         assert_eq!(state.result_count, RESULT_HISTORY_CAPACITY as u64 + 3);
         assert!(state.stable_result_song.is_none());
+    }
+
+    #[test]
+    fn result_value_labels_preserve_domain_states_without_debug_reasons() {
+        use scorepeek::recognition::ResultFieldUnknownReason;
+
+        assert_eq!(
+            supplemental_u32(&SupplementalResultValue::Known { value: 1_234 }),
+            "1,234"
+        );
+        assert_eq!(
+            supplemental_u32(&SupplementalResultValue::NotDisplayed),
+            "--"
+        );
+        assert_eq!(
+            supplemental_u32(&SupplementalResultValue::Unknown {
+                reason: ResultFieldUnknownReason::InvalidFormat,
+            }),
+            "?"
+        );
+        assert_eq!(previous_text(&PreviousBestValue::NotPlayed), "NO PLAY");
+        assert_eq!(previous_u32(&PreviousBestValue::NotDisplayed), "--");
+        assert_eq!(
+            previous_u32(&PreviousBestValue::Unknown {
+                reason: ResultFieldUnknownReason::OutOfRange,
+            }),
+            "?"
+        );
     }
 
     #[test]

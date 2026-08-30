@@ -44,7 +44,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   truth. The active 17-episode suite has not been advanced because its new values still require
   operator confirmation. The unchanged active v2 suite still replays all five sessions, seventeen
   episodes, 2,102 canonical frames, and one negative frame with the expanded observer in about 168
-  seconds on the development host. `play_options`, target 10 Hz cadence, busy-skip impact, installed-binary
+  seconds on the development host. ADR 0084 makes accepted `scorepeek-result-detected-v2` records
+  the TUI's always-present primary surface and renders their judgments, optional performance values,
+  and previous-best snapshot. Watcher, play-attempt, recognition/temporal state, and channel health
+  appear only as explicitly labeled debug panels; compact layouts with an accepted event dedicate
+  the pane to accepted values and omit those debug panels. Debug state never creates result rows.
+  `play_options`, target 10 Hz cadence, busy-skip impact, installed-binary
   behavior, and public `/v1.sock` authority remain later explicit checkpoints.
   No independent transform mismatch or changed normalizer currently justifies replaying a
   scorepeek-written raw/canonical pair through the same implementation. ADR 0048 trusts
@@ -291,11 +296,13 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   and one negative. The provisional run channel now emits one typed `result_detected` after the
   existing two-observation/250 ms song and clear stabilization when the chart and score are known.
   Release accuracy, event authority, target-host performance, and support remain later gates.
-  ADR 0079 makes those accepted results the primary TUI output. One watcher invocation now retains
-  the newest 32 results across Gamescope session boundaries and renders newest-first catalog title,
-  artist, clear type, chart, notes, EX score, theoretical maximum, and percentage. The TUI does not
-  print event JSON and does not load persistent history from prior invocations; the observation
-  channel and retained run-event artifact remain the machine-readable diagnostic surfaces.
+  ADR 0079 and ADR 0084 make those accepted results the primary TUI output. One watcher invocation
+  retains the newest 32 results across Gamescope session boundaries and renders newest-first catalog
+  presentation plus the v2 chart, score, judgments, optional performance, and previous-best values.
+  The accepted panel is present before the first event; watcher, attempt, recognition, temporal, and
+  channel information is labeled debug. The TUI does not print event JSON or load persistent history
+  from prior invocations; the observation channel and retained run-event artifact remain the
+  machine-readable diagnostic surfaces.
 
 ## Included deliverables
 
@@ -939,7 +946,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    run as failure evidence if any condition regresses.
 3. Exercise one ordinary target flow through music select, song decision, gameplay and result.
    Confirm that the TUI keeps the catalog title and artist visible as one attempt, advances
-   `SELECTED` to `PLAYING` to `CONFIRMED`, and leaves raw OCR separate. If a natural result-to-play
+   `SELECTED` to `PLAYING` to `CONFIRMED`, then adds exactly one accepted result row containing the
+   five judgments, typed miss/fast/slow/combo-break values, and previous-best snapshot. Require all
+   watcher, attempt, recognition, temporal, and channel information to remain labeled debug and raw
+   OCR to stay out of the accepted result panel. If a natural result-to-play
    retry is available, verify a new attempt ID with the prior parent; do not request extra play only
    for retry tuning. Treat missing decide/play, an unlinked result or conflict as evidence rather
    than repairing it.

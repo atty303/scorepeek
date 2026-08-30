@@ -247,6 +247,10 @@ authoritative.
 - [ADR 0083: Accept play-attempt performance results](0083-accept-play-attempt-performance-results.md)
   supersedes ADR 0078's fixed savability and v1 payload, gates result events on observed gameplay
   plus confirmed attempt linkage, and adds checked judgement and typed reference values.
+- [ADR 0084: Make accepted domain events the primary TUI surface](0084-make-domain-events-the-primary-tui-surface.md)
+  keeps the accepted-event panel present for the whole invocation, renders v2 performance values
+  from that event, and explicitly classifies watcher, attempt, recognition, and channel panels as
+  debug information.
 
 ## Historical
 
