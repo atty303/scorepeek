@@ -354,6 +354,8 @@ pub struct GamescopeFieldObservationGateReport {
     recognition_ticks: u64,
     recognition_busy_skips: u64,
     maximum_consecutive_busy_skips: u64,
+    field_observation_busy_skips: u64,
+    maximum_consecutive_field_observation_busy_skips: u64,
     last_recognition_sequence: Option<u64>,
     inspected_frames: u64,
     result_frames: u64,
@@ -504,6 +506,13 @@ impl GamescopeFieldObservationGateReport {
         )
     }
 
+    pub const fn field_busy_sampling(&self) -> (u64, u64) {
+        (
+            self.field_observation_busy_skips,
+            self.maximum_consecutive_field_observation_busy_skips,
+        )
+    }
+
     pub const fn diagnostic_completeness_name(&self) -> &'static str {
         match self.diagnostic_completeness {
             Some(DiagnosticCompleteness::Complete) => "complete",
@@ -547,6 +556,9 @@ struct FieldObservationCounters {
     recognition_ticks: u64,
     recognition_busy_skips: u64,
     maximum_consecutive_busy_skips: u64,
+    field_observation_busy_skips: u64,
+    maximum_consecutive_field_observation_busy_skips: u64,
+    consecutive_field_observation_busy_skips: u64,
     last_recognition_sequence: Option<u64>,
     inspected_frames: u64,
     result_frames: u64,
@@ -1002,6 +1014,7 @@ pub fn run_gamescope_live_session(
     .map(|_| (FieldObservationGateErrorType::ResultOutputFailed, None));
     let mut counters = FieldObservationCounters::default();
     let mut pending = Vec::<PendingSessionFieldObservation<RegisteredFieldOutput>>::new();
+    let mut minimum_event_sequence = None;
     if terminal.is_none() {
         terminal = offer_live_field_observation_frames(
             &mut lease,
@@ -1012,6 +1025,7 @@ pub fn run_gamescope_live_session(
             &mut artifact_worker,
             &mut sink,
             emit,
+            &mut minimum_event_sequence,
         );
     }
     let (shutdown, finish_time) = lease.shutdown_with_elapsed(&mut sink);
@@ -1032,6 +1046,7 @@ pub fn run_gamescope_live_session(
             &mut counters,
             &mut artifact_worker,
             emit,
+            minimum_event_sequence,
         );
         if let Some(error) = drain_error {
             if matches!(
@@ -1050,9 +1065,14 @@ pub fn run_gamescope_live_session(
     session.record_sampling_summary(
         counters.last_recognition_sequence.unwrap_or(0),
         finish_time,
-        counters.recognition_ticks,
-        counters.recognition_busy_skips,
-        counters.maximum_consecutive_busy_skips,
+        crate::diagnostic_recording::RecognitionSamplingSummary {
+            processed_ticks: counters.recognition_ticks,
+            busy_skips: counters.recognition_busy_skips,
+            maximum_consecutive_busy_skips: counters.maximum_consecutive_busy_skips,
+            field_observation_busy_skips: counters.field_observation_busy_skips,
+            maximum_consecutive_field_observation_busy_skips: counters
+                .maximum_consecutive_field_observation_busy_skips,
+        },
     );
     let mut source_ended = matches!(
         terminal,
@@ -1393,6 +1413,9 @@ fn offer_field_observation_frames(
             };
             *screen_counter = screen_counter.saturating_add(1);
             match result.field_submission {
+                FieldObservationSubmission::BusySkipped => {
+                    unreachable!("offline gate has no pending OCR policy")
+                }
                 FieldObservationSubmission::NotApplicable => {
                     source.counters.field_not_applicable =
                         source.counters.field_not_applicable.saturating_add(1);
@@ -1424,6 +1447,7 @@ fn offer_field_observation_frames(
                 artifact_worker,
                 None,
                 None,
+                None,
             ) {
                 return Some((error, None));
             }
@@ -1434,7 +1458,11 @@ fn offer_field_observation_frames(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the live loop keeps screen cadence, field admission, event ordering, and counters in one owner"
+)]
 fn offer_live_field_observation_frames(
     lease: &mut CalibratedGamescopeLease,
     session: &mut FieldObservationSession<RegisteredScreenFieldObserver>,
@@ -1444,6 +1472,7 @@ fn offer_live_field_observation_frames(
     artifact_worker: &mut Option<RecognitionArtifactWorker>,
     sink: &mut BoundedDiagnosticSink,
     emit: &mut LiveEventEmitter<'_>,
+    minimum_event_sequence: &mut Option<u64>,
 ) -> Option<(FieldObservationGateErrorType, Option<CaptureErrorType>)> {
     let mut cadence = RecognitionCadence::default();
     let mut last_emitted_screen = None;
@@ -1460,6 +1489,7 @@ fn offer_live_field_observation_frames(
             artifact_worker,
             None,
             Some(emit),
+            *minimum_event_sequence,
         ) {
             return Some((error, None));
         }
@@ -1468,26 +1498,21 @@ fn offer_live_field_observation_frames(
             Err(error) => return Some(error),
         };
         if let Some(mut frame) = frame {
-            match cadence.observe(frame.monotonic_end_ms(), !pending.is_empty()) {
+            match cadence.observe(frame.monotonic_end_ms()) {
                 CadenceDecision::SkipCadence => continue,
-                CadenceDecision::SkipBusy { tick_sequence } => {
-                    source.counters.recognition_busy_skips = cadence.busy_skips();
-                    source.counters.maximum_consecutive_busy_skips =
-                        cadence.maximum_consecutive_busy_skips();
-                    let _ = session.record_recognition_busy_skip(
-                        tick_sequence,
-                        frame.monotonic_start_ms(),
-                        frame.monotonic_end_ms(),
-                    );
-                    continue;
-                }
                 CadenceDecision::Process { tick_sequence } => {
                     source.counters.recognition_ticks = cadence.processed();
                     source.counters.last_recognition_sequence = Some(tick_sequence);
                     frame.assign_tick_sequence(tick_sequence);
                 }
             }
-            let Ok(result) = session.inspect(&frame) else {
+            let field_busy = !pending.is_empty();
+            let inspected = if field_busy {
+                session.inspect_while_field_busy(&frame)
+            } else {
+                session.inspect(&frame)
+            };
+            let Ok(result) = inspected else {
                 return Some((FieldObservationGateErrorType::RecognitionFailed, None));
             };
             source.counters.inspected_frames = source.counters.inspected_frames.saturating_add(1);
@@ -1502,6 +1527,9 @@ fn offer_live_field_observation_frames(
             *screen_counter = screen_counter.saturating_add(1);
             let screen = result.observation.screen();
             if last_emitted_screen != Some(screen) {
+                if last_emitted_screen.is_some() {
+                    *minimum_event_sequence = Some(frame.sequence());
+                }
                 if emit(GamescopeLiveSessionEvent::ScreenChanged {
                     sequence: frame.sequence(),
                     monotonic_start_ms: frame.monotonic_start_ms(),
@@ -1515,16 +1543,35 @@ fn offer_live_field_observation_frames(
                 last_emitted_screen = Some(screen);
             }
             match result.field_submission {
+                FieldObservationSubmission::BusySkipped => {
+                    source.counters.field_observation_busy_skips = source
+                        .counters
+                        .field_observation_busy_skips
+                        .saturating_add(1);
+                    source.counters.consecutive_field_observation_busy_skips = source
+                        .counters
+                        .consecutive_field_observation_busy_skips
+                        .saturating_add(1);
+                    source
+                        .counters
+                        .maximum_consecutive_field_observation_busy_skips = source
+                        .counters
+                        .maximum_consecutive_field_observation_busy_skips
+                        .max(source.counters.consecutive_field_observation_busy_skips);
+                }
                 FieldObservationSubmission::NotApplicable => {
+                    source.counters.consecutive_field_observation_busy_skips = 0;
                     source.counters.field_not_applicable =
                         source.counters.field_not_applicable.saturating_add(1);
                 }
                 FieldObservationSubmission::Submitted(observation) => {
+                    source.counters.consecutive_field_observation_busy_skips = 0;
                     source.counters.field_submitted =
                         source.counters.field_submitted.saturating_add(1);
                     pending.push(observation);
                 }
                 FieldObservationSubmission::Rejected(error) => {
+                    source.counters.consecutive_field_observation_busy_skips = 0;
                     source.counters.field_rejected =
                         source.counters.field_rejected.saturating_add(1);
                     if matches!(
@@ -1602,6 +1649,7 @@ fn wait_field_observations(
             artifact_worker,
             Some(remaining),
             None,
+            None,
         ) {
             return Some((error, None));
         }
@@ -1616,6 +1664,7 @@ fn poll_field_observations(
     artifact_worker: &mut Option<RecognitionArtifactWorker>,
     wait: Option<Duration>,
     mut emit: Option<&mut LiveEventEmitter<'_>>,
+    minimum_event_sequence: Option<u64>,
 ) -> Option<FieldObservationGateErrorType> {
     let mut index = 0;
     while index < pending.len() {
@@ -1648,7 +1697,8 @@ fn poll_field_observations(
                         counters.result_observations =
                             counters.result_observations.saturating_add(1);
                     }
-                    if let Some(emit) = emit.as_deref_mut()
+                    if minimum_event_sequence.is_none_or(|minimum| sequence >= minimum)
+                        && let Some(emit) = emit.as_deref_mut()
                         && emit(GamescopeLiveSessionEvent::Observation {
                             sequence,
                             monotonic_start_ms,
@@ -1707,6 +1757,7 @@ fn wait_live_field_observations(
     counters: &mut FieldObservationCounters,
     artifact_worker: &mut Option<RecognitionArtifactWorker>,
     emit: &mut LiveEventEmitter<'_>,
+    minimum_event_sequence: Option<u64>,
 ) -> Option<(FieldObservationGateErrorType, Option<CaptureErrorType>)> {
     let started = Instant::now();
     while !pending.is_empty() {
@@ -1721,6 +1772,7 @@ fn wait_live_field_observations(
             artifact_worker,
             Some(remaining),
             Some(emit),
+            minimum_event_sequence,
         ) {
             return Some((error, None));
         }
@@ -1837,6 +1889,9 @@ fn field_observation_report(
         recognition_ticks: counters.recognition_ticks,
         recognition_busy_skips: counters.recognition_busy_skips,
         maximum_consecutive_busy_skips: counters.maximum_consecutive_busy_skips,
+        field_observation_busy_skips: counters.field_observation_busy_skips,
+        maximum_consecutive_field_observation_busy_skips: counters
+            .maximum_consecutive_field_observation_busy_skips,
         last_recognition_sequence: counters.last_recognition_sequence,
         inspected_frames: counters.inspected_frames,
         result_frames: counters.result_frames,

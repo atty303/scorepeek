@@ -23,6 +23,7 @@ const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v3";
 const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v5";
 const CURRENT_OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v6";
 const LATEST_OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v7";
+const CURRENT_OBSERVATION_SCHEMA_V8: &str = "scorepeek-recognition-observation-v8";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-temporal-evaluation-v1";
 const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -545,7 +546,10 @@ fn evaluate_episode(
         ) {
             for transition in update.transitions {
                 match transition.reason {
-                    TemporalTransitionReason::ResetByGap => transitions.gap_resets += 1,
+                    TemporalTransitionReason::ResetByGap
+                    | TemporalTransitionReason::ResetByTimeRegression => {
+                        transitions.gap_resets += 1;
+                    }
                     TemporalTransitionReason::Conflict => transitions.conflicts += 1,
                     TemporalTransitionReason::PendingReplaced => {
                         transitions.pending_replacements += 1;
@@ -706,6 +710,7 @@ fn parse_record(value: &Value) -> Result<TemporalRecord, CorpusError> {
     if value["schema"] != OBSERVATION_SCHEMA
         && value["schema"] != CURRENT_OBSERVATION_SCHEMA
         && value["schema"] != LATEST_OBSERVATION_SCHEMA
+        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V8
     {
         return invalid("temporal evaluation observation schema differs");
     }

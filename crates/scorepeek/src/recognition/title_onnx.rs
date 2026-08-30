@@ -327,6 +327,20 @@ pub struct DynamicTextObservation {
     pub input_width: usize,
     pub output_timesteps: usize,
     pub open_text: String,
+    pub constrained_text: Option<String>,
+}
+
+impl DynamicTextObservation {
+    #[must_use]
+    pub fn constrained_text(&self) -> Option<&str> {
+        self.constrained_text.as_deref()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CtcCharacterSet {
+    Digits,
+    DigitsAndDashes,
 }
 
 /// The exact registered live text runtime, loaded once and owned by one observer worker.
@@ -565,6 +579,28 @@ impl RegisteredDynamicTitleRuntime {
             crop.pixels(),
             crop.roi.width as usize,
             crop.roi.height as usize,
+            None,
+        )
+        .map(|(observation, _)| observation)
+    }
+
+    /// Runs one inference and decodes both unrestricted text and a field-local character set.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid crop, dictionary, or runtime tensor contract.
+    pub fn observe_constrained_text(
+        &mut self,
+        crop: &Rgb8Crop,
+        character_set: CtcCharacterSet,
+    ) -> Result<DynamicTextObservation, OnnxParityError> {
+        observe_dynamic_rgb8(
+            &mut self.session,
+            &self.dictionary,
+            self.output_classes,
+            crop.pixels(),
+            crop.roi.width as usize,
+            crop.roi.height as usize,
+            Some(character_set),
         )
         .map(|(observation, _)| observation)
     }
@@ -1334,6 +1370,7 @@ pub fn decode_dynamic_official_onnx_crops(
             pixels,
             source_width,
             source_height,
+            None,
         )?;
         input_widths.push(observation.input_width);
         input_tensor_sha256s.push(input_tensor_sha256);
@@ -1362,6 +1399,7 @@ fn observe_dynamic_rgb8(
     pixels: &[u8],
     source_width: usize,
     source_height: usize,
+    character_set: Option<CtcCharacterSet>,
 ) -> Result<(DynamicTextObservation, String), OnnxParityError> {
     let input = preprocess_dynamic_title_image(pixels, source_width, source_height)?;
     let input_tensor_sha256 = encode_f32_sha256(&input.values);
@@ -1385,22 +1423,49 @@ fn observe_dynamic_rgb8(
     }
     validate_argmax_probability_rows(probabilities, output_classes)?;
     let (_, collapsed) = argmax_tokens(probabilities, timesteps, output_classes)?;
-    let mut open_text = String::new();
-    for token in collapsed {
-        open_text.push_str(
-            dictionary
-                .get(usize::try_from(token).map_err(|_| OnnxParityError::InvalidArtifact)?)
-                .ok_or(OnnxParityError::InvalidArtifact)?,
-        );
-    }
+    let open_text = decode_dictionary_tokens(dictionary, &collapsed)?;
+    let constrained_text = character_set
+        .map(|character_set| {
+            let allowed = dictionary
+                .iter()
+                .map(|token| character_set.allows(token))
+                .collect::<Vec<_>>();
+            let (_, collapsed) =
+                constrained_argmax_tokens(probabilities, timesteps, output_classes, &allowed)?;
+            decode_dictionary_tokens(dictionary, &collapsed)
+        })
+        .transpose()?;
     Ok((
         DynamicTextObservation {
             input_width: input_shape[3],
             output_timesteps: timesteps,
             open_text,
+            constrained_text,
         },
         input_tensor_sha256,
     ))
+}
+
+impl CtcCharacterSet {
+    fn allows(self, token: &str) -> bool {
+        token.len() == 1 && token.bytes().all(|byte| byte.is_ascii_digit())
+            || matches!(self, Self::DigitsAndDashes) && matches!(token, "-" | "―" | "ー" | "—")
+    }
+}
+
+fn decode_dictionary_tokens(
+    dictionary: &[String],
+    tokens: &[u32],
+) -> Result<String, OnnxParityError> {
+    let mut text = String::new();
+    for token in tokens {
+        text.push_str(
+            dictionary
+                .get(usize::try_from(*token).map_err(|_| OnnxParityError::InvalidArtifact)?)
+                .ok_or(OnnxParityError::InvalidArtifact)?,
+        );
+    }
+    Ok(text)
 }
 
 fn strict_p6(bytes: &[u8]) -> Result<(usize, usize, &[u8]), OnnxParityError> {
@@ -1683,6 +1748,36 @@ fn argmax_tokens(
     Ok((raw, collapsed))
 }
 
+fn constrained_argmax_tokens(
+    probabilities: &[f32],
+    timesteps: usize,
+    classes: usize,
+    allowed: &[bool],
+) -> Result<(Vec<u32>, Vec<u32>), OnnxParityError> {
+    if probabilities.len() != timesteps * classes || allowed.len() != classes || classes == 0 {
+        return Err(OnnxParityError::InvalidArtifact);
+    }
+    let mut raw = Vec::with_capacity(timesteps);
+    for row in probabilities.chunks_exact(classes) {
+        let mut token = 0_usize;
+        for (index, value) in row.iter().enumerate().skip(1) {
+            if allowed[index] && value.total_cmp(&row[token]) == Ordering::Greater {
+                token = index;
+            }
+        }
+        raw.push(u32::try_from(token).map_err(|_| OnnxParityError::InvalidArtifact)?);
+    }
+    let mut collapsed = Vec::new();
+    let mut previous = None;
+    for token in &raw {
+        if *token != 0 && Some(*token) != previous {
+            collapsed.push(*token);
+        }
+        previous = Some(*token);
+    }
+    Ok((raw, collapsed))
+}
+
 fn ctc_log_probability(
     probabilities: &[f32],
     timesteps: usize,
@@ -1778,8 +1873,9 @@ mod tests {
     use super::{
         DynamicBundleManifest, LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256, LiveRuntimeManifest,
         RegisteredRecognitionResources, RegisteredResourceLoadError,
-        RegisteredResourceLoadErrorType, argmax_tokens, ctc_log_probability, strict_p6,
-        valid_presentation_transform_id, validate_argmax_probability_rows,
+        RegisteredResourceLoadErrorType, argmax_tokens, constrained_argmax_tokens,
+        ctc_log_probability, strict_p6, valid_presentation_transform_id,
+        validate_argmax_probability_rows,
     };
     use crate::catalog::{Catalog, CatalogStore};
 
@@ -1990,6 +2086,31 @@ mod tests {
         let (raw, collapsed) = argmax_tokens(&probabilities, 3, 2).unwrap();
         assert_eq!(raw, [0, 0, 0]);
         assert!(collapsed.is_empty());
+    }
+
+    #[test]
+    fn constrained_argmax_uses_the_allowed_digit_from_the_same_logits() {
+        let probabilities = [0.1_f32, 0.8, 0.7]; // blank, 只, 0
+        let (_, unrestricted) = argmax_tokens(&probabilities, 1, 3).unwrap();
+        let (_, constrained) =
+            constrained_argmax_tokens(&probabilities, 1, 3, &[false, false, true]).unwrap();
+        assert_eq!(unrestricted, [1]);
+        assert_eq!(constrained, [2]);
+    }
+
+    #[test]
+    fn constrained_argmax_preserves_blank_repeat_and_deterministic_ties() {
+        let probabilities = [
+            0.9_f32, 0.1, 0.1, // blank
+            0.1, 0.8, 0.8, // equal allowed values choose the lower token
+            0.1, 0.7, 0.6, // repeated lower token
+            0.9, 0.1, 0.1, // blank
+            0.1, 0.7, 0.6, // lower token again
+        ];
+        let (raw, collapsed) =
+            constrained_argmax_tokens(&probabilities, 5, 3, &[false, true, true]).unwrap();
+        assert_eq!(raw, [0, 1, 1, 0, 1]);
+        assert_eq!(collapsed, [1, 1]);
     }
 
     #[test]

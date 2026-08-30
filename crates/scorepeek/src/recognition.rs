@@ -53,10 +53,10 @@ pub use title_decoder::{
     score_catalog_titles, title_model_export_requirements,
 };
 pub use title_onnx::{
-    DynamicOfficialOnnxDecodeSummary, DynamicTextObservation, ExportContractParityRequest,
-    ExportContractParitySummary, LIVE_MODEL_BUNDLE_MANIFEST_SHA256, LIVE_MODEL_ID,
-    LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256, OfficialOnnxDecodeSummary, OnnxParityError,
-    OnnxParitySummary, OnnxTitleDiagnosticRequest, RegisteredDynamicTitleRuntime,
+    CtcCharacterSet, DynamicOfficialOnnxDecodeSummary, DynamicTextObservation,
+    ExportContractParityRequest, ExportContractParitySummary, LIVE_MODEL_BUNDLE_MANIFEST_SHA256,
+    LIVE_MODEL_ID, LIVE_MODEL_SHA256, LIVE_RUNTIME_SHA256, OfficialOnnxDecodeSummary,
+    OnnxParityError, OnnxParitySummary, OnnxTitleDiagnosticRequest, RegisteredDynamicTitleRuntime,
     RegisteredLiveModelFile, RegisteredRecognitionResources, RegisteredResourceLoadError,
     RegisteredResourceLoadErrorType, compare_export_contract, compare_paddle_onnx,
     decode_dynamic_official_onnx_crops, decode_official_onnx_crops, registered_live_model_files,
@@ -1006,6 +1006,35 @@ impl ScreenTextField {
             Self::MusicSelectArtist => "music_select_artist",
             Self::MusicSelectSelectedChart => "music_select_selected_chart",
             Self::MusicSelectActiveListTitle => "music_select_active_list_title",
+        }
+    }
+
+    #[must_use]
+    pub const fn ctc_character_set(self) -> Option<CtcCharacterSet> {
+        match self {
+            Self::ResultLevel
+            | Self::ResultNotes
+            | Self::ResultCurrentScore
+            | Self::ResultPgreat
+            | Self::ResultGreat
+            | Self::ResultGood
+            | Self::ResultBad
+            | Self::ResultPoor => Some(CtcCharacterSet::Digits),
+            Self::ResultPreviousScore
+            | Self::ResultPreviousMissCount
+            | Self::ResultMissCount
+            | Self::ResultFast
+            | Self::ResultSlow
+            | Self::ResultComboBreak => Some(CtcCharacterSet::DigitsAndDashes),
+            Self::ResultTitle
+            | Self::ResultArtist
+            | Self::ResultClearType
+            | Self::ResultDifficulty
+            | Self::ResultPreviousClearType
+            | Self::MusicSelectCentralTitle
+            | Self::MusicSelectArtist
+            | Self::MusicSelectSelectedChart
+            | Self::MusicSelectActiveListTitle => None,
         }
     }
 }
@@ -2749,6 +2778,7 @@ mod tests {
                 input_width: crop.roi.width as usize,
                 output_timesteps: result_calls,
                 open_text: format!("result-{result_calls}"),
+                constrained_text: None,
             })
         })
         .unwrap();
@@ -2785,6 +2815,7 @@ mod tests {
                 input_width: crop.roi.width as usize,
                 output_timesteps: music_calls,
                 open_text: format!("music-{music_calls}"),
+                constrained_text: None,
             })
         })
         .unwrap();
@@ -2812,6 +2843,7 @@ mod tests {
                     input_width: 1,
                     output_timesteps: 1,
                     open_text: "discarded".to_owned(),
+                    constrained_text: None,
                 })
             }
         })
@@ -2819,6 +2851,40 @@ mod tests {
         assert_eq!(calls, 2);
         assert_eq!(error.field, ScreenTextField::ResultArtist);
         assert_eq!(error.source_error(), &"runtime-failed");
+    }
+
+    #[test]
+    fn every_numeric_field_routes_to_the_fixed_ctc_character_set() {
+        for field in [
+            ScreenTextField::ResultLevel,
+            ScreenTextField::ResultNotes,
+            ScreenTextField::ResultCurrentScore,
+            ScreenTextField::ResultPgreat,
+            ScreenTextField::ResultGreat,
+            ScreenTextField::ResultGood,
+            ScreenTextField::ResultBad,
+            ScreenTextField::ResultPoor,
+        ] {
+            assert_eq!(field.ctc_character_set(), Some(CtcCharacterSet::Digits));
+        }
+        for field in [
+            ScreenTextField::ResultPreviousScore,
+            ScreenTextField::ResultPreviousMissCount,
+            ScreenTextField::ResultMissCount,
+            ScreenTextField::ResultFast,
+            ScreenTextField::ResultSlow,
+            ScreenTextField::ResultComboBreak,
+        ] {
+            assert_eq!(
+                field.ctc_character_set(),
+                Some(CtcCharacterSet::DigitsAndDashes)
+            );
+        }
+        assert_eq!(ScreenTextField::ResultTitle.ctc_character_set(), None);
+        assert_eq!(
+            ScreenTextField::MusicSelectCentralTitle.ctc_character_set(),
+            None
+        );
     }
 
     #[test]

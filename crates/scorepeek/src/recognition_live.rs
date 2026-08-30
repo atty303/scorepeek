@@ -23,6 +23,12 @@ pub mod field_observer;
 pub mod field_session;
 pub mod screen_field_observer;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FieldInputPolicy {
+    Route,
+    SkipBusy,
+}
+
 /// One screen-predicate result that borrows its immutable live capture evidence.
 ///
 /// The result cannot outlive or detach from the profile- and generation-bearing frame that was
@@ -181,6 +187,14 @@ impl RecognitionSession {
         &mut self,
         frame: &'a BoundCanonicalFrame,
     ) -> Result<RecognitionFrameResult<'a>, RecognitionSessionError> {
+        self.inspect_with_field_policy(frame, FieldInputPolicy::Route)
+    }
+
+    pub(crate) fn inspect_with_field_policy<'a>(
+        &mut self,
+        frame: &'a BoundCanonicalFrame,
+        field_policy: FieldInputPolicy,
+    ) -> Result<RecognitionFrameResult<'a>, RecognitionSessionError> {
         if !self.bridge.matches_frame(frame) {
             let _ = self.bridge.offer(frame);
             return Err(RecognitionSessionError::FrameBindingMismatch);
@@ -197,6 +211,11 @@ impl RecognitionSession {
             | ScreenClass::DecideTransition
             | ScreenClass::Play
             | ScreenClass::Unknown => None,
+            ScreenClass::Result | ScreenClass::MusicSelect
+                if field_policy == FieldInputPolicy::SkipBusy =>
+            {
+                None
+            }
             screen @ (ScreenClass::Result | ScreenClass::MusicSelect) => {
                 let Ok(routed) = route_screen_rgb8_crops(frame.pixels(), screen) else {
                     let _ = self.bridge.record_recognition_failure(frame);
@@ -276,17 +295,11 @@ impl RecognitionSession {
         &mut self,
         sequence: u64,
         monotonic_ms: u64,
-        processed_ticks: u64,
-        busy_skips: u64,
-        maximum_consecutive_busy_skips: u64,
+        summary: crate::diagnostic_recording::RecognitionSamplingSummary,
     ) {
-        let _ = self.bridge.record_sampling_summary(
-            sequence,
-            monotonic_ms,
-            processed_ticks,
-            busy_skips,
-            maximum_consecutive_busy_skips,
-        );
+        let _ = self
+            .bridge
+            .record_sampling_summary(sequence, monotonic_ms, summary);
     }
 
     pub(crate) fn record_recognition_busy_skip(
@@ -297,6 +310,19 @@ impl RecognitionSession {
     ) -> DiagnosticEnqueueOutcome {
         self.bridge
             .record_recognition_busy_skip(sequence, monotonic_start_ms, monotonic_end_ms)
+    }
+
+    pub(crate) fn record_field_observation_busy_skip(
+        &mut self,
+        frame: &BoundCanonicalFrame,
+        screen: ScreenClass,
+    ) -> DiagnosticEnqueueOutcome {
+        self.bridge.record_field_observation_busy_skip(
+            frame.sequence(),
+            frame.monotonic_start_ms(),
+            frame.monotonic_end_ms(),
+            screen,
+        )
     }
 
     pub(crate) fn reject_pending_field_observation(&mut self) {

@@ -32,6 +32,7 @@ const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v1";
 const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v5";
 const CURRENT_OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v6";
 const LATEST_OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v7";
+const CURRENT_OBSERVATION_SCHEMA_V8: &str = "scorepeek-recognition-observation-v8";
 const DRAFT_SCHEMA: &str = "scorepeek-private-music-select-motion-review-draft-v1";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-music-select-motion-review-summary-v1";
 const DECISIONS_SCHEMA: &str = "scorepeek-private-music-select-motion-review-decisions-v2";
@@ -742,8 +743,11 @@ pub fn plan_music_select_motion_review(
         run_artifact,
         MAX_DOCUMENT_BYTES as u64,
     )?)?;
-    if run.schema != "scorepeek-private-diagnostic-capture-start-v3"
-        || run.run_id != session.source_session_id
+    if !matches!(
+        run.schema.as_str(),
+        "scorepeek-private-diagnostic-capture-start-v3"
+            | "scorepeek-private-diagnostic-capture-start-v4"
+    ) || run.run_id != session.source_session_id
         || run.source.kind != "video_replay"
         || run.source.video_sha256 != video_sha256
         || run.binding.capture_profile_sha256 != session.profile_sha256
@@ -1799,6 +1803,7 @@ fn resolve_stored_music_select(
         input_width: 0,
         output_timesteps: open_text.chars().count(),
         open_text,
+        constrained_text: None,
     };
     let observations = ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
         central_title: dynamic(text("central_title")),
@@ -2304,7 +2309,12 @@ fn read_observations(
 fn supported_observation_schema(value: &Value) -> bool {
     matches!(
         value.as_str(),
-        Some(OBSERVATION_SCHEMA | CURRENT_OBSERVATION_SCHEMA | LATEST_OBSERVATION_SCHEMA)
+        Some(
+            OBSERVATION_SCHEMA
+                | CURRENT_OBSERVATION_SCHEMA
+                | LATEST_OBSERVATION_SCHEMA
+                | CURRENT_OBSERVATION_SCHEMA_V8,
+        )
     )
 }
 
@@ -3172,17 +3182,18 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        CURRENT_OBSERVATION_SCHEMA, CorrectSongExpectation, CorrectSongLabel, CorrectSongLabels,
-        LATEST_OBSERVATION_SCHEMA, MAX_PROCESS_STDERR_BYTES, MotionEvidence, MotionReviewDecision,
-        MotionReviewDecisions, MusicSelectDwellPolicy, MusicSelectTemporalCandidatePolicy,
-        OBSERVATION_SCHEMA, ObservationRecord, OperatorReviewState, RegionMotion,
-        ReviewCompleteness, ReviewState, ReviewedMotionPair, ReviewedMotionSet, ReviewedMotionSpan,
-        VideoIdentity, apply_music_select_motion_review, canonical_line, digest_bytes,
-        evaluate_correctness_runs, evaluate_dwell_policy, parse_showinfo_pts,
-        plan_music_select_motion_review, read_bounded_stream, region_motion_packed,
-        replay_temporal_states, review_windows, run_bounded_output, select_expression,
-        selected_frame_targets, stationary_runs, stored_screen, supported_observation_schema,
-        validate_correct_song_labels, validate_reviewed_motion_set, verify_video_unchanged,
+        CURRENT_OBSERVATION_SCHEMA, CURRENT_OBSERVATION_SCHEMA_V8, CorrectSongExpectation,
+        CorrectSongLabel, CorrectSongLabels, LATEST_OBSERVATION_SCHEMA, MAX_PROCESS_STDERR_BYTES,
+        MotionEvidence, MotionReviewDecision, MotionReviewDecisions, MusicSelectDwellPolicy,
+        MusicSelectTemporalCandidatePolicy, OBSERVATION_SCHEMA, ObservationRecord,
+        OperatorReviewState, RegionMotion, ReviewCompleteness, ReviewState, ReviewedMotionPair,
+        ReviewedMotionSet, ReviewedMotionSpan, VideoIdentity, apply_music_select_motion_review,
+        canonical_line, digest_bytes, evaluate_correctness_runs, evaluate_dwell_policy,
+        parse_showinfo_pts, plan_music_select_motion_review, read_bounded_stream,
+        region_motion_packed, replay_temporal_states, review_windows, run_bounded_output,
+        select_expression, selected_frame_targets, stationary_runs, stored_screen,
+        supported_observation_schema, validate_correct_song_labels, validate_reviewed_motion_set,
+        verify_video_unchanged,
     };
 
     #[test]
@@ -3191,13 +3202,14 @@ mod tests {
             OBSERVATION_SCHEMA,
             CURRENT_OBSERVATION_SCHEMA,
             LATEST_OBSERVATION_SCHEMA,
+            CURRENT_OBSERVATION_SCHEMA_V8,
         ] {
             assert!(supported_observation_schema(&serde_json::Value::String(
                 schema.to_owned()
             )));
         }
         assert!(!supported_observation_schema(&serde_json::Value::String(
-            "scorepeek-recognition-observation-v8".to_owned()
+            "scorepeek-recognition-observation-v9".to_owned()
         )));
     }
 

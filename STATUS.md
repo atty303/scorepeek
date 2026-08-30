@@ -36,7 +36,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   state from sparse foreground retention. Diagnostic cadence and quota remain unchanged.
   ADR 0083 supersedes the provisional savability/result-event slice. The fixed result layout now
   observes five judgments, miss count, fast/slow, combo break, and the previous-best clear/score/miss
-  snapshot with PP-OCRv6-small. Recognition observation v7 retains all raw and typed values; a v2
+  snapshot with PP-OCRv6-small. Recognition observation v8 retains unrestricted raw, optional
+  field-constrained, and typed values; a v2
   result event requires the score-breakdown invariant and an accepted play attempt with observed
   gameplay/result plus a confirmed selected or retry-inherited song. Missing decision transition is
   allowed, while missing gameplay, unlinked/conflicting result, and abandonment suppress emission.
@@ -49,8 +50,18 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   and previous-best snapshot. Watcher, play-attempt, recognition/temporal state, and channel health
   appear only as explicitly labeled debug panels; compact layouts with an accepted event dedicate
   the pane to accepted values and omit those debug panels. Debug state never creates result rows.
-  `play_options`, target 10 Hz cadence, busy-skip impact, installed-binary
+  `play_options`, target 10 Hz cadence, installed-binary
   behavior, and public `/v1.sock` authority remain later explicit checkpoints.
+  A first target run of the expanded observer retained complete no-drop evidence but emitted no
+  result event: field OCR busy widened consecutive result observations to about 500 ms, hid all
+  intervening screen ticks, and unrestricted BAD decoded as `只`. ADR 0085 now keeps the 10 Hz screen
+  predicate independent of field submission, records typed field-only busy skips, and makes result
+  temporal continuity episode-scoped. Numeric fields use fixed character-set CTC decoding of the
+  same inference logits while preserving unrestricted raw evidence; there is no `只` substitution.
+  Complete diagnostic sessions advance to v4 and recognition observations to v8 while legacy v2/v3
+  diagnostics and v5-v7 observations remain readable. Repository checks, the complete test suite,
+  and the unchanged active private replay suite pass; target installation and live verification are
+  still pending for this checkpoint.
   No independent transform mismatch or changed normalizer currently justifies replaying a
   scorepeek-written raw/canonical pair through the same implementation. ADR 0048 trusts
   operator-selected local artifacts, removes that transform-first checkpoint and duplicate
@@ -294,7 +305,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   adds visually reviewed savable/SP/1P, difficulty, level, notes, and current score to all seventeen
   episodes. Production replay passes all 2,102 QOI references, seventeen complete result contexts,
   and one negative. The provisional run channel now emits one typed `result_detected` after the
-  existing two-observation/250 ms song and clear stabilization when the chart and score are known.
+  existing two-observation result song and clear stabilization when the chart and score are known.
   Release accuracy, event authority, target-host performance, and support remain later gates.
   ADR 0079 and ADR 0084 make those accepted results the primary TUI output. One watcher invocation
   retains the newest 32 results across Gamescope session boundaries and renders newest-first catalog
@@ -344,10 +355,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   preprocessing, CTC decoding, exact-first comparison keys, catalog search, and private replay
   tooling are digest-bound and reproducible. Custom training/export is deferred until integrated
   evidence isolates a residual that requires it.
-- Application-owned v3 diagnostic sessions retain full 10 Hz fact and exact recognition-observation
+- Application-owned v4 diagnostic sessions retain full 10 Hz screen-predicate facts and exact
+  recognition-observation
   NDJSON streams, every ordered routine run event needed to replay temporal and play-attempt state,
   plus bounded content-deduplicated canonical QOI evidence. Live sampling uses only the latest
-  frame and records busy ticks explicitly without backlog; video sampling uses source timestamps. Optional
+  frame; field-only busy skips are explicit and never suppress screen ticks. Video sampling uses
+  source timestamps. Optional
   observed QOI pairs preserve normalization evidence without storing uncompressed BGRx in new
   diagnostics. A session records at most 250,000 fact or observation records, and each NDJSON
   record is bounded to 1 MiB. Pixels and recognition facts remain separate from public result

@@ -100,6 +100,8 @@ pub struct CurrentScoreOcrAttempt {
     pub input_width: usize,
     pub output_timesteps: usize,
     pub open_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub constrained_text: Option<String>,
 }
 
 impl From<&scorepeek::recognition::DynamicTextObservation> for CurrentScoreOcrAttempt {
@@ -108,6 +110,7 @@ impl From<&scorepeek::recognition::DynamicTextObservation> for CurrentScoreOcrAt
             input_width: value.input_width,
             output_timesteps: value.output_timesteps,
             open_text: value.open_text.clone(),
+            constrained_text: value.constrained_text.clone(),
         }
     }
 }
@@ -270,7 +273,13 @@ impl FieldObserver for RegisteredScreenFieldObserver {
     fn observe(&mut self, input: &FieldObserverInput) -> Self::Output {
         let mut current_score_ocr_resolution = None;
         let fields = observe_screen_fields(input.crops(), |field, crop| {
-            let primary = self.resources.title_runtime().observe_open_text(crop)?;
+            let primary = match field.ctc_character_set() {
+                Some(character_set) => self
+                    .resources
+                    .title_runtime()
+                    .observe_constrained_text(crop, character_set)?,
+                None => self.resources.title_runtime().observe_open_text(crop)?,
+            };
             if field != scorepeek::recognition::ScreenTextField::ResultCurrentScore
                 || (!primary.open_text.is_empty() && !primary.open_text.ends_with('0'))
             {
@@ -291,7 +300,10 @@ impl FieldObserver for RegisteredScreenFieldObserver {
                 });
                 return Ok(primary);
             };
-            let retry = self.resources.title_runtime().observe_open_text(&content)?;
+            let retry = self.resources.title_runtime().observe_constrained_text(
+                &content,
+                scorepeek::recognition::CtcCharacterSet::Digits,
+            )?;
             let (selected, selection) = select_current_score_observation(&primary, &retry);
             current_score_ocr_resolution = Some(CurrentScoreOcrResolution {
                 primary: (&primary).into(),
@@ -326,7 +338,7 @@ fn select_current_score_observation(
     ) && primary_prefix == retry_prefix
     {
         let mut selected = retry.clone();
-        selected.open_text = format!("{retry_prefix}8");
+        selected.constrained_text = Some(format!("{retry_prefix}8"));
         return (selected, CurrentScoreOcrSelection::CyanRetryTrailingEight);
     }
     (primary.clone(), CurrentScoreOcrSelection::Primary)
@@ -348,6 +360,7 @@ mod tests {
             input_width: 1,
             output_timesteps: 1,
             open_text: value.to_owned(),
+            constrained_text: None,
         }
     }
 
@@ -355,7 +368,8 @@ mod tests {
     fn current_score_retry_is_bounded_and_preserves_both_attempts() {
         let (selected, selection) =
             select_current_score_observation(&dynamic("1130"), &dynamic("113日"));
-        assert_eq!(selected.open_text, "1138");
+        assert_eq!(selected.open_text, "113日");
+        assert_eq!(selected.constrained_text.as_deref(), Some("1138"));
         assert_eq!(selection, CurrentScoreOcrSelection::CyanRetryTrailingEight);
 
         let (selected, selection) =
@@ -381,36 +395,43 @@ mod tests {
                 input_width: 1,
                 output_timesteps: 1,
                 open_text: "title".to_owned(),
+                constrained_text: None,
             },
             artist: DynamicTextObservation {
                 input_width: 1,
                 output_timesteps: 1,
                 open_text: "artist".to_owned(),
+                constrained_text: None,
             },
             clear_type: DynamicTextObservation {
                 input_width: 1,
                 output_timesteps: 1,
                 open_text: "FAILED".to_owned(),
+                constrained_text: None,
             },
             difficulty: DynamicTextObservation {
                 input_width: 1,
                 output_timesteps: 1,
                 open_text: "HYPER".to_owned(),
+                constrained_text: None,
             },
             level: DynamicTextObservation {
                 input_width: 1,
                 output_timesteps: 1,
                 open_text: "8".to_owned(),
+                constrained_text: None,
             },
             notes: DynamicTextObservation {
                 input_width: 1,
                 output_timesteps: 1,
                 open_text: "127".to_owned(),
+                constrained_text: None,
             },
             current_score: DynamicTextObservation {
                 input_width: 1,
                 output_timesteps: 1,
                 open_text: "1".to_owned(),
+                constrained_text: None,
             },
             ..Default::default()
         });
@@ -434,6 +455,7 @@ mod tests {
             input_width: 1,
             output_timesteps: 1,
             open_text: value.to_owned(),
+            constrained_text: None,
         };
         let fields = ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
             central_title: text("texture"),

@@ -40,6 +40,7 @@ const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const SOCKET_NAME: &str = "observations-v2.sock";
 const RESULT_HISTORY_CAPACITY: usize = 32;
+const RESULT_TEMPORAL_REQUIRED_OBSERVATIONS: u8 = 2;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RunEvent {
@@ -702,6 +703,7 @@ pub struct RoutineOutput {
     candidate_music_select_song: Option<SongPresentation>,
     play_attempt: PlayAttemptReducer<SongPresentation>,
     result_event_emitted: bool,
+    latest_screen_boundary_sequence: Option<u64>,
     event_store: Option<PathBuf>,
     event_worker: Option<RunEventArtifactWorker>,
     completed_event_artifact: Option<RunEventArtifactOutcome>,
@@ -734,7 +736,8 @@ impl RoutineOutput {
             display,
             next_sequence: 1,
             temporal_result: ResultTemporalReducer::new(
-                TemporalPolicy::new(2, 250).expect("fixed result temporal policy is valid"),
+                TemporalPolicy::for_episode(RESULT_TEMPORAL_REQUIRED_OBSERVATIONS)
+                    .expect("fixed result temporal policy is valid"),
             ),
             stable_result_song: None,
             temporal_music_select: MusicSelectTemporalReducer::new(
@@ -745,6 +748,7 @@ impl RoutineOutput {
             candidate_music_select_song: None,
             play_attempt: PlayAttemptReducer::default(),
             result_event_emitted: false,
+            latest_screen_boundary_sequence: None,
             event_store,
             event_worker: None,
             completed_event_artifact: None,
@@ -765,6 +769,7 @@ impl RoutineOutput {
                 self.candidate_music_select_song = None;
                 self.play_attempt.reset_session();
                 self.result_event_emitted = false;
+                self.latest_screen_boundary_sequence = None;
                 self.completed_event_artifact = None;
                 self.event_worker =
                     self.event_store.as_deref().zip(session_id.as_deref()).map(
@@ -838,6 +843,12 @@ impl RoutineOutput {
             unreachable!("field observation dispatcher preserves event kind");
         };
         self.publish_one(event)?;
+        if self
+            .latest_screen_boundary_sequence
+            .is_some_and(|boundary| *sequence < boundary)
+        {
+            return Ok(());
+        }
         match screen.as_str() {
             "result" => self.reduce_result_observation(
                 session_id.as_ref(),
@@ -1085,6 +1096,7 @@ impl RoutineOutput {
         else {
             unreachable!("screen change dispatcher preserves event kind");
         };
+        self.latest_screen_boundary_sequence = Some(*sequence);
         self.publish_one(event)?;
         if let Some(attempt_screen) = play_attempt_screen(screen)
             && let Some(state) = self.play_attempt.observe_screen(attempt_screen, *sequence)
@@ -2072,14 +2084,18 @@ fn channel_lines(
             ),
         )));
         lines.push(Line::from(format!(
-            "recognition ticks={} busy-skips={} dropped-diagnostic-facts={}",
+            "screen ticks={} field-busy-skips={} max-consecutive={} dropped-diagnostic-facts={}",
             state.latest_report.as_ref().map_or_else(
                 || "-".to_owned(),
                 |report| text_at(report, "/recognition_ticks")
             ),
             state.latest_report.as_ref().map_or_else(
                 || "-".to_owned(),
-                |report| text_at(report, "/recognition_busy_skips")
+                |report| text_at(report, "/field_observation_busy_skips")
+            ),
+            state.latest_report.as_ref().map_or_else(
+                || "-".to_owned(),
+                |report| text_at(report, "/maximum_consecutive_field_observation_busy_skips")
             ),
             state.latest_report.as_ref().map_or_else(
                 || "-".to_owned(),
@@ -2426,7 +2442,9 @@ mod tests {
                 last_line: None,
             },
             next_sequence: 1,
-            temporal_result: ResultTemporalReducer::new(TemporalPolicy::new(2, 250).unwrap()),
+            temporal_result: ResultTemporalReducer::new(
+                TemporalPolicy::for_episode(RESULT_TEMPORAL_REQUIRED_OBSERVATIONS).unwrap(),
+            ),
             stable_result_song: None,
             temporal_music_select: MusicSelectTemporalReducer::new(
                 MusicSelectTemporalPolicy::new(200, 200, 250).unwrap(),
@@ -2435,6 +2453,7 @@ mod tests {
             candidate_music_select_song: None,
             play_attempt: PlayAttemptReducer::default(),
             result_event_emitted: false,
+            latest_screen_boundary_sequence: None,
             event_store: None,
             event_worker: None,
             completed_event_artifact: None,
@@ -2462,7 +2481,7 @@ mod tests {
                 music_select_song_resolution: Value::Null,
                 parsed_result_fields: None,
                 result_chart_resolution: Some(ResultChartResolution::Accepted {
-                    resolver_id: "scorepeek-result-fields-catalog-constrained-v1".to_owned(),
+                    resolver_id: "scorepeek-result-fields-catalog-constrained-v2".to_owned(),
                     chart: scorepeek::catalog::Chart {
                         key: scorepeek::catalog::ChartKey {
                             play_type: PlayType::Single,
@@ -2914,6 +2933,55 @@ mod tests {
         assert_eq!(session_events[0]["event"], "session_finished");
         assert_eq!(session_events[1]["event"], "temporal_result_changed");
         assert_eq!(session_events[1]["channel_sequence"], 13);
+    }
+
+    #[test]
+    fn production_result_policy_stabilizes_across_long_field_ocr_spacing() {
+        let mut reducer = ResultTemporalReducer::new(
+            TemporalPolicy::for_episode(RESULT_TEMPORAL_REQUIRED_OBSERVATIONS).unwrap(),
+        );
+        reducer.observe_result(1, 100, Some(7), Some("CLEAR".to_owned()));
+        let update = reducer
+            .observe_result(8, 800, Some(7), Some("CLEAR".to_owned()))
+            .unwrap();
+        assert_eq!(update.state.song.stable_value(), Some(&7));
+        assert_eq!(
+            update.state.clear_type.stable_value().map(String::as_str),
+            Some("CLEAR")
+        );
+    }
+
+    #[test]
+    fn field_observation_older_than_an_observed_screen_boundary_cannot_reenter_temporal_state() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = state();
+        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
+        let mut output = test_output(state, channel);
+
+        output.publish(&screen_event(1, "result")).unwrap();
+        output.publish(&accepted_result_event(1)).unwrap();
+        assert!(matches!(
+            output.temporal_result.state().song,
+            scorepeek::temporal_recognition::TemporalFieldState::Pending { .. }
+        ));
+        output.publish(&screen_event(2, "unknown")).unwrap();
+        assert_eq!(
+            output.temporal_result.state(),
+            &ResultTemporalState::default()
+        );
+
+        output.publish(&accepted_result_event(1)).unwrap();
+        assert_eq!(
+            output.temporal_result.state(),
+            &ResultTemporalState::default()
+        );
+
+        output.publish(&screen_event(3, "result")).unwrap();
+        output.publish(&accepted_result_event(3)).unwrap();
+        assert!(matches!(
+            output.temporal_result.state().song,
+            scorepeek::temporal_recognition::TemporalFieldState::Pending { .. }
+        ));
     }
 
     #[test]

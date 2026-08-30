@@ -4,7 +4,7 @@ use crate::catalog::{Catalog, Chart, Difficulty, PlayType, ScorepeekSongId};
 
 use super::{DynamicTextObservation, ResultScreenFieldObservations};
 
-pub const RESULT_FIELD_RESOLVER_ID: &str = "scorepeek-result-fields-catalog-constrained-v1";
+pub const RESULT_FIELD_RESOLVER_ID: &str = "scorepeek-result-fields-catalog-constrained-v2";
 pub const RESULT_PERFORMANCE_RESOLVER_ID: &str = "scorepeek-result-performance-v1";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -137,7 +137,11 @@ impl ParsedResultFields {
         let previous_score = parse_previous_decimal(&fields.previous_score, previous_not_played);
         let previous_miss_count = if previous_not_played {
             PreviousBestValue::NotPlayed
-        } else if is_displayed_dash(&fields.previous_miss_count.open_text) {
+        } else if fields
+            .previous_miss_count
+            .constrained_text()
+            .is_some_and(is_displayed_dash)
+        {
             PreviousBestValue::NotDisplayed
         } else {
             previous_value(parse_decimal(&fields.previous_miss_count, 0, u32::MAX))
@@ -414,13 +418,10 @@ fn parse_decimal<T>(
 where
     T: Copy + Ord + std::str::FromStr,
 {
-    let raw = observation.open_text.trim();
-    let normalized_one;
-    let value = if matches!(raw, "I" | "l" | "|") {
-        normalized_one = "1";
-        normalized_one
-    } else {
-        raw
+    let Some(value) = observation.constrained_text().map(str::trim) else {
+        return ResultFieldValue::Unknown {
+            reason: ResultFieldUnknownReason::Empty,
+        };
     };
     if value.is_empty() {
         return ResultFieldValue::Unknown {
@@ -475,7 +476,11 @@ fn parse_supplemental_decimal(
     observation: &DynamicTextObservation,
     dash_is_not_displayed: bool,
 ) -> SupplementalResultValue<u32> {
-    if dash_is_not_displayed && is_displayed_dash(&observation.open_text) {
+    if dash_is_not_displayed
+        && observation
+            .constrained_text()
+            .is_some_and(is_displayed_dash)
+    {
         return SupplementalResultValue::NotDisplayed;
     }
     match parse_decimal(observation, 0, u32::MAX) {
@@ -491,7 +496,10 @@ fn parse_previous_decimal(
     if not_played {
         return PreviousBestValue::NotPlayed;
     }
-    if is_displayed_dash(&observation.open_text) {
+    if observation
+        .constrained_text()
+        .is_some_and(is_displayed_dash)
+    {
         return PreviousBestValue::NotDisplayed;
     }
     previous_value(parse_decimal(observation, 0, u32::MAX))
@@ -592,6 +600,7 @@ mod tests {
             input_width: 1,
             output_timesteps: 1,
             open_text: value.to_owned(),
+            constrained_text: Some(value.to_owned()),
         }
     }
 
@@ -634,6 +643,26 @@ mod tests {
             parse_decimal(&text("76A"), 1_u32, u32::MAX),
             ResultFieldValue::Unknown {
                 reason: ResultFieldUnknownReason::InvalidFormat
+            }
+        ));
+    }
+
+    #[test]
+    fn numeric_parser_uses_constrained_decode_and_preserves_raw_evidence() {
+        let mut observations = result_fields();
+        observations.bad = DynamicTextObservation {
+            input_width: 1,
+            output_timesteps: 1,
+            open_text: "只".to_owned(),
+            constrained_text: Some("0".to_owned()),
+        };
+        let parsed = ParsedResultFields::from_observations(&observations);
+        assert_eq!(observations.bad.open_text, "只");
+        assert!(matches!(
+            resolve_result_performance(&parsed, 764, 1_286),
+            ResultPerformanceResolution::Accepted {
+                judgments: ResultJudgments { bad: 0, .. },
+                ..
             }
         ));
     }

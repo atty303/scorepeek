@@ -20,7 +20,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::CorpusError;
 
-const DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v3";
+const DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v4";
+const LEGACY_DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v3";
 const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v1";
 const DRAFT_SCHEMA: &str = "scorepeek-private-session-review-draft-v1";
 const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v3";
@@ -1350,8 +1351,10 @@ pub fn verify_diagnostic(path: &Path) -> Result<DiagnosticVerificationSummary, C
     let (recognition, _) =
         read_json::<RecognitionComponentManifest>(&path.join("recognition/manifest.json"))?;
     let (event, _) = read_json::<EventComponentManifest>(&path.join("event-manifest.json"))?;
-    if capture.schema != "scorepeek-private-diagnostic-capture-v3"
-        || recognition.schema != "scorepeek-recognition-evidence-manifest-v3"
+    if !matches!(
+        capture.schema.as_str(),
+        "scorepeek-private-diagnostic-capture-v3" | "scorepeek-private-diagnostic-capture-v4"
+    ) || recognition.schema != "scorepeek-recognition-evidence-manifest-v3"
         || capture.start.schema != "scorepeek-private-diagnostic-artifact-v1"
         || capture.start.filename != "run.json"
         || capture.start.file_sha256 != run_artifact.sha256
@@ -1360,6 +1363,7 @@ pub fn verify_diagnostic(path: &Path) -> Result<DiagnosticVerificationSummary, C
             run.schema.as_str(),
             "scorepeek-private-diagnostic-run-start-v2"
                 | "scorepeek-private-diagnostic-capture-start-v3"
+                | "scorepeek-private-diagnostic-capture-start-v4"
         )
         || run.run_id != manifest.session_id
         || run.binding.capture_generation != manifest.capture_generation
@@ -2109,8 +2113,10 @@ fn field_json(fields: &scorepeek::recognition::ScreenFieldObservations) -> Value
 }
 
 fn validate_diagnostic_manifest(manifest: &DiagnosticManifest) -> Result<(), CorpusError> {
-    if manifest.schema != DIAGNOSTIC_SCHEMA
-        || manifest.session_id.is_empty()
+    if !matches!(
+        manifest.schema.as_str(),
+        DIAGNOSTIC_SCHEMA | LEGACY_DIAGNOSTIC_SCHEMA
+    ) || manifest.session_id.is_empty()
         || manifest.capture_generation == 0
         || !valid_sha256(&manifest.profile_sha256)
         || !valid_sha256(&manifest.catalog_sha256)

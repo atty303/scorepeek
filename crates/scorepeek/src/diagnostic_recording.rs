@@ -315,6 +315,15 @@ pub enum DiagnosticEventOutcome {
     NotApplicable,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecognitionSamplingSummary {
+    pub processed_ticks: u64,
+    pub busy_skips: u64,
+    pub maximum_consecutive_busy_skips: u64,
+    pub field_observation_busy_skips: u64,
+    pub maximum_consecutive_field_observation_busy_skips: u64,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DiagnosticDetail {
@@ -323,8 +332,13 @@ pub enum DiagnosticDetail {
         processed_ticks: u64,
         busy_skips: u64,
         maximum_consecutive_busy_skips: u64,
+        field_observation_busy_skips: u64,
+        maximum_consecutive_field_observation_busy_skips: u64,
     },
     RecognitionBusySkip,
+    FieldObservationBusySkip {
+        screen: DiagnosticScreen,
+    },
     ScreenObservation {
         screen: DiagnosticScreen,
     },
@@ -613,7 +627,7 @@ impl DiagnosticRecorder {
         };
         let _ = root_metadata;
         let start = DiagnosticRunStart {
-            schema: "scorepeek-private-diagnostic-capture-start-v3",
+            schema: "scorepeek-private-diagnostic-capture-start-v4",
             run_id: &descriptor.run_id,
             monotonic_start_ms: descriptor.monotonic_start_ms,
             resource: &descriptor.resource,
@@ -1144,7 +1158,7 @@ impl ActiveDiagnosticRecorder {
         let mut total_bytes = self.bytes;
         for _ in 0..8 {
             let manifest = DiagnosticRunManifest {
-                schema: "scorepeek-private-diagnostic-capture-v3",
+                schema: "scorepeek-private-diagnostic-capture-v4",
                 monotonic_end_ms,
                 status,
                 completeness,
@@ -1333,6 +1347,7 @@ fn valid_fact(fact: &DiagnosticFact) -> bool {
         ) | (
             DiagnosticOperation::ObserveFields,
             DiagnosticDetail::FieldObservation { .. }
+                | DiagnosticDetail::FieldObservationBusySkip { .. }
         ) | (
             DiagnosticOperation::ReduceSongContext,
             DiagnosticDetail::SongContextObservation { .. }
@@ -1529,6 +1544,7 @@ pub fn completed_run_start_is_intact(directory: &Path) -> bool {
         "scorepeek-private-diagnostic-run-v1"
             | "scorepeek-private-diagnostic-run-v2"
             | "scorepeek-private-diagnostic-capture-v3"
+            | "scorepeek-private-diagnostic-capture-v4"
     ) || manifest.start.schema != "scorepeek-private-diagnostic-artifact-v1"
         || manifest.start.filename != "run.json"
         || !valid_sha256(&manifest.start.file_sha256)

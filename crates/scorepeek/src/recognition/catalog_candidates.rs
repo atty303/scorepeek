@@ -536,6 +536,7 @@ mod tests {
             input_width: 100,
             output_timesteps: value.chars().count(),
             open_text: value.to_owned(),
+            constrained_text: None,
         }
     }
 

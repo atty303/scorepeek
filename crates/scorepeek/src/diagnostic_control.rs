@@ -1619,6 +1619,7 @@ fn validate_manifest(
         "scorepeek-private-diagnostic-run-v1"
             | "scorepeek-private-diagnostic-run-v2"
             | "scorepeek-private-diagnostic-capture-v3"
+            | "scorepeek-private-diagnostic-capture-v4"
     ) || (manifest.schema == "scorepeek-private-diagnostic-run-v1"
         && manifest.frames.iter().any(|frame| frame.source.is_some()))
         || manifest.start.schema != "scorepeek-private-diagnostic-artifact-v1"
@@ -1757,7 +1758,11 @@ fn valid_manifest_entries(
             let minimum_stride = source.video.width.checked_mul(4);
             let expected_bytes =
                 u64::from(source.stride).checked_mul(u64::from(source.video.height));
-            let legacy = manifest.schema != "scorepeek-private-diagnostic-capture-v3";
+            let legacy = !matches!(
+                manifest.schema.as_str(),
+                "scorepeek-private-diagnostic-capture-v3"
+                    | "scorepeek-private-diagnostic-capture-v4"
+            );
             let legacy_source_invalid = source.filename
                 != format!("source-{:020}.bgrx", frame.sequence)
                 || source.pixel_format.as_deref() != Some("bgrx");
@@ -1812,8 +1817,11 @@ fn valid_manifest_entries(
             }
         }
         FactManifest::Ndjson(facts) => {
-            if manifest.schema != "scorepeek-private-diagnostic-capture-v3"
-                || facts.filename != "facts.ndjson"
+            if !matches!(
+                manifest.schema.as_str(),
+                "scorepeek-private-diagnostic-capture-v3"
+                    | "scorepeek-private-diagnostic-capture-v4"
+            ) || facts.filename != "facts.ndjson"
                 || !valid_sha256(&facts.file_sha256)
                 || facts.bytes > (MAX_FACTS_PER_RUN as u64 * MAX_FACT_BYTES as u64)
                 || (facts.record_count == 0
@@ -1922,6 +1930,7 @@ fn parse_run_start(bytes: &[u8], run_id: &str) -> Result<RunStartDocument, Strin
             start.schema.as_str(),
             "scorepeek-private-diagnostic-run-start-v2"
                 | "scorepeek-private-diagnostic-capture-start-v3"
+                | "scorepeek-private-diagnostic-capture-start-v4"
         )
         && start.run_id == run_id
         && valid_start(&start)

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TemporalPolicy {
     required_observations: u8,
-    maximum_gap_ms: u64,
+    maximum_gap_ms: Option<u64>,
 }
 
 impl TemporalPolicy {
@@ -21,7 +21,21 @@ impl TemporalPolicy {
         }
         Ok(Self {
             required_observations,
-            maximum_gap_ms,
+            maximum_gap_ms: Some(maximum_gap_ms),
+        })
+    }
+
+    /// Creates an episode-scoped policy whose continuity is owned by explicit screen boundaries.
+    ///
+    /// # Errors
+    /// Returns [`TemporalPolicyError`] when fewer than two observations are required.
+    pub const fn for_episode(required_observations: u8) -> Result<Self, TemporalPolicyError> {
+        if required_observations < 2 {
+            return Err(TemporalPolicyError);
+        }
+        Ok(Self {
+            required_observations,
+            maximum_gap_ms: None,
         })
     }
 
@@ -31,7 +45,7 @@ impl TemporalPolicy {
     }
 
     #[must_use]
-    pub const fn maximum_gap_ms(self) -> u64 {
+    pub const fn maximum_gap_ms(self) -> Option<u64> {
         self.maximum_gap_ms
     }
 }
@@ -493,6 +507,7 @@ pub enum TemporalTransitionReason {
     Stabilized,
     PendingClearedByUnknown,
     ResetByGap,
+    ResetByTimeRegression,
     ResetByScreenChange,
     ResetBySessionBoundary,
     Conflict,
@@ -562,20 +577,30 @@ impl<S: Clone + Eq> ResultTemporalReducer<S> {
         clear_type: Option<String>,
     ) -> Option<ResultTemporalUpdate<S>> {
         let mut transitions = Vec::new();
-        if self.last_observation_monotonic_ms.is_some_and(|previous| {
-            monotonic_ms < previous
-                || monotonic_ms.saturating_sub(previous) > self.policy.maximum_gap_ms
-        }) {
+        let reset_reason = self.last_observation_monotonic_ms.and_then(|previous| {
+            if monotonic_ms < previous {
+                Some(TemporalTransitionReason::ResetByTimeRegression)
+            } else if self
+                .policy
+                .maximum_gap_ms
+                .is_some_and(|maximum| monotonic_ms.saturating_sub(previous) > maximum)
+            {
+                Some(TemporalTransitionReason::ResetByGap)
+            } else {
+                None
+            }
+        });
+        if let Some(reason) = reset_reason {
             reset_field(
                 &mut self.state.song,
                 TemporalField::Song,
-                TemporalTransitionReason::ResetByGap,
+                reason,
                 &mut transitions,
             );
             reset_field(
                 &mut self.state.clear_type,
                 TemporalField::ClearType,
-                TemporalTransitionReason::ResetByGap,
+                reason,
                 &mut transitions,
             );
         }
@@ -766,6 +791,26 @@ mod tests {
     }
 
     #[test]
+    fn episode_policy_has_no_observation_gap_but_rejects_reversed_time() {
+        let mut reducer = ResultTemporalReducer::new(TemporalPolicy::for_episode(2).unwrap());
+        reducer.observe_result(1, 100, Some(7), None);
+        let stable = reducer.observe_result(2, 900, Some(7), None).unwrap();
+        assert_eq!(stable.state.song.stable_value(), Some(&7));
+
+        let reset = reducer.observe_result(3, 800, Some(7), None).unwrap();
+        assert!(matches!(
+            reset.state.song,
+            TemporalFieldState::Pending {
+                evidence: TemporalEvidence { count: 1, .. },
+                ..
+            }
+        ));
+        assert!(reset.transitions.iter().any(|transition| {
+            transition.reason == TemporalTransitionReason::ResetByTimeRegression
+        }));
+    }
+
+    #[test]
     fn unknown_clears_pending_but_not_stable() {
         let mut reducer = reducer();
         reducer.observe_result(1, 100, Some(7), None);
@@ -822,7 +867,10 @@ mod tests {
 
     #[test]
     fn gap_or_reversed_time_resets_conflict_before_new_evidence() {
-        for time in [551, 250] {
+        for (time, reason) in [
+            (551, TemporalTransitionReason::ResetByGap),
+            (250, TemporalTransitionReason::ResetByTimeRegression),
+        ] {
             let mut reducer = reducer();
             reducer.observe_result(1, 100, Some(7), None);
             reducer.observe_result(2, 200, Some(7), None);
@@ -836,15 +884,17 @@ mod tests {
                 }
             ));
             assert!(update.transitions.iter().any(|transition| {
-                transition.field == TemporalField::Song
-                    && transition.reason == TemporalTransitionReason::ResetByGap
+                transition.field == TemporalField::Song && transition.reason == reason
             }));
         }
     }
 
     #[test]
     fn excessive_or_reversed_time_gap_restarts_evidence() {
-        for time in [351, 99] {
+        for (time, reason) in [
+            (351, TemporalTransitionReason::ResetByGap),
+            (99, TemporalTransitionReason::ResetByTimeRegression),
+        ] {
             let mut reducer = reducer();
             reducer.observe_result(1, 100, Some(7), None);
             let update = reducer.observe_result(2, time, Some(7), None).unwrap();
@@ -856,8 +906,7 @@ mod tests {
                 }
             ));
             assert!(update.transitions.iter().any(|transition| {
-                transition.field == TemporalField::Song
-                    && transition.reason == TemporalTransitionReason::ResetByGap
+                transition.field == TemporalField::Song && transition.reason == reason
             }));
         }
     }

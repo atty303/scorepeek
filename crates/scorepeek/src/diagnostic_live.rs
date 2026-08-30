@@ -580,6 +580,32 @@ impl DiagnosticBridge {
         })
     }
 
+    pub(crate) fn record_field_observation_busy_skip(
+        &mut self,
+        sequence: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+        screen: ScreenClass,
+    ) -> DiagnosticEnqueueOutcome {
+        let screen = match screen {
+            ScreenClass::Result => DiagnosticScreen::Result,
+            ScreenClass::MusicSelect => DiagnosticScreen::MusicSelection,
+            ScreenClass::ModeSelect
+            | ScreenClass::DecideTransition
+            | ScreenClass::Play
+            | ScreenClass::Unknown => return DiagnosticEnqueueOutcome::Rejected,
+        };
+        self.worker.try_record_fact(DiagnosticFact {
+            sequence,
+            monotonic_start_ms,
+            monotonic_end_ms,
+            operation: DiagnosticOperation::ObserveFields,
+            status: DiagnosticOperationStatus::Success,
+            error_type: None,
+            detail: DiagnosticDetail::FieldObservationBusySkip { screen },
+        })
+    }
+
     pub(crate) fn reject_field_observation(&mut self, sequence: u64) -> DiagnosticEnqueueOutcome {
         self.worker
             .record_external_error(DiagnosticErrorType::InvalidConfiguration, sequence);
@@ -606,9 +632,7 @@ impl DiagnosticBridge {
         &mut self,
         sequence: u64,
         monotonic_ms: u64,
-        processed_ticks: u64,
-        busy_skips: u64,
-        maximum_consecutive_busy_skips: u64,
+        summary: crate::diagnostic_recording::RecognitionSamplingSummary,
     ) -> DiagnosticEnqueueOutcome {
         self.worker.try_record_fact(DiagnosticFact {
             sequence,
@@ -618,9 +642,12 @@ impl DiagnosticBridge {
             status: DiagnosticOperationStatus::Success,
             error_type: None,
             detail: DiagnosticDetail::SamplingSummary {
-                processed_ticks,
-                busy_skips,
-                maximum_consecutive_busy_skips,
+                processed_ticks: summary.processed_ticks,
+                busy_skips: summary.busy_skips,
+                maximum_consecutive_busy_skips: summary.maximum_consecutive_busy_skips,
+                field_observation_busy_skips: summary.field_observation_busy_skips,
+                maximum_consecutive_field_observation_busy_skips: summary
+                    .maximum_consecutive_field_observation_busy_skips,
             },
         })
     }
@@ -902,6 +929,7 @@ mod tests {
             input_width: 320,
             output_timesteps: 20,
             open_text: text.to_owned(),
+            constrained_text: None,
         };
         ScreenFieldObservations::Result(ResultScreenFieldObservations {
             title: text(),
@@ -1067,7 +1095,7 @@ mod tests {
             serde_json::from_slice(&fs::read(directory.join("manifest.json")).unwrap()).unwrap();
         assert_eq!(
             manifest["schema"],
-            "scorepeek-private-diagnostic-capture-v3"
+            "scorepeek-private-diagnostic-capture-v4"
         );
         assert_eq!(manifest["frames"].as_array().unwrap().len(), 3);
         assert!(manifest["frames"][0]["source"].is_object());

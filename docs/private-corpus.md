@@ -5,12 +5,12 @@
 ADR 0056 replaces the former recording-root capture dataset with this flow:
 
 ```text
-live run     -> 10 Hz recognition -> diagnostic v3 -> review -> corpus
-video replay -> 10 Hz recognition -> diagnostic v3 -> review -> corpus
+live run     -> 10 Hz screen recognition -> diagnostic v4 -> review -> corpus
+video replay -> 10 Hz screen recognition -> diagnostic v4 -> review -> corpus
 ```
 
 The only importable capture-regression input is a successfully verified
-`scorepeek-private-diagnostic-session-v3`. Facts, recognition observations, and watcher/session
+`scorepeek-private-diagnostic-session-v4` or a verified legacy v3. Facts, recognition observations, and watcher/session
 events are session NDJSON streams. Ordered canonical evidence is RGB8 1920x1080 QOI and is
 content-deduplicated; video and observed-frame evidence are optional. Recognition output is a
 review aid, never ground truth. Video replay evidence stops at 1,024 frame references or 1 GiB of

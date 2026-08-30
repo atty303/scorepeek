@@ -18,7 +18,7 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 const CATALOG_SCHEMA: &str = "scorepeek-recognition-catalog-evidence-v1";
-const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v7";
+const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v8";
 const MANIFEST_SCHEMA: &str = "scorepeek-recognition-evidence-manifest-v3";
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -137,6 +137,8 @@ struct StoredText<'a> {
     input_width: usize,
     output_timesteps: usize,
     open_text: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    constrained_text: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -820,6 +822,7 @@ impl<'a> From<&'a scorepeek::recognition::DynamicTextObservation> for StoredText
             input_width: observation.input_width,
             output_timesteps: observation.output_timesteps,
             open_text: &observation.open_text,
+            constrained_text: observation.constrained_text.as_deref(),
         }
     }
 }
@@ -936,6 +939,7 @@ mod tests {
             input_width: 64,
             output_timesteps: 12,
             open_text: value.to_owned(),
+            constrained_text: None,
         };
         ScreenFieldObservations::Result(ResultScreenFieldObservations {
             title: text("ABSOLUTE EVIL"),
@@ -954,6 +958,7 @@ mod tests {
             input_width: 64,
             output_timesteps: 12,
             open_text: value.to_owned(),
+            constrained_text: None,
         };
         ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
             central_title: text("texture"),
@@ -1200,9 +1205,15 @@ mod tests {
         let root = parent.path().join("live");
         let domain =
             CatalogCandidateDomain::from_catalog(&scorepeek::catalog::Catalog::default()).unwrap();
+        let mut fields = result_fields();
+        let ScreenFieldObservations::Result(result) = &mut fields else {
+            unreachable!("fixture is result fields");
+        };
+        result.bad.open_text = "只".to_owned();
+        result.bad.constrained_text = Some("0".to_owned());
         let observation = crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation::from_fields(
             &domain,
-            result_fields(),
+            fields,
         );
         let mut worker = RecognitionArtifactWorker::start_inner(
             root.clone(),
@@ -1221,7 +1232,9 @@ mod tests {
         assert_eq!(outcome.status, RecognitionArtifactFinishStatus::Complete);
         assert_eq!(outcome.manifest_sha256.unwrap().len(), 64);
         let stored = fs::read_to_string(root.join("observations.ndjson")).unwrap();
-        assert!(stored.contains("scorepeek-recognition-observation-v7"));
+        assert!(stored.contains("scorepeek-recognition-observation-v8"));
+        assert!(stored.contains("\"open_text\":\"只\""));
+        assert!(stored.contains("\"constrained_text\":\"0\""));
         assert!(stored.contains("\"difficulty\""));
         assert!(!stored.contains("observer_not_implemented"));
         assert!(stored.contains("\"source\":\"live\""));

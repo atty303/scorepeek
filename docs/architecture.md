@@ -143,13 +143,17 @@ padding, and tensor normalization belong to a versioned OCR preprocessor bound
 to the model. Training and Rust inference use the same preprocessing contract.
 
 Fields are represented as `known`, `unknown(reason)`, or `not_applicable`.
-PP-OCRv6 small native-dynamic is the selected v1 text observer for title and
-artist; each field keeps its own ROI and preprocessing contract. OCR output is
-an observation rather than an authoritative value. Frame-local full-catalog resolution keeps
-screen-specific evidence separate. Result uses title and artist today; later result fields remain
-explicitly unobserved. A deterministic post-resolver reducer stabilizes result song and clear type
-after two equal observations within 250 ms, preserves stable values across a transient unknown, and
-fails closed on a different accepted value. Music select uses central
+PP-OCRv6 small native-dynamic is the selected text observer; each field keeps its own ROI and
+preprocessing contract. Every due 100 ms tick evaluates the screen predicate independently of the
+bounded field worker. While that worker is occupied, result/music-select crop routing and submission
+alone are skipped and recorded as `field_observation_busy_skip`; screen transitions and play-attempt
+state continue at the screen cadence. One inference preserves unrestricted raw OCR and optionally
+decodes the same logits through a fixed digits or digits-plus-dashes CTC alphabet. Numeric parsers
+consume only that constrained decode while artifacts keep raw, constrained, and typed forms.
+Frame-local full-catalog resolution keeps screen-specific evidence separate. A deterministic
+post-resolver reducer stabilizes result song and clear type after two equal observations in one
+explicitly observed result episode, preserves stable values across a transient unknown, rejects
+reversed time, and fails closed on a different accepted value. Music select uses central
 title, artist, play mode, selected difficulty and level, and the active
 right-list title. The two title presentations are not counted as independent
 metadata votes, and readable conflict rejects. A separate 200 ms hold-and-replace reducer derives

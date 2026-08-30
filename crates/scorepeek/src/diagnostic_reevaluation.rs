@@ -46,6 +46,10 @@ struct SourceSessionManifest {
     processed_ticks: u64,
     busy_skips: u64,
     maximum_consecutive_busy_skips: u64,
+    #[serde(default)]
+    field_observation_busy_skips: u64,
+    #[serde(default)]
+    maximum_consecutive_field_observation_busy_skips: u64,
     completeness: String,
     capture_manifest_sha256: String,
     artifacts: Vec<SourceArtifact>,
@@ -191,6 +195,8 @@ struct Coverage {
     source_processed_ticks: u64,
     source_busy_skips: u64,
     source_maximum_consecutive_busy_skips: u64,
+    source_field_observation_busy_skips: u64,
+    source_maximum_consecutive_field_observation_busy_skips: u64,
     source_recognition_interval_ms: u64,
     session_reconstructed: bool,
     temporal_domain_events_reconstructed: bool,
@@ -314,6 +320,11 @@ pub fn reevaluate(
                 let screen = inspected.observation.screen();
                 *screen_counts.entry(screen_name(screen)).or_insert(0) += 1;
                 let field_observation = match inspected.field_submission {
+                    FieldObservationSubmission::BusySkipped => {
+                        return Err(
+                            "re-evaluation unexpectedly skipped field OCR as busy".to_owned()
+                        );
+                    }
                     FieldObservationSubmission::NotApplicable => None,
                     FieldObservationSubmission::Rejected(error) => {
                         return Err(format!("current field observation was rejected: {error:?}"));
@@ -418,6 +429,10 @@ pub fn reevaluate(
                 source_maximum_consecutive_busy_skips: loaded
                     .manifest
                     .maximum_consecutive_busy_skips,
+                source_field_observation_busy_skips: loaded.manifest.field_observation_busy_skips,
+                source_maximum_consecutive_field_observation_busy_skips: loaded
+                    .manifest
+                    .maximum_consecutive_field_observation_busy_skips,
                 source_recognition_interval_ms: loaded.manifest.recognition_interval_ms,
                 session_reconstructed: false,
                 temporal_domain_events_reconstructed: false,
@@ -694,8 +709,11 @@ fn load_source(source: &Path, expected_session_sha256: &str) -> Result<LoadedSou
     let run_bytes = read_artifact(source, run_artifact, MAX_RUN_BYTES)?;
     let start: CaptureStart = serde_json::from_slice(&run_bytes)
         .map_err(|error| format!("capture start is invalid: {error}"))?;
-    if start.schema != "scorepeek-private-diagnostic-capture-start-v3"
-        || start.run_id != manifest.session_id
+    if !matches!(
+        start.schema.as_str(),
+        "scorepeek-private-diagnostic-capture-start-v3"
+            | "scorepeek-private-diagnostic-capture-start-v4"
+    ) || start.run_id != manifest.session_id
         || start.binding.capture_generation != manifest.capture_generation
         || start.binding.capture_profile_sha256 != manifest.profile_sha256
         || !valid_sha256(&start.binding.normalizer_sha256)
@@ -714,8 +732,10 @@ fn load_source(source: &Path, expected_session_sha256: &str) -> Result<LoadedSou
 }
 
 fn validate_source_manifest(manifest: &SourceSessionManifest) -> Result<(), String> {
-    if manifest.schema != "scorepeek-private-diagnostic-session-v3"
-        || manifest.source_kind != "live_run"
+    if !matches!(
+        manifest.schema.as_str(),
+        "scorepeek-private-diagnostic-session-v3" | "scorepeek-private-diagnostic-session-v4"
+    ) || manifest.source_kind != "live_run"
         || manifest.session_id.is_empty()
         || manifest.capture_generation == 0
         || !valid_sha256(&manifest.profile_sha256)
@@ -742,8 +762,10 @@ fn validate_source_manifest(manifest: &SourceSessionManifest) -> Result<(), Stri
 }
 
 fn validate_capture_manifest(manifest: &CaptureManifest) -> Result<(), String> {
-    if manifest.schema != "scorepeek-private-diagnostic-capture-v3"
-        || manifest.frames.len() > MAX_RETAINED_FRAMES
+    if !matches!(
+        manifest.schema.as_str(),
+        "scorepeek-private-diagnostic-capture-v3" | "scorepeek-private-diagnostic-capture-v4"
+    ) || manifest.frames.len() > MAX_RETAINED_FRAMES
     {
         return Err("capture manifest contract is invalid".to_owned());
     }

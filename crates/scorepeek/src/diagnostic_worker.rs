@@ -916,6 +916,8 @@ mod tests {
                     processed_ticks: 1,
                     busy_skips: 0,
                     maximum_consecutive_busy_skips: 0,
+                    field_observation_busy_skips: 0,
+                    maximum_consecutive_field_observation_busy_skips: 0,
                 },
             }),
             DiagnosticEnqueueOutcome::Enqueued

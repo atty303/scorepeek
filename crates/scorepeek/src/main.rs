@@ -765,6 +765,10 @@ fn run_routine_live_session(
                     {
                         let (processed_ticks, busy_skips, maximum_consecutive_busy_skips) =
                             report.recognition_sampling();
+                        let (
+                            field_observation_busy_skips,
+                            maximum_consecutive_field_observation_busy_skips,
+                        ) = report.field_busy_sampling();
                         let completeness = if report.diagnostic_completeness_name() == "complete"
                             && event_artifact.complete
                         {
@@ -781,6 +785,8 @@ fn run_routine_live_session(
                             processed_ticks,
                             busy_skips,
                             maximum_consecutive_busy_skips,
+                            field_observation_busy_skips,
+                            maximum_consecutive_field_observation_busy_skips,
                             completeness,
                             capture_directory: &state.diagnostic_root.join(&session_id),
                             capture_manifest_sha256,
@@ -3804,6 +3810,7 @@ mod tests {
             input_width: 1,
             output_timesteps: 1,
             open_text: value.to_owned(),
+            constrained_text: None,
         }
     }
 }

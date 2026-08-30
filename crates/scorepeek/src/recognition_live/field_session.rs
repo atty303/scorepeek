@@ -14,7 +14,8 @@ use super::screen_field_observer::{
     RegisteredScreenFieldObserver, RegisteredScreenFieldObserverLoadError,
 };
 use super::{
-    RecognitionFrameResult, RecognitionObservation, RecognitionSession, RecognitionSessionError,
+    FieldInputPolicy, RecognitionFrameResult, RecognitionObservation, RecognitionSession,
+    RecognitionSessionError,
 };
 use crate::diagnostic_live::BoundCanonicalFrame;
 use crate::diagnostic_recording::{
@@ -34,6 +35,7 @@ pub enum FieldObservationStartError<E> {
 #[derive(Debug)]
 pub enum FieldObservationSubmission<T> {
     NotApplicable,
+    BusySkipped,
     Submitted(PendingSessionFieldObservation<T>),
     Rejected(FieldObserverOfferError),
 }
@@ -85,17 +87,10 @@ impl<O: FieldObserver> FieldObservationSession<O> {
         &mut self,
         sequence: u64,
         monotonic_ms: u64,
-        processed_ticks: u64,
-        busy_skips: u64,
-        maximum_consecutive_busy_skips: u64,
+        summary: crate::diagnostic_recording::RecognitionSamplingSummary,
     ) {
-        self.recognition.record_sampling_summary(
-            sequence,
-            monotonic_ms,
-            processed_ticks,
-            busy_skips,
-            maximum_consecutive_busy_skips,
-        );
+        self.recognition
+            .record_sampling_summary(sequence, monotonic_ms, summary);
     }
 
     /// Loads the observer before opening the matching diagnostic-backed recognition run.
@@ -139,15 +134,44 @@ impl<O: FieldObserver> FieldObservationSession<O> {
         &mut self,
         frame: &'a BoundCanonicalFrame,
     ) -> Result<FieldObservationFrameResult<'a, O::Output>, RecognitionSessionError> {
+        self.inspect_with_field_policy(frame, FieldInputPolicy::Route)
+    }
+
+    pub(crate) fn inspect_while_field_busy<'a>(
+        &mut self,
+        frame: &'a BoundCanonicalFrame,
+    ) -> Result<FieldObservationFrameResult<'a, O::Output>, RecognitionSessionError> {
+        self.inspect_with_field_policy(frame, FieldInputPolicy::SkipBusy)
+    }
+
+    fn inspect_with_field_policy<'a>(
+        &mut self,
+        frame: &'a BoundCanonicalFrame,
+        field_policy: FieldInputPolicy,
+    ) -> Result<FieldObservationFrameResult<'a, O::Output>, RecognitionSessionError> {
         let RecognitionFrameResult {
             observation,
             field_inputs,
             diagnostic_frame,
             diagnostic_fact,
-        } = self.recognition.inspect(frame)?;
-        let field_submission = match field_inputs {
-            None => FieldObservationSubmission::NotApplicable,
-            Some(inputs) => match self.field_observer.try_observe(inputs) {
+        } = self
+            .recognition
+            .inspect_with_field_policy(frame, field_policy)?;
+        let field_submission = match (field_policy, field_inputs) {
+            (FieldInputPolicy::SkipBusy, None)
+                if matches!(
+                    observation.screen(),
+                    scorepeek::recognition::ScreenClass::Result
+                        | scorepeek::recognition::ScreenClass::MusicSelect
+                ) =>
+            {
+                let _ = self
+                    .recognition
+                    .record_field_observation_busy_skip(frame, observation.screen());
+                FieldObservationSubmission::BusySkipped
+            }
+            (_, None) => FieldObservationSubmission::NotApplicable,
+            (_, Some(inputs)) => match self.field_observer.try_observe(inputs) {
                 Ok(pending) => {
                     let identity = Arc::new(());
                     self.outstanding
@@ -460,6 +484,7 @@ mod tests {
                     input_width: crop.roi.width as usize,
                     output_timesteps: 1,
                     open_text: "imperfect observation".to_owned(),
+                    constrained_text: None,
                 })
             })
         }
@@ -521,6 +546,38 @@ mod tests {
             finished.diagnostic.completeness,
             Some(DiagnosticCompleteness::Complete)
         );
+    }
+
+    #[test]
+    fn busy_field_policy_keeps_screen_classification_and_skips_only_field_submission() {
+        let root = tempfile::tempdir().unwrap();
+        let mut session = FieldObservationSession::start_for_test(
+            root.path(),
+            descriptor("busy-field-screen-tick", 1),
+            DiagnosticPolicy::default(),
+            |_| Ok::<_, ()>(CompleteObserver),
+            1,
+        )
+        .unwrap();
+
+        let result_frame = solid_frame([200, 100, 20], 1, 1);
+        let result = session.inspect_while_field_busy(&result_frame).unwrap();
+        assert_eq!(result.observation.screen(), ScreenClass::Result);
+        assert!(matches!(
+            result.field_submission,
+            FieldObservationSubmission::BusySkipped
+        ));
+
+        let unknown_frame = solid_frame([0, 0, 0], 1, 2);
+        let unknown = session.inspect_while_field_busy(&unknown_frame).unwrap();
+        assert_eq!(unknown.observation.screen(), ScreenClass::Unknown);
+        assert!(matches!(
+            unknown.field_submission,
+            FieldObservationSubmission::NotApplicable
+        ));
+
+        let finished = session.finish(DiagnosticRunStatus::Success, 60, Duration::from_secs(1));
+        assert_eq!(finished.field_observer.submitted, 0);
     }
 
     #[test]

@@ -874,6 +874,7 @@ mod tests {
                     input_width: crop.roi.width as usize,
                     output_timesteps: 1,
                     open_text: "imperfect observation".to_owned(),
+                    constrained_text: None,
                 })
             })
         }

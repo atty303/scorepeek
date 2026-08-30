@@ -251,6 +251,9 @@ authoritative.
   keeps the accepted-event panel present for the whole invocation, renders v2 performance values
   from that event, and explicitly classifies watcher, attempt, recognition, and channel panels as
   debug information.
+- [ADR 0085: Decouple screen observation and constrain numeric CTC decode](0085-decouple-screen-observation-and-constrain-numeric-ctc.md)
+  keeps 10 Hz screen/session observation independent of the bounded field worker, makes result
+  continuity episode-scoped, and decodes numeric fields from the same logits with fixed alphabets.
 
 ## Historical
 

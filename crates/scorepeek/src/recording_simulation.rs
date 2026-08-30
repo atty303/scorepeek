@@ -343,7 +343,7 @@ fn process_frames(
         }
         match inspected.field_submission {
             FieldObservationSubmission::NotApplicable => {}
-            FieldObservationSubmission::Rejected(_) => {
+            FieldObservationSubmission::BusySkipped | FieldObservationSubmission::Rejected(_) => {
                 report.error_type = Some(RecordingSimulationErrorType::FieldSubmissionFailed);
                 break;
             }
