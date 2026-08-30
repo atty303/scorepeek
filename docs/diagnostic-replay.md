@@ -1,5 +1,29 @@
 # Diagnostic canonical replay
 
+## Retained full-frame reevaluation
+
+`scorepeek diagnostic reevaluate` is the recognition path for an existing
+`scorepeek-private-diagnostic-session-v3`. It verifies the exact source session and every retained
+QOI it consumes, requires each QOI to remain a complete canonical RGB8 1920x1080 frame, then runs
+the current production screen predicate and applicable registered OCR/catalog/result resolvers.
+
+```bash
+mise run diagnostic:reevaluate -- --session /absolute/private-session --session-sha256 SESSION_MANIFEST_SHA256 --output /absolute/new-evaluation
+```
+
+The active catalog and registered model/runtime are evaluator inputs, not inherited source truth.
+The create-only output contains `observations.ndjson` and `manifest.json`, binding the source
+session, evaluator executable, layout, catalog, model, and runtime. It also records whether the
+catalog changed since capture.
+
+The source QOIs are retained foreground evidence, not a newly recorded 10 Hz stream. Consequently
+the command evaluates every retained full frame independently and explicitly reports
+`session_reconstructed=false` and `temporal_domain_events_reconstructed=false`. It does not pass
+the sparse sequence through temporal reducers or synthesize play attempts/domain events. Existing
+retention cadence, quota, and source files are unchanged.
+
+## Diagnostic writer replay
+
 `scorepeek diagnostic replay` feeds digest-bound canonical RGB8 extraction
 frames through the same bounded application worker and QOI diagnostic writer
 planned for live capture. It does not execute recognition or reconstruct a game

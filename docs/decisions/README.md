@@ -241,6 +241,9 @@ authoritative.
   supersedes ADR 0044 only for treating aggregate color and brightness evidence as sufficient,
   adds a first-class non-field `mode_select` screen, and binds two approved QOI references to the
   screen-path layout.
+- [ADR 0082: Re-evaluate retained full-frame diagnostics](0082-reevaluate-retained-full-frame-diagnostics.md)
+  runs every retained canonical QOI through current production recognition while making sparse
+  retained-only coverage and the absence of temporal/session reconstruction explicit.
 
 ## Historical
 

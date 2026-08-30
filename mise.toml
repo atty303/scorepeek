@@ -290,6 +290,14 @@ set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek -- diagnostic replay "$@"
 '''
 
+[tasks."diagnostic:reevaluate"]
+description = "Reevaluate retained full-frame diagnostic QOIs with the current recognizer"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek -- diagnostic reevaluate "$@"
+'''
+
 [tasks."diagnostic:status"]
 description = "Inspect bounded aggregate diagnostic-store status"
 run = '''

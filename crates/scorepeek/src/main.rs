@@ -5,6 +5,7 @@ mod capture_live;
 pub mod diagnostic_control;
 pub mod diagnostic_live;
 pub mod diagnostic_recording;
+mod diagnostic_reevaluation;
 pub mod diagnostic_replay;
 pub mod diagnostic_worker;
 mod inventory;
@@ -90,6 +91,7 @@ fn parse_global_model_bundle(args: &[OsString]) -> Result<(Option<&Path>, &[OsSt
 fn run_command(args: &[OsString], bundle: &Path) -> Result<(), String> {
     if let Some(result) = local_profiles::try_command(args, bundle)
         .or_else(|| try_diagnostic_control(args))
+        .or_else(|| try_diagnostic_reevaluation(args, bundle))
         .or_else(|| try_diagnostic_replay(args))
         .or_else(|| try_recording_simulation(args, bundle))
         .or_else(|| try_routine_live_session(args, bundle))
@@ -2221,6 +2223,52 @@ fn try_diagnostic_replay(args: &[OsString]) -> Option<Result<(), String>> {
         })
 }
 
+fn try_diagnostic_reevaluation(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
+    let [
+        diagnostic,
+        reevaluate,
+        session_flag,
+        session,
+        digest_flag,
+        digest,
+        output_flag,
+        output,
+    ] = args
+    else {
+        return None;
+    };
+    (diagnostic == "diagnostic"
+        && reevaluate == "reevaluate"
+        && session_flag == "--session"
+        && digest_flag == "--session-sha256"
+        && output_flag == "--output")
+        .then(|| {
+            let digest = digest
+                .to_str()
+                .ok_or_else(|| "diagnostic session digest must be UTF-8".to_owned())?;
+            let (catalog_root, _) = catalog_paths(
+                env::var_os("XDG_DATA_HOME").as_deref(),
+                env::var_os("XDG_CACHE_HOME").as_deref(),
+                env::var_os("HOME").as_deref(),
+            )?;
+            let summary = diagnostic_reevaluation::reevaluate(
+                Path::new(session),
+                digest,
+                Path::new(output),
+                &catalog_root,
+                bundle,
+                &current_executable_sha256()?,
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string(&summary).map_err(|_| {
+                    "diagnostic reevaluation summary serialization failed".to_owned()
+                })?
+            );
+            Ok(())
+        })
+}
+
 fn try_doctor(args: &[OsString]) -> Option<Result<(), String>> {
     matches!(args, [command] if command == "doctor").then(|| {
         println!("{}", inventory::collect().to_json());
@@ -3267,6 +3315,9 @@ fn print_usage() {
     );
     println!(
         "  scorepeek recognition field-resource-load-gate --catalog-store DIRECTORY --catalog-sha256 SHA256"
+    );
+    println!(
+        "  scorepeek diagnostic reevaluate --session DIRECTORY --session-sha256 SHA256 --output DIRECTORY"
     );
     println!(
         "  scorepeek capture gamescope-diagnostic-handoff-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --duration-ms MILLISECONDS --diagnostic-root DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --recording enabled|disabled"

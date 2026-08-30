@@ -30,6 +30,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   sequence 898 now scores 1,000,000 versus 969,436 ppm and retained MUSIC SELECT sequence 948 scores
   1,000,000 versus 969,130 ppm for the correct reference. MODE SELECT is emitted to diagnostics and
   the TUI but does not enter field OCR, catalog resolution, or play-attempt transitions.
+  ADR 0082 adds create-only reevaluation of every retained full canonical QOI through the current
+  production screen predicate and applicable registered OCR/catalog/result resolvers. The output
+  binds both source and evaluator resources and explicitly does not reconstruct temporal/domain
+  state from sparse foreground retention. Diagnostic cadence and quota remain unchanged.
   No independent transform mismatch or changed normalizer currently justifies replaying a
   scorepeek-written raw/canonical pair through the same implementation. ADR 0048 trusts
   operator-selected local artifacts, removes that transform-first checkpoint and duplicate
