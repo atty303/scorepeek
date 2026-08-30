@@ -11,6 +11,7 @@ mod catalog_candidates;
 mod music_select_resolver;
 mod result_fields;
 mod result_resolver;
+mod screen_reference;
 mod title;
 mod title_decoder;
 mod title_onnx;
@@ -592,6 +593,7 @@ struct ResultPresencePredicate {
 pub enum ScreenClass {
     Result,
     MusicSelect,
+    ModeSelect,
     DecideTransition,
     Play,
     Unknown,
@@ -1172,6 +1174,11 @@ pub struct MusicSelectPresenceEvidence {
     pub colored_level_pixels_min: u32,
     pub bright_label_pixels: u32,
     pub bright_label_pixels_min: u32,
+    pub reference_evaluated: bool,
+    pub music_reference_score_ppm: u32,
+    pub mode_select_reference_score_ppm: u32,
+    pub reference_score_min_ppm: u32,
+    pub reference_winner_margin_min_ppm: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -1329,8 +1336,22 @@ struct ScreenPathLayout {
     canonical_frame_contract_id: String,
     width: u32,
     height: u32,
+    music_select_reference: MusicSelectReferenceLayout,
     decide_transition: DecideTransitionLayout,
     play: PlayLayout,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MusicSelectReferenceLayout {
+    algorithm_id: String,
+    search_roi: Roi,
+    template_width: u32,
+    template_height: u32,
+    music_asset_sha256: String,
+    mode_asset_sha256: String,
+    score_min_ppm: u32,
+    winner_margin_min_ppm: u32,
 }
 
 impl ScreenPathLayout {
@@ -1344,6 +1365,7 @@ impl ScreenPathLayout {
             return Err(RecognitionError::InvalidCanonicalLayout);
         }
         for roi in [
+            layout.music_select_reference.search_roi,
             layout.decide_transition.splash,
             layout.play.lane_edge,
             layout.play.header,
@@ -1356,6 +1378,21 @@ impl ScreenPathLayout {
             .width
             .checked_mul(layout.decide_transition.splash.height)
             .ok_or(RecognitionError::InvalidCanonicalLayout)?;
+        let reference = &layout.music_select_reference;
+        if reference.algorithm_id != "imageproc-cross-correlation-normalized-gray8-v1"
+            || reference.template_width == 0
+            || reference.template_height == 0
+            || reference.template_width > reference.search_roi.width
+            || reference.template_height > reference.search_roi.height
+            || reference.music_asset_sha256.len() != 64
+            || reference.mode_asset_sha256.len() != 64
+            || reference.score_min_ppm == 0
+            || reference.score_min_ppm > 1_000_000
+            || reference.winner_margin_min_ppm == 0
+            || reference.winner_margin_min_ppm > 1_000_000
+        {
+            return Err(RecognitionError::InvalidCanonicalLayout);
+        }
         let lane_edge_pixels = layout
             .play
             .lane_edge
@@ -1504,10 +1541,40 @@ pub fn inspect_canonical_rgb8(
         .fold(0_u32, |count, _| count + 1);
     let result_present = warm >= layout.result.presence.warm_pixels_min
         && upper_panel_edge_pixels >= layout.result.presence.horizontal_edge_pixels_min;
-    let music_select_present = cyan_header_pixels
+    let aggregate_music_select_present = cyan_header_pixels
         >= layout.music_select.presence.cyan_header_pixels_min
         && colored_level_pixels >= layout.music_select.presence.colored_level_pixels_min
         && bright_label_pixels >= layout.music_select.presence.bright_label_pixels_min;
+    let reference_scores = aggregate_music_select_present
+        .then(|| {
+            screen_reference::score(
+                pixels,
+                &screen_reference::ReferenceContract {
+                    search_roi: screen_path_layout.music_select_reference.search_roi,
+                    template_width: screen_path_layout.music_select_reference.template_width,
+                    template_height: screen_path_layout.music_select_reference.template_height,
+                    music_asset_sha256: &screen_path_layout
+                        .music_select_reference
+                        .music_asset_sha256,
+                    mode_asset_sha256: &screen_path_layout.music_select_reference.mode_asset_sha256,
+                },
+            )
+        })
+        .transpose()?;
+    let music_select_present = reference_scores.is_some_and(|scores| {
+        scores.music_ppm >= screen_path_layout.music_select_reference.score_min_ppm
+            && scores.music_ppm.saturating_sub(scores.mode_select_ppm)
+                >= screen_path_layout
+                    .music_select_reference
+                    .winner_margin_min_ppm
+    });
+    let mode_select_present = reference_scores.is_some_and(|scores| {
+        scores.mode_select_ppm >= screen_path_layout.music_select_reference.score_min_ppm
+            && scores.mode_select_ppm.saturating_sub(scores.music_ppm)
+                >= screen_path_layout
+                    .music_select_reference
+                    .winner_margin_min_ppm
+    });
     let decide_transition_present = decide_cyan_pixels
         >= screen_path_layout
             .decide_transition
@@ -1529,6 +1596,7 @@ pub fn inspect_canonical_rgb8(
     let screen = match [
         (result_present, ScreenClass::Result),
         (music_select_present, ScreenClass::MusicSelect),
+        (mode_select_present, ScreenClass::ModeSelect),
         (decide_transition_present, ScreenClass::DecideTransition),
         (play_present, ScreenClass::Play),
     ]
@@ -1557,6 +1625,14 @@ pub fn inspect_canonical_rgb8(
             colored_level_pixels_min: layout.music_select.presence.colored_level_pixels_min,
             bright_label_pixels,
             bright_label_pixels_min: layout.music_select.presence.bright_label_pixels_min,
+            reference_evaluated: reference_scores.is_some(),
+            music_reference_score_ppm: reference_scores.map_or(0, |scores| scores.music_ppm),
+            mode_select_reference_score_ppm: reference_scores
+                .map_or(0, |scores| scores.mode_select_ppm),
+            reference_score_min_ppm: screen_path_layout.music_select_reference.score_min_ppm,
+            reference_winner_margin_min_ppm: screen_path_layout
+                .music_select_reference
+                .winner_margin_min_ppm,
         },
         decide_transition_presence: DecideTransitionPresenceEvidence {
             cyan_pixels: decide_cyan_pixels,
@@ -1899,9 +1975,10 @@ pub fn route_screen_rgb8_crops(
             selected_chart: crop(pixels, context.music_select.selected_chart)?,
             active_list_title: crop(pixels, context.music_select.active_list_title)?,
         })),
-        ScreenClass::DecideTransition | ScreenClass::Play | ScreenClass::Unknown => {
-            Err(RecognitionError::InvalidCanonicalFrame)
-        }
+        ScreenClass::ModeSelect
+        | ScreenClass::DecideTransition
+        | ScreenClass::Play
+        | ScreenClass::Unknown => Err(RecognitionError::InvalidCanonicalFrame),
     }
 }
 
@@ -2085,7 +2162,10 @@ fn read_integrated_context_crop_artifact(
                 layout.music_select.active_list_title,
             ),
         ],
-        ScreenClass::DecideTransition | ScreenClass::Play | ScreenClass::Unknown => {
+        ScreenClass::ModeSelect
+        | ScreenClass::DecideTransition
+        | ScreenClass::Play
+        | ScreenClass::Unknown => {
             return Err(RecognitionError::InvalidCanonicalFrame);
         }
     };
@@ -2252,6 +2332,25 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    fn paint_screen_reference(pixels: &mut [u8], encoded: &[u8]) {
+        let (header, reference) = qoi::decode_to_vec(encoded).unwrap();
+        assert_eq!((header.width, header.height), (410, 60));
+        for y in 0..header.height as usize {
+            let source_start = y * header.width as usize * 3;
+            let target_start = ((50 + y) * CANONICAL_WIDTH as usize + 50) * 3;
+            pixels[target_start..target_start + header.width as usize * 3].copy_from_slice(
+                &reference[source_start..source_start + header.width as usize * 3],
+            );
+        }
+    }
+
+    fn paint_music_reference(pixels: &mut [u8]) {
+        paint_screen_reference(
+            pixels,
+            include_bytes!("../assets/screen-references-v1/music-select.qoi"),
+        );
+    }
 
     fn test_frame(pixels: Vec<u8>) -> CanonicalFrame {
         CanonicalFrame {
@@ -2549,6 +2648,7 @@ mod tests {
             ambiguous[(y * CANONICAL_WIDTH as usize + x) * 3..][..3]
                 .copy_from_slice(&[220, 220, 220]);
         }
+        paint_music_reference(&mut ambiguous);
         assert_eq!(
             inspect(&test_frame(ambiguous)).unwrap().screen,
             ScreenClass::Unknown
@@ -2638,12 +2738,45 @@ mod tests {
                 + index / layout.music_select.label.width as usize;
             pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&[220, 220, 220]);
         }
+        let mut mode_select = pixels.clone();
+        paint_screen_reference(
+            &mut mode_select,
+            include_bytes!("../assets/screen-references-v1/mode-select.qoi"),
+        );
+        let mode_snapshot = inspect(&test_frame(mode_select)).unwrap();
+        assert_eq!(mode_snapshot.screen, ScreenClass::ModeSelect);
+        assert!(mode_snapshot.music_select_presence.reference_evaluated);
+        assert!(
+            mode_snapshot
+                .music_select_presence
+                .mode_select_reference_score_ppm
+                > mode_snapshot
+                    .music_select_presence
+                    .music_reference_score_ppm
+        );
+        paint_music_reference(&mut pixels);
         let frame = test_frame(pixels);
         let snapshot = inspect(&frame).unwrap();
-        assert_eq!(snapshot.screen, ScreenClass::MusicSelect);
-        assert_eq!(snapshot.music_select_presence.cyan_header_pixels, 7_000);
+        assert_eq!(
+            snapshot.screen,
+            ScreenClass::MusicSelect,
+            "{:?}",
+            snapshot.music_select_presence
+        );
+        assert!(snapshot.music_select_presence.cyan_header_pixels >= 7_000);
         assert_eq!(snapshot.music_select_presence.colored_level_pixels, 1_000);
-        assert_eq!(snapshot.music_select_presence.bright_label_pixels, 4_000);
+        assert!(snapshot.music_select_presence.bright_label_pixels >= 4_000);
+        assert!(snapshot.music_select_presence.reference_evaluated);
+        assert_eq!(
+            snapshot.music_select_presence.music_reference_score_ppm,
+            1_000_000
+        );
+        assert!(
+            snapshot.music_select_presence.music_reference_score_ppm
+                > snapshot
+                    .music_select_presence
+                    .mode_select_reference_score_ppm
+        );
 
         let directory = tempdir().unwrap();
         let output = directory.path().join("music-select-crops");
@@ -2703,6 +2836,7 @@ mod tests {
             music_select_pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3]
                 .copy_from_slice(&[220, 220, 220]);
         }
+        paint_music_reference(&mut music_select_pixels);
         let directory = tempdir().unwrap();
         let music_output = directory.path().join("music-context");
         let music_summary = export_integrated_context_crops(

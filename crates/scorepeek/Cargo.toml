@@ -10,6 +10,7 @@ dist = true
 
 [dependencies]
 encoding_rs.workspace = true
+imageproc.workspace = true
 ort.workspace = true
 pipewire.workspace = true
 qoi.workspace = true

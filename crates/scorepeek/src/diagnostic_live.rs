@@ -382,6 +382,7 @@ impl DiagnosticBridge {
         let screen = match observation.screen() {
             scorepeek::recognition::ScreenClass::Result => DiagnosticScreen::Result,
             scorepeek::recognition::ScreenClass::MusicSelect => DiagnosticScreen::MusicSelection,
+            scorepeek::recognition::ScreenClass::ModeSelect => DiagnosticScreen::ModeSelection,
             scorepeek::recognition::ScreenClass::DecideTransition => {
                 DiagnosticScreen::DecideTransition
             }
@@ -422,6 +423,21 @@ impl DiagnosticBridge {
                 music_select_bright_label_pixels_min: predicate
                     .music_select_presence
                     .bright_label_pixels_min,
+                music_select_reference_evaluated: predicate
+                    .music_select_presence
+                    .reference_evaluated,
+                music_select_music_reference_score_ppm: predicate
+                    .music_select_presence
+                    .music_reference_score_ppm,
+                music_select_mode_reference_score_ppm: predicate
+                    .music_select_presence
+                    .mode_select_reference_score_ppm,
+                music_select_reference_score_min_ppm: predicate
+                    .music_select_presence
+                    .reference_score_min_ppm,
+                music_select_reference_winner_margin_min_ppm: predicate
+                    .music_select_presence
+                    .reference_winner_margin_min_ppm,
                 decide_transition_cyan_pixels: predicate.decide_transition_presence.cyan_pixels,
                 decide_transition_cyan_pixels_min: predicate
                     .decide_transition_presence
@@ -498,7 +514,10 @@ impl DiagnosticBridge {
         let diagnostic_screen = match screen {
             ScreenClass::Result => DiagnosticScreen::Result,
             ScreenClass::MusicSelect => DiagnosticScreen::MusicSelection,
-            ScreenClass::DecideTransition | ScreenClass::Play | ScreenClass::Unknown => {
+            ScreenClass::ModeSelect
+            | ScreenClass::DecideTransition
+            | ScreenClass::Play
+            | ScreenClass::Unknown => {
                 self.worker
                     .record_external_error(DiagnosticErrorType::InvalidConfiguration, sequence);
                 return DiagnosticEnqueueOutcome::Rejected;
@@ -534,7 +553,8 @@ impl DiagnosticBridge {
                     match screen {
                         ScreenClass::Result => 4,
                         ScreenClass::MusicSelect => 1,
-                        ScreenClass::DecideTransition
+                        ScreenClass::ModeSelect
+                        | ScreenClass::DecideTransition
                         | ScreenClass::Play
                         | ScreenClass::Unknown => {
                             unreachable!("non-field screen was rejected above")

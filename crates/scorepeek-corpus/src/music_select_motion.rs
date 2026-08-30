@@ -2308,6 +2308,7 @@ fn stored_screen(value: &Value, error: &str) -> Result<ScreenClass, CorpusError>
     {
         Some("result") => Ok(ScreenClass::Result),
         Some("music_select") => Ok(ScreenClass::MusicSelect),
+        Some("mode_select") => Ok(ScreenClass::ModeSelect),
         Some("decide_transition") => Ok(ScreenClass::DecideTransition),
         Some("play") => Ok(ScreenClass::Play),
         Some("unknown") => Ok(ScreenClass::Unknown),
@@ -3577,8 +3578,13 @@ mod tests {
 
     #[test]
     fn stored_screen_accepts_non_music_path_contexts() {
+        let mode = serde_json::json!({"screen": "mode_select"});
         let decide = serde_json::json!({"screen": "decide_transition"});
         let play = serde_json::json!({"screen": "play"});
+        assert_eq!(
+            stored_screen(&mode, "invalid").unwrap(),
+            ScreenClass::ModeSelect
+        );
         assert_eq!(
             stored_screen(&decide, "invalid").unwrap(),
             ScreenClass::DecideTransition

@@ -717,6 +717,7 @@ fn parse_record(value: &Value) -> Result<TemporalRecord, CorpusError> {
     let screen = match screen_name {
         "result" => ScreenClass::Result,
         "music_select" => ScreenClass::MusicSelect,
+        "mode_select" => ScreenClass::ModeSelect,
         "decide_transition" => ScreenClass::DecideTransition,
         "play" => ScreenClass::Play,
         "unknown" => ScreenClass::Unknown,
@@ -988,8 +989,9 @@ mod tests {
     #[test]
     fn path_screens_are_non_result_interval_boundaries() {
         for (sequence, screen, expected) in [
-            (1, "decide_transition", ScreenClass::DecideTransition),
-            (2, "play", ScreenClass::Play),
+            (1, "mode_select", ScreenClass::ModeSelect),
+            (2, "decide_transition", ScreenClass::DecideTransition),
+            (3, "play", ScreenClass::Play),
         ] {
             let parsed = parse_record(&serde_json::json!({
                 "schema": OBSERVATION_SCHEMA,

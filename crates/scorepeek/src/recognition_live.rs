@@ -193,7 +193,10 @@ impl RecognitionSession {
         };
         let diagnostic_frame = self.bridge.record_frame_for_observation(&observation);
         let field_inputs = match observation.screen() {
-            ScreenClass::DecideTransition | ScreenClass::Play | ScreenClass::Unknown => None,
+            ScreenClass::ModeSelect
+            | ScreenClass::DecideTransition
+            | ScreenClass::Play
+            | ScreenClass::Unknown => None,
             screen @ (ScreenClass::Result | ScreenClass::MusicSelect) => {
                 let Ok(routed) = route_screen_rgb8_crops(frame.pixels(), screen) else {
                     let _ = self.bridge.record_recognition_failure(frame);
@@ -472,6 +475,15 @@ mod tests {
                     pixels[(y as usize * 1920 + x as usize) * 3..][..3]
                         .copy_from_slice(&[220, 220, 220]);
                 }
+            }
+            let encoded = include_bytes!("../assets/screen-references-v1/music-select.qoi");
+            let (header, reference) = qoi::decode_to_vec(encoded).unwrap();
+            for y in 0..header.height as usize {
+                let source_start = y * header.width as usize * 3;
+                let target_start = ((50 + y) * 1920 + 50) * 3;
+                pixels[target_start..target_start + header.width as usize * 3].copy_from_slice(
+                    &reference[source_start..source_start + header.width as usize * 3],
+                );
             }
         }
         BoundCanonicalFrame::for_test_pixels(1, sequence, 0, pixels.into_boxed_slice())

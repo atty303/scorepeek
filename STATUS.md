@@ -25,6 +25,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   after prefix distance and similarity, so equal prefix evidence such as `X` and `X-DEN` remains
   catalog-constrained without a character-count branch. Complete recording and active-catalog
   replays accept the reviewed selections without weighted score fusion or threshold relaxation.
+  ADR 0081 replaces aggregate-only selection-screen classification with two approved, digest-bound
+  QOI references and adds `mode_select` as a first-class non-field screen. Retained MODE SELECT
+  sequence 898 now scores 1,000,000 versus 969,436 ppm and retained MUSIC SELECT sequence 948 scores
+  1,000,000 versus 969,130 ppm for the correct reference. MODE SELECT is emitted to diagnostics and
+  the TUI but does not enter field OCR, catalog resolution, or play-attempt transitions.
   No independent transform mismatch or changed normalizer currently justifies replaying a
   scorepeek-written raw/canonical pair through the same implementation. ADR 0048 trusts
   operator-selected local artifacts, removes that transform-first checkpoint and duplicate
@@ -829,8 +834,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   predicate-context pairs remain unknown context. Replaying equal accepted song IDs shows zero
   missed selection-change resets at 100--500 ms. The motion truth does not label the correct song
   ID, so it establishes neither stable-selection accuracy nor whether dwell improves OCR jitter
-  without preserving a wrong acceptance; the observed predicate false positives have not been
-  recalibrated.
+  without preserving a wrong acceptance. ADR 0081 now separates the retained MODE SELECT false
+  positive from MUSIC SELECT using fixed reference evidence; broader unknown-screen coverage and
+  target-host recognition cost remain unverified.
 - Persistent scheduler installation was verified in isolation but not applied to the operator's
   actual configuration. Real S3 credentials/provider behavior and remote bucket lifecycle remain
   untested.
@@ -893,7 +899,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Install the ADR 0080 binary on the target and select a short catalog title such as `X`, `〆`, or
+1. Install the ADR 0080/0081 binary on the target. Before entering MUSIC SELECT, require MODE SELECT
+   to appear as `mode_select` in the TUI and diagnostic history without field OCR or a play-attempt
+   transition; after entering MUSIC SELECT, require `music_select` and normal field observations.
+   Confirm that the target 10 Hz cadence does not accumulate busy skips. Then select a short catalog
+   title such as `X`, `〆`, or
    `無双`. Require v2 to rank it without `active_list_title_too_short`, preserve the full catalog
    candidate evidence, reach stable/armed state, and retain any later attempt linkage. Treat an
    ambiguous or conflicting result as evidence rather than adding a character-count threshold.

@@ -237,6 +237,10 @@ authoritative.
 - [ADR 0080: Rank full-title evidence after active-prefix evidence](0080-rank-full-title-after-active-prefix.md)
   supersedes ADR 0046's arbitrary minimum active-title length and uses existing full-title metrics
   to resolve equal prefix evidence without character-count routing.
+- [ADR 0081: Classify mode and music selection by fixed references](0081-classify-mode-and-music-select-by-reference.md)
+  supersedes ADR 0044 only for treating aggregate color and brightness evidence as sufficient,
+  adds a first-class non-field `mode_select` screen, and binds two approved QOI references to the
+  screen-path layout.
 
 ## Historical
 

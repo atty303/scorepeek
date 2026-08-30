@@ -213,6 +213,7 @@ fn rewrite_recognition_stream(
             }
             let screen = match document.fact.detail["screen"].as_str() {
                 Some("music_selection") => "music_select",
+                Some("mode_selection") => "mode_select",
                 Some("decide_transition") => "decide_transition",
                 Some("gameplay") => "play",
                 Some(screen @ ("result" | "unknown")) => screen,

@@ -534,6 +534,7 @@ pub fn replay_video(
         let screen = match snapshot.screen {
             scorepeek::recognition::ScreenClass::Result => "result",
             scorepeek::recognition::ScreenClass::MusicSelect => "music_select",
+            scorepeek::recognition::ScreenClass::ModeSelect => "mode_select",
             scorepeek::recognition::ScreenClass::DecideTransition => "decide_transition",
             scorepeek::recognition::ScreenClass::Play => "play",
             scorepeek::recognition::ScreenClass::Unknown => "unknown",

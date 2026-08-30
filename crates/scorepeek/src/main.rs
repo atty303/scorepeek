@@ -3559,6 +3559,19 @@ mod tests {
         assert_eq!(value["capture_generation"], 2);
         assert_eq!(value["sequence"], 41);
         assert_eq!(value["screen"], "unknown");
+
+        let mode = live_session_event_value(
+            Some("invocation-session-2"),
+            Some(2),
+            GamescopeLiveSessionEvent::ScreenChanged {
+                sequence: 42,
+                monotonic_start_ms: 125,
+                monotonic_end_ms: 150,
+                screen: scorepeek::recognition::ScreenClass::ModeSelect,
+            },
+        )
+        .unwrap();
+        assert_eq!(mode["screen"], "mode_select");
     }
 
     #[test]

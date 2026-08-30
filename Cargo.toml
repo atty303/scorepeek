@@ -23,6 +23,7 @@ lto = "thin"
 [workspace.dependencies]
 encoding_rs = "0.8.35"
 futures-util = "0.3.34"
+imageproc = { version = "0.27.0", default-features = false }
 object_store = { version = "0.14.1", default-features = false, features = ["aws"] }
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-27"] }
 pipewire = "0.10.0"

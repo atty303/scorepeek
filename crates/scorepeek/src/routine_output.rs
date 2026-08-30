@@ -1851,6 +1851,12 @@ fn observation_lines(
         ))];
     };
     let raw_screen = text_at(observation, "/screen");
+    if current_screen == Some("mode_select") && raw_screen != "mode_select" {
+        return vec![Line::from(format!(
+            "screen={}  No field observation for this screen",
+            current_screen.unwrap_or("-")
+        ))];
+    }
     let mut lines = vec![Line::from(format!(
         "current screen={}  raw screen={}  sequence={}  interval={}..{} ms",
         current_screen.unwrap_or(&raw_screen),
@@ -2341,6 +2347,27 @@ mod tests {
                 screen: screen.to_owned(),
             },
         }
+    }
+
+    #[test]
+    fn mode_select_is_displayed_without_stale_field_data_or_attempt_evidence() {
+        assert_eq!(play_attempt_screen("mode_select"), None);
+        let stale = json!({
+            "screen": "music_select",
+            "sequence": 7,
+            "monotonic_start_ms": 700,
+            "monotonic_end_ms": 725,
+            "fields": { "active_list_title": "STALE TITLE" }
+        });
+        let lines = observation_lines(Some("mode_select"), Some(&stale), None, None, false, 80);
+        let rendered = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("screen=mode_select"));
+        assert!(rendered.contains("No field observation for this screen"));
+        assert!(!rendered.contains("STALE TITLE"));
     }
 
     fn read_events(reader: &mut BufReader<UnixStream>, count: usize) -> Vec<Value> {
