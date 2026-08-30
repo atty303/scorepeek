@@ -279,6 +279,22 @@ pub enum DiagnosticTextField {
     ResultTitle,
     ResultArtist,
     ResultClearType,
+    ResultDifficulty,
+    ResultLevel,
+    ResultNotes,
+    ResultCurrentScore,
+    ResultPreviousClearType,
+    ResultPreviousScore,
+    ResultPreviousMissCount,
+    ResultMissCount,
+    ResultPgreat,
+    ResultGreat,
+    ResultGood,
+    ResultBad,
+    ResultPoor,
+    ResultFast,
+    ResultSlow,
+    ResultComboBreak,
     MusicSelectCentralTitle,
     MusicSelectArtist,
     MusicSelectActiveListTitle,
@@ -1293,6 +1309,10 @@ fn valid_binding(binding: &DiagnosticBinding) -> bool {
         })
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the strict diagnostic fact validator keeps the complete schema match in one place"
+)]
 fn valid_fact(fact: &DiagnosticFact) -> bool {
     if fact.monotonic_end_ms < fact.monotonic_start_ms || !valid_fact_status_error(fact) {
         return false;
@@ -1363,7 +1383,8 @@ fn valid_fact(fact: &DiagnosticFact) -> bool {
                     && fact.error_type.is_none()
                     && matches!(
                         (screen, observed_fields, unimplemented_fields),
-                        (DiagnosticScreen::Result, 3, 4) | (DiagnosticScreen::MusicSelection, 3, 1)
+                        (DiagnosticScreen::Result, 19, 0)
+                            | (DiagnosticScreen::MusicSelection, 3, 1)
                     )
             }
             Some(field) => {
@@ -1374,10 +1395,26 @@ fn valid_fact(fact: &DiagnosticFact) -> bool {
                         (screen, unimplemented_fields, field),
                         (
                             DiagnosticScreen::Result,
-                            4,
+                            0,
                             DiagnosticTextField::ResultTitle
                                 | DiagnosticTextField::ResultArtist
                                 | DiagnosticTextField::ResultClearType
+                                | DiagnosticTextField::ResultDifficulty
+                                | DiagnosticTextField::ResultLevel
+                                | DiagnosticTextField::ResultNotes
+                                | DiagnosticTextField::ResultCurrentScore
+                                | DiagnosticTextField::ResultPreviousClearType
+                                | DiagnosticTextField::ResultPreviousScore
+                                | DiagnosticTextField::ResultPreviousMissCount
+                                | DiagnosticTextField::ResultMissCount
+                                | DiagnosticTextField::ResultPgreat
+                                | DiagnosticTextField::ResultGreat
+                                | DiagnosticTextField::ResultGood
+                                | DiagnosticTextField::ResultBad
+                                | DiagnosticTextField::ResultPoor
+                                | DiagnosticTextField::ResultFast
+                                | DiagnosticTextField::ResultSlow
+                                | DiagnosticTextField::ResultComboBreak
                         ) | (
                             DiagnosticScreen::MusicSelection,
                             1,

@@ -112,6 +112,18 @@ def load_layout_contract(
             "level",
             "notes",
             "current_score",
+            "previous_clear_type",
+            "previous_score",
+            "previous_miss_count",
+            "miss_count",
+            "pgreat",
+            "great",
+            "good",
+            "bad",
+            "poor",
+            "fast",
+            "slow",
+            "combo_break",
         },
         "canonical result layout",
     )
@@ -123,6 +135,18 @@ def load_layout_contract(
         "level": "level.ppm",
         "notes": "notes.ppm",
         "current_score": "current-score.ppm",
+        "previous_clear_type": "previous-clear-type.ppm",
+        "previous_score": "previous-score.ppm",
+        "previous_miss_count": "previous-miss-count.ppm",
+        "miss_count": "miss-count.ppm",
+        "pgreat": "pgreat.ppm",
+        "great": "great.ppm",
+        "good": "good.ppm",
+        "bad": "bad.ppm",
+        "poor": "poor.ppm",
+        "fast": "fast.ppm",
+        "slow": "slow.ppm",
+        "combo_break": "combo-break.ppm",
     }
     _exact_object(
         result["presence"],
@@ -259,7 +283,7 @@ def load_crops(directory: Path, expected_sha256: str) -> tuple[str, list[Crop]]:
     )
     schema = raw["schema"]
     screen = {
-        "scorepeek-private-canonical-result-crops-v1": "result",
+        "scorepeek-private-canonical-result-crops-v2": "result",
         "scorepeek-private-canonical-music-select-crops-v1": "music_select",
     }.get(schema)
     if screen is None:

@@ -1543,7 +1543,7 @@ class ContractTests(unittest.TestCase):
                     }
                 )
             manifest = {
-                "schema": "scorepeek-private-canonical-result-crops-v1",
+                "schema": "scorepeek-private-canonical-result-crops-v2",
                 "frame_id": "result-001",
                 "frame_extraction_sha256": "1" * 64,
                 "canonical_frame_sha256": "2" * 64,
@@ -1557,7 +1557,7 @@ class ContractTests(unittest.TestCase):
             (directory / "manifest.json").write_bytes(manifest_bytes)
             digest = hashlib.sha256(manifest_bytes).hexdigest()
             _, crops = load_crops(directory, digest)
-            self.assertEqual(len(crops), 7)
+            self.assertEqual(len(crops), 19)
 
             manifest["crops"][0]["roi"] = {
                 **manifest["crops"][0]["roi"],

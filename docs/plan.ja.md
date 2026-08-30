@@ -100,11 +100,13 @@
   だけを同一lifetimeで再接続しない。
   registered resourceとcandidate domainをcapture開始前にloadし、Gamescope capture loopからfield submit、inference、全song scoring、
   capture/worker/diagnosticの順序付き終了までを一つのbounded gateへ統合済み。private INFINITAS frameによる実submit、実行cost、
-  queue behaviorとtarget上のfield性能は未検証。ADR 0078のadmitted SP/1P corpus sliceでは、catalog-constrained chart、score、clearを
-  temporal stable songへ結合したprovisional `result_detected`を生成する。public `/v1.sock` event authorityとSP/DP・1P/2P・savability detectorは未実装。
+  queue behaviorとtarget上のfield性能は未検証。ADR 0078のprovisional result eventはADR 0083によりsupersedeされ、
+  public `/v1.sock` event authorityとSP/DP・1P/2P detectorは引き続き未実装である。
   さらにcorpus録画由来の全canonical frameをsource adapterから同じapplication sessionへ供給するrecording simulationを実装した。
   profileはrecording/recording manifest/source manifest/probe/coverage label/extraction/normalizer/layout/catalog/model/runtime、全frame span、source pacing、diagnostic
-  sampling、coverage labelの全resultを一対一で覆うepisode windowとexact `CLEAR TYPE`をbindする。result presenceは固定headerと2本のpanel境界で判定し、可変な背景色や
+  sampling、coverage labelの全resultを一対一で覆うepisode windowとexact `CLEAR TYPE`をbindする。ADR 0083ではplay/result観測とselectedまたはretry-inherited songの一致をaccepted attemptとし、
+  `savable`固定値を廃止した。result v2 eventはattempt ID、5 judgement、typed miss/timing/combo、typed previous-best snapshotを持ち、`current_score == 2 * pgreat + great`を必須とする。
+  `play_options`は複数optionの実画像とclosed vocabularyを確定する次checkpointまで追加しない。result presenceは固定headerと2本のpanel境界で判定し、可変な背景色や
   背景絵を使わない。対象録画459 framesでは2 `FAILED`と1 `CLEAR`の3 episode、120 field observations、全song scoring、complete
   diagnosticを同じproduction worker経路で確認済み。これはaccepted result、他clear type、別背景variant、live supportまたは性能の根拠ではない。
   OBS/obs-vkcapture並行、
@@ -203,12 +205,12 @@ fieldは`known(value) | unknown(reason) | not_applicable`で表す。matcher fai
 
 v1の必須fieldは次とする。
 
-- result: screen state、savable、playside、play mode/type、song、difficulty、level、notes、
-  current score
+- result: screen state、accepted play attempt、playside、play mode/type、song、difficulty、level、notes、
+  current score、5 judgement
 - music select: screen state、play mode、song、selected difficulty、selected level
 
-clear、DJ level、miss、best/current/new、option、graph等は各fieldの独立fixture gateを
-満たしたものからoptional `known`として追加する。必須fieldまたはcross-field validationが
+clearは必須、miss/fast/slow/combo breakとprevious best snapshotはtyped optional/referenceとする。
+DJ level、option、graph等は各fieldの独立fixture gateを満たしたものから追加する。必須fieldまたはcross-field validationが
 一つでも失敗したcandidateはdetected eventにしない。
 
 ### Event API
@@ -560,7 +562,7 @@ flush timeoutは`partial | dropped` evidenceとして残すが、play、capture 
 7. **M4 completion**: peer profileごとのnormalizerとshared alignmentを検証し、選定済みPP-OCRv6 smallの
    Rust parity gateを完了する。custom fine-tune/exportは統合context後のmissing OCR signalが実測された場合だけ追加する。
 8. **M5**: gateを通ったsupported PipeWire profileのlifecycle/performanceを比較し、defaultを選ぶ。
-9. **M6**: screen、savable、title/artist/chart contextのfield recognizer、full-catalog screen-local song
+9. **M6**: screen、accepted play attempt、title/artist/chart contextのfield recognizer、full-catalog screen-local song
    resolver、digits、cross-field validationの順で追加する。field recognizerとcandidate evidenceをlive
    captureへ接続する最初のgateは、1つのimmutable run bindingとbounded worker lifetimeを所有する。自動化向けの
    compact resultはtyped status、screen/worker/candidate件数、diagnostic completenessおよびartifact identityに

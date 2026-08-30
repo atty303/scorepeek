@@ -550,6 +550,7 @@ mod tests {
             level: text("8"),
             notes: text("800"),
             current_score: text("1200"),
+            ..Default::default()
         });
         let ScreenCatalogCandidateObservations::Result { candidates, .. } =
             domain.observe(&observations)
@@ -702,6 +703,7 @@ mod tests {
             level: text("8"),
             notes: text("800"),
             current_score: text("1200"),
+            ..Default::default()
         });
         let candidate_observations = domain.observe(&observations);
         assert_eq!(candidate_observations.candidate_count(), 0);
@@ -748,6 +750,7 @@ mod tests {
             level: text("8"),
             notes: text("800"),
             current_score: text("1200"),
+            ..Default::default()
         });
         let ScreenCatalogCandidateObservations::Result { candidates, .. } =
             domain.observe(&observations)

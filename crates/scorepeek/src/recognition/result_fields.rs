@@ -5,6 +5,7 @@ use crate::catalog::{Catalog, Chart, Difficulty, PlayType, ScorepeekSongId};
 use super::{DynamicTextObservation, ResultScreenFieldObservations};
 
 pub const RESULT_FIELD_RESOLVER_ID: &str = "scorepeek-result-fields-catalog-constrained-v1";
+pub const RESULT_PERFORMANCE_RESOLVER_ID: &str = "scorepeek-result-performance-v1";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,6 +20,70 @@ pub enum ResultFieldUnknownReason {
 pub enum ResultFieldValue<T> {
     Known { value: T },
     Unknown { reason: ResultFieldUnknownReason },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum SupplementalResultValue<T> {
+    Known { value: T },
+    NotDisplayed,
+    Unknown { reason: ResultFieldUnknownReason },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum PreviousBestValue<T> {
+    Known { value: T },
+    NotPlayed,
+    NotDisplayed,
+    Unknown { reason: ResultFieldUnknownReason },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ResultJudgments {
+    pub pgreat: u32,
+    pub great: u32,
+    pub good: u32,
+    pub bad: u32,
+    pub poor: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ResultTiming {
+    pub fast: SupplementalResultValue<u32>,
+    pub slow: SupplementalResultValue<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PreviousBest {
+    pub clear_type: PreviousBestValue<String>,
+    pub score: PreviousBestValue<u32>,
+    pub miss_count: PreviousBestValue<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultPerformanceUnknownReason {
+    IncompleteJudgments,
+    JudgmentExceedsNotes,
+    ScoreBreakdownMismatch,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ResultPerformanceResolution {
+    Accepted {
+        resolver_id: String,
+        judgments: ResultJudgments,
+        miss_count: SupplementalResultValue<u32>,
+        timing: ResultTiming,
+        combo_break: SupplementalResultValue<u32>,
+        previous_best: PreviousBest,
+    },
+    Unknown {
+        resolver_id: String,
+        reason: ResultPerformanceUnknownReason,
+    },
 }
 
 impl<T> ResultFieldValue<T> {
@@ -38,17 +103,63 @@ pub struct ParsedResultFields {
     pub level: ResultFieldValue<u8>,
     pub notes: ResultFieldValue<u32>,
     pub current_score: ResultFieldValue<u32>,
+    pub previous_clear_type: PreviousBestValue<String>,
+    pub previous_score: PreviousBestValue<u32>,
+    pub previous_miss_count: PreviousBestValue<u32>,
+    pub miss_count: SupplementalResultValue<u32>,
+    pub pgreat: ResultFieldValue<u32>,
+    pub great: ResultFieldValue<u32>,
+    pub good: ResultFieldValue<u32>,
+    pub bad: ResultFieldValue<u32>,
+    pub poor: ResultFieldValue<u32>,
+    pub fast: SupplementalResultValue<u32>,
+    pub slow: SupplementalResultValue<u32>,
+    pub combo_break: SupplementalResultValue<u32>,
 }
 
 impl ParsedResultFields {
     #[must_use]
     pub fn from_observations(fields: &ResultScreenFieldObservations) -> Self {
+        let previous_not_played =
+            unique_ascii_match(&fields.previous_clear_type.open_text, &["NO PLAY"]).is_some();
+        let previous_clear_type = if previous_not_played {
+            PreviousBestValue::NotPlayed
+        } else {
+            resolve_clear_type(&fields.previous_clear_type.open_text).map_or(
+                PreviousBestValue::Unknown {
+                    reason: field_unknown_reason(&fields.previous_clear_type.open_text),
+                },
+                |value| PreviousBestValue::Known {
+                    value: value.to_owned(),
+                },
+            )
+        };
+        let previous_score = parse_previous_decimal(&fields.previous_score, previous_not_played);
+        let previous_miss_count = if previous_not_played {
+            PreviousBestValue::NotPlayed
+        } else if is_displayed_dash(&fields.previous_miss_count.open_text) {
+            PreviousBestValue::NotDisplayed
+        } else {
+            previous_value(parse_decimal(&fields.previous_miss_count, 0, u32::MAX))
+        };
         Self {
             resolver_id: RESULT_FIELD_RESOLVER_ID.to_owned(),
             difficulty: parse_difficulty(&fields.difficulty),
             level: parse_decimal(&fields.level, 1, 12),
             notes: parse_decimal(&fields.notes, 1, u32::MAX),
             current_score: parse_decimal(&fields.current_score, 0, u32::MAX),
+            previous_clear_type,
+            previous_score,
+            previous_miss_count,
+            miss_count: parse_supplemental_decimal(&fields.miss_count, true),
+            pgreat: parse_decimal(&fields.pgreat, 0, u32::MAX),
+            great: parse_decimal(&fields.great, 0, u32::MAX),
+            good: parse_decimal(&fields.good, 0, u32::MAX),
+            bad: parse_decimal(&fields.bad, 0, u32::MAX),
+            poor: parse_decimal(&fields.poor, 0, u32::MAX),
+            fast: parse_supplemental_decimal(&fields.fast, true),
+            slow: parse_supplemental_decimal(&fields.slow, true),
+            combo_break: parse_supplemental_decimal(&fields.combo_break, true),
         }
     }
 
@@ -65,6 +176,80 @@ impl ParsedResultFields {
         };
         Some((difficulty, level, notes))
     }
+}
+
+#[must_use]
+pub fn resolve_result_performance(
+    fields: &ParsedResultFields,
+    notes: u32,
+    current_score: u32,
+) -> ResultPerformanceResolution {
+    let (
+        ResultFieldValue::Known { value: pgreat },
+        ResultFieldValue::Known { value: great },
+        ResultFieldValue::Known { value: good },
+        ResultFieldValue::Known { value: bad },
+        ResultFieldValue::Known { value: poor },
+    ) = (
+        &fields.pgreat,
+        &fields.great,
+        &fields.good,
+        &fields.bad,
+        &fields.poor,
+    )
+    else {
+        return performance_unknown(ResultPerformanceUnknownReason::IncompleteJudgments);
+    };
+    if [pgreat, great, good, bad, poor]
+        .into_iter()
+        .any(|value| *value > notes)
+    {
+        return performance_unknown(ResultPerformanceUnknownReason::JudgmentExceedsNotes);
+    }
+    if pgreat
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(*great))
+        != Some(current_score)
+    {
+        return performance_unknown(ResultPerformanceUnknownReason::ScoreBreakdownMismatch);
+    }
+    ResultPerformanceResolution::Accepted {
+        resolver_id: RESULT_PERFORMANCE_RESOLVER_ID.to_owned(),
+        judgments: ResultJudgments {
+            pgreat: *pgreat,
+            great: *great,
+            good: *good,
+            bad: *bad,
+            poor: *poor,
+        },
+        miss_count: bound_supplemental(&fields.miss_count, notes),
+        timing: ResultTiming {
+            fast: bound_supplemental(&fields.fast, notes),
+            slow: bound_supplemental(&fields.slow, notes),
+        },
+        combo_break: bound_supplemental(&fields.combo_break, notes),
+        previous_best: PreviousBest {
+            clear_type: fields.previous_clear_type.clone(),
+            score: bound_previous(&fields.previous_score, notes.saturating_mul(2)),
+            miss_count: bound_previous(&fields.previous_miss_count, notes),
+        },
+    }
+}
+
+#[must_use]
+pub fn resolve_clear_type(observed: &str) -> Option<&'static str> {
+    unique_ascii_match(
+        observed,
+        &[
+            "FAILED",
+            "ASSIST CLEAR",
+            "EASY CLEAR",
+            "CLEAR",
+            "HARD CLEAR",
+            "EXH-CLEAR",
+            "F-COMBO",
+        ],
+    )
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -260,6 +445,104 @@ where
     ResultFieldValue::Known { value }
 }
 
+fn unique_ascii_match<'a>(observed: &str, candidates: &[&'a str]) -> Option<&'a str> {
+    let value = observed.trim().to_ascii_uppercase();
+    let mut matches = candidates
+        .iter()
+        .copied()
+        .filter(|candidate| ascii_edit_distance_at_most_one(&value, candidate));
+    let selected = matches.next()?;
+    matches.next().is_none().then_some(selected)
+}
+
+fn field_unknown_reason(raw: &str) -> ResultFieldUnknownReason {
+    if raw.trim().is_empty() {
+        ResultFieldUnknownReason::Empty
+    } else {
+        ResultFieldUnknownReason::InvalidFormat
+    }
+}
+
+fn is_displayed_dash(raw: &str) -> bool {
+    let value = raw.trim();
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|character| matches!(character, '-' | '―' | 'ー' | '—'))
+}
+
+fn parse_supplemental_decimal(
+    observation: &DynamicTextObservation,
+    dash_is_not_displayed: bool,
+) -> SupplementalResultValue<u32> {
+    if dash_is_not_displayed && is_displayed_dash(&observation.open_text) {
+        return SupplementalResultValue::NotDisplayed;
+    }
+    match parse_decimal(observation, 0, u32::MAX) {
+        ResultFieldValue::Known { value } => SupplementalResultValue::Known { value },
+        ResultFieldValue::Unknown { reason } => SupplementalResultValue::Unknown { reason },
+    }
+}
+
+fn parse_previous_decimal(
+    observation: &DynamicTextObservation,
+    not_played: bool,
+) -> PreviousBestValue<u32> {
+    if not_played {
+        return PreviousBestValue::NotPlayed;
+    }
+    if is_displayed_dash(&observation.open_text) {
+        return PreviousBestValue::NotDisplayed;
+    }
+    previous_value(parse_decimal(observation, 0, u32::MAX))
+}
+
+fn previous_value<T>(value: ResultFieldValue<T>) -> PreviousBestValue<T> {
+    match value {
+        ResultFieldValue::Known { value } => PreviousBestValue::Known { value },
+        ResultFieldValue::Unknown { reason } => PreviousBestValue::Unknown { reason },
+    }
+}
+
+fn performance_unknown(reason: ResultPerformanceUnknownReason) -> ResultPerformanceResolution {
+    ResultPerformanceResolution::Unknown {
+        resolver_id: RESULT_PERFORMANCE_RESOLVER_ID.to_owned(),
+        reason,
+    }
+}
+
+fn bound_supplemental(
+    value: &SupplementalResultValue<u32>,
+    maximum: u32,
+) -> SupplementalResultValue<u32> {
+    match value {
+        SupplementalResultValue::Known { value } if *value <= maximum => {
+            SupplementalResultValue::Known { value: *value }
+        }
+        SupplementalResultValue::Known { .. } => SupplementalResultValue::Unknown {
+            reason: ResultFieldUnknownReason::OutOfRange,
+        },
+        SupplementalResultValue::NotDisplayed => SupplementalResultValue::NotDisplayed,
+        SupplementalResultValue::Unknown { reason } => {
+            SupplementalResultValue::Unknown { reason: *reason }
+        }
+    }
+}
+
+fn bound_previous(value: &PreviousBestValue<u32>, maximum: u32) -> PreviousBestValue<u32> {
+    match value {
+        PreviousBestValue::Known { value } if *value <= maximum => {
+            PreviousBestValue::Known { value: *value }
+        }
+        PreviousBestValue::Known { .. } => PreviousBestValue::Unknown {
+            reason: ResultFieldUnknownReason::OutOfRange,
+        },
+        PreviousBestValue::NotPlayed => PreviousBestValue::NotPlayed,
+        PreviousBestValue::NotDisplayed => PreviousBestValue::NotDisplayed,
+        PreviousBestValue::Unknown { reason } => PreviousBestValue::Unknown { reason: *reason },
+    }
+}
+
 fn ascii_edit_distance_at_most_one(left: &str, right: &str) -> bool {
     let left = left.as_bytes();
     let right = right.as_bytes();
@@ -312,6 +595,29 @@ mod tests {
         }
     }
 
+    fn result_fields() -> ResultScreenFieldObservations {
+        ResultScreenFieldObservations {
+            clear_type: text("CLEAR"),
+            difficulty: text("HYPER"),
+            level: text("8"),
+            notes: text("764"),
+            current_score: text("1286"),
+            previous_clear_type: text("HARD CLEAR"),
+            previous_score: text("1200"),
+            previous_miss_count: text("12"),
+            miss_count: text("9"),
+            pgreat: text("600"),
+            great: text("86"),
+            good: text("20"),
+            bad: text("5"),
+            poor: text("3"),
+            fast: text("40"),
+            slow: text("41"),
+            combo_break: text("7"),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn parses_exact_closed_difficulty_and_decimal_fields() {
         assert_eq!(
@@ -328,6 +634,112 @@ mod tests {
             parse_decimal(&text("76A"), 1_u32, u32::MAX),
             ResultFieldValue::Unknown {
                 reason: ResultFieldUnknownReason::InvalidFormat
+            }
+        ));
+    }
+
+    #[test]
+    fn accepts_complete_judgments_and_keeps_supplemental_values_typed() {
+        let parsed = ParsedResultFields::from_observations(&result_fields());
+        assert!(matches!(
+            resolve_result_performance(&parsed, 764, 1_286),
+            ResultPerformanceResolution::Accepted {
+                judgments: ResultJudgments {
+                    pgreat: 600,
+                    great: 86,
+                    ..
+                },
+                miss_count: SupplementalResultValue::Known { value: 9 },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_or_mismatched_judgments() {
+        let mut observations = result_fields();
+        observations.good = text("2O");
+        let parsed = ParsedResultFields::from_observations(&observations);
+        assert!(matches!(
+            resolve_result_performance(&parsed, 764, 1_286),
+            ResultPerformanceResolution::Unknown {
+                reason: ResultPerformanceUnknownReason::IncompleteJudgments,
+                ..
+            }
+        ));
+
+        observations.good = text("20");
+        observations.great = text("85");
+        let parsed = ParsedResultFields::from_observations(&observations);
+        assert!(matches!(
+            resolve_result_performance(&parsed, 764, 1_286),
+            ResultPerformanceResolution::Unknown {
+                reason: ResultPerformanceUnknownReason::ScoreBreakdownMismatch,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn failed_miss_is_not_displayed_and_optional_overflow_does_not_block() {
+        let mut observations = result_fields();
+        observations.clear_type = text("FAILED");
+        observations.miss_count = text("--");
+        observations.fast = text("9999");
+        let parsed = ParsedResultFields::from_observations(&observations);
+        let ResultPerformanceResolution::Accepted {
+            miss_count, timing, ..
+        } = resolve_result_performance(&parsed, 764, 1_286)
+        else {
+            panic!("valid judgments must keep the result accepted");
+        };
+        assert_eq!(miss_count, SupplementalResultValue::NotDisplayed);
+        assert_eq!(
+            timing.fast,
+            SupplementalResultValue::Unknown {
+                reason: ResultFieldUnknownReason::OutOfRange
+            }
+        );
+    }
+
+    #[test]
+    fn no_play_normalizes_all_previous_best_fields() {
+        let mut observations = result_fields();
+        observations.previous_clear_type = text("NO PLAY");
+        observations.previous_score = text("0");
+        observations.previous_miss_count = text("--");
+        let parsed = ParsedResultFields::from_observations(&observations);
+        assert_eq!(parsed.previous_clear_type, PreviousBestValue::NotPlayed);
+        assert_eq!(parsed.previous_score, PreviousBestValue::NotPlayed);
+        assert_eq!(parsed.previous_miss_count, PreviousBestValue::NotPlayed);
+    }
+
+    #[test]
+    fn previous_best_preserves_field_specific_missing_states() {
+        let mut observations = result_fields();
+        observations.previous_score = text("SCORE");
+        observations.previous_miss_count = text("--");
+        let parsed = ParsedResultFields::from_observations(&observations);
+        assert_eq!(
+            parsed.previous_score,
+            PreviousBestValue::Unknown {
+                reason: ResultFieldUnknownReason::InvalidFormat
+            }
+        );
+        assert_eq!(parsed.previous_miss_count, PreviousBestValue::NotDisplayed);
+    }
+
+    #[test]
+    fn score_breakdown_overflow_fails_closed() {
+        let mut observations = result_fields();
+        observations.pgreat = text(&u32::MAX.to_string());
+        observations.great = text("1");
+        let parsed = ParsedResultFields::from_observations(&observations);
+        assert!(matches!(
+            resolve_result_performance(&parsed, u32::MAX, u32::MAX),
+            ResultPerformanceResolution::Unknown {
+                reason: ResultPerformanceUnknownReason::ScoreBreakdownMismatch,
+                ..
             }
         ));
     }

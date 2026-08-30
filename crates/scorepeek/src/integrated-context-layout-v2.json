@@ -1,7 +1,7 @@
 {
   "schema": "scorepeek-integrated-context-layout-v2",
   "canonical_frame_contract_id": "scorepeek-canonical-rgb8-1920x1080-v1",
-  "canonical_layout_sha256": "5884ae8b9882c285ef9c82807b7d7f293a6622d9e13faa6fbb726136757da5b6",
+  "canonical_layout_sha256": "b58d27688ebe1453aab3fe9eea586ac71c27d05eff41104ef60474b03cf94ed7",
   "result": {
     "artist": { "x": 650, "y": 990, "width": 650, "height": 40 }
   },

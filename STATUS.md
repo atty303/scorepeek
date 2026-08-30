@@ -34,6 +34,18 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   production screen predicate and applicable registered OCR/catalog/result resolvers. The output
   binds both source and evaluator resources and explicitly does not reconstruct temporal/domain
   state from sparse foreground retention. Diagnostic cadence and quota remain unchanged.
+  ADR 0083 supersedes the provisional savability/result-event slice. The fixed result layout now
+  observes five judgments, miss count, fast/slow, combo break, and the previous-best clear/score/miss
+  snapshot with PP-OCRv6-small. Recognition observation v7 retains all raw and typed values; a v2
+  result event requires the score-breakdown invariant and an accepted play attempt with observed
+  gameplay/result plus a confirmed selected or retry-inherited song. Missing decision transition is
+  allowed, while missing gameplay, unlinked/conflicting result, and abandonment suppress emission.
+  Existing private label v2 generations remain replayable; new review apply requires v3 performance
+  truth. The active 17-episode suite has not been advanced because its new values still require
+  operator confirmation. The unchanged active v2 suite still replays all five sessions, seventeen
+  episodes, 2,102 canonical frames, and one negative frame with the expanded observer in about 168
+  seconds on the development host. `play_options`, target 10 Hz cadence, busy-skip impact, installed-binary
+  behavior, and public `/v1.sock` authority remain later explicit checkpoints.
   No independent transform mismatch or changed normalizer currently justifies replaying a
   scorepeek-written raw/canonical pair through the same implementation. ADR 0048 trusts
   operator-selected local artifacts, removes that transform-first checkpoint and duplicate

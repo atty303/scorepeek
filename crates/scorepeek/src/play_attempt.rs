@@ -77,6 +77,13 @@ pub struct PlayAttempt<S> {
     pub reasons: Vec<PlayAttemptReason>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AcceptedPlayAttempt<'a, S> {
+    pub attempt_id: u64,
+    pub parent_attempt_id: Option<u64>,
+    pub song: &'a S,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum PlayAttemptState<S> {
@@ -129,6 +136,30 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
 
     pub fn reset_session(&mut self) {
         *self = Self::default();
+    }
+
+    #[must_use]
+    pub fn accepted_result(&self) -> Option<AcceptedPlayAttempt<'_, S>> {
+        let PlayAttemptState::Attempt { attempt } = &self.state else {
+            return None;
+        };
+        if attempt.phase != PlayAttemptPhase::Result
+            || !attempt.path.play_observed
+            || !attempt.path.result_observed
+            || attempt.result_relation != PlayAttemptResultRelation::Confirmed
+        {
+            return None;
+        }
+        let selected_song = attempt.selected_song.as_ref()?;
+        let result_song = attempt.result_song.as_ref()?;
+        if selected_song != result_song {
+            return None;
+        }
+        Some(AcceptedPlayAttempt {
+            attempt_id: attempt.attempt_id,
+            parent_attempt_id: attempt.parent_attempt_id,
+            song: result_song,
+        })
     }
 
     pub fn observe_selection(
@@ -496,6 +527,53 @@ mod tests {
                 result_observed: true,
             }
         );
+        assert_eq!(
+            reducer.accepted_result(),
+            Some(AcceptedPlayAttempt {
+                attempt_id: 1,
+                parent_attempt_id: None,
+                song: &7,
+            })
+        );
+    }
+
+    #[test]
+    fn missing_decide_still_accepts_play_then_matching_result() {
+        let mut reducer = PlayAttemptReducer::default();
+        reducer.observe_selection(Some(7), Some(SelectionSource::Stable), 1);
+        reducer.observe_screen(PlayAttemptScreen::Play, 2);
+        reducer.observe_screen(PlayAttemptScreen::Result, 3);
+        reducer.observe_stable_result(7);
+
+        assert!(reducer.accepted_result().is_some());
+    }
+
+    #[test]
+    fn missing_play_conflict_unlinked_and_abandoned_are_not_accepted() {
+        let mut missing_play = PlayAttemptReducer::default();
+        missing_play.observe_selection(Some(7), Some(SelectionSource::Stable), 1);
+        missing_play.observe_screen(PlayAttemptScreen::DecideTransition, 2);
+        missing_play.observe_screen(PlayAttemptScreen::Result, 3);
+        missing_play.observe_stable_result(7);
+        assert_eq!(missing_play.accepted_result(), None);
+
+        let mut conflict = PlayAttemptReducer::default();
+        conflict.observe_selection(Some(7), Some(SelectionSource::Stable), 1);
+        conflict.observe_screen(PlayAttemptScreen::Play, 2);
+        conflict.observe_screen(PlayAttemptScreen::Result, 3);
+        conflict.observe_stable_result(8);
+        assert_eq!(conflict.accepted_result(), None);
+
+        let mut unlinked = PlayAttemptReducer::default();
+        unlinked.observe_screen(PlayAttemptScreen::Result, 1);
+        unlinked.observe_stable_result(7);
+        assert_eq!(unlinked.accepted_result(), None);
+
+        let mut abandoned = PlayAttemptReducer::default();
+        abandoned.observe_selection(Some(7), Some(SelectionSource::Stable), 1);
+        abandoned.observe_screen(PlayAttemptScreen::Play, 2);
+        abandoned.observe_selection(Some(8), Some(SelectionSource::Stable), 3);
+        assert_eq!(abandoned.accepted_result(), None);
     }
 
     #[test]
@@ -591,6 +669,17 @@ mod tests {
         );
         assert!(!retry.path.select_observed);
         assert!(retry.path.play_observed);
+
+        reducer.observe_screen(PlayAttemptScreen::Result, 14);
+        reducer.observe_stable_result(8);
+        assert_eq!(
+            reducer.accepted_result(),
+            Some(AcceptedPlayAttempt {
+                attempt_id: 2,
+                parent_attempt_id: Some(1),
+                song: &8,
+            })
+        );
     }
 
     #[test]

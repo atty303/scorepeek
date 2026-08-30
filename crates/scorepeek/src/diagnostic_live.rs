@@ -551,7 +551,7 @@ impl DiagnosticBridge {
                     Some(DiagnosticFactErrorType::FieldObservationFailed),
                     0,
                     match screen {
-                        ScreenClass::Result => 4,
+                        ScreenClass::Result => 0,
                         ScreenClass::MusicSelect => 1,
                         ScreenClass::ModeSelect
                         | ScreenClass::DecideTransition
@@ -763,6 +763,36 @@ fn diagnostic_text_field(
         (ScreenClass::Result, ScreenTextField::ResultClearType) => {
             DiagnosticTextField::ResultClearType
         }
+        (ScreenClass::Result, ScreenTextField::ResultDifficulty) => {
+            DiagnosticTextField::ResultDifficulty
+        }
+        (ScreenClass::Result, ScreenTextField::ResultLevel) => DiagnosticTextField::ResultLevel,
+        (ScreenClass::Result, ScreenTextField::ResultNotes) => DiagnosticTextField::ResultNotes,
+        (ScreenClass::Result, ScreenTextField::ResultCurrentScore) => {
+            DiagnosticTextField::ResultCurrentScore
+        }
+        (ScreenClass::Result, ScreenTextField::ResultPreviousClearType) => {
+            DiagnosticTextField::ResultPreviousClearType
+        }
+        (ScreenClass::Result, ScreenTextField::ResultPreviousScore) => {
+            DiagnosticTextField::ResultPreviousScore
+        }
+        (ScreenClass::Result, ScreenTextField::ResultPreviousMissCount) => {
+            DiagnosticTextField::ResultPreviousMissCount
+        }
+        (ScreenClass::Result, ScreenTextField::ResultMissCount) => {
+            DiagnosticTextField::ResultMissCount
+        }
+        (ScreenClass::Result, ScreenTextField::ResultPgreat) => DiagnosticTextField::ResultPgreat,
+        (ScreenClass::Result, ScreenTextField::ResultGreat) => DiagnosticTextField::ResultGreat,
+        (ScreenClass::Result, ScreenTextField::ResultGood) => DiagnosticTextField::ResultGood,
+        (ScreenClass::Result, ScreenTextField::ResultBad) => DiagnosticTextField::ResultBad,
+        (ScreenClass::Result, ScreenTextField::ResultPoor) => DiagnosticTextField::ResultPoor,
+        (ScreenClass::Result, ScreenTextField::ResultFast) => DiagnosticTextField::ResultFast,
+        (ScreenClass::Result, ScreenTextField::ResultSlow) => DiagnosticTextField::ResultSlow,
+        (ScreenClass::Result, ScreenTextField::ResultComboBreak) => {
+            DiagnosticTextField::ResultComboBreak
+        }
         (ScreenClass::MusicSelect, ScreenTextField::MusicSelectCentralTitle) => {
             DiagnosticTextField::MusicSelectCentralTitle
         }
@@ -881,6 +911,7 @@ mod tests {
             level: text(),
             notes: text(),
             current_score: text(),
+            ..Default::default()
         })
     }
 
@@ -1179,8 +1210,8 @@ mod tests {
         let fact: serde_json::Value = serde_json::from_slice(&fact_bytes).unwrap();
         assert_eq!(fact["fact"]["operation"], "observe_fields");
         assert_eq!(fact["fact"]["detail"]["kind"], "field_observation");
-        assert_eq!(fact["fact"]["detail"]["observed_fields"], 3);
-        assert_eq!(fact["fact"]["detail"]["unimplemented_fields"], 4);
+        assert_eq!(fact["fact"]["detail"]["observed_fields"], 19);
+        assert_eq!(fact["fact"]["detail"]["unimplemented_fields"], 0);
         assert!(
             !String::from_utf8(fact_bytes)
                 .unwrap()

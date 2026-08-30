@@ -244,6 +244,9 @@ authoritative.
 - [ADR 0082: Re-evaluate retained full-frame diagnostics](0082-reevaluate-retained-full-frame-diagnostics.md)
   runs every retained canonical QOI through current production recognition while making sparse
   retained-only coverage and the absence of temporal/session reconstruction explicit.
+- [ADR 0083: Accept play-attempt performance results](0083-accept-play-attempt-performance-results.md)
+  supersedes ADR 0078's fixed savability and v1 payload, gates result events on observed gameplay
+  plus confirmed attempt linkage, and adds checked judgement and typed reference values.
 
 ## Historical
 

@@ -1237,6 +1237,10 @@ fn prepare_private_directory(path: &Path) -> bool {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the serializer keeps the complete versioned live event mapping together"
+)]
 fn live_session_event_value(
     session_id: Option<&str>,
     routine_generation: Option<u64>,
@@ -1303,6 +1307,18 @@ fn live_session_event_value(
                         "level": fields.level.open_text,
                         "notes": fields.notes.open_text,
                         "current_score": fields.current_score.open_text,
+                        "previous_clear_type": fields.previous_clear_type.open_text,
+                        "previous_score": fields.previous_score.open_text,
+                        "previous_miss_count": fields.previous_miss_count.open_text,
+                        "miss_count": fields.miss_count.open_text,
+                        "pgreat": fields.pgreat.open_text,
+                        "great": fields.great.open_text,
+                        "good": fields.good.open_text,
+                        "bad": fields.bad.open_text,
+                        "poor": fields.poor.open_text,
+                        "fast": fields.fast.open_text,
+                        "slow": fields.slow.open_text,
+                        "combo_break": fields.combo_break.open_text,
                     }),
                 ),
                 scorepeek::recognition::ScreenFieldObservations::MusicSelect(fields) => (
@@ -1327,6 +1343,7 @@ fn live_session_event_value(
                 "music_select_song_resolution": observation.music_select_resolution(),
                 "parsed_result_fields": observation.parsed_result_fields(),
                 "result_chart_resolution": observation.result_chart_resolution(),
+                "result_performance_resolution": observation.result_performance_resolution(),
                 "current_score_ocr_resolution": observation.current_score_ocr_resolution(),
             });
             if let Some(session_id) = session_id {
@@ -3638,6 +3655,7 @@ mod tests {
                 level: text("8"),
                 notes: text("800"),
                 current_score: text("1200"),
+                ..Default::default()
             }),
         );
         let value = live_session_event_value(
@@ -3675,6 +3693,7 @@ mod tests {
                 level: text("8"),
                 notes: text("800"),
                 current_score: text("1200"),
+                ..Default::default()
             }),
         );
         let value = live_session_event_value(
@@ -3711,6 +3730,7 @@ mod tests {
                 level: text("8"),
                 notes: text("800"),
                 current_score: text("1200"),
+                ..Default::default()
             }),
         );
         let value = live_session_event_value(

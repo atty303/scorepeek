@@ -22,12 +22,14 @@ Value-bearing records keep exact OCR and resolver output but bind a candidate co
 exact catalog object instead of duplicating every recomputable per-song metric at every tick. The
 complete observation stream is bounded to 512 MiB.
 
-Current regression labels use `scorepeek-private-session-regression-label-v2`. Each included
-episode binds the accepted song and clear type plus the visually reviewed savable, play side, play
-mode/type, difficulty, level, notes, and current score. The current active generation admits only
-the provisional savable SP/1P slice. Replay requires every typed result value to agree with the
-catalog-constrained production observation; a new apply publishes immutable label and suite objects
-and atomically advances only the active generation pointer.
+New regression labels use `scorepeek-private-session-regression-label-v3`. Each included episode
+binds the accepted song and clear type plus play side, play mode/type, difficulty, level, notes,
+current score, all five judgments, typed miss/timing/combo values, and the typed previous-best
+snapshot. Immutable v2 labels and suites remain readable and replayable; they do not acquire
+performance truth retroactively. Replay requires every value present in the label generation to
+agree with the catalog-constrained production observation. A review apply accepts only v3 labels,
+publishes immutable label and suite objects, and atomically advances the active generation pointer;
+the operator must confirm every new value before that apply.
 
 ```text
 scorepeek-corpus diagnostic replay-video --video /absolute/input.mkv --profile gamescope-4k --output /absolute/new-diagnostic

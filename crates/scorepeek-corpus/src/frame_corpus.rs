@@ -10,7 +10,10 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use scorepeek::catalog::{Difficulty, PlayType};
-use scorepeek::recognition::ResultChartResolution;
+use scorepeek::recognition::{
+    PreviousBest, PreviousBestValue, ResultChartResolution, ResultJudgments,
+    ResultPerformanceResolution, ResultTiming, SupplementalResultValue, resolve_clear_type,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -20,7 +23,8 @@ use crate::CorpusError;
 const DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v3";
 const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v1";
 const DRAFT_SCHEMA: &str = "scorepeek-private-session-review-draft-v1";
-const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v2";
+const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v3";
+const LEGACY_LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v2";
 const SUITE_SCHEMA: &str = "scorepeek-private-regression-suite-v1";
 const ACTIVE_SCHEMA: &str = "scorepeek-private-regression-suite-active-v1";
 const MAX_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
@@ -361,6 +365,48 @@ struct RegressionEpisode {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ExpectedResult {
+    play_side: String,
+    play_mode: String,
+    play_type: PlayType,
+    difficulty: Difficulty,
+    level: u8,
+    notes: u32,
+    current_score: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    judgments: Option<ResultJudgments>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    miss_count: Option<SupplementalResultValue<u32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timing: Option<ResultTiming>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    combo_break: Option<SupplementalResultValue<u32>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_best: Option<PreviousBest>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyRegressionLabel {
+    schema: String,
+    session_sha256: String,
+    disposition: LabelDisposition,
+    episodes: Vec<LegacyRegressionEpisode>,
+    negative_frames: Vec<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyRegressionEpisode {
+    episode_id: String,
+    expected_song_id: String,
+    expected_clear_type: String,
+    expected_result: LegacyExpectedResult,
+    stable_sequences: Vec<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyExpectedResult {
     savable: bool,
     play_side: String,
     play_mode: String,
@@ -1599,7 +1645,7 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
                 .join("sessions")
                 .join(format!("{}.json", entry.session_sha256)),
         )?;
-        let (label, label_bytes) = read_json::<RegressionLabel>(
+        let (label, label_bytes) = read_regression_label(
             &store
                 .join("labels")
                 .join(format!("{}.json", entry.label_sha256)),
@@ -1760,8 +1806,7 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
                         current_score,
                         ..
                     }) => {
-                        if !expected.savable
-                            || expected.play_side != "one_player"
+                        if expected.play_side != "one_player"
                             || expected.play_mode != "single_play"
                             || chart.key.play_type != expected.play_type
                             || chart.key.difficulty != expected.difficulty
@@ -1787,6 +1832,45 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
                         output.parsed_result_fields(),
                         resolution,
                     )),
+                }
+                if let (
+                    Some(expected_judgments),
+                    Some(expected_miss_count),
+                    Some(expected_timing),
+                    Some(expected_combo_break),
+                    Some(expected_previous_best),
+                ) = (
+                    expected.judgments.as_ref(),
+                    expected.miss_count.as_ref(),
+                    expected.timing.as_ref(),
+                    expected.combo_break.as_ref(),
+                    expected.previous_best.as_ref(),
+                ) {
+                    match output.result_performance_resolution() {
+                        Some(ResultPerformanceResolution::Accepted {
+                            judgments,
+                            miss_count,
+                            timing,
+                            combo_break,
+                            previous_best,
+                            ..
+                        }) if judgments == expected_judgments
+                            && miss_count == expected_miss_count
+                            && timing == expected_timing
+                            && combo_break == expected_combo_break
+                            && previous_best == expected_previous_best => {}
+                        resolution => replay_failures.push(format!(
+                            "episode {} tick {} performance differs: expected judgments={:?} miss_count={:?} timing={:?} combo_break={:?} previous_best={:?}, observed={:?}",
+                            episode.episode_id,
+                            sequence,
+                            expected_judgments,
+                            expected_miss_count,
+                            expected_timing,
+                            expected_combo_break,
+                            expected_previous_best,
+                            resolution,
+                        )),
+                    }
                 }
             }
             episodes += 1;
@@ -2222,14 +2306,11 @@ fn validate_label(draft: &ReviewDraft, label: &RegressionLabel) -> Result<(), Co
         if episode.episode_id.is_empty()
             || episode.expected_song_id.is_empty()
             || episode.expected_clear_type.is_empty()
-            || !episode.expected_result.savable
             || episode.expected_result.play_side != "one_player"
             || episode.expected_result.play_mode != "single_play"
             || episode.expected_result.play_type != PlayType::Single
             || !(1..=12).contains(&episode.expected_result.level)
-            || episode.expected_result.notes == 0
-            || episode.expected_result.current_score
-                > episode.expected_result.notes.saturating_mul(2)
+            || !valid_expected_result(&episode.expected_result)
             || episode.stable_sequences.is_empty()
             || episode
                 .stable_sequences
@@ -2258,6 +2339,80 @@ fn validate_label(draft: &ReviewDraft, label: &RegressionLabel) -> Result<(), Co
         return invalid("review negative frame is invalid");
     }
     Ok(())
+}
+
+fn valid_expected_result(expected: &ExpectedResult) -> bool {
+    let notes = expected.notes;
+    let Some(judgments) = expected.judgments.as_ref() else {
+        return false;
+    };
+    let Some(miss_count) = expected.miss_count.as_ref() else {
+        return false;
+    };
+    let Some(timing) = expected.timing.as_ref() else {
+        return false;
+    };
+    let Some(combo_break) = expected.combo_break.as_ref() else {
+        return false;
+    };
+    let Some(previous_best) = expected.previous_best.as_ref() else {
+        return false;
+    };
+    let previous_not_played = [
+        matches!(previous_best.clear_type, PreviousBestValue::NotPlayed),
+        matches!(previous_best.score, PreviousBestValue::NotPlayed),
+        matches!(previous_best.miss_count, PreviousBestValue::NotPlayed),
+    ];
+    notes > 0
+        && u64::from(expected.current_score) <= u64::from(notes) * 2
+        && judgments
+            .pgreat
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(judgments.great))
+            == Some(expected.current_score)
+        && [
+            judgments.pgreat,
+            judgments.great,
+            judgments.good,
+            judgments.bad,
+            judgments.poor,
+        ]
+        .into_iter()
+        .all(|value| value <= notes)
+        && valid_supplemental(miss_count, notes)
+        && valid_supplemental(&timing.fast, notes)
+        && valid_supplemental(&timing.slow, notes)
+        && valid_supplemental(combo_break, notes)
+        && valid_previous_clear(&previous_best.clear_type)
+        && valid_previous_numeric(&previous_best.score, notes.saturating_mul(2))
+        && valid_previous_numeric(&previous_best.miss_count, notes)
+        && (previous_not_played.into_iter().all(|value| value)
+            || previous_not_played.into_iter().all(|value| !value))
+}
+
+const fn valid_supplemental(value: &SupplementalResultValue<u32>, maximum: u32) -> bool {
+    match value {
+        SupplementalResultValue::Known { value } => *value <= maximum,
+        SupplementalResultValue::NotDisplayed | SupplementalResultValue::Unknown { .. } => true,
+    }
+}
+
+fn valid_previous_clear(value: &PreviousBestValue<String>) -> bool {
+    match value {
+        PreviousBestValue::Known { value } => resolve_clear_type(value) == Some(value.as_str()),
+        PreviousBestValue::NotPlayed
+        | PreviousBestValue::NotDisplayed
+        | PreviousBestValue::Unknown { .. } => true,
+    }
+}
+
+const fn valid_previous_numeric(value: &PreviousBestValue<u32>, maximum: u32) -> bool {
+    match value {
+        PreviousBestValue::Known { value } => *value <= maximum,
+        PreviousBestValue::NotPlayed
+        | PreviousBestValue::NotDisplayed
+        | PreviousBestValue::Unknown { .. } => true,
+    }
 }
 
 fn ensure_store(store: &Path) -> Result<(), CorpusError> {
@@ -2581,6 +2736,60 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<(T, Vec<u8>), 
     Ok((value, bytes))
 }
 
+fn read_regression_label(path: &Path) -> Result<(RegressionLabel, Vec<u8>), CorpusError> {
+    let metadata = path.metadata()?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_DOCUMENT_BYTES {
+        return invalid("document size is invalid");
+    }
+    let bytes = fs::read(path)?;
+    let value = serde_json::from_slice::<Value>(&bytes)?;
+    match value.get("schema").and_then(Value::as_str) {
+        Some(LABEL_SCHEMA) => Ok((serde_json::from_value(value)?, bytes)),
+        Some(LEGACY_LABEL_SCHEMA) => {
+            let legacy = serde_json::from_value::<LegacyRegressionLabel>(value)?;
+            if legacy
+                .episodes
+                .iter()
+                .any(|episode| !episode.expected_result.savable)
+            {
+                return invalid("legacy regression label contains an unsavable result");
+            }
+            let label = RegressionLabel {
+                schema: legacy.schema,
+                session_sha256: legacy.session_sha256,
+                disposition: legacy.disposition,
+                episodes: legacy
+                    .episodes
+                    .into_iter()
+                    .map(|episode| RegressionEpisode {
+                        episode_id: episode.episode_id,
+                        expected_song_id: episode.expected_song_id,
+                        expected_clear_type: episode.expected_clear_type,
+                        expected_result: ExpectedResult {
+                            play_side: episode.expected_result.play_side,
+                            play_mode: episode.expected_result.play_mode,
+                            play_type: episode.expected_result.play_type,
+                            difficulty: episode.expected_result.difficulty,
+                            level: episode.expected_result.level,
+                            notes: episode.expected_result.notes,
+                            current_score: episode.expected_result.current_score,
+                            judgments: None,
+                            miss_count: None,
+                            timing: None,
+                            combo_break: None,
+                            previous_best: None,
+                        },
+                        stable_sequences: episode.stable_sequences,
+                    })
+                    .collect(),
+                negative_frames: legacy.negative_frames,
+            };
+            Ok((label, bytes))
+        }
+        _ => invalid("regression label schema is unsupported"),
+    }
+}
+
 fn verify_file(path: &Path, expected_sha256: &str, expected_bytes: u64) -> Result<(), CorpusError> {
     let metadata = path.metadata()?;
     if !metadata.is_file()
@@ -2766,6 +2975,114 @@ mod tests {
         )
         .unwrap();
         assert_eq!(verify_session_events(&path, &manifest).unwrap(), 2);
+    }
+
+    fn expected_result() -> ExpectedResult {
+        ExpectedResult {
+            play_side: "one_player".to_owned(),
+            play_mode: "single_play".to_owned(),
+            play_type: PlayType::Single,
+            difficulty: Difficulty::Hyper,
+            level: 8,
+            notes: 100,
+            current_score: 150,
+            judgments: Some(ResultJudgments {
+                pgreat: 70,
+                great: 10,
+                good: 5,
+                bad: 3,
+                poor: 2,
+            }),
+            miss_count: Some(SupplementalResultValue::Known { value: 2 }),
+            timing: Some(ResultTiming {
+                fast: SupplementalResultValue::Known { value: 4 },
+                slow: SupplementalResultValue::Known { value: 5 },
+            }),
+            combo_break: Some(SupplementalResultValue::Known { value: 1 }),
+            previous_best: Some(PreviousBest {
+                clear_type: PreviousBestValue::Known {
+                    value: "CLEAR".to_owned(),
+                },
+                score: PreviousBestValue::Known { value: 140 },
+                miss_count: PreviousBestValue::Known { value: 3 },
+            }),
+        }
+    }
+
+    #[test]
+    fn v3_result_validation_rejects_unreplayable_typed_values() {
+        assert!(valid_expected_result(&expected_result()));
+
+        let mut overflow = expected_result();
+        overflow.miss_count = Some(SupplementalResultValue::Known { value: 101 });
+        assert!(!valid_expected_result(&overflow));
+
+        let mut inconsistent_no_play = expected_result();
+        inconsistent_no_play
+            .previous_best
+            .as_mut()
+            .unwrap()
+            .clear_type = PreviousBestValue::NotPlayed;
+        assert!(!valid_expected_result(&inconsistent_no_play));
+
+        let mut invalid_clear = expected_result();
+        invalid_clear.previous_best.as_mut().unwrap().clear_type = PreviousBestValue::Known {
+            value: "CLEER".to_owned(),
+        };
+        assert!(!valid_expected_result(&invalid_clear));
+
+        let mut score_overflow = expected_result();
+        score_overflow.notes = u32::MAX;
+        score_overflow.current_score = u32::MAX;
+        score_overflow.judgments = Some(ResultJudgments {
+            pgreat: u32::MAX,
+            great: 1,
+            good: 0,
+            bad: 0,
+            poor: 0,
+        });
+        assert!(!valid_expected_result(&score_overflow));
+    }
+
+    #[test]
+    fn invalid_v3_result_does_not_publish_an_active_suite() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = temporary.path().join("store");
+        let draft_path = temporary.path().join("draft.json");
+        let label_path = temporary.path().join("label.json");
+        let session_sha256 = "1".repeat(64);
+        let draft = ReviewDraft {
+            schema: DRAFT_SCHEMA.to_owned(),
+            session_sha256: session_sha256.clone(),
+            diagnostic_sha256: "2".repeat(64),
+            source_session_id: "session".to_owned(),
+            canonical_frames: vec![ReviewFrame {
+                sequence: 1,
+                artifact_sha256: "3".repeat(64),
+            }],
+            observation_count: 1,
+            completeness: "complete".to_owned(),
+        };
+        let mut invalid_result = expected_result();
+        invalid_result.miss_count = Some(SupplementalResultValue::Known { value: 101 });
+        let label = RegressionLabel {
+            schema: LABEL_SCHEMA.to_owned(),
+            session_sha256,
+            disposition: LabelDisposition::Include,
+            episodes: vec![RegressionEpisode {
+                episode_id: "episode-1".to_owned(),
+                expected_song_id: "song-1".to_owned(),
+                expected_clear_type: "CLEAR".to_owned(),
+                expected_result: invalid_result,
+                stable_sequences: vec![1],
+            }],
+            negative_frames: Vec::new(),
+        };
+        fs::write(&draft_path, canonical_json(&draft).unwrap()).unwrap();
+        fs::write(&label_path, canonical_json(&label).unwrap()).unwrap();
+
+        assert!(apply_review(&store, &draft_path, &label_path).is_err());
+        assert!(!store.join("active-suite.json").exists());
     }
 
     #[test]

@@ -41,7 +41,7 @@ be established, the field is `unknown`.
 | Field | Applicability predicate | Evidence required for `known` |
 | --- | --- | --- |
 | result state | Precondition for every result event | Unique result-screen anchors; transition, cut-in, overlay, and unknown classes reject |
-| savable | Always for a result candidate; must be `known(true)` to emit | Current admitted corpus slice provisionally fixes `true`; widening requires a unique positive or negative detector |
+| accepted play attempt | Precondition for result-event emission | The same attempt observed gameplay and result, and its result song confirms the selected or retry-inherited song; observing the decision transition is not required |
 | playside | Always | Current admitted corpus slice provisionally fixes 1P; widening requires unique 1P or 2P layout anchors |
 | play mode | Always | Current admitted corpus slice provisionally fixes SP; widening requires unique SP or DP evidence |
 | play type | Always | SP follows known SP mode; DP battle/non-battle needs explicit evidence and never defaults |
@@ -49,14 +49,17 @@ be established, the field is `unknown`.
 | difficulty and level | Always | Unique closed difficulty plus a catalog-unique chart; unreadable level may come from that chart, while a readable conflict rejects the chart |
 | notes | Always | Complete positive integer consistent with the recognized result layout |
 | current score | Always | Complete non-negative value satisfying `score <= 2 * notes` |
-| clear, DJ level, miss | Applicable after each field's presence predicate is independently calibrated | `clear` comes from the exact `CLEAR TYPE` field value, never the result background; each value must be unique and complete, and `miss <= notes` when present |
-| best/current/new, options, graph, play speed, dead/loveletter, rival/radar | Optional v1 capability only after its named layout and presence/absence predicates pass a dedicated release gate | Complete field-specific evidence; unsupported capability is `not_applicable`, enabled-but-unrecognized capability is `unknown` |
+| judgments | Always | All five of `pgreat`, `great`, `good`, `bad`, and `poor` are complete, each is at most notes, and `current score == 2 * pgreat + great`; their sum is not constrained to notes |
+| clear | Always for the admitted result layout | One registered clear-type value from the exact `CLEAR TYPE` field, never the result background |
+| miss count, fast, slow, combo break | Supplemental result values | Complete non-negative value at most notes, a displayed dash as `not_displayed`, or an explicit `unknown(reason)`; unknown does not block the event |
+| previous best clear/score/miss | Reference snapshot | Each field is independently `known`, `not_displayed`, or `unknown(reason)`; recognized `NO PLAY` normalizes all three to `not_played`; score is at most `2 * notes` and miss is at most notes |
+| DJ level, score delta, NEW RECORD, percentage | Derived or excluded | Do not save from OCR; derive from score, notes, and previous score when needed |
+| options, graph, play speed, dead/loveletter, rival/radar | Deferred capability only after its named layout and presence/absence predicates pass a dedicated release gate | Complete field-specific evidence; no placeholder or fixed RANDOM value is emitted |
 
-A result event requires all mandatory rows to be `known`, `savable == true`,
-catalog consistency, and temporal stability. Optional fields may be
-`not_applicable`; an optional field that is applicable but unknown does not get a
-guessed value and may block full-capability advertisement without blocking the
-minimal result event.
+A result event requires all mandatory rows to be `known`, an accepted play attempt, catalog
+consistency, and temporal stability. Missing gameplay, an unlinked result, song conflict, or an
+abandoned attempt suppresses it. Supplemental and previous-best unknowns do not get guessed values
+and do not block the minimal result event.
 
 ## Music select
 

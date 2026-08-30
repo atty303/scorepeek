@@ -24,7 +24,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use scorepeek::catalog::{Difficulty, PlayType, ScorepeekSongId};
-use scorepeek::recognition::{ParsedResultFields, ResultChartResolution};
+use scorepeek::recognition::{
+    ParsedResultFields, PreviousBest, ResultChartResolution, ResultJudgments,
+    ResultPerformanceResolution, ResultTiming, SupplementalResultValue,
+};
 use scorepeek::temporal_recognition::{
     MusicSelectTemporalPolicy, MusicSelectTemporalReducer, MusicSelectTemporalState,
     MusicSelectTemporalTransitionReason, ResultTemporalReducer, ResultTemporalState,
@@ -47,6 +50,10 @@ pub struct RunEvent {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the event schema remains flat and values cross an already bounded queue"
+)]
 pub enum RunEventKind {
     WatcherStarted {
         invocation_id: String,
@@ -85,6 +92,8 @@ pub enum RunEventKind {
         parsed_result_fields: Option<ParsedResultFields>,
         #[serde(skip_serializing_if = "Option::is_none")]
         result_chart_resolution: Option<ResultChartResolution>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result_performance_resolution: Option<ResultPerformanceResolution>,
         #[serde(skip_serializing_if = "Option::is_none")]
         current_score_ocr_resolution: Option<Value>,
         song_resolution_presentation: Box<SongResolutionPresentation>,
@@ -144,8 +153,10 @@ pub enum RunEventKind {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ResultDomainEvent {
     pub contract: String,
+    pub attempt_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_attempt_id: Option<u64>,
     pub scorepeek_song_id: ScorepeekSongId,
-    pub savable: bool,
     pub play_side: String,
     pub play_mode: String,
     pub play_type: PlayType,
@@ -154,6 +165,11 @@ pub struct ResultDomainEvent {
     pub notes: u32,
     pub current_score: u32,
     pub clear_type: String,
+    pub judgments: ResultJudgments,
+    pub miss_count: SupplementalResultValue<u32>,
+    pub timing: ResultTiming,
+    pub combo_break: SupplementalResultValue<u32>,
+    pub previous_best: PreviousBest,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -814,6 +830,7 @@ impl RoutineOutput {
             screen,
             fields,
             result_chart_resolution,
+            result_performance_resolution,
             song_resolution_presentation,
             ..
         } = &event.kind
@@ -829,6 +846,7 @@ impl RoutineOutput {
                 *monotonic_end_ms,
                 fields,
                 result_chart_resolution.as_ref(),
+                result_performance_resolution.as_ref(),
                 song_resolution_presentation,
             ),
             "music_select" => self.reduce_music_select_observation(
@@ -842,7 +860,11 @@ impl RoutineOutput {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "the reducer keeps ordered temporal, attempt, and domain emission in one path"
+    )]
     fn reduce_result_observation(
         &mut self,
         session_id: Option<&String>,
@@ -851,6 +873,7 @@ impl RoutineOutput {
         monotonic_end_ms: u64,
         fields: &Value,
         result_chart_resolution: Option<&ResultChartResolution>,
+        result_performance_resolution: Option<&ResultPerformanceResolution>,
         song_resolution_presentation: &SongResolutionPresentation,
     ) -> Result<(), String> {
         let observed_song = match song_resolution_presentation {
@@ -907,18 +930,32 @@ impl RoutineOutput {
                     current_score,
                     ..
                 }),
+                Some(ResultPerformanceResolution::Accepted {
+                    judgments,
+                    miss_count,
+                    timing,
+                    combo_break,
+                    previous_best,
+                    ..
+                }),
             ) = (
                 self.stable_result_song.as_ref(),
                 self.temporal_result.state().clear_type.stable_value(),
                 result_chart_resolution,
+                result_performance_resolution,
             )
             && Some(stable_song.scorepeek_song_id) == observed_song
             && Some(stable_clear_type.as_str()) == observed_clear_type.as_deref()
+            && let Some(accepted_attempt) = self.play_attempt.accepted_result()
+            && accepted_attempt.song.scorepeek_song_id == stable_song.scorepeek_song_id
         {
+            let attempt_id = accepted_attempt.attempt_id;
+            let parent_attempt_id = accepted_attempt.parent_attempt_id;
             let result = ResultDomainEvent {
-                contract: "scorepeek-result-detected-v1".to_owned(),
+                contract: "scorepeek-result-detected-v2".to_owned(),
+                attempt_id,
+                parent_attempt_id,
                 scorepeek_song_id: stable_song.scorepeek_song_id,
-                savable: true,
                 play_side: "one_player".to_owned(),
                 play_mode: "single_play".to_owned(),
                 play_type: chart.key.play_type,
@@ -927,6 +964,11 @@ impl RoutineOutput {
                 notes: chart.notes,
                 current_score: *current_score,
                 clear_type: stable_clear_type.clone(),
+                judgments: judgments.clone(),
+                miss_count: miss_count.clone(),
+                timing: timing.clone(),
+                combo_break: combo_break.clone(),
+                previous_best: previous_best.clone(),
             };
             self.publish_one(&RunEvent {
                 schema: "scorepeek-run-event-v2".to_owned(),
@@ -2218,6 +2260,29 @@ mod tests {
                     },
                     current_score: 1_286,
                 }),
+                result_performance_resolution: Some(ResultPerformanceResolution::Accepted {
+                    resolver_id: "scorepeek-result-performance-v1".to_owned(),
+                    judgments: ResultJudgments {
+                        pgreat: 600,
+                        great: 86,
+                        good: 10,
+                        bad: 5,
+                        poor: 3,
+                    },
+                    miss_count: SupplementalResultValue::Known { value: 3 },
+                    timing: ResultTiming {
+                        fast: SupplementalResultValue::Known { value: 20 },
+                        slow: SupplementalResultValue::Known { value: 21 },
+                    },
+                    combo_break: SupplementalResultValue::Known { value: 2 },
+                    previous_best: PreviousBest {
+                        clear_type: scorepeek::recognition::PreviousBestValue::Known {
+                            value: "CLEAR".to_owned(),
+                        },
+                        score: scorepeek::recognition::PreviousBestValue::Known { value: 1_200 },
+                        miss_count: scorepeek::recognition::PreviousBestValue::Known { value: 4 },
+                    },
+                }),
                 current_score_ocr_resolution: None,
                 song_resolution_presentation: Box::new(SongResolutionPresentation::Accepted {
                     reason: None,
@@ -2257,6 +2322,24 @@ mod tests {
         }
     }
 
+    fn prepare_accepted_attempt(output: &mut RoutineOutput) {
+        let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
+        let song = SongPresentation {
+            scorepeek_song_id: song_id,
+            display_titles: vec!["CATALOG TITLE".to_owned()],
+            artist: "CATALOG ARTIST".to_owned(),
+        };
+        output
+            .play_attempt
+            .observe_selection(Some(song), Some(SelectionSource::Stable), 0);
+        output
+            .play_attempt
+            .observe_screen(PlayAttemptScreen::Play, 0);
+        output
+            .play_attempt
+            .observe_screen(PlayAttemptScreen::Result, 0);
+    }
+
     fn unknown_result_event(sequence: u64) -> RunEvent {
         let mut event = accepted_result_event(sequence);
         let RunEventKind::FieldObservation {
@@ -2289,6 +2372,22 @@ mod tests {
             unreachable!();
         };
         *result_chart_resolution = None;
+        event
+    }
+
+    fn result_with_rejected_performance(sequence: u64) -> RunEvent {
+        let mut event = accepted_result_event(sequence);
+        let RunEventKind::FieldObservation {
+            result_performance_resolution,
+            ..
+        } = &mut event.kind
+        else {
+            unreachable!();
+        };
+        *result_performance_resolution = Some(ResultPerformanceResolution::Unknown {
+            resolver_id: "scorepeek-result-performance-v1".to_owned(),
+            reason: scorepeek::recognition::ResultPerformanceUnknownReason::ScoreBreakdownMismatch,
+        });
         event
     }
 
@@ -2512,10 +2611,11 @@ mod tests {
         let mut snapshot = String::new();
         reader.read_line(&mut snapshot).unwrap();
         let mut output = test_output(state, channel);
+        prepare_accepted_attempt(&mut output);
 
         output.publish(&accepted_result_event(1)).unwrap();
         output.publish(&accepted_result_event(2)).unwrap();
-        let events = read_events(&mut reader, 5);
+        let events = read_events(&mut reader, 6);
         assert_eq!(events[0]["event"], "field_observation");
         assert_eq!(events[1]["event"], "temporal_result_changed");
         assert_eq!(events[1]["state"]["song"]["status"], "pending");
@@ -2523,11 +2623,23 @@ mod tests {
         assert_eq!(events[3]["event"], "temporal_result_changed");
         assert_eq!(events[3]["state"]["song"]["status"], "stable");
         assert_eq!(events[3]["state"]["clear_type"]["status"], "stable");
-        assert_eq!(events[4]["event"], "result_detected");
-        assert_eq!(events[4]["result"]["play_side"], "one_player");
-        assert_eq!(events[4]["result"]["play_mode"], "single_play");
-        assert_eq!(events[4]["result"]["difficulty"], "hyper");
-        assert_eq!(events[4]["result"]["current_score"], 1_286);
+        assert_eq!(events[4]["event"], "play_attempt_changed");
+        assert_eq!(
+            events[4]["state"]["attempt"]["result_relation"],
+            "confirmed"
+        );
+        assert_eq!(events[5]["event"], "result_detected");
+        assert_eq!(
+            events[5]["result"]["contract"],
+            "scorepeek-result-detected-v2"
+        );
+        assert_eq!(events[5]["result"]["attempt_id"], 1);
+        assert!(events[5]["result"].get("savable").is_none());
+        assert_eq!(events[5]["result"]["play_side"], "one_player");
+        assert_eq!(events[5]["result"]["play_mode"], "single_play");
+        assert_eq!(events[5]["result"]["difficulty"], "hyper");
+        assert_eq!(events[5]["result"]["current_score"], 1_286);
+        assert_eq!(events[5]["result"]["judgments"]["pgreat"], 600);
         assert_eq!(
             events[3]["stable_song"]["display_titles"][0],
             "CATALOG TITLE"
@@ -2537,7 +2649,7 @@ mod tests {
                 .iter()
                 .map(|event| event["channel_sequence"].as_u64().unwrap())
                 .collect::<Vec<_>>(),
-            vec![1, 2, 3, 4, 5]
+            vec![1, 2, 3, 4, 5, 6]
         );
 
         output.publish(&unknown_result_event(3)).unwrap();
@@ -2545,7 +2657,7 @@ mod tests {
         reader.read_line(&mut line).unwrap();
         let raw_unknown: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(raw_unknown["event"], "field_observation");
-        assert_eq!(raw_unknown["channel_sequence"], 6);
+        assert_eq!(raw_unknown["channel_sequence"], 7);
         let state = output.state.lock().unwrap();
         assert_stabilized_fields(&state, "stable");
         drop(state);
@@ -2567,7 +2679,7 @@ mod tests {
         assert_eq!(boundary_events[0]["event"], "screen_changed");
         assert_eq!(boundary_events[1]["event"], "temporal_result_changed");
         assert_eq!(boundary_events[1]["state"]["song"]["status"], "empty");
-        assert_eq!(boundary_events[1]["channel_sequence"], 8);
+        assert_eq!(boundary_events[1]["channel_sequence"], 9);
 
         output.publish(&accepted_result_event(5)).unwrap();
         let after_boundary = read_events(&mut reader, 2);
@@ -2588,7 +2700,7 @@ mod tests {
         let session_events = read_events(&mut reader, 2);
         assert_eq!(session_events[0]["event"], "session_finished");
         assert_eq!(session_events[1]["event"], "temporal_result_changed");
-        assert_eq!(session_events[1]["channel_sequence"], 12);
+        assert_eq!(session_events[1]["channel_sequence"], 13);
     }
 
     #[test]
@@ -2604,24 +2716,32 @@ mod tests {
         let mut snapshot = String::new();
         reader.read_line(&mut snapshot).unwrap();
         let mut output = test_output(state, channel);
+        prepare_accepted_attempt(&mut output);
 
         output.publish(&accepted_result_without_chart(1)).unwrap();
         output.publish(&accepted_result_without_chart(2)).unwrap();
-        let stabilization = read_events(&mut reader, 4);
+        let stabilization = read_events(&mut reader, 5);
         assert!(
             stabilization
                 .iter()
                 .all(|event| event["event"] != "result_detected")
         );
         assert_eq!(stabilization[3]["state"]["song"]["status"], "stable");
+        assert_eq!(stabilization[4]["event"], "play_attempt_changed");
 
-        output.publish(&accepted_result_event(3)).unwrap();
+        output
+            .publish(&result_with_rejected_performance(3))
+            .unwrap();
+        let rejected = read_events(&mut reader, 1);
+        assert_eq!(rejected[0]["event"], "field_observation");
+
+        output.publish(&accepted_result_event(4)).unwrap();
         let completed = read_events(&mut reader, 2);
         assert_eq!(completed[0]["event"], "field_observation");
         assert_eq!(completed[1]["event"], "result_detected");
-        assert_eq!(completed[1]["source_sequence"], 3);
+        assert_eq!(completed[1]["source_sequence"], 4);
 
-        output.publish(&accepted_result_event(4)).unwrap();
+        output.publish(&accepted_result_event(5)).unwrap();
         assert_eq!(read_events(&mut reader, 1)[0]["event"], "field_observation");
     }
 
@@ -3321,6 +3441,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one rendering test covers both retained result entries and layout sizes"
+    )]
     fn result_history_tui_prioritizes_song_and_play_result_without_json() {
         let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
         let song = SongPresentation {
@@ -3337,9 +3461,10 @@ mod tests {
             1,
             42,
             ResultDomainEvent {
-                contract: "scorepeek-result-detected-v1".to_owned(),
+                contract: "scorepeek-result-detected-v2".to_owned(),
+                attempt_id: 1,
+                parent_attempt_id: None,
                 scorepeek_song_id: song_id,
-                savable: true,
                 play_side: "one_player".to_owned(),
                 play_mode: "single_play".to_owned(),
                 play_type: PlayType::Single,
@@ -3348,6 +3473,26 @@ mod tests {
                 notes: 764,
                 current_score: 1_286,
                 clear_type: "HARD CLEAR".to_owned(),
+                judgments: ResultJudgments {
+                    pgreat: 600,
+                    great: 86,
+                    good: 10,
+                    bad: 5,
+                    poor: 3,
+                },
+                miss_count: SupplementalResultValue::Known { value: 3 },
+                timing: ResultTiming {
+                    fast: SupplementalResultValue::Known { value: 20 },
+                    slow: SupplementalResultValue::Known { value: 21 },
+                },
+                combo_break: SupplementalResultValue::Known { value: 2 },
+                previous_best: PreviousBest {
+                    clear_type: scorepeek::recognition::PreviousBestValue::Known {
+                        value: "CLEAR".to_owned(),
+                    },
+                    score: scorepeek::recognition::PreviousBestValue::Known { value: 1_200 },
+                    miss_count: scorepeek::recognition::PreviousBestValue::Known { value: 4 },
+                },
             },
         );
         state.reduce(&result, &result.to_value().unwrap());
@@ -3390,9 +3535,10 @@ mod tests {
             2,
             84,
             ResultDomainEvent {
-                contract: "scorepeek-result-detected-v1".to_owned(),
+                contract: "scorepeek-result-detected-v2".to_owned(),
+                attempt_id: 2,
+                parent_attempt_id: None,
                 scorepeek_song_id: second_song_id,
-                savable: true,
                 play_side: "one_player".to_owned(),
                 play_mode: "single_play".to_owned(),
                 play_type: PlayType::Single,
@@ -3401,6 +3547,24 @@ mod tests {
                 notes: 1_000,
                 current_score: 1_500,
                 clear_type: "FAILED".to_owned(),
+                judgments: ResultJudgments {
+                    pgreat: 700,
+                    great: 100,
+                    good: 20,
+                    bad: 10,
+                    poor: 5,
+                },
+                miss_count: SupplementalResultValue::NotDisplayed,
+                timing: ResultTiming {
+                    fast: SupplementalResultValue::Known { value: 30 },
+                    slow: SupplementalResultValue::Known { value: 31 },
+                },
+                combo_break: SupplementalResultValue::Known { value: 5 },
+                previous_best: PreviousBest {
+                    clear_type: scorepeek::recognition::PreviousBestValue::NotPlayed,
+                    score: scorepeek::recognition::PreviousBestValue::NotPlayed,
+                    miss_count: scorepeek::recognition::PreviousBestValue::NotPlayed,
+                },
             },
         );
         state.reduce(&second, &second.to_value().unwrap());
@@ -3439,9 +3603,10 @@ mod tests {
                 1,
                 source_sequence,
                 ResultDomainEvent {
-                    contract: "scorepeek-result-detected-v1".to_owned(),
+                    contract: "scorepeek-result-detected-v2".to_owned(),
+                    attempt_id: source_sequence,
+                    parent_attempt_id: None,
                     scorepeek_song_id: song_id,
-                    savable: true,
                     play_side: "one_player".to_owned(),
                     play_mode: "single_play".to_owned(),
                     play_type: PlayType::Single,
@@ -3450,6 +3615,24 @@ mod tests {
                     notes: 100,
                     current_score: 150,
                     clear_type: "CLEAR".to_owned(),
+                    judgments: ResultJudgments {
+                        pgreat: 70,
+                        great: 10,
+                        good: 5,
+                        bad: 3,
+                        poor: 2,
+                    },
+                    miss_count: SupplementalResultValue::Known { value: 2 },
+                    timing: ResultTiming {
+                        fast: SupplementalResultValue::Known { value: 4 },
+                        slow: SupplementalResultValue::Known { value: 5 },
+                    },
+                    combo_break: SupplementalResultValue::Known { value: 1 },
+                    previous_best: PreviousBest {
+                        clear_type: scorepeek::recognition::PreviousBestValue::NotPlayed,
+                        score: scorepeek::recognition::PreviousBestValue::NotPlayed,
+                        miss_count: scorepeek::recognition::PreviousBestValue::NotPlayed,
+                    },
                 },
             );
             state.reduce(&result, &result.to_value().unwrap());

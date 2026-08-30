@@ -28,8 +28,12 @@ pub use music_select_resolver::{
     MusicSelectSongUnknownReason, RankedMusicSelectSongCandidate, resolve_music_select_song,
 };
 pub use result_fields::{
-    ParsedResultFields, RESULT_FIELD_RESOLVER_ID, ResultChartResolution, ResultChartUnknownReason,
-    ResultFieldUnknownReason, ResultFieldValue, matching_single_play_songs, resolve_result_chart,
+    ParsedResultFields, PreviousBest, PreviousBestValue, RESULT_FIELD_RESOLVER_ID,
+    RESULT_PERFORMANCE_RESOLVER_ID, ResultChartResolution, ResultChartUnknownReason,
+    ResultFieldUnknownReason, ResultFieldValue, ResultJudgments, ResultPerformanceResolution,
+    ResultPerformanceUnknownReason, ResultTiming, SupplementalResultValue,
+    matching_single_play_songs, resolve_clear_type, resolve_result_chart,
+    resolve_result_performance,
 };
 pub use result_resolver::{
     RESULT_SONG_CHART_ASSISTED_RESOLVER_ID, RESULT_SONG_RESOLVER_ID, RankedResultSongCandidate,
@@ -500,6 +504,18 @@ pub struct ResultLayout {
     pub level: Roi,
     pub notes: Roi,
     pub current_score: Roi,
+    pub previous_clear_type: Roi,
+    pub previous_score: Roi,
+    pub previous_miss_count: Roi,
+    pub miss_count: Roi,
+    pub pgreat: Roi,
+    pub great: Roi,
+    pub good: Roi,
+    pub bad: Roi,
+    pub poor: Roi,
+    pub fast: Roi,
+    pub slow: Roi,
+    pub combo_break: Roi,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
@@ -661,6 +677,18 @@ pub enum ResultCropField {
     Level,
     Notes,
     CurrentScore,
+    PreviousClearType,
+    PreviousScore,
+    PreviousMissCount,
+    MissCount,
+    Pgreat,
+    Great,
+    Good,
+    Bad,
+    Poor,
+    Fast,
+    Slow,
+    ComboBreak,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -887,6 +915,18 @@ pub struct ResultScreenRgb8Crops {
     pub level: Rgb8Crop,
     pub notes: Rgb8Crop,
     pub current_score: Rgb8Crop,
+    pub previous_clear_type: Rgb8Crop,
+    pub previous_score: Rgb8Crop,
+    pub previous_miss_count: Rgb8Crop,
+    pub miss_count: Rgb8Crop,
+    pub pgreat: Rgb8Crop,
+    pub great: Rgb8Crop,
+    pub good: Rgb8Crop,
+    pub bad: Rgb8Crop,
+    pub poor: Rgb8Crop,
+    pub fast: Rgb8Crop,
+    pub slow: Rgb8Crop,
+    pub combo_break: Rgb8Crop,
 }
 
 /// Every currently measured music-select field crop used by one selection observation.
@@ -902,6 +942,10 @@ pub struct MusicSelectScreenRgb8Crops {
 
 /// Measured field crops for exactly one classified screen.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "both variants are short-lived fixed-layout crop views and boxing would add allocation"
+)]
 pub enum ScreenRgb8Crops {
     Result(ResultScreenRgb8Crops),
     MusicSelect(MusicSelectScreenRgb8Crops),
@@ -917,6 +961,18 @@ pub enum ScreenTextField {
     ResultLevel,
     ResultNotes,
     ResultCurrentScore,
+    ResultPreviousClearType,
+    ResultPreviousScore,
+    ResultPreviousMissCount,
+    ResultMissCount,
+    ResultPgreat,
+    ResultGreat,
+    ResultGood,
+    ResultBad,
+    ResultPoor,
+    ResultFast,
+    ResultSlow,
+    ResultComboBreak,
     MusicSelectCentralTitle,
     MusicSelectArtist,
     MusicSelectSelectedChart,
@@ -934,6 +990,18 @@ impl ScreenTextField {
             Self::ResultLevel => "result_level",
             Self::ResultNotes => "result_notes",
             Self::ResultCurrentScore => "result_current_score",
+            Self::ResultPreviousClearType => "result_previous_clear_type",
+            Self::ResultPreviousScore => "result_previous_score",
+            Self::ResultPreviousMissCount => "result_previous_miss_count",
+            Self::ResultMissCount => "result_miss_count",
+            Self::ResultPgreat => "result_pgreat",
+            Self::ResultGreat => "result_great",
+            Self::ResultGood => "result_good",
+            Self::ResultBad => "result_bad",
+            Self::ResultPoor => "result_poor",
+            Self::ResultFast => "result_fast",
+            Self::ResultSlow => "result_slow",
+            Self::ResultComboBreak => "result_combo_break",
             Self::MusicSelectCentralTitle => "music_select_central_title",
             Self::MusicSelectArtist => "music_select_artist",
             Self::MusicSelectSelectedChart => "music_select_selected_chart",
@@ -943,7 +1011,7 @@ impl ScreenTextField {
 }
 
 /// Complete result-screen field observations from the currently registered observers.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ResultScreenFieldObservations {
     pub title: DynamicTextObservation,
     pub artist: DynamicTextObservation,
@@ -952,6 +1020,18 @@ pub struct ResultScreenFieldObservations {
     pub level: DynamicTextObservation,
     pub notes: DynamicTextObservation,
     pub current_score: DynamicTextObservation,
+    pub previous_clear_type: DynamicTextObservation,
+    pub previous_score: DynamicTextObservation,
+    pub previous_miss_count: DynamicTextObservation,
+    pub miss_count: DynamicTextObservation,
+    pub pgreat: DynamicTextObservation,
+    pub great: DynamicTextObservation,
+    pub good: DynamicTextObservation,
+    pub bad: DynamicTextObservation,
+    pub poor: DynamicTextObservation,
+    pub fast: DynamicTextObservation,
+    pub slow: DynamicTextObservation,
+    pub combo_break: DynamicTextObservation,
 }
 
 /// Complete music-select field observations from the currently registered observers.
@@ -965,6 +1045,10 @@ pub struct MusicSelectScreenFieldObservations {
 
 /// Complete field-observer output for exactly one classified screen.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the bounded worker output retains a flat screen-specific observation schema"
+)]
 pub enum ScreenFieldObservations {
     Result(ResultScreenFieldObservations),
     MusicSelect(MusicSelectScreenFieldObservations),
@@ -989,7 +1073,7 @@ impl ScreenFieldObservations {
     #[must_use]
     pub const fn diagnostic_field_counts(&self) -> (u8, u8) {
         match self {
-            Self::Result(_) => (3, 4),
+            Self::Result(_) => (19, 0),
             Self::MusicSelect(_) => (3, 1),
         }
     }
@@ -1052,6 +1136,27 @@ pub fn observe_screen_fields<E>(
                 level: observe(ScreenTextField::ResultLevel, &crops.level)?,
                 notes: observe(ScreenTextField::ResultNotes, &crops.notes)?,
                 current_score: observe(ScreenTextField::ResultCurrentScore, &crops.current_score)?,
+                previous_clear_type: observe(
+                    ScreenTextField::ResultPreviousClearType,
+                    &crops.previous_clear_type,
+                )?,
+                previous_score: observe(
+                    ScreenTextField::ResultPreviousScore,
+                    &crops.previous_score,
+                )?,
+                previous_miss_count: observe(
+                    ScreenTextField::ResultPreviousMissCount,
+                    &crops.previous_miss_count,
+                )?,
+                miss_count: observe(ScreenTextField::ResultMissCount, &crops.miss_count)?,
+                pgreat: observe(ScreenTextField::ResultPgreat, &crops.pgreat)?,
+                great: observe(ScreenTextField::ResultGreat, &crops.great)?,
+                good: observe(ScreenTextField::ResultGood, &crops.good)?,
+                bad: observe(ScreenTextField::ResultBad, &crops.bad)?,
+                poor: observe(ScreenTextField::ResultPoor, &crops.poor)?,
+                fast: observe(ScreenTextField::ResultFast, &crops.fast)?,
+                slow: observe(ScreenTextField::ResultSlow, &crops.slow)?,
+                combo_break: observe(ScreenTextField::ResultComboBreak, &crops.combo_break)?,
             })
         }
         ScreenRgb8Crops::MusicSelect(crops) => {
@@ -1235,6 +1340,18 @@ impl CanonicalLayout {
             layout.result.level,
             layout.result.notes,
             layout.result.current_score,
+            layout.result.previous_clear_type,
+            layout.result.previous_score,
+            layout.result.previous_miss_count,
+            layout.result.miss_count,
+            layout.result.pgreat,
+            layout.result.great,
+            layout.result.good,
+            layout.result.bad,
+            layout.result.poor,
+            layout.result.fast,
+            layout.result.slow,
+            layout.result.combo_break,
             layout.music_select.header,
             layout.music_select.label,
             layout.music_select.level_column,
@@ -1735,6 +1852,38 @@ pub fn export_result_crops(
             "current-score.ppm",
             routed.current_score,
         ),
+        (
+            ResultCropField::PreviousClearType,
+            "previous-clear-type.ppm",
+            routed.previous_clear_type,
+        ),
+        (
+            ResultCropField::PreviousScore,
+            "previous-score.ppm",
+            routed.previous_score,
+        ),
+        (
+            ResultCropField::PreviousMissCount,
+            "previous-miss-count.ppm",
+            routed.previous_miss_count,
+        ),
+        (
+            ResultCropField::MissCount,
+            "miss-count.ppm",
+            routed.miss_count,
+        ),
+        (ResultCropField::Pgreat, "pgreat.ppm", routed.pgreat),
+        (ResultCropField::Great, "great.ppm", routed.great),
+        (ResultCropField::Good, "good.ppm", routed.good),
+        (ResultCropField::Bad, "bad.ppm", routed.bad),
+        (ResultCropField::Poor, "poor.ppm", routed.poor),
+        (ResultCropField::Fast, "fast.ppm", routed.fast),
+        (ResultCropField::Slow, "slow.ppm", routed.slow),
+        (
+            ResultCropField::ComboBreak,
+            "combo-break.ppm",
+            routed.combo_break,
+        ),
     ];
     let mut crops = Vec::with_capacity(selections.len());
     for (field, filename, crop) in selections {
@@ -1755,7 +1904,7 @@ pub fn export_result_crops(
         });
     }
     let artifact = ResultCropArtifact {
-        schema: "scorepeek-private-canonical-result-crops-v1".to_owned(),
+        schema: "scorepeek-private-canonical-result-crops-v2".to_owned(),
         frame_id: frame_id.to_owned(),
         frame_extraction_sha256: snapshot.frame_extraction_sha256,
         canonical_frame_sha256: snapshot.canonical_frame_sha256,
@@ -1966,6 +2115,18 @@ pub fn route_screen_rgb8_crops(
             level: crop(pixels, canonical.result.level)?,
             notes: crop(pixels, canonical.result.notes)?,
             current_score: crop(pixels, canonical.result.current_score)?,
+            previous_clear_type: crop(pixels, canonical.result.previous_clear_type)?,
+            previous_score: crop(pixels, canonical.result.previous_score)?,
+            previous_miss_count: crop(pixels, canonical.result.previous_miss_count)?,
+            miss_count: crop(pixels, canonical.result.miss_count)?,
+            pgreat: crop(pixels, canonical.result.pgreat)?,
+            great: crop(pixels, canonical.result.great)?,
+            good: crop(pixels, canonical.result.good)?,
+            bad: crop(pixels, canonical.result.bad)?,
+            poor: crop(pixels, canonical.result.poor)?,
+            fast: crop(pixels, canonical.result.fast)?,
+            slow: crop(pixels, canonical.result.slow)?,
+            combo_break: crop(pixels, canonical.result.combo_break)?,
         })),
         ScreenClass::MusicSelect => Ok(ScreenRgb8Crops::MusicSelect(MusicSelectScreenRgb8Crops {
             canonical_layout_sha256: CanonicalLayout::sha256(),
@@ -2203,6 +2364,10 @@ fn read_integrated_context_crop_artifact(
     Ok(artifact)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "strict admission validates every ordered result crop in one versioned contract"
+)]
 pub(super) fn read_title_crop_artifact(
     directory: &Path,
     expected_manifest_sha256: &str,
@@ -2223,7 +2388,7 @@ pub(super) fn read_title_crop_artifact(
     }
     let artifact: ResultCropArtifact = serde_json::from_slice(&manifest_bytes)?;
     if canonical_evidence_json(&artifact)? != manifest_bytes
-        || artifact.schema != "scorepeek-private-canonical-result-crops-v1"
+        || artifact.schema != "scorepeek-private-canonical-result-crops-v2"
         || artifact.frame_id.is_empty()
         || !valid_sha256(&artifact.frame_extraction_sha256)
         || !valid_sha256(&artifact.canonical_frame_sha256)
@@ -2252,6 +2417,38 @@ pub(super) fn read_title_crop_artifact(
             ResultCropField::CurrentScore,
             "current-score.ppm",
             layout.result.current_score,
+        ),
+        (
+            ResultCropField::PreviousClearType,
+            "previous-clear-type.ppm",
+            layout.result.previous_clear_type,
+        ),
+        (
+            ResultCropField::PreviousScore,
+            "previous-score.ppm",
+            layout.result.previous_score,
+        ),
+        (
+            ResultCropField::PreviousMissCount,
+            "previous-miss-count.ppm",
+            layout.result.previous_miss_count,
+        ),
+        (
+            ResultCropField::MissCount,
+            "miss-count.ppm",
+            layout.result.miss_count,
+        ),
+        (ResultCropField::Pgreat, "pgreat.ppm", layout.result.pgreat),
+        (ResultCropField::Great, "great.ppm", layout.result.great),
+        (ResultCropField::Good, "good.ppm", layout.result.good),
+        (ResultCropField::Bad, "bad.ppm", layout.result.bad),
+        (ResultCropField::Poor, "poor.ppm", layout.result.poor),
+        (ResultCropField::Fast, "fast.ppm", layout.result.fast),
+        (ResultCropField::Slow, "slow.ppm", layout.result.slow),
+        (
+            ResultCropField::ComboBreak,
+            "combo-break.ppm",
+            layout.result.combo_break,
         ),
     ];
     if artifact.crops.len() != expected.len() {
@@ -2558,7 +2755,7 @@ mod tests {
         let ScreenFieldObservations::Result(result) = result else {
             panic!("result crops produced another screen output");
         };
-        assert_eq!(result_calls, 7);
+        assert_eq!(result_calls, 19);
         assert_eq!(result.title.open_text, "result-1");
         assert_eq!(result.artist.open_text, "result-2");
         assert_eq!(result.clear_type.open_text, "result-3");
@@ -2566,6 +2763,18 @@ mod tests {
         assert_eq!(result.level.open_text, "result-5");
         assert_eq!(result.notes.open_text, "result-6");
         assert_eq!(result.current_score.open_text, "result-7");
+        assert_eq!(result.previous_clear_type.open_text, "result-8");
+        assert_eq!(result.previous_score.open_text, "result-9");
+        assert_eq!(result.previous_miss_count.open_text, "result-10");
+        assert_eq!(result.miss_count.open_text, "result-11");
+        assert_eq!(result.pgreat.open_text, "result-12");
+        assert_eq!(result.great.open_text, "result-13");
+        assert_eq!(result.good.open_text, "result-14");
+        assert_eq!(result.bad.open_text, "result-15");
+        assert_eq!(result.poor.open_text, "result-16");
+        assert_eq!(result.fast.open_text, "result-17");
+        assert_eq!(result.slow.open_text, "result-18");
+        assert_eq!(result.combo_break.open_text, "result-19");
 
         let music_crops =
             route_screen_rgb8_crops(&vec![0; CANONICAL_BYTES], ScreenClass::MusicSelect).unwrap();
@@ -2912,9 +3121,9 @@ mod tests {
         let artifact: ResultCropArtifactForTest = serde_json::from_slice(&manifest).unwrap();
         assert_eq!(
             artifact.schema,
-            "scorepeek-private-canonical-result-crops-v1"
+            "scorepeek-private-canonical-result-crops-v2"
         );
-        assert_eq!(artifact.crops.len(), 7);
+        assert_eq!(artifact.crops.len(), 19);
         assert_eq!(artifact.crops[0].field, "title");
         assert_eq!(artifact.crops[0].roi, layout.result.title);
         assert_eq!(artifact.crops[0].bytes, 600 * 50 * 3 + 14);

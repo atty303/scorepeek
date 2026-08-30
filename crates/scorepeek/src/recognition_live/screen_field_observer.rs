@@ -2,10 +2,12 @@ use scorepeek::catalog::Catalog;
 use scorepeek::recognition::{
     CatalogCandidateDomain, CatalogCandidateDomainError, MusicSelectSongResolution,
     OnnxParityError, ParsedResultFields, RegisteredRecognitionResources,
-    RegisteredResourceLoadError, ResultChartResolution, ResultSongResolution,
-    ScreenCatalogCandidateObservations, ScreenFieldObservationError, ScreenFieldObservations,
-    ScreenSongResolution, assist_unknown_result_song_with_chart, matching_single_play_songs,
-    observe_screen_fields, resolve_music_select_song, resolve_result_chart, resolve_result_song,
+    RegisteredResourceLoadError, ResultChartResolution, ResultPerformanceResolution,
+    ResultSongResolution, ScreenCatalogCandidateObservations, ScreenFieldObservationError,
+    ScreenFieldObservations, ScreenSongResolution, assist_unknown_result_song_with_chart,
+    matching_single_play_songs, observe_screen_fields, resolve_clear_type,
+    resolve_music_select_song, resolve_result_chart, resolve_result_performance,
+    resolve_result_song,
 };
 use serde::Serialize;
 use std::error::Error;
@@ -73,6 +75,7 @@ pub struct RegisteredScreenFieldObservation {
     clear_type: Option<&'static str>,
     parsed_result_fields: Option<ParsedResultFields>,
     result_chart_resolution: Option<ResultChartResolution>,
+    result_performance_resolution: Option<ResultPerformanceResolution>,
     current_score_ocr_resolution: Option<CurrentScoreOcrResolution>,
 }
 
@@ -173,6 +176,24 @@ impl RegisteredScreenFieldObservation {
                 .map(|song_id| resolve_result_chart(catalog, song_id, parsed)),
             _ => None,
         };
+        let result_performance_resolution = match (
+            result_chart_resolution.as_ref(),
+            parsed_result_fields.as_ref(),
+        ) {
+            (
+                Some(ResultChartResolution::Accepted {
+                    chart,
+                    current_score,
+                    ..
+                }),
+                Some(parsed),
+            ) => Some(resolve_result_performance(
+                parsed,
+                chart.notes,
+                *current_score,
+            )),
+            _ => None,
+        };
         Self {
             fields,
             candidates,
@@ -180,6 +201,7 @@ impl RegisteredScreenFieldObservation {
             clear_type,
             parsed_result_fields,
             result_chart_resolution,
+            result_performance_resolution,
             current_score_ocr_resolution: None,
         }
     }
@@ -231,61 +253,14 @@ impl RegisteredScreenFieldObservation {
     }
 
     #[must_use]
+    pub const fn result_performance_resolution(&self) -> Option<&ResultPerformanceResolution> {
+        self.result_performance_resolution.as_ref()
+    }
+
+    #[must_use]
     pub const fn current_score_ocr_resolution(&self) -> Option<&CurrentScoreOcrResolution> {
         self.current_score_ocr_resolution.as_ref()
     }
-}
-
-const CLEAR_TYPES: [&str; 7] = [
-    "FAILED",
-    "ASSIST CLEAR",
-    "EASY CLEAR",
-    "CLEAR",
-    "HARD CLEAR",
-    "EXH-CLEAR",
-    "F-COMBO",
-];
-
-/// Resolves one OCR value through the registered fail-closed clear-type vocabulary.
-#[must_use]
-pub fn resolve_clear_type(observed: &str) -> Option<&'static str> {
-    let mut matches = CLEAR_TYPES
-        .into_iter()
-        .filter(|candidate| ascii_edit_distance_at_most_one(observed, candidate));
-    let selected = matches.next()?;
-    matches.next().is_none().then_some(selected)
-}
-
-fn ascii_edit_distance_at_most_one(left: &str, right: &str) -> bool {
-    let left = left.as_bytes();
-    let right = right.as_bytes();
-    if left.len().abs_diff(right.len()) > 1 {
-        return false;
-    }
-    let (shorter, longer) = if left.len() <= right.len() {
-        (left, right)
-    } else {
-        (right, left)
-    };
-    let mut short = 0;
-    let mut long = 0;
-    let mut edits = 0;
-    while short < shorter.len() && long < longer.len() {
-        if shorter[short] == longer[long] {
-            short += 1;
-            long += 1;
-        } else {
-            edits += 1;
-            if edits > 1 {
-                return false;
-            }
-            if shorter.len() == longer.len() {
-                short += 1;
-            }
-            long += 1;
-        }
-    }
-    edits + usize::from(long < longer.len()) <= 1
 }
 
 impl FieldObserver for RegisteredScreenFieldObserver {
@@ -437,6 +412,7 @@ mod tests {
                 output_timesteps: 1,
                 open_text: "1".to_owned(),
             },
+            ..Default::default()
         });
         let output = RegisteredScreenFieldObservation::from_fields(&domain, fields.clone());
 

@@ -18,9 +18,11 @@ const ACTIVE_SCHEMA: &str = "scorepeek-private-regression-suite-active-v1";
 const SUITE_SCHEMA: &str = "scorepeek-private-regression-suite-v1";
 const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v1";
 const LEGACY_LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v1";
-const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v2";
+const PREVIOUS_LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v2";
+const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v3";
 const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v5";
 const CURRENT_OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v6";
+const LATEST_OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v7";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-temporal-evaluation-v1";
 const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -324,7 +326,10 @@ pub fn evaluate_temporal_corpus(
 }
 
 fn supported_label_schema(schema: &str) -> bool {
-    matches!(schema, LABEL_SCHEMA | LEGACY_LABEL_SCHEMA)
+    matches!(
+        schema,
+        LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA | LEGACY_LABEL_SCHEMA
+    )
 }
 
 fn validate_entry_binding(
@@ -698,7 +703,10 @@ fn read_line(reader: &mut BufReader<File>, line: &mut Vec<u8>) -> Result<bool, C
 }
 
 fn parse_record(value: &Value) -> Result<TemporalRecord, CorpusError> {
-    if value["schema"] != OBSERVATION_SCHEMA && value["schema"] != CURRENT_OBSERVATION_SCHEMA {
+    if value["schema"] != OBSERVATION_SCHEMA
+        && value["schema"] != CURRENT_OBSERVATION_SCHEMA
+        && value["schema"] != LATEST_OBSERVATION_SCHEMA
+    {
         return invalid("temporal evaluation observation schema differs");
     }
     let sequence = value["tick_sequence"].as_u64().ok_or_else(|| {
@@ -775,7 +783,7 @@ fn observed_clear_type(value: &Value) -> Option<String> {
                 .as_str()
                 .or_else(|| clear.get("open_text").and_then(Value::as_str))
         })
-        .and_then(scorepeek::recognition_live::screen_field_observer::resolve_clear_type)
+        .and_then(scorepeek::recognition::resolve_clear_type)
         .map(ToOwned::to_owned)
 }
 
@@ -818,10 +826,9 @@ mod tests {
     #[test]
     fn current_and_legacy_regression_labels_are_supported() {
         assert!(supported_label_schema(LABEL_SCHEMA));
+        assert!(supported_label_schema(PREVIOUS_LABEL_SCHEMA));
         assert!(supported_label_schema(LEGACY_LABEL_SCHEMA));
-        assert!(!supported_label_schema(
-            "scorepeek-private-session-regression-label-v3"
-        ));
+        assert!(!supported_label_schema("unsupported-label-schema"));
     }
 
     fn policy(required_observations: u8, maximum_gap_ms: u64) -> TemporalEvaluationPolicy {

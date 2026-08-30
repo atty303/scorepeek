@@ -11,14 +11,14 @@ use std::time::Instant;
 use scorepeek::catalog::ScorepeekSongId;
 use scorepeek::recognition::{
     CatalogCandidateEvidenceTable, MusicSelectSongResolution, ParsedResultFields,
-    ResultChartResolution, ResultSongResolution, ScreenCatalogCandidateObservations,
-    ScreenFieldObservations, ScreenSongResolution,
+    ResultChartResolution, ResultPerformanceResolution, ResultSongResolution,
+    ScreenCatalogCandidateObservations, ScreenFieldObservations, ScreenSongResolution,
 };
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 const CATALOG_SCHEMA: &str = "scorepeek-recognition-catalog-evidence-v1";
-const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v6";
+const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v7";
 const MANIFEST_SCHEMA: &str = "scorepeek-recognition-evidence-manifest-v3";
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -58,6 +58,8 @@ struct StoredObservation<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     result_chart_resolution: Option<&'a ResultChartResolution>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    result_performance_resolution: Option<&'a ResultPerformanceResolution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     current_score_ocr_resolution:
         Option<&'a crate::recognition_live::screen_field_observer::CurrentScoreOcrResolution>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -96,6 +98,10 @@ enum StoredDecision<'a> {
 
 #[derive(Serialize)]
 #[serde(tag = "screen", rename_all = "snake_case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the flat stored schema is serialized immediately and preserves artifact readability"
+)]
 enum StoredFields<'a> {
     Result {
         title: StoredText<'a>,
@@ -105,6 +111,18 @@ enum StoredFields<'a> {
         level: StoredText<'a>,
         notes: StoredText<'a>,
         current_score: StoredText<'a>,
+        previous_clear_type: StoredText<'a>,
+        previous_score: StoredText<'a>,
+        previous_miss_count: StoredText<'a>,
+        miss_count: StoredText<'a>,
+        pgreat: StoredText<'a>,
+        great: StoredText<'a>,
+        good: StoredText<'a>,
+        bad: StoredText<'a>,
+        poor: StoredText<'a>,
+        fast: StoredText<'a>,
+        slow: StoredText<'a>,
+        combo_break: StoredText<'a>,
     },
     MusicSelect {
         central_title: StoredText<'a>,
@@ -227,6 +245,7 @@ impl RecognitionArtifactWriter {
             parsed.as_ref(),
             None,
             None,
+            None,
             expected,
         )
     }
@@ -241,6 +260,7 @@ impl RecognitionArtifactWriter {
         song_resolution: &ScreenSongResolution,
         parsed_result_fields: Option<&ParsedResultFields>,
         result_chart_resolution: Option<&ResultChartResolution>,
+        result_performance_resolution: Option<&ResultPerformanceResolution>,
         current_score_ocr_resolution: Option<
             &crate::recognition_live::screen_field_observer::CurrentScoreOcrResolution,
         >,
@@ -269,6 +289,7 @@ impl RecognitionArtifactWriter {
             decision,
             parsed_result_fields,
             result_chart_resolution,
+            result_performance_resolution,
             current_score_ocr_resolution,
             expected,
         };
@@ -731,6 +752,7 @@ fn record_live(writer: &mut RecognitionArtifactWriter, record: &LiveRecord) -> R
         output.song_resolution(),
         output.parsed_result_fields(),
         output.result_chart_resolution(),
+        output.result_performance_resolution(),
         output.current_score_ocr_resolution(),
         None,
     )
@@ -769,6 +791,18 @@ impl<'a> From<&'a ScreenFieldObservations> for StoredFields<'a> {
                 level: StoredText::from(&fields.level),
                 notes: StoredText::from(&fields.notes),
                 current_score: StoredText::from(&fields.current_score),
+                previous_clear_type: StoredText::from(&fields.previous_clear_type),
+                previous_score: StoredText::from(&fields.previous_score),
+                previous_miss_count: StoredText::from(&fields.previous_miss_count),
+                miss_count: StoredText::from(&fields.miss_count),
+                pgreat: StoredText::from(&fields.pgreat),
+                great: StoredText::from(&fields.great),
+                good: StoredText::from(&fields.good),
+                bad: StoredText::from(&fields.bad),
+                poor: StoredText::from(&fields.poor),
+                fast: StoredText::from(&fields.fast),
+                slow: StoredText::from(&fields.slow),
+                combo_break: StoredText::from(&fields.combo_break),
             },
             ScreenFieldObservations::MusicSelect(fields) => Self::MusicSelect {
                 central_title: StoredText::from(&fields.central_title),
@@ -911,6 +945,7 @@ mod tests {
             level: text("8"),
             notes: text("127"),
             current_score: text("1"),
+            ..Default::default()
         })
     }
 
@@ -1186,7 +1221,7 @@ mod tests {
         assert_eq!(outcome.status, RecognitionArtifactFinishStatus::Complete);
         assert_eq!(outcome.manifest_sha256.unwrap().len(), 64);
         let stored = fs::read_to_string(root.join("observations.ndjson")).unwrap();
-        assert!(stored.contains("scorepeek-recognition-observation-v6"));
+        assert!(stored.contains("scorepeek-recognition-observation-v7"));
         assert!(stored.contains("\"difficulty\""));
         assert!(!stored.contains("observer_not_implemented"));
         assert!(stored.contains("\"source\":\"live\""));
