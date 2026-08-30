@@ -13,10 +13,21 @@ best_library=
 best_resource_dir=
 
 while IFS= read -r inventory_line; do
+  major=
+  library=
   if [[ "$inventory_line" =~ libclang\.so\.([0-9]+)[^[:space:]]*[[:space:]]+\(libc6,x86-64\)[[:space:]]+=\>[[:space:]]+(.+)$ ]]; then
     major="${BASH_REMATCH[1]}"
     library="${BASH_REMATCH[2]}"
-    for resource_dir in "/usr/lib/clang/$major" "/usr/lib64/clang/$major"; do
+  elif [[ "$inventory_line" =~ libclang-([0-9]+)\.so[^[:space:]]*[[:space:]]+\(libc6,x86-64\)[[:space:]]+=\>[[:space:]]+(.+)$ ]]; then
+    major="${BASH_REMATCH[1]}"
+    library="${BASH_REMATCH[2]}"
+  fi
+
+  if [[ -n "$major" && -n "$library" ]]; then
+    for resource_dir in \
+      "/usr/lib/clang/$major" \
+      "/usr/lib64/clang/$major" \
+      "/usr/lib/llvm-$major/lib/clang/$major"; do
       if (( major > best_major )) \
         && [[ -f "$library" ]] \
         && [[ -f "$resource_dir/include/stdbool.h" ]]; then
