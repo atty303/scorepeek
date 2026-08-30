@@ -18,9 +18,10 @@ mod music_select_motion;
 mod temporal_evaluation;
 pub use frame_corpus::{
     CorpusReplaySummary, DiagnosticConversionSummary, DiagnosticImportSummary,
-    DiagnosticVerificationSummary, ReviewApplySummary, VideoReplaySummary, apply_review,
-    convert_v2_diagnostic, import_diagnostic, inspect_review, replay_corpus, replay_video,
-    verify_diagnostic,
+    DiagnosticVerificationSummary, NumericDatasetAuthoringSummary, NumericSentinelAuthoringSummary,
+    ReviewApplySummary, VideoReplaySummary, apply_review, author_numeric_dataset,
+    author_numeric_sentinel, convert_v2_diagnostic, import_diagnostic, inspect_review,
+    replay_corpus, replay_video, verify_diagnostic,
 };
 pub use media::{CanonicalFrameExtractionSummary, FrameExtractionSummary, MediaProbeSummary};
 pub use music_list::{

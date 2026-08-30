@@ -1,0 +1,23 @@
+{
+  "schema": "scorepeek-ocr-training-archive-source-v1",
+  "model_id": "en-number-mobile-v2-rec-trained-v1",
+  "model_name": "en_number_mobile_v2.0_rec",
+  "source_url": "https://paddleocr.bj.bcebos.com/dygraph_v2.0/multilingual/en_number_mobile_v2.0_rec_train.tar",
+  "archive_sha256": "5d9b76a3ad9c50b39931d39b5c94c1d1410a5385023352090c31327a4e50e152",
+  "archive_bytes": 9123840,
+  "checkpoint_path": "en_number_mobile_v2.0_rec_train/best_accuracy.pdparams",
+  "checkpoint_sha256": "1d2d6289794c5c2ca7145ad4adf4f1b11421734796dbf006a982c7a2925ec991",
+  "checkpoint_bytes": 3875414,
+  "license_id": "Apache-2.0",
+  "license_url": "https://github.com/PaddlePaddle/PaddleOCR/blob/v3.7.0/LICENSE",
+  "paddleocr_version": "3.7.0",
+  "paddlepaddle_version": "3.3.1",
+  "training_config": {
+    "path": "configs/rec/multi_language/rec_en_number_lite_train.yml",
+    "sha256": "eef77283301f505b33708534d47fbb78c3c0d1b24ff3ed5963e1cc8ffb3ff9dd"
+  },
+  "character_dictionary": {
+    "path": "ppocr/utils/en_dict.txt",
+    "sha256": "5662df9d2d03f0e8ca0d3b0649d6acbab904b6a14b3d3521463c71c37c668ce3"
+  }
+}

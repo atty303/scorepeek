@@ -10,6 +10,8 @@ use sha2::{Digest as _, Sha256};
 mod catalog_candidates;
 mod ctc_sequence;
 mod music_select_resolver;
+mod numeric_onnx;
+mod numeric_specialist;
 mod result_fields;
 mod result_resolver;
 mod screen_reference;
@@ -27,6 +29,17 @@ pub use catalog_candidates::{
 pub use music_select_resolver::{
     MUSIC_SELECT_SONG_RESOLVER_ID, MusicSelectCorroboration, MusicSelectSongResolution,
     MusicSelectSongUnknownReason, RankedMusicSelectSongCandidate, resolve_music_select_song,
+};
+pub use numeric_onnx::{
+    NUMERIC_MODEL_MANIFEST_BYTES, NUMERIC_MODEL_MANIFEST_SHA256, NUMERIC_PREPROCESSOR_ID,
+    NumericBatchInference, NumericModelCalibrations, NumericModelContract,
+    RegisteredNumericRuntime,
+};
+pub use numeric_specialist::{
+    NUMERIC_BLANK_INDEX, NUMERIC_DICTIONARY, NUMERIC_TOP_CANDIDATES, NumericCalibration,
+    NumericCandidate, NumericField, NumericFieldInference, ScoreBreakdownCandidate,
+    ScoreBreakdownDecision, rank_numeric_probabilities, rank_numeric_sequences,
+    select_score_breakdown,
 };
 pub use result_fields::{
     ParsedResultFields, PreviousBest, PreviousBestValue, RESULT_FIELD_RESOLVER_ID,
@@ -955,6 +968,7 @@ pub enum ScreenRgb8Crops {
 /// One text field that can fail without fabricating a partial screen observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScreenTextField {
+    ResultNumericBatch,
     ResultTitle,
     ResultArtist,
     ResultClearType,
@@ -984,6 +998,7 @@ impl ScreenTextField {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::ResultNumericBatch => "result_numeric_batch",
             Self::ResultTitle => "result_title",
             Self::ResultArtist => "result_artist",
             Self::ResultClearType => "result_clear_type",
@@ -1027,7 +1042,8 @@ impl ScreenTextField {
             | Self::ResultFast
             | Self::ResultSlow => Some(CtcCharacterSet::DigitsAndDashes),
             Self::ResultComboBreak => Some(CtcCharacterSet::DigitsAndDashesUpToThree),
-            Self::ResultTitle
+            Self::ResultNumericBatch
+            | Self::ResultTitle
             | Self::ResultArtist
             | Self::ResultClearType
             | Self::ResultDifficulty
@@ -1206,6 +1222,44 @@ pub fn observe_screen_fields<E>(
                 )?,
             })
         }
+    })
+}
+
+/// Combines one specialist numeric batch with only the five registered general-text result fields.
+///
+/// # Errors
+/// Returns the exact failed text field without running PP-OCR for any numeric ROI.
+pub fn observe_result_fields_with_numeric<E>(
+    crops: &ResultScreenRgb8Crops,
+    numeric: &NumericBatchInference,
+    mut observe_text: impl FnMut(ScreenTextField, &Rgb8Crop) -> Result<DynamicTextObservation, E>,
+) -> Result<ResultScreenFieldObservations, ScreenFieldObservationError<E>> {
+    let mut observe = |field, crop| {
+        observe_text(field, crop).map_err(|source| ScreenFieldObservationError::new(field, source))
+    };
+    Ok(ResultScreenFieldObservations {
+        title: observe(ScreenTextField::ResultTitle, &crops.title)?,
+        artist: observe(ScreenTextField::ResultArtist, &crops.artist)?,
+        clear_type: observe(ScreenTextField::ResultClearType, &crops.clear_type)?,
+        difficulty: observe(ScreenTextField::ResultDifficulty, &crops.difficulty)?,
+        level: numeric.text_observation(NumericField::Level),
+        notes: numeric.text_observation(NumericField::Notes),
+        current_score: numeric.text_observation(NumericField::CurrentScore),
+        previous_clear_type: observe(
+            ScreenTextField::ResultPreviousClearType,
+            &crops.previous_clear_type,
+        )?,
+        previous_score: numeric.text_observation(NumericField::PreviousScore),
+        previous_miss_count: numeric.text_observation(NumericField::PreviousMissCount),
+        miss_count: numeric.text_observation(NumericField::MissCount),
+        pgreat: numeric.text_observation(NumericField::Pgreat),
+        great: numeric.text_observation(NumericField::Great),
+        good: numeric.text_observation(NumericField::Good),
+        bad: numeric.text_observation(NumericField::Bad),
+        poor: numeric.text_observation(NumericField::Poor),
+        fast: numeric.text_observation(NumericField::Fast),
+        slow: numeric.text_observation(NumericField::Slow),
+        combo_break: numeric.text_observation(NumericField::ComboBreak),
     })
 }
 

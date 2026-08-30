@@ -11,6 +11,7 @@ pub mod diagnostic_recording;
 #[allow(dead_code)]
 pub mod diagnostic_worker;
 pub mod model_cache;
+pub mod numeric_model_store;
 pub mod recognition;
 #[allow(dead_code)]
 mod recognition_artifact;

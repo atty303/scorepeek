@@ -8,7 +8,28 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: the corpus recording has passed the value-bearing result-song
+- Current execution focus: ADR 0087 removes PP-OCRv6-small from all fourteen numeric result
+  fields and replaces it with one fixed `N×3×32×320` MobileNetV3-small/BiLSTM/CTC ONNX batch.
+  Private suite v3
+  `3ec72a21e55e65c4b5c5a6c386f10c47edcc60b41e5553ba870034d346764ea8`
+  supplies 391 globally deduplicated reviewed samples across five session-disjoint splits; exact
+  crops repeated across sessions are excluded from all splits. Exact CTC keeps top-eight,
+  blank and calibrated-margin evidence; score/PGREAT/GREAT are joined by the score invariant;
+  optional result values may remain unknown but cannot become wrong known values. Recognition
+  artifact v9 and diagnostic `numeric_result_changed` records retain model, candidate, temporal,
+  and event-suppression evidence, while accepted `scorepeek-result-detected-v2` remains the TUI
+  primary surface. The model is an explicitly installed private digest-bound resource and run
+  startup has no numeric PP-OCR fallback. Level/notes background-only crops have no visible training
+  truth and their calibration is disabled; after
+  song+difficulty acceptance, exactly one catalog chart may provide registered chart values.
+  Frozen runtime manifest
+  `7badce6d463a2d795e513b67979c9eceb53718adbcc7fa3b6afe4cbd12e1ba2a` passes
+  the active seventeen-episode private replay and the `Horizons of Promise` sentinel with score
+  `1383`, PGREAT `630`, GREAT `123`, GOOD `11`, BAD `0`, and POOR `2`. Target install and the
+  prospective ten-episode/two-session target gate are the remaining boundaries for this
+  checkpoint; repository checks, the complete test suite, and the active seventeen-episode replay
+  pass.
+- Recognition path background: the corpus recording has passed the value-bearing result-song
   recognition simulation for all three reviewed episodes, and a normal foreground Gamescope
   session now reuses that post-canonical path. Retained Wayland evidence repaired three independently
   measurable layout errors without lowering thresholds or changing the OCR model: the two result
@@ -41,9 +62,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   result event requires the score-breakdown invariant and an accepted play attempt with observed
   gameplay/result plus a confirmed selected or retry-inherited song. Missing decision transition is
   allowed, while missing gameplay, unlinked/conflicting result, and abandonment suppress emission.
-  Existing private label v2 generations remain replayable; new review apply requires v3 performance
-  truth. The active 17-episode suite has not been advanced because its new values still require
-  operator confirmation. The unchanged active v2 suite still replays all five sessions, seventeen
+  Existing private label v2 generations remain replayable. Operator-confirmed v3 performance truth
+  is now active, including the corrected FAST/SLOW values and `Horizons of Promise` combo break 1.
+  The active v3 suite replays all five sessions, seventeen
   episodes, 2,102 canonical frames, and one negative frame with the expanded observer in about 168
   seconds on the development host. ADR 0084 makes accepted `scorepeek-result-detected-v2` records
   the TUI's always-present primary surface and renders their judgments, optional performance values,

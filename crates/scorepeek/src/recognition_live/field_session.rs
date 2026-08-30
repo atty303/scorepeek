@@ -4,6 +4,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use scorepeek::recognition::ScreenFieldObservationError;
+use scorepeek::recognition::{NUMERIC_MODEL_MANIFEST_BYTES, NUMERIC_MODEL_MANIFEST_SHA256};
 
 use super::DiagnosticScreenFieldObservation;
 use super::field_observer::{
@@ -308,7 +309,14 @@ impl FieldObservationSession<RegisteredScreenFieldObserver> {
     ) -> Result<Self, FieldObservationStartError<RegisteredScreenFieldObserverLoadError>> {
         Self::start(root, descriptor, policy, |binding| {
             let resources = binding.load_registered_resources(catalog_root, bundle_root)?;
-            Ok(RegisteredScreenFieldObserver::new(resources)?)
+            let numeric_runtime = scorepeek::numeric_model_store::active_registered(
+                NUMERIC_MODEL_MANIFEST_BYTES,
+                NUMERIC_MODEL_MANIFEST_SHA256,
+            )?;
+            Ok(RegisteredScreenFieldObserver::new(
+                resources,
+                numeric_runtime,
+            )?)
         })
     }
 }

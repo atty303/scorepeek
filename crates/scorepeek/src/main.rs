@@ -67,7 +67,10 @@ fn run_with_model_initializer(
     args: &[OsString],
     initialize: impl FnOnce(Option<&Path>) -> Result<PathBuf, String>,
 ) -> Result<(), String> {
-    if let Some(result) = try_offline_program_information(args).or_else(|| try_doctor(args)) {
+    if let Some(result) = try_offline_program_information(args)
+        .or_else(|| try_numeric_model_install(args))
+        .or_else(|| try_doctor(args))
+    {
         return result;
     }
     let (override_bundle, args) = parse_global_model_bundle(args)?;
@@ -1351,6 +1354,7 @@ fn live_session_event_value(
                 "result_chart_resolution": observation.result_chart_resolution(),
                 "result_performance_resolution": observation.result_performance_resolution(),
                 "current_score_ocr_resolution": observation.current_score_ocr_resolution(),
+                "numeric_batch": observation.numeric_batch(),
             });
             if let Some(session_id) = session_id {
                 value["session_id"] = session_id.into();
@@ -2294,9 +2298,68 @@ fn try_diagnostic_reevaluation(args: &[OsString], bundle: &Path) -> Option<Resul
 
 fn try_doctor(args: &[OsString]) -> Option<Result<(), String>> {
     matches!(args, [command] if command == "doctor").then(|| {
-        println!("{}", inventory::collect().to_json());
+        let target_inventory: serde_json::Value =
+            serde_json::from_str(&inventory::collect().to_json())
+                .map_err(|error| format!("doctor report serialization failed: {error}"))?;
+        let numeric_model = match scorepeek::numeric_model_store::active_registered(
+            recognition::NUMERIC_MODEL_MANIFEST_BYTES,
+            recognition::NUMERIC_MODEL_MANIFEST_SHA256,
+        ) {
+            Ok(runtime) => serde_json::json!({
+                "status": "active",
+                "model_id": runtime.contract().model_id,
+                "model_sha256": runtime.contract().model_sha256,
+                "manifest_sha256": recognition::NUMERIC_MODEL_MANIFEST_SHA256,
+                "preprocessor_id": runtime.contract().preprocessor_id,
+            }),
+            Err(error) => serde_json::json!({
+                "status": "unavailable",
+                "reason": error.to_string(),
+                "registered_manifest_sha256": recognition::NUMERIC_MODEL_MANIFEST_SHA256,
+            }),
+        };
+        let report = serde_json::json!({
+            "schema": "scorepeek-doctor-v2",
+            "target_inventory": target_inventory,
+            "numeric_model": numeric_model,
+        });
+        println!(
+            "{}",
+            serde_json::to_string(&report)
+                .map_err(|error| format!("doctor report serialization failed: {error}"))?
+        );
         Ok(())
     })
+}
+
+fn try_numeric_model_install(args: &[OsString]) -> Option<Result<(), String>> {
+    let [numeric_model, install, bundle_flag, bundle] = args else {
+        return None;
+    };
+    if numeric_model != "numeric-model" || install != "install" || bundle_flag != "--bundle" {
+        return None;
+    }
+    Some((|| {
+        let source = Path::new(bundle)
+            .canonicalize()
+            .map_err(|error| format!("numeric model bundle cannot be resolved: {error}"))?;
+        let installed = scorepeek::numeric_model_store::install_registered(
+            &source,
+            recognition::NUMERIC_MODEL_MANIFEST_BYTES,
+            recognition::NUMERIC_MODEL_MANIFEST_SHA256,
+        )
+        .map_err(|error| format!("numeric model installation failed: {error}"))?;
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema": "scorepeek-numeric-model-install-v1",
+                "status": "active",
+                "manifest_sha256": recognition::NUMERIC_MODEL_MANIFEST_SHA256,
+                "object": installed,
+            })
+        );
+        Ok(())
+    })())
 }
 
 fn try_recording_simulation(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
@@ -3357,6 +3420,7 @@ fn print_usage() {
     println!(
         "  scorepeek run gamescope --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION --diagnostic-root DIRECTORY --catalog-store DIRECTORY --run-id RUN_ID --build-sha256 SHA256 --canonical-layout-sha256 SHA256 --catalog-sha256 SHA256 --recording enabled|disabled --recognition-artifact DIRECTORY"
     );
+    println!("  scorepeek numeric-model install --bundle DIRECTORY");
 }
 
 #[cfg(test)]
@@ -3402,6 +3466,26 @@ mod tests {
             .unwrap();
             assert!(!initialized.get());
         }
+    }
+
+    #[test]
+    fn numeric_model_install_skips_text_model_initialization() {
+        let initialized = Cell::new(false);
+        let error = run_with_model_initializer(
+            &[
+                OsString::from("numeric-model"),
+                OsString::from("install"),
+                OsString::from("--bundle"),
+                OsString::from("/definitely/missing/numeric-model-bundle"),
+            ],
+            |_| {
+                initialized.set(true);
+                Err("must not initialize".to_owned())
+            },
+        )
+        .unwrap_err();
+        assert!(!initialized.get());
+        assert!(error.starts_with("numeric model bundle cannot be resolved:"));
     }
 
     #[test]

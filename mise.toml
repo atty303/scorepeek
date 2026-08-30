@@ -602,6 +602,14 @@ set -euo pipefail
 exec uv run --locked --no-dev python -m scorepeek_ocr.training_replay "$@"
 '''
 
+[tasks."ocr:numeric-model"]
+description = "Prepare or initialize the private fixed-ROI numeric CTC model"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.numeric_training "$@"
+'''
+
 [tasks."ocr:title-model:census"]
 description = "Measure unique song-ID coverage across the complete private title corpus"
 run = '''

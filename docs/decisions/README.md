@@ -257,6 +257,9 @@ authoritative.
 - [ADR 0086: Score finite numeric CTC sequences exactly](0086-score-finite-numeric-ctc-sequences.md)
   supersedes ADR 0085's field-local greedy decode, shares the exact catalog-title CTC trie with a
   finite numeric language, and adopts the operator-reviewed result ROIs.
+- [ADR 0087: Specialize fixed-result numeric recognition](0087-specialize-fixed-result-numeric-recognition.md)
+  removes PP-OCRv6-small from numeric authority, batches fourteen fixed-ROI fields through a
+  private calibrated CTC model, and retains accepted numeric tuples for attempt/event joining.
 
 ## Historical
 

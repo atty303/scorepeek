@@ -4,7 +4,7 @@ use crate::catalog::{Catalog, Chart, Difficulty, PlayType, ScorepeekSongId};
 
 use super::{DynamicTextObservation, ResultScreenFieldObservations};
 
-pub const RESULT_FIELD_RESOLVER_ID: &str = "scorepeek-result-fields-catalog-constrained-v3";
+pub const RESULT_FIELD_RESOLVER_ID: &str = "scorepeek-result-fields-catalog-constrained-v4";
 pub const RESULT_PERFORMANCE_RESOLVER_ID: &str = "scorepeek-result-performance-v1";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -204,7 +204,7 @@ pub fn resolve_result_performance(
     else {
         return performance_unknown(ResultPerformanceUnknownReason::IncompleteJudgments);
     };
-    if [pgreat, great, good, bad, poor]
+    if [pgreat, great, good, bad]
         .into_iter()
         .any(|value| *value > notes)
     {
@@ -226,16 +226,16 @@ pub fn resolve_result_performance(
             bad: *bad,
             poor: *poor,
         },
-        miss_count: bound_supplemental(&fields.miss_count, notes),
+        miss_count: fields.miss_count.clone(),
         timing: ResultTiming {
-            fast: bound_supplemental(&fields.fast, notes),
-            slow: bound_supplemental(&fields.slow, notes),
+            fast: fields.fast.clone(),
+            slow: fields.slow.clone(),
         },
-        combo_break: bound_supplemental(&fields.combo_break, notes),
+        combo_break: fields.combo_break.clone(),
         previous_best: PreviousBest {
             clear_type: fields.previous_clear_type.clone(),
             score: bound_previous(&fields.previous_score, notes.saturating_mul(2)),
-            miss_count: bound_previous(&fields.previous_miss_count, notes),
+            miss_count: fields.previous_miss_count.clone(),
         },
     }
 }
@@ -305,9 +305,7 @@ pub fn resolve_result_chart(
     let Some(difficulty) = fields.difficulty.known().copied() else {
         return unknown(ResultChartUnknownReason::IncompleteObservation, Vec::new());
     };
-    let Some(notes) = fields.notes.known().copied() else {
-        return unknown(ResultChartUnknownReason::IncompleteObservation, Vec::new());
-    };
+    let notes = fields.notes.known().copied();
     let level = fields.level.known().copied();
     let Some(song) = catalog.songs().get(&song_id) else {
         return unknown(ResultChartUnknownReason::SongMissingFromCatalog, Vec::new());
@@ -319,7 +317,7 @@ pub fn resolve_result_chart(
             chart.key.play_type == PlayType::Single
                 && chart.key.difficulty == difficulty
                 && level.is_none_or(|level| chart.level == level)
-                && chart.notes == notes
+                && notes.is_none_or(|notes| chart.notes == notes)
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -338,15 +336,15 @@ pub fn resolve_result_chart(
             matching_charts,
         );
     };
-    if current_score > notes.saturating_mul(2) {
-        return unknown(
-            ResultChartUnknownReason::CurrentScoreExceedsMaximum,
-            matching_charts,
-        );
-    }
     let Some(chart) = matching_charts.into_iter().next() else {
         return unknown(ResultChartUnknownReason::NoMatchingChart, Vec::new());
     };
+    if current_score > chart.notes.saturating_mul(2) {
+        return unknown(
+            ResultChartUnknownReason::CurrentScoreExceedsMaximum,
+            vec![chart],
+        );
+    }
     ResultChartResolution::Accepted {
         resolver_id: RESULT_FIELD_RESOLVER_ID.to_owned(),
         chart,
@@ -519,24 +517,6 @@ fn performance_unknown(reason: ResultPerformanceUnknownReason) -> ResultPerforma
     }
 }
 
-fn bound_supplemental(
-    value: &SupplementalResultValue<u32>,
-    maximum: u32,
-) -> SupplementalResultValue<u32> {
-    match value {
-        SupplementalResultValue::Known { value } if *value <= maximum => {
-            SupplementalResultValue::Known { value: *value }
-        }
-        SupplementalResultValue::Known { .. } => SupplementalResultValue::Unknown {
-            reason: ResultFieldUnknownReason::OutOfRange,
-        },
-        SupplementalResultValue::NotDisplayed => SupplementalResultValue::NotDisplayed,
-        SupplementalResultValue::Unknown { reason } => {
-            SupplementalResultValue::Unknown { reason: *reason }
-        }
-    }
-}
-
 fn bound_previous(value: &PreviousBestValue<u32>, maximum: u32) -> PreviousBestValue<u32> {
     match value {
         PreviousBestValue::Known { value } if *value <= maximum => {
@@ -593,7 +573,10 @@ fn unknown(reason: ResultChartUnknownReason, matching_charts: Vec<Chart>) -> Res
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+    use crate::catalog::{FederationInput, SourceRevision, TachiFixtureAdapter};
 
     fn text(value: &str) -> DynamicTextObservation {
         DynamicTextObservation {
@@ -625,6 +608,66 @@ mod tests {
             combo_break: text("7"),
             ..Default::default()
         }
+    }
+
+    fn single_chart_catalog() -> Catalog {
+        let bytes = serde_json::to_vec(&json!({
+            "schema": "scorepeek-tachi-fixture-v1",
+            "records": [{
+                "source_song_id": "result-chart",
+                "title": "RESULT CHART",
+                "title_kind": "in_game_display",
+                "artist": "ARTIST",
+                "version": "SYNTHETIC",
+                "charts": [{
+                    "play_type": "single",
+                    "difficulty": "hyper",
+                    "level": 8,
+                    "notes": 764,
+                    "source_chart_id": "sph",
+                    "product_versions": ["synthetic-v1"],
+                    "primary": true
+                }],
+                "primary_infinitas": true
+            }]
+        }))
+        .unwrap();
+        let snapshot = TachiFixtureAdapter::parse(
+            &bytes,
+            SourceRevision::git_commit("0123456789abcdef0123456789abcdef01234567").unwrap(),
+        )
+        .unwrap();
+        Catalog::default()
+            .federate(FederationInput {
+                tachi: Some(snapshot),
+                ..FederationInput::default()
+            })
+            .catalog
+    }
+
+    #[test]
+    fn unique_catalog_chart_resolves_when_level_and_notes_are_not_displayed() {
+        let catalog = single_chart_catalog();
+        let song_id = *catalog.songs().keys().next().unwrap();
+        let mut parsed = ParsedResultFields::from_observations(&result_fields());
+        parsed.level = ResultFieldValue::Unknown {
+            reason: ResultFieldUnknownReason::Empty,
+        };
+        parsed.notes = ResultFieldValue::Unknown {
+            reason: ResultFieldUnknownReason::Empty,
+        };
+        assert!(matches!(
+            resolve_result_chart(&catalog, song_id, &parsed),
+            ResultChartResolution::Accepted {
+                chart: Chart {
+                    level: 8,
+                    notes: 764,
+                    ..
+                },
+                current_score: 1_286,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -710,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_miss_is_not_displayed_and_optional_overflow_does_not_block() {
+    fn failed_miss_is_not_displayed_and_supplemental_values_are_not_notes_bounded() {
         let mut observations = result_fields();
         observations.clear_type = text("FAILED");
         observations.miss_count = text("--");
@@ -723,12 +766,50 @@ mod tests {
             panic!("valid judgments must keep the result accepted");
         };
         assert_eq!(miss_count, SupplementalResultValue::NotDisplayed);
+        assert_eq!(timing.fast, SupplementalResultValue::Known { value: 9999 });
+    }
+
+    #[test]
+    fn poor_and_previous_miss_are_not_notes_bounded() {
+        let mut observations = result_fields();
+        observations.poor = text("9999");
+        observations.previous_miss_count = text("9999");
+        let parsed = ParsedResultFields::from_observations(&observations);
+        let ResultPerformanceResolution::Accepted {
+            judgments,
+            previous_best,
+            ..
+        } = resolve_result_performance(&parsed, 764, 1_286)
+        else {
+            panic!("POOR and previous miss must not be constrained by notes");
+        };
+        assert_eq!(judgments.poor, 9999);
         assert_eq!(
-            timing.fast,
-            SupplementalResultValue::Unknown {
-                reason: ResultFieldUnknownReason::OutOfRange
-            }
+            previous_best.miss_count,
+            PreviousBestValue::Known { value: 9999 }
         );
+    }
+
+    #[test]
+    fn note_judgments_are_individually_notes_bounded() {
+        for field in ["pgreat", "great", "good", "bad"] {
+            let mut observations = result_fields();
+            *match field {
+                "pgreat" => &mut observations.pgreat,
+                "great" => &mut observations.great,
+                "good" => &mut observations.good,
+                "bad" => &mut observations.bad,
+                _ => unreachable!(),
+            } = text("765");
+            let parsed = ParsedResultFields::from_observations(&observations);
+            assert!(matches!(
+                resolve_result_performance(&parsed, 764, 1_286),
+                ResultPerformanceResolution::Unknown {
+                    reason: ResultPerformanceUnknownReason::JudgmentExceedsNotes,
+                    ..
+                }
+            ));
+        }
     }
 
     #[test]

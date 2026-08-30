@@ -122,6 +122,7 @@ enum FieldObservationGateErrorType {
     CatalogLoadFailed,
     ModelBundleInvalid,
     RuntimeInitializationFailed,
+    NumericModelUnavailable,
     CandidateDomainInvalid,
     FieldObserverUnavailable,
     FrameUnavailable,
@@ -1328,6 +1329,13 @@ fn field_start_error(
                     "catalog candidate domain is invalid for song {}: {error}",
                     error.song_id.as_uuid()
                 )),
+            ),
+            FieldObserverStartError::Load(
+                RegisteredScreenFieldObserverLoadError::NumericModel(error),
+            ) => (
+                FieldObservationGateErrorType::NumericModelUnavailable,
+                None,
+                Some(error.to_string()),
             ),
             FieldObserverStartError::WorkerUnavailable => (
                 FieldObservationGateErrorType::FieldObserverUnavailable,

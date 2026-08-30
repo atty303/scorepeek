@@ -97,6 +97,8 @@ pub enum RunEventKind {
         result_performance_resolution: Option<ResultPerformanceResolution>,
         #[serde(skip_serializing_if = "Option::is_none")]
         current_score_ocr_resolution: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        numeric_batch: Option<Value>,
         song_resolution_presentation: Box<SongResolutionPresentation>,
     },
     ResultDetected {
@@ -131,6 +133,17 @@ pub enum RunEventKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         candidate_song: Option<SongPresentation>,
     },
+    NumericResultChanged {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        capture_generation: Option<u64>,
+        source_sequence: u64,
+        state: NumericResultTemporalState,
+        reason: NumericResultTransitionReason,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        event_suppression_reason: Option<NumericResultEventSuppressionReason>,
+    },
     PlayAttemptChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
@@ -149,6 +162,37 @@ pub enum RunEventKind {
         invocation_id: String,
         reason: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum NumericResultTemporalState {
+    Unknown,
+    Pending { observations: u8 },
+    Accepted,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NumericResultTransitionReason {
+    Incomplete,
+    CandidateStarted,
+    CandidateRepeated,
+    Accepted,
+    Conflict,
+    ChronologyReset,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NumericResultEventSuppressionReason {
+    NumericNotAccepted,
+    SessionUnavailable,
+    ResultSongNotStable,
+    ClearTypeNotStable,
+    PlayAttemptNotAccepted,
+    LinkageConflict,
+    AlreadyEmitted,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -171,6 +215,30 @@ pub struct ResultDomainEvent {
     pub timing: ResultTiming,
     pub combo_break: SupplementalResultValue<u32>,
     pub previous_best: PreviousBest,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NumericResultView {
+    song_id: ScorepeekSongId,
+    clear_type: String,
+    chart: scorepeek::catalog::Chart,
+    current_score: u32,
+    performance: ResultPerformanceResolution,
+    source_sequence: u64,
+}
+
+#[derive(Clone, Debug)]
+struct PendingNumericResult {
+    view: NumericResultView,
+    observations: u8,
+}
+
+fn same_numeric_tuple(left: &NumericResultView, right: &NumericResultView) -> bool {
+    left.song_id == right.song_id
+        && left.clear_type == right.clear_type
+        && left.chart == right.chart
+        && left.current_score == right.current_score
+        && left.performance == right.performance
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -313,6 +381,7 @@ impl RunViewState {
             RunEventKind::TemporalMusicSelectChanged { .. } => {
                 self.latest_temporal_music_select = Some(serialized.clone());
             }
+            RunEventKind::NumericResultChanged { .. } => {}
             RunEventKind::PlayAttemptChanged { .. } => {
                 self.latest_play_attempt = Some(serialized.clone());
             }
@@ -702,6 +771,10 @@ pub struct RoutineOutput {
     retained_music_select_song: Option<SongPresentation>,
     candidate_music_select_song: Option<SongPresentation>,
     play_attempt: PlayAttemptReducer<SongPresentation>,
+    pending_numeric_result: Option<PendingNumericResult>,
+    accepted_numeric_result: Option<NumericResultView>,
+    last_numeric_sequence: Option<u64>,
+    last_numeric_monotonic_ms: Option<u64>,
     result_event_emitted: bool,
     latest_screen_boundary_sequence: Option<u64>,
     event_store: Option<PathBuf>,
@@ -747,6 +820,10 @@ impl RoutineOutput {
             retained_music_select_song: None,
             candidate_music_select_song: None,
             play_attempt: PlayAttemptReducer::default(),
+            pending_numeric_result: None,
+            accepted_numeric_result: None,
+            last_numeric_sequence: None,
+            last_numeric_monotonic_ms: None,
             result_event_emitted: false,
             latest_screen_boundary_sequence: None,
             event_store,
@@ -768,6 +845,7 @@ impl RoutineOutput {
                 self.retained_music_select_song = None;
                 self.candidate_music_select_song = None;
                 self.play_attempt.reset_session();
+                self.reset_numeric_result();
                 self.result_event_emitted = false;
                 self.latest_screen_boundary_sequence = None;
                 self.completed_event_artifact = None;
@@ -784,6 +862,7 @@ impl RoutineOutput {
             RunEventKind::WatcherStarted { .. }
             | RunEventKind::TemporalResultChanged { .. }
             | RunEventKind::TemporalMusicSelectChanged { .. }
+            | RunEventKind::NumericResultChanged { .. }
             | RunEventKind::PlayAttemptChanged { .. }
             | RunEventKind::ResultDetected { .. } => self.publish_one(event),
         }
@@ -930,69 +1009,239 @@ impl RoutineOutput {
                 )?;
             }
         }
-        if !self.result_event_emitted
-            && let (Some(session_id), Some(capture_generation)) =
-                (session_id.cloned(), capture_generation)
-            && let (
-                Some(stable_song),
-                Some(stable_clear_type),
-                Some(ResultChartResolution::Accepted {
-                    chart,
-                    current_score,
-                    ..
-                }),
-                Some(ResultPerformanceResolution::Accepted {
-                    judgments,
-                    miss_count,
-                    timing,
-                    combo_break,
-                    previous_best,
-                    ..
-                }),
-            ) = (
-                self.stable_result_song.as_ref(),
-                self.temporal_result.state().clear_type.stable_value(),
-                result_chart_resolution,
-                result_performance_resolution,
-            )
-            && Some(stable_song.scorepeek_song_id) == observed_song
-            && Some(stable_clear_type.as_str()) == observed_clear_type.as_deref()
-            && let Some(accepted_attempt) = self.play_attempt.accepted_result()
-            && accepted_attempt.song.scorepeek_song_id == stable_song.scorepeek_song_id
-        {
-            let attempt_id = accepted_attempt.attempt_id;
-            let parent_attempt_id = accepted_attempt.parent_attempt_id;
-            let result = ResultDomainEvent {
-                contract: "scorepeek-result-detected-v2".to_owned(),
-                attempt_id,
-                parent_attempt_id,
-                scorepeek_song_id: stable_song.scorepeek_song_id,
-                play_side: "one_player".to_owned(),
-                play_mode: "single_play".to_owned(),
-                play_type: chart.key.play_type,
-                difficulty: chart.key.difficulty,
-                level: chart.level,
-                notes: chart.notes,
-                current_score: *current_score,
-                clear_type: stable_clear_type.clone(),
-                judgments: judgments.clone(),
-                miss_count: miss_count.clone(),
-                timing: timing.clone(),
-                combo_break: combo_break.clone(),
-                previous_best: previous_best.clone(),
-            };
+        if let Some((state, reason)) = self.observe_numeric_result(
+            sequence,
+            monotonic_end_ms,
+            observed_song,
+            observed_clear_type,
+            result_chart_resolution,
+            result_performance_resolution,
+        ) {
             self.publish_one(&RunEvent {
                 schema: "scorepeek-run-event-v2".to_owned(),
-                kind: RunEventKind::ResultDetected {
-                    session_id,
+                kind: RunEventKind::NumericResultChanged {
+                    session_id: session_id.cloned(),
                     capture_generation,
                     source_sequence: sequence,
-                    result,
+                    state,
+                    reason,
+                    event_suppression_reason: self
+                        .numeric_event_suppression_reason(session_id, capture_generation),
                 },
             })?;
-            self.result_event_emitted = true;
         }
+        self.try_emit_result(session_id.cloned(), capture_generation, sequence)?;
         Ok(())
+    }
+
+    fn observe_numeric_result(
+        &mut self,
+        sequence: u64,
+        monotonic_end_ms: u64,
+        observed_song: Option<ScorepeekSongId>,
+        observed_clear_type: Option<String>,
+        chart_resolution: Option<&ResultChartResolution>,
+        performance_resolution: Option<&ResultPerformanceResolution>,
+    ) -> Option<(NumericResultTemporalState, NumericResultTransitionReason)> {
+        let chronology_reset = self
+            .last_numeric_sequence
+            .is_some_and(|last| sequence <= last)
+            || self
+                .last_numeric_monotonic_ms
+                .is_some_and(|last| monotonic_end_ms < last);
+        if chronology_reset {
+            self.reset_numeric_result();
+        }
+        self.last_numeric_sequence = Some(sequence);
+        self.last_numeric_monotonic_ms = Some(monotonic_end_ms);
+        let (
+            Some(song_id),
+            Some(clear_type),
+            Some(ResultChartResolution::Accepted {
+                chart,
+                current_score,
+                ..
+            }),
+            Some(performance @ ResultPerformanceResolution::Accepted { .. }),
+        ) = (
+            observed_song,
+            observed_clear_type,
+            chart_resolution,
+            performance_resolution,
+        )
+        else {
+            return self.pending_numeric_result.take().map(|_| {
+                (
+                    NumericResultTemporalState::Unknown,
+                    NumericResultTransitionReason::Incomplete,
+                )
+            });
+        };
+        let view = NumericResultView {
+            song_id,
+            clear_type,
+            chart: chart.clone(),
+            current_score: *current_score,
+            performance: performance.clone(),
+            source_sequence: sequence,
+        };
+        if let Some(accepted) = &self.accepted_numeric_result {
+            if same_numeric_tuple(accepted, &view) {
+                return None;
+            }
+            self.accepted_numeric_result = None;
+        }
+        let had_conflict = self
+            .pending_numeric_result
+            .as_ref()
+            .is_some_and(|pending| !same_numeric_tuple(&pending.view, &view));
+        match &mut self.pending_numeric_result {
+            Some(pending) if same_numeric_tuple(&pending.view, &view) => {
+                pending.observations = pending.observations.saturating_add(1);
+                pending.view.source_sequence = sequence;
+                if pending.observations >= RESULT_TEMPORAL_REQUIRED_OBSERVATIONS {
+                    self.accepted_numeric_result = Some(pending.view.clone());
+                    self.pending_numeric_result = None;
+                    Some((
+                        NumericResultTemporalState::Accepted,
+                        NumericResultTransitionReason::Accepted,
+                    ))
+                } else {
+                    Some((
+                        NumericResultTemporalState::Pending {
+                            observations: pending.observations,
+                        },
+                        NumericResultTransitionReason::CandidateRepeated,
+                    ))
+                }
+            }
+            _ => {
+                self.pending_numeric_result = Some(PendingNumericResult {
+                    view,
+                    observations: 1,
+                });
+                Some((
+                    NumericResultTemporalState::Pending { observations: 1 },
+                    if chronology_reset {
+                        NumericResultTransitionReason::ChronologyReset
+                    } else if had_conflict {
+                        NumericResultTransitionReason::Conflict
+                    } else {
+                        NumericResultTransitionReason::CandidateStarted
+                    },
+                ))
+            }
+        }
+    }
+
+    fn numeric_event_suppression_reason(
+        &self,
+        session_id: Option<&String>,
+        capture_generation: Option<u64>,
+    ) -> Option<NumericResultEventSuppressionReason> {
+        if self.result_event_emitted {
+            return Some(NumericResultEventSuppressionReason::AlreadyEmitted);
+        }
+        if session_id.is_none() || capture_generation.is_none() {
+            return Some(NumericResultEventSuppressionReason::SessionUnavailable);
+        }
+        let Some(numeric) = self.accepted_numeric_result.as_ref() else {
+            return Some(NumericResultEventSuppressionReason::NumericNotAccepted);
+        };
+        let Some(stable_song) = self.stable_result_song.as_ref() else {
+            return Some(NumericResultEventSuppressionReason::ResultSongNotStable);
+        };
+        let Some(stable_clear_type) = self.temporal_result.state().clear_type.stable_value() else {
+            return Some(NumericResultEventSuppressionReason::ClearTypeNotStable);
+        };
+        let Some(accepted_attempt) = self.play_attempt.accepted_result() else {
+            return Some(NumericResultEventSuppressionReason::PlayAttemptNotAccepted);
+        };
+        (stable_song.scorepeek_song_id != numeric.song_id
+            || stable_clear_type != &numeric.clear_type
+            || accepted_attempt.song.scorepeek_song_id != numeric.song_id)
+            .then_some(NumericResultEventSuppressionReason::LinkageConflict)
+    }
+
+    fn try_emit_result(
+        &mut self,
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        fallback_sequence: u64,
+    ) -> Result<(), String> {
+        if self.result_event_emitted {
+            return Ok(());
+        }
+        let (Some(session_id), Some(capture_generation)) = (session_id, capture_generation) else {
+            return Ok(());
+        };
+        let Some(numeric) = self.accepted_numeric_result.as_ref() else {
+            return Ok(());
+        };
+        let Some(stable_song) = self.stable_result_song.as_ref() else {
+            return Ok(());
+        };
+        let Some(stable_clear_type) = self.temporal_result.state().clear_type.stable_value() else {
+            return Ok(());
+        };
+        let Some(accepted_attempt) = self.play_attempt.accepted_result() else {
+            return Ok(());
+        };
+        if stable_song.scorepeek_song_id != numeric.song_id
+            || stable_clear_type != &numeric.clear_type
+            || accepted_attempt.song.scorepeek_song_id != numeric.song_id
+        {
+            return Ok(());
+        }
+        let ResultPerformanceResolution::Accepted {
+            judgments,
+            miss_count,
+            timing,
+            combo_break,
+            previous_best,
+            ..
+        } = &numeric.performance
+        else {
+            unreachable!("accepted numeric view stores accepted performance");
+        };
+        let result = ResultDomainEvent {
+            contract: "scorepeek-result-detected-v2".to_owned(),
+            attempt_id: accepted_attempt.attempt_id,
+            parent_attempt_id: accepted_attempt.parent_attempt_id,
+            scorepeek_song_id: numeric.song_id,
+            play_side: "one_player".to_owned(),
+            play_mode: "single_play".to_owned(),
+            play_type: numeric.chart.key.play_type,
+            difficulty: numeric.chart.key.difficulty,
+            level: numeric.chart.level,
+            notes: numeric.chart.notes,
+            current_score: numeric.current_score,
+            clear_type: numeric.clear_type.clone(),
+            judgments: judgments.clone(),
+            miss_count: miss_count.clone(),
+            timing: timing.clone(),
+            combo_break: combo_break.clone(),
+            previous_best: previous_best.clone(),
+        };
+        let source_sequence = numeric.source_sequence.max(fallback_sequence);
+        self.publish_one(&RunEvent {
+            schema: "scorepeek-run-event-v2".to_owned(),
+            kind: RunEventKind::ResultDetected {
+                session_id,
+                capture_generation,
+                source_sequence,
+                result,
+            },
+        })?;
+        self.result_event_emitted = true;
+        Ok(())
+    }
+
+    fn reset_numeric_result(&mut self) {
+        self.pending_numeric_result = None;
+        self.accepted_numeric_result = None;
+        self.last_numeric_sequence = None;
+        self.last_numeric_monotonic_ms = None;
     }
 
     fn reduce_music_select_observation(
@@ -1114,6 +1363,7 @@ impl RoutineOutput {
                 .reset(TemporalTransitionReason::ResetByScreenChange)
         {
             self.stable_result_song = None;
+            self.reset_numeric_result();
             self.result_event_emitted = false;
             self.publish_temporal_update(
                 session_id.clone(),
@@ -1242,12 +1492,16 @@ impl RoutineOutput {
         self.publish_one(&RunEvent {
             schema: "scorepeek-run-event-v2".to_owned(),
             kind: RunEventKind::PlayAttemptChanged {
-                session_id,
+                session_id: session_id.clone(),
                 capture_generation,
                 source_sequence,
                 state,
             },
-        })
+        })?;
+        if let Some(sequence) = source_sequence {
+            self.try_emit_result(session_id, capture_generation, sequence)?;
+        }
+        Ok(())
     }
 
     fn publish_one(&mut self, event: &RunEvent) -> Result<(), String> {
@@ -2452,6 +2706,10 @@ mod tests {
             retained_music_select_song: None,
             candidate_music_select_song: None,
             play_attempt: PlayAttemptReducer::default(),
+            pending_numeric_result: None,
+            accepted_numeric_result: None,
+            last_numeric_sequence: None,
+            last_numeric_monotonic_ms: None,
             result_event_emitted: false,
             latest_screen_boundary_sequence: None,
             event_store: None,
@@ -2481,7 +2739,7 @@ mod tests {
                 music_select_song_resolution: Value::Null,
                 parsed_result_fields: None,
                 result_chart_resolution: Some(ResultChartResolution::Accepted {
-                    resolver_id: "scorepeek-result-fields-catalog-constrained-v3".to_owned(),
+                    resolver_id: "scorepeek-result-fields-catalog-constrained-v4".to_owned(),
                     chart: scorepeek::catalog::Chart {
                         key: scorepeek::catalog::ChartKey {
                             play_type: PlayType::Single,
@@ -2516,6 +2774,7 @@ mod tests {
                     },
                 }),
                 current_score_ocr_resolution: None,
+                numeric_batch: None,
                 song_resolution_presentation: Box::new(SongResolutionPresentation::Accepted {
                     reason: None,
                     selected: SongPresentation {
@@ -2831,6 +3090,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn raw_result_events_are_followed_by_bounded_temporal_transitions() {
         let temporary = tempfile::tempdir().unwrap();
         let state = state();
@@ -2847,33 +3107,37 @@ mod tests {
 
         output.publish(&accepted_result_event(1)).unwrap();
         output.publish(&accepted_result_event(2)).unwrap();
-        let events = read_events(&mut reader, 6);
+        let events = read_events(&mut reader, 8);
         assert_eq!(events[0]["event"], "field_observation");
         assert_eq!(events[1]["event"], "temporal_result_changed");
         assert_eq!(events[1]["state"]["song"]["status"], "pending");
-        assert_eq!(events[2]["event"], "field_observation");
-        assert_eq!(events[3]["event"], "temporal_result_changed");
-        assert_eq!(events[3]["state"]["song"]["status"], "stable");
-        assert_eq!(events[3]["state"]["clear_type"]["status"], "stable");
-        assert_eq!(events[4]["event"], "play_attempt_changed");
+        assert_eq!(events[2]["event"], "numeric_result_changed");
+        assert_eq!(events[3]["event"], "field_observation");
+        assert_eq!(events[4]["event"], "temporal_result_changed");
+        assert_eq!(events[4]["state"]["song"]["status"], "stable");
+        assert_eq!(events[4]["state"]["clear_type"]["status"], "stable");
+        assert_eq!(events[5]["event"], "play_attempt_changed");
         assert_eq!(
-            events[4]["state"]["attempt"]["result_relation"],
+            events[5]["state"]["attempt"]["result_relation"],
             "confirmed"
         );
-        assert_eq!(events[5]["event"], "result_detected");
+        assert_eq!(events[6]["event"], "numeric_result_changed");
+        assert_eq!(events[6]["state"]["status"], "accepted");
+        assert!(events[6].get("event_suppression_reason").is_none());
+        assert_eq!(events[7]["event"], "result_detected");
         assert_eq!(
-            events[5]["result"]["contract"],
+            events[7]["result"]["contract"],
             "scorepeek-result-detected-v2"
         );
-        assert_eq!(events[5]["result"]["attempt_id"], 1);
-        assert!(events[5]["result"].get("savable").is_none());
-        assert_eq!(events[5]["result"]["play_side"], "one_player");
-        assert_eq!(events[5]["result"]["play_mode"], "single_play");
-        assert_eq!(events[5]["result"]["difficulty"], "hyper");
-        assert_eq!(events[5]["result"]["current_score"], 1_286);
-        assert_eq!(events[5]["result"]["judgments"]["pgreat"], 600);
+        assert_eq!(events[7]["result"]["attempt_id"], 1);
+        assert!(events[7]["result"].get("savable").is_none());
+        assert_eq!(events[7]["result"]["play_side"], "one_player");
+        assert_eq!(events[7]["result"]["play_mode"], "single_play");
+        assert_eq!(events[7]["result"]["difficulty"], "hyper");
+        assert_eq!(events[7]["result"]["current_score"], 1_286);
+        assert_eq!(events[7]["result"]["judgments"]["pgreat"], 600);
         assert_eq!(
-            events[3]["stable_song"]["display_titles"][0],
+            events[4]["stable_song"]["display_titles"][0],
             "CATALOG TITLE"
         );
         assert_eq!(
@@ -2881,7 +3145,7 @@ mod tests {
                 .iter()
                 .map(|event| event["channel_sequence"].as_u64().unwrap())
                 .collect::<Vec<_>>(),
-            vec![1, 2, 3, 4, 5, 6]
+            vec![1, 2, 3, 4, 5, 6, 7, 8]
         );
 
         output.publish(&unknown_result_event(3)).unwrap();
@@ -2889,7 +3153,7 @@ mod tests {
         reader.read_line(&mut line).unwrap();
         let raw_unknown: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(raw_unknown["event"], "field_observation");
-        assert_eq!(raw_unknown["channel_sequence"], 7);
+        assert_eq!(raw_unknown["channel_sequence"], 9);
         let state = output.state.lock().unwrap();
         assert_stabilized_fields(&state, "stable");
         drop(state);
@@ -2911,12 +3175,13 @@ mod tests {
         assert_eq!(boundary_events[0]["event"], "screen_changed");
         assert_eq!(boundary_events[1]["event"], "temporal_result_changed");
         assert_eq!(boundary_events[1]["state"]["song"]["status"], "empty");
-        assert_eq!(boundary_events[1]["channel_sequence"], 9);
+        assert_eq!(boundary_events[1]["channel_sequence"], 11);
 
         output.publish(&accepted_result_event(5)).unwrap();
-        let after_boundary = read_events(&mut reader, 2);
+        let after_boundary = read_events(&mut reader, 3);
         assert_eq!(after_boundary[0]["event"], "field_observation");
         assert_eq!(after_boundary[1]["state"]["song"]["status"], "pending");
+        assert_eq!(after_boundary[2]["event"], "numeric_result_changed");
 
         output
             .publish(&RunEvent {
@@ -2932,7 +3197,7 @@ mod tests {
         let session_events = read_events(&mut reader, 2);
         assert_eq!(session_events[0]["event"], "session_finished");
         assert_eq!(session_events[1]["event"], "temporal_result_changed");
-        assert_eq!(session_events[1]["channel_sequence"], 13);
+        assert_eq!(session_events[1]["channel_sequence"], 16);
     }
 
     #[test]
@@ -3017,12 +3282,18 @@ mod tests {
         assert_eq!(rejected[0]["event"], "field_observation");
 
         output.publish(&accepted_result_event(4)).unwrap();
-        let completed = read_events(&mut reader, 2);
-        assert_eq!(completed[0]["event"], "field_observation");
-        assert_eq!(completed[1]["event"], "result_detected");
-        assert_eq!(completed[1]["source_sequence"], 4);
+        let candidate = read_events(&mut reader, 2);
+        assert_eq!(candidate[0]["event"], "field_observation");
+        assert_eq!(candidate[1]["event"], "numeric_result_changed");
 
         output.publish(&accepted_result_event(5)).unwrap();
+        let completed = read_events(&mut reader, 3);
+        assert_eq!(completed[0]["event"], "field_observation");
+        assert_eq!(completed[1]["event"], "numeric_result_changed");
+        assert_eq!(completed[2]["event"], "result_detected");
+        assert_eq!(completed[2]["source_sequence"], 5);
+
+        output.publish(&accepted_result_event(6)).unwrap();
         assert_eq!(read_events(&mut reader, 1)[0]["event"], "field_observation");
     }
 
@@ -3151,14 +3422,16 @@ mod tests {
 
         output.publish(&accepted_result_event(13)).unwrap();
         output.publish(&accepted_result_event(14)).unwrap();
-        let result = read_events(&mut reader, 5);
+        let result = read_events(&mut reader, 7);
         assert_eq!(result[0]["event"], "field_observation");
         assert_eq!(result[1]["event"], "temporal_result_changed");
-        assert_eq!(result[2]["event"], "field_observation");
-        assert_eq!(result[3]["event"], "temporal_result_changed");
-        assert_eq!(result[4]["event"], "play_attempt_changed");
+        assert_eq!(result[2]["event"], "numeric_result_changed");
+        assert_eq!(result[3]["event"], "field_observation");
+        assert_eq!(result[4]["event"], "temporal_result_changed");
+        assert_eq!(result[5]["event"], "play_attempt_changed");
+        assert_eq!(result[6]["event"], "numeric_result_changed");
         assert_eq!(
-            result[4]["state"]["attempt"]["result_relation"],
+            result[5]["state"]["attempt"]["result_relation"],
             "confirmed"
         );
 

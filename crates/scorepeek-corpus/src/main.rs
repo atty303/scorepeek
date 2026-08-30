@@ -6,11 +6,12 @@ use std::process::ExitCode;
 use scorepeek_corpus::{
     MusicSelectDwellPolicy, MusicSelectTemporalCandidatePolicy, TemporalEvaluationPolicy,
     apply_music_list_motion_review, apply_music_select_motion_review, apply_review,
-    convert_v2_diagnostic, evaluate_music_select_correctness, evaluate_music_select_dwell,
-    evaluate_temporal_corpus, import_diagnostic, inspect_music_list_row_observation_draft,
-    inspect_review, measure_music_list_motion, plan_music_list_motion_review,
-    plan_music_select_motion_review, render_synthetic_title_set, replay_corpus, replay_video,
-    verify_diagnostic, verify_music_list_motion, verify_music_list_row_observation_draft,
+    author_numeric_dataset, author_numeric_sentinel, convert_v2_diagnostic,
+    evaluate_music_select_correctness, evaluate_music_select_dwell, evaluate_temporal_corpus,
+    import_diagnostic, inspect_music_list_row_observation_draft, inspect_review,
+    measure_music_list_motion, plan_music_list_motion_review, plan_music_select_motion_review,
+    render_synthetic_title_set, replay_corpus, replay_video, verify_diagnostic,
+    verify_music_list_motion, verify_music_list_row_observation_draft,
 };
 
 fn main() -> ExitCode {
@@ -422,6 +423,57 @@ fn run_frame_corpus(args: &[OsString]) -> Option<Result<(), String>> {
             replay_corpus(&PathBuf::from(store))
                 .map_err(|error| format!("corpus replay failed: {error}"))
                 .and_then(|summary| print_json(&summary, "corpus replay"))
+        }
+        [
+            numeric,
+            dataset,
+            author,
+            store_flag,
+            store,
+            output_flag,
+            output,
+        ] if numeric == "numeric"
+            && dataset == "dataset"
+            && author == "author"
+            && store_flag == "--store"
+            && output_flag == "--output" =>
+        {
+            author_numeric_dataset(&PathBuf::from(store), &PathBuf::from(output))
+                .map_err(|error| format!("numeric dataset authoring failed: {error}"))
+                .and_then(|summary| print_json(&summary, "numeric dataset authoring"))
+        }
+        [
+            numeric,
+            sentinel,
+            author,
+            frame_flag,
+            frame,
+            frame_digest_flag,
+            frame_digest,
+            labels_flag,
+            labels,
+            labels_digest_flag,
+            labels_digest,
+            output_flag,
+            output,
+        ] if numeric == "numeric"
+            && sentinel == "sentinel"
+            && author == "author"
+            && frame_flag == "--frame"
+            && frame_digest_flag == "--frame-sha256"
+            && labels_flag == "--labels"
+            && labels_digest_flag == "--labels-sha256"
+            && output_flag == "--output" =>
+        {
+            author_numeric_sentinel(
+                &PathBuf::from(frame),
+                &frame_digest.to_string_lossy(),
+                &PathBuf::from(labels),
+                &labels_digest.to_string_lossy(),
+                &PathBuf::from(output),
+            )
+            .map_err(|error| format!("numeric sentinel authoring failed: {error}"))
+            .and_then(|summary| print_json(&summary, "numeric sentinel authoring"))
         }
         _ => return None,
     };

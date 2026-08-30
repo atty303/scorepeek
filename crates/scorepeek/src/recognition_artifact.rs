@@ -10,15 +10,15 @@ use std::time::Instant;
 
 use scorepeek::catalog::ScorepeekSongId;
 use scorepeek::recognition::{
-    CatalogCandidateEvidenceTable, MusicSelectSongResolution, ParsedResultFields,
-    ResultChartResolution, ResultPerformanceResolution, ResultSongResolution,
+    CatalogCandidateEvidenceTable, MusicSelectSongResolution, NumericBatchInference,
+    ParsedResultFields, ResultChartResolution, ResultPerformanceResolution, ResultSongResolution,
     ScreenCatalogCandidateObservations, ScreenFieldObservations, ScreenSongResolution,
 };
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 const CATALOG_SCHEMA: &str = "scorepeek-recognition-catalog-evidence-v1";
-const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v8";
+const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v9";
 const MANIFEST_SCHEMA: &str = "scorepeek-recognition-evidence-manifest-v3";
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -62,6 +62,8 @@ struct StoredObservation<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     current_score_ocr_resolution:
         Option<&'a crate::recognition_live::screen_field_observer::CurrentScoreOcrResolution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    numeric_batch: Option<&'a NumericBatchInference>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expected: Option<RecognitionArtifactExpected<'a>>,
 }
@@ -248,6 +250,7 @@ impl RecognitionArtifactWriter {
             None,
             None,
             None,
+            None,
             expected,
         )
     }
@@ -266,6 +269,7 @@ impl RecognitionArtifactWriter {
         current_score_ocr_resolution: Option<
             &crate::recognition_live::screen_field_observer::CurrentScoreOcrResolution,
         >,
+        numeric_batch: Option<&NumericBatchInference>,
         expected: Option<RecognitionArtifactExpected<'_>>,
     ) -> Result<(), String> {
         if self.observation_count >= MAX_OBSERVATIONS {
@@ -293,6 +297,7 @@ impl RecognitionArtifactWriter {
             result_chart_resolution,
             result_performance_resolution,
             current_score_ocr_resolution,
+            numeric_batch,
             expected,
         };
         let mut bytes = serde_json::to_vec(&stored)
@@ -756,6 +761,7 @@ fn record_live(writer: &mut RecognitionArtifactWriter, record: &LiveRecord) -> R
         output.result_chart_resolution(),
         output.result_performance_resolution(),
         output.current_score_ocr_resolution(),
+        output.numeric_batch(),
         None,
     )
 }
@@ -1232,7 +1238,7 @@ mod tests {
         assert_eq!(outcome.status, RecognitionArtifactFinishStatus::Complete);
         assert_eq!(outcome.manifest_sha256.unwrap().len(), 64);
         let stored = fs::read_to_string(root.join("observations.ndjson")).unwrap();
-        assert!(stored.contains("scorepeek-recognition-observation-v8"));
+        assert!(stored.contains("scorepeek-recognition-observation-v9"));
         assert!(stored.contains("\"open_text\":\"只\""));
         assert!(stored.contains("\"constrained_text\":\"0\""));
         assert!(stored.contains("\"difficulty\""));

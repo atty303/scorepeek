@@ -1,11 +1,12 @@
 use scorepeek::catalog::Catalog;
 use scorepeek::recognition::{
     CatalogCandidateDomain, CatalogCandidateDomainError, MusicSelectSongResolution,
-    OnnxParityError, ParsedResultFields, RegisteredRecognitionResources,
-    RegisteredResourceLoadError, ResultChartResolution, ResultPerformanceResolution,
-    ResultSongResolution, ScreenCatalogCandidateObservations, ScreenFieldObservationError,
-    ScreenFieldObservations, ScreenSongResolution, assist_unknown_result_song_with_chart,
-    matching_single_play_songs, observe_screen_fields, resolve_clear_type,
+    NumericBatchInference, OnnxParityError, ParsedResultFields, RegisteredNumericRuntime,
+    RegisteredRecognitionResources, RegisteredResourceLoadError, ResultChartResolution,
+    ResultPerformanceResolution, ResultSongResolution, ScreenCatalogCandidateObservations,
+    ScreenFieldObservationError, ScreenFieldObservations, ScreenSongResolution,
+    assist_unknown_result_song_with_chart, matching_single_play_songs,
+    observe_result_fields_with_numeric, observe_screen_fields, resolve_clear_type,
     resolve_music_select_song, resolve_result_chart, resolve_result_performance,
     resolve_result_song,
 };
@@ -18,12 +19,14 @@ use super::field_observer::{FieldObserver, FieldObserverInput};
 /// Production screen-field observer owning the exact resources for one immutable run.
 pub struct RegisteredScreenFieldObserver {
     resources: RegisteredRecognitionResources,
+    numeric_runtime: RegisteredNumericRuntime,
     candidate_domain: CatalogCandidateDomain,
 }
 
 #[derive(Debug)]
 pub enum RegisteredScreenFieldObserverLoadError {
     Resources(RegisteredResourceLoadError),
+    NumericModel(scorepeek::numeric_model_store::NumericModelStoreError),
     CandidateDomain(CatalogCandidateDomainError),
 }
 
@@ -31,6 +34,7 @@ impl fmt::Display for RegisteredScreenFieldObserverLoadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Resources(error) => error.fmt(formatter),
+            Self::NumericModel(error) => error.fmt(formatter),
             Self::CandidateDomain(error) => error.fmt(formatter),
         }
     }
@@ -50,6 +54,14 @@ impl From<CatalogCandidateDomainError> for RegisteredScreenFieldObserverLoadErro
     }
 }
 
+impl From<scorepeek::numeric_model_store::NumericModelStoreError>
+    for RegisteredScreenFieldObserverLoadError
+{
+    fn from(error: scorepeek::numeric_model_store::NumericModelStoreError) -> Self {
+        Self::NumericModel(error)
+    }
+}
+
 impl RegisteredScreenFieldObserver {
     /// Builds the immutable full-catalog comparison domain once for this observer lifetime.
     ///
@@ -57,17 +69,19 @@ impl RegisteredScreenFieldObserver {
     /// Returns the exact catalog-domain error when an active song has no scoreable title.
     pub fn new(
         resources: RegisteredRecognitionResources,
+        numeric_runtime: RegisteredNumericRuntime,
     ) -> Result<Self, CatalogCandidateDomainError> {
         let candidate_domain = CatalogCandidateDomain::from_catalog(resources.catalog())?;
         Ok(Self {
             resources,
+            numeric_runtime,
             candidate_domain,
         })
     }
 }
 
 /// Complete registered field inference and full-catalog evidence for one classified screen.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RegisteredScreenFieldObservation {
     fields: ScreenFieldObservations,
     candidates: ScreenCatalogCandidateObservations,
@@ -77,6 +91,7 @@ pub struct RegisteredScreenFieldObservation {
     result_chart_resolution: Option<ResultChartResolution>,
     result_performance_resolution: Option<ResultPerformanceResolution>,
     current_score_ocr_resolution: Option<CurrentScoreOcrResolution>,
+    numeric_batch: Option<NumericBatchInference>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -206,6 +221,7 @@ impl RegisteredScreenFieldObservation {
             result_chart_resolution,
             result_performance_resolution,
             current_score_ocr_resolution: None,
+            numeric_batch: None,
         }
     }
 
@@ -264,6 +280,11 @@ impl RegisteredScreenFieldObservation {
     pub const fn current_score_ocr_resolution(&self) -> Option<&CurrentScoreOcrResolution> {
         self.current_score_ocr_resolution.as_ref()
     }
+
+    #[must_use]
+    pub const fn numeric_batch(&self) -> Option<&NumericBatchInference> {
+        self.numeric_batch.as_ref()
+    }
 }
 
 impl FieldObserver for RegisteredScreenFieldObserver {
@@ -271,77 +292,37 @@ impl FieldObserver for RegisteredScreenFieldObserver {
         Result<RegisteredScreenFieldObservation, ScreenFieldObservationError<OnnxParityError>>;
 
     fn observe(&mut self, input: &FieldObserverInput) -> Self::Output {
-        let mut current_score_ocr_resolution = None;
-        let fields = observe_screen_fields(input.crops(), |field, crop| {
-            let primary = match field.ctc_character_set() {
-                Some(character_set) => self
-                    .resources
-                    .title_runtime()
-                    .observe_constrained_text(crop, character_set)?,
-                None => self.resources.title_runtime().observe_open_text(crop)?,
-            };
-            if field != scorepeek::recognition::ScreenTextField::ResultCurrentScore
-                || (!primary.open_text.is_empty() && !primary.open_text.ends_with('0'))
-            {
-                if field == scorepeek::recognition::ScreenTextField::ResultCurrentScore {
-                    current_score_ocr_resolution = Some(CurrentScoreOcrResolution {
-                        primary: (&primary).into(),
-                        cyan_retry: None,
-                        selection: CurrentScoreOcrSelection::Primary,
-                    });
-                }
-                return Ok(primary);
+        let (fields, numeric_batch) = match input.crops() {
+            scorepeek::recognition::ScreenRgb8Crops::Result(crops) => {
+                let numeric = self.numeric_runtime.observe(crops).map_err(|source| {
+                    ScreenFieldObservationError::new(
+                        scorepeek::recognition::ScreenTextField::ResultNumericBatch,
+                        source,
+                    )
+                })?;
+                let fields = observe_result_fields_with_numeric(crops, &numeric, |_, crop| {
+                    self.resources.title_runtime().observe_open_text(crop)
+                })?;
+                (
+                    scorepeek::recognition::ScreenFieldObservations::Result(fields),
+                    Some(numeric),
+                )
             }
-            let Some(content) = crop.cyan_content_crop() else {
-                current_score_ocr_resolution = Some(CurrentScoreOcrResolution {
-                    primary: (&primary).into(),
-                    cyan_retry: None,
-                    selection: CurrentScoreOcrSelection::Primary,
-                });
-                return Ok(primary);
-            };
-            let retry = self.resources.title_runtime().observe_constrained_text(
-                &content,
-                scorepeek::recognition::CtcCharacterSet::Digits,
-            )?;
-            let (selected, selection) = select_current_score_observation(&primary, &retry);
-            current_score_ocr_resolution = Some(CurrentScoreOcrResolution {
-                primary: (&primary).into(),
-                cyan_retry: Some((&retry).into()),
-                selection,
-            });
-            Ok(selected)
-        })?;
+            scorepeek::recognition::ScreenRgb8Crops::MusicSelect(_) => (
+                observe_screen_fields(input.crops(), |_, crop| {
+                    self.resources.title_runtime().observe_open_text(crop)
+                })?,
+                None,
+            ),
+        };
         let mut observation = RegisteredScreenFieldObservation::from_fields_with_catalog(
             &self.candidate_domain,
             self.resources.catalog(),
             fields,
         );
-        observation.current_score_ocr_resolution = current_score_ocr_resolution;
+        observation.numeric_batch = numeric_batch;
         Ok(observation)
     }
-}
-
-fn select_current_score_observation(
-    primary: &scorepeek::recognition::DynamicTextObservation,
-    retry: &scorepeek::recognition::DynamicTextObservation,
-) -> (
-    scorepeek::recognition::DynamicTextObservation,
-    CurrentScoreOcrSelection,
-) {
-    if primary.open_text.is_empty() {
-        return (retry.clone(), CurrentScoreOcrSelection::CyanRetry);
-    }
-    if let (Some(primary_prefix), Some(retry_prefix)) = (
-        primary.open_text.strip_suffix('0'),
-        retry.open_text.strip_suffix('日'),
-    ) && primary_prefix == retry_prefix
-    {
-        let mut selected = retry.clone();
-        selected.constrained_text = Some(format!("{retry_prefix}8"));
-        return (selected, CurrentScoreOcrSelection::CyanRetryTrailingEight);
-    }
-    (primary.clone(), CurrentScoreOcrSelection::Primary)
 }
 
 #[cfg(test)]
@@ -354,29 +335,6 @@ mod tests {
     };
 
     use super::*;
-
-    fn dynamic(value: &str) -> DynamicTextObservation {
-        DynamicTextObservation {
-            input_width: 1,
-            output_timesteps: 1,
-            open_text: value.to_owned(),
-            constrained_text: None,
-        }
-    }
-
-    #[test]
-    fn current_score_retry_is_bounded_and_preserves_both_attempts() {
-        let (selected, selection) =
-            select_current_score_observation(&dynamic("1130"), &dynamic("113日"));
-        assert_eq!(selected.open_text, "113日");
-        assert_eq!(selected.constrained_text.as_deref(), Some("1138"));
-        assert_eq!(selection, CurrentScoreOcrSelection::CyanRetryTrailingEight);
-
-        let (selected, selection) =
-            select_current_score_observation(&dynamic("1286"), &dynamic("1206"));
-        assert_eq!(selected.open_text, "1286");
-        assert_eq!(selection, CurrentScoreOcrSelection::Primary);
-    }
 
     #[test]
     fn clear_type_resolution_accepts_only_a_unique_one_edit_registered_value() {

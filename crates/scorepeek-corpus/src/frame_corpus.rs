@@ -11,8 +11,9 @@ use std::time::Duration;
 
 use scorepeek::catalog::{Difficulty, PlayType};
 use scorepeek::recognition::{
-    PreviousBest, PreviousBestValue, ResultChartResolution, ResultJudgments,
-    ResultPerformanceResolution, ResultTiming, SupplementalResultValue, resolve_clear_type,
+    NumericField, PreviousBest, PreviousBestValue, ResultChartResolution, ResultJudgments,
+    ResultPerformanceResolution, ResultTiming, Rgb8Crop, ScreenClass, ScreenRgb8Crops,
+    SupplementalResultValue, inspect_canonical_rgb8, resolve_clear_type, route_screen_rgb8_crops,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -36,6 +37,7 @@ const MAX_NDJSON_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_EVIDENCE_FRAMES: usize = 1_024;
 const MAX_EVIDENCE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_QOI_BYTES: u64 = 16 * 1024 * 1024;
+const NUMERIC_DATASET_SCHEMA: &str = "scorepeek-private-numeric-ctc-dataset-v1";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -383,6 +385,79 @@ struct ExpectedResult {
     combo_break: Option<SupplementalResultValue<u32>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     previous_best: Option<PreviousBest>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct NumericDatasetAuthoringSummary {
+    pub schema: &'static str,
+    pub suite_sha256: String,
+    pub sessions: usize,
+    pub episodes: usize,
+    pub samples: usize,
+    pub unique_crops: usize,
+    pub output: PathBuf,
+    pub manifest_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NumericSentinelRequest {
+    schema: String,
+    sentinel_id: String,
+    labels: BTreeMap<NumericField, String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NumericSentinelAuthoringSummary {
+    pub schema: &'static str,
+    pub sentinel_id: String,
+    pub frame_sha256: String,
+    pub labels_sha256: String,
+    pub samples: usize,
+    pub output: PathBuf,
+    pub manifest_sha256: String,
+}
+
+#[derive(Serialize)]
+struct NumericSentinelManifest {
+    schema: &'static str,
+    sentinel_id: String,
+    frame_sha256: String,
+    labels_sha256: String,
+    dictionary: &'static str,
+    maximum_text_length: usize,
+    samples: Vec<NumericSentinelSample>,
+}
+
+#[derive(Serialize)]
+struct NumericSentinelSample {
+    field: NumericField,
+    label: String,
+    crop_sha256: String,
+    filename: String,
+    roi: scorepeek::recognition::Roi,
+}
+
+#[derive(Serialize)]
+struct NumericDatasetManifest {
+    schema: &'static str,
+    suite_sha256: String,
+    dictionary: &'static str,
+    maximum_text_length: usize,
+    samples: Vec<NumericDatasetSample>,
+}
+
+#[derive(Debug, Serialize)]
+struct NumericDatasetSample {
+    session_sha256: String,
+    episode_id: String,
+    split: String,
+    sequence: u64,
+    field: NumericField,
+    label: String,
+    crop_sha256: String,
+    filename: String,
+    roi: scorepeek::recognition::Roi,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1631,6 +1706,473 @@ pub fn apply_review(
     })
 }
 
+pub fn author_numeric_dataset(
+    store: &Path,
+    output: &Path,
+) -> Result<NumericDatasetAuthoringSummary, CorpusError> {
+    if !store.is_absolute() || !output.is_absolute() || output.exists() {
+        return invalid("numeric dataset paths must be absolute and output must not exist");
+    }
+    let Some((suite_sha256, suite)) = load_active_suite(store)? else {
+        return invalid("active regression suite is unavailable");
+    };
+    let parent = output.parent().ok_or_else(|| {
+        CorpusError::InvalidRequest("numeric dataset output has no parent".into())
+    })?;
+    fs::create_dir_all(parent)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".scorepeek-numeric-dataset-")
+        .tempdir_in(parent)?;
+    let images = staging.path().join("images");
+    fs::create_dir(&images)?;
+    let mut crop_candidates = BTreeMap::<String, (Vec<NumericDatasetSample>, Vec<u8>)>::new();
+    let mut episode_count = 0;
+    for entry in &suite.entries {
+        let (session, _) = read_json::<CaptureSession>(
+            &store
+                .join("sessions")
+                .join(format!("{}.json", entry.session_sha256)),
+        )?;
+        let (label, _) = read_json::<RegressionLabel>(
+            &store
+                .join("labels")
+                .join(format!("{}.json", entry.label_sha256)),
+        )?;
+        if label.schema != LABEL_SCHEMA {
+            return invalid("numeric dataset requires v3 labels for every active session");
+        }
+        let screen_sequences = numeric_screen_sequences(store, &session)?;
+        for episode in &label.episodes {
+            episode_count += 1;
+            let field_labels = numeric_field_labels(&episode.expected_result)?;
+            let mut episode_crops = BTreeSet::new();
+            let mut episode_field_counts = BTreeMap::<NumericField, usize>::new();
+            for sequence in
+                numeric_episode_sequences(&screen_sequences, &episode.stable_sequences, usize::MAX)?
+            {
+                let artifact_sha256 = session
+                    .canonical_frames
+                    .iter()
+                    .find(|frame| frame.sequence == sequence)
+                    .map(|frame| frame.artifact_sha256.as_str())
+                    .ok_or_else(|| {
+                        CorpusError::InvalidRequest("numeric dataset frame is unavailable".into())
+                    })?;
+                let encoded = fs::read(store.join("objects").join(artifact_sha256))?;
+                if digest(&encoded) != *artifact_sha256 {
+                    return invalid("numeric dataset frame digest differs");
+                }
+                let (header, pixels) = qoi::decode_to_vec(encoded).map_err(|_| {
+                    CorpusError::InvalidRequest("numeric dataset QOI is invalid".into())
+                })?;
+                if header.width != 1_920
+                    || header.height != 1_080
+                    || pixels.len() != 1_920 * 1_080 * 3
+                    || inspect_canonical_rgb8(&pixels)
+                        .map_err(|_| {
+                            CorpusError::InvalidRequest(
+                                "numeric dataset screen predicate failed".into(),
+                            )
+                        })?
+                        .screen
+                        != ScreenClass::Result
+                {
+                    return invalid("numeric dataset frame is not a canonical result frame");
+                }
+                let ScreenRgb8Crops::Result(crops) =
+                    route_screen_rgb8_crops(&pixels, ScreenClass::Result).map_err(|_| {
+                        CorpusError::InvalidRequest("numeric dataset crop routing failed".into())
+                    })?
+                else {
+                    unreachable!("result routing returns result crops");
+                };
+                for (field, label, crop) in numeric_crops(&crops, &field_labels) {
+                    let bytes = ppm_bytes(crop)?;
+                    let crop_sha256 = digest(&bytes);
+                    if !episode_crops.insert((field, crop_sha256.clone())) {
+                        continue;
+                    }
+                    let field_count = episode_field_counts.entry(field).or_default();
+                    if *field_count >= 32 {
+                        continue;
+                    }
+                    *field_count += 1;
+                    let filename = format!("images/{crop_sha256}.ppm");
+                    let sample = NumericDatasetSample {
+                        session_sha256: entry.session_sha256.clone(),
+                        episode_id: episode.episode_id.clone(),
+                        split: entry.session_sha256.clone(),
+                        sequence,
+                        field,
+                        label,
+                        crop_sha256: crop_sha256.clone(),
+                        filename,
+                        roi: crop.roi,
+                    };
+                    let candidates = crop_candidates
+                        .entry(crop_sha256)
+                        .or_insert_with(|| (Vec::new(), bytes));
+                    if candidates.0.first().is_some_and(|existing| {
+                        existing.field != sample.field || existing.label != sample.label
+                    }) {
+                        return invalid("numeric crop digest has conflicting field or label truth");
+                    }
+                    candidates.0.push(sample);
+                }
+            }
+        }
+    }
+    let mut samples = Vec::new();
+    for (_, (mut candidates, bytes)) in crop_candidates {
+        let sessions = candidates
+            .iter()
+            .map(|sample| sample.session_sha256.as_str())
+            .collect::<BTreeSet<_>>();
+        if sessions.len() != 1 {
+            continue;
+        }
+        let sample = candidates.remove(0);
+        fs::write(staging.path().join(&sample.filename), bytes)?;
+        samples.push(sample);
+    }
+    samples.sort_by(|left, right| {
+        (
+            &left.session_sha256,
+            &left.episode_id,
+            left.sequence,
+            left.field,
+            &left.crop_sha256,
+        )
+            .cmp(&(
+                &right.session_sha256,
+                &right.episode_id,
+                right.sequence,
+                right.field,
+                &right.crop_sha256,
+            ))
+    });
+    let manifest = NumericDatasetManifest {
+        schema: NUMERIC_DATASET_SCHEMA,
+        suite_sha256: suite_sha256.clone(),
+        dictionary: scorepeek::recognition::NUMERIC_DICTIONARY,
+        maximum_text_length: 4,
+        samples,
+    };
+    let manifest_bytes = canonical_json(&manifest)?;
+    let manifest_sha256 = digest(&manifest_bytes);
+    fs::write(staging.path().join("manifest.json"), manifest_bytes)?;
+    let samples = manifest.samples.len();
+    let unique_crop_count = samples;
+    let staging_path = staging.keep();
+    fs::rename(staging_path, output)?;
+    fs::File::open(parent)?.sync_all()?;
+    Ok(NumericDatasetAuthoringSummary {
+        schema: "scorepeek-private-numeric-ctc-dataset-authoring-v1",
+        suite_sha256,
+        sessions: suite.entries.len(),
+        episodes: episode_count,
+        samples,
+        unique_crops: unique_crop_count,
+        output: output.to_owned(),
+        manifest_sha256,
+    })
+}
+
+pub fn author_numeric_sentinel(
+    frame: &Path,
+    frame_sha256: &str,
+    labels: &Path,
+    labels_sha256: &str,
+    output: &Path,
+) -> Result<NumericSentinelAuthoringSummary, CorpusError> {
+    if !frame.is_absolute()
+        || !labels.is_absolute()
+        || !output.is_absolute()
+        || output.exists()
+        || !valid_sha256(frame_sha256)
+        || !valid_sha256(labels_sha256)
+    {
+        return invalid("numeric sentinel inputs must be absolute, digest-bound, and create-only");
+    }
+    let encoded = fs::read(frame)?;
+    if digest(&encoded) != frame_sha256 {
+        return invalid("numeric sentinel frame digest differs");
+    }
+    let label_bytes = fs::read(labels)?;
+    if digest(&label_bytes) != labels_sha256 {
+        return invalid("numeric sentinel labels digest differs");
+    }
+    let request: NumericSentinelRequest = serde_json::from_slice(&label_bytes)?;
+    if request.schema != "scorepeek-private-numeric-ctc-sentinel-request-v1"
+        || request.sentinel_id.is_empty()
+        || request.sentinel_id.len() > 128
+        || request.labels.len() != NumericField::ALL.len()
+        || NumericField::ALL
+            .iter()
+            .any(|field| !valid_numeric_label(*field, request.labels.get(field)))
+    {
+        return invalid("numeric sentinel labels are invalid");
+    }
+    let (header, pixels) = qoi::decode_to_vec(encoded)
+        .map_err(|_| CorpusError::InvalidRequest("numeric sentinel QOI is invalid".into()))?;
+    if header.width != 1_920
+        || header.height != 1_080
+        || pixels.len() != 1_920 * 1_080 * 3
+        || inspect_canonical_rgb8(&pixels)
+            .map_err(|_| {
+                CorpusError::InvalidRequest("numeric sentinel screen predicate failed".into())
+            })?
+            .screen
+            != ScreenClass::Result
+    {
+        return invalid("numeric sentinel frame is not a canonical result frame");
+    }
+    let ScreenRgb8Crops::Result(crops) = route_screen_rgb8_crops(&pixels, ScreenClass::Result)
+        .map_err(|_| CorpusError::InvalidRequest("numeric sentinel crop routing failed".into()))?
+    else {
+        unreachable!("result routing returns result crops");
+    };
+    let parent = output.parent().ok_or_else(|| {
+        CorpusError::InvalidRequest("numeric sentinel output has no parent".into())
+    })?;
+    fs::create_dir_all(parent)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".scorepeek-numeric-sentinel-")
+        .tempdir_in(parent)?;
+    let images = staging.path().join("images");
+    fs::create_dir(&images)?;
+    let mut samples = Vec::new();
+    for (field, label, crop) in numeric_crops(&crops, &request.labels) {
+        let bytes = ppm_bytes(crop)?;
+        let crop_sha256 = digest(&bytes);
+        let filename = format!("images/{crop_sha256}.ppm");
+        let target = staging.path().join(&filename);
+        if !target.exists() {
+            fs::write(&target, bytes)?;
+        }
+        samples.push(NumericSentinelSample {
+            field,
+            label,
+            crop_sha256,
+            filename,
+            roi: crop.roi,
+        });
+    }
+    let manifest = NumericSentinelManifest {
+        schema: "scorepeek-private-numeric-ctc-sentinel-v1",
+        sentinel_id: request.sentinel_id.clone(),
+        frame_sha256: frame_sha256.to_owned(),
+        labels_sha256: labels_sha256.to_owned(),
+        dictionary: scorepeek::recognition::NUMERIC_DICTIONARY,
+        maximum_text_length: 4,
+        samples,
+    };
+    let manifest_bytes = canonical_json(&manifest)?;
+    let manifest_sha256 = digest(&manifest_bytes);
+    fs::write(staging.path().join("manifest.json"), manifest_bytes)?;
+    let sample_count = manifest.samples.len();
+    let staging_path = staging.keep();
+    fs::rename(staging_path, output)?;
+    fs::File::open(parent)?.sync_all()?;
+    Ok(NumericSentinelAuthoringSummary {
+        schema: "scorepeek-private-numeric-ctc-sentinel-authoring-v1",
+        sentinel_id: request.sentinel_id,
+        frame_sha256: frame_sha256.to_owned(),
+        labels_sha256: labels_sha256.to_owned(),
+        samples: sample_count,
+        output: output.to_owned(),
+        manifest_sha256,
+    })
+}
+
+fn valid_numeric_label(field: NumericField, label: Option<&String>) -> bool {
+    let Some(label) = label else {
+        return false;
+    };
+    if field.allows_dash() && label == "--" {
+        return true;
+    }
+    !label.is_empty()
+        && label.len() <= field.maximum_digits()
+        && label.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn numeric_screen_sequences(
+    store: &Path,
+    session: &CaptureSession,
+) -> Result<Vec<(u64, bool)>, CorpusError> {
+    let mut sequences = Vec::with_capacity(session.canonical_frames.len());
+    for frame in &session.canonical_frames {
+        let encoded = fs::read(store.join("objects").join(&frame.artifact_sha256))?;
+        if digest(&encoded) != frame.artifact_sha256 {
+            return invalid("numeric dataset frame digest differs");
+        }
+        let (header, pixels) = qoi::decode_to_vec(encoded)
+            .map_err(|_| CorpusError::InvalidRequest("numeric dataset QOI is invalid".into()))?;
+        if header.width != 1_920 || header.height != 1_080 || pixels.len() != 1_920 * 1_080 * 3 {
+            return invalid("numeric dataset frame is not canonical RGB8");
+        }
+        let is_result = inspect_canonical_rgb8(&pixels)
+            .map_err(|_| {
+                CorpusError::InvalidRequest("numeric dataset screen predicate failed".into())
+            })?
+            .screen
+            == ScreenClass::Result;
+        sequences.push((frame.sequence, is_result));
+    }
+    Ok(sequences)
+}
+
+fn numeric_episode_sequences(
+    screen_sequences: &[(u64, bool)],
+    stable_sequences: &[u64],
+    limit: usize,
+) -> Result<Vec<u64>, CorpusError> {
+    if stable_sequences.is_empty() || limit == 0 {
+        return invalid("numeric dataset episode has no stable sequence");
+    }
+    let mut episode_indices = BTreeSet::new();
+    for stable in stable_sequences {
+        let Some(index) = screen_sequences
+            .iter()
+            .position(|(sequence, is_result)| sequence == stable && *is_result)
+        else {
+            return invalid("numeric dataset stable frame is not a result frame");
+        };
+        episode_indices.insert(index);
+        let mut before = index;
+        while before > 0 && screen_sequences[before - 1].1 {
+            before -= 1;
+            episode_indices.insert(before);
+        }
+        let mut after = index;
+        while after + 1 < screen_sequences.len() && screen_sequences[after + 1].1 {
+            after += 1;
+            episode_indices.insert(after);
+        }
+    }
+
+    let mut candidates = episode_indices.into_iter().collect::<Vec<_>>();
+    candidates.sort_by_key(|index| {
+        let sequence = screen_sequences[*index].0;
+        (
+            stable_sequences
+                .iter()
+                .map(|stable| sequence.abs_diff(*stable))
+                .min()
+                .unwrap_or(u64::MAX),
+            sequence,
+        )
+    });
+    candidates.truncate(limit);
+    Ok(candidates
+        .into_iter()
+        .map(|index| screen_sequences[index].0)
+        .collect())
+}
+
+fn numeric_field_labels(
+    expected: &ExpectedResult,
+) -> Result<BTreeMap<NumericField, String>, CorpusError> {
+    let judgments = expected.judgments.as_ref().ok_or_else(|| {
+        CorpusError::InvalidRequest("numeric dataset judgments are absent".into())
+    })?;
+    let timing = expected
+        .timing
+        .as_ref()
+        .ok_or_else(|| CorpusError::InvalidRequest("numeric dataset timing is absent".into()))?;
+    let previous = expected.previous_best.as_ref().ok_or_else(|| {
+        CorpusError::InvalidRequest("numeric dataset previous best is absent".into())
+    })?;
+    let mut labels = BTreeMap::new();
+    labels.insert(
+        NumericField::CurrentScore,
+        expected.current_score.to_string(),
+    );
+    labels.insert(
+        NumericField::PreviousScore,
+        previous_numeric_label(&previous.score, true)?,
+    );
+    labels.insert(
+        NumericField::PreviousMissCount,
+        previous_numeric_label(&previous.miss_count, false)?,
+    );
+    labels.insert(
+        NumericField::MissCount,
+        supplemental_label(expected.miss_count.as_ref())?,
+    );
+    labels.insert(NumericField::Pgreat, judgments.pgreat.to_string());
+    labels.insert(NumericField::Great, judgments.great.to_string());
+    labels.insert(NumericField::Good, judgments.good.to_string());
+    labels.insert(NumericField::Bad, judgments.bad.to_string());
+    labels.insert(NumericField::Poor, judgments.poor.to_string());
+    labels.insert(NumericField::Fast, supplemental_label(Some(&timing.fast))?);
+    labels.insert(NumericField::Slow, supplemental_label(Some(&timing.slow))?);
+    labels.insert(
+        NumericField::ComboBreak,
+        supplemental_label(expected.combo_break.as_ref())?,
+    );
+    Ok(labels)
+}
+
+fn supplemental_label(value: Option<&SupplementalResultValue<u32>>) -> Result<String, CorpusError> {
+    match value {
+        Some(SupplementalResultValue::Known { value }) => Ok(value.to_string()),
+        Some(SupplementalResultValue::NotDisplayed) => Ok("--".to_owned()),
+        Some(SupplementalResultValue::Unknown { .. }) | None => {
+            invalid("numeric dataset cannot train an unknown supplemental value")
+        }
+    }
+}
+
+fn previous_numeric_label(
+    value: &PreviousBestValue<u32>,
+    zero_when_not_played: bool,
+) -> Result<String, CorpusError> {
+    match value {
+        PreviousBestValue::Known { value } => Ok(value.to_string()),
+        PreviousBestValue::NotPlayed if zero_when_not_played => Ok("0".to_owned()),
+        PreviousBestValue::NotPlayed | PreviousBestValue::NotDisplayed => Ok("--".to_owned()),
+        PreviousBestValue::Unknown { .. } => {
+            invalid("numeric dataset cannot train an unknown previous value")
+        }
+    }
+}
+
+fn numeric_crops<'a>(
+    crops: &'a scorepeek::recognition::ResultScreenRgb8Crops,
+    labels: &BTreeMap<NumericField, String>,
+) -> Vec<(NumericField, String, &'a Rgb8Crop)> {
+    [
+        (NumericField::Level, &crops.level),
+        (NumericField::Notes, &crops.notes),
+        (NumericField::CurrentScore, &crops.current_score),
+        (NumericField::PreviousScore, &crops.previous_score),
+        (NumericField::PreviousMissCount, &crops.previous_miss_count),
+        (NumericField::MissCount, &crops.miss_count),
+        (NumericField::Pgreat, &crops.pgreat),
+        (NumericField::Great, &crops.great),
+        (NumericField::Good, &crops.good),
+        (NumericField::Bad, &crops.bad),
+        (NumericField::Poor, &crops.poor),
+        (NumericField::Fast, &crops.fast),
+        (NumericField::Slow, &crops.slow),
+        (NumericField::ComboBreak, &crops.combo_break),
+    ]
+    .into_iter()
+    .filter_map(|(field, crop)| labels.get(&field).map(|label| (field, label.clone(), crop)))
+    .collect()
+}
+
+fn ppm_bytes(crop: &Rgb8Crop) -> Result<Vec<u8>, CorpusError> {
+    let mut bytes = format!("P6\n{} {}\n255\n", crop.roi.width, crop.roi.height).into_bytes();
+    bytes.extend_from_slice(crop.pixels());
+    if bytes.len() > 1024 * 1024 {
+        return invalid("numeric dataset crop exceeds its bound");
+    }
+    Ok(bytes)
+}
+
 pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
     let Some((generation_sha256, suite)) = load_active_suite(store)? else {
         return invalid("active regression suite is unavailable");
@@ -1825,7 +2367,7 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
                         }
                     }
                     resolution => replay_failures.push(format!(
-                        "episode {} tick {} result context unresolved: expected={:?}, raw difficulty={:?} level={:?} notes={:?} score={:?}, parsed={:?}, resolution={:?}",
+                        "episode {} tick {} result context unresolved: expected={:?}, raw difficulty={:?} level={:?} notes={:?} score={:?}, parsed={:?}, resolution={:?}, numeric={:?}",
                         episode.episode_id,
                         sequence,
                         expected,
@@ -1835,6 +2377,7 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
                         fields.current_score.open_text,
                         output.parsed_result_fields(),
                         resolution,
+                        output.numeric_batch(),
                     )),
                 }
                 if let (
@@ -1859,12 +2402,24 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
                             previous_best,
                             ..
                         }) if judgments == expected_judgments
-                            && miss_count == expected_miss_count
-                            && timing == expected_timing
-                            && combo_break == expected_combo_break
-                            && previous_best == expected_previous_best => {}
+                            && optional_supplemental_matches(miss_count, expected_miss_count)
+                            && optional_supplemental_matches(&timing.fast, &expected_timing.fast)
+                            && optional_supplemental_matches(&timing.slow, &expected_timing.slow)
+                            && optional_supplemental_matches(combo_break, expected_combo_break)
+                            && optional_previous_matches(
+                                &previous_best.clear_type,
+                                &expected_previous_best.clear_type,
+                            )
+                            && optional_previous_matches(
+                                &previous_best.score,
+                                &expected_previous_best.score,
+                            )
+                            && optional_previous_matches(
+                                &previous_best.miss_count,
+                                &expected_previous_best.miss_count,
+                            ) => {}
                         resolution => replay_failures.push(format!(
-                            "episode {} tick {} performance differs: expected judgments={:?} miss_count={:?} timing={:?} combo_break={:?} previous_best={:?}, observed={:?}",
+                            "episode {} tick {} performance differs: expected judgments={:?} miss_count={:?} timing={:?} combo_break={:?} previous_best={:?}, observed={:?}, numeric={:?}",
                             episode.episode_id,
                             sequence,
                             expected_judgments,
@@ -1873,6 +2428,7 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
                             expected_combo_break,
                             expected_previous_best,
                             resolution,
+                            output.numeric_batch(),
                         )),
                     }
                 }
@@ -1901,6 +2457,20 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
         canonical_frames,
         negative_frames: negatives,
     })
+}
+
+fn optional_supplemental_matches<T: PartialEq>(
+    observed: &SupplementalResultValue<T>,
+    expected: &SupplementalResultValue<T>,
+) -> bool {
+    observed == expected || matches!(observed, SupplementalResultValue::Unknown { .. })
+}
+
+fn optional_previous_matches<T: PartialEq>(
+    observed: &PreviousBestValue<T>,
+    expected: &PreviousBestValue<T>,
+) -> bool {
+    observed == expected || matches!(observed, PreviousBestValue::Unknown { .. })
 }
 
 #[derive(Deserialize)]
@@ -2352,15 +2922,15 @@ fn valid_expected_result(expected: &ExpectedResult) -> bool {
     let Some(judgments) = expected.judgments.as_ref() else {
         return false;
     };
-    let Some(miss_count) = expected.miss_count.as_ref() else {
+    if expected.miss_count.is_none() {
         return false;
-    };
-    let Some(timing) = expected.timing.as_ref() else {
+    }
+    if expected.timing.is_none() {
         return false;
-    };
-    let Some(combo_break) = expected.combo_break.as_ref() else {
+    }
+    if expected.combo_break.is_none() {
         return false;
-    };
+    }
     let Some(previous_best) = expected.previous_best.as_ref() else {
         return false;
     };
@@ -2381,26 +2951,13 @@ fn valid_expected_result(expected: &ExpectedResult) -> bool {
             judgments.great,
             judgments.good,
             judgments.bad,
-            judgments.poor,
         ]
         .into_iter()
         .all(|value| value <= notes)
-        && valid_supplemental(miss_count, notes)
-        && valid_supplemental(&timing.fast, notes)
-        && valid_supplemental(&timing.slow, notes)
-        && valid_supplemental(combo_break, notes)
         && valid_previous_clear(&previous_best.clear_type)
         && valid_previous_numeric(&previous_best.score, notes.saturating_mul(2))
-        && valid_previous_numeric(&previous_best.miss_count, notes)
         && (previous_not_played.into_iter().all(|value| value)
             || previous_not_played.into_iter().all(|value| !value))
-}
-
-const fn valid_supplemental(value: &SupplementalResultValue<u32>, maximum: u32) -> bool {
-    match value {
-        SupplementalResultValue::Known { value } => *value <= maximum,
-        SupplementalResultValue::NotDisplayed | SupplementalResultValue::Unknown { .. } => true,
-    }
 }
 
 fn valid_previous_clear(value: &PreviousBestValue<String>) -> bool {
@@ -3016,12 +3573,73 @@ mod tests {
     }
 
     #[test]
+    fn numeric_dataset_selects_only_the_stable_result_episode() {
+        let screen_sequences = [
+            (8, true),
+            (18, true),
+            (30, true),
+            (41, false),
+            (50, true),
+            (61, true),
+        ];
+        assert_eq!(
+            numeric_episode_sequences(&screen_sequences, &[18], 32).unwrap(),
+            vec![18, 8, 30]
+        );
+        assert!(numeric_episode_sequences(&screen_sequences, &[41], 32).is_err());
+    }
+
+    #[test]
+    fn numeric_dataset_caps_frames_nearest_to_stable_evidence() {
+        let screen_sequences = (1..=10)
+            .map(|sequence| (sequence, true))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            numeric_episode_sequences(&screen_sequences, &[6], 4).unwrap(),
+            vec![6, 5, 7, 4]
+        );
+    }
+
+    #[test]
+    fn optional_numeric_unknown_is_safe_but_wrong_known_is_not() {
+        let expected = SupplementalResultValue::Known { value: 7_u32 };
+        assert!(optional_supplemental_matches(
+            &SupplementalResultValue::Unknown {
+                reason: scorepeek::recognition::ResultFieldUnknownReason::Empty,
+            },
+            &expected,
+        ));
+        assert!(!optional_supplemental_matches(
+            &SupplementalResultValue::Known { value: 8 },
+            &expected,
+        ));
+        assert!(optional_previous_matches(
+            &PreviousBestValue::Unknown {
+                reason: scorepeek::recognition::ResultFieldUnknownReason::Empty,
+            },
+            &PreviousBestValue::Known { value: 7_u32 },
+        ));
+    }
+
+    #[test]
     fn v3_result_validation_rejects_unreplayable_typed_values() {
         assert!(valid_expected_result(&expected_result()));
 
-        let mut overflow = expected_result();
-        overflow.miss_count = Some(SupplementalResultValue::Known { value: 101 });
-        assert!(!valid_expected_result(&overflow));
+        let mut unbounded = expected_result();
+        unbounded.miss_count = Some(SupplementalResultValue::Known { value: 101 });
+        unbounded.timing = Some(ResultTiming {
+            fast: SupplementalResultValue::Known { value: 102 },
+            slow: SupplementalResultValue::Known { value: 103 },
+        });
+        unbounded.combo_break = Some(SupplementalResultValue::Known { value: 104 });
+        unbounded.judgments.as_mut().unwrap().poor = 105;
+        unbounded.previous_best.as_mut().unwrap().miss_count =
+            PreviousBestValue::Known { value: 106 };
+        assert!(valid_expected_result(&unbounded));
+
+        let mut note_judgment_overflow = expected_result();
+        note_judgment_overflow.judgments.as_mut().unwrap().bad = 101;
+        assert!(!valid_expected_result(&note_judgment_overflow));
 
         let mut inconsistent_no_play = expected_result();
         inconsistent_no_play
@@ -3070,7 +3688,7 @@ mod tests {
             completeness: "complete".to_owned(),
         };
         let mut invalid_result = expected_result();
-        invalid_result.miss_count = Some(SupplementalResultValue::Known { value: 101 });
+        invalid_result.judgments.as_mut().unwrap().bad = 101;
         let label = RegressionLabel {
             schema: LABEL_SCHEMA.to_owned(),
             session_sha256,

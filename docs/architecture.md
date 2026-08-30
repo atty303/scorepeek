@@ -143,13 +143,22 @@ padding, and tensor normalization belong to a versioned OCR preprocessor bound
 to the model. Training and Rust inference use the same preprocessing contract.
 
 Fields are represented as `known`, `unknown(reason)`, or `not_applicable`.
-PP-OCRv6 small native-dynamic is the selected text observer; each field keeps its own ROI and
-preprocessing contract. Every due 100 ms tick evaluates the screen predicate independently of the
-bounded field worker. While that worker is occupied, result/music-select crop routing and submission
-alone are skipped and recorded as `field_observation_busy_skip`; screen transitions and play-attempt
-state continue at the screen cadence. One inference preserves unrestricted raw OCR and optionally
-decodes the same logits through a fixed digits or digits-plus-dashes CTC alphabet. Numeric parsers
-consume only that constrained decode while artifacts keep raw, constrained, and typed forms.
+PP-OCRv6 small native-dynamic observes only result title, artist, clear type, difficulty, previous
+clear type, and the music-select text fields. Fourteen fixed result numeric ROIs are instead
+preprocessed as BGR `3x32x320` and submitted together to one registered specialist CTC ONNX batch.
+Its dictionary is exactly `0123456789-`; exact shared-prefix sequence scoring retains top-eight,
+all-blank, calibrated posterior, and margin evidence rather than forcing a greedy glyph from an
+empty crop. A deterministic blank-first greedy collapse of the same logits separately preserves
+unrestricted raw diagnostic text; only exact field-grammar candidates can become typed values.
+Every due 100 ms tick evaluates the screen predicate independently of the bounded field
+worker. While that worker is occupied, result/music-select crop routing and submission alone are
+skipped and recorded as `field_observation_busy_skip`; screen transitions and play-attempt state
+continue at the screen cadence. Numeric model, preprocessor, candidate, joint-score, and typed
+decisions remain debug artifacts; only a temporally accepted result can reach the domain event.
+Level and notes stay unknown when their crops contain no displayed glyph. For an already accepted
+result song, accepted difficulty plus any known level/notes values constrain the catalog; exactly
+one matching single-play chart may provide its registered level and notes, while zero or multiple
+matches remain unknown.
 Frame-local full-catalog resolution keeps screen-specific evidence separate. A deterministic
 post-resolver reducer stabilizes result song and clear type after two equal observations in one
 explicitly observed result episode, preserves stable values across a transient unknown, rejects
@@ -314,19 +323,20 @@ The single-production-worker token is retained through observer teardown. Model/
 field schemas, catalog decisions, and event acceptance remain separate layers.
 
 ADR 0031 supplies the production resource loader for that boundary. It requires the active catalog,
-registered PP-OCRv6-small model, and fixed CPU runtime artifact to match the immutable run digests,
-then retains the catalog, dictionary, and one ONNX session. The runtime has a pure bounded-crop
-open-text method. The read-only resource gate transfers the loaded resources into the production
-field worker and requires bounded teardown without crop submission. It proves resource admission
-and worker ownership only; it is not live recognition or performance evidence.
+registered PP-OCRv6-small text model, and an explicitly installed active private numeric model to
+match their immutable manifests before the production worker starts. It retains one text ONNX
+session and one specialist numeric ONNX session. Missing or changed numeric bytes fail closed; the
+text recognizer is not a numeric fallback. The read-only resource gate transfers the loaded
+resources into the production field worker and requires bounded teardown without crop submission.
+It proves resource admission and worker ownership only; it is not live recognition or performance
+evidence.
 
-ADR 0032, as narrowed by ADR 0036, supplies the production screen-field observer and exact complete
-output shapes. Result output always contains observed title, artist, and `CLEAR TYPE` text together with explicit observer-not-implemented
-states for difficulty, level, notes, and current score. Music-select output always contains observed
-central-title, artist, and active-list-title text together with an explicit observer-not-implemented
-selected chart. A text-field failure returns a typed whole-screen error instead of a partial value.
-The existing field-count operation records the screen, fixed observed/unimplemented counts, and an
-optional typed failed-field ID. ADR 0037 requires the application-owned recognition artifact to
+ADR 0032, as narrowed by ADR 0036 and superseded for implemented fields by ADR 0087, supplies the
+production screen-field observer and exact complete output shapes. Result output contains five
+general-text observations and fourteen specialist numeric states; music-select contains its four
+general-text observations. A text or numeric-batch failure returns a typed whole-screen error
+instead of a partial value. The existing field-count operation records the screen, fixed field
+count, and an optional typed failed-field ID. ADR 0037 requires the application-owned recognition artifact to
 retain bounded exact OCR strings, a run-scoped exact catalog display/comparison string table,
 candidate string references, and metrics as stages are added; this evidence still has no
 song-decision, accepted-field, suppression, or event authority by itself. Pixels remain in the

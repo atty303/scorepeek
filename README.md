@@ -104,6 +104,14 @@ Developers may instead provide a complete fixed small bundle with
 `scorepeek --model-bundle /absolute/directory <command...>`; scorepeek verifies the same registered
 contract and does not use the network. This is not an alternate-model selector.
 
+Result digits require the separately frozen private numeric bundle. Install its create-only,
+digest-bound model before `run` with
+`scorepeek numeric-model install --bundle /absolute/numeric-model-bundle`. There is no general-text
+numeric fallback: a missing or mismatched active bundle makes `run` fail closed. `scorepeek doctor`
+uses `scorepeek-doctor-v2`; it reports the unchanged `scorepeek-target-inventory-v1` under
+`target_inventory` and the active numeric model identity or typed unavailability under
+`numeric_model`.
+
 After transferring or synchronizing one active catalog, create a capture profile on the machine
 that will run the game. Scorepeek starts and stops a dedicated calibration Gamescope containing its
 own marker; arguments after `--` are used only to launch that calibration process:
@@ -251,8 +259,8 @@ and sampled pixels stay in the private diagnostic root.
 contains every reproducible repository check. Live Bazzite, Portal, OBS,
 Gamescope, and GPU verification remains in explicit target-only tasks.
 
-`mise run doctor` prints a versioned JSON inventory using fixed local commands
-and allowlisted parsers. Missing target tools are reported as `unavailable`;
+`mise run doctor` prints a versioned JSON doctor report whose target inventory uses fixed local
+commands and allowlisted parsers. Missing target tools are reported as `unavailable`;
 command stderr is never included. Running Gamescope flags and authenticated OBS
 state remain unavailable until an exact, secret-safe probe contract exists.
 
