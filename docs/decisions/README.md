@@ -234,6 +234,9 @@ authoritative.
 - [ADR 0079: Prioritize formatted result history in the TUI](0079-prioritize-formatted-result-history-in-the-tui.md)
   retains a bounded invocation-local result history and presents catalog song information and play
   results ahead of frame-local diagnostic detail without rendering event JSON.
+- [ADR 0080: Rank full-title evidence after active-prefix evidence](0080-rank-full-title-after-active-prefix.md)
+  supersedes ADR 0046's arbitrary minimum active-title length and uses existing full-title metrics
+  to resolve equal prefix evidence without character-count routing.
 
 ## Historical
 

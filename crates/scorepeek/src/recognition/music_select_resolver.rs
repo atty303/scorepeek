@@ -10,9 +10,8 @@ use super::{
 };
 
 pub const MUSIC_SELECT_SONG_RESOLVER_ID: &str =
-    "scorepeek-music-select-active-prefix-corroborated-v1";
+    "scorepeek-music-select-active-prefix-full-tiebreak-corroborated-v2";
 
-const MINIMUM_ACTIVE_PREFIX_UNITS: usize = 5;
 const MAXIMUM_ACTIVE_PREFIX_EDIT_DISTANCE: usize = 1;
 const MINIMUM_ACTIVE_PREFIX_MATCHING_UNITS: usize = 6;
 const MINIMUM_ACTIVE_PREFIX_COMPARED_UNITS: usize = 7;
@@ -24,7 +23,6 @@ const MINIMUM_CORROBORATION_COMPARED_UNITS: usize = 5;
 #[serde(rename_all = "snake_case")]
 pub enum MusicSelectSongUnknownReason {
     EmptyActiveListTitle,
-    ActiveListTitleTooShort,
     NoCatalogCandidates,
     RunnerUpMissing,
     ActivePrefixEditDistanceExceeded,
@@ -98,21 +96,9 @@ pub fn resolve_music_select_song(
     observed_active_list_title: &str,
     candidates: &[MusicSelectSongCandidateObservation],
 ) -> MusicSelectSongResolution {
-    if observed_active_list_title.is_empty() {
+    if folded_comparison_key(observed_active_list_title).is_empty() {
         return unknown(
             MusicSelectSongUnknownReason::EmptyActiveListTitle,
-            None,
-            None,
-            None,
-        );
-    }
-    if folded_comparison_key(observed_active_list_title)
-        .chars()
-        .count()
-        < MINIMUM_ACTIVE_PREFIX_UNITS
-    {
-        return unknown(
-            MusicSelectSongUnknownReason::ActiveListTitleTooShort,
             None,
             None,
             None,
@@ -143,19 +129,16 @@ fn rank_candidates(
     candidates: &[MusicSelectSongCandidateObservation],
 ) -> Vec<&MusicSelectSongCandidateObservation> {
     let mut ranked: Vec<_> = candidates.iter().collect();
-    ranked.sort_by(|left, right| {
-        left.active_list_title_prefix
-            .minimum_edit_distance
-            .cmp(&right.active_list_title_prefix.minimum_edit_distance)
-            .then_with(|| {
-                compare_similarity(
-                    right.active_list_title_prefix.maximum_normalized_similarity,
-                    left.active_list_title_prefix.maximum_normalized_similarity,
-                )
-            })
-            .then_with(|| left.song_id.cmp(&right.song_id))
-    });
+    ranked.sort_by(|left, right| compare_active_evidence(left, right));
     ranked
+}
+
+fn compare_active_evidence(
+    left: &MusicSelectSongCandidateObservation,
+    right: &MusicSelectSongCandidateObservation,
+) -> std::cmp::Ordering {
+    compare_active_evidence_without_song_id(left, right)
+        .then_with(|| left.song_id.cmp(&right.song_id))
 }
 
 fn resolve_ranked(
@@ -200,7 +183,7 @@ fn resolve_ranked(
         );
     }
 
-    let mut survivors = active_survivors(ranked, selected.active_list_title_prefix);
+    let mut survivors = active_survivors(ranked);
     let central = strong_text_candidates(observed_central_title, candidates, |candidate| {
         candidate.central_title
     });
@@ -218,15 +201,15 @@ fn resolve_ranked(
     )
 }
 
-fn active_survivors(
-    ranked: &[&MusicSelectSongCandidateObservation],
-    selected: CatalogPrefixCandidateScore,
-) -> BTreeSet<ScorepeekSongId> {
+fn active_survivors(ranked: &[&MusicSelectSongCandidateObservation]) -> BTreeSet<ScorepeekSongId> {
+    let Some(selected) = ranked.first() else {
+        return BTreeSet::new();
+    };
     ranked
         .iter()
         .take_while(|candidate| {
-            candidate.active_list_title_prefix.minimum_edit_distance
-                == selected.minimum_edit_distance
+            compare_active_evidence_without_song_id(candidate, selected)
+                == std::cmp::Ordering::Equal
                 && score_ratio_at_least(
                     candidate.active_list_title_prefix,
                     MINIMUM_ACTIVE_PREFIX_MATCHING_UNITS,
@@ -235,6 +218,32 @@ fn active_survivors(
         })
         .map(|candidate| candidate.song_id)
         .collect()
+}
+
+fn compare_active_evidence_without_song_id(
+    left: &MusicSelectSongCandidateObservation,
+    right: &MusicSelectSongCandidateObservation,
+) -> std::cmp::Ordering {
+    left.active_list_title_prefix
+        .minimum_edit_distance
+        .cmp(&right.active_list_title_prefix.minimum_edit_distance)
+        .then_with(|| {
+            compare_similarity(
+                right.active_list_title_prefix.maximum_normalized_similarity,
+                left.active_list_title_prefix.maximum_normalized_similarity,
+            )
+        })
+        .then_with(|| {
+            left.active_list_title
+                .minimum_edit_distance
+                .cmp(&right.active_list_title.minimum_edit_distance)
+        })
+        .then_with(|| {
+            compare_similarity(
+                right.active_list_title.maximum_normalized_similarity,
+                left.active_list_title.maximum_normalized_similarity,
+            )
+        })
 }
 
 struct ResolutionContext<'a> {
@@ -510,11 +519,27 @@ mod tests {
         artist: CatalogTextCandidateScore,
         active_prefix: CatalogPrefixCandidateScore,
     ) -> MusicSelectSongCandidateObservation {
+        candidate_with_active_title(
+            song_id,
+            central_title,
+            artist,
+            text(20, 20, 40),
+            active_prefix,
+        )
+    }
+
+    fn candidate_with_active_title(
+        song_id: ScorepeekSongId,
+        central_title: CatalogTextCandidateScore,
+        artist: CatalogTextCandidateScore,
+        active_title: CatalogTextCandidateScore,
+        active_prefix: CatalogPrefixCandidateScore,
+    ) -> MusicSelectSongCandidateObservation {
         MusicSelectSongCandidateObservation {
             song_id,
             central_title,
             artist,
-            active_list_title: text(20, 20, 40),
+            active_list_title: active_title,
             active_list_title_prefix: active_prefix,
         }
     }
@@ -633,29 +658,112 @@ mod tests {
     }
 
     #[test]
-    fn short_or_ambiguous_active_evidence_remains_unknown() {
-        for active_title in [
-            "ABCD",
-            "X    ",
-            "X\u{3000}\u{3000}\u{3000}\u{3000}",
-            "     ",
-        ] {
+    fn short_full_title_breaks_an_equal_prefix_tie() {
+        let resolution = resolve_music_select_song(
+            "",
+            "",
+            "X",
+            &[
+                candidate_with_active_title(
+                    id(1),
+                    text(8, 0, 8),
+                    text(8, 0, 8),
+                    text(0, 1, 1),
+                    prefix(0, 1, 1),
+                ),
+                candidate_with_active_title(
+                    id(2),
+                    text(8, 0, 8),
+                    text(8, 0, 8),
+                    text(4, 1, 5),
+                    prefix(0, 1, 1),
+                ),
+            ],
+        );
+        assert_eq!(resolution.accepted_song_id(), Some(id(1)));
+    }
+
+    #[test]
+    fn short_prefix_accepts_the_only_catalog_match() {
+        let resolution = resolve_music_select_song(
+            "",
+            "",
+            "X",
+            &[
+                candidate_with_active_title(
+                    id(1),
+                    text(8, 0, 8),
+                    text(8, 0, 8),
+                    text(4, 1, 5),
+                    prefix(0, 1, 1),
+                ),
+                candidate_with_active_title(
+                    id(2),
+                    text(8, 0, 8),
+                    text(8, 0, 8),
+                    text(5, 0, 5),
+                    prefix(1, 0, 1),
+                ),
+            ],
+        );
+        assert_eq!(resolution.accepted_song_id(), Some(id(1)));
+    }
+
+    #[test]
+    fn short_title_without_a_catalog_prefix_match_remains_unknown() {
+        let resolution = resolve_music_select_song(
+            "",
+            "",
+            "X",
+            &[
+                candidate_with_active_title(
+                    id(1),
+                    text(8, 0, 8),
+                    text(8, 0, 8),
+                    text(4, 0, 4),
+                    prefix(1, 0, 1),
+                ),
+                candidate_with_active_title(
+                    id(2),
+                    text(8, 0, 8),
+                    text(8, 0, 8),
+                    text(5, 0, 5),
+                    prefix(1, 0, 1),
+                ),
+            ],
+        );
+        assert!(matches!(
+            resolution,
+            MusicSelectSongResolution::Unknown {
+                reason: MusicSelectSongUnknownReason::ActivePrefixSimilarityTooLow,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn comparison_key_empty_active_title_remains_unknown() {
+        for active_title in ["", "     ", "\u{3000}\u{3000}"] {
             assert!(matches!(
                 resolve_music_select_song(
                     "",
                     "",
                     active_title,
                     &[
-                        candidate(id(1), text(8, 0, 8), text(8, 0, 8), prefix(0, 5, 5)),
-                        candidate(id(2), text(8, 0, 8), text(8, 0, 8), prefix(1, 4, 5)),
+                        candidate(id(1), text(8, 0, 8), text(8, 0, 8), prefix(0, 1, 1)),
+                        candidate(id(2), text(8, 0, 8), text(8, 0, 8), prefix(1, 0, 1)),
                     ],
                 ),
                 MusicSelectSongResolution::Unknown {
-                    reason: MusicSelectSongUnknownReason::ActiveListTitleTooShort,
+                    reason: MusicSelectSongUnknownReason::EmptyActiveListTitle,
                     ..
                 }
             ));
         }
+    }
+
+    #[test]
+    fn fully_equal_active_evidence_remains_ambiguous() {
         let ambiguous = resolve_music_select_song(
             "noise",
             "noise",

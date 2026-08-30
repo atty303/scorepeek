@@ -20,7 +20,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   measured fixed `MUSIC SELECT` label and rejects retained startup evidence offline. Retained
   longest-title live evidence now grounds a screen-local music-select resolver: the clipped
   one-line active row is primary prefix evidence, while the arbitrary central-title texture and
-  artist can only strongly corroborate or narrow a tie. Complete recording and active-catalog
+  artist can only strongly corroborate or narrow a tie. ADR 0080 removes the arbitrary five-unit
+  rejection exposed by valid short catalog titles and ranks the already-retained full-title score
+  after prefix distance and similarity, so equal prefix evidence such as `X` and `X-DEN` remains
+  catalog-constrained without a character-count branch. Complete recording and active-catalog
   replays accept the reviewed selections without weighted score fusion or threshold relaxation.
   No independent transform mismatch or changed normalizer currently justifies replaying a
   scorepeek-written raw/canonical pair through the same implementation. ADR 0048 trusts
@@ -480,13 +483,14 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   least `6/7`, runner-up title edit margin at least two, and selected-candidate artist similarity at
   least `2/5`. Artist corroborates the title-selected song rather than contributing to a combined
   rank. Every rejection is a typed unknown with candidate evidence when available.
-- ADR 0046 adds the fail-closed music-select song resolver
-  `scorepeek-music-select-active-prefix-corroborated-v1`. It treats the clipped one-line active-list
-  title as primary catalog-prefix evidence, requiring at least five folded comparison-key units,
-  edit distance at most one, and similarity at least `6/7`. Central-title texture and artist observations remain
+- ADR 0046 adds the fail-closed music-select song resolver; ADR 0080 supersedes its minimum-length
+  gate and registers `scorepeek-music-select-active-prefix-full-tiebreak-corroborated-v2`. It treats
+  the clipped one-line active-list title as primary catalog-prefix evidence, requiring edit distance
+  at most one and similarity at least `6/7`, then uses full-title distance and similarity to resolve
+  equal prefix evidence. Central-title texture and artist observations remain
   separate one-crop OCR evidence; only full-text matches within edit one and similarity `4/5` are
   strong enough to conflict with a unique active candidate or intersect an active tie. Weak
-  supplemental OCR is ignored, and every empty, short, weak, conflicting, or ambiguous result is a
+  supplemental OCR is ignored, and every empty, weak, conflicting, or ambiguous result is a
   typed unknown. No weighted score is computed.
 - Recording profile v2 requires an exact expected `ScorepeekSongId` for every episode. The
   recognition simulation requires at least two exact expected song decisions and two exact
@@ -652,7 +656,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   official-model execution, and native PipeWire build have each passed their dedicated development
   gates. These do not substitute for target-machine capture, recognition, or performance evidence.
 - Repository validation at this checkpoint includes formatting/static checks, workspace all-target
-  clippy with warnings denied, 314 library tests, 227 binary tests, 78 corpus library tests, 4 corpus
+  clippy with warnings denied, 323 library tests, 237 binary tests, 79 corpus library tests, 4 corpus
   binary tests, 77 offline OCR tests, native PipeWire build verification, and the packaged
   distribution artifact test. Focused session tests also verify descriptor/layout rejection,
   frame-generation rejection, diagnostic opt-out non-interference, and manifest-backed ordered
@@ -772,6 +776,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   event deduplication pass the active QOI suite, but target-live behavior, mode/side/savability
   detection, and public accepted event authority remain unverified. The complete motion review is sufficient
   for candidate dwell evaluation but does not select a policy.
+- The ADR 0080 resolver ordering is covered by synthetic catalog candidates, including `X` versus
+  `X-DEN`, but has not yet processed a prospective target session containing a short valid title.
+  Retained v1 diagnostics prove the former `active_list_title_too_short` failure and do not by
+  themselves qualify v2 live behavior.
 - A true live music-select screen has passed the fixed-label predicate and retained values now pass
   the screen-local song resolver, but stable-selection and event acceptance remain unimplemented.
   Exact live result QOIs classify as result and reproduce their
@@ -881,10 +889,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Install the ADR 0079 binary on the target, then exercise multiple ordinary SP/1P results. Require the
-   raw `field_observation` to precede exactly one `result_detected` with the catalog chart and visible
-   score/clear values, and require the TUI to retain earlier formatted songs and play results when a
-   later result arrives. Treat an unknown chart or score as evidence; do not alter the operator label.
+1. Install the ADR 0080 binary on the target and select a short catalog title such as `X`, `〆`, or
+   `無双`. Require v2 to rank it without `active_list_title_too_short`, preserve the full catalog
+   candidate evidence, reach stable/armed state, and retain any later attempt linkage. Treat an
+   ambiguous or conflicting result as evidence rather than adding a character-count threshold.
 2. Run the installed `scorepeek` against the fixed measured `gamescope-4k` profile and sample
    `pw-top` before and during the session. Require a zero scorepeek
    error delta, no `BUSY +++`, continued 10 Hz observations, and clean receiver shutdown; retain the
