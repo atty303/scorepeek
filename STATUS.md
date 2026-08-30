@@ -63,9 +63,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   operator review, immutable labels, suite publication, and production frame replay are separate
   stages. Video is auxiliary and the former recording-dataset CLI routes have been removed. The
   active frame-first suite generation
-  `56ddaa1a9122c63c91a81f8276ef5e80a6e2e06962c5f9ab2fb6d90347dda75d` contains four verified
-  diagnostics and fourteen operator-reviewed episodes. `mise run corpus:test` replays all 1,870
-  stored canonical frame references through the production predicate and all fourteen stable QOIs
+  `883681cb7efe5643256a1bb201b93adc7685a3f0c881fecc9cbbb0b050c46058` contains five verified
+  diagnostics and seventeen operator-reviewed episodes. `mise run corpus:test` replays all 2,102
+  stored canonical frame references through the production predicate and all seventeen stable QOIs
   through OCR, catalog resolution, and clear-type resolution successfully. The current
   suite also contains one operator-confirmed black startup frame as an explicit negative predicate
   expectation. The current four-song legacy diagnostic was normalized to v3 with 636
@@ -273,9 +273,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   notes, and any readable level. Chart evidence cannot downgrade an accepted primary song; one
   catalog-unique chart may only complete a margin- or artist-limited unknown primary. The active
   create-only private suite generation
-  `56ddaa1a9122c63c91a81f8276ef5e80a6e2e06962c5f9ab2fb6d90347dda75d`
-  adds visually reviewed savable/SP/1P, difficulty, level, notes, and current score to all fourteen
-  episodes. Production replay passes all 1,870 QOI references, fourteen complete result contexts,
+  `883681cb7efe5643256a1bb201b93adc7685a3f0c881fecc9cbbb0b050c46058`
+  adds visually reviewed savable/SP/1P, difficulty, level, notes, and current score to all seventeen
+  episodes. Production replay passes all 2,102 QOI references, seventeen complete result contexts,
   and one negative. The provisional run channel now emits one typed `result_detected` after the
   existing two-observation/250 ms song and clear stabilization when the chart and score are known.
   Release accuracy, event authority, target-host performance, and support remain later gates.
@@ -302,9 +302,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   top-level manifest and their NDJSON streams. Capture facts preserve append/completion order from
   asynchronous field recognition, while recognition observations and v2 run-event channel
   sequences retain strict ordering. Target session
-  `run-1788051374-895415156-1312881-session-1` was verified and imported as the unlabeled session
+  `run-1788051374-895415156-1312881-session-1` was verified and imported as session
   `a1ad7dbb2f7a220c9602afce34bd27bfc67d74d9d548d85a55370822983c878a` with 232 canonical QOI
-  frames and 5,838 observations; the active regression suite remains unchanged pending review.
+  frames and 5,838 observations. Immutable label
+  `9e653fc1ad9254e73eccc8a614816532d234c4e019af321f8e900c150ed47f79` adds three visually
+  confirmed results for `ドリムチウ`, `無双`, and `Monkey Business`; all seventeen active result
+  contexts replay successfully.
 - Private frames, labels, recordings, source snapshots, generated catalogs, models, and environment
   artifacts remain outside the repository. Committed fixtures are synthetic or opaque and
   non-personal.
