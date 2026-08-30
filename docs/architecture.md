@@ -434,6 +434,12 @@ discard an already-represented live record and detect later gaps. It is intentio
 accepted domain events. TTY stdout renders the same typed run state as a TUI, while non-TTY stdout
 reports only human-readable state changes.
 
+The TUI treats accepted play results as its primary human-facing output. It retains the newest 32
+results across source-session boundaries within one watcher invocation and formats catalog title,
+artist, clear type, chart, notes, EX score, maximum score, and percentage without exposing the JSON
+payload. This invocation-local view is not persistent score history; machine-readable events remain
+in the observation channel and bounded run-event artifact.
+
 The first public interface is a same-user Unix socket at
 `$XDG_RUNTIME_DIR/scorepeek/v1.sock`. It streams versioned NDJSON accepted
 domain events, never pixels, OCR candidate text, source snapshots, or stored

@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::env;
 use std::fs::{self, DirBuilder};
 use std::io::{self, BufWriter, IsTerminal as _, Write as _};
@@ -35,6 +36,7 @@ use serde_json::{Value, json};
 const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const SOCKET_NAME: &str = "observations-v2.sock";
+const RESULT_HISTORY_CAPACITY: usize = 32;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RunEvent {
@@ -161,6 +163,16 @@ pub struct SongPresentation {
     pub artist: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct ResultHistoryEntry {
+    ordinal: u64,
+    session_id: String,
+    capture_generation: u64,
+    source_sequence: u64,
+    song: Option<SongPresentation>,
+    result: ResultDomainEvent,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum SongResolutionPresentation {
@@ -205,6 +217,10 @@ pub struct RunViewState {
     latest_temporal_music_select: Option<Value>,
     latest_play_attempt: Option<Value>,
     latest_result_detected: Option<Value>,
+    result_history: VecDeque<ResultHistoryEntry>,
+    result_count: u64,
+    #[serde(skip)]
+    stable_result_song: Option<SongPresentation>,
     latest_report: Option<Value>,
     status_recording: &'static str,
     next_channel_sequence: u64,
@@ -231,6 +247,9 @@ impl RunViewState {
             latest_temporal_music_select: None,
             latest_play_attempt: None,
             latest_result_detected: None,
+            result_history: VecDeque::with_capacity(RESULT_HISTORY_CAPACITY),
+            result_count: 0,
+            stable_result_song: None,
             latest_report: None,
             status_recording: if recording_enabled {
                 "ready"
@@ -260,6 +279,7 @@ impl RunViewState {
                 self.latest_temporal_music_select = None;
                 self.latest_play_attempt = None;
                 self.latest_result_detected = None;
+                self.stable_result_song = None;
                 self.latest_report = None;
                 "Gamescope session admitted".clone_into(&mut self.message);
             }
@@ -269,8 +289,9 @@ impl RunViewState {
             RunEventKind::FieldObservation { .. } => {
                 self.latest_observation = Some(serialized.clone());
             }
-            RunEventKind::TemporalResultChanged { .. } => {
+            RunEventKind::TemporalResultChanged { stable_song, .. } => {
                 self.latest_stabilized_result = Some(serialized.clone());
+                self.stable_result_song.clone_from(stable_song);
             }
             RunEventKind::TemporalMusicSelectChanged { .. } => {
                 self.latest_temporal_music_select = Some(serialized.clone());
@@ -278,8 +299,30 @@ impl RunViewState {
             RunEventKind::PlayAttemptChanged { .. } => {
                 self.latest_play_attempt = Some(serialized.clone());
             }
-            RunEventKind::ResultDetected { .. } => {
+            RunEventKind::ResultDetected {
+                session_id,
+                capture_generation,
+                source_sequence,
+                result,
+            } => {
                 self.latest_result_detected = Some(serialized.clone());
+                self.result_count = self.result_count.saturating_add(1);
+                if self.result_history.len() == RESULT_HISTORY_CAPACITY {
+                    self.result_history.pop_front();
+                }
+                let song = self
+                    .stable_result_song
+                    .as_ref()
+                    .filter(|song| song.scorepeek_song_id == result.scorepeek_song_id)
+                    .cloned();
+                self.result_history.push_back(ResultHistoryEntry {
+                    ordinal: self.result_count,
+                    session_id: session_id.clone(),
+                    capture_generation: *capture_generation,
+                    source_sequence: *source_sequence,
+                    song,
+                    result: result.clone(),
+                });
             }
             RunEventKind::SessionFinished {
                 outcome, report, ..
@@ -301,6 +344,7 @@ impl RunViewState {
                 self.latest_temporal_music_select = None;
                 self.latest_play_attempt = None;
                 self.latest_result_detected = None;
+                self.stable_result_song = None;
                 "scorepeek stopped by signal".clone_into(&mut self.message);
             }
         }
@@ -1276,30 +1320,14 @@ fn render(
     let area = frame.area();
     let compact = area.width < 80 || area.height < 32;
     let show_attempt = !compact || state.latest_play_attempt.is_some();
-    let constraints = if compact && show_attempt {
-        vec![
-            Constraint::Length(6),
-            Constraint::Length(6),
-            Constraint::Min(5),
-            Constraint::Length(3),
-        ]
-    } else if compact {
-        vec![
-            Constraint::Length(8),
-            Constraint::Min(7),
-            Constraint::Length(5),
-        ]
-    } else {
-        vec![
-            Constraint::Length(7),
-            Constraint::Length(9),
-            Constraint::Min(10),
-            Constraint::Length(8),
-        ]
-    };
+    let show_results = !state.result_history.is_empty();
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(constraints)
+        .constraints(result_panel_constraints(
+            compact,
+            show_attempt,
+            show_results,
+        ))
         .split(area);
     let header = watcher_lines(state, compact, rows[0].width.saturating_sub(2) as usize);
     frame.render_widget(
@@ -1308,6 +1336,21 @@ fn render(
     );
 
     let mut row = 1;
+    if show_results {
+        let results = result_history_lines(
+            state,
+            compact,
+            rows[row].width.saturating_sub(2) as usize,
+            rows[row].height.saturating_sub(2) as usize,
+        );
+        frame.render_widget(
+            Paragraph::new(results)
+                .wrap(Wrap { trim: false })
+                .block(Block::default().borders(Borders::ALL).title("Play results")),
+            rows[row],
+        );
+        row += 1;
+    }
     if show_attempt {
         let attempt = play_attempt_lines(
             state.latest_play_attempt.as_ref(),
@@ -1352,6 +1395,177 @@ fn render(
         ),
         rows[row],
     );
+}
+
+fn result_panel_constraints(
+    compact: bool,
+    show_attempt: bool,
+    show_results: bool,
+) -> Vec<Constraint> {
+    if show_results && compact && show_attempt {
+        vec![
+            Constraint::Length(6),
+            Constraint::Min(7),
+            Constraint::Length(6),
+            Constraint::Length(5),
+            Constraint::Length(3),
+        ]
+    } else if show_results && compact {
+        vec![
+            Constraint::Length(6),
+            Constraint::Min(8),
+            Constraint::Length(8),
+            Constraint::Length(5),
+        ]
+    } else if show_results {
+        vec![
+            Constraint::Length(7),
+            Constraint::Min(12),
+            Constraint::Length(9),
+            Constraint::Length(10),
+            Constraint::Length(8),
+        ]
+    } else if compact && show_attempt {
+        vec![
+            Constraint::Length(6),
+            Constraint::Length(6),
+            Constraint::Min(5),
+            Constraint::Length(3),
+        ]
+    } else if compact {
+        vec![
+            Constraint::Length(8),
+            Constraint::Min(7),
+            Constraint::Length(5),
+        ]
+    } else {
+        vec![
+            Constraint::Length(7),
+            Constraint::Length(9),
+            Constraint::Min(10),
+            Constraint::Length(8),
+        ]
+    }
+}
+
+fn result_history_lines(
+    state: &RunViewState,
+    compact: bool,
+    available_width: usize,
+    available_height: usize,
+) -> Vec<Line<'static>> {
+    if state.result_history.is_empty() {
+        return vec![
+            Line::from(Span::styled(
+                "No completed plays yet",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from("A stable result will appear here."),
+        ];
+    }
+
+    let entry_height = 4;
+    let available_entries = available_height.saturating_sub(1) / entry_height;
+    let shown = available_entries.max(1).min(state.result_history.len());
+    let mut lines = vec![Line::from(format!(
+        "{} completed  |  newest first  |  showing {}  |  retained {}/{}",
+        state.result_count,
+        shown,
+        state.result_history.len(),
+        RESULT_HISTORY_CAPACITY
+    ))];
+
+    for entry in state.result_history.iter().rev().take(shown) {
+        let result = &entry.result;
+        let maximum_score = result.notes.saturating_mul(2);
+        let percentage_tenths = result
+            .current_score
+            .saturating_mul(1_000)
+            .checked_div(maximum_score)
+            .unwrap_or(0);
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("#{} {}", entry.ordinal, result.clear_type),
+                Style::default()
+                    .fg(clear_type_color(&result.clear_type))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!(
+                "  {} {} Lv{}  EX SCORE {} / {} ({}.{:01}%)",
+                play_type_label(result.play_type),
+                difficulty_label(result.difficulty),
+                result.level,
+                grouped_u32(result.current_score),
+                grouped_u32(maximum_score),
+                percentage_tenths / 10,
+                percentage_tenths % 10,
+            )),
+        ]));
+        let title = entry
+            .song
+            .as_ref()
+            .and_then(|song| song.display_titles.first())
+            .map_or_else(
+                || result.scorepeek_song_id.as_uuid().to_string(),
+                ToOwned::to_owned,
+            );
+        lines.push(Line::from(fitted_value("Title: ", &title, available_width)));
+        lines.push(Line::from(fitted_value(
+            "Artist: ",
+            entry.song.as_ref().map_or("-", |song| song.artist.as_str()),
+            available_width,
+        )));
+        if compact {
+            lines.push(Line::from(format!("Notes: {}", grouped_u32(result.notes))));
+        } else {
+            lines.push(Line::from(format!(
+                "Notes: {}  side={}  mode={}  sequence={}",
+                grouped_u32(result.notes),
+                result.play_side,
+                result.play_mode,
+                entry.source_sequence,
+            )));
+        }
+    }
+    lines
+}
+
+const fn clear_type_color(clear_type: &str) -> Color {
+    match clear_type.as_bytes() {
+        b"FAILED" => Color::Red,
+        b"ASSIST CLEAR" | b"EASY CLEAR" => Color::Yellow,
+        b"CLEAR" | b"HARD CLEAR" | b"EXH-CLEAR" | b"F-COMBO" => Color::Green,
+        _ => Color::White,
+    }
+}
+
+const fn play_type_label(play_type: PlayType) -> &'static str {
+    match play_type {
+        PlayType::Single => "SP",
+        PlayType::Double => "DP",
+    }
+}
+
+const fn difficulty_label(difficulty: Difficulty) -> &'static str {
+    match difficulty {
+        Difficulty::Beginner => "BEGINNER",
+        Difficulty::Normal => "NORMAL",
+        Difficulty::Hyper => "HYPER",
+        Difficulty::Another => "ANOTHER",
+        Difficulty::Leggendaria => "LEGGENDARIA",
+    }
+}
+
+fn grouped_u32(value: u32) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
 }
 
 #[allow(
@@ -2016,6 +2230,23 @@ mod tests {
                     },
                     evidence_summary: "title edit=0; runner-up margin=4".to_owned(),
                 }),
+            },
+        }
+    }
+
+    fn detected_result_event(
+        session_id: &str,
+        capture_generation: u64,
+        source_sequence: u64,
+        result: ResultDomainEvent,
+    ) -> RunEvent {
+        RunEvent {
+            schema: "scorepeek-run-event-v2".to_owned(),
+            kind: RunEventKind::ResultDetected {
+                session_id: session_id.to_owned(),
+                capture_generation,
+                source_sequence,
+                result,
             },
         }
     }
@@ -3060,6 +3291,163 @@ mod tests {
                 assert!(rendered.contains("path select=true decide=true play=true result=true"));
             }
         }
+    }
+
+    #[test]
+    fn result_history_tui_prioritizes_song_and_play_result_without_json() {
+        let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
+        let song = SongPresentation {
+            scorepeek_song_id: song_id,
+            display_titles: vec!["HISTORY TITLE".to_owned(), "HISTORY ALIAS".to_owned()],
+            artist: "HISTORY ARTIST".to_owned(),
+        };
+        let mut state = RunViewState::new("invocation-1".to_owned(), "a".repeat(64), true);
+        state.watcher_state = "session_active".to_owned();
+        state.latest_play_attempt = Some(json!({"state": {"status": "attempt"}}));
+        state.stable_result_song = Some(song);
+        let result = detected_result_event(
+            "session-1",
+            1,
+            42,
+            ResultDomainEvent {
+                contract: "scorepeek-result-detected-v1".to_owned(),
+                scorepeek_song_id: song_id,
+                savable: true,
+                play_side: "one_player".to_owned(),
+                play_mode: "single_play".to_owned(),
+                play_type: PlayType::Single,
+                difficulty: Difficulty::Hyper,
+                level: 8,
+                notes: 764,
+                current_score: 1_286,
+                clear_type: "HARD CLEAR".to_owned(),
+            },
+        );
+        state.reduce(&result, &result.to_value().unwrap());
+
+        let health = ChannelHealth::default();
+        for (width, height) in [(100, 40), (70, 30), (100, 30)] {
+            let backend = TestBackend::new(width, height);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| render(frame, &state, Path::new("/run/scorepeek.sock"), &health))
+                .unwrap();
+            let rendered = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>();
+            assert!(rendered.contains("Play results"));
+            assert!(rendered.contains("#1 HARD CLEAR"));
+            assert!(rendered.contains("SP HYPER Lv8"));
+            assert!(rendered.contains("EX SCORE 1,286 / 1,528 (84.1%)"));
+            assert!(rendered.contains("Title: HISTORY TITLE"));
+            assert!(rendered.contains("Artist: HISTORY ARTIST"));
+            assert!(rendered.contains("Notes: 764"));
+            assert!(!rendered.contains("scorepeek_song_id"));
+            assert!(!rendered.contains("current_score"));
+            assert!(!rendered.contains("HISTORY ALIAS"));
+        }
+
+        let second_song_id =
+            serde_json::from_str("\"00000000-0000-0000-0000-000000000002\"").unwrap();
+        state.stable_result_song = Some(SongPresentation {
+            scorepeek_song_id: second_song_id,
+            display_titles: vec!["SECOND TITLE".to_owned()],
+            artist: "SECOND ARTIST".to_owned(),
+        });
+        let second = detected_result_event(
+            "session-2",
+            2,
+            84,
+            ResultDomainEvent {
+                contract: "scorepeek-result-detected-v1".to_owned(),
+                scorepeek_song_id: second_song_id,
+                savable: true,
+                play_side: "one_player".to_owned(),
+                play_mode: "single_play".to_owned(),
+                play_type: PlayType::Single,
+                difficulty: Difficulty::Another,
+                level: 10,
+                notes: 1_000,
+                current_score: 1_500,
+                clear_type: "FAILED".to_owned(),
+            },
+        );
+        state.reduce(&second, &second.to_value().unwrap());
+        let backend = TestBackend::new(100, 60);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(frame, &state, Path::new("/run/scorepeek.sock"), &health))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(rendered.contains("2 completed"));
+        assert!(rendered.contains("#2 FAILED"));
+        assert!(rendered.contains("Title: SECOND TITLE"));
+        assert!(rendered.contains("#1 HARD CLEAR"));
+        assert!(rendered.contains("Title: HISTORY TITLE"));
+        assert!(rendered.find("#2 FAILED") < rendered.find("#1 HARD CLEAR"));
+    }
+
+    #[test]
+    fn result_history_is_bounded_and_survives_session_changes() {
+        let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
+        let mut state = RunViewState::new("invocation-1".to_owned(), "a".repeat(64), true);
+        state.stable_result_song = Some(SongPresentation {
+            scorepeek_song_id: song_id,
+            display_titles: vec!["TITLE".to_owned()],
+            artist: "ARTIST".to_owned(),
+        });
+        for source_sequence in 1..=(RESULT_HISTORY_CAPACITY as u64 + 3) {
+            let result = detected_result_event(
+                "session-1",
+                1,
+                source_sequence,
+                ResultDomainEvent {
+                    contract: "scorepeek-result-detected-v1".to_owned(),
+                    scorepeek_song_id: song_id,
+                    savable: true,
+                    play_side: "one_player".to_owned(),
+                    play_mode: "single_play".to_owned(),
+                    play_type: PlayType::Single,
+                    difficulty: Difficulty::Normal,
+                    level: 5,
+                    notes: 100,
+                    current_score: 150,
+                    clear_type: "CLEAR".to_owned(),
+                },
+            );
+            state.reduce(&result, &result.to_value().unwrap());
+        }
+        assert_eq!(state.result_count, RESULT_HISTORY_CAPACITY as u64 + 3);
+        assert_eq!(state.result_history.len(), RESULT_HISTORY_CAPACITY);
+        assert_eq!(state.result_history.front().unwrap().ordinal, 4);
+        assert_eq!(
+            state.result_history.back().unwrap().ordinal,
+            RESULT_HISTORY_CAPACITY as u64 + 3
+        );
+
+        let next_session = RunEvent {
+            schema: "scorepeek-run-event-v2".to_owned(),
+            kind: RunEventKind::SessionStarted {
+                session_id: Some("session-2".to_owned()),
+                capture_generation: 2,
+                capture_profile_sha256: "b".repeat(64),
+                normalizer_artifact_sha256: "c".repeat(64),
+            },
+        };
+        state.reduce(&next_session, &next_session.to_value().unwrap());
+        assert_eq!(state.result_history.len(), RESULT_HISTORY_CAPACITY);
+        assert_eq!(state.result_count, RESULT_HISTORY_CAPACITY as u64 + 3);
+        assert!(state.stable_result_song.is_none());
     }
 
     #[test]

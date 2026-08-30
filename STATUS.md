@@ -267,6 +267,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   and one negative. The provisional run channel now emits one typed `result_detected` after the
   existing two-observation/250 ms song and clear stabilization when the chart and score are known.
   Release accuracy, event authority, target-host performance, and support remain later gates.
+  ADR 0079 makes those accepted results the primary TUI output. One watcher invocation now retains
+  the newest 32 results across Gamescope session boundaries and renders newest-first catalog title,
+  artist, clear type, chart, notes, EX score, theoretical maximum, and percentage. The TUI does not
+  print event JSON and does not load persistent history from prior invocations; the observation
+  channel and retained run-event artifact remain the machine-readable diagnostic surfaces.
 
 ## Included deliverables
 
@@ -876,9 +881,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Install the ADR 0078 binary on the target, then exercise one ordinary SP/1P result. Require the
+1. Install the ADR 0079 binary on the target, then exercise multiple ordinary SP/1P results. Require the
    raw `field_observation` to precede exactly one `result_detected` with the catalog chart and visible
-   score/clear values. Treat an unknown chart or score as evidence; do not alter the operator label.
+   score/clear values, and require the TUI to retain earlier formatted songs and play results when a
+   later result arrives. Treat an unknown chart or score as evidence; do not alter the operator label.
 2. Run the installed `scorepeek` against the fixed measured `gamescope-4k` profile and sample
    `pw-top` before and during the session. Require a zero scorepeek
    error delta, no `BUSY +++`, continued 10 Hz observations, and clean receiver shutdown; retain the

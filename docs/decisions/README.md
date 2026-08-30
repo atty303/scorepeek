@@ -231,6 +231,9 @@ authoritative.
 - [ADR 0078: Emit catalog-constrained result domain events](0078-emit-catalog-constrained-result-domain-events.md)
   observes and types the complete current result context, keeps accepted song identity monotonic
   under auxiliary chart evidence, and emits one provisional domain event per stable result episode.
+- [ADR 0079: Prioritize formatted result history in the TUI](0079-prioritize-formatted-result-history-in-the-tui.md)
+  retains a bounded invocation-local result history and presents catalog song information and play
+  results ahead of frame-local diagnostic detail without rendering event JSON.
 
 ## Historical
 
