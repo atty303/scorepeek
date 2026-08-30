@@ -70,16 +70,22 @@
   unless separately identified as credentials, personal or player data, or
   explicitly redacted content. Do not add output suppression, path redaction,
   fixed generic errors, or privacy-review requirements solely because an
-  artifact is called private. Continue to keep raw external catalog snapshots
-  and generated catalogs out of commits and honor source-reuse and
-  personal-data boundaries.
-- Never commit captured frames, game assets, player/rival data, raw external
-  catalog snapshots, generated catalogs, OCR models, OBS passwords, tokens, or
-  raw external API responses containing secrets.
-- Store real fixture frames and their complete labels outside the repository.
-  Commit only schemas, opaque fixture IDs/hashes, non-personal class labels,
-  independently created and redistributable synthetic contract fixtures,
-  explicitly redacted expected values, and replay tooling.
+  artifact is called private. By default, keep raw external catalog snapshots
+  and generated catalogs out of commits and treat source-reuse and
+  personal-data boundaries as repository-inclusion exclusions.
+- By default, do not commit captured frames, game assets, player/rival data,
+  raw external catalog snapshots, generated catalogs, or OCR models. A specific
+  artifact may be committed only when the user explicitly approves its
+  repository inclusion. For these artifact classes, that explicit instruction
+  takes precedence over the default source-reuse, redistribution, and
+  personal-data exclusions.
+- Never commit credentials, including OBS passwords and tokens, or raw external
+  API responses containing secrets.
+- By default, store real fixture frames and their complete labels outside the
+  repository. Without an approved exception, commit only schemas, opaque
+  fixture IDs/hashes, non-personal class labels, independently created and
+  redistributable synthetic contract fixtures, explicitly redacted expected
+  values, and replay tooling.
 - External catalog strings are runtime decoder inputs, not training data.
   Training text must be independently licensed or generated, and real game
   crops and labels remain in the private corpus.

@@ -880,8 +880,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - New dependencies require prior approval with purpose, version/license, alternatives, and
   runtime/distribution/host/reproducibility impact.
-- Captured frames, game/player data, complete labels, raw catalog inputs, generated catalogs, OCR
-  models, credentials, and environment-specific artifacts must not be committed.
+- By default, captured frames, game assets, player/rival data, raw external catalog snapshots,
+  generated catalogs, and OCR models must not be committed. A specific artifact requires explicit
+  user approval for repository inclusion. For these artifact classes, that explicit instruction
+  takes precedence over the default source-reuse, redistribution, and personal-data exclusions.
+  Real fixture frames and their complete labels follow the same approved-exception rule.
+  Credentials and environment-specific artifacts must never be committed.
 - External-source use remains governed by `docs/sources.md`; no source requiring new permission may
   be enabled without it.
 - Push, release, deployment, persistent host configuration, real remote-storage changes, Portal/OBS
