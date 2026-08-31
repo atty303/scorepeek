@@ -279,6 +279,9 @@ authoritative.
 - [ADR 0093: Accept unique exact result titles](0093-accept-unique-exact-result-titles.md)
   supersedes ADR 0038's uniform title-margin requirement: an exact title must be unique at margin
   one, while fuzzy title evidence retains margin two and artist corroboration.
+- [ADR 0094: Extend fixed level cells and bind marker training to stable frames](0094-extend-fixed-level-cells-and-stable-marker-training.md)
+  adds measured two-digit ANOTHER level cells, normalizes `H-CLEAR`, and limits marker supervision
+  to operator-selected stable result frames.
 
 ## Historical
 

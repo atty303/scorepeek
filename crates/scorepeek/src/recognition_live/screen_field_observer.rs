@@ -358,6 +358,7 @@ mod tests {
         assert_eq!(resolve_clear_type("EXH-CLEAR"), Some("EXH-CLEAR"));
         assert_eq!(resolve_clear_type("XH-CLEAR"), Some("EXH-CLEAR"));
         assert_eq!(resolve_clear_type("A-CLEAR"), Some("ASSIST CLEAR"));
+        assert_eq!(resolve_clear_type("H-CLEAR"), Some("HARD CLEAR"));
         assert_eq!(resolve_clear_type("F-COMBO"), Some("F-COMBO"));
         assert_eq!(resolve_clear_type(""), None);
         assert_eq!(resolve_clear_type("UNRELATED"), None);

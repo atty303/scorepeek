@@ -145,12 +145,15 @@ to the model. Training and Rust inference use the same preprocessing contract.
 Fields are represented as `known`, `unknown(reason)`, or `not_applicable`.
 PP-OCRv6 small native-dynamic observes only result title, artist, clear type, difficulty, previous
 clear type, and the music-select text fields. Fourteen fixed result numeric ROIs are instead
-split only by canonical numeric-character layout v2. Each declared cell receives a field-family
+split only by canonical numeric-character layout v3. Each declared cell receives a field-family
 hard/soft mask and a fixed 2,244-value HOG/soft-pixel feature. All cells are submitted together to
 one registered `N x 2244 -> N x 11` MLP ONNX batch with classes `_0123456789`. Fixed-slot grammar
 retains top-eight, all-blank, calibrated posterior, and margin evidence; it admits only leading
 blank cells followed by contiguous digits and never discovers components from image content.
-Display dashes are a separate fixed marker predicate rather than an MLP class.
+Display dashes are a separate fixed marker predicate rather than an MLP class. Offline marker
+accuracy uses only operator-selected stable result frames; transition rows remain unsupervised
+source evidence. The measured level variants cover one-digit ANOTHER/BEGINNER/HYPER and two-digit
+ANOTHER/HYPER, while unmeasured variants fail closed.
 Every due 100 ms tick evaluates the screen predicate independently of the bounded field
 worker. While that worker is occupied, result/music-select crop routing and submission alone are
 skipped and recorded as `field_observation_busy_skip`; screen transitions and play-attempt state

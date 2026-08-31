@@ -26,7 +26,7 @@ HIDDEN_DIMENSIONS = 64
 EPOCHS = 40
 PREPROCESSOR_ID = "scorepeek-fixed-slot-hog-hybrid-0p25-v1"
 MODEL_SCHEMA = "scorepeek-private-numeric-model-runtime-v2"
-REPORT_SCHEMA = "scorepeek-private-fixed-slot-hog-mlp-build-v1"
+REPORT_SCHEMA = "scorepeek-private-fixed-slot-hog-mlp-build-v2"
 MANDATORY = ("current_score", "pgreat", "great", "good", "bad", "poor")
 FAMILIES = {
     "level": "level",
@@ -146,6 +146,13 @@ def has_not_displayed_marker(image: np.ndarray) -> tuple[bool, dict[str, int]]:
     }
 
 
+def evaluate_stable_markers(
+    marker_rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    stable = [row for row in marker_rows if row["stable"]]
+    return stable, [row for row in stable if not row["correct"]]
+
+
 def load_rows(dataset: Path, layout_path: Path, store: Path) -> tuple[dict[str, Any], dict[str, Any], str, list[Row], set[str], list[dict[str, Any]]]:
     manifest_bytes = (dataset / "manifest.json").read_bytes()
     manifest = json.loads(manifest_bytes)
@@ -170,6 +177,7 @@ def load_rows(dataset: Path, layout_path: Path, store: Path) -> tuple[dict[str, 
                 "sequence": source["sequence"],
                 "field": source["field"],
                 "truth": source["label"],
+                "stable": source["sequence"] in metadata["stable"],
                 "expected": expected,
                 "detected": detected,
                 "correct": detected == expected,
@@ -446,7 +454,7 @@ def build(dataset: Path, layout_path: Path, store: Path, output: Path) -> None:
     if output.exists() or not output.is_absolute():
         raise FixedSlotError("output must be an absent absolute directory")
     manifest, layout, suite, source_rows, cross_session, marker_rows = load_rows(dataset, layout_path, store)
-    wrong_marker_rows = [row for row in marker_rows if not row["correct"]]
+    stable_marker_rows, wrong_marker_rows = evaluate_stable_markers(marker_rows)
     if wrong_marker_rows:
         raise FixedSlotError(
             f"not-displayed marker predicate misclassified {len(wrong_marker_rows)} source rows"
@@ -484,10 +492,11 @@ def build(dataset: Path, layout_path: Path, store: Path, output: Path) -> None:
         ],
         "calibrations": calibrations,
         "not_displayed_marker": {
-            "total": len(marker_rows),
-            "correct": len(marker_rows) - len(wrong_marker_rows),
+            "source_total": len(marker_rows),
+            "total": len(stable_marker_rows),
+            "correct": len(stable_marker_rows) - len(wrong_marker_rows),
             "wrong": len(wrong_marker_rows),
-            "truth_counts": dict(sorted(Counter(row["truth"] for row in marker_rows).items())),
+            "truth_counts": dict(sorted(Counter(row["truth"] for row in stable_marker_rows).items())),
         },
         "final_training": final_training,
     }

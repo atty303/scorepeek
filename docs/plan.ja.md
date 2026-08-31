@@ -120,12 +120,14 @@
   music-selectの選択中titleおよび可視list row crop、result artistとmusic-select artist/chart/active-rowの
   versioned context crop、active catalog trie診断まで）
 - 公式ONNX recognition model比較とPP-OCRv6 small native-dynamic選定: 完了
-- result数字recognizer: canonical character layout v2の固定cell、field-family mask、
+- result数字recognizer: canonical character layout v3の固定cell、field-family mask、
   `2244 -> 64 -> 11` shared HOG/MLP private ONNX batchを実装済み。PP-OCRは数字authorityから外し、
   levelはsong未確定時の候補絞り込みだけに使い、confirmed chart/eventをrejectしない。target install済み。
-  private suiteは8-session/34-episodeへ進み、追加target sessionの目視truthによりFAST `155`を`156`とする
-  誤認識とFlyAway clear type未解決を回帰失敗として保持している。短題名`A`はunique exact titleのmargin 1を
-  許可するresult resolver v3でsong、chart、performanceまで解決済み。prospective 10-episode/2-session gateは未検証
+  private suiteは8-session/34-episodeへ進み、追加target sessionの目視truthでFlyAway FASTを`156`、
+  resolved clear typeを`HARD CLEAR`へ訂正した。HYPER level 11とANOTHER level 12を追加したmodelは
+  session-disjoint stable field 423/423とcomplete private replayを通過し、短題名`A`もunique exact titleの
+  margin 1を許可するresult resolver v3でsong、chart、performanceまで解決済み。binaryとprivate modelは
+  targetでchecksum、version、doctor確認済みだが、fresh gameplayとprospective 10-episode/2-session gateは未検証
 - selection song contextとlive replay telemetry storage: 着手（最小context reducer、operator確認済み
   scenario、application-owned QOI diagnostic run writer、bounded worker、strict canonical replay、read-only
   status/list control、cross-process active ownership、crash-safe aggregate retention、digest-confirmed

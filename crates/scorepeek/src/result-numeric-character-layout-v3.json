@@ -1,0 +1,154 @@
+{
+  "schema": "scorepeek-result-numeric-character-layout-v3",
+  "canonical_frame_contract_id": "scorepeek-canonical-rgb8-1920x1080-v1",
+  "canonical_layout_sha256": "a20cf2489b580c2b014bb1fb6a3792ebdad4b36bd4646a705e59cdb9a28ad4d4",
+  "level": [
+    {
+      "difficulty": "another",
+      "displayed_digits": 1,
+      "digit_cells": [{ "x": 870, "y": 1038, "width": 19, "height": 19 }]
+    },
+    {
+      "difficulty": "another",
+      "displayed_digits": 2,
+      "digit_cells": [
+        { "x": 858, "y": 1038, "width": 19, "height": 19 },
+        { "x": 877, "y": 1038, "width": 19, "height": 19 }
+      ]
+    },
+    {
+      "difficulty": "beginner",
+      "displayed_digits": 1,
+      "digit_cells": [{ "x": 880, "y": 1039, "width": 19, "height": 19 }]
+    },
+    {
+      "difficulty": "hyper",
+      "displayed_digits": 1,
+      "digit_cells": [{ "x": 851, "y": 1037, "width": 21, "height": 21 }]
+    },
+    {
+      "difficulty": "hyper",
+      "displayed_digits": 2,
+      "digit_cells": [
+        { "x": 840, "y": 1037, "width": 19, "height": 21 },
+        { "x": 859, "y": 1037, "width": 19, "height": 21 }
+      ]
+    }
+  ],
+  "notes": {
+    "digit_cells": [
+      { "x": 1003, "y": 1038, "width": 19, "height": 20 },
+      { "x": 1024, "y": 1038, "width": 19, "height": 20 },
+      { "x": 1045, "y": 1038, "width": 19, "height": 20 },
+      { "x": 1066, "y": 1038, "width": 19, "height": 20 }
+    ],
+    "not_displayed_marker": null
+  },
+  "current_score": {
+    "digit_cells": [
+      { "x": 368, "y": 551, "width": 34, "height": 23 },
+      { "x": 404, "y": 551, "width": 34, "height": 23 },
+      { "x": 440, "y": 551, "width": 34, "height": 23 },
+      { "x": 476, "y": 551, "width": 34, "height": 23 }
+    ],
+    "not_displayed_marker": null
+  },
+  "previous_score": {
+    "digit_cells": [
+      { "x": 210, "y": 551, "width": 34, "height": 28 },
+      { "x": 244, "y": 551, "width": 34, "height": 28 },
+      { "x": 280, "y": 551, "width": 34, "height": 28 },
+      { "x": 316, "y": 551, "width": 34, "height": 28 }
+    ],
+    "not_displayed_marker": { "x": 210, "y": 525, "width": 145, "height": 55 }
+  },
+  "previous_miss_count": {
+    "digit_cells": [
+      { "x": 205, "y": 620, "width": 34, "height": 28 },
+      { "x": 241, "y": 620, "width": 34, "height": 28 },
+      { "x": 277, "y": 620, "width": 34, "height": 28 },
+      { "x": 313, "y": 620, "width": 34, "height": 28 }
+    ],
+    "not_displayed_marker": { "x": 205, "y": 595, "width": 150, "height": 55 }
+  },
+  "miss_count": {
+    "digit_cells": [
+      { "x": 368, "y": 619, "width": 34, "height": 31 },
+      { "x": 404, "y": 619, "width": 34, "height": 31 },
+      { "x": 440, "y": 619, "width": 34, "height": 31 },
+      { "x": 476, "y": 619, "width": 34, "height": 31 }
+    ],
+    "not_displayed_marker": { "x": 360, "y": 595, "width": 150, "height": 55 }
+  },
+  "pgreat": {
+    "digit_cells": [
+      { "x": 391, "y": 786, "width": 27, "height": 22 },
+      { "x": 419, "y": 786, "width": 27, "height": 22 },
+      { "x": 447, "y": 786, "width": 27, "height": 22 },
+      { "x": 475, "y": 786, "width": 27, "height": 22 }
+    ],
+    "not_displayed_marker": null
+  },
+  "great": {
+    "digit_cells": [
+      { "x": 391, "y": 814, "width": 27, "height": 22 },
+      { "x": 419, "y": 814, "width": 27, "height": 22 },
+      { "x": 447, "y": 814, "width": 27, "height": 22 },
+      { "x": 475, "y": 814, "width": 27, "height": 22 }
+    ],
+    "not_displayed_marker": null
+  },
+  "good": {
+    "digit_cells": [
+      { "x": 391, "y": 842, "width": 27, "height": 22 },
+      { "x": 419, "y": 842, "width": 27, "height": 22 },
+      { "x": 447, "y": 842, "width": 27, "height": 22 },
+      { "x": 475, "y": 842, "width": 27, "height": 22 }
+    ],
+    "not_displayed_marker": null
+  },
+  "bad": {
+    "digit_cells": [
+      { "x": 391, "y": 870, "width": 27, "height": 22 },
+      { "x": 419, "y": 870, "width": 27, "height": 22 },
+      { "x": 447, "y": 870, "width": 27, "height": 22 },
+      { "x": 475, "y": 870, "width": 27, "height": 22 }
+    ],
+    "not_displayed_marker": null
+  },
+  "poor": {
+    "digit_cells": [
+      { "x": 391, "y": 898, "width": 27, "height": 22 },
+      { "x": 419, "y": 898, "width": 27, "height": 22 },
+      { "x": 447, "y": 898, "width": 27, "height": 22 },
+      { "x": 475, "y": 898, "width": 27, "height": 22 }
+    ],
+    "not_displayed_marker": null
+  },
+  "fast": {
+    "digit_cells": [
+      { "x": 105, "y": 978, "width": 17, "height": 16 },
+      { "x": 122, "y": 978, "width": 17, "height": 16 },
+      { "x": 139, "y": 978, "width": 17, "height": 16 },
+      { "x": 156, "y": 978, "width": 17, "height": 16 }
+    ],
+    "not_displayed_marker": null
+  },
+  "slow": {
+    "digit_cells": [
+      { "x": 105, "y": 995, "width": 17, "height": 16 },
+      { "x": 122, "y": 995, "width": 17, "height": 16 },
+      { "x": 139, "y": 995, "width": 17, "height": 16 },
+      { "x": 156, "y": 995, "width": 17, "height": 16 }
+    ],
+    "not_displayed_marker": null
+  },
+  "combo_break": {
+    "digit_cells": [
+      { "x": 450, "y": 979, "width": 28, "height": 22 },
+      { "x": 478, "y": 979, "width": 28, "height": 22 },
+      { "x": 506, "y": 979, "width": 28, "height": 22 }
+    ],
+    "not_displayed_marker": null
+  }
+}

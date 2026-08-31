@@ -9,6 +9,7 @@ import numpy as np
 from scorepeek_ocr.fixed_slot_training import (
     CLASSES,
     FEATURE_DIMENSIONS,
+    evaluate_stable_markers,
     feature,
     hard_mask,
     has_not_displayed_marker,
@@ -85,6 +86,16 @@ class FixedSlotTrainingTests(unittest.TestCase):
 
         marker[33, 94:120] = 220
         self.assertFalse(has_not_displayed_marker(marker)[0])
+
+    def test_marker_evaluation_ignores_non_stable_transition_rows(self) -> None:
+        stable, wrong = evaluate_stable_markers(
+            [
+                {"stable": True, "correct": True, "sequence": 10},
+                {"stable": False, "correct": False, "sequence": 11},
+            ]
+        )
+        self.assertEqual([row["sequence"] for row in stable], [10])
+        self.assertEqual(wrong, [])
 
 
 if __name__ == "__main__":

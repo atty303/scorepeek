@@ -29,7 +29,7 @@ pub const NUMERIC_MODEL_MANIFEST_BYTES: &[u8] = include_bytes!(concat!(
     "/../../models/manifests/numeric-fixed-slot-hog-mlp-runtime-v2.json"
 ));
 pub const NUMERIC_MODEL_MANIFEST_SHA256: &str =
-    "52d260cccb61433a0e838486a62c7ced0a231c543a03c9d9a9c00e9dee3b5227";
+    "cf099b27b533a79534db62a912d7c4b4e949ac29b786f57bb5ed6f21cf7766d6";
 const MAX_NUMERIC_MODEL_BYTES: u64 = 32 * 1024 * 1024;
 const NUMERIC_FEATURE_DIMENSIONS_I64: i64 = 2_244;
 const NUMERIC_OUTPUT_CLASSES_I64: i64 = 11;

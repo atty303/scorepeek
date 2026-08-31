@@ -8,24 +8,22 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: ADR 0092 promotes canonical numeric-character layout v2 to production
+- Current execution focus: ADR 0094 advances canonical numeric-character layout v3 to production
   authority. All fourteen numeric fields are split into fixed cells, normalized to 2,244-value
   field-family HOG/soft-pixel features, and classified by one private dynamic-batch
   `2244 -> 64 -> 11` MLP with classes `_0123456789`. Runtime performs no component detection and
   PP-OCRv6-small is not a numeric fallback. Dash presentation remains a separate fixed horizontal
-  marker predicate.
+  marker predicate. Layout v3 adds the first measured two-digit ANOTHER cells while preserving the
+  immutable v2 artifact.
 - Active corrected suite
-  `64455406b0326778cfb85075263b9104a7020a882965426a0c81ef804630d0e7`
+  `ecbc46bdfd428fbd337ec7de8af3c5d3c811b525a8f47aa7f6034f3fe1b887e1`
   contains eight sessions, thirty-four episodes, 2,888 canonical frames, and one negative frame.
-  Session-disjoint model evaluation classifies 339 of 340 stable fields exactly; the sole wrong
-  top prediction is level `10` as `11`, and the independent level threshold keeps it unknown.
-  The dash predicate classifies all 167 reviewed marker-capable rows correctly. The production
-  prior seven-session runtime passed the complete private replay, including fixed PGREAT `587`,
-  POOR `3`, combo break `30`, and `Horizons of Promise` sentinels, without a wrong optional known
-  value. The newly reviewed target session deliberately makes the active replay fail closed: its
-  `FlyAway` result has operator-confirmed FAST `155`, while the installed model returns `156` and
-  leaves clear type unresolved. The same session retains the formerly event-suppressed short title
-  `A` with complete visually confirmed truth. ADR 0093 now accepts its unique exact title at margin
+  Session-disjoint model evaluation classifies all 423 stable fields exactly, including HYPER level
+  11 and ANOTHER level 12. The stable dash predicate classifies 86 of 86 reviewed rows while the
+  build report retains 199 total source rows. The active suite corrects the visually confirmed
+  `FlyAway` FAST value to `156` and its resolved clear-type truth to `HARD CLEAR`; runtime normalizes
+  display alias `H-CLEAR` accordingly. The same session retains the formerly event-suppressed short
+  title `A` with complete visually confirmed truth. ADR 0093 accepts its unique exact title at margin
   one while retaining margin two for fuzzy title evidence; production replay resolves `A` through
   song, chart, and performance without using numeric truth to manufacture song identity.
 - Level is advisory only. Before song acceptance it may narrow candidates already established by
@@ -37,15 +35,17 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - The fixed-cell model remains an explicitly installed, digest-bound private resource. Its v2
   manifest binds feature/layout, dataset/evaluation/final-training, calibration, tensor shape, and
   ONNX digest. Registered manifest
-  `52d260cccb61433a0e838486a62c7ced0a231c543a03c9d9a9c00e9dee3b5227`
-  binds model `83751dfd41f20c067dbce95175cbcf5007252a1eb70a2bbd50c5dfc5a75f0a2f`.
+  `cf099b27b533a79534db62a912d7c4b4e949ac29b786f57bb5ed6f21cf7766d6`
+  binds model `8bf99191ecde1c7c511f72ae676b75bdcd53f838a0a2d11321886f918ff1e127`.
   Historical CTC manifests and recognition artifacts v5-v9 remain readable but cannot
   acquire current authority. Model bytes, real crops, labels, and generated datasets remain outside
-  the repository. The binary and resource are installed on the target, but prospective
+  the repository. Binary `e1e436e9bc01da91bafe12dae8bbf6ed2565f93cbb59d9fa5936a142ef86e649`
+  and registered resource `cf099b27b533a79534db62a912d7c4b4e949ac29b786f57bb5ed6f21cf7766d6`
+  are installed on the target and pass checksum, version, and doctor verification, but prospective
   ten-episode/two-session validation, public `/v1.sock` authority, and target support remain
   unverified and are separate approval boundaries.
-- The fixed result clear-type resolver continues to normalize `A-CLEAR` to domain value
-  `ASSIST CLEAR`; all prior private labels and suite generations remain immutable and replayable.
+- The fixed result clear-type resolver normalizes `A-CLEAR` to `ASSIST CLEAR` and `H-CLEAR` to
+  `HARD CLEAR`; all prior private labels and suite generations remain immutable and replayable.
 - Recognition path background: the corpus recording has passed the value-bearing result-song
   recognition simulation for all three reviewed episodes, and a normal foreground Gamescope
   session now reuses that post-canonical path. Retained Wayland evidence repaired three independently
@@ -390,11 +390,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   confirmed results for `ドリムチウ`, `無双`, and `Monkey Business`. The latest imported target
   diagnostic `run-1788175440-434900493-484549-session-1` contributes 290 canonical frames and seven
   operator-reviewed results through immutable label
-  `abc458b0b8c9d00e26a1bd5abae14f86173cd0c79c0a2eb98c20234b827f434d`. Its two event-suppressed
-  results are labeled rather than omitted, so the current eight-session, thirty-four-episode suite
-  exposes the FAST `155` versus `156` recognition error and the unresolved `FlyAway` clear type.
-  ADR 0093 resolves the other retained failure, short title `A`, from its unique exact title and
-  exact artist evidence. The active replay now reports differences only for `current-9-3`.
+  `065aa1f7b9193c51246e65de402e4a4b4eb4752916111067f61d723f61e68927`. Its two originally
+  event-suppressed results remain labeled rather than omitted. Visual review corrected FlyAway FAST
+  to `156` and its resolved clear type to `HARD CLEAR`; layout v3 and the registered model also add
+  HYPER level 11 and ANOTHER level 12. ADR 0093 resolves short title `A` from its unique exact title
+  and exact artist evidence. The active eight-session, thirty-four-episode suite replays without a
+  difference.
 - Private frames, labels, recordings, source snapshots, generated catalogs, models, and environment
   artifacts remain outside the repository. Committed fixtures are synthetic or opaque and
   non-personal.
@@ -1002,9 +1003,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Correct the fixed-cell timing recognition exposed by the active `FlyAway` FAST `155` sentinel
-   and its unresolved clear type without weakening fail-closed acceptance, then replay all eight
-   sessions.
+1. Run a fresh target gameplay diagnostic and confirm FlyAway FAST `156`, `H-CLEAR` normalization,
+   level 11/12 evidence, 10 Hz screen cadence, and one accepted event per confirmed attempt without
+   weakening fail-closed acceptance.
 2. Before entering MUSIC SELECT, require MODE SELECT
    to appear as `mode_select` in the TUI and diagnostic history without field OCR or a play-attempt
    transition; after entering MUSIC SELECT, require `music_select` and normal field observations.

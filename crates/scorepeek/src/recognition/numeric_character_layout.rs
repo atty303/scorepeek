@@ -3,8 +3,8 @@ use serde::Deserialize;
 
 use super::{CanonicalLayout, NumericField, RecognitionError, Roi};
 
-const LAYOUT_BYTES: &[u8] = include_bytes!("../result-numeric-character-layout-v2.json");
-const LAYOUT_SCHEMA: &str = "scorepeek-result-numeric-character-layout-v2";
+const LAYOUT_BYTES: &[u8] = include_bytes!("../result-numeric-character-layout-v3.json");
+const LAYOUT_SCHEMA: &str = "scorepeek-result-numeric-character-layout-v3";
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -177,7 +177,13 @@ fn validate_level_variants(
     variants: &[NumericCharacterLayoutVariant],
     source: Roi,
 ) -> Result<(), RecognitionError> {
-    let expected = [("another", 1), ("beginner", 1), ("hyper", 1), ("hyper", 2)];
+    let expected = [
+        ("another", 1),
+        ("another", 2),
+        ("beginner", 1),
+        ("hyper", 1),
+        ("hyper", 2),
+    ];
     if variants.len() != expected.len() {
         return Err(RecognitionError::InvalidCanonicalLayout);
     }
@@ -299,7 +305,7 @@ mod tests {
                 .unwrap_or_else(|_| panic!("invalid fixed cells for {name}"));
         }
         let layout = ResultNumericCharacterLayout::load().unwrap();
-        assert_eq!(layout.level.len(), 4);
+        assert_eq!(layout.level.len(), 5);
         assert_eq!(layout.notes.digit_cells.len(), 4);
         assert_eq!(layout.current_score.digit_cells.len(), 4);
         assert_eq!(layout.previous_miss_count.digit_cells.len(), 4);
@@ -316,6 +322,16 @@ mod tests {
         assert_eq!(
             hyper_two_digits.digit_cells[0].width,
             hyper_two_digits.digit_cells[1].width
+        );
+        let another_two_digits = layout
+            .level
+            .iter()
+            .find(|variant| variant.difficulty == "another" && variant.displayed_digits == 2)
+            .unwrap();
+        assert_eq!(another_two_digits.digit_cells.len(), 2);
+        assert_eq!(
+            another_two_digits.digit_cells[0].width,
+            another_two_digits.digit_cells[1].width
         );
         assert_eq!(
             layout.previous_miss_count.not_displayed_marker,
