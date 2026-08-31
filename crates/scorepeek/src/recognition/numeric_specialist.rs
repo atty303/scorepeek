@@ -8,6 +8,8 @@ use super::ctc_sequence::CtcSequenceTrie;
 pub const NUMERIC_DICTIONARY: &str = "0123456789-";
 pub const NUMERIC_BLANK_INDEX: usize = 11;
 pub const NUMERIC_TOP_CANDIDATES: usize = 8;
+pub const FIXED_SLOT_CLASSES: &str = "_0123456789";
+pub const FIXED_SLOT_CLASS_COUNT: usize = 11;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -153,7 +155,7 @@ pub fn rank_numeric_sequences(
         return Err("numeric calibration temperature must be positive");
     }
     let probabilities =
-        softmax_rows_blank_first(logits, timesteps, classes, calibration.temperature);
+        softmax_ctc_rows_blank_first(logits, timesteps, classes, calibration.temperature);
     let raw_text = greedy_decode_dictionary_first(logits, classes);
     rank_numeric_probabilities_inner(field, &probabilities, calibration, raw_text)
 }
@@ -208,6 +210,122 @@ pub fn rank_numeric_probabilities(
     }
     let raw_text = greedy_decode_blank_first(probabilities, classes);
     rank_numeric_probabilities_inner(field, &calibrated, calibration, raw_text)
+}
+
+/// Scores a fixed number of independently classified character cells.
+///
+/// `logits` is row-major `[slots, 11]` in `_0123456789` order. The grammar admits only leading
+/// blank cells followed by contiguous decimal digits; notes always retain all four displayed
+/// digits. There is no CTC collapse and no dash class.
+///
+/// # Errors
+/// Returns an error for an invalid tensor shape or calibration.
+pub fn rank_fixed_slot_logits(
+    field: NumericField,
+    logits: &[f32],
+    slots: usize,
+    calibration: NumericCalibration,
+) -> Result<NumericFieldInference, &'static str> {
+    if slots == 0 || logits.len() != slots.saturating_mul(FIXED_SLOT_CLASS_COUNT) {
+        return Err("fixed-slot logits have an invalid shape");
+    }
+    if !calibration.temperature.is_finite() || calibration.temperature <= 0.0 {
+        return Err("fixed-slot calibration temperature must be positive");
+    }
+    let probabilities = softmax_rows(
+        logits,
+        slots,
+        FIXED_SLOT_CLASS_COUNT,
+        calibration.temperature,
+    );
+    let mut ranked = fixed_slot_sequences(field, slots)
+        .into_iter()
+        .map(|(text, tokens)| {
+            let log_probability = tokens
+                .into_iter()
+                .enumerate()
+                .map(|(slot, token)| probabilities[slot * FIXED_SLOT_CLASS_COUNT + token].ln())
+                .sum::<f32>();
+            (text, log_probability)
+        })
+        .collect::<Vec<_>>();
+    if ranked.len() < 2 {
+        return Err("fixed-slot grammar has fewer than two sequences");
+    }
+    let normalizer = log_sum_exp(&ranked.iter().map(|(_, score)| *score).collect::<Vec<_>>());
+    ranked.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    ranked.truncate(NUMERIC_TOP_CANDIDATES);
+    let candidates = ranked
+        .into_iter()
+        .map(|(text, log_probability)| NumericCandidate {
+            text,
+            log_probability,
+            calibrated_probability: (log_probability - normalizer).exp(),
+        })
+        .collect::<Vec<_>>();
+    let all_blank_log_probability = (0..slots)
+        .map(|slot| probabilities[slot * FIXED_SLOT_CLASS_COUNT].ln())
+        .sum();
+    let runner_up_margin = candidates
+        .first()
+        .zip(candidates.get(1))
+        .map(|(best, runner_up)| best.log_probability - runner_up.log_probability);
+    let raw_text = probabilities
+        .chunks_exact(FIXED_SLOT_CLASS_COUNT)
+        .map(|row| {
+            let selected = row
+                .iter()
+                .enumerate()
+                .max_by(|left, right| left.1.partial_cmp(right.1).unwrap_or(Ordering::Equal))
+                .map_or(0, |(index, _)| index);
+            char::from(FIXED_SLOT_CLASSES.as_bytes()[selected])
+        })
+        .collect();
+    let mut inference = NumericFieldInference {
+        field,
+        calibration,
+        accepted: false,
+        raw_text,
+        candidates,
+        all_blank_log_probability,
+        runner_up_margin,
+    };
+    inference.accepted = calibration.accepts(&inference);
+    Ok(inference)
+}
+
+fn fixed_slot_sequences(field: NumericField, slots: usize) -> Vec<(String, Vec<usize>)> {
+    if field == NumericField::Notes {
+        return (0..10_u32.pow(u32::try_from(slots).unwrap_or(u32::MAX)))
+            .map(|value| {
+                let text = format!("{value:0slots$}");
+                let tokens = text
+                    .bytes()
+                    .map(|byte| usize::from(byte - b'0') + 1)
+                    .collect();
+                (text, tokens)
+            })
+            .collect();
+    }
+    let (minimum, maximum) = if field == NumericField::Level {
+        if slots == 1 { (1, 9) } else { (10, 12) }
+    } else {
+        (0, 10_u32.pow(u32::try_from(slots).unwrap_or(u32::MAX)) - 1)
+    };
+    (minimum..=maximum)
+        .map(|value| {
+            let text = value.to_string();
+            let mut tokens = vec![0; slots - text.len()];
+            tokens.extend(text.bytes().map(|byte| usize::from(byte - b'0') + 1));
+            (text, tokens)
+        })
+        .collect()
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -436,7 +554,7 @@ fn numeric_trie(field: NumericField) -> &'static CtcSequenceTrie<String> {
     })
 }
 
-fn softmax_rows_blank_first(
+fn softmax_ctc_rows_blank_first(
     logits: &[f32],
     rows: usize,
     columns: usize,
@@ -453,6 +571,22 @@ fn softmax_rows_blank_first(
         output.extend(
             row[..NUMERIC_BLANK_INDEX]
                 .iter()
+                .map(|value| ((*value - maximum) / temperature).exp() / normalizer),
+        );
+    }
+    output
+}
+
+fn softmax_rows(logits: &[f32], rows: usize, columns: usize, temperature: f32) -> Vec<f32> {
+    let mut output = Vec::with_capacity(logits.len());
+    for row in logits.chunks_exact(columns).take(rows) {
+        let maximum = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let normalizer = row
+            .iter()
+            .map(|value| ((*value - maximum) / temperature).exp())
+            .sum::<f32>();
+        output.extend(
+            row.iter()
                 .map(|value| ((*value - maximum) / temperature).exp() / normalizer),
         );
     }
@@ -484,6 +618,14 @@ mod tests {
         logits
     }
 
+    fn fixed_slot_logits(path: &[usize]) -> Vec<f32> {
+        let mut logits = vec![-8.0; path.len() * FIXED_SLOT_CLASS_COUNT];
+        for (slot, class) in path.iter().copied().enumerate() {
+            logits[slot * FIXED_SLOT_CLASS_COUNT + class] = 8.0;
+        }
+        logits
+    }
+
     const fn calibration() -> NumericCalibration {
         NumericCalibration {
             enabled: true,
@@ -509,6 +651,55 @@ mod tests {
         let blank = logits(&[NUMERIC_BLANK_INDEX, NUMERIC_BLANK_INDEX]);
         let ranked = rank_numeric_sequences(NumericField::Bad, &blank, 2, calibration()).unwrap();
         assert!(!calibration().accepts(&ranked));
+    }
+
+    #[test]
+    fn fixed_slots_use_blank_first_eleven_class_logits() {
+        let ranked = rank_fixed_slot_logits(
+            NumericField::Bad,
+            &fixed_slot_logits(&[0, 1]),
+            2,
+            calibration(),
+        )
+        .unwrap();
+        assert_eq!(ranked.raw_text, "_0");
+        assert_eq!(ranked.candidates[0].text, "0");
+
+        let repeated = rank_fixed_slot_logits(
+            NumericField::ComboBreak,
+            &fixed_slot_logits(&[0, 4, 4]),
+            3,
+            calibration(),
+        )
+        .unwrap();
+        assert_eq!(repeated.candidates[0].text, "33");
+    }
+
+    #[test]
+    fn fixed_slot_grammar_keeps_notes_padding_and_level_range() {
+        let notes = rank_fixed_slot_logits(
+            NumericField::Notes,
+            &fixed_slot_logits(&[1, 1, 8, 7]),
+            4,
+            calibration(),
+        )
+        .unwrap();
+        assert_eq!(notes.candidates[0].text, "0076");
+
+        let level = rank_fixed_slot_logits(
+            NumericField::Level,
+            &fixed_slot_logits(&[2, 3]),
+            2,
+            calibration(),
+        )
+        .unwrap();
+        assert_eq!(level.candidates[0].text, "12");
+        assert!(
+            level
+                .candidates
+                .iter()
+                .all(|candidate| candidate.text != "13")
+        );
     }
 
     #[test]

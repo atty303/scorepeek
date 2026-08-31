@@ -8,9 +8,6 @@ pub(super) const TITLE_INPUT_VALUES: usize = 3 * 48 * 320;
 pub(super) const DYNAMIC_TITLE_INPUT_HEIGHT: usize = 48;
 pub(super) const DYNAMIC_TITLE_MINIMUM_WIDTH: usize = 320;
 pub(super) const DYNAMIC_TITLE_MAXIMUM_WIDTH: usize = 3_200;
-pub(super) const NUMERIC_INPUT_HEIGHT: usize = 32;
-pub(super) const NUMERIC_INPUT_WIDTH: usize = 320;
-pub(super) const NUMERIC_INPUT_VALUES: usize = 3 * NUMERIC_INPUT_HEIGHT * NUMERIC_INPUT_WIDTH;
 
 pub(super) struct DynamicTitleInput {
     pub width: usize,
@@ -104,39 +101,6 @@ pub(super) fn preprocess_dynamic_title_image(
     Ok(DynamicTitleInput { width, values })
 }
 
-/// Applies the fixed specialist numeric-model resize and normalization contract.
-pub(super) fn preprocess_numeric_image(
-    rgb: &[u8],
-    source_width: usize,
-    source_height: usize,
-) -> Result<Vec<f32>, RecognitionError> {
-    if source_width == 0 || source_height == 0 || rgb.len() != source_width * source_height * 3 {
-        return Err(RecognitionError::InvalidCanonicalFrame);
-    }
-    let resized_width = (NUMERIC_INPUT_HEIGHT * source_width)
-        .div_ceil(source_height)
-        .min(NUMERIC_INPUT_WIDTH);
-    let resized = resize_linear_rgb(
-        rgb,
-        source_width,
-        source_height,
-        resized_width,
-        NUMERIC_INPUT_HEIGHT,
-    );
-    let plane = NUMERIC_INPUT_HEIGHT * NUMERIC_INPUT_WIDTH;
-    let mut values = vec![0.0_f32; NUMERIC_INPUT_VALUES];
-    for y in 0..NUMERIC_INPUT_HEIGHT {
-        for x in 0..resized_width {
-            let pixel = (y * resized_width + x) * 3;
-            for (channel, rgb_channel) in [2_usize, 1, 0].into_iter().enumerate() {
-                values[channel * plane + y * NUMERIC_INPUT_WIDTH + x] =
-                    f32::from(resized[pixel + rgb_channel]) / 127.5 - 1.0;
-            }
-        }
-    }
-    Ok(values)
-}
-
 fn resize_linear_rgb(
     source: &[u8],
     source_width: usize,
@@ -174,6 +138,37 @@ fn resize_linear_rgb(
         }
     }
     output
+}
+
+pub(super) fn resize_linear_gray(
+    source: &[u8],
+    source_width: usize,
+    source_height: usize,
+    target_width: usize,
+    target_height: usize,
+) -> Result<Vec<u8>, RecognitionError> {
+    if source_width == 0
+        || source_height == 0
+        || target_width == 0
+        || target_height == 0
+        || source.len() != source_width.saturating_mul(source_height)
+    {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
+    let mut rgb = Vec::with_capacity(source.len() * 3);
+    for value in source {
+        rgb.extend_from_slice(&[*value; 3]);
+    }
+    Ok(resize_linear_rgb(
+        &rgb,
+        source_width,
+        source_height,
+        target_width,
+        target_height,
+    )
+    .chunks_exact(3)
+    .map(|pixel| pixel[0])
+    .collect())
 }
 
 fn clamped_source_index(index: isize, source_size: usize) -> usize {
@@ -245,18 +240,6 @@ mod tests {
         assert!((tensor[plane] - (128.0 / 127.5 - 1.0)).abs() < f32::EPSILON);
         assert_eq!(tensor[plane * 2].to_bits(), 1.0_f32.to_bits());
         assert_eq!(tensor[319].to_bits(), (-1.0_f32).to_bits());
-    }
-
-    #[test]
-    fn numeric_preprocessor_is_fixed_bgr_chw_and_zero_padded() {
-        let rgb = [255_u8, 128, 0].repeat(16 * 8);
-        let tensor = preprocess_numeric_image(&rgb, 16, 8).unwrap();
-        let plane = NUMERIC_INPUT_HEIGHT * NUMERIC_INPUT_WIDTH;
-        assert_eq!(tensor.len(), NUMERIC_INPUT_VALUES);
-        assert_eq!(tensor[0].to_bits(), (-1.0_f32).to_bits());
-        assert!((tensor[plane] - (128.0 / 127.5 - 1.0)).abs() < f32::EPSILON);
-        assert_eq!(tensor[plane * 2].to_bits(), 1.0_f32.to_bits());
-        assert_eq!(tensor[64].to_bits(), 0.0_f32.to_bits());
     }
 
     #[test]

@@ -610,6 +610,14 @@ set -euo pipefail
 exec uv run --locked --no-dev python -m scorepeek_ocr.numeric_training "$@"
 '''
 
+[tasks."ocr:numeric-fixed-slot:build"]
+description = "Build and evaluate the private fixed-slot HOG/MLP numeric bundle"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec uv run --locked --no-dev python -m scorepeek_ocr.fixed_slot_training "$@"
+'''
+
 [tasks."ocr:title-model:census"]
 description = "Measure unique song-ID coverage across the complete private title corpus"
 run = '''

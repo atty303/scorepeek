@@ -11,6 +11,7 @@ mod catalog_candidates;
 mod ctc_sequence;
 mod music_select_resolver;
 mod numeric_character_layout;
+mod numeric_fixed_slot;
 mod numeric_onnx;
 mod numeric_specialist;
 mod result_fields;
@@ -34,10 +35,12 @@ pub use music_select_resolver::{
 pub use numeric_character_layout::{
     NumericCharacterFieldLayout, NumericCharacterLayoutVariant, ResultNumericCharacterLayout,
 };
+pub use numeric_fixed_slot::{FIXED_SLOT_FEATURE_DIMENSIONS, FIXED_SLOT_PREPROCESSOR_ID};
 pub use numeric_onnx::{
-    NUMERIC_MODEL_MANIFEST_BYTES, NUMERIC_MODEL_MANIFEST_SHA256, NUMERIC_PREPROCESSOR_ID,
-    NumericBatchInference, NumericModelCalibrations, NumericModelContract,
-    RegisteredNumericRuntime,
+    LegacyNumericModelContract, NUMERIC_MODEL_MANIFEST_BYTES, NUMERIC_MODEL_MANIFEST_SHA256,
+    NUMERIC_PREPROCESSOR_ID, NumericBatchInference, NumericCellCandidate, NumericCellInference,
+    NumericModelCalibrations, NumericModelContract, ReadableNumericModelContract,
+    RegisteredNumericRuntime, read_numeric_model_contract,
 };
 pub use numeric_specialist::{
     NUMERIC_BLANK_INDEX, NUMERIC_DICTIONARY, NUMERIC_TOP_CANDIDATES, NumericCalibration,
@@ -50,8 +53,8 @@ pub use result_fields::{
     RESULT_PERFORMANCE_RESOLVER_ID, ResultChartResolution, ResultChartUnknownReason,
     ResultFieldUnknownReason, ResultFieldValue, ResultJudgments, ResultPerformanceResolution,
     ResultPerformanceUnknownReason, ResultTiming, SupplementalResultValue,
-    matching_single_play_songs, resolve_clear_type, resolve_result_chart,
-    resolve_result_performance,
+    matching_single_play_songs, observed_result_difficulty, resolve_clear_type,
+    resolve_result_chart, resolve_result_performance,
 };
 pub use result_resolver::{
     RESULT_SONG_CHART_ASSISTED_RESOLVER_ID, RESULT_SONG_RESOLVER_ID, RankedResultSongCandidate,
@@ -2913,7 +2916,7 @@ mod tests {
     }
 
     #[test]
-    fn every_numeric_field_routes_to_the_fixed_ctc_character_set() {
+    fn legacy_general_text_numeric_comparison_keeps_its_fixed_character_sets() {
         for field in [
             ScreenTextField::ResultNotes,
             ScreenTextField::ResultCurrentScore,

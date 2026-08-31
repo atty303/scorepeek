@@ -1,6 +1,7 @@
+use crate::catalog::Difficulty;
 use serde::Deserialize;
 
-use super::{CanonicalLayout, RecognitionError, Roi};
+use super::{CanonicalLayout, NumericField, RecognitionError, Roi};
 
 const LAYOUT_BYTES: &[u8] = include_bytes!("../result-numeric-character-layout-v2.json");
 const LAYOUT_SCHEMA: &str = "scorepeek-result-numeric-character-layout-v2";
@@ -43,6 +44,11 @@ pub struct ResultNumericCharacterLayout {
 }
 
 impl ResultNumericCharacterLayout {
+    #[must_use]
+    pub fn sha256() -> String {
+        super::encode_sha256(LAYOUT_BYTES)
+    }
+
     /// Loads the fixed character cells measured in canonical-frame coordinates.
     ///
     /// Cells are ordered from the most-significant slot to the least-significant slot. A later
@@ -95,6 +101,75 @@ impl ResultNumericCharacterLayout {
             validate_field(field, source, expected_cells, marker)?;
         }
         Ok(layout)
+    }
+
+    #[must_use]
+    pub fn cells(
+        &self,
+        field: NumericField,
+        difficulty: Option<Difficulty>,
+        displayed_digits: Option<usize>,
+    ) -> Option<&[Roi]> {
+        if field == NumericField::Level {
+            let difficulty = difficulty?;
+            let displayed_digits = displayed_digits?;
+            let name = match difficulty {
+                Difficulty::Beginner => "beginner",
+                Difficulty::Normal => "normal",
+                Difficulty::Hyper => "hyper",
+                Difficulty::Another => "another",
+                Difficulty::Leggendaria => "leggendaria",
+            };
+            return self
+                .level
+                .iter()
+                .find(|variant| {
+                    variant.difficulty == name && variant.displayed_digits == displayed_digits
+                })
+                .map(|variant| variant.digit_cells.as_slice());
+        }
+        Some(match field {
+            NumericField::Level => unreachable!("level returned above"),
+            NumericField::Notes => &self.notes.digit_cells,
+            NumericField::CurrentScore => &self.current_score.digit_cells,
+            NumericField::PreviousScore => &self.previous_score.digit_cells,
+            NumericField::PreviousMissCount => &self.previous_miss_count.digit_cells,
+            NumericField::MissCount => &self.miss_count.digit_cells,
+            NumericField::Pgreat => &self.pgreat.digit_cells,
+            NumericField::Great => &self.great.digit_cells,
+            NumericField::Good => &self.good.digit_cells,
+            NumericField::Bad => &self.bad.digit_cells,
+            NumericField::Poor => &self.poor.digit_cells,
+            NumericField::Fast => &self.fast.digit_cells,
+            NumericField::Slow => &self.slow.digit_cells,
+            NumericField::ComboBreak => &self.combo_break.digit_cells,
+        })
+    }
+
+    pub fn level_variants(
+        &self,
+        difficulty: Difficulty,
+    ) -> impl Iterator<Item = &NumericCharacterLayoutVariant> {
+        let name = match difficulty {
+            Difficulty::Beginner => "beginner",
+            Difficulty::Normal => "normal",
+            Difficulty::Hyper => "hyper",
+            Difficulty::Another => "another",
+            Difficulty::Leggendaria => "leggendaria",
+        };
+        self.level
+            .iter()
+            .filter(move |variant| variant.difficulty == name)
+    }
+
+    #[must_use]
+    pub fn not_displayed_marker(&self, field: NumericField) -> Option<Roi> {
+        match field {
+            NumericField::PreviousScore => self.previous_score.not_displayed_marker,
+            NumericField::PreviousMissCount => self.previous_miss_count.not_displayed_marker,
+            NumericField::MissCount => self.miss_count.not_displayed_marker,
+            _ => None,
+        }
     }
 }
 

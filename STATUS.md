@@ -8,74 +8,37 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: ADR 0087 removes PP-OCRv6-small from all fourteen numeric result
-  fields and replaces it with one fixed `N×3×32×320` MobileNetV3-small/BiLSTM/CTC ONNX batch.
-  The five-session training suite v3 generation
-  `3ec72a21e55e65c4b5c5a6c386f10c47edcc60b41e5553ba870034d346764ea8`
-  supplies 391 globally deduplicated reviewed samples across five session-disjoint splits; exact
-  crops repeated across sessions are excluded from all splits. Exact CTC keeps top-eight,
-  blank and calibrated-margin evidence; score/PGREAT/GREAT are joined by the score invariant;
-  optional result values may remain unknown but cannot become wrong known values. Recognition
-  artifact v9 and diagnostic `numeric_result_changed` records retain model, candidate, temporal,
-  and event-suppression evidence, while accepted `scorepeek-result-detected-v2` remains the TUI
-  primary surface. The model is an explicitly installed private digest-bound resource and run
-  startup has no numeric PP-OCR fallback. Its level/notes calibration remains disabled, while
-  exactly one catalog chart may provide registered chart values after song+difficulty acceptance.
-  ADR 0090 corrects the earlier background-only assessment: stable canonical QOIs visibly contain
-  level and four-digit zero-padded notes, and bind them to fixed character cells for the next
-  recognizer without changing current runtime authority. ADR 0091 aligns that layout with the
-  existing four-digit grammar for both miss fields and FAST/SLOW, and gives the two HYPER level
-  positions equal-width fixed slots; production classifier authority remains unchanged.
-  Frozen runtime manifest
-  `7badce6d463a2d795e513b67979c9eceb53718adbcc7fa3b6afe4cbd12e1ba2a` passes
-  the active seventeen-episode private replay and the `Horizons of Promise` sentinel with score
-  `1383`, PGREAT `630`, GREAT `123`, GOOD `11`, BAD `0`, and POOR `2`. Target install and the
-  prospective ten-episode/two-session target gate remain unverified. The subsequently expanded
-  active private suite is described below and intentionally exposes a new wrong numeric accept.
-- The fixed result clear-type resolver normalizes the game display abbreviation `A-CLEAR` to the
-  existing domain value `ASSIST CLEAR`. Complete v4 diagnostic
-  `a3a1f34b591946089df4db62e31bac362538052a62779497d7caf7d6368b2cc7` is imported into the
-  private corpus as immutable session
-  `7a054ac06059de02dcdda49d1bc78eb191d1e289db36dd247519cc0f855d8ea1` with 428 canonical QOIs
-  and 18,613 observations. Immutable operator label
-  `46308d4843c5c71409ae1786279f91f38a2ca10e472dfcde7929fcc8f9ef7b52` adds nine visually
-  reviewed result episodes, including four `A-CLEAR` displays normalized to `ASSIST CLEAR` and
-  one failed result. Active suite generation
-  `682f96833ae2e77e389051f717939fe0165b4a7338f129d75d31cede5539faf2` now contains six
-  sessions, twenty-six episodes, 2,530 canonical QOI references, and one negative frame. Replay
-  fails closed at `current-7-6`: the `LIGHTNING STRIKES` image truth is POOR `3`, while numeric
-  model `scorepeek-numeric-mobile-ctc-696b072d-v1` wrong-accepts POOR `2`. The label remains bound
-  to image truth; retraining or replacement must make this active replay pass without relaxing the
-  label. The corpus verifier accepts the v4 field-worker busy summary while preserving immutable
-  v3 manifests.
-- Complete target diagnostic
-  `43b90f1b01fa1a31e955f5b2ddfb56c76b9a36096f012c158562636f2e183784` is imported as session
-  `42552e9126ddc1ab020cf3dbba3edf822586fccc0a1882c301d73a572ccbd659` with 68 canonical QOIs
-  and 2,692 observations. Immutable operator label
-  `911fa6b2b753a9ec0da098ebd66da31ee898de014a75c0a8b10f56c98c2ac767` adds the visually
-  reviewed `鏡像都市` result as `current-8-1`. Active suite generation
-  `5c62b35bf467dabc8ac3500d2d725cf2a94b85663f240f581f9e97e5322a6348` contains seven
-  sessions, twenty-seven episodes, 2,598 canonical QOI references, and one negative frame. Replay
-  fails closed at `current-8-1`: PGREAT truth `587` has insufficient candidate margin, so the score
-  breakdown and result context stay unresolved; COMBO BREAK truth `2` is only the runner-up behind
-  wrong raw candidate `3`. Replay also retains the `current-7-6` failure where the
-  `LIGHTNING STRIKES` image truth is POOR `3` but the numeric model wrong-accepts POOR `2`. Both
-  labels remain bound to image truth; retraining or replacement must make the active replay pass
-  without relaxing them.
-  Operator-confirmed `current-7-9` COMBO BREAK `30` is now published as immutable replacement label
-  `0cb36469503ef363cef6eea1eab0e8f08955e3b29de25978f79200a9dc3c8c92`; active suite
-  `4b0fc906f0a74efb52d406850a3c611f6741d4b49b8228ac2efc8bae56ffe78c` changes only that session
-  label and leaves every older object replayable. Fixed-character source v3 manifest
-  `4a1f4f0a513a112732a394cebfe68458a75b9d3041b65fba5fccadbd003488e8` contains 678 unique crops,
-  including 23 level and 26 notes crops collected from stable QOIs; notes labels retain the
-  displayed leading zero. It retains v2 truth and provenance while re-cropping only level, both
-  miss fields, FAST, and SLOW under canonical layout
-  `a20cf2489b580c2b014bb1fb6a3792ebdad4b36bd4646a705e59cdb9a28ad4d4`. The digest-bound v2
-  character layout defines fixed cells for all fourteen numeric fields; level is selected by
-  measured difficulty and digit-count variants, while dynamic component detection is excluded. It
-  is not connected to production inference yet. The existing full-field observer does receive the
-  five widened canonical crops and records them under the new layout digest; model, calibration,
-  resolver, event, and TUI authority are unchanged.
+- Current execution focus: ADR 0092 promotes canonical numeric-character layout v2 to production
+  authority. All fourteen numeric fields are split into fixed cells, normalized to 2,244-value
+  field-family HOG/soft-pixel features, and classified by one private dynamic-batch
+  `2244 -> 64 -> 11` MLP with classes `_0123456789`. Runtime performs no component detection and
+  PP-OCRv6-small is not a numeric fallback. Dash presentation remains a separate fixed horizontal
+  marker predicate.
+- Active corrected suite
+  `647b544669e190e3ac484c53eeed6bb5c72d1d83c6bef054cbb6048ca2716bb6`
+  contains seven sessions, twenty-seven episodes, 2,598 canonical frames, and one negative frame.
+  Session-disjoint model evaluation classifies 339 of 340 stable fields exactly; the sole wrong
+  top prediction is level `10` as `11`, and the independent level threshold keeps it unknown.
+  The dash predicate classifies all 167 reviewed marker-capable rows correctly. The production
+  runtime passes the complete private replay, including fixed PGREAT `587`, POOR `3`, combo break
+  `30`, and `Horizons of Promise` sentinels, without a wrong optional known value.
+- Level is advisory only. Before song acceptance it may narrow candidates already established by
+  title/artist, difficulty, and notes; it never creates a song candidate. After song acceptance,
+  chart resolution ignores observed level, records any catalog mismatch in recognition artifact
+  v10, and uses the catalog chart level. A wrong or unknown level cannot reject performance,
+  attempt confirmation, or `scorepeek-result-detected-v2`. The accepted event and domain-primary
+  TUI payload remain unchanged.
+- The fixed-cell model remains an explicitly installed, digest-bound private resource. Its v2
+  manifest binds feature/layout, dataset/evaluation/final-training, calibration, tensor shape, and
+  ONNX digest. Registered manifest
+  `52d260cccb61433a0e838486a62c7ced0a231c543a03c9d9a9c00e9dee3b5227`
+  binds model `83751dfd41f20c067dbce95175cbcf5007252a1eb70a2bbd50c5dfc5a75f0a2f`.
+  Historical CTC manifests and recognition artifacts v5-v9 remain readable but cannot
+  acquire current authority. Model bytes, real crops, labels, and generated datasets remain outside
+  the repository. Target installation, prospective ten-episode/two-session validation, public
+  `/v1.sock` authority, and target support remain unverified and are separate approval boundaries.
+- The fixed result clear-type resolver continues to normalize `A-CLEAR` to domain value
+  `ASSIST CLEAR`; all prior private labels and suite generations remain immutable and replayable.
 - Recognition path background: the corpus recording has passed the value-bearing result-song
   recognition simulation for all three reviewed episodes, and a normal foreground Gamescope
   session now reuses that post-canonical path. Retained Wayland evidence repaired three independently

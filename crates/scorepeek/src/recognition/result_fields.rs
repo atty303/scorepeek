@@ -4,7 +4,7 @@ use crate::catalog::{Catalog, Chart, Difficulty, PlayType, ScorepeekSongId};
 
 use super::{DynamicTextObservation, ResultScreenFieldObservations};
 
-pub const RESULT_FIELD_RESOLVER_ID: &str = "scorepeek-result-fields-catalog-constrained-v4";
+pub const RESULT_FIELD_RESOLVER_ID: &str = "scorepeek-result-fields-catalog-constrained-v5";
 pub const RESULT_PERFORMANCE_RESOLVER_ID: &str = "scorepeek-result-performance-v1";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -309,7 +309,6 @@ pub fn resolve_result_chart(
         return unknown(ResultChartUnknownReason::IncompleteObservation, Vec::new());
     };
     let notes = fields.notes.known().copied();
-    let level = fields.level.known().copied();
     let Some(song) = catalog.songs().get(&song_id) else {
         return unknown(ResultChartUnknownReason::SongMissingFromCatalog, Vec::new());
     };
@@ -319,7 +318,6 @@ pub fn resolve_result_chart(
         .filter(|chart| {
             chart.key.play_type == PlayType::Single
                 && chart.key.difficulty == difficulty
-                && level.is_none_or(|level| chart.level == level)
                 && notes.is_none_or(|notes| chart.notes == notes)
         })
         .cloned()
@@ -409,6 +407,11 @@ fn parse_difficulty(observation: &DynamicTextObservation) -> ResultFieldValue<Di
         };
     }
     ResultFieldValue::Known { value: selected }
+}
+
+#[must_use]
+pub fn observed_result_difficulty(observation: &DynamicTextObservation) -> Option<Difficulty> {
+    parse_difficulty(observation).known().copied()
 }
 
 fn parse_decimal<T>(
@@ -668,6 +671,25 @@ mod tests {
                     ..
                 },
                 current_score: 1_286,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn observed_level_never_vetoes_a_confirmed_song_chart() {
+        let catalog = single_chart_catalog();
+        let song_id = *catalog.songs().keys().next().unwrap();
+        let mut parsed = ParsedResultFields::from_observations(&result_fields());
+        parsed.level = ResultFieldValue::Known { value: 11 };
+        assert!(matches!(
+            resolve_result_chart(&catalog, song_id, &parsed),
+            ResultChartResolution::Accepted {
+                chart: Chart {
+                    level: 8,
+                    notes: 764,
+                    ..
+                },
                 ..
             }
         ));

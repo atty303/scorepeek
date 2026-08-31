@@ -3,35 +3,36 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
+use crate::catalog::Difficulty;
 use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::{Tensor, TensorElementType, ValueType};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use super::numeric_fixed_slot::{
+    FIXED_SLOT_FEATURE_DIMENSIONS, FIXED_SLOT_PREPROCESSOR_ID, extract_fixed_slot_fields,
+    fixed_not_displayed_fields, fixed_slot_feature,
+};
 use super::numeric_specialist::{
-    NUMERIC_BLANK_INDEX, NUMERIC_DICTIONARY, NumericCalibration, NumericField,
-    NumericFieldInference, ScoreBreakdownDecision, rank_numeric_probabilities,
-    select_score_breakdown,
+    FIXED_SLOT_CLASS_COUNT, FIXED_SLOT_CLASSES, NumericCalibration, NumericField,
+    NumericFieldInference, ScoreBreakdownDecision, rank_fixed_slot_logits, select_score_breakdown,
 };
 use super::title_onnx::OnnxParityError;
-use super::title_preprocessor::{
-    NUMERIC_INPUT_HEIGHT, NUMERIC_INPUT_VALUES, NUMERIC_INPUT_WIDTH, preprocess_numeric_image,
+use super::{
+    CanonicalLayout, DynamicTextObservation, ResultNumericCharacterLayout, ResultScreenRgb8Crops,
 };
-use super::{DynamicTextObservation, ResultScreenRgb8Crops, Rgb8Crop};
 
-pub const NUMERIC_PREPROCESSOR_ID: &str = "paddleocr-3.7.0-bgr-rec-resize-3x32x320-v1";
+pub const NUMERIC_PREPROCESSOR_ID: &str = FIXED_SLOT_PREPROCESSOR_ID;
 pub const NUMERIC_MODEL_MANIFEST_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../models/manifests/numeric-mobile-ctc-runtime-v1.json"
+    "/../../models/manifests/numeric-fixed-slot-hog-mlp-runtime-v2.json"
 ));
 pub const NUMERIC_MODEL_MANIFEST_SHA256: &str =
-    "7badce6d463a2d795e513b67979c9eceb53718adbcc7fa3b6afe4cbd12e1ba2a";
+    "52d260cccb61433a0e838486a62c7ced0a231c543a03c9d9a9c00e9dee3b5227";
 const MAX_NUMERIC_MODEL_BYTES: u64 = 32 * 1024 * 1024;
-const NUMERIC_BATCH_I64: i64 = 14;
-const NUMERIC_INPUT_HEIGHT_I64: i64 = 32;
-const NUMERIC_INPUT_WIDTH_I64: i64 = 320;
-const NUMERIC_OUTPUT_CLASSES_I64: i64 = 12;
+const NUMERIC_FEATURE_DIMENSIONS_I64: i64 = 2_244;
+const NUMERIC_OUTPUT_CLASSES_I64: i64 = 11;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -92,6 +93,33 @@ pub struct NumericModelContract {
     pub model_sha256: String,
     pub model_bytes: u64,
     pub candidate: String,
+    pub classes: String,
+    pub preprocessor_id: String,
+    pub feature_dimensions: usize,
+    pub hidden_dimensions: usize,
+    pub output_classes: usize,
+    pub numeric_character_layout_sha256: String,
+    pub canonical_layout_sha256: String,
+    pub dataset_sha256: String,
+    pub evaluation_manifest_sha256: String,
+    pub final_training_sha256: String,
+    pub license_id: String,
+    pub calibrations: NumericModelCalibrations,
+}
+
+/// Historical CTC manifest shape retained for diagnostic and migration readers.
+///
+/// A legacy contract can be inspected, but it is never accepted by the active fixed-slot
+/// runtime or its create-only installer.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LegacyNumericModelContract {
+    pub schema: String,
+    pub model_id: String,
+    pub model_filename: String,
+    pub model_sha256: String,
+    pub model_bytes: u64,
+    pub candidate: String,
     pub dictionary: String,
     pub preprocessor_id: String,
     pub input_shape: [usize; 3],
@@ -110,35 +138,57 @@ pub struct NumericModelContract {
     pub calibrations: NumericModelCalibrations,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ReadableNumericModelContract {
+    FixedSlot(NumericModelContract),
+    LegacyCtc(LegacyNumericModelContract),
+}
+
+/// Parses the current fixed-slot manifest or the immutable historical CTC manifest.
+///
+/// # Errors
+/// Returns a JSON error for any unknown manifest generation or malformed contract.
+pub fn read_numeric_model_contract(
+    bytes: &[u8],
+) -> Result<ReadableNumericModelContract, serde_json::Error> {
+    serde_json::from_slice(bytes)
+}
+
 impl NumericModelContract {
     fn validate(&self) -> bool {
-        self.schema == "scorepeek-private-numeric-model-runtime-v1"
+        self.schema == "scorepeek-private-numeric-model-runtime-v2"
             && !self.model_id.is_empty()
             && self.model_filename == "inference.onnx"
             && valid_sha256(&self.model_sha256)
             && (1..=MAX_NUMERIC_MODEL_BYTES).contains(&self.model_bytes)
-            && self.candidate == "mobile"
-            && self.dictionary == NUMERIC_DICTIONARY
+            && self.candidate == "shared_hog_mlp"
+            && self.classes == FIXED_SLOT_CLASSES
             && self.preprocessor_id == NUMERIC_PREPROCESSOR_ID
-            && self.input_shape == [3, NUMERIC_INPUT_HEIGHT, NUMERIC_INPUT_WIDTH]
-            && self.output_classes == NUMERIC_BLANK_INDEX + 1
+            && self.feature_dimensions == FIXED_SLOT_FEATURE_DIMENSIONS
+            && self.hidden_dimensions == 64
+            && self.output_classes == FIXED_SLOT_CLASS_COUNT
+            && self.numeric_character_layout_sha256 == ResultNumericCharacterLayout::sha256()
+            && self.canonical_layout_sha256 == CanonicalLayout::sha256()
             && valid_sha256(&self.dataset_sha256)
-            && valid_sha256(&self.preparation_sha256)
             && valid_sha256(&self.evaluation_manifest_sha256)
-            && valid_sha256(&self.final_training_manifest_sha256)
-            && valid_sha256(&self.initializer_manifest_sha256)
-            && valid_sha256(&self.initializer_checkpoint_sha256)
-            && self.training_source_commit.len() == 40
-            && self
-                .training_source_commit
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit())
-            && valid_sha256(&self.export_manifest_sha256)
-            && valid_sha256(&self.paddle_graph_sha256)
-            && valid_sha256(&self.paddle_parameters_sha256)
-            && self.license_id == "Apache-2.0"
+            && valid_sha256(&self.final_training_sha256)
+            && self.license_id == "LicenseRef-Scorepeek-Private-Trained-Weights"
             && self.calibrations.is_valid()
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct NumericCellCandidate {
+    pub class: char,
+    pub probability: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct NumericCellInference {
+    pub field: NumericField,
+    pub slot: usize,
+    pub candidates: Vec<NumericCellCandidate>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -147,10 +197,12 @@ pub struct NumericBatchInference {
     pub model_sha256: String,
     pub preprocessor_id: String,
     pub elapsed_ms: u64,
-    pub output_timesteps: usize,
+    pub input_cells: usize,
     pub input_tensor_sha256: String,
     pub output_tensor_sha256: String,
+    pub cells: Vec<NumericCellInference>,
     pub fields: Vec<NumericFieldInference>,
+    pub not_displayed_fields: Vec<NumericField>,
     pub score_breakdown: Option<ScoreBreakdownDecision>,
 }
 
@@ -164,6 +216,9 @@ impl NumericBatchInference {
 
     #[must_use]
     pub fn accepted_text(&self, field: NumericField) -> Option<String> {
+        if self.not_displayed_fields.contains(&field) {
+            return Some("--".to_owned());
+        }
         if let Some(joint) = self
             .score_breakdown
             .as_ref()
@@ -192,8 +247,8 @@ impl NumericBatchInference {
     #[must_use]
     pub fn text_observation(&self, field: NumericField) -> DynamicTextObservation {
         DynamicTextObservation {
-            input_width: NUMERIC_INPUT_WIDTH,
-            output_timesteps: self.output_timesteps,
+            input_width: 24,
+            output_timesteps: field.maximum_digits(),
             open_text: self
                 .field(field)
                 .map_or_else(String::new, |value| value.raw_text.clone()),
@@ -292,15 +347,12 @@ impl RegisteredNumericRuntime {
             || !matches!(
                 session.inputs()[0].dtype(),
                 ValueType::Tensor { ty: TensorElementType::Float32, shape, .. }
-                    if shape.as_ref() == [-1, 3, NUMERIC_INPUT_HEIGHT_I64, NUMERIC_INPUT_WIDTH_I64]
+                    if shape.as_ref() == [-1, NUMERIC_FEATURE_DIMENSIONS_I64]
             )
             || !matches!(
                 session.outputs()[0].dtype(),
                 ValueType::Tensor { ty: TensorElementType::Float32, shape, .. }
-                    if shape.len() == 3
-                        && shape[0] == -1
-                        && shape[1] > 0
-                        && shape[2] == NUMERIC_OUTPUT_CLASSES_I64
+                    if shape.as_ref() == [-1, NUMERIC_OUTPUT_CLASSES_I64]
             )
         {
             return Err(OnnxParityError::InvalidArtifact);
@@ -316,54 +368,93 @@ impl RegisteredNumericRuntime {
     pub fn observe(
         &mut self,
         crops: &ResultScreenRgb8Crops,
+        difficulty: Option<Difficulty>,
     ) -> Result<NumericBatchInference, OnnxParityError> {
         let started = Instant::now();
-        let registered = numeric_crops(crops);
-        let mut input = Vec::with_capacity(NumericField::ALL.len() * NUMERIC_INPUT_VALUES);
-        for (_, crop) in &registered {
-            input.extend(preprocess_numeric_image(
-                crop.pixels(),
-                crop.roi.width as usize,
-                crop.roi.height as usize,
-            )?);
+        let not_displayed_fields = fixed_not_displayed_fields(crops);
+        let registered = extract_fixed_slot_fields(crops, difficulty)?;
+        let cell_count = registered
+            .iter()
+            .map(|field| field.cells.len())
+            .sum::<usize>();
+        let mut input = Vec::with_capacity(cell_count * FIXED_SLOT_FEATURE_DIMENSIONS);
+        for field in &registered {
+            for cell in &field.cells {
+                input.extend(fixed_slot_feature(
+                    &cell.pixels,
+                    cell.width,
+                    cell.height,
+                    field.field,
+                )?);
+            }
+        }
+        if input.is_empty() {
+            return Err(OnnxParityError::InvalidArtifact);
         }
         let input_tensor_sha256 = encode_f32_sha256(&input);
         let outputs = self.session.run(ort::inputs![Tensor::from_array((
-            [
-                NumericField::ALL.len(),
-                3,
-                NUMERIC_INPUT_HEIGHT,
-                NUMERIC_INPUT_WIDTH,
-            ],
+            [cell_count, FIXED_SLOT_FEATURE_DIMENSIONS],
             input,
         ))?])?;
-        let (shape, probabilities) = outputs[0].try_extract_tensor::<f32>()?;
-        let [batch, timesteps, classes] = shape.as_ref() else {
+        let (shape, logits) = outputs[0].try_extract_tensor::<f32>()?;
+        let [batch, classes] = shape.as_ref() else {
             return Err(OnnxParityError::InvalidArtifact);
         };
-        let timesteps =
-            usize::try_from(*timesteps).map_err(|_| OnnxParityError::InvalidArtifact)?;
-        if *batch != NUMERIC_BATCH_I64
-            || timesteps == 0
+        if usize::try_from(*batch).ok() != Some(cell_count)
             || *classes != NUMERIC_OUTPUT_CLASSES_I64
-            || probabilities.len()
-                != NumericField::ALL.len() * timesteps * self.contract.output_classes
+            || logits.len() != cell_count * self.contract.output_classes
         {
             return Err(OnnxParityError::InvalidArtifact);
         }
-        let stride = timesteps * self.contract.output_classes;
-        let output_tensor_sha256 = encode_f32_sha256(probabilities);
-        let mut fields = Vec::with_capacity(NumericField::ALL.len());
-        for (index, field) in NumericField::ALL.into_iter().enumerate() {
-            fields.push(
-                rank_numeric_probabilities(
-                    field,
-                    &probabilities[index * stride..(index + 1) * stride],
-                    timesteps,
-                    self.contract.calibrations.for_field(field),
+        let output_tensor_sha256 = encode_f32_sha256(logits);
+        let mut offset = 0;
+        let mut cells = Vec::with_capacity(cell_count);
+        let mut decoded = Vec::with_capacity(registered.len());
+        for field in registered {
+            let length = field.cells.len() * self.contract.output_classes;
+            for (slot, row) in logits[offset..offset + length]
+                .chunks_exact(self.contract.output_classes)
+                .enumerate()
+            {
+                cells.push(cell_inference(field.field, slot, row));
+            }
+            decoded.push(
+                rank_fixed_slot_logits(
+                    field.field,
+                    &logits[offset..offset + length],
+                    field.cells.len(),
+                    self.contract.calibrations.for_field(field.field),
                 )
                 .map_err(|_| OnnxParityError::InvalidArtifact)?,
             );
+            offset += length;
+        }
+        let mut fields = Vec::with_capacity(NumericField::ALL.len());
+        for field in NumericField::ALL {
+            let selected = decoded
+                .iter()
+                .filter(|inference| inference.field == field)
+                .max_by(|left, right| {
+                    left.candidates
+                        .first()
+                        .map_or(f32::NEG_INFINITY, |candidate| {
+                            candidate.calibrated_probability
+                        })
+                        .partial_cmp(
+                            &right
+                                .candidates
+                                .first()
+                                .map_or(f32::NEG_INFINITY, |candidate| {
+                                    candidate.calibrated_probability
+                                }),
+                        )
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .cloned()
+                .unwrap_or_else(|| {
+                    unavailable_field(field, self.contract.calibrations.for_field(field))
+                });
+            fields.push(selected);
         }
         let score_breakdown = select_batch_score_breakdown(&fields, &self.contract.calibrations)?;
         Ok(NumericBatchInference {
@@ -371,10 +462,12 @@ impl RegisteredNumericRuntime {
             model_sha256: self.contract.model_sha256.clone(),
             preprocessor_id: self.contract.preprocessor_id.clone(),
             elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            output_timesteps: timesteps,
+            input_cells: cell_count,
             input_tensor_sha256,
             output_tensor_sha256,
+            cells,
             fields,
+            not_displayed_fields,
             score_breakdown,
         })
     }
@@ -382,6 +475,36 @@ impl RegisteredNumericRuntime {
     #[must_use]
     pub const fn contract(&self) -> &NumericModelContract {
         &self.contract
+    }
+}
+
+fn cell_inference(field: NumericField, slot: usize, logits: &[f32]) -> NumericCellInference {
+    let maximum = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let normalizer = logits
+        .iter()
+        .map(|value| (*value - maximum).exp())
+        .sum::<f32>();
+    let mut candidates = logits
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, value)| NumericCellCandidate {
+            class: char::from(FIXED_SLOT_CLASSES.as_bytes()[index]),
+            probability: (value - maximum).exp() / normalizer,
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        right
+            .probability
+            .partial_cmp(&left.probability)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.class.cmp(&right.class))
+    });
+    candidates.truncate(3);
+    NumericCellInference {
+        field,
+        slot,
+        candidates,
     }
 }
 
@@ -395,23 +518,19 @@ fn accepted_value(
         .flatten()
 }
 
-fn numeric_crops(crops: &ResultScreenRgb8Crops) -> [(NumericField, &Rgb8Crop); 14] {
-    [
-        (NumericField::Level, &crops.level),
-        (NumericField::Notes, &crops.notes),
-        (NumericField::CurrentScore, &crops.current_score),
-        (NumericField::PreviousScore, &crops.previous_score),
-        (NumericField::PreviousMissCount, &crops.previous_miss_count),
-        (NumericField::MissCount, &crops.miss_count),
-        (NumericField::Pgreat, &crops.pgreat),
-        (NumericField::Great, &crops.great),
-        (NumericField::Good, &crops.good),
-        (NumericField::Bad, &crops.bad),
-        (NumericField::Poor, &crops.poor),
-        (NumericField::Fast, &crops.fast),
-        (NumericField::Slow, &crops.slow),
-        (NumericField::ComboBreak, &crops.combo_break),
-    ]
+fn unavailable_field(
+    field: NumericField,
+    calibration: NumericCalibration,
+) -> NumericFieldInference {
+    NumericFieldInference {
+        field,
+        calibration,
+        accepted: false,
+        raw_text: String::new(),
+        candidates: Vec::new(),
+        all_blank_log_probability: 0.0,
+        runner_up_margin: None,
+    }
 }
 
 fn valid_sha256(value: &str) -> bool {
@@ -515,14 +634,72 @@ mod tests {
             model_sha256: "0".repeat(64),
             preprocessor_id: NUMERIC_PREPROCESSOR_ID.to_owned(),
             elapsed_ms: 1,
-            output_timesteps: 6,
+            input_cells: 6,
             input_tensor_sha256: "1".repeat(64),
             output_tensor_sha256: "2".repeat(64),
+            cells: Vec::new(),
             fields: vec![bad],
+            not_displayed_fields: Vec::new(),
             score_breakdown: None,
         };
         let observation = batch.text_observation(NumericField::Bad);
         assert_eq!(observation.open_text, "07-");
         assert_eq!(observation.constrained_text.as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn current_and_legacy_numeric_manifests_remain_readable() {
+        assert!(matches!(
+            read_numeric_model_contract(NUMERIC_MODEL_MANIFEST_BYTES).unwrap(),
+            ReadableNumericModelContract::FixedSlot(_)
+        ));
+        assert!(matches!(
+            read_numeric_model_contract(include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../models/manifests/numeric-mobile-ctc-runtime-v1.json"
+            )))
+            .unwrap(),
+            ReadableNumericModelContract::LegacyCtc(_)
+        ));
+    }
+
+    #[test]
+    fn runtime_rejects_manifest_bound_to_another_layout() {
+        let mut contract: NumericModelContract =
+            serde_json::from_slice(NUMERIC_MODEL_MANIFEST_BYTES).unwrap();
+        contract.numeric_character_layout_sha256 = "0".repeat(64);
+        let mut bytes = serde_json::to_vec(&contract).unwrap();
+        bytes.push(b'\n');
+        let digest = encode_sha256(&bytes);
+        let bundle = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            RegisteredNumericRuntime::load(bundle.path(), &bytes, &digest),
+            Err(OnnxParityError::InvalidArtifact)
+        ));
+
+        contract = serde_json::from_slice(NUMERIC_MODEL_MANIFEST_BYTES).unwrap();
+        contract.canonical_layout_sha256 = "0".repeat(64);
+        bytes = serde_json::to_vec(&contract).unwrap();
+        bytes.push(b'\n');
+        let digest = encode_sha256(&bytes);
+        assert!(matches!(
+            RegisteredNumericRuntime::load(bundle.path(), &bytes, &digest),
+            Err(OnnxParityError::InvalidArtifact)
+        ));
+    }
+
+    #[test]
+    fn cell_evidence_retains_ranked_blank_and_digit_classes() {
+        let mut logits = vec![0.0; FIXED_SLOT_CLASS_COUNT];
+        logits[0] = 3.0;
+        logits[8] = 2.0;
+        logits[2] = 1.0;
+        let cell = cell_inference(NumericField::Pgreat, 2, &logits);
+        assert_eq!(cell.field, NumericField::Pgreat);
+        assert_eq!(cell.slot, 2);
+        assert_eq!(cell.candidates.len(), 3);
+        assert_eq!(cell.candidates[0].class, '_');
+        assert_eq!(cell.candidates[1].class, '7');
+        assert_eq!(cell.candidates[2].class, '1');
     }
 }

@@ -6,9 +6,9 @@ use scorepeek::recognition::{
     ResultPerformanceResolution, ResultSongResolution, ScreenCatalogCandidateObservations,
     ScreenFieldObservationError, ScreenFieldObservations, ScreenSongResolution,
     assist_unknown_result_song_with_chart, matching_single_play_songs,
-    observe_result_fields_with_numeric, observe_screen_fields, resolve_clear_type,
-    resolve_music_select_song, resolve_result_chart, resolve_result_performance,
-    resolve_result_song,
+    observe_result_fields_with_numeric, observe_screen_fields, observed_result_difficulty,
+    resolve_clear_type, resolve_music_select_song, resolve_result_chart,
+    resolve_result_performance, resolve_result_song,
 };
 use serde::Serialize;
 use std::error::Error;
@@ -294,14 +294,31 @@ impl FieldObserver for RegisteredScreenFieldObserver {
     fn observe(&mut self, input: &FieldObserverInput) -> Self::Output {
         let (fields, numeric_batch) = match input.crops() {
             scorepeek::recognition::ScreenRgb8Crops::Result(crops) => {
-                let numeric = self.numeric_runtime.observe(crops).map_err(|source| {
-                    ScreenFieldObservationError::new(
-                        scorepeek::recognition::ScreenTextField::ResultNumericBatch,
-                        source,
-                    )
-                })?;
-                let fields = observe_result_fields_with_numeric(crops, &numeric, |_, crop| {
-                    self.resources.title_runtime().observe_open_text(crop)
+                let difficulty = self
+                    .resources
+                    .title_runtime()
+                    .observe_open_text(&crops.difficulty)
+                    .map_err(|source| {
+                        ScreenFieldObservationError::new(
+                            scorepeek::recognition::ScreenTextField::ResultDifficulty,
+                            source,
+                        )
+                    })?;
+                let numeric = self
+                    .numeric_runtime
+                    .observe(crops, observed_result_difficulty(&difficulty))
+                    .map_err(|source| {
+                        ScreenFieldObservationError::new(
+                            scorepeek::recognition::ScreenTextField::ResultNumericBatch,
+                            source,
+                        )
+                    })?;
+                let fields = observe_result_fields_with_numeric(crops, &numeric, |field, crop| {
+                    if field == scorepeek::recognition::ScreenTextField::ResultDifficulty {
+                        Ok(difficulty.clone())
+                    } else {
+                        self.resources.title_runtime().observe_open_text(crop)
+                    }
                 })?;
                 (
                     scorepeek::recognition::ScreenFieldObservations::Result(fields),

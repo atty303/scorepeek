@@ -272,6 +272,10 @@ authoritative.
 - [ADR 0091: Align fixed numeric slots with field grammars](0091-align-fixed-numeric-slots-with-field-grammars.md)
   gives both miss fields and FAST/SLOW four fixed cells, equalizes the two HYPER level slot widths,
   and widens only their owning canonical ROIs.
+- [ADR 0092: Promote fixed-cell numeric recognition](0092-promote-fixed-cell-numeric-recognition.md)
+  replaces full-field numeric CTC authority with canonical fixed cells and one shared HOG/MLP
+  batch, makes level advisory before song acceptance and non-vetoing afterward, and advances
+  debug evidence to recognition artifact v10 without changing the accepted event.
 
 ## Historical
 

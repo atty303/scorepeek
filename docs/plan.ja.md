@@ -118,6 +118,10 @@
   music-selectの選択中titleおよび可視list row crop、result artistとmusic-select artist/chart/active-rowの
   versioned context crop、active catalog trie診断まで）
 - 公式ONNX recognition model比較とPP-OCRv6 small native-dynamic選定: 完了
+- result数字recognizer: canonical character layout v2の固定cell、field-family mask、
+  `2244 -> 64 -> 11` shared HOG/MLP private ONNX batchを実装済み。PP-OCRは数字authorityから外し、
+  levelはsong未確定時の候補絞り込みだけに使い、confirmed chart/eventをrejectしない。private
+  7-session/27-episode replayは通過済み。target installとprospective 10-episode/2-session gateは未検証
 - selection song contextとlive replay telemetry storage: 着手（最小context reducer、operator確認済み
   scenario、application-owned QOI diagnostic run writer、bounded worker、strict canonical replay、read-only
   status/list control、cross-process active ownership、crash-safe aggregate retention、digest-confirmed

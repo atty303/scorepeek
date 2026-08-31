@@ -11,14 +11,15 @@ use std::time::Instant;
 use scorepeek::catalog::ScorepeekSongId;
 use scorepeek::recognition::{
     CatalogCandidateEvidenceTable, MusicSelectSongResolution, NumericBatchInference,
-    ParsedResultFields, ResultChartResolution, ResultPerformanceResolution, ResultSongResolution,
-    ScreenCatalogCandidateObservations, ScreenFieldObservations, ScreenSongResolution,
+    ParsedResultFields, ResultChartResolution, ResultFieldValue, ResultPerformanceResolution,
+    ResultSongResolution, ScreenCatalogCandidateObservations, ScreenFieldObservations,
+    ScreenSongResolution,
 };
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 const CATALOG_SCHEMA: &str = "scorepeek-recognition-catalog-evidence-v1";
-const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v9";
+const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v10";
 const MANIFEST_SCHEMA: &str = "scorepeek-recognition-evidence-manifest-v3";
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -64,6 +65,8 @@ struct StoredObservation<'a> {
         Option<&'a crate::recognition_live::screen_field_observer::CurrentScoreOcrResolution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     numeric_batch: Option<&'a NumericBatchInference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    level_catalog_mismatch: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expected: Option<RecognitionArtifactExpected<'a>>,
 }
@@ -298,6 +301,10 @@ impl RecognitionArtifactWriter {
             result_performance_resolution,
             current_score_ocr_resolution,
             numeric_batch,
+            level_catalog_mismatch: observed_level_catalog_mismatch(
+                parsed_result_fields,
+                result_chart_resolution,
+            ),
             expected,
         };
         let mut bytes = serde_json::to_vec(&stored)
@@ -388,6 +395,19 @@ impl RecognitionArtifactWriter {
         self.catalog_sha256 = Some(digest);
         Ok(())
     }
+}
+
+fn observed_level_catalog_mismatch(
+    fields: Option<&ParsedResultFields>,
+    chart: Option<&ResultChartResolution>,
+) -> Option<bool> {
+    let ResultFieldValue::Known { value: observed } = &fields?.level else {
+        return None;
+    };
+    let ResultChartResolution::Accepted { chart, .. } = chart? else {
+        return None;
+    };
+    Some(*observed != chart.level)
 }
 
 const LIVE_QUEUE_CAPACITY: usize = 2;
@@ -931,6 +951,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
     use std::sync::Arc;
 
+    use scorepeek::catalog::{Chart, ChartKey, Difficulty, PlayType};
     use scorepeek::recognition::{
         CatalogCandidateDomain, CatalogCandidateEvidenceTable, CatalogNormalizedSimilarity,
         CatalogTextCandidateScore, DynamicTextObservation, MusicSelectScreenFieldObservations,
@@ -939,6 +960,31 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn artifact_marks_observed_level_catalog_mismatch_without_changing_chart() {
+        let ScreenFieldObservations::Result(fields) = result_fields() else {
+            unreachable!("fixture is a result screen");
+        };
+        let mut parsed = ParsedResultFields::from_observations(&fields);
+        parsed.level = ResultFieldValue::Known { value: 11 };
+        let chart = ResultChartResolution::Accepted {
+            resolver_id: "test".to_owned(),
+            chart: Chart {
+                key: ChartKey {
+                    play_type: PlayType::Single,
+                    difficulty: Difficulty::Hyper,
+                },
+                level: 8,
+                notes: 764,
+            },
+            current_score: 1_286,
+        };
+        assert_eq!(
+            observed_level_catalog_mismatch(Some(&parsed), Some(&chart)),
+            Some(true)
+        );
+    }
 
     fn result_fields() -> ScreenFieldObservations {
         let text = |value: &str| DynamicTextObservation {
@@ -1238,7 +1284,7 @@ mod tests {
         assert_eq!(outcome.status, RecognitionArtifactFinishStatus::Complete);
         assert_eq!(outcome.manifest_sha256.unwrap().len(), 64);
         let stored = fs::read_to_string(root.join("observations.ndjson")).unwrap();
-        assert!(stored.contains("scorepeek-recognition-observation-v9"));
+        assert!(stored.contains("scorepeek-recognition-observation-v10"));
         assert!(stored.contains("\"open_text\":\"只\""));
         assert!(stored.contains("\"constrained_text\":\"0\""));
         assert!(stored.contains("\"difficulty\""));

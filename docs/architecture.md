@@ -145,20 +145,22 @@ to the model. Training and Rust inference use the same preprocessing contract.
 Fields are represented as `known`, `unknown(reason)`, or `not_applicable`.
 PP-OCRv6 small native-dynamic observes only result title, artist, clear type, difficulty, previous
 clear type, and the music-select text fields. Fourteen fixed result numeric ROIs are instead
-preprocessed as BGR `3x32x320` and submitted together to one registered specialist CTC ONNX batch.
-Its dictionary is exactly `0123456789-`; exact shared-prefix sequence scoring retains top-eight,
-all-blank, calibrated posterior, and margin evidence rather than forcing a greedy glyph from an
-empty crop. A deterministic blank-first greedy collapse of the same logits separately preserves
-unrestricted raw diagnostic text; only exact field-grammar candidates can become typed values.
+split only by canonical numeric-character layout v2. Each declared cell receives a field-family
+hard/soft mask and a fixed 2,244-value HOG/soft-pixel feature. All cells are submitted together to
+one registered `N x 2244 -> N x 11` MLP ONNX batch with classes `_0123456789`. Fixed-slot grammar
+retains top-eight, all-blank, calibrated posterior, and margin evidence; it admits only leading
+blank cells followed by contiguous digits and never discovers components from image content.
+Display dashes are a separate fixed marker predicate rather than an MLP class.
 Every due 100 ms tick evaluates the screen predicate independently of the bounded field
 worker. While that worker is occupied, result/music-select crop routing and submission alone are
 skipped and recorded as `field_observation_busy_skip`; screen transitions and play-attempt state
 continue at the screen cadence. Numeric model, preprocessor, candidate, joint-score, and typed
 decisions remain debug artifacts; only a temporally accepted result can reach the domain event.
-Level and notes stay unknown when their crops contain no displayed glyph. For an already accepted
-result song, accepted difficulty plus any known level/notes values constrain the catalog; exactly
-one matching single-play chart may provide its registered level and notes, while zero or multiple
-matches remain unknown.
+Level remains advisory. Before song acceptance, a calibrated known level may only narrow candidates
+already established by text, difficulty, and notes. For an already accepted result song, chart
+resolution ignores observed level, keeps its mismatch as debug evidence, and selects the unique
+single-play chart from accepted difficulty and any known notes. Zero or multiple matches remain
+unknown; the catalog supplies the accepted chart level.
 Frame-local full-catalog resolution keeps screen-specific evidence separate. A deterministic
 post-resolver reducer stabilizes result song and clear type after two equal observations in one
 explicitly observed result episode, preserves stable values across a transient unknown, rejects
@@ -331,7 +333,7 @@ resources into the production field worker and requires bounded teardown without
 It proves resource admission and worker ownership only; it is not live recognition or performance
 evidence.
 
-ADR 0032, as narrowed by ADR 0036 and superseded for implemented fields by ADR 0087, supplies the
+ADR 0032, as narrowed by ADR 0036 and superseded for implemented fields by ADR 0092, supplies the
 production screen-field observer and exact complete output shapes. Result output contains five
 general-text observations and fourteen specialist numeric states; music-select contains its four
 general-text observations. A text or numeric-batch failure returns a typed whole-screen error
