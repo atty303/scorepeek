@@ -5,14 +5,15 @@ use crate::catalog::ScorepeekSongId;
 use super::{CatalogTextCandidateScore, ResultSongCandidateObservation};
 
 pub const RESULT_SONG_RESOLVER_ID: &str =
-    "scorepeek-result-song-title-primary-artist-corroborated-v2";
+    "scorepeek-result-song-title-primary-artist-corroborated-v3";
 pub const RESULT_SONG_CHART_ASSISTED_RESOLVER_ID: &str =
     "scorepeek-result-song-title-primary-chart-assisted-v1";
 
 const MAXIMUM_TITLE_EDIT_DISTANCE: usize = 3;
 const MINIMUM_TITLE_MATCHING_UNITS: usize = 3;
 const MINIMUM_TITLE_COMPARED_UNITS: usize = 4;
-const MINIMUM_TITLE_EDIT_MARGIN: usize = 2;
+const MINIMUM_EXACT_TITLE_EDIT_MARGIN: usize = 1;
+const MINIMUM_FUZZY_TITLE_EDIT_MARGIN: usize = 2;
 const MINIMUM_ARTIST_MATCHING_UNITS: usize = 2;
 const MINIMUM_ARTIST_COMPARED_UNITS: usize = 5;
 
@@ -136,7 +137,12 @@ pub fn resolve_result_song(
             Some(margin),
         );
     }
-    if margin < MINIMUM_TITLE_EDIT_MARGIN {
+    let minimum_margin = if selected.title.minimum_edit_distance == 0 {
+        MINIMUM_EXACT_TITLE_EDIT_MARGIN
+    } else {
+        MINIMUM_FUZZY_TITLE_EDIT_MARGIN
+    };
+    if margin < minimum_margin {
         return unknown(
             ResultSongUnknownReason::TitleEditMarginTooSmall,
             Some(selected),
@@ -186,7 +192,8 @@ pub fn assist_unknown_result_song_with_chart(
         reason,
         ResultSongUnknownReason::TitleEditMarginTooSmall
             | ResultSongUnknownReason::ArtistSimilarityTooLow
-    ) || matching_song_ids != [selected.song_id]
+    ) || (selected.title.minimum_edit_distance == 0 && *title_edit_margin == 0)
+        || matching_song_ids != [selected.song_id]
     {
         return primary;
     }
@@ -287,6 +294,16 @@ mod tests {
             ],
         );
         assert_eq!(measured_result_ocr.accepted_song_id(), Some(id(1)));
+
+        let one_character_exact = resolve_result_song(
+            "A",
+            "D.J.Amuro",
+            &[
+                candidate(id(1), score(0, 1, 1), score(0, 9, 9)),
+                candidate(id(2), score(1, 0, 1), score(0, 9, 9)),
+            ],
+        );
+        assert_eq!(one_character_exact.accepted_song_id(), Some(id(1)));
     }
 
     #[test]
@@ -315,6 +332,18 @@ mod tests {
         };
         let retained = assist_unknown_result_song_with_chart(accepted.clone(), &[id(2)]);
         assert_eq!(retained, accepted);
+
+        let duplicate_exact = resolve_result_song(
+            "A",
+            "artist",
+            &[
+                candidate(id(1), score(0, 1, 1), score(0, 6, 6)),
+                candidate(id(2), score(0, 1, 1), score(0, 6, 6)),
+            ],
+        );
+        let still_ambiguous =
+            assist_unknown_result_song_with_chart(duplicate_exact.clone(), &[id(1)]);
+        assert_eq!(still_ambiguous, duplicate_exact);
     }
 
     #[test]
@@ -333,6 +362,21 @@ mod tests {
         );
         assert!(matches!(
             ambiguous,
+            ResultSongResolution::Unknown {
+                reason: ResultSongUnknownReason::TitleEditMarginTooSmall,
+                ..
+            }
+        ));
+        let duplicate_exact = resolve_result_song(
+            "A",
+            "artist",
+            &[
+                candidate(id(1), score(0, 1, 1), score(0, 6, 6)),
+                candidate(id(2), score(0, 1, 1), score(0, 6, 6)),
+            ],
+        );
+        assert!(matches!(
+            duplicate_exact,
             ResultSongResolution::Unknown {
                 reason: ResultSongUnknownReason::TitleEditMarginTooSmall,
                 ..

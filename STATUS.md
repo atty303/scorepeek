@@ -24,8 +24,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   POOR `3`, combo break `30`, and `Horizons of Promise` sentinels, without a wrong optional known
   value. The newly reviewed target session deliberately makes the active replay fail closed: its
   `FlyAway` result has operator-confirmed FAST `155`, while the installed model returns `156` and
-  leaves clear type unresolved. The same session also retains the event-suppressed short title `A`
-  with its complete visually confirmed numeric truth instead of excluding failed observations.
+  leaves clear type unresolved. The same session retains the formerly event-suppressed short title
+  `A` with complete visually confirmed truth. ADR 0093 now accepts its unique exact title at margin
+  one while retaining margin two for fuzzy title evidence; production replay resolves `A` through
+  song, chart, and performance without using numeric truth to manufacture song identity.
 - Level is advisory only. Before song acceptance it may narrow candidates already established by
   title/artist, difficulty, and notes; it never creates a song candidate. After song acceptance,
   chart resolution ignores observed level, records any catalog mismatch in recognition artifact
@@ -390,7 +392,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   operator-reviewed results through immutable label
   `abc458b0b8c9d00e26a1bd5abae14f86173cd0c79c0a2eb98c20234b827f434d`. Its two event-suppressed
   results are labeled rather than omitted, so the current eight-session, thirty-four-episode suite
-  exposes the FAST `155` versus `156` recognition error and the unresolved short title `A`.
+  exposes the FAST `155` versus `156` recognition error and the unresolved `FlyAway` clear type.
+  ADR 0093 resolves the other retained failure, short title `A`, from its unique exact title and
+  exact artist evidence. The active replay now reports differences only for `current-9-3`.
 - Private frames, labels, recordings, source snapshots, generated catalogs, models, and environment
   artifacts remain outside the repository. Committed fixtures are synthetic or opaque and
   non-personal.
@@ -999,8 +1003,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 ## Next executable task
 
 1. Correct the fixed-cell timing recognition exposed by the active `FlyAway` FAST `155` sentinel
-   without weakening fail-closed acceptance, then replay all eight sessions. Separately diagnose
-   the short title `A` result linkage without using its numeric truth to accept the song.
+   and its unresolved clear type without weakening fail-closed acceptance, then replay all eight
+   sessions.
 2. Before entering MUSIC SELECT, require MODE SELECT
    to appear as `mode_select` in the TUI and diagnostic history without field OCR or a play-attempt
    transition; after entering MUSIC SELECT, require `music_select` and normal field observations.

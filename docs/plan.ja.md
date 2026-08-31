@@ -85,9 +85,11 @@
   minimum edit distanceとinteger normalized similarityを全songについて別々に保持する。ranking、top-N truncation、field間集約、
   threshold、accepted field、song decision、selection context更新、diagnostic side effect、eventは行わない。folded observationは
   domain-unique folded candidate formとのみ比較し、search-term-only songはdropやpanicではなくtyped errorでdomain構築を停止する。
-  さらにretained recording evidenceからresult-song resolverを固定し、今回のreview済みlive evidenceによりv2へ更新した。titleのunique minimum edit candidateに対し
-  edit distance 1以下、normalized similarity 6/7以上、runner-up edit margin 2以上、選択candidateのartist similarity 2/5以上を
-  exact integerで要求し、artist scoreをtitleへ加算しない。失敗はtyped unknownにする。profile v2は全episodeのexact expected song IDをbindし、
+  さらにretained recording evidenceからresult-song resolverを固定し、review済みlive evidenceでv2、
+  unique exact short-title evidenceでv3へ更新した。titleのunique minimum edit candidateに対し
+  edit distance 1以下、normalized similarity 6/7以上、選択candidateのartist similarity 2/5以上を
+  exact integerで要求し、unique exact titleはrunner-up margin 1以上、fuzzy titleはmargin 2以上とする。
+  artist scoreをtitleへ加算しない。失敗はtyped unknownにする。profile v2は全episodeのexact expected song IDをbindし、
   exact songと`CLEAR TYPE`を各2 frame以上要求する。local artifactはexact OCR/catalog strings、全candidate metrics、decision/reason、expected valuesを保持する。
   Gamescope liveでは同じserializerをcapture loop外のcapacity 2 workerで使用し、live monotonic intervalをrecording PTSと区別する。
   新しいvalue-evidence gateは1件以上のcompleted result resolution、全completed observationのenqueue、manifest完了を要求し、
@@ -122,7 +124,8 @@
   `2244 -> 64 -> 11` shared HOG/MLP private ONNX batchを実装済み。PP-OCRは数字authorityから外し、
   levelはsong未確定時の候補絞り込みだけに使い、confirmed chart/eventをrejectしない。target install済み。
   private suiteは8-session/34-episodeへ進み、追加target sessionの目視truthによりFAST `155`を`156`とする
-  誤認識と短題名`A`の未解決resultを回帰失敗として保持している。prospective 10-episode/2-session gateは未検証
+  誤認識とFlyAway clear type未解決を回帰失敗として保持している。短題名`A`はunique exact titleのmargin 1を
+  許可するresult resolver v3でsong、chart、performanceまで解決済み。prospective 10-episode/2-session gateは未検証
 - selection song contextとlive replay telemetry storage: 着手（最小context reducer、operator確認済み
   scenario、application-owned QOI diagnostic run writer、bounded worker、strict canonical replay、read-only
   status/list control、cross-process active ownership、crash-safe aggregate retention、digest-confirmed

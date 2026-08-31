@@ -93,7 +93,7 @@ authoritative.
 - [ADR 0038: Resolve result songs from retained simulation evidence](0038-resolve-result-songs-from-retained-simulation-evidence.md)
   fixes the first fail-closed result-song resolver from retained OCR/candidate evidence, binds
   expected song IDs in recording profile v2, and requires exact song plus `CLEAR TYPE` agreement
-  before a simulation episode passes.
+  before a simulation episode passes. ADR 0093 supersedes its uniform title-margin requirement.
 - [ADR 0039: Record live recognition evidence off the capture loop](0039-record-live-recognition-evidence-off-capture-loop.md)
   adds a capacity-two writer for exact live field/resolver evidence, distinguishes live monotonic
   intervals from recording PTS, and makes complete no-drop artifact persistence part of the new
@@ -276,6 +276,9 @@ authoritative.
   replaces full-field numeric CTC authority with canonical fixed cells and one shared HOG/MLP
   batch, makes level advisory before song acceptance and non-vetoing afterward, and advances
   debug evidence to recognition artifact v10 without changing the accepted event.
+- [ADR 0093: Accept unique exact result titles](0093-accept-unique-exact-result-titles.md)
+  supersedes ADR 0038's uniform title-margin requirement: an exact title must be unique at margin
+  one, while fuzzy title evidence retains margin two and artist corroboration.
 
 ## Historical
 

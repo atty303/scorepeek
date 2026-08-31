@@ -355,9 +355,10 @@ accepted field, song, event, live-profile support, or performance authority.
 
 ADR 0038 adds result-screen song authority after that shared candidate path. The pure resolver uses
 the unique minimum title edit-distance candidate, requires title distance at most one, normalized
-title similarity at least `6/7`, a title edit margin of at least two, and selected-candidate artist
-similarity at least `2/5`. Artist evidence corroborates the title-selected song and is not added to
-title distance. Every rejected condition is a typed unknown. Recording profile v2 binds an exact
+title similarity at least `6/7`, and selected-candidate artist similarity at least `2/5`. ADR 0093
+requires margin one for a unique exact title and retains margin two for fuzzy title evidence.
+Artist evidence corroborates the title-selected song and is not added to title distance. Every
+rejected condition is a typed unknown. Recording profile v2 binds an exact
 expected song ID per episode and requires two exact song decisions plus two exact `CLEAR TYPE`
 observations. The create-only local artifact retains the exact OCR, catalog strings, complete
 candidate metrics, decision/reason, and expected values; it does not duplicate pixels.
