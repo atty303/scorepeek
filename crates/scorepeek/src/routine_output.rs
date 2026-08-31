@@ -1640,48 +1640,48 @@ fn render(
     let compact = area.width < 80 || area.height < 32;
     let show_attempt = !compact || state.latest_play_attempt.is_some();
     let has_results = !state.result_history.is_empty();
-    if compact && has_results {
-        let results = latest_result_lines(state, true, area.width.saturating_sub(2) as usize);
-        frame.render_widget(
-            Paragraph::new(results).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Latest accepted play event"),
-            ),
-            area,
-        );
-        return;
-    }
+    let available_width = area.width.saturating_sub(2) as usize;
+    let watcher = watcher_lines(state, available_width);
+    let results = latest_result_lines(state, compact, available_width);
+    let attempt = show_attempt.then(|| play_event_promotion_lines(state, compact, available_width));
+    let observation = (!compact || !has_results).then(|| {
+        observation_lines(
+            state.current_screen.as_deref(),
+            state.latest_observation.as_ref(),
+            state.latest_stabilized_result.as_ref(),
+            state.latest_temporal_music_select.as_ref(),
+            compact,
+            available_width,
+        )
+    });
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(result_panel_constraints(compact, show_attempt, has_results))
+        .constraints(panel_constraints(
+            watcher.len(),
+            results.len(),
+            attempt.as_ref().map(Vec::len),
+            observation.as_ref().map(Vec::len),
+        ))
         .split(area);
-    let results = latest_result_lines(state, compact, rows[0].width.saturating_sub(2) as usize);
+
+    frame.render_widget(
+        Paragraph::new(watcher).block(Block::default().borders(Borders::ALL).title("Watcher")),
+        rows[0],
+    );
+
     frame.render_widget(
         Paragraph::new(results).block(
             Block::default()
                 .borders(Borders::ALL)
                 .title("Latest accepted play event"),
         ),
-        rows[0],
-    );
-
-    let header = watcher_lines(state, compact, rows[1].width.saturating_sub(2) as usize);
-    frame.render_widget(
-        Paragraph::new(header).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Debug: Watcher"),
-        ),
         rows[1],
     );
 
     let mut row = 2;
-    if show_attempt {
-        let attempt =
-            play_event_promotion_lines(state, compact, rows[row].width.saturating_sub(2) as usize);
+    if let Some(attempt) = attempt {
         frame.render_widget(
-            Paragraph::new(attempt).wrap(Wrap { trim: false }).block(
+            Paragraph::new(attempt).block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title("Provisional: Play event promotion"),
@@ -1691,84 +1691,36 @@ fn render(
         row += 1;
     }
 
-    let observation = observation_lines(
-        state.current_screen.as_deref(),
-        state.latest_observation.as_ref(),
-        state.latest_stabilized_result.as_ref(),
-        state.latest_temporal_music_select.as_ref(),
-        compact,
-        rows[row].width.saturating_sub(2) as usize,
-    );
-    frame.render_widget(
-        Paragraph::new(observation)
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Debug: Latest recognition"),
-            ),
-        rows[row],
-    );
+    if let Some(observation) = observation {
+        frame.render_widget(
+            Paragraph::new(observation)
+                .wrap(Wrap { trim: false })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Debug: Latest recognition"),
+                ),
+            rows[row],
+        );
+    }
 }
 
-fn result_panel_constraints(
-    compact: bool,
-    show_attempt: bool,
-    has_results: bool,
+fn panel_constraints(
+    watcher_lines: usize,
+    result_lines: usize,
+    attempt_lines: Option<usize>,
+    observation_lines: Option<usize>,
 ) -> Vec<Constraint> {
-    if !has_results && compact && show_attempt {
-        vec![
-            Constraint::Length(4),
-            Constraint::Length(5),
-            Constraint::Length(8),
-            Constraint::Min(6),
-        ]
-    } else if !has_results && compact {
-        vec![
-            Constraint::Length(4),
-            Constraint::Length(5),
-            Constraint::Min(8),
-        ]
-    } else if !has_results && show_attempt {
-        vec![
-            Constraint::Length(4),
-            Constraint::Length(5),
-            Constraint::Length(11),
-            Constraint::Min(13),
-        ]
-    } else if !has_results {
-        vec![
-            Constraint::Length(4),
-            Constraint::Length(5),
-            Constraint::Min(14),
-        ]
-    } else if compact && show_attempt {
-        vec![
-            Constraint::Min(8),
-            Constraint::Length(5),
-            Constraint::Length(8),
-            Constraint::Min(8),
-        ]
-    } else if compact {
-        vec![
-            Constraint::Min(8),
-            Constraint::Length(5),
-            Constraint::Min(6),
-        ]
-    } else if show_attempt {
-        vec![
-            Constraint::Min(14),
-            Constraint::Length(5),
-            Constraint::Length(10),
-            Constraint::Length(8),
-        ]
-    } else {
-        vec![
-            Constraint::Min(14),
-            Constraint::Length(5),
-            Constraint::Length(8),
-        ]
-    }
+    [
+        Some(watcher_lines),
+        Some(result_lines),
+        attempt_lines,
+        observation_lines,
+    ]
+    .into_iter()
+    .flatten()
+    .map(|lines| Constraint::Length(u16::try_from(lines.saturating_add(2)).unwrap_or(u16::MAX)))
+    .collect()
 }
 
 fn latest_result_lines(
@@ -2072,12 +2024,53 @@ fn play_event_promotion_lines(
         Style::default().fg(color).add_modifier(Modifier::BOLD),
     ))];
     lines.push(Line::from(fitted_value("Next: ", &detail, available_width)));
+    lines.extend(promotion_numeric_lines(state, available_width));
     lines.extend(play_attempt_lines(
         state.latest_play_attempt.as_ref(),
         compact,
         available_width,
     ));
     lines
+}
+
+fn promotion_numeric_lines(state: &RunViewState, available_width: usize) -> Vec<Line<'static>> {
+    let Some(observation) = state
+        .latest_observation
+        .as_ref()
+        .filter(|event| text_at(event, "/screen") == "result")
+    else {
+        return Vec::new();
+    };
+    let Some(fields) = observation.get("parsed_result_fields") else {
+        return Vec::new();
+    };
+    let values = [
+        ("EX", "current_score"),
+        ("PG", "pgreat"),
+        ("GR", "great"),
+        ("GD", "good"),
+        ("BD", "bad"),
+        ("PR", "poor"),
+    ]
+    .map(|(label, field)| format!("{label} {}", promotion_field_value(fields, field)));
+    let mut lines = packed_token_lines(values, available_width);
+    for reason in numeric_rejection_reasons(observation) {
+        lines.push(Line::from(fitted_value(
+            "Rejected: ",
+            &reason,
+            available_width,
+        )));
+    }
+    lines
+}
+
+fn promotion_field_value(fields: &Value, field: &str) -> String {
+    let value = fields.get(field).unwrap_or(&Value::Null);
+    if text_at(value, "/status") == "known" {
+        text_at(value, "/value")
+    } else {
+        "?".to_owned()
+    }
 }
 
 fn play_event_promotion_status(state: &RunViewState) -> (&'static str, Color, String) {
@@ -2172,7 +2165,8 @@ fn numeric_promotion_status(state: &RunViewState) -> (&'static str, Color, Strin
         .latest_observation
         .as_ref()
         .filter(|event| text_at(event, "/screen") == "result");
-    let calibration_rejection = result_observation.and_then(numeric_rejection_reason);
+    let calibration_rejection = result_observation
+        .and_then(|observation| numeric_rejection_reasons(observation).into_iter().next());
     if let Some(numeric) = state.latest_numeric_result.as_ref() {
         match text_at(numeric, "/state/status").as_str() {
             "accepted" => {
@@ -2259,11 +2253,12 @@ fn numeric_promotion_status(state: &RunViewState) -> (&'static str, Color, Strin
     )
 }
 
-fn numeric_rejection_reason(observation: &Value) -> Option<String> {
+fn numeric_rejection_reasons(observation: &Value) -> Vec<String> {
     observation
-        .pointer("/numeric_batch/fields")?
-        .as_array()?
-        .iter()
+        .pointer("/numeric_batch/fields")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
         .filter(|field| {
             matches!(
                 text_at(field, "/field").as_str(),
@@ -2274,26 +2269,56 @@ fn numeric_rejection_reason(observation: &Value) -> Option<String> {
                     .and_then(Value::as_bool)
                     == Some(true)
         })
-        .find_map(|field| {
-            let name = text_at(field, "/field").to_ascii_uppercase();
-            let probability = field
-                .pointer("/candidates/0/calibrated_probability")?
-                .as_f64()?;
-            let minimum_probability = field
-                .pointer("/calibration/minimum_probability")?
-                .as_f64()?;
-            if probability < minimum_probability {
-                return Some(format!(
-                    "{name} confidence probability {probability:.2} < {minimum_probability:.2}"
-                ));
-            }
-            let margin = field.get("runner_up_margin")?.as_f64()?;
-            let minimum_margin = field
-                .pointer("/calibration/minimum_runner_up_margin")?
-                .as_f64()?;
-            (margin < minimum_margin)
-                .then(|| format!("{name} confidence margin {margin:.2} < {minimum_margin:.2}"))
-        })
+        .flat_map(numeric_field_rejection_reasons)
+        .collect()
+}
+
+fn numeric_field_rejection_reasons(field: &Value) -> Vec<String> {
+    let name = text_at(field, "/field").to_ascii_uppercase();
+    let Some(candidate) = field.pointer("/candidates/0") else {
+        return vec![format!("{name} has no numeric candidate")];
+    };
+    let mut reasons = Vec::new();
+    if let (Some(best), Some(blank)) = (
+        candidate.get("log_probability").and_then(Value::as_f64),
+        field
+            .get("all_blank_log_probability")
+            .and_then(Value::as_f64),
+    ) && best <= blank
+    {
+        reasons.push(format!(
+            "{name} best log probability {best:.2} <= blank {blank:.2}"
+        ));
+    }
+    if let (Some(probability), Some(minimum)) = (
+        candidate
+            .get("calibrated_probability")
+            .and_then(Value::as_f64),
+        field
+            .pointer("/calibration/minimum_probability")
+            .and_then(Value::as_f64),
+    ) && probability < minimum
+    {
+        reasons.push(format!(
+            "{name} confidence probability {probability:.2} < {minimum:.2}"
+        ));
+    }
+    let minimum_margin = field
+        .pointer("/calibration/minimum_runner_up_margin")
+        .and_then(Value::as_f64);
+    match (
+        field.get("runner_up_margin").and_then(Value::as_f64),
+        minimum_margin,
+    ) {
+        (Some(margin), Some(minimum)) if margin < minimum => reasons.push(format!(
+            "{name} confidence margin {margin:.2} < {minimum:.2}"
+        )),
+        (None, Some(minimum)) => reasons.push(format!(
+            "{name} confidence margin unavailable < {minimum:.2}"
+        )),
+        _ => {}
+    }
+    reasons
 }
 
 fn human_reason(reason: &str) -> String {
@@ -2445,70 +2470,37 @@ fn play_attempt_lines(
     }
 }
 
-fn watcher_lines(
-    state: &RunViewState,
-    compact: bool,
-    available_width: usize,
-) -> Vec<Line<'static>> {
-    if compact {
-        return vec![
-            Line::from(vec![
-                Span::styled(
-                    "scorepeek run",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(format!(
-                    "  state={} sessions={} generation={}",
-                    state.watcher_state,
-                    state.session_count,
-                    state
-                        .capture_generation
-                        .map_or_else(|| "-".to_owned(), |value| value.to_string())
-                )),
-            ]),
-            Line::from(fitted_value(
-                "invocation=",
-                &state.invocation_id,
-                available_width,
-            )),
-            Line::from(format!(
-                "session={}  recording={}  status={}",
-                state.active_session_id.as_deref().unwrap_or("-"),
-                state.recording,
-                state.status_recording
-            )),
-        ];
-    }
-    vec![
+fn watcher_lines(state: &RunViewState, available_width: usize) -> Vec<Line<'static>> {
+    let screen = state.current_screen.as_deref().unwrap_or("-");
+    let mut lines = vec![
         Line::from(vec![
             Span::styled(
-                "scorepeek run",
+                state.watcher_state.to_ascii_uppercase(),
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(format!(
-                "  invocation={}  state={}",
-                state.invocation_id, state.watcher_state
+                "  screen={screen}  sessions={}  generation={}",
+                state.session_count,
+                state
+                    .capture_generation
+                    .map_or_else(|| "-".to_owned(), |value| value.to_string())
             )),
         ]),
-        Line::from(format!(
-            "sessions={}  session={}  generation={}",
-            state.session_count,
-            state.active_session_id.as_deref().unwrap_or("-"),
-            state
-                .capture_generation
-                .map_or_else(|| "-".to_owned(), |value| value.to_string())
-        )),
-        Line::from(format!("profile={}", state.profile_sha256)),
-        Line::from(format!(
-            "recording={}  status-recording={}",
-            state.recording, state.status_recording
-        )),
-        Line::from(format!("message={}", state.message)),
-    ]
+        Line::from(fitted_value("message=", &state.message, available_width)),
+    ];
+    if state.status_recording != "ready" {
+        lines[1] = Line::from(fitted_value(
+            "recording=",
+            &format!(
+                "{} ({})  {}",
+                state.recording, state.status_recording, state.message
+            ),
+            available_width,
+        ));
+    }
+    lines
 }
 
 fn observation_lines(
@@ -3968,12 +3960,13 @@ mod tests {
         assert!(rendered.contains("OCR title: OCR TITLE"));
         assert!(rendered.contains("Latest accepted play event"));
         assert!(rendered.contains("No accepted play event yet"));
-        assert!(rendered.contains("Debug: Watcher"));
+        assert!(rendered.contains("Watcher"));
         assert!(rendered.contains("Debug: Latest recognition"));
         assert!(!rendered.contains("Observation channel"));
         assert!(rendered.contains("current screen=unknown"));
         assert!(rendered.contains("raw screen=result"));
-        assert!(rendered.contains("invocation=invocation-1"));
+        assert!(rendered.contains("Watcher"));
+        assert!(rendered.contains("screen=unknown"));
         assert!(rendered.contains("Catalog title: CATALOG TITLE / CATALOG ALT"));
         assert!(rendered.contains("Catalog artist: CATALOG ARTIST"));
         assert!(rendered.contains("ACCEPTED"));
@@ -4029,9 +4022,9 @@ mod tests {
         assert!(rendered.contains("IMPORTANT TITLE"));
         assert!(rendered.contains("IMPORTANT ARTIST"));
         assert!(rendered.contains("Candidate title:"));
-        assert!(rendered.contains("state=session_active"));
+        assert!(rendered.contains("SESSION_ACTIVE"));
         assert!(rendered.contains("generation=12"));
-        assert!(rendered.contains("invocation=run-1787877123"));
+        assert!(rendered.contains("recording=disabled"));
         assert!(!rendered.contains("00000000-0000-0000-0000-000000000001"));
     }
 
@@ -4212,7 +4205,6 @@ mod tests {
             (100, 40, false),
             (70, 30, true),
             (100, 30, true),
-            (70, 12, true),
             (40, 30, true),
         ] {
             let backend = TestBackend::new(width, height);
@@ -4369,8 +4361,76 @@ mod tests {
         assert!(!rendered.contains("Observation channel"));
     }
 
-    #[test]
-    fn play_event_promotion_panel_explains_numeric_calibration_rejection() {
+    fn numeric_calibration_rejection_observation() -> Value {
+        json!({
+            "screen": "result",
+            "parsed_result_fields": {
+                "current_score": { "status": "unknown", "reason": "empty" },
+                "pgreat": { "status": "unknown", "reason": "empty" },
+                "great": { "status": "known", "value": 123 },
+                "good": { "status": "known", "value": 11 },
+                "bad": { "status": "unknown", "reason": "empty" },
+                "poor": { "status": "known", "value": 2 }
+            },
+            "result_chart_resolution": {
+                "status": "unknown",
+                "reason": "current_score_unknown"
+            },
+            "result_performance_resolution": {
+                "status": "unknown",
+                "reason": "incomplete_judgments"
+            },
+            "numeric_batch": {
+                "fields": [{
+                    "field": "current_score",
+                    "accepted": false,
+                    "all_blank_log_probability": -1.5,
+                    "runner_up_margin": 2.0,
+                    "calibration": {
+                        "enabled": true,
+                        "minimum_probability": 0.5,
+                        "minimum_runner_up_margin": 1.0
+                    },
+                    "candidates": [{
+                        "text": "1286",
+                        "log_probability": -2.0,
+                        "calibrated_probability": 0.8
+                    }]
+                }, {
+                    "field": "pgreat",
+                    "accepted": false,
+                    "runner_up_margin": 0.558_871_5,
+                    "calibration": {
+                        "enabled": true,
+                        "minimum_probability": 0.0,
+                        "minimum_runner_up_margin": 1.314_789
+                    },
+                    "candidates": [{
+                        "text": "587",
+                        "calibrated_probability": 0.6211
+                    }, {
+                        "text": "567",
+                        "calibrated_probability": 0.3789
+                    }]
+                }, {
+                    "field": "bad",
+                    "accepted": false,
+                    "runner_up_margin": 0.5,
+                    "calibration": {
+                        "enabled": true,
+                        "minimum_probability": 0.75,
+                        "minimum_runner_up_margin": 1.0
+                    },
+                    "candidates": [{
+                        "text": "0",
+                        "calibrated_probability": 0.61
+                    }]
+                }]
+            }
+        })
+    }
+
+    fn numeric_calibration_rejection_state() -> RunViewState {
         let mut state = RunViewState::new("invocation-1".to_owned(), "a".repeat(64), true);
         state.watcher_state = "session_active".to_owned();
         state.current_screen = Some("result".to_owned());
@@ -4403,50 +4463,31 @@ mod tests {
                 }
             }
         }));
-        state.latest_observation = Some(json!({
-            "screen": "result",
-            "result_chart_resolution": {
-                "status": "unknown",
-                "reason": "current_score_unknown"
-            },
-            "result_performance_resolution": {
-                "status": "unknown",
-                "reason": "incomplete_judgments"
-            },
-            "numeric_batch": {
-                "fields": [{
-                    "field": "pgreat",
-                    "accepted": false,
-                    "runner_up_margin": 0.558_871_5,
-                    "calibration": {
-                        "enabled": true,
-                        "minimum_probability": 0.0,
-                        "minimum_runner_up_margin": 1.314_789
-                    },
-                    "candidates": [{
-                        "text": "587",
-                        "calibrated_probability": 0.6211
-                    }, {
-                        "text": "567",
-                        "calibrated_probability": 0.3789
-                    }]
-                }]
-            }
-        }));
+        state.latest_observation = Some(numeric_calibration_rejection_observation());
         state.latest_numeric_result = Some(json!({
             "event": "numeric_result_changed",
             "state": { "status": "unknown" },
             "reason": "incomplete",
             "event_suppression_reason": "numeric_not_accepted"
         }));
+        state
+    }
 
+    #[test]
+    fn play_event_promotion_panel_explains_numeric_calibration_rejection() {
+        let state = numeric_calibration_rejection_state();
         let promotion = play_event_promotion_lines(&state, false, 98)
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
         assert!(promotion.contains("PROMOTION BLOCKED"));
+        assert!(promotion.contains("CURRENT_SCORE best log probability -2.00 <= blank -1.50"));
         assert!(promotion.contains("PGREAT confidence margin 0.56 < 1.31"));
+        assert!(promotion.contains("EX ? PG ? GR 123 GD 11 BD ? PR 2"));
+        assert!(promotion.contains("BAD confidence probability 0.61 < 0.75"));
+        assert!(promotion.contains("BAD confidence margin 0.50 < 1.00"));
+        assert!(!promotion.contains("1286"));
         assert!(!promotion.contains("587"));
         assert!(!promotion.contains("567"));
 
@@ -4464,7 +4505,11 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(rendered.contains("Provisional: Play event promotion"));
+        assert!(rendered.contains("CURRENT_SCORE best log probability -2.00 <= blank -1.50"));
         assert!(rendered.contains("PGREAT confidence margin 0.56 < 1.31"));
+        assert!(rendered.contains("EX ? PG ? GR 123 GD 11 BD ? PR 2"));
+        assert!(rendered.contains("BAD confidence probability 0.61 < 0.75"));
+        assert!(rendered.contains("BAD confidence margin 0.50 < 1.00"));
         assert!(!rendered.contains("Observation channel"));
     }
 

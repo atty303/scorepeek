@@ -263,6 +263,9 @@ authoritative.
 - [ADR 0088: Explain domain-event promotion in the TUI](0088-explain-domain-event-promotion-in-the-tui.md)
   renders only the latest accepted event, turns the play-attempt panel into a typed promotion-gate
   tracker, and hides the observation-channel panel without changing machine-readable evidence.
+- [ADR 0089: Prioritize compact watcher state in the TUI](0089-prioritize-compact-watcher-state-in-the-tui.md)
+  moves a two-row current watcher surface to the top, content-sizes the latest event, and shows the
+  typed mandatory numeric tuple plus every calibrated promotion rejection.
 
 ## Historical
 

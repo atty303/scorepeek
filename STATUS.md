@@ -369,13 +369,14 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   and one negative. The provisional run channel now emits one typed `result_detected` after the
   existing two-observation result song and clear stabilization when the chart and score are known.
   Release accuracy, event authority, target-host performance, and support remain later gates.
-  ADR 0079 and ADR 0084 make those accepted results the primary TUI output. One watcher invocation
-  retains the newest 32 results across Gamescope session boundaries and renders newest-first catalog
-  presentation plus the v2 chart, score, judgments, optional performance, and previous-best values.
-  The accepted panel is present before the first event; watcher, attempt, recognition, temporal, and
-  channel information is labeled debug. The TUI does not print event JSON or load persistent history
-  from prior invocations; the observation channel and retained run-event artifact remain the
-  machine-readable diagnostic surfaces.
+  ADR 0079 and ADR 0084 make those accepted results the primary TUI output. ADR 0088 limits the
+  display to the latest event and turns attempt state into a promotion tracker. ADR 0089 places a
+  two-row current watcher surface first, content-sizes the latest event instead of filling the
+  terminal, and shows typed EX/PG/GR/GD/BD/PR values plus every enabled calibration rejection in the
+  promotion panel. One watcher invocation still retains the newest 32 results across Gamescope
+  session boundaries. The TUI does not print event JSON or rejected OCR candidates and does not load
+  persistent history from prior invocations; the observation channel and retained run-event
+  artifact remain the machine-readable diagnostic surfaces.
 
 ## Included deliverables
 
@@ -1024,8 +1025,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    Confirm that the TUI keeps the catalog title and artist visible as one attempt, advances
    `SELECTED` to `PLAYING` to `CONFIRMED`, then adds exactly one accepted result row containing the
    five judgments, typed miss/fast/slow/combo-break values, and previous-best snapshot. Require all
-   watcher, attempt, recognition, temporal, and channel information to remain labeled debug and raw
-   OCR to stay out of the accepted result panel. If a natural result-to-play
+   watcher to remain first and compact, the latest accepted event to use only its content height,
+   and a blocked promotion to show typed EX/PG/GR/GD/BD/PR availability plus every calibrated
+   rejection without rejected OCR candidate strings. If a natural result-to-play
    retry is available, verify a new attempt ID with the prior parent; do not request extra play only
    for retry tuning. Treat missing decide/play, an unlinked result or conflict as evidence rather
    than repairing it.
