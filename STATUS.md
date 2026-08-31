@@ -29,6 +29,14 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   prospective ten-episode/two-session target gate are the remaining boundaries for this
   checkpoint; repository checks, the complete test suite, and the active seventeen-episode replay
   pass.
+- The fixed result clear-type resolver normalizes the game display abbreviation `A-CLEAR` to the
+  existing domain value `ASSIST CLEAR`. Complete v4 diagnostic
+  `a3a1f34b591946089df4db62e31bac362538052a62779497d7caf7d6368b2cc7` is imported into the
+  private corpus as immutable session
+  `7a054ac06059de02dcdda49d1bc78eb191d1e289db36dd247519cc0f855d8ea1` with 428 canonical QOIs
+  and 18,613 observations. Its review draft is pending operator labels; the active suite remains
+  unchanged. The corpus verifier now accepts the v4 field-worker busy summary while preserving
+  immutable v3 manifests.
 - Recognition path background: the corpus recording has passed the value-bearing result-song
   recognition simulation for all three reviewed episodes, and a normal foreground Gamescope
   session now reuses that post-canonical path. Retained Wayland evidence repaired three independently

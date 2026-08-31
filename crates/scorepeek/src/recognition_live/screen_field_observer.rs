@@ -337,9 +337,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clear_type_resolution_accepts_only_a_unique_one_edit_registered_value() {
+    fn clear_type_resolution_accepts_registered_values_and_display_aliases() {
         assert_eq!(resolve_clear_type("EXH-CLEAR"), Some("EXH-CLEAR"));
         assert_eq!(resolve_clear_type("XH-CLEAR"), Some("EXH-CLEAR"));
+        assert_eq!(resolve_clear_type("A-CLEAR"), Some("ASSIST CLEAR"));
         assert_eq!(resolve_clear_type("F-COMBO"), Some("F-COMBO"));
         assert_eq!(resolve_clear_type(""), None);
         assert_eq!(resolve_clear_type("UNRELATED"), None);

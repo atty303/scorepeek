@@ -242,6 +242,9 @@ pub fn resolve_result_performance(
 
 #[must_use]
 pub fn resolve_clear_type(observed: &str) -> Option<&'static str> {
+    if observed == "A-CLEAR" {
+        return Some("ASSIST CLEAR");
+    }
     unique_ascii_match(
         observed,
         &[

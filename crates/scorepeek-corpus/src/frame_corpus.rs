@@ -52,6 +52,10 @@ struct DiagnosticManifest {
     processed_ticks: u64,
     busy_skips: u64,
     maximum_consecutive_busy_skips: u64,
+    #[serde(default)]
+    field_observation_busy_skips: Option<u64>,
+    #[serde(default)]
+    maximum_consecutive_field_observation_busy_skips: Option<u64>,
     completeness: String,
     capture_manifest_sha256: String,
     recognition_manifest_sha256: String,
@@ -1023,6 +1027,8 @@ pub fn replay_video(
         processed_ticks: sequence,
         busy_skips: 0,
         maximum_consecutive_busy_skips: 0,
+        field_observation_busy_skips: Some(0),
+        maximum_consecutive_field_observation_busy_skips: Some(0),
         completeness: "complete".to_owned(),
         capture_manifest_sha256: digest(&capture_bytes),
         recognition_manifest_sha256: digest(&recognition_bytes),
@@ -1355,6 +1361,8 @@ pub fn convert_v2_diagnostic(
         processed_ticks,
         busy_skips: 0,
         maximum_consecutive_busy_skips: 0,
+        field_observation_busy_skips: Some(0),
+        maximum_consecutive_field_observation_busy_skips: Some(0),
         completeness: capture_manifest["completeness"]
             .as_str()
             .unwrap_or("partial")
@@ -2696,6 +2704,19 @@ fn validate_diagnostic_manifest(manifest: &DiagnosticManifest) -> Result<(), Cor
         || manifest.artifacts.is_empty()
         || manifest.artifacts.len() > MAX_ARTIFACTS
         || manifest.recognition_interval_ms != 100
+        || match manifest.schema.as_str() {
+            DIAGNOSTIC_SCHEMA => manifest
+                .field_observation_busy_skips
+                .zip(manifest.maximum_consecutive_field_observation_busy_skips)
+                .is_none_or(|(total, maximum)| maximum > total),
+            LEGACY_DIAGNOSTIC_SCHEMA => {
+                manifest.field_observation_busy_skips.is_some()
+                    || manifest
+                        .maximum_consecutive_field_observation_busy_skips
+                        .is_some()
+            }
+            _ => true,
+        }
     {
         return invalid("diagnostic manifest is invalid");
     }
@@ -3430,12 +3451,36 @@ mod tests {
             processed_ticks: 1,
             busy_skips: 0,
             maximum_consecutive_busy_skips: 0,
+            field_observation_busy_skips: Some(0),
+            maximum_consecutive_field_observation_busy_skips: Some(0),
             completeness: "complete".to_owned(),
             capture_manifest_sha256: "3".repeat(64),
             recognition_manifest_sha256: "4".repeat(64),
             event_manifest_sha256: "5".repeat(64),
             artifacts: Vec::new(),
         }
+    }
+
+    #[test]
+    fn diagnostic_manifest_requires_v4_field_busy_summary_and_preserves_v3() {
+        let mut manifest = diagnostic_manifest();
+        manifest.artifacts.push(DiagnosticArtifact {
+            kind: "capture_manifest".to_owned(),
+            path: "capture/manifest.json".to_owned(),
+            sha256: "6".repeat(64),
+            bytes: 1,
+        });
+        manifest.field_observation_busy_skips = Some(17);
+        manifest.maximum_consecutive_field_observation_busy_skips = Some(3);
+        assert!(validate_diagnostic_manifest(&manifest).is_ok());
+
+        manifest.maximum_consecutive_field_observation_busy_skips = Some(18);
+        assert!(validate_diagnostic_manifest(&manifest).is_err());
+
+        manifest.schema = LEGACY_DIAGNOSTIC_SCHEMA.to_owned();
+        manifest.field_observation_busy_skips = None;
+        manifest.maximum_consecutive_field_observation_busy_skips = None;
+        assert!(validate_diagnostic_manifest(&manifest).is_ok());
     }
 
     #[test]
