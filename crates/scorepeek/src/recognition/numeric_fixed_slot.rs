@@ -12,6 +12,7 @@ pub const FIXED_SLOT_FEATURE_DIMENSIONS: usize = 2_244;
 #[derive(Debug)]
 pub struct FixedSlotFieldCells {
     pub field: NumericField,
+    pub level_difficulty: Option<Difficulty>,
     pub cells: Vec<FixedSlotCell>,
 }
 
@@ -24,17 +25,23 @@ pub struct FixedSlotCell {
 
 pub fn extract_fixed_slot_fields(
     crops: &ResultScreenRgb8Crops,
-    difficulty: Option<Difficulty>,
 ) -> Result<Vec<FixedSlotFieldCells>, RecognitionError> {
     let layout = ResultNumericCharacterLayout::load()?;
     let mut output = Vec::new();
-    if let Some(difficulty) = difficulty {
-        for variant in layout.level_variants(difficulty) {
-            output.push(FixedSlotFieldCells {
-                field: NumericField::Level,
-                cells: extract_cells(&crops.level, &variant.digit_cells)?,
-            });
-        }
+    for variant in layout.all_level_variants() {
+        let level_difficulty = match variant.difficulty.as_str() {
+            "beginner" => Difficulty::Beginner,
+            "normal" => Difficulty::Normal,
+            "hyper" => Difficulty::Hyper,
+            "another" => Difficulty::Another,
+            "leggendaria" => Difficulty::Leggendaria,
+            _ => return Err(RecognitionError::InvalidCanonicalLayout),
+        };
+        output.push(FixedSlotFieldCells {
+            field: NumericField::Level,
+            level_difficulty: Some(level_difficulty),
+            cells: extract_cells(&crops.level, &variant.digit_cells)?,
+        });
     }
     for field in NumericField::ALL
         .into_iter()
@@ -46,6 +53,7 @@ pub fn extract_fixed_slot_fields(
             .ok_or(RecognitionError::InvalidCanonicalLayout)?;
         output.push(FixedSlotFieldCells {
             field,
+            level_difficulty: None,
             cells: extract_cells(owner, cells)?,
         });
     }

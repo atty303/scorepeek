@@ -681,6 +681,7 @@ pub fn replay_video(
             },
             &catalog_root,
             &bundle,
+            scorepeek::recognition_live::text_observer_pool::RecognitionExecutionMode::Offline,
         )
         .map_err(|error| {
             CorpusError::InvalidRequest(format!("production recognizer could not start: {error:?}"))
@@ -2288,6 +2289,7 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
                 },
                 &catalog_root,
                 &bundle,
+                scorepeek::recognition_live::text_observer_pool::RecognitionExecutionMode::Offline,
             )
             .map_err(|error| {
                 CorpusError::InvalidReplay(format!(

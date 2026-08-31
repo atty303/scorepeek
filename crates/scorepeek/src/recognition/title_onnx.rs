@@ -5,6 +5,7 @@ use std::fs::File;
 use std::io::Read as _;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use ort::session::Session;
@@ -66,9 +67,9 @@ const V5_SERVER_BUNDLE_MANIFEST_BYTES: &[u8] =
 const V5_SERVER_BUNDLE_MANIFEST_SHA256: &str =
     "4fe22f41508ed31b86e86caa88d433a20702d0a6e95cea07bcaca577441594fe";
 const LIVE_RUNTIME_MANIFEST_BYTES: &[u8] =
-    include_bytes!("../../../../models/manifests/pp-ocrv6-small-live-runtime-v2.json");
+    include_bytes!("../../../../models/manifests/pp-ocrv6-small-live-runtime-v3.json");
 pub const LIVE_RUNTIME_SHA256: &str =
-    "faa3f6c718fc6298d7dc9a70558b833ec611b705e41a122eeb17f4fdee2c49e1";
+    "ecd5a0d54ba6c27219f716a3b3bdfa1cc1c01ec03fb164bcffbf0785ac4f9756";
 pub const LIVE_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
 pub const LIVE_MODEL_SHA256: &str =
     "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634";
@@ -294,6 +295,9 @@ struct LiveRuntimeManifest {
     preprocessor_id: String,
     decoder_id: String,
     model_bundle_manifest_sha256: String,
+    live_available_parallelism_divisor: usize,
+    offline_reserved_parallelism: usize,
+    maximum_text_workers: usize,
 }
 
 impl LiveRuntimeManifest {
@@ -302,7 +306,7 @@ impl LiveRuntimeManifest {
             return Err(OnnxParityError::InvalidArtifact);
         }
         let manifest: Self = serde_json::from_slice(LIVE_RUNTIME_MANIFEST_BYTES)?;
-        if manifest.schema != "scorepeek-field-text-runtime-v2"
+        if manifest.schema != "scorepeek-field-text-runtime-v3"
             || manifest.implementation_id != "scorepeek-pp-ocrv6-small-native-dynamic-cpu-v1"
             || manifest.ort_crate_version != "2.0.0-rc.13"
             || manifest.ort_api != 27
@@ -315,6 +319,9 @@ impl LiveRuntimeManifest {
             || manifest.preprocessor_id != DYNAMIC_TITLE_PREPROCESSOR_ID
             || manifest.decoder_id != "scorepeek-ctc-open-greedy-numeric-exact-v1"
             || manifest.model_bundle_manifest_sha256 != LIVE_MODEL_BUNDLE_MANIFEST_SHA256
+            || manifest.live_available_parallelism_divisor != 2
+            || manifest.offline_reserved_parallelism != 1
+            || manifest.maximum_text_workers != 5
         {
             return Err(OnnxParityError::InvalidArtifact);
         }
@@ -452,6 +459,7 @@ impl NumericCtcDecoder {
 /// The exact registered live text runtime, loaded once and owned by one observer worker.
 pub struct RegisteredDynamicTitleRuntime {
     session: Session,
+    model_bytes: Arc<[u8]>,
     dictionary: Vec<String>,
     output_classes: usize,
     numeric_digits: NumericCtcDecoder,
@@ -613,6 +621,11 @@ impl RegisteredRecognitionResources {
     pub const fn title_runtime(&mut self) -> &mut RegisteredDynamicTitleRuntime {
         &mut self.title_runtime
     }
+
+    #[must_use]
+    pub fn into_catalog_and_title_runtime(self) -> (Catalog, RegisteredDynamicTitleRuntime) {
+        (self.catalog, self.title_runtime)
+    }
 }
 
 fn validate_registered_resource_directory(
@@ -643,7 +656,7 @@ impl RegisteredDynamicTitleRuntime {
     pub fn load(bundle: &Path) -> Result<Self, OnnxParityError> {
         let runtime = LiveRuntimeManifest::load_registered()?;
         let manifest = DynamicBundleManifest::load_registered(LIVE_MODEL_ID)?;
-        let model_bytes = manifest.verified_model_bytes(bundle)?;
+        let model_bytes: Arc<[u8]> = Arc::from(manifest.verified_model_bytes(bundle)?);
         let dictionary_file = manifest
             .files
             .iter()
@@ -654,6 +667,33 @@ impl RegisteredDynamicTitleRuntime {
             &dictionary_file.sha256,
             manifest.native_contract.output_classes,
         )?;
+        Self::from_verified(
+            &runtime,
+            model_bytes,
+            dictionary,
+            manifest.native_contract.output_classes,
+        )
+    }
+
+    /// Constructs another independent session from the already-verified model and dictionary.
+    ///
+    /// # Errors
+    /// Returns an error when the fixed registered runtime cannot initialize another session.
+    pub fn spawn_peer(&self) -> Result<Self, OnnxParityError> {
+        Self::from_verified(
+            &LiveRuntimeManifest::load_registered()?,
+            Arc::clone(&self.model_bytes),
+            self.dictionary.clone(),
+            self.output_classes,
+        )
+    }
+
+    fn from_verified(
+        runtime: &LiveRuntimeManifest,
+        model_bytes: Arc<[u8]>,
+        dictionary: Vec<String>,
+        output_classes: usize,
+    ) -> Result<Self, OnnxParityError> {
         let numeric_digits = NumericCtcDecoder::new(&dictionary, CtcCharacterSet::Digits)?;
         let numeric_digits_up_to_two =
             NumericCtcDecoder::new(&dictionary, CtcCharacterSet::DigitsUpToTwo)?;
@@ -680,8 +720,9 @@ impl RegisteredDynamicTitleRuntime {
         }
         Ok(Self {
             session,
+            model_bytes,
             dictionary,
-            output_classes: manifest.native_contract.output_classes,
+            output_classes,
             numeric_digits,
             numeric_digits_up_to_two,
             numeric_digits_and_dashes,

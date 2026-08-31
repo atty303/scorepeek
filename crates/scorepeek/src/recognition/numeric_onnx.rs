@@ -187,6 +187,8 @@ pub struct NumericCellCandidate {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct NumericCellInference {
     pub field: NumericField,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level_difficulty: Option<Difficulty>,
     pub slot: usize,
     pub candidates: Vec<NumericCellCandidate>,
 }
@@ -196,17 +198,72 @@ pub struct NumericBatchInference {
     pub model_id: String,
     pub model_sha256: String,
     pub preprocessor_id: String,
-    pub elapsed_ms: u64,
+    pub elapsed_us: u64,
     pub input_cells: usize,
     pub input_tensor_sha256: String,
     pub output_tensor_sha256: String,
     pub cells: Vec<NumericCellInference>,
     pub fields: Vec<NumericFieldInference>,
+    pub level_variants: Vec<NumericLevelVariantInference>,
     pub not_displayed_fields: Vec<NumericField>,
     pub score_breakdown: Option<ScoreBreakdownDecision>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct NumericLevelVariantInference {
+    pub difficulty: Difficulty,
+    pub inference: NumericFieldInference,
+}
+
 impl NumericBatchInference {
+    /// Selects the already-recognized level variant corresponding to the independent difficulty
+    /// observation.
+    ///
+    /// # Errors
+    /// Returns an error when the numeric batch lacks its required level field.
+    pub fn join_level(&mut self, difficulty: Option<Difficulty>) -> Result<(), OnnxParityError> {
+        let calibration = self
+            .fields
+            .iter()
+            .find(|field| field.field == NumericField::Level)
+            .map(|field| field.calibration)
+            .ok_or(OnnxParityError::InvalidArtifact)?;
+        let selected = difficulty.and_then(|difficulty| {
+            self.level_variants
+                .iter()
+                .filter(|variant| variant.difficulty == difficulty)
+                .map(|variant| &variant.inference)
+                .max_by(|left, right| {
+                    left.candidates
+                        .first()
+                        .map_or(f32::NEG_INFINITY, |candidate| {
+                            candidate.calibrated_probability
+                        })
+                        .partial_cmp(
+                            &right
+                                .candidates
+                                .first()
+                                .map_or(f32::NEG_INFINITY, |candidate| {
+                                    candidate.calibrated_probability
+                                }),
+                        )
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .cloned()
+        });
+        let level = selected.unwrap_or_else(|| unavailable_field(NumericField::Level, calibration));
+        if let Some(current) = self
+            .fields
+            .iter_mut()
+            .find(|field| field.field == NumericField::Level)
+        {
+            *current = level;
+            Ok(())
+        } else {
+            Err(OnnxParityError::InvalidArtifact)
+        }
+    }
+
     #[must_use]
     pub fn field(&self, field: NumericField) -> Option<&NumericFieldInference> {
         self.fields
@@ -368,11 +425,10 @@ impl RegisteredNumericRuntime {
     pub fn observe(
         &mut self,
         crops: &ResultScreenRgb8Crops,
-        difficulty: Option<Difficulty>,
     ) -> Result<NumericBatchInference, OnnxParityError> {
         let started = Instant::now();
         let not_displayed_fields = fixed_not_displayed_fields(crops);
-        let registered = extract_fixed_slot_fields(crops, difficulty)?;
+        let registered = extract_fixed_slot_fields(crops)?;
         let cell_count = registered
             .iter()
             .map(|field| field.cells.len())
@@ -416,9 +472,15 @@ impl RegisteredNumericRuntime {
                 .chunks_exact(self.contract.output_classes)
                 .enumerate()
             {
-                cells.push(cell_inference(field.field, slot, row));
+                cells.push(cell_inference(
+                    field.field,
+                    field.level_difficulty,
+                    slot,
+                    row,
+                ));
             }
-            decoded.push(
+            decoded.push((
+                field.level_difficulty,
                 rank_fixed_slot_logits(
                     field.field,
                     &logits[offset..offset + length],
@@ -426,14 +488,56 @@ impl RegisteredNumericRuntime {
                     self.contract.calibrations.for_field(field.field),
                 )
                 .map_err(|_| OnnxParityError::InvalidArtifact)?,
-            );
+            ));
             offset += length;
         }
-        let mut fields = Vec::with_capacity(NumericField::ALL.len());
-        for field in NumericField::ALL {
-            let selected = decoded
+        let (fields, level_variants) = select_numeric_fields(&decoded, &self.contract.calibrations);
+        let score_breakdown = select_batch_score_breakdown(&fields, &self.contract.calibrations)?;
+        Ok(NumericBatchInference {
+            model_id: self.contract.model_id.clone(),
+            model_sha256: self.contract.model_sha256.clone(),
+            preprocessor_id: self.contract.preprocessor_id.clone(),
+            elapsed_us: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+            input_cells: cell_count,
+            input_tensor_sha256,
+            output_tensor_sha256,
+            cells,
+            fields,
+            level_variants,
+            not_displayed_fields,
+            score_breakdown,
+        })
+    }
+
+    #[must_use]
+    pub const fn contract(&self) -> &NumericModelContract {
+        &self.contract
+    }
+}
+
+fn select_numeric_fields(
+    decoded: &[(Option<Difficulty>, NumericFieldInference)],
+    calibrations: &NumericModelCalibrations,
+) -> (
+    Vec<NumericFieldInference>,
+    Vec<NumericLevelVariantInference>,
+) {
+    let level_variants = decoded
+        .iter()
+        .filter_map(|(difficulty, inference)| {
+            difficulty.map(|difficulty| NumericLevelVariantInference {
+                difficulty,
+                inference: inference.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let fields = NumericField::ALL
+        .into_iter()
+        .map(|field| {
+            decoded
                 .iter()
-                .filter(|inference| inference.field == field)
+                .filter(|(difficulty, inference)| difficulty.is_none() && inference.field == field)
+                .map(|(_, inference)| inference)
                 .max_by(|left, right| {
                     left.candidates
                         .first()
@@ -451,34 +555,18 @@ impl RegisteredNumericRuntime {
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .cloned()
-                .unwrap_or_else(|| {
-                    unavailable_field(field, self.contract.calibrations.for_field(field))
-                });
-            fields.push(selected);
-        }
-        let score_breakdown = select_batch_score_breakdown(&fields, &self.contract.calibrations)?;
-        Ok(NumericBatchInference {
-            model_id: self.contract.model_id.clone(),
-            model_sha256: self.contract.model_sha256.clone(),
-            preprocessor_id: self.contract.preprocessor_id.clone(),
-            elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            input_cells: cell_count,
-            input_tensor_sha256,
-            output_tensor_sha256,
-            cells,
-            fields,
-            not_displayed_fields,
-            score_breakdown,
+                .unwrap_or_else(|| unavailable_field(field, calibrations.for_field(field)))
         })
-    }
-
-    #[must_use]
-    pub const fn contract(&self) -> &NumericModelContract {
-        &self.contract
-    }
+        .collect();
+    (fields, level_variants)
 }
 
-fn cell_inference(field: NumericField, slot: usize, logits: &[f32]) -> NumericCellInference {
+fn cell_inference(
+    field: NumericField,
+    level_difficulty: Option<Difficulty>,
+    slot: usize,
+    logits: &[f32],
+) -> NumericCellInference {
     let maximum = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let normalizer = logits
         .iter()
@@ -503,6 +591,7 @@ fn cell_inference(field: NumericField, slot: usize, logits: &[f32]) -> NumericCe
     candidates.truncate(3);
     NumericCellInference {
         field,
+        level_difficulty,
         slot,
         candidates,
     }
@@ -633,18 +722,61 @@ mod tests {
             model_id: "model".to_owned(),
             model_sha256: "0".repeat(64),
             preprocessor_id: NUMERIC_PREPROCESSOR_ID.to_owned(),
-            elapsed_ms: 1,
+            elapsed_us: 1,
             input_cells: 6,
             input_tensor_sha256: "1".repeat(64),
             output_tensor_sha256: "2".repeat(64),
             cells: Vec::new(),
             fields: vec![bad],
+            level_variants: Vec::new(),
             not_displayed_fields: Vec::new(),
             score_breakdown: None,
         };
         let observation = batch.text_observation(NumericField::Bad);
         assert_eq!(observation.open_text, "07-");
         assert_eq!(observation.constrained_text.as_deref(), Some("0"));
+    }
+
+    #[test]
+    fn level_recognition_is_joined_with_difficulty_after_inference() {
+        let calibration = NumericCalibration {
+            enabled: true,
+            temperature: 1.0,
+            minimum_probability: 0.0,
+            minimum_runner_up_margin: 0.0,
+        };
+        let mut batch = NumericBatchInference {
+            model_id: "model".to_owned(),
+            model_sha256: "0".repeat(64),
+            preprocessor_id: NUMERIC_PREPROCESSOR_ID.to_owned(),
+            elapsed_us: 1,
+            input_cells: 4,
+            input_tensor_sha256: "1".repeat(64),
+            output_tensor_sha256: "2".repeat(64),
+            cells: Vec::new(),
+            fields: vec![unavailable_field(NumericField::Level, calibration)],
+            level_variants: vec![
+                NumericLevelVariantInference {
+                    difficulty: Difficulty::Hyper,
+                    inference: inference(NumericField::Level, "11", 2.0),
+                },
+                NumericLevelVariantInference {
+                    difficulty: Difficulty::Another,
+                    inference: inference(NumericField::Level, "12", 3.0),
+                },
+            ],
+            not_displayed_fields: Vec::new(),
+            score_breakdown: None,
+        };
+
+        batch.join_level(Some(Difficulty::Another)).unwrap();
+        assert_eq!(
+            batch.accepted_text(NumericField::Level).as_deref(),
+            Some("12")
+        );
+
+        batch.join_level(None).unwrap();
+        assert_eq!(batch.accepted_text(NumericField::Level), None);
     }
 
     #[test]
@@ -694,12 +826,16 @@ mod tests {
         logits[0] = 3.0;
         logits[8] = 2.0;
         logits[2] = 1.0;
-        let cell = cell_inference(NumericField::Pgreat, 2, &logits);
+        let cell = cell_inference(NumericField::Pgreat, None, 2, &logits);
         assert_eq!(cell.field, NumericField::Pgreat);
+        assert_eq!(cell.level_difficulty, None);
         assert_eq!(cell.slot, 2);
         assert_eq!(cell.candidates.len(), 3);
         assert_eq!(cell.candidates[0].class, '_');
         assert_eq!(cell.candidates[1].class, '7');
         assert_eq!(cell.candidates[2].class, '1');
+
+        let level = cell_inference(NumericField::Level, Some(Difficulty::Another), 0, &logits);
+        assert_eq!(level.level_difficulty, Some(Difficulty::Another));
     }
 }

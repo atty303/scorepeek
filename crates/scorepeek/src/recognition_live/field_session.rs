@@ -14,6 +14,7 @@ use super::field_observer::{
 use super::screen_field_observer::{
     RegisteredScreenFieldObserver, RegisteredScreenFieldObserverLoadError,
 };
+use super::text_observer_pool::RecognitionExecutionMode;
 use super::{
     FieldInputPolicy, RecognitionFrameResult, RecognitionObservation, RecognitionSession,
     RecognitionSessionError,
@@ -306,6 +307,7 @@ impl FieldObservationSession<RegisteredScreenFieldObserver> {
         policy: DiagnosticPolicy,
         catalog_root: &Path,
         bundle_root: &Path,
+        execution_mode: RecognitionExecutionMode,
     ) -> Result<Self, FieldObservationStartError<RegisteredScreenFieldObserverLoadError>> {
         Self::start(root, descriptor, policy, |binding| {
             let resources = binding.load_registered_resources(catalog_root, bundle_root)?;
@@ -313,10 +315,7 @@ impl FieldObservationSession<RegisteredScreenFieldObserver> {
                 NUMERIC_MODEL_MANIFEST_BYTES,
                 NUMERIC_MODEL_MANIFEST_SHA256,
             )?;
-            Ok(RegisteredScreenFieldObserver::new(
-                resources,
-                numeric_runtime,
-            )?)
+            RegisteredScreenFieldObserver::new(resources, numeric_runtime, execution_mode)
         })
     }
 }

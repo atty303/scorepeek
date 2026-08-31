@@ -275,6 +275,7 @@ pub fn run_recording_simulation(
         policy,
         config.catalog_root,
         config.bundle_root,
+        crate::recognition_live::text_observer_pool::RecognitionExecutionMode::Offline,
     ) else {
         return error_report(
             profile_digest,
@@ -405,12 +406,10 @@ fn process_completed_observation(
     });
     if recognition_artifact.as_mut().is_some_and(|artifact| {
         artifact
-            .record(
+            .record_observation(
                 sequence,
                 RecognitionArtifactTiming::Recording { source_pts_ms },
-                output.fields(),
-                output.candidates(),
-                output.song_resolution(),
+                output,
                 expected,
             )
             .is_err()

@@ -8,8 +8,18 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 offline canonical-frame and recognition spike: **in progress**.
-- Current execution focus: ADR 0094 advances canonical numeric-character layout v3 to production
-  authority. All fourteen numeric fields are split into fixed cells, normalized to 2,244-value
+- Current execution focus: ADR 0095 keeps one no-backlog frame worker but fans every independent
+  PP-OCR field into a persistent session pool while the fixed-cell numeric batch runs concurrently.
+  Live pool width is half available logical CPUs and offline replay reserves one, both bounded to
+  one through five sessions; each session retains intra/inter-op one. Recognition observation v11
+  records raw per-frame worker, text-stage, numeric-stage, and join microseconds plus the selected
+  execution policy and worker count, without calculating aggregate statistics. Numeric inference
+  evaluates every registered level layout up front and joins the matching variant only after the
+  independent difficulty observation. Runtime manifest v3 binds this policy. The complete active
+  private suite replays unchanged; target timing, RSS, game frametime, and busy-skip A/B remain
+  unverified, and this source checkpoint is not installed on the target.
+- ADR 0094 advances canonical numeric-character layout v3 to production authority. All fourteen
+  numeric fields are split into fixed cells, normalized to 2,244-value
   field-family HOG/soft-pixel features, and classified by one private dynamic-batch
   `2244 -> 64 -> 11` MLP with classes `_0123456789`. Runtime performs no component detection and
   PP-OCRv6-small is not a numeric fallback. Dash presentation remains a separate fixed horizontal
@@ -28,8 +38,8 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   song, chart, and performance without using numeric truth to manufacture song identity.
 - Level is advisory only. Before song acceptance it may narrow candidates already established by
   title/artist, difficulty, and notes; it never creates a song candidate. After song acceptance,
-  chart resolution ignores observed level, records any catalog mismatch in recognition artifact
-  v10, and uses the catalog chart level. A wrong or unknown level cannot reject performance,
+    chart resolution ignores observed level, records any catalog mismatch in recognition artifact
+    v11, and uses the catalog chart level. A wrong or unknown level cannot reject performance,
   attempt confirmation, or `scorepeek-result-detected-v2`. The accepted event and domain-primary
   TUI payload remain unchanged.
 - The fixed-cell model remains an explicitly installed, digest-bound private resource. Its v2
@@ -37,7 +47,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   ONNX digest. Registered manifest
   `cf099b27b533a79534db62a912d7c4b4e949ac29b786f57bb5ed6f21cf7766d6`
   binds model `8bf99191ecde1c7c511f72ae676b75bdcd53f838a0a2d11321886f918ff1e127`.
-  Historical CTC manifests and recognition artifacts v5-v9 remain readable but cannot
+  Historical CTC manifests and recognition artifacts v5-v10 remain readable but cannot
   acquire current authority. Model bytes, real crops, labels, and generated datasets remain outside
   the repository. Binary `e1e436e9bc01da91bafe12dae8bbf6ed2565f93cbb59d9fa5936a142ef86e649`
   and registered resource `cf099b27b533a79534db62a912d7c4b4e949ac29b786f57bb5ed6f21cf7766d6`

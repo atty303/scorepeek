@@ -282,6 +282,9 @@ authoritative.
 - [ADR 0094: Extend fixed level cells and bind marker training to stable frames](0094-extend-fixed-level-cells-and-stable-marker-training.md)
   adds measured two-digit ANOTHER level cells, normalizes `H-CLEAR`, and limits marker supervision
   to operator-selected stable result frames.
+- [ADR 0095: Parallelize independent field recognition and retain raw timing](0095-parallelize-independent-field-recognition.md)
+  fans independent text and numeric jobs out within one current frame, joins difficulty with level
+  afterward, and retains raw frame and stage durations without aggregate statistics.
 
 ## Historical
 

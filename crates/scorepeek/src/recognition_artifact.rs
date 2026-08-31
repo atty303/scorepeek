@@ -19,7 +19,7 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 const CATALOG_SCHEMA: &str = "scorepeek-recognition-catalog-evidence-v1";
-const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v10";
+const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v11";
 const MANIFEST_SCHEMA: &str = "scorepeek-recognition-evidence-manifest-v3";
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -65,6 +65,9 @@ struct StoredObservation<'a> {
         Option<&'a crate::recognition_live::screen_field_observer::CurrentScoreOcrResolution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     numeric_batch: Option<&'a NumericBatchInference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    processing_timing:
+        Option<&'a crate::recognition_live::screen_field_observer::RecognitionProcessingTiming>,
     #[serde(skip_serializing_if = "Option::is_none")]
     level_catalog_mismatch: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -228,7 +231,8 @@ impl RecognitionArtifactWriter {
         })
     }
 
-    pub fn record(
+    #[cfg(test)]
+    fn record(
         &mut self,
         sequence: u64,
         timing: RecognitionArtifactTiming,
@@ -254,6 +258,30 @@ impl RecognitionArtifactWriter {
             None,
             None,
             None,
+            None,
+            expected,
+        )
+    }
+
+    pub fn record_observation(
+        &mut self,
+        sequence: u64,
+        timing: RecognitionArtifactTiming,
+        output: &crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+        expected: Option<RecognitionArtifactExpected<'_>>,
+    ) -> Result<(), String> {
+        self.record_with_result_context(
+            sequence,
+            timing,
+            output.fields(),
+            output.candidates(),
+            output.song_resolution(),
+            output.parsed_result_fields(),
+            output.result_chart_resolution(),
+            output.result_performance_resolution(),
+            output.current_score_ocr_resolution(),
+            output.numeric_batch(),
+            Some(output.processing_timing()),
             expected,
         )
     }
@@ -273,6 +301,9 @@ impl RecognitionArtifactWriter {
             &crate::recognition_live::screen_field_observer::CurrentScoreOcrResolution,
         >,
         numeric_batch: Option<&NumericBatchInference>,
+        processing_timing: Option<
+            &crate::recognition_live::screen_field_observer::RecognitionProcessingTiming,
+        >,
         expected: Option<RecognitionArtifactExpected<'_>>,
     ) -> Result<(), String> {
         if self.observation_count >= MAX_OBSERVATIONS {
@@ -301,6 +332,7 @@ impl RecognitionArtifactWriter {
             result_performance_resolution,
             current_score_ocr_resolution,
             numeric_batch,
+            processing_timing,
             level_catalog_mismatch: observed_level_catalog_mismatch(
                 parsed_result_fields,
                 result_chart_resolution,
@@ -767,21 +799,13 @@ fn run_live_writer(
 }
 
 fn record_live(writer: &mut RecognitionArtifactWriter, record: &LiveRecord) -> Result<(), String> {
-    let output = &record.observation;
-    writer.record_with_result_context(
+    writer.record_observation(
         record.sequence,
         RecognitionArtifactTiming::Live {
             monotonic_start_ms: record.monotonic_start_ms,
             monotonic_end_ms: record.monotonic_end_ms,
         },
-        output.fields(),
-        output.candidates(),
-        output.song_resolution(),
-        output.parsed_result_fields(),
-        output.result_chart_resolution(),
-        output.result_performance_resolution(),
-        output.current_score_ocr_resolution(),
-        output.numeric_batch(),
+        &record.observation,
         None,
     )
 }
@@ -1284,7 +1308,9 @@ mod tests {
         assert_eq!(outcome.status, RecognitionArtifactFinishStatus::Complete);
         assert_eq!(outcome.manifest_sha256.unwrap().len(), 64);
         let stored = fs::read_to_string(root.join("observations.ndjson")).unwrap();
-        assert!(stored.contains("scorepeek-recognition-observation-v10"));
+        assert!(stored.contains("scorepeek-recognition-observation-v11"));
+        assert!(stored.contains("\"processing_timing\""));
+        assert!(stored.contains("\"frame_total_us\":0"));
         assert!(stored.contains("\"open_text\":\"只\""));
         assert!(stored.contains("\"constrained_text\":\"0\""));
         assert!(stored.contains("\"difficulty\""));

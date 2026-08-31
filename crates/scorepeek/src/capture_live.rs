@@ -1231,6 +1231,7 @@ fn start_field_observation_gate(
         config.handoff.policy,
         config.catalog_root,
         config.bundle_root,
+        crate::recognition_live::text_observer_pool::RecognitionExecutionMode::Live,
     ) {
         Ok(session) => session,
         Err(error) => {
@@ -1334,6 +1335,13 @@ fn field_start_error(
                 RegisteredScreenFieldObserverLoadError::NumericModel(error),
             ) => (
                 FieldObservationGateErrorType::NumericModelUnavailable,
+                None,
+                Some(error.to_string()),
+            ),
+            FieldObserverStartError::Load(RegisteredScreenFieldObserverLoadError::TextRuntime(
+                error,
+            )) => (
+                FieldObservationGateErrorType::FieldObserverUnavailable,
                 None,
                 Some(error.to_string()),
             ),

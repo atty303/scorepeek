@@ -65,14 +65,17 @@
   field inputsを生成できない。さらにcomplete descriptorから導出したrun IDと全bindingを保持し、loaderをcapture開始前に
   1回だけ呼ぶapplication-owned field-observer worker境界を実装した。capacity 2のnon-blocking queue、worker-only execution、
   queue取得後も含むaccepted-but-unconsumed resultのglobal capacity、provenance-bound result、race-free abandoned count、
-  observer teardownまで保持するsingle-worker supervisor、5秒bounded finishを持つ。さらにactive catalog digest、登録済み
-  PP-OCRv6-small model digest、固定CPU runtime manifest digestを照合し、catalog/dictionary/ONNX sessionをworker開始前に
-  1回だけ保持するproduction resource loaderとread-only gateを実装した。gateはresourceをproduction field workerへ移し、cropを
-  submitせずbounded teardownまで確認する。さらにcomplete crop setをworker thread上で登録済みruntimeへ通すproduction
+  observer teardownまで保持するouter single-worker supervisor、5秒bounded finishを持つ。さらにactive catalog digest、登録済み
+  PP-OCRv6-small model digest、固定CPU runtime manifest digestを照合し、catalog/dictionaryとpersistent ONNX session poolを
+  worker開始前に保持するproduction resource loaderとread-only gateを実装した。live poolは利用可能な論理CPUの半分、offline replayは
+  1論理CPUを残し、どちらも1--5 sessionに制限する。各sessionはintra/inter-op 1を維持する。gateはresourceをproduction field workerへ
+  移し、cropをsubmitせずbounded teardownまで確認する。さらにcomplete crop setをworker thread上で登録済みruntimeへ通すproduction
   screen-field observerを実装した。ADR 0078によりresultのtitle/artist/clear type/difficulty/level/notes/current scoreと、
   music-selectのcentral title/artist/active-list title/selected chartを登録済みruntimeで観測するcompleteなscreen別型だけを
   出力し、単一field失敗もfield ID付きwhole-screen errorにする。diagnosticはscreen、固定field count、失敗field IDを保持し、
-  opt-out/rejectionは認識結果を変えない。認識判断を実装する段階ではoperator-owned local artifactへboundedなexact OCR text、
+  opt-out/rejectionは認識結果を変えない。各field-bearing frameでは独立な全PP-OCR fieldと全登録済みlevel layoutを含むnumeric batchを
+  最初にfan-outし、完了後のjoinだけがdifficultyに対応するlevel候補を選ぶ。recognition observation v11はworker全体、並列text段階、
+  numeric段階およびjoinのraw microsecondを保持し、集計statsは生成しない。認識判断を実装する段階ではoperator-owned local artifactへboundedなexact OCR text、
   run単位のexact catalog display/comparison string table、song ID、string reference、全candidate metric、判断と理由も保持する。さらに同一immutable descriptorのrecognition sessionと
   registered field workerを一つのapplication ownerへ統合した。
   resource load完了後にdiagnostic-backed runを開始し、screen result、non-blocking field submit、diagnostic outcomeを分離して返す。

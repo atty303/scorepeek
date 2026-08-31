@@ -162,6 +162,10 @@ impl ResultNumericCharacterLayout {
             .filter(move |variant| variant.difficulty == name)
     }
 
+    pub fn all_level_variants(&self) -> impl Iterator<Item = &NumericCharacterLayoutVariant> {
+        self.level.iter()
+    }
+
     #[must_use]
     pub fn not_displayed_marker(&self, field: NumericField) -> Option<Roi> {
         match field {

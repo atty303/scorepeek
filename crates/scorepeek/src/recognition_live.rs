@@ -22,6 +22,7 @@ use crate::recognition_live::screen_field_observer::RegisteredScreenFieldObserva
 pub mod field_observer;
 pub mod field_session;
 pub mod screen_field_observer;
+pub mod text_observer_pool;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FieldInputPolicy {

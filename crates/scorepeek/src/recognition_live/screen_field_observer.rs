@@ -6,19 +6,24 @@ use scorepeek::recognition::{
     ResultPerformanceResolution, ResultSongResolution, ScreenCatalogCandidateObservations,
     ScreenFieldObservationError, ScreenFieldObservations, ScreenSongResolution,
     assist_unknown_result_song_with_chart, matching_single_play_songs,
-    observe_result_fields_with_numeric, observe_screen_fields, observed_result_difficulty,
-    resolve_clear_type, resolve_music_select_song, resolve_result_chart,
-    resolve_result_performance, resolve_result_song,
+    observe_result_fields_with_numeric, observed_result_difficulty, resolve_clear_type,
+    resolve_music_select_song, resolve_result_chart, resolve_result_performance,
+    resolve_result_song,
 };
 use serde::Serialize;
 use std::error::Error;
 use std::fmt;
+use std::time::Instant;
 
 use super::field_observer::{FieldObserver, FieldObserverInput};
+use super::text_observer_pool::{
+    RecognitionExecutionMode, RegisteredTextObserverPool, TextObservationBatch,
+};
 
 /// Production screen-field observer owning the exact resources for one immutable run.
 pub struct RegisteredScreenFieldObserver {
-    resources: RegisteredRecognitionResources,
+    catalog: Catalog,
+    text_pool: RegisteredTextObserverPool,
     numeric_runtime: RegisteredNumericRuntime,
     candidate_domain: CatalogCandidateDomain,
 }
@@ -28,6 +33,7 @@ pub enum RegisteredScreenFieldObserverLoadError {
     Resources(RegisteredResourceLoadError),
     NumericModel(scorepeek::numeric_model_store::NumericModelStoreError),
     CandidateDomain(CatalogCandidateDomainError),
+    TextRuntime(OnnxParityError),
 }
 
 impl fmt::Display for RegisteredScreenFieldObserverLoadError {
@@ -36,6 +42,7 @@ impl fmt::Display for RegisteredScreenFieldObserverLoadError {
             Self::Resources(error) => error.fmt(formatter),
             Self::NumericModel(error) => error.fmt(formatter),
             Self::CandidateDomain(error) => error.fmt(formatter),
+            Self::TextRuntime(error) => error.fmt(formatter),
         }
     }
 }
@@ -51,6 +58,12 @@ impl From<RegisteredResourceLoadError> for RegisteredScreenFieldObserverLoadErro
 impl From<CatalogCandidateDomainError> for RegisteredScreenFieldObserverLoadError {
     fn from(error: CatalogCandidateDomainError) -> Self {
         Self::CandidateDomain(error)
+    }
+}
+
+impl From<OnnxParityError> for RegisteredScreenFieldObserverLoadError {
+    fn from(error: OnnxParityError) -> Self {
+        Self::TextRuntime(error)
     }
 }
 
@@ -70,10 +83,14 @@ impl RegisteredScreenFieldObserver {
     pub fn new(
         resources: RegisteredRecognitionResources,
         numeric_runtime: RegisteredNumericRuntime,
-    ) -> Result<Self, CatalogCandidateDomainError> {
-        let candidate_domain = CatalogCandidateDomain::from_catalog(resources.catalog())?;
+        execution_mode: RecognitionExecutionMode,
+    ) -> Result<Self, RegisteredScreenFieldObserverLoadError> {
+        let (catalog, title_runtime) = resources.into_catalog_and_title_runtime();
+        let candidate_domain = CatalogCandidateDomain::from_catalog(&catalog)?;
+        let text_pool = RegisteredTextObserverPool::start(title_runtime, execution_mode)?;
         Ok(Self {
-            resources,
+            catalog,
+            text_pool,
             numeric_runtime,
             candidate_domain,
         })
@@ -92,6 +109,19 @@ pub struct RegisteredScreenFieldObservation {
     result_performance_resolution: Option<ResultPerformanceResolution>,
     current_score_ocr_resolution: Option<CurrentScoreOcrResolution>,
     numeric_batch: Option<NumericBatchInference>,
+    processing_timing: RecognitionProcessingTiming,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct RecognitionProcessingTiming {
+    pub execution_policy: &'static str,
+    pub available_parallelism: usize,
+    pub text_workers: usize,
+    pub frame_total_us: u64,
+    pub text_recognition_wall_us: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub numeric_recognition_us: Option<u64>,
+    pub join_us: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -222,6 +252,15 @@ impl RegisteredScreenFieldObservation {
             result_performance_resolution,
             current_score_ocr_resolution: None,
             numeric_batch: None,
+            processing_timing: RecognitionProcessingTiming {
+                execution_policy: "test",
+                available_parallelism: 1,
+                text_workers: 1,
+                frame_total_us: 0,
+                text_recognition_wall_us: 0,
+                numeric_recognition_us: None,
+                join_us: 0,
+            },
         }
     }
 
@@ -285,6 +324,142 @@ impl RegisteredScreenFieldObservation {
     pub const fn numeric_batch(&self) -> Option<&NumericBatchInference> {
         self.numeric_batch.as_ref()
     }
+
+    #[must_use]
+    pub const fn processing_timing(&self) -> &RecognitionProcessingTiming {
+        &self.processing_timing
+    }
+}
+
+struct ObservedFrameFields {
+    fields: ScreenFieldObservations,
+    numeric_batch: Option<NumericBatchInference>,
+    text_recognition_wall_us: u64,
+    join_started: Instant,
+}
+
+impl RegisteredScreenFieldObserver {
+    fn observe_result(
+        &mut self,
+        crops: &scorepeek::recognition::ResultScreenRgb8Crops,
+    ) -> Result<ObservedFrameFields, ScreenFieldObservationError<OnnxParityError>> {
+        use scorepeek::recognition::ScreenTextField;
+        let pending = self
+            .text_pool
+            .submit(vec![
+                (ScreenTextField::ResultDifficulty, crops.difficulty.clone()),
+                (ScreenTextField::ResultTitle, crops.title.clone()),
+                (ScreenTextField::ResultArtist, crops.artist.clone()),
+                (ScreenTextField::ResultClearType, crops.clear_type.clone()),
+                (
+                    ScreenTextField::ResultPreviousClearType,
+                    crops.previous_clear_type.clone(),
+                ),
+            ])
+            .map_err(|source| {
+                ScreenFieldObservationError::new(ScreenTextField::ResultDifficulty, source)
+            })?;
+        let numeric = self.numeric_runtime.observe(crops);
+        let mut text = pending.join().map_err(|source| {
+            ScreenFieldObservationError::new(ScreenTextField::ResultDifficulty, source)
+        })?;
+        let join_started = Instant::now();
+        let difficulty =
+            take_text(&mut text, ScreenTextField::ResultDifficulty).map_err(|source| {
+                ScreenFieldObservationError::new(ScreenTextField::ResultDifficulty, source)
+            })?;
+        let mut numeric = numeric.map_err(|source| {
+            ScreenFieldObservationError::new(ScreenTextField::ResultNumericBatch, source)
+        })?;
+        numeric
+            .join_level(observed_result_difficulty(&difficulty))
+            .map_err(|source| {
+                ScreenFieldObservationError::new(ScreenTextField::ResultNumericBatch, source)
+            })?;
+        let fields = observe_result_fields_with_numeric(crops, &numeric, |field, _| {
+            if field == ScreenTextField::ResultDifficulty {
+                Ok(difficulty.clone())
+            } else {
+                take_text(&mut text, field)
+            }
+        })?;
+        Ok(ObservedFrameFields {
+            fields: ScreenFieldObservations::Result(fields),
+            numeric_batch: Some(numeric),
+            text_recognition_wall_us: text.wall_us,
+            join_started,
+        })
+    }
+
+    fn observe_music_select(
+        &self,
+        crops: &scorepeek::recognition::MusicSelectScreenRgb8Crops,
+    ) -> Result<ObservedFrameFields, ScreenFieldObservationError<OnnxParityError>> {
+        use scorepeek::recognition::ScreenTextField;
+        let pending = self
+            .text_pool
+            .submit(vec![
+                (
+                    ScreenTextField::MusicSelectCentralTitle,
+                    crops.central_title.clone(),
+                ),
+                (ScreenTextField::MusicSelectArtist, crops.artist.clone()),
+                (
+                    ScreenTextField::MusicSelectSelectedChart,
+                    crops.selected_chart.clone(),
+                ),
+                (
+                    ScreenTextField::MusicSelectActiveListTitle,
+                    crops.active_list_title.clone(),
+                ),
+            ])
+            .map_err(|source| {
+                ScreenFieldObservationError::new(ScreenTextField::MusicSelectCentralTitle, source)
+            })?;
+        let mut text = pending.join().map_err(|source| {
+            ScreenFieldObservationError::new(ScreenTextField::MusicSelectCentralTitle, source)
+        })?;
+        let join_started = Instant::now();
+        let fields = ScreenFieldObservations::MusicSelect(
+            scorepeek::recognition::MusicSelectScreenFieldObservations {
+                central_title: take_text(&mut text, ScreenTextField::MusicSelectCentralTitle)
+                    .map_err(|source| {
+                        ScreenFieldObservationError::new(
+                            ScreenTextField::MusicSelectCentralTitle,
+                            source,
+                        )
+                    })?,
+                artist: take_text(&mut text, ScreenTextField::MusicSelectArtist).map_err(
+                    |source| {
+                        ScreenFieldObservationError::new(ScreenTextField::MusicSelectArtist, source)
+                    },
+                )?,
+                selected_chart: take_text(&mut text, ScreenTextField::MusicSelectSelectedChart)
+                    .map_err(|source| {
+                        ScreenFieldObservationError::new(
+                            ScreenTextField::MusicSelectSelectedChart,
+                            source,
+                        )
+                    })?,
+                active_list_title: take_text(
+                    &mut text,
+                    ScreenTextField::MusicSelectActiveListTitle,
+                )
+                .map_err(|source| {
+                    ScreenFieldObservationError::new(
+                        ScreenTextField::MusicSelectActiveListTitle,
+                        source,
+                    )
+                })?,
+            },
+        );
+        Ok(ObservedFrameFields {
+            fields,
+            numeric_batch: None,
+            text_recognition_wall_us: text.wall_us,
+            join_started,
+        })
+    }
 }
 
 impl FieldObserver for RegisteredScreenFieldObserver {
@@ -292,54 +467,50 @@ impl FieldObserver for RegisteredScreenFieldObserver {
         Result<RegisteredScreenFieldObservation, ScreenFieldObservationError<OnnxParityError>>;
 
     fn observe(&mut self, input: &FieldObserverInput) -> Self::Output {
-        let (fields, numeric_batch) = match input.crops() {
-            scorepeek::recognition::ScreenRgb8Crops::Result(crops) => {
-                let difficulty = self
-                    .resources
-                    .title_runtime()
-                    .observe_open_text(&crops.difficulty)
-                    .map_err(|source| {
-                        ScreenFieldObservationError::new(
-                            scorepeek::recognition::ScreenTextField::ResultDifficulty,
-                            source,
-                        )
-                    })?;
-                let numeric = self
-                    .numeric_runtime
-                    .observe(crops, observed_result_difficulty(&difficulty))
-                    .map_err(|source| {
-                        ScreenFieldObservationError::new(
-                            scorepeek::recognition::ScreenTextField::ResultNumericBatch,
-                            source,
-                        )
-                    })?;
-                let fields = observe_result_fields_with_numeric(crops, &numeric, |field, crop| {
-                    if field == scorepeek::recognition::ScreenTextField::ResultDifficulty {
-                        Ok(difficulty.clone())
-                    } else {
-                        self.resources.title_runtime().observe_open_text(crop)
-                    }
-                })?;
-                (
-                    scorepeek::recognition::ScreenFieldObservations::Result(fields),
-                    Some(numeric),
-                )
+        let frame_started = Instant::now();
+        let configuration = self.text_pool.configuration();
+        let observed = match input.crops() {
+            scorepeek::recognition::ScreenRgb8Crops::Result(crops) => self.observe_result(crops)?,
+            scorepeek::recognition::ScreenRgb8Crops::MusicSelect(crops) => {
+                self.observe_music_select(crops)?
             }
-            scorepeek::recognition::ScreenRgb8Crops::MusicSelect(_) => (
-                observe_screen_fields(input.crops(), |_, crop| {
-                    self.resources.title_runtime().observe_open_text(crop)
-                })?,
-                None,
-            ),
         };
         let mut observation = RegisteredScreenFieldObservation::from_fields_with_catalog(
             &self.candidate_domain,
-            self.resources.catalog(),
-            fields,
+            &self.catalog,
+            observed.fields,
         );
-        observation.numeric_batch = numeric_batch;
+        observation.numeric_batch = observed.numeric_batch;
+        observation.processing_timing = RecognitionProcessingTiming {
+            execution_policy: configuration.execution_mode.as_str(),
+            available_parallelism: configuration.available_parallelism,
+            text_workers: configuration.workers,
+            frame_total_us: duration_us(frame_started.elapsed()),
+            text_recognition_wall_us: observed.text_recognition_wall_us,
+            numeric_recognition_us: observation
+                .numeric_batch
+                .as_ref()
+                .map(|batch| batch.elapsed_us),
+            join_us: duration_us(observed.join_started.elapsed()),
+        };
         Ok(observation)
     }
+}
+
+fn take_text(
+    batch: &mut TextObservationBatch,
+    field: scorepeek::recognition::ScreenTextField,
+) -> Result<scorepeek::recognition::DynamicTextObservation, OnnxParityError> {
+    let index = batch
+        .observations
+        .iter()
+        .position(|(candidate, _)| *candidate == field)
+        .ok_or(OnnxParityError::InvalidArtifact)?;
+    batch.observations.remove(index).1
+}
+
+fn duration_us(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

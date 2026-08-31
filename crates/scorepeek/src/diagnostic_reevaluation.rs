@@ -295,6 +295,7 @@ pub fn reevaluate(
             disabled_diagnostics,
             catalog_root,
             bundle_root,
+            crate::recognition_live::text_observer_pool::RecognitionExecutionMode::Offline,
         )
         .map_err(|error| format!("production recognizer could not start: {error:?}"))?;
         let mut observations_hasher = Sha256::new();
