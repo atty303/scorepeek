@@ -1,7 +1,7 @@
 {
-  "schema": "scorepeek-result-numeric-character-layout-v1",
+  "schema": "scorepeek-result-numeric-character-layout-v2",
   "canonical_frame_contract_id": "scorepeek-canonical-rgb8-1920x1080-v1",
-  "canonical_layout_sha256": "25885cd166ae81d44abf997d4ff2401b6002e9336e4935dfca16ecc84a5e17db",
+  "canonical_layout_sha256": "a20cf2489b580c2b014bb1fb6a3792ebdad4b36bd4646a705e59cdb9a28ad4d4",
   "level": [
     {
       "difficulty": "another",
@@ -22,7 +22,7 @@
       "difficulty": "hyper",
       "displayed_digits": 2,
       "digit_cells": [
-        { "x": 850, "y": 1037, "width": 9, "height": 21 },
+        { "x": 840, "y": 1037, "width": 19, "height": 21 },
         { "x": 859, "y": 1037, "width": 19, "height": 21 }
       ]
     }
@@ -56,19 +56,21 @@
   },
   "previous_miss_count": {
     "digit_cells": [
+      { "x": 205, "y": 620, "width": 34, "height": 28 },
       { "x": 241, "y": 620, "width": 34, "height": 28 },
       { "x": 277, "y": 620, "width": 34, "height": 28 },
       { "x": 313, "y": 620, "width": 34, "height": 28 }
     ],
-    "not_displayed_marker": { "x": 215, "y": 595, "width": 140, "height": 55 }
+    "not_displayed_marker": { "x": 205, "y": 595, "width": 150, "height": 55 }
   },
   "miss_count": {
     "digit_cells": [
+      { "x": 368, "y": 619, "width": 34, "height": 31 },
       { "x": 404, "y": 619, "width": 34, "height": 31 },
       { "x": 440, "y": 619, "width": 34, "height": 31 },
       { "x": 476, "y": 619, "width": 34, "height": 31 }
     ],
-    "not_displayed_marker": { "x": 380, "y": 595, "width": 130, "height": 55 }
+    "not_displayed_marker": { "x": 360, "y": 595, "width": 150, "height": 55 }
   },
   "pgreat": {
     "digit_cells": [
@@ -117,6 +119,7 @@
   },
   "fast": {
     "digit_cells": [
+      { "x": 105, "y": 978, "width": 17, "height": 16 },
       { "x": 122, "y": 978, "width": 17, "height": 16 },
       { "x": 139, "y": 978, "width": 17, "height": 16 },
       { "x": 156, "y": 978, "width": 17, "height": 16 }
@@ -125,6 +128,7 @@
   },
   "slow": {
     "digit_cells": [
+      { "x": 105, "y": 995, "width": 17, "height": 16 },
       { "x": 122, "y": 995, "width": 17, "height": 16 },
       { "x": 139, "y": 995, "width": 17, "height": 16 },
       { "x": 156, "y": 995, "width": 17, "height": 16 }

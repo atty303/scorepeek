@@ -2,8 +2,8 @@ use serde::Deserialize;
 
 use super::{CanonicalLayout, RecognitionError, Roi};
 
-const LAYOUT_BYTES: &[u8] = include_bytes!("../result-numeric-character-layout-v1.json");
-const LAYOUT_SCHEMA: &str = "scorepeek-result-numeric-character-layout-v1";
+const LAYOUT_BYTES: &[u8] = include_bytes!("../result-numeric-character-layout-v2.json");
+const LAYOUT_SCHEMA: &str = "scorepeek-result-numeric-character-layout-v2";
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -79,17 +79,17 @@ impl ResultNumericCharacterLayout {
             (
                 &layout.previous_miss_count,
                 canonical.result.previous_miss_count,
-                3,
+                4,
                 true,
             ),
-            (&layout.miss_count, canonical.result.miss_count, 3, true),
+            (&layout.miss_count, canonical.result.miss_count, 4, true),
             (&layout.pgreat, canonical.result.pgreat, 4, false),
             (&layout.great, canonical.result.great, 4, false),
             (&layout.good, canonical.result.good, 4, false),
             (&layout.bad, canonical.result.bad, 4, false),
             (&layout.poor, canonical.result.poor, 4, false),
-            (&layout.fast, canonical.result.fast, 3, false),
-            (&layout.slow, canonical.result.slow, 3, false),
+            (&layout.fast, canonical.result.fast, 4, false),
+            (&layout.slow, canonical.result.slow, 4, false),
             (&layout.combo_break, canonical.result.combo_break, 3, false),
         ] {
             validate_field(field, source, expected_cells, marker)?;
@@ -195,14 +195,14 @@ mod tests {
                 "previous_miss_count",
                 &parsed.previous_miss_count,
                 canonical.result.previous_miss_count,
-                3,
+                4,
                 true,
             ),
             (
                 "miss_count",
                 &parsed.miss_count,
                 canonical.result.miss_count,
-                3,
+                4,
                 true,
             ),
             ("pgreat", &parsed.pgreat, canonical.result.pgreat, 4, false),
@@ -210,8 +210,8 @@ mod tests {
             ("good", &parsed.good, canonical.result.good, 4, false),
             ("bad", &parsed.bad, canonical.result.bad, 4, false),
             ("poor", &parsed.poor, canonical.result.poor, 4, false),
-            ("fast", &parsed.fast, canonical.result.fast, 3, false),
-            ("slow", &parsed.slow, canonical.result.slow, 3, false),
+            ("fast", &parsed.fast, canonical.result.fast, 4, false),
+            ("slow", &parsed.slow, canonical.result.slow, 4, false),
             (
                 "combo_break",
                 &parsed.combo_break,
@@ -227,8 +227,21 @@ mod tests {
         assert_eq!(layout.level.len(), 4);
         assert_eq!(layout.notes.digit_cells.len(), 4);
         assert_eq!(layout.current_score.digit_cells.len(), 4);
+        assert_eq!(layout.previous_miss_count.digit_cells.len(), 4);
+        assert_eq!(layout.miss_count.digit_cells.len(), 4);
         assert_eq!(layout.pgreat.digit_cells.len(), 4);
+        assert_eq!(layout.fast.digit_cells.len(), 4);
+        assert_eq!(layout.slow.digit_cells.len(), 4);
         assert_eq!(layout.combo_break.digit_cells.len(), 3);
+        let hyper_two_digits = layout
+            .level
+            .iter()
+            .find(|variant| variant.difficulty == "hyper" && variant.displayed_digits == 2)
+            .unwrap();
+        assert_eq!(
+            hyper_two_digits.digit_cells[0].width,
+            hyper_two_digits.digit_cells[1].width
+        );
         assert_eq!(
             layout.previous_miss_count.not_displayed_marker,
             Some(CanonicalLayout::load().unwrap().result.previous_miss_count)

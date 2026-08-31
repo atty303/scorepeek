@@ -269,6 +269,9 @@ authoritative.
 - [ADR 0090: Fix result digits to canonical character cells](0090-fix-result-digits-to-canonical-character-cells.md)
   binds fixed digit cells to the canonical result layout, collects visible level and notes crops,
   and excludes image-driven component detection from the next character recognizer.
+- [ADR 0091: Align fixed numeric slots with field grammars](0091-align-fixed-numeric-slots-with-field-grammars.md)
+  gives both miss fields and FAST/SLOW four fixed cells, equalizes the two HYPER level slot widths,
+  and widens only their owning canonical ROIs.
 
 ## Historical
 

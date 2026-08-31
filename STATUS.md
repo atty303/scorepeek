@@ -23,7 +23,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   exactly one catalog chart may provide registered chart values after song+difficulty acceptance.
   ADR 0090 corrects the earlier background-only assessment: stable canonical QOIs visibly contain
   level and four-digit zero-padded notes, and bind them to fixed character cells for the next
-  recognizer without changing current runtime authority.
+  recognizer without changing current runtime authority. ADR 0091 aligns that layout with the
+  existing four-digit grammar for both miss fields and FAST/SLOW, and gives the two HYPER level
+  positions equal-width fixed slots; production classifier authority remains unchanged.
   Frozen runtime manifest
   `7badce6d463a2d795e513b67979c9eceb53718adbcc7fa3b6afe4cbd12e1ba2a` passes
   the active seventeen-episode private replay and the `Horizons of Promise` sentinel with score
@@ -63,13 +65,17 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   Operator-confirmed `current-7-9` COMBO BREAK `30` is now published as immutable replacement label
   `0cb36469503ef363cef6eea1eab0e8f08955e3b29de25978f79200a9dc3c8c92`; active suite
   `4b0fc906f0a74efb52d406850a3c611f6741d4b49b8228ac2efc8bae56ffe78c` changes only that session
-  label and leaves every older object replayable. Fixed-character source v2 manifest
-  `e52dd198fac8abd5dc4a67a316903a31e270c5e28aa2ba6f034d21bb6e39e02b` contains 678 unique crops,
+  label and leaves every older object replayable. Fixed-character source v3 manifest
+  `4a1f4f0a513a112732a394cebfe68458a75b9d3041b65fba5fccadbd003488e8` contains 678 unique crops,
   including 23 level and 26 notes crops collected from stable QOIs; notes labels retain the
-  displayed leading zero. The digest-bound character
-  layout defines fixed cells for all fourteen numeric fields; level is selected by measured
-  difficulty and digit-count variants, while dynamic component detection is excluded. It is not
-  connected to production inference yet.
+  displayed leading zero. It retains v2 truth and provenance while re-cropping only level, both
+  miss fields, FAST, and SLOW under canonical layout
+  `a20cf2489b580c2b014bb1fb6a3792ebdad4b36bd4646a705e59cdb9a28ad4d4`. The digest-bound v2
+  character layout defines fixed cells for all fourteen numeric fields; level is selected by
+  measured difficulty and digit-count variants, while dynamic component detection is excluded. It
+  is not connected to production inference yet. The existing full-field observer does receive the
+  five widened canonical crops and records them under the new layout digest; model, calibration,
+  resolver, event, and TUI authority are unchanged.
 - Recognition path background: the corpus recording has passed the value-bearing result-song
   recognition simulation for all three reviewed episodes, and a normal foreground Gamescope
   session now reuses that post-canonical path. Retained Wayland evidence repaired three independently
