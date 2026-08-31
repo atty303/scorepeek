@@ -10,6 +10,7 @@ use sha2::{Digest as _, Sha256};
 mod catalog_candidates;
 mod ctc_sequence;
 mod music_select_resolver;
+mod numeric_character_layout;
 mod numeric_onnx;
 mod numeric_specialist;
 mod result_fields;
@@ -29,6 +30,9 @@ pub use catalog_candidates::{
 pub use music_select_resolver::{
     MUSIC_SELECT_SONG_RESOLVER_ID, MusicSelectCorroboration, MusicSelectSongResolution,
     MusicSelectSongUnknownReason, RankedMusicSelectSongCandidate, resolve_music_select_song,
+};
+pub use numeric_character_layout::{
+    NumericCharacterFieldLayout, NumericCharacterLayoutVariant, ResultNumericCharacterLayout,
 };
 pub use numeric_onnx::{
     NUMERIC_MODEL_MANIFEST_BYTES, NUMERIC_MODEL_MANIFEST_SHA256, NUMERIC_PREPROCESSOR_ID,

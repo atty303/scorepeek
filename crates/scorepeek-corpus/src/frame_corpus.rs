@@ -1795,6 +1795,9 @@ pub fn author_numeric_dataset(
                     unreachable!("result routing returns result crops");
                 };
                 for (field, label, crop) in numeric_crops(&crops, &field_labels) {
+                    if !numeric_field_uses_sequence(field, sequence, &episode.stable_sequences) {
+                        continue;
+                    }
                     let bytes = ppm_bytes(crop)?;
                     let crop_sha256 = digest(&bytes);
                     if !episode_crops.insert((field, crop_sha256.clone())) {
@@ -1820,10 +1823,21 @@ pub fn author_numeric_dataset(
                     let candidates = crop_candidates
                         .entry(crop_sha256)
                         .or_insert_with(|| (Vec::new(), bytes));
-                    if candidates.0.first().is_some_and(|existing| {
+                    if let Some(existing) = candidates.0.first().filter(|existing| {
                         existing.field != sample.field || existing.label != sample.label
                     }) {
-                        return invalid("numeric crop digest has conflicting field or label truth");
+                        return invalid(&format!(
+                            "numeric crop {} conflicts: {}:{}:{:?}={} versus {}:{}:{:?}={}",
+                            sample.crop_sha256,
+                            existing.session_sha256,
+                            existing.episode_id,
+                            existing.field,
+                            existing.label,
+                            sample.session_sha256,
+                            sample.episode_id,
+                            sample.field,
+                            sample.label,
+                        ));
                     }
                     candidates.0.push(sample);
                 }
@@ -2093,6 +2107,8 @@ fn numeric_field_labels(
         CorpusError::InvalidRequest("numeric dataset previous best is absent".into())
     })?;
     let mut labels = BTreeMap::new();
+    labels.insert(NumericField::Level, expected.level.to_string());
+    labels.insert(NumericField::Notes, format!("{:04}", expected.notes));
     labels.insert(
         NumericField::CurrentScore,
         expected.current_score.to_string(),
@@ -2121,6 +2137,15 @@ fn numeric_field_labels(
         supplemental_label(expected.combo_break.as_ref())?,
     );
     Ok(labels)
+}
+
+fn numeric_field_uses_sequence(
+    field: NumericField,
+    sequence: u64,
+    stable_sequences: &[u64],
+) -> bool {
+    !matches!(field, NumericField::Level | NumericField::Notes)
+        || stable_sequences.contains(&sequence)
 }
 
 fn supplemental_label(value: Option<&SupplementalResultValue<u32>>) -> Result<String, CorpusError> {
@@ -3643,6 +3668,23 @@ mod tests {
             numeric_episode_sequences(&screen_sequences, &[6], 4).unwrap(),
             vec![6, 5, 7, 4]
         );
+    }
+
+    #[test]
+    fn numeric_dataset_collects_visible_level_and_notes_truth() {
+        let labels = numeric_field_labels(&expected_result()).unwrap();
+        assert_eq!(
+            labels.get(&NumericField::Level).map(String::as_str),
+            Some("8")
+        );
+        assert_eq!(
+            labels.get(&NumericField::Notes).map(String::as_str),
+            Some("0100")
+        );
+        assert_eq!(labels.len(), 14);
+        assert!(numeric_field_uses_sequence(NumericField::Level, 20, &[20]));
+        assert!(!numeric_field_uses_sequence(NumericField::Notes, 19, &[20]));
+        assert!(numeric_field_uses_sequence(NumericField::Good, 19, &[20]));
     }
 
     #[test]

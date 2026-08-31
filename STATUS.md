@@ -19,9 +19,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   artifact v9 and diagnostic `numeric_result_changed` records retain model, candidate, temporal,
   and event-suppression evidence, while accepted `scorepeek-result-detected-v2` remains the TUI
   primary surface. The model is an explicitly installed private digest-bound resource and run
-  startup has no numeric PP-OCR fallback. Level/notes background-only crops have no visible training
-  truth and their calibration is disabled; after
-  song+difficulty acceptance, exactly one catalog chart may provide registered chart values.
+  startup has no numeric PP-OCR fallback. Its level/notes calibration remains disabled, while
+  exactly one catalog chart may provide registered chart values after song+difficulty acceptance.
+  ADR 0090 corrects the earlier background-only assessment: stable canonical QOIs visibly contain
+  level and four-digit zero-padded notes, and bind them to fixed character cells for the next
+  recognizer without changing current runtime authority.
   Frozen runtime manifest
   `7badce6d463a2d795e513b67979c9eceb53718adbcc7fa3b6afe4cbd12e1ba2a` passes
   the active seventeen-episode private replay and the `Horizons of Promise` sentinel with score
@@ -50,7 +52,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   and 2,692 observations. Immutable operator label
   `911fa6b2b753a9ec0da098ebd66da31ee898de014a75c0a8b10f56c98c2ac767` adds the visually
   reviewed `鏡像都市` result as `current-8-1`. Active suite generation
-  `5c62b35bf467dabc8ac3500d2d725cf2a94b85663f240f581f9e97e5322a6348` now contains seven
+  `5c62b35bf467dabc8ac3500d2d725cf2a94b85663f240f581f9e97e5322a6348` contains seven
   sessions, twenty-seven episodes, 2,598 canonical QOI references, and one negative frame. Replay
   fails closed at `current-8-1`: PGREAT truth `587` has insufficient candidate margin, so the score
   breakdown and result context stay unresolved; COMBO BREAK truth `2` is only the runner-up behind
@@ -58,6 +60,16 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   `LIGHTNING STRIKES` image truth is POOR `3` but the numeric model wrong-accepts POOR `2`. Both
   labels remain bound to image truth; retraining or replacement must make the active replay pass
   without relaxing them.
+  Operator-confirmed `current-7-9` COMBO BREAK `30` is now published as immutable replacement label
+  `0cb36469503ef363cef6eea1eab0e8f08955e3b29de25978f79200a9dc3c8c92`; active suite
+  `4b0fc906f0a74efb52d406850a3c611f6741d4b49b8228ac2efc8bae56ffe78c` changes only that session
+  label and leaves every older object replayable. Fixed-character source v2 manifest
+  `e52dd198fac8abd5dc4a67a316903a31e270c5e28aa2ba6f034d21bb6e39e02b` contains 678 unique crops,
+  including 23 level and 26 notes crops collected from stable QOIs; notes labels retain the
+  displayed leading zero. The digest-bound character
+  layout defines fixed cells for all fourteen numeric fields; level is selected by measured
+  difficulty and digit-count variants, while dynamic component detection is excluded. It is not
+  connected to production inference yet.
 - Recognition path background: the corpus recording has passed the value-bearing result-song
   recognition simulation for all three reviewed episodes, and a normal foreground Gamescope
   session now reuses that post-canonical path. Retained Wayland evidence repaired three independently

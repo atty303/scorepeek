@@ -266,6 +266,9 @@ authoritative.
 - [ADR 0089: Prioritize compact watcher state in the TUI](0089-prioritize-compact-watcher-state-in-the-tui.md)
   moves a two-row current watcher surface to the top, content-sizes the latest event, and shows the
   typed mandatory numeric tuple plus every calibrated promotion rejection.
+- [ADR 0090: Fix result digits to canonical character cells](0090-fix-result-digits-to-canonical-character-cells.md)
+  binds fixed digit cells to the canonical result layout, collects visible level and notes crops,
+  and excludes image-driven component detection from the next character recognizer.
 
 ## Historical
 
