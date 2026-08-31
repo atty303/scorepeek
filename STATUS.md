@@ -44,6 +44,20 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   to image truth; retraining or replacement must make this active replay pass without relaxing the
   label. The corpus verifier accepts the v4 field-worker busy summary while preserving immutable
   v3 manifests.
+- Complete target diagnostic
+  `43b90f1b01fa1a31e955f5b2ddfb56c76b9a36096f012c158562636f2e183784` is imported as session
+  `42552e9126ddc1ab020cf3dbba3edf822586fccc0a1882c301d73a572ccbd659` with 68 canonical QOIs
+  and 2,692 observations. Immutable operator label
+  `911fa6b2b753a9ec0da098ebd66da31ee898de014a75c0a8b10f56c98c2ac767` adds the visually
+  reviewed `鏡像都市` result as `current-8-1`. Active suite generation
+  `5c62b35bf467dabc8ac3500d2d725cf2a94b85663f240f581f9e97e5322a6348` now contains seven
+  sessions, twenty-seven episodes, 2,598 canonical QOI references, and one negative frame. Replay
+  fails closed at `current-8-1`: PGREAT truth `587` has insufficient candidate margin, so the score
+  breakdown and result context stay unresolved; COMBO BREAK truth `2` is only the runner-up behind
+  wrong raw candidate `3`. Replay also retains the `current-7-6` failure where the
+  `LIGHTNING STRIKES` image truth is POOR `3` but the numeric model wrong-accepts POOR `2`. Both
+  labels remain bound to image truth; retraining or replacement must make the active replay pass
+  without relaxing them.
 - Recognition path background: the corpus recording has passed the value-bearing result-song
   recognition simulation for all three reviewed episodes, and a normal foreground Gamescope
   session now reuses that post-canonical path. Retained Wayland evidence repaired three independently
