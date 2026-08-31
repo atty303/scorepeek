@@ -10,7 +10,7 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 - M4 offline canonical-frame and recognition spike: **in progress**.
 - Current execution focus: ADR 0087 removes PP-OCRv6-small from all fourteen numeric result
   fields and replaces it with one fixed `N×3×32×320` MobileNetV3-small/BiLSTM/CTC ONNX batch.
-  Private suite v3
+  The five-session training suite v3 generation
   `3ec72a21e55e65c4b5c5a6c386f10c47edcc60b41e5553ba870034d346764ea8`
   supplies 391 globally deduplicated reviewed samples across five session-disjoint splits; exact
   crops repeated across sessions are excluded from all splits. Exact CTC keeps top-eight,
@@ -26,17 +26,24 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   `7badce6d463a2d795e513b67979c9eceb53718adbcc7fa3b6afe4cbd12e1ba2a` passes
   the active seventeen-episode private replay and the `Horizons of Promise` sentinel with score
   `1383`, PGREAT `630`, GREAT `123`, GOOD `11`, BAD `0`, and POOR `2`. Target install and the
-  prospective ten-episode/two-session target gate are the remaining boundaries for this
-  checkpoint; repository checks, the complete test suite, and the active seventeen-episode replay
-  pass.
+  prospective ten-episode/two-session target gate remain unverified. The subsequently expanded
+  active private suite is described below and intentionally exposes a new wrong numeric accept.
 - The fixed result clear-type resolver normalizes the game display abbreviation `A-CLEAR` to the
   existing domain value `ASSIST CLEAR`. Complete v4 diagnostic
   `a3a1f34b591946089df4db62e31bac362538052a62779497d7caf7d6368b2cc7` is imported into the
   private corpus as immutable session
   `7a054ac06059de02dcdda49d1bc78eb191d1e289db36dd247519cc0f855d8ea1` with 428 canonical QOIs
-  and 18,613 observations. Its review draft is pending operator labels; the active suite remains
-  unchanged. The corpus verifier now accepts the v4 field-worker busy summary while preserving
-  immutable v3 manifests.
+  and 18,613 observations. Immutable operator label
+  `46308d4843c5c71409ae1786279f91f38a2ca10e472dfcde7929fcc8f9ef7b52` adds nine visually
+  reviewed result episodes, including four `A-CLEAR` displays normalized to `ASSIST CLEAR` and
+  one failed result. Active suite generation
+  `682f96833ae2e77e389051f717939fe0165b4a7338f129d75d31cede5539faf2` now contains six
+  sessions, twenty-six episodes, 2,530 canonical QOI references, and one negative frame. Replay
+  fails closed at `current-7-6`: the `LIGHTNING STRIKES` image truth is POOR `3`, while numeric
+  model `scorepeek-numeric-mobile-ctc-696b072d-v1` wrong-accepts POOR `2`. The label remains bound
+  to image truth; retraining or replacement must make this active replay pass without relaxing the
+  label. The corpus verifier accepts the v4 field-worker busy summary while preserving immutable
+  v3 manifests.
 - Recognition path background: the corpus recording has passed the value-bearing result-song
   recognition simulation for all three reviewed episodes, and a normal foreground Gamescope
   session now reuses that post-canonical path. Retained Wayland evidence repaired three independently
@@ -377,8 +384,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   `a1ad7dbb2f7a220c9602afce34bd27bfc67d74d9d548d85a55370822983c878a` with 232 canonical QOI
   frames and 5,838 observations. Immutable label
   `9e653fc1ad9254e73eccc8a614816532d234c4e019af321f8e900c150ed47f79` adds three visually
-  confirmed results for `ドリムチウ`, `無双`, and `Monkey Business`; all seventeen active result
-  contexts replay successfully.
+  confirmed results for `ドリムチウ`, `無双`, and `Monkey Business`. The current six-session,
+  twenty-six-episode active suite adds the separately described nine-result imported session and
+  currently fails closed on its visually confirmed POOR `3` regression sentinel.
 - Private frames, labels, recordings, source snapshots, generated catalogs, models, and environment
   artifacts remain outside the repository. Committed fixtures are synthetic or opaque and
   non-personal.
