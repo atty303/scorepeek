@@ -217,6 +217,14 @@ enum StoredRunEventPayload {
         retained_song: Option<Value>,
         candidate_song: Option<Value>,
     },
+    NumericResultChanged {
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        source_sequence: u64,
+        state: Value,
+        reason: String,
+        event_suppression_reason: Option<String>,
+    },
     PlayAttemptChanged {
         session_id: Option<String>,
         capture_generation: Option<u64>,
@@ -3566,10 +3574,11 @@ mod tests {
             concat!(
                 "{\"schema\":\"scorepeek-run-event-v2\",\"event\":\"session_started\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"capture_profile_sha256\":\"profile\",\"normalizer_artifact_sha256\":\"normalizer\",\"channel_sequence\":2}\n",
                 "{\"schema\":\"scorepeek-run-event-v2\",\"event\":\"screen_changed\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"sequence\":0,\"monotonic_start_ms\":0,\"monotonic_end_ms\":1,\"screen\":\"unknown\",\"channel_sequence\":3}\n",
+                "{\"schema\":\"scorepeek-run-event-v2\",\"event\":\"numeric_result_changed\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"source_sequence\":2,\"state\":{\"observations\":1,\"status\":\"pending\"},\"reason\":\"candidate_started\",\"event_suppression_reason\":\"numeric_not_accepted\",\"channel_sequence\":4}\n",
             ),
         )
         .unwrap();
-        assert_eq!(verify_session_events(&path, &manifest).unwrap(), 2);
+        assert_eq!(verify_session_events(&path, &manifest).unwrap(), 3);
 
         fs::write(
             &path,

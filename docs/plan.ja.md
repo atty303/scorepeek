@@ -120,8 +120,9 @@
 - 公式ONNX recognition model比較とPP-OCRv6 small native-dynamic選定: 完了
 - result数字recognizer: canonical character layout v2の固定cell、field-family mask、
   `2244 -> 64 -> 11` shared HOG/MLP private ONNX batchを実装済み。PP-OCRは数字authorityから外し、
-  levelはsong未確定時の候補絞り込みだけに使い、confirmed chart/eventをrejectしない。private
-  7-session/27-episode replayは通過済み。target installとprospective 10-episode/2-session gateは未検証
+  levelはsong未確定時の候補絞り込みだけに使い、confirmed chart/eventをrejectしない。target install済み。
+  private suiteは8-session/34-episodeへ進み、追加target sessionの目視truthによりFAST `155`を`156`とする
+  誤認識と短題名`A`の未解決resultを回帰失敗として保持している。prospective 10-episode/2-session gateは未検証
 - selection song contextとlive replay telemetry storage: 着手（最小context reducer、operator確認済み
   scenario、application-owned QOI diagnostic run writer、bounded worker、strict canonical replay、read-only
   status/list control、cross-process active ownership、crash-safe aggregate retention、digest-confirmed

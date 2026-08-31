@@ -15,13 +15,17 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   PP-OCRv6-small is not a numeric fallback. Dash presentation remains a separate fixed horizontal
   marker predicate.
 - Active corrected suite
-  `647b544669e190e3ac484c53eeed6bb5c72d1d83c6bef054cbb6048ca2716bb6`
-  contains seven sessions, twenty-seven episodes, 2,598 canonical frames, and one negative frame.
+  `64455406b0326778cfb85075263b9104a7020a882965426a0c81ef804630d0e7`
+  contains eight sessions, thirty-four episodes, 2,888 canonical frames, and one negative frame.
   Session-disjoint model evaluation classifies 339 of 340 stable fields exactly; the sole wrong
   top prediction is level `10` as `11`, and the independent level threshold keeps it unknown.
   The dash predicate classifies all 167 reviewed marker-capable rows correctly. The production
-  runtime passes the complete private replay, including fixed PGREAT `587`, POOR `3`, combo break
-  `30`, and `Horizons of Promise` sentinels, without a wrong optional known value.
+  prior seven-session runtime passed the complete private replay, including fixed PGREAT `587`,
+  POOR `3`, combo break `30`, and `Horizons of Promise` sentinels, without a wrong optional known
+  value. The newly reviewed target session deliberately makes the active replay fail closed: its
+  `FlyAway` result has operator-confirmed FAST `155`, while the installed model returns `156` and
+  leaves clear type unresolved. The same session also retains the event-suppressed short title `A`
+  with its complete visually confirmed numeric truth instead of excluding failed observations.
 - Level is advisory only. Before song acceptance it may narrow candidates already established by
   title/artist, difficulty, and notes; it never creates a song candidate. After song acceptance,
   chart resolution ignores observed level, records any catalog mismatch in recognition artifact
@@ -35,8 +39,9 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   binds model `83751dfd41f20c067dbce95175cbcf5007252a1eb70a2bbd50c5dfc5a75f0a2f`.
   Historical CTC manifests and recognition artifacts v5-v9 remain readable but cannot
   acquire current authority. Model bytes, real crops, labels, and generated datasets remain outside
-  the repository. Target installation, prospective ten-episode/two-session validation, public
-  `/v1.sock` authority, and target support remain unverified and are separate approval boundaries.
+  the repository. The binary and resource are installed on the target, but prospective
+  ten-episode/two-session validation, public `/v1.sock` authority, and target support remain
+  unverified and are separate approval boundaries.
 - The fixed result clear-type resolver continues to normalize `A-CLEAR` to domain value
   `ASSIST CLEAR`; all prior private labels and suite generations remain immutable and replayable.
 - Recognition path background: the corpus recording has passed the value-bearing result-song
@@ -380,9 +385,12 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
   `a1ad7dbb2f7a220c9602afce34bd27bfc67d74d9d548d85a55370822983c878a` with 232 canonical QOI
   frames and 5,838 observations. Immutable label
   `9e653fc1ad9254e73eccc8a614816532d234c4e019af321f8e900c150ed47f79` adds three visually
-  confirmed results for `ドリムチウ`, `無双`, and `Monkey Business`. The current six-session,
-  twenty-six-episode active suite adds the separately described nine-result imported session and
-  currently fails closed on its visually confirmed POOR `3` regression sentinel.
+  confirmed results for `ドリムチウ`, `無双`, and `Monkey Business`. The latest imported target
+  diagnostic `run-1788175440-434900493-484549-session-1` contributes 290 canonical frames and seven
+  operator-reviewed results through immutable label
+  `abc458b0b8c9d00e26a1bd5abae14f86173cd0c79c0a2eb98c20234b827f434d`. Its two event-suppressed
+  results are labeled rather than omitted, so the current eight-session, thirty-four-episode suite
+  exposes the FAST `155` versus `156` recognition error and the unresolved short title `A`.
 - Private frames, labels, recordings, source snapshots, generated catalogs, models, and environment
   artifacts remain outside the repository. Committed fixtures are synthetic or opaque and
   non-personal.
@@ -990,7 +998,10 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
 
 ## Next executable task
 
-1. Install the ADR 0080/0081 binary on the target. Before entering MUSIC SELECT, require MODE SELECT
+1. Correct the fixed-cell timing recognition exposed by the active `FlyAway` FAST `155` sentinel
+   without weakening fail-closed acceptance, then replay all eight sessions. Separately diagnose
+   the short title `A` result linkage without using its numeric truth to accept the song.
+2. Before entering MUSIC SELECT, require MODE SELECT
    to appear as `mode_select` in the TUI and diagnostic history without field OCR or a play-attempt
    transition; after entering MUSIC SELECT, require `music_select` and normal field observations.
    Confirm that the target 10 Hz cadence does not accumulate busy skips. Then select a short catalog
@@ -998,11 +1009,11 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    `無双`. Require v2 to rank it without `active_list_title_too_short`, preserve the full catalog
    candidate evidence, reach stable/armed state, and retain any later attempt linkage. Treat an
    ambiguous or conflicting result as evidence rather than adding a character-count threshold.
-2. Run the installed `scorepeek` against the fixed measured `gamescope-4k` profile and sample
+3. Run the installed `scorepeek` against the fixed measured `gamescope-4k` profile and sample
    `pw-top` before and during the session. Require a zero scorepeek
    error delta, no `BUSY +++`, continued 10 Hz observations, and clean receiver shutdown; retain the
    run as failure evidence if any condition regresses.
-3. Exercise one ordinary target flow through music select, song decision, gameplay and result.
+4. Exercise one ordinary target flow through music select, song decision, gameplay and result.
    Confirm that the TUI keeps the catalog title and artist visible as one attempt, advances
    `SELECTED` to `PLAYING` to `CONFIRMED`, then adds exactly one accepted result row containing the
    five judgments, typed miss/fast/slow/combo-break values, and previous-best snapshot. Require all
@@ -1012,21 +1023,21 @@ the roadmap and long-lived decisions remain in `docs/plan.ja.md` and `docs/decis
    retry is available, verify a new attempt ID with the prior parent; do not request extra play only
    for retry tuning. Treat missing decide/play, an unlinked result or conflict as evidence rather
    than repairing it.
-4. Exercise the fixed measured target `gamescope-4k` watcher with scorepeek-first startup through the
+5. Exercise the fixed measured target `gamescope-4k` watcher with scorepeek-first startup through the
    transient INFINITAS source sequence, then cover Gamescope-first, sequential and simultaneous
    source lifetimes, idle/active signals, TTY restoration, redirected plain output, and a
    mid-session observation-socket client. Confirm that raw result events precede temporal
    transitions and that one-tick unknowns do not erase the stable TUI result. Do not claim target
    lifecycle or presentation support before those separate checks pass.
-5. After explicitly installing the ADR 0077 correction, repeat the observed
+6. After explicitly installing the ADR 0077 correction, repeat the observed
    `armed -> unknown -> music_select(unknown OCR) -> unknown -> decide -> play -> unknown ->
    music_select(unknown OCR) -> unknown -> result` path. Require one attempt to retain the armed song
    with `select_observed=true`, omit `no_stable_selection` and `returned_to_select`, and confirm the
    matching result. Then verify a real temporal selection return emits ordered `abandoned` and
    `armed` states. Add only operator-reviewed episodes to the active suite.
-6. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
+7. Verify subsequent offline model-cache reuse without a repository checkout, mise, Rust, or Python
    in the game-session path.
-7. In the next real music-select session, verify that a one-tick frame-local unknown renders the
+8. In the next real music-select session, verify that a one-tick frame-local unknown renders the
    catalog identity as `HELD`, a real selection change renders `CHANGING` and replaces after 200 ms,
    and a category/filter selection clears after the bounded grace. Keep raw central-title OCR
    visible and separate; this live check qualifies presentation behavior, not event authority.
