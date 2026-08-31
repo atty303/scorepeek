@@ -38,8 +38,8 @@ use serde_json::{Value, json};
 
 const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
-const SOCKET_NAME: &str = "observations-v2.sock";
 const RESULT_HISTORY_CAPACITY: usize = 32;
+const SOCKET_NAME: &str = "observations-v2.sock";
 const RESULT_TEMPORAL_REQUIRED_OBSERVATIONS: u8 = 2;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -301,6 +301,8 @@ pub struct RunViewState {
     latest_stabilized_result: Option<Value>,
     latest_temporal_music_select: Option<Value>,
     latest_play_attempt: Option<Value>,
+    #[serde(skip)]
+    latest_numeric_result: Option<Value>,
     latest_result_detected: Option<Value>,
     result_history: VecDeque<ResultHistoryEntry>,
     result_count: u64,
@@ -331,6 +333,7 @@ impl RunViewState {
             latest_stabilized_result: None,
             latest_temporal_music_select: None,
             latest_play_attempt: None,
+            latest_numeric_result: None,
             latest_result_detected: None,
             result_history: VecDeque::with_capacity(RESULT_HISTORY_CAPACITY),
             result_count: 0,
@@ -363,12 +366,17 @@ impl RunViewState {
                 self.latest_stabilized_result = None;
                 self.latest_temporal_music_select = None;
                 self.latest_play_attempt = None;
+                self.latest_numeric_result = None;
                 self.latest_result_detected = None;
                 self.stable_result_song = None;
                 self.latest_report = None;
                 "Gamescope session admitted".clone_into(&mut self.message);
             }
             RunEventKind::ScreenChanged { screen, .. } => {
+                self.latest_result_detected = None;
+                if screen == "result" {
+                    self.latest_numeric_result = None;
+                }
                 self.current_screen = Some(screen.clone());
             }
             RunEventKind::FieldObservation { .. } => {
@@ -381,7 +389,9 @@ impl RunViewState {
             RunEventKind::TemporalMusicSelectChanged { .. } => {
                 self.latest_temporal_music_select = Some(serialized.clone());
             }
-            RunEventKind::NumericResultChanged { .. } => {}
+            RunEventKind::NumericResultChanged { .. } => {
+                self.latest_numeric_result = Some(serialized.clone());
+            }
             RunEventKind::PlayAttemptChanged { .. } => {
                 self.latest_play_attempt = Some(serialized.clone());
             }
@@ -393,14 +403,14 @@ impl RunViewState {
             } => {
                 self.latest_result_detected = Some(serialized.clone());
                 self.result_count = self.result_count.saturating_add(1);
-                if self.result_history.len() == RESULT_HISTORY_CAPACITY {
-                    self.result_history.pop_front();
-                }
                 let song = self
                     .stable_result_song
                     .as_ref()
                     .filter(|song| song.scorepeek_song_id == result.scorepeek_song_id)
                     .cloned();
+                if self.result_history.len() == RESULT_HISTORY_CAPACITY {
+                    self.result_history.pop_front();
+                }
                 self.result_history.push_back(ResultHistoryEntry {
                     ordinal: self.result_count,
                     session_id: session_id.clone(),
@@ -429,6 +439,7 @@ impl RunViewState {
                 self.latest_stabilized_result = None;
                 self.latest_temporal_music_select = None;
                 self.latest_play_attempt = None;
+                self.latest_numeric_result = None;
                 self.latest_result_detected = None;
                 self.stable_result_song = None;
                 "scorepeek stopped by signal".clone_into(&mut self.message);
@@ -1622,25 +1633,20 @@ fn plain_status_line(state: &RunViewState, health: &ChannelHealth) -> String {
 fn render(
     frame: &mut ratatui::Frame<'_>,
     state: &RunViewState,
-    socket_path: &Path,
-    health: &ChannelHealth,
+    _socket_path: &Path,
+    _health: &ChannelHealth,
 ) {
     let area = frame.area();
     let compact = area.width < 80 || area.height < 32;
     let show_attempt = !compact || state.latest_play_attempt.is_some();
     let has_results = !state.result_history.is_empty();
     if compact && has_results {
-        let results = result_history_lines(
-            state,
-            true,
-            area.width.saturating_sub(2) as usize,
-            area.height.saturating_sub(2) as usize,
-        );
+        let results = latest_result_lines(state, true, area.width.saturating_sub(2) as usize);
         frame.render_widget(
             Paragraph::new(results).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Accepted play events"),
+                    .title("Latest accepted play event"),
             ),
             area,
         );
@@ -1650,17 +1656,12 @@ fn render(
         .direction(Direction::Vertical)
         .constraints(result_panel_constraints(compact, show_attempt, has_results))
         .split(area);
-    let results = result_history_lines(
-        state,
-        compact,
-        rows[0].width.saturating_sub(2) as usize,
-        rows[0].height.saturating_sub(2) as usize,
-    );
+    let results = latest_result_lines(state, compact, rows[0].width.saturating_sub(2) as usize);
     frame.render_widget(
         Paragraph::new(results).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Accepted play events"),
+                .title("Latest accepted play event"),
         ),
         rows[0],
     );
@@ -1677,16 +1678,13 @@ fn render(
 
     let mut row = 2;
     if show_attempt {
-        let attempt = play_attempt_lines(
-            state.latest_play_attempt.as_ref(),
-            compact,
-            rows[row].width.saturating_sub(2) as usize,
-        );
+        let attempt =
+            play_event_promotion_lines(state, compact, rows[row].width.saturating_sub(2) as usize);
         frame.render_widget(
             Paragraph::new(attempt).wrap(Wrap { trim: false }).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Debug: Play attempt"),
+                    .title("Provisional: Play event promotion"),
             ),
             rows[row],
         );
@@ -1711,17 +1709,6 @@ fn render(
             ),
         rows[row],
     );
-    row += 1;
-
-    let footer = channel_lines(state, socket_path, health, compact);
-    frame.render_widget(
-        Paragraph::new(footer).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Debug: Observation channel"),
-        ),
-        rows[row],
-    );
 }
 
 fn result_panel_constraints(
@@ -1733,72 +1720,63 @@ fn result_panel_constraints(
         vec![
             Constraint::Length(4),
             Constraint::Length(5),
-            Constraint::Length(6),
+            Constraint::Length(8),
             Constraint::Min(6),
-            Constraint::Length(3),
         ]
     } else if !has_results && compact {
         vec![
             Constraint::Length(4),
             Constraint::Length(5),
             Constraint::Min(8),
-            Constraint::Length(3),
         ]
     } else if !has_results && show_attempt {
         vec![
             Constraint::Length(4),
             Constraint::Length(5),
-            Constraint::Length(9),
+            Constraint::Length(11),
             Constraint::Min(13),
-            Constraint::Length(5),
         ]
     } else if !has_results {
         vec![
             Constraint::Length(4),
             Constraint::Length(5),
             Constraint::Min(14),
-            Constraint::Length(5),
         ]
     } else if compact && show_attempt {
         vec![
             Constraint::Min(8),
             Constraint::Length(5),
-            Constraint::Length(6),
+            Constraint::Length(8),
             Constraint::Min(8),
-            Constraint::Length(3),
         ]
     } else if compact {
         vec![
             Constraint::Min(8),
             Constraint::Length(5),
             Constraint::Min(6),
-            Constraint::Length(3),
         ]
     } else if show_attempt {
         vec![
             Constraint::Min(14),
             Constraint::Length(5),
+            Constraint::Length(10),
             Constraint::Length(8),
-            Constraint::Length(8),
-            Constraint::Length(5),
         ]
     } else {
         vec![
             Constraint::Min(14),
             Constraint::Length(5),
             Constraint::Length(8),
-            Constraint::Length(5),
         ]
     }
 }
 
-fn result_history_lines(
+fn latest_result_lines(
     state: &RunViewState,
     compact: bool,
     available_width: usize,
-    available_height: usize,
 ) -> Vec<Line<'static>> {
-    if state.result_history.is_empty() {
+    let Some(entry) = state.result_history.back() else {
         return vec![
             Line::from(Span::styled(
                 "No accepted play event yet",
@@ -1806,27 +1784,13 @@ fn result_history_lines(
             )),
             Line::from("Only scorepeek-result-detected-v2 events appear here."),
         ];
-    }
+    };
 
-    let mut entries = Vec::new();
-    let mut used_lines = 1_usize;
-    for entry in state.result_history.iter().rev() {
-        let entry_lines = result_history_entry_lines(entry, compact, available_width);
-        if !entries.is_empty() && used_lines.saturating_add(entry_lines.len()) > available_height {
-            break;
-        }
-        used_lines = used_lines.saturating_add(entry_lines.len());
-        entries.push(entry_lines);
-    }
-    let shown = entries.len();
     let mut lines = vec![Line::from(format!(
-        "{} completed  |  newest first  |  showing {}  |  retained {}/{}",
-        state.result_count,
-        shown,
-        state.result_history.len(),
-        RESULT_HISTORY_CAPACITY
+        "{} completed  |  showing latest only",
+        state.result_count
     ))];
-    lines.extend(entries.into_iter().flatten());
+    lines.extend(result_history_entry_lines(entry, compact, available_width));
     lines
 }
 
@@ -2097,6 +2061,249 @@ fn previous_text(value: &PreviousBestValue<String>) -> String {
     }
 }
 
+fn play_event_promotion_lines(
+    state: &RunViewState,
+    compact: bool,
+    available_width: usize,
+) -> Vec<Line<'static>> {
+    let (label, color, detail) = play_event_promotion_status(state);
+    let mut lines = vec![Line::from(Span::styled(
+        label,
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    ))];
+    lines.push(Line::from(fitted_value("Next: ", &detail, available_width)));
+    lines.extend(play_attempt_lines(
+        state.latest_play_attempt.as_ref(),
+        compact,
+        available_width,
+    ));
+    lines
+}
+
+fn play_event_promotion_status(state: &RunViewState) -> (&'static str, Color, String) {
+    if state.latest_result_detected.is_some() {
+        return (
+            "EVENT EMITTED",
+            Color::Green,
+            "accepted domain event".to_owned(),
+        );
+    }
+    let Some(event) = state.latest_play_attempt.as_ref() else {
+        return (
+            "PROMOTION WAITING",
+            Color::DarkGray,
+            "stable music selection".to_owned(),
+        );
+    };
+    let attempt_state = event.get("state").unwrap_or(&Value::Null);
+    match text_at(attempt_state, "/status").as_str() {
+        "armed" => (
+            "PROMOTION WAITING",
+            Color::Yellow,
+            "song decision".to_owned(),
+        ),
+        "unlinked_result" => (
+            "PROMOTION BLOCKED",
+            Color::Red,
+            format!(
+                "unlinked result ({})",
+                human_reason(&text_at(attempt_state, "/reason"))
+            ),
+        ),
+        "attempt" => attempt_promotion_status(state, attempt_state),
+        _ => (
+            "PROMOTION WAITING",
+            Color::DarkGray,
+            "stable music selection".to_owned(),
+        ),
+    }
+}
+
+fn attempt_promotion_status(
+    state: &RunViewState,
+    attempt_state: &Value,
+) -> (&'static str, Color, String) {
+    let attempt = attempt_state.get("attempt").unwrap_or(&Value::Null);
+    let phase = text_at(attempt, "/phase");
+    match text_at(attempt, "/result_relation").as_str() {
+        "conflict" => {
+            return (
+                "PROMOTION BLOCKED",
+                Color::Red,
+                "selected and result songs conflict".to_owned(),
+            );
+        }
+        "pending" => {
+            return (
+                "PROMOTION WAITING",
+                Color::Yellow,
+                "stable result song and clear type".to_owned(),
+            );
+        }
+        "confirmed" => {}
+        _ if phase == "decided" => {
+            return (
+                "PROMOTION WAITING",
+                Color::Yellow,
+                "gameplay observation".to_owned(),
+            );
+        }
+        _ if phase == "playing" => {
+            return (
+                "PROMOTION WAITING",
+                Color::Yellow,
+                "result screen".to_owned(),
+            );
+        }
+        _ => {
+            return (
+                "PROMOTION BLOCKED",
+                Color::Yellow,
+                format!("complete play path ({})", human_reason(&phase)),
+            );
+        }
+    }
+
+    numeric_promotion_status(state)
+}
+
+fn numeric_promotion_status(state: &RunViewState) -> (&'static str, Color, String) {
+    let result_observation = state
+        .latest_observation
+        .as_ref()
+        .filter(|event| text_at(event, "/screen") == "result");
+    let calibration_rejection = result_observation.and_then(numeric_rejection_reason);
+    if let Some(numeric) = state.latest_numeric_result.as_ref() {
+        match text_at(numeric, "/state/status").as_str() {
+            "accepted" => {
+                let suppression = text_at(numeric, "/event_suppression_reason");
+                return if suppression == "-" {
+                    (
+                        "PROMOTION WAITING",
+                        Color::Yellow,
+                        "domain event publication".to_owned(),
+                    )
+                } else {
+                    (
+                        "PROMOTION BLOCKED",
+                        Color::Yellow,
+                        human_reason(&suppression),
+                    )
+                };
+            }
+            "pending" => {
+                return (
+                    "PROMOTION WAITING",
+                    Color::Yellow,
+                    format!(
+                        "numeric tuple {}/{} observations",
+                        text_at(numeric, "/state/observations"),
+                        RESULT_TEMPORAL_REQUIRED_OBSERVATIONS
+                    ),
+                );
+            }
+            "unknown" => {
+                if let Some(reason) = calibration_rejection.as_ref() {
+                    return ("PROMOTION BLOCKED", Color::Yellow, reason.clone());
+                }
+                return (
+                    "PROMOTION BLOCKED",
+                    Color::Yellow,
+                    format!(
+                        "numeric tuple ({})",
+                        human_reason(&text_at(numeric, "/reason"))
+                    ),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let Some(observation) = result_observation else {
+        return (
+            "PROMOTION WAITING",
+            Color::Yellow,
+            "result field observation".to_owned(),
+        );
+    };
+    if let Some(reason) = calibration_rejection {
+        return ("PROMOTION BLOCKED", Color::Yellow, reason);
+    }
+    if text_at(observation, "/result_chart_resolution/status") == "unknown" {
+        return (
+            "PROMOTION BLOCKED",
+            Color::Yellow,
+            format!(
+                "chart and score ({})",
+                human_reason(&text_at(observation, "/result_chart_resolution/reason"))
+            ),
+        );
+    }
+    if text_at(observation, "/result_performance_resolution/status") == "unknown" {
+        return (
+            "PROMOTION BLOCKED",
+            Color::Yellow,
+            format!(
+                "performance tuple ({})",
+                human_reason(&text_at(
+                    observation,
+                    "/result_performance_resolution/reason"
+                ))
+            ),
+        );
+    }
+    (
+        "PROMOTION WAITING",
+        Color::Yellow,
+        "second equal numeric observation".to_owned(),
+    )
+}
+
+fn numeric_rejection_reason(observation: &Value) -> Option<String> {
+    observation
+        .pointer("/numeric_batch/fields")?
+        .as_array()?
+        .iter()
+        .filter(|field| {
+            matches!(
+                text_at(field, "/field").as_str(),
+                "current_score" | "pgreat" | "great" | "good" | "bad" | "poor"
+            ) && field.get("accepted").and_then(Value::as_bool) == Some(false)
+                && field
+                    .pointer("/calibration/enabled")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+        })
+        .find_map(|field| {
+            let name = text_at(field, "/field").to_ascii_uppercase();
+            let probability = field
+                .pointer("/candidates/0/calibrated_probability")?
+                .as_f64()?;
+            let minimum_probability = field
+                .pointer("/calibration/minimum_probability")?
+                .as_f64()?;
+            if probability < minimum_probability {
+                return Some(format!(
+                    "{name} confidence probability {probability:.2} < {minimum_probability:.2}"
+                ));
+            }
+            let margin = field.get("runner_up_margin")?.as_f64()?;
+            let minimum_margin = field
+                .pointer("/calibration/minimum_runner_up_margin")?
+                .as_f64()?;
+            (margin < minimum_margin)
+                .then(|| format!("{name} confidence margin {margin:.2} < {minimum_margin:.2}"))
+        })
+}
+
+fn human_reason(reason: &str) -> String {
+    if reason == "-" {
+        "unknown".to_owned()
+    } else {
+        reason.replace('_', " ")
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the bounded TUI panel keeps all play-attempt display priorities in one formatter"
@@ -2302,63 +2509,6 @@ fn watcher_lines(
         )),
         Line::from(format!("message={}", state.message)),
     ]
-}
-
-fn channel_lines(
-    state: &RunViewState,
-    socket_path: &Path,
-    health: &ChannelHealth,
-    compact: bool,
-) -> Vec<Line<'static>> {
-    let channel = health.value();
-    let mut lines = vec![
-        Line::from(format!("socket={}", socket_path.display())),
-        Line::from(format!(
-            "channel={} clients={} dropped={} disconnected={}",
-            channel["status"].as_str().unwrap_or("degraded"),
-            channel["connected_clients"],
-            channel["dropped_events"],
-            channel["disconnected_clients"]
-        )),
-    ];
-    if !compact {
-        lines.push(Line::from(format!(
-            "diagnostic={}  artifact={}  field-worker={}",
-            state.latest_report.as_ref().map_or_else(
-                || "-".to_owned(),
-                |report| text_at(report, "/diagnostic_completeness")
-            ),
-            state.latest_report.as_ref().map_or_else(
-                || "-".to_owned(),
-                |report| text_at(report, "/recognition_artifact_status")
-            ),
-            state.latest_report.as_ref().map_or_else(
-                || "-".to_owned(),
-                |report| text_at(report, "/field_worker_status")
-            ),
-        )));
-        lines.push(Line::from(format!(
-            "screen ticks={} field-busy-skips={} max-consecutive={} dropped-diagnostic-facts={}",
-            state.latest_report.as_ref().map_or_else(
-                || "-".to_owned(),
-                |report| text_at(report, "/recognition_ticks")
-            ),
-            state.latest_report.as_ref().map_or_else(
-                || "-".to_owned(),
-                |report| text_at(report, "/field_observation_busy_skips")
-            ),
-            state.latest_report.as_ref().map_or_else(
-                || "-".to_owned(),
-                |report| text_at(report, "/maximum_consecutive_field_observation_busy_skips")
-            ),
-            state.latest_report.as_ref().map_or_else(
-                || "-".to_owned(),
-                |report| text_at(report, "/dropped_capture_diagnostic_facts")
-            ),
-        )));
-    }
-    lines.push(Line::from("Ctrl-C / SIGTERM: stop scorepeek"));
-    lines
 }
 
 fn observation_lines(
@@ -3816,11 +3966,11 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(rendered.contains("OCR title: OCR TITLE"));
-        assert!(rendered.contains("Accepted play events"));
+        assert!(rendered.contains("Latest accepted play event"));
         assert!(rendered.contains("No accepted play event yet"));
         assert!(rendered.contains("Debug: Watcher"));
         assert!(rendered.contains("Debug: Latest recognition"));
-        assert!(rendered.contains("Debug: Observation channel"));
+        assert!(!rendered.contains("Observation channel"));
         assert!(rendered.contains("current screen=unknown"));
         assert!(rendered.contains("raw screen=result"));
         assert!(rendered.contains("invocation=invocation-1"));
@@ -3984,7 +4134,8 @@ mod tests {
                 .iter()
                 .map(ratatui::buffer::Cell::symbol)
                 .collect::<String>();
-            assert!(rendered.contains("Play attempt"));
+            assert!(rendered.contains("Play event promotion"));
+            assert!(rendered.contains("PROMOTION BLOCKED"));
             assert!(rendered.contains("CONFLICT"));
             assert!(rendered.contains("Song: SELECTED TITLE"));
             assert!(rendered.contains("Artist: SELECTED ARTIST"));
@@ -4004,7 +4155,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one rendering test covers both retained result entries and layout sizes"
     )]
-    fn result_history_tui_prioritizes_song_and_play_result_without_json() {
+    fn latest_result_tui_prioritizes_song_and_play_result_without_json() {
         let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
         let song = SongPresentation {
             scorepeek_song_id: song_id,
@@ -4076,7 +4227,7 @@ mod tests {
                 .iter()
                 .map(ratatui::buffer::Cell::symbol)
                 .collect::<String>();
-            assert!(rendered.contains("Accepted play events"));
+            assert!(rendered.contains("Latest accepted play event"));
             assert!(rendered.contains("#1 HARD CLEAR"));
             assert!(rendered.contains("SP HYPER Lv8"));
             assert!(rendered.contains("Title: HISTORY TITLE"));
@@ -4101,6 +4252,7 @@ mod tests {
             assert!(!rendered.contains("scorepeek_song_id"));
             assert!(!rendered.contains("current_score"));
             assert!(!rendered.contains("HISTORY ALIAS"));
+            assert!(!rendered.contains("Observation channel"));
         }
 
         let mut upper_bound_entry = state.result_history.back().unwrap().clone();
@@ -4207,18 +4359,154 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
-        assert!(rendered.contains("2 completed"));
+        assert!(rendered.contains("2 completed  |  showing latest only"));
         assert!(rendered.contains("#2 FAILED"));
         assert!(rendered.contains("Title: SECOND TITLE"));
         assert!(rendered.contains("MISS --  FAST 30  SLOW 31  COMBO BREAK 5"));
         assert!(rendered.contains("Previous: clear=NO PLAY  EX SCORE NO PLAY  MISS NO PLAY"));
-        assert!(rendered.contains("#1 HARD CLEAR"));
-        assert!(rendered.contains("Title: HISTORY TITLE"));
-        assert!(rendered.find("#2 FAILED") < rendered.find("#1 HARD CLEAR"));
+        assert!(!rendered.contains("#1 HARD CLEAR"));
+        assert!(!rendered.contains("Title: HISTORY TITLE"));
+        assert!(!rendered.contains("Observation channel"));
     }
 
     #[test]
-    fn result_history_is_bounded_and_survives_session_changes() {
+    fn play_event_promotion_panel_explains_numeric_calibration_rejection() {
+        let mut state = RunViewState::new("invocation-1".to_owned(), "a".repeat(64), true);
+        state.watcher_state = "session_active".to_owned();
+        state.current_screen = Some("result".to_owned());
+        state.latest_play_attempt = Some(json!({
+            "state": {
+                "status": "attempt",
+                "attempt": {
+                    "attempt_id": 1,
+                    "parent_attempt_id": null,
+                    "phase": "result",
+                    "selection_source": "stable",
+                    "selected_song": {
+                        "scorepeek_song_id": "00000000-0000-0000-0000-000000000001",
+                        "display_titles": ["SELECTED TITLE"],
+                        "artist": "SELECTED ARTIST"
+                    },
+                    "result_song": {
+                        "scorepeek_song_id": "00000000-0000-0000-0000-000000000001",
+                        "display_titles": ["RESULT TITLE"],
+                        "artist": "RESULT ARTIST"
+                    },
+                    "path": {
+                        "select_observed": true,
+                        "decide_observed": true,
+                        "play_observed": true,
+                        "result_observed": true
+                    },
+                    "result_relation": "confirmed",
+                    "reasons": []
+                }
+            }
+        }));
+        state.latest_observation = Some(json!({
+            "screen": "result",
+            "result_chart_resolution": {
+                "status": "unknown",
+                "reason": "current_score_unknown"
+            },
+            "result_performance_resolution": {
+                "status": "unknown",
+                "reason": "incomplete_judgments"
+            },
+            "numeric_batch": {
+                "fields": [{
+                    "field": "pgreat",
+                    "accepted": false,
+                    "runner_up_margin": 0.558_871_5,
+                    "calibration": {
+                        "enabled": true,
+                        "minimum_probability": 0.0,
+                        "minimum_runner_up_margin": 1.314_789
+                    },
+                    "candidates": [{
+                        "text": "587",
+                        "calibrated_probability": 0.6211
+                    }, {
+                        "text": "567",
+                        "calibrated_probability": 0.3789
+                    }]
+                }]
+            }
+        }));
+        state.latest_numeric_result = Some(json!({
+            "event": "numeric_result_changed",
+            "state": { "status": "unknown" },
+            "reason": "incomplete",
+            "event_suppression_reason": "numeric_not_accepted"
+        }));
+
+        let promotion = play_event_promotion_lines(&state, false, 98)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(promotion.contains("PROMOTION BLOCKED"));
+        assert!(promotion.contains("PGREAT confidence margin 0.56 < 1.31"));
+        assert!(!promotion.contains("587"));
+        assert!(!promotion.contains("567"));
+
+        let health = ChannelHealth::default();
+        let backend = TestBackend::new(100, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(frame, &state, Path::new("/run/scorepeek.sock"), &health))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(rendered.contains("Provisional: Play event promotion"));
+        assert!(rendered.contains("PGREAT confidence margin 0.56 < 1.31"));
+        assert!(!rendered.contains("Observation channel"));
+    }
+
+    #[test]
+    fn leaving_result_clears_the_previous_event_promotion_marker() {
+        let mut state = RunViewState::new("invocation-1".to_owned(), "a".repeat(64), true);
+        state.latest_result_detected = Some(json!({
+            "event": "result_detected",
+            "result": { "attempt_id": 1 }
+        }));
+        assert_eq!(play_event_promotion_status(&state).0, "EVENT EMITTED");
+
+        let screen = RunEvent {
+            schema: "scorepeek-run-event-v2".to_owned(),
+            kind: RunEventKind::ScreenChanged {
+                session_id: Some("session-1".to_owned()),
+                capture_generation: Some(1),
+                sequence: 50,
+                monotonic_start_ms: 5_000,
+                monotonic_end_ms: 5_001,
+                screen: "music_select".to_owned(),
+            },
+        };
+        state.reduce(&screen, &screen.to_value().unwrap());
+        state.latest_play_attempt = Some(json!({
+            "state": {
+                "status": "armed",
+                "selected_song": {
+                    "scorepeek_song_id": "00000000-0000-0000-0000-000000000002",
+                    "display_titles": ["NEXT TITLE"],
+                    "artist": "NEXT ARTIST"
+                }
+            }
+        }));
+
+        let (label, _, detail) = play_event_promotion_status(&state);
+        assert_eq!(label, "PROMOTION WAITING");
+        assert_eq!(detail, "song decision");
+    }
+
+    #[test]
+    fn result_history_remains_bounded_and_survives_session_changes() {
         let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
         let mut state = RunViewState::new("invocation-1".to_owned(), "a".repeat(64), true);
         state.stable_result_song = Some(SongPresentation {
@@ -4226,7 +4514,7 @@ mod tests {
             display_titles: vec!["TITLE".to_owned()],
             artist: "ARTIST".to_owned(),
         });
-        for source_sequence in 1..=(RESULT_HISTORY_CAPACITY as u64 + 3) {
+        for source_sequence in 1..=(RESULT_HISTORY_CAPACITY as u64 + 1) {
             let result = detected_result_event(
                 "session-1",
                 1,
@@ -4266,12 +4554,12 @@ mod tests {
             );
             state.reduce(&result, &result.to_value().unwrap());
         }
-        assert_eq!(state.result_count, RESULT_HISTORY_CAPACITY as u64 + 3);
+        assert_eq!(state.result_count, RESULT_HISTORY_CAPACITY as u64 + 1);
         assert_eq!(state.result_history.len(), RESULT_HISTORY_CAPACITY);
-        assert_eq!(state.result_history.front().unwrap().ordinal, 4);
+        assert_eq!(state.result_history.front().unwrap().ordinal, 2);
         assert_eq!(
             state.result_history.back().unwrap().ordinal,
-            RESULT_HISTORY_CAPACITY as u64 + 3
+            RESULT_HISTORY_CAPACITY as u64 + 1
         );
 
         let next_session = RunEvent {
@@ -4284,8 +4572,11 @@ mod tests {
             },
         };
         state.reduce(&next_session, &next_session.to_value().unwrap());
-        assert_eq!(state.result_history.len(), RESULT_HISTORY_CAPACITY);
-        assert_eq!(state.result_count, RESULT_HISTORY_CAPACITY as u64 + 3);
+        assert_eq!(
+            state.result_history.back().unwrap().ordinal,
+            RESULT_HISTORY_CAPACITY as u64 + 1
+        );
+        assert_eq!(state.result_count, RESULT_HISTORY_CAPACITY as u64 + 1);
         assert!(state.stable_result_song.is_none());
     }
 

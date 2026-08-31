@@ -449,10 +449,15 @@ accepted domain events. TTY stdout renders the same typed run state as a TUI, wh
 reports only human-readable state changes.
 
 The TUI treats accepted play results as its primary human-facing output. It retains the newest 32
-results across source-session boundaries within one watcher invocation and formats catalog title,
-artist, clear type, chart, notes, EX score, maximum score, and percentage without exposing the JSON
-payload. This invocation-local view is not persistent score history; machine-readable events remain
-in the observation channel and bounded run-event artifact.
+results across source-session boundaries within one watcher invocation but renders only the latest
+event, with the invocation result count, and formats catalog title, artist, clear type, chart, notes,
+EX score, maximum score, and percentage without exposing the JSON payload. Its provisional promotion
+panel follows the current attempt through selection, decision, gameplay, result linkage, numeric
+acceptance and temporal stability, and reports the first typed blocking reason. Numeric calibration
+failures identify the field, confidence boundary, observed value, and threshold without showing OCR
+candidate strings. Observation-channel health is hidden from the TUI but remains available in the
+machine-readable observation snapshot and non-TTY status output, while event evidence remains in
+bounded artifacts. This invocation-local view is not persistent score history.
 
 The first public interface is a same-user Unix socket at
 `$XDG_RUNTIME_DIR/scorepeek/v1.sock`. It streams versioned NDJSON accepted

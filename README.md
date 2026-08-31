@@ -162,11 +162,14 @@ value, while a different accepted value is shown as a conflict. Music-select son
 stabilizes after 200 ms. A transient unknown retains the prior catalog identity as explicitly
 `HELD`, while a different accepted ID is `CHANGING` until it persists for 200 ms; retained unknown
 state expires after a 200 ms grace. Raw active-list and central-title OCR remain separate and are
-not rewritten by this presentation state. A separate play-attempt panel carries only a stable or
-explicitly held selection through observed `decide_transition`, `play`, and `result` screens. It
-shows matching results as `CONFIRMED`, mismatches as `CONFLICT`, missing path steps as incomplete,
-and result-to-play retries as a new child attempt. This is observational presentation and never
-changes result acceptance.
+not rewritten by this presentation state. The accepted-event panel renders only the latest event
+within the watcher invocation. A provisional promotion panel carries a stable or explicitly held
+selection through observed `decide_transition`, `play`, and `result` screens, then identifies the
+next unsatisfied event gate. It shows matching results as `CONFIRMED`, mismatches as `CONFLICT`,
+missing path steps as incomplete, result-to-play retries as a new child attempt, and calibrated
+mandatory-numeric rejection as a field and confidence-boundary comparison without OCR candidates.
+The observation-channel panel is hidden; this presentation never changes result acceptance or the
+machine-readable channel.
 Redirected stdout contains only deduplicated human-readable state changes. Provisional
 machine-readable observations are available from
 `$XDG_RUNTIME_DIR/scorepeek/observations-v2.sock`: each client receives a current snapshot followed

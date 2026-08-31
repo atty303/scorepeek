@@ -260,6 +260,9 @@ authoritative.
 - [ADR 0087: Specialize fixed-result numeric recognition](0087-specialize-fixed-result-numeric-recognition.md)
   removes PP-OCRv6-small from numeric authority, batches fourteen fixed-ROI fields through a
   private calibrated CTC model, and retains accepted numeric tuples for attempt/event joining.
+- [ADR 0088: Explain domain-event promotion in the TUI](0088-explain-domain-event-promotion-in-the-tui.md)
+  renders only the latest accepted event, turns the play-attempt panel into a typed promotion-gate
+  tracker, and hides the observation-channel panel without changing machine-readable evidence.
 
 ## Historical
 

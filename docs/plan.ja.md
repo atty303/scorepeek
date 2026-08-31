@@ -106,7 +106,7 @@
   profileはrecording/recording manifest/source manifest/probe/coverage label/extraction/normalizer/layout/catalog/model/runtime、全frame span、source pacing、diagnostic
   sampling、coverage labelの全resultを一対一で覆うepisode windowとexact `CLEAR TYPE`をbindする。ADR 0083ではplay/result観測とselectedまたはretry-inherited songの一致をaccepted attemptとし、
   `savable`固定値を廃止した。result v2 eventはattempt ID、5 judgement、typed miss/timing/combo、typed previous-best snapshotを持ち、`current_score == 2 * pgreat + great`を必須とする。
-  ADR 0084ではTUIの常設主面をこのaccepted result eventだけから構成し、judgement、miss/timing/comboおよびprevious-bestを表示する。watcher、play-attempt、frame-local recognition、temporal stateとobservation channelは明示的にdebug表示として分離する。
+  ADR 0084ではTUIの常設主面をこのaccepted result eventだけから構成し、judgement、miss/timing/comboおよびprevious-bestを表示する。ADR 0088ではその表示を最新event 1件に限定し、play-attempt面をevent昇格gateとtyped blocking reasonの追跡表示に変え、observation channel面を非表示にする。machine-readable observationと保持済み履歴は変更しない。
   `play_options`は複数optionの実画像とclosed vocabularyを確定する次checkpointまで追加しない。result presenceは固定headerと2本のpanel境界で判定し、可変な背景色や
   背景絵を使わない。対象録画459 framesでは2 `FAILED`と1 `CLEAR`の3 episode、120 field observations、全song scoring、complete
   diagnosticを同じproduction worker経路で確認済み。これはaccepted result、他clear type、別背景variant、live supportまたは性能の根拠ではない。
