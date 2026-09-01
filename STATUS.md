@@ -11,7 +11,8 @@ outside the checkpoint; implementation history belongs in Git.
   fields continue to use the registered PP-OCRv6-small bundle. Numeric model bytes, real crops,
   complete labels, and generated datasets remain outside the repository.
 - `scorepeek-result-detected-v2` remains the accepted domain contract. Public `/v1.sock` authority,
-  target support, push, release, and target installation are separate unverified boundaries.
+  target support, push, and release remain separate unverified boundaries. The current cargo-dist
+  binary is installed on the operator target, but prospective runtime behavior is not yet verified.
 
 ## Implemented authority
 
@@ -30,8 +31,10 @@ outside the checkpoint; implementation history belongs in Git.
 - The attempt reducer records selection-screen presence even without accepted identity. Sufficient
   result evidence may complete an observed select/play/result path; missing select/retry linkage or
   missing play remains non-authoritative. Confirmed attempt transition precedes the attempt's one
-  domain result event. A MUSIC SELECT boundary clears prior select evidence and prevents retry
-  inheritance; emitted attempt IDs remain deduplicated across transient screen-episode breaks.
+  domain result event. The first boundary out of RESULT closes result-local and attempt-joint debug
+  evidence. A MUSIC SELECT boundary clears the completed attempt even before identity is known and
+  prevents retry inheritance; only a direct RESULT-to-PLAY path inherits. Emitted attempt IDs remain
+  deduplicated across transient screen-episode breaks.
 - Current score and PGREAT/GREAT obey the score invariant. PGREAT/GREAT/GOOD/BAD are individually
   bounded by chart notes. Judgment totals, POOR, miss, FAST/SLOW, and combo break are not bounded by
   notes. Optional values remain typed and do not suppress an otherwise complete performance.
@@ -53,6 +56,9 @@ outside the checkpoint; implementation history belongs in Git.
 ## Verification boundary
 
 - `mise run test` passes, including Rust runtime/corpus tests and the offline OCR tests.
+- Resolver regressions verify that RESULT-to-MUSIC SELECT records typed result and attempt-joint
+  resets, removes the completed attempt from the Resolver snapshot, retains Latest domain, and does
+  not change direct retry inheritance through an UNKNOWN interstitial.
 - The saved target session `run-1788227723-404993416-858800-session-1` was used only as a read-only
   failure oracle. The fixed marker predicate resolves its final selection frames as attempt 1
   NORMAL and attempts 2--6 HYPER, matching operator truth. It was not imported or labeled.
@@ -63,10 +69,15 @@ outside the checkpoint; implementation history belongs in Git.
   acceptance and zero wrong domain events before replacing target authority.
 - Target cadence, stage p50/p95/max, field busy skips, accepted attempts, one event per attempt, and
   event drop count have not yet been re-verified with this source checkpoint.
+- Cargo-dist binary
+  `a77d63d65f519f30acff3d171dcddcdf58b869b463083f4ed1186539c7252f43` is installed at
+  `/home/atty/.local/bin/scorepeek` on `infinitas.lan`; remote hash, version 0.1.0, doctor, and active
+  numeric model identity were read back. PID 944238 was still executing the replaced binary with a
+  different hash, so a fresh target run requires an operator restart.
 
 ## Next executable task
 
 Build the replacement reviewed corpus, implement the v4 attempt-policy evaluator and its `mise`
 entry point, then run it and inspect wrong or unresolved joint outcomes before changing policy
-constants. Target installation and prospective session validation remain a separate explicit
-request.
+constants. After restarting the installed binary, prospective session validation remains the next
+target boundary.

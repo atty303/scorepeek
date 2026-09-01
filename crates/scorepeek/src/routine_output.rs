@@ -1157,6 +1157,7 @@ pub struct RoutineOutput {
     music_select_challenger: HypothesisAccumulator,
     retained_select: HypothesisAccumulator,
     result_hypotheses: HypothesisAccumulator,
+    result_resolver_active: bool,
     resolver_transitions: BTreeMap<ResolverScope, ResolverTransitionIdentity>,
     attempt_started_ms: Option<u64>,
     attempt_phase_started_ms: Option<u64>,
@@ -1275,6 +1276,7 @@ impl RoutineOutput {
             music_select_challenger: HypothesisAccumulator::default(),
             retained_select: HypothesisAccumulator::default(),
             result_hypotheses: HypothesisAccumulator::default(),
+            result_resolver_active: false,
             attempt_started_ms: None,
             attempt_phase_started_ms: None,
             event_store,
@@ -1339,6 +1341,7 @@ impl RoutineOutput {
                 self.music_select_challenger = HypothesisAccumulator::default();
                 self.retained_select = HypothesisAccumulator::default();
                 self.result_hypotheses = HypothesisAccumulator::default();
+                self.result_resolver_active = false;
                 self.resolver_transitions.clear();
                 self.attempt_started_ms = None;
                 self.attempt_phase_started_ms = None;
@@ -1969,6 +1972,16 @@ impl RoutineOutput {
         self.screen_episode_id = *screen_episode_id;
         self.screen_episode_started_ms = Some(*monotonic_end_ms);
         self.screen_episode_last_ms = Some(*monotonic_end_ms);
+        let close_result_resolver = screen != "result" && self.result_resolver_active;
+        if close_result_resolver {
+            self.result_resolver_active = false;
+            self.result_hypotheses = HypothesisAccumulator::default();
+            self.retained_select = HypothesisAccumulator::default();
+            self.resolver_transitions.remove(&ResolverScope::Result);
+            self.resolver_transitions
+                .remove(&ResolverScope::AttemptJoint);
+        }
+        let mut selection_screen_attempt_update = None;
         if screen == "music_select" {
             self.music_select_current = HypothesisAccumulator::default();
             self.music_select_challenger = HypothesisAccumulator::default();
@@ -1977,9 +1990,10 @@ impl RoutineOutput {
                 .remove(&ResolverScope::MusicSelectCurrent);
             self.resolver_transitions
                 .remove(&ResolverScope::MusicSelectChallenger);
-            self.play_attempt.observe_selection_screen();
+            selection_screen_attempt_update = self.play_attempt.observe_selection_screen();
         }
         if screen == "result" {
+            self.result_resolver_active = true;
             self.result_hypotheses = HypothesisAccumulator::default();
             self.resolver_transitions.remove(&ResolverScope::Result);
             self.resolver_transitions
@@ -1996,6 +2010,24 @@ impl RoutineOutput {
         }
         self.publish_one(event)?;
         let unresolved = HypothesisAccumulator::default().summary();
+        if close_result_resolver {
+            self.publish_resolver_transition(
+                session_id.as_ref(),
+                *capture_generation,
+                *sequence,
+                ResolverScope::Result,
+                &unresolved,
+                0,
+            )?;
+            self.publish_resolver_transition(
+                session_id.as_ref(),
+                *capture_generation,
+                *sequence,
+                ResolverScope::AttemptJoint,
+                &unresolved,
+                0,
+            )?;
+        }
         if screen == "music_select" {
             self.publish_resolver_transition(
                 session_id.as_ref(),
@@ -2035,6 +2067,16 @@ impl RoutineOutput {
         if let Some(attempt_screen) = play_attempt_screen(screen)
             && let Some(state) = self.play_attempt.observe_screen(attempt_screen, *sequence)
         {
+            self.publish_play_attempt_update(
+                session_id.clone(),
+                *capture_generation,
+                Some(*sequence),
+                state,
+            )?;
+        }
+        if let Some(state) = selection_screen_attempt_update {
+            self.attempt_started_ms = None;
+            self.attempt_phase_started_ms = None;
             self.publish_play_attempt_update(
                 session_id.clone(),
                 *capture_generation,
@@ -2941,6 +2983,7 @@ mod tests {
             music_select_challenger: HypothesisAccumulator::default(),
             retained_select: HypothesisAccumulator::default(),
             result_hypotheses: HypothesisAccumulator::default(),
+            result_resolver_active: false,
             resolver_transitions: BTreeMap::new(),
             attempt_started_ms: None,
             attempt_phase_started_ms: None,
@@ -3275,6 +3318,36 @@ mod tests {
         assert_eq!(read_events(reader, 1)[0]["event"], "field_observation");
         output.publish(&screen_event(11, "unknown")).unwrap();
         assert_eq!(read_events(reader, 1)[0]["event"], "screen_changed");
+    }
+
+    fn return_to_music_select_closes_result_resolver(
+        output: &mut RoutineOutput,
+        reader: &mut BufReader<UnixStream>,
+    ) -> Value {
+        output.publish(&screen_event(15, "music_select")).unwrap();
+        let mut boundary_events = Vec::new();
+        while boundary_events.len() < 8 {
+            let event = read_raw_event(reader);
+            let complete = event["event"] == "temporal_result_changed";
+            boundary_events.push(event);
+            if complete {
+                break;
+            }
+        }
+        let reset_scopes = boundary_events
+            .iter()
+            .filter(|event| {
+                event["event"] == "resolver_state_changed" && event["state"] == "unresolved"
+            })
+            .filter_map(|event| event["scope"].as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(reset_scopes.contains("result"));
+        assert!(reset_scopes.contains("attempt_joint"));
+        assert!(boundary_events.iter().any(|event| {
+            event["event"] == "play_attempt_changed" && event["state"]["status"] == "idle"
+        }));
+
+        read_snapshot(&output.channel.socket_path)
     }
 
     fn read_snapshot(socket_path: &Path) -> Value {
@@ -3809,11 +3882,16 @@ mod tests {
             "accepted: result_detected emitted"
         );
 
-        output.publish(&screen_event(15, "music_select")).unwrap();
-        let snapshot = read_snapshot(&output.channel.socket_path);
+        let snapshot = return_to_music_select_closes_result_resolver(&mut output, &mut reader);
         assert_eq!(
             snapshot["state"]["latest_result_detected"]["result"]["contract"],
             "scorepeek-result-detected-v2"
+        );
+        assert_eq!(snapshot["state"]["resolver"]["screen"], "music_select");
+        assert_eq!(snapshot["state"]["resolver"]["attempt"], Value::Null);
+        assert_eq!(
+            snapshot["state"]["resolver"]["gate"],
+            "waiting: joint identity"
         );
 
         for sequence in 16..=18 {
@@ -3823,6 +3901,17 @@ mod tests {
         }
         let snapshot = read_snapshot(&output.channel.socket_path);
         assert_eq!(snapshot["state"]["resolver"]["attempt"]["phase"], "armed");
+        let retained_observations = output.retained_select.observation_count;
+        assert!(retained_observations > 0);
+
+        output
+            .publish(&screen_event(19, "decide_transition"))
+            .unwrap();
+        assert_eq!(
+            output.retained_select.observation_count,
+            retained_observations
+        );
+        assert!(!output.result_resolver_active);
     }
 
     #[test]

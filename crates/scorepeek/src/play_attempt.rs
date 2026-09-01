@@ -140,8 +140,22 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
         *self = Self::default();
     }
 
-    pub fn observe_selection_screen(&mut self) {
+    pub fn observe_selection_screen(&mut self) -> Option<PlayAttemptState<S>> {
+        let previous = self.state.clone();
         self.selection_screen_observed = true;
+        if matches!(
+            self.state,
+            PlayAttemptState::Attempt {
+                attempt: PlayAttempt {
+                    phase: PlayAttemptPhase::Result,
+                    ..
+                }
+            } | PlayAttemptState::UnlinkedResult { .. }
+        ) {
+            self.selection_handoff = None;
+            self.state = PlayAttemptState::Idle;
+        }
+        (self.state != previous).then(|| self.state.clone())
     }
 
     #[must_use]
@@ -566,7 +580,7 @@ mod tests {
     #[test]
     fn observed_select_without_identity_is_linked_by_later_joint_result() {
         let mut reducer = PlayAttemptReducer::default();
-        reducer.observe_selection_screen();
+        let _ = reducer.observe_selection_screen();
         reducer.observe_screen(PlayAttemptScreen::Play, 10);
         reducer.observe_screen(PlayAttemptScreen::Result, 20);
         reducer.observe_stable_result(7);
@@ -631,21 +645,17 @@ mod tests {
     }
 
     #[test]
-    fn result_survives_select_and_pending_until_the_next_selection_is_armed() {
+    fn selection_screen_closes_completed_result_before_identity_is_known() {
         let mut reducer = PlayAttemptReducer::default();
         reducer.observe_selection(Some(7), Some(SelectionSource::Stable), 9);
         reducer.observe_screen(PlayAttemptScreen::DecideTransition, 10);
         reducer.observe_screen(PlayAttemptScreen::Play, 11);
         reducer.observe_screen(PlayAttemptScreen::Result, 12);
         reducer.observe_stable_result(7);
-        let result = reducer.state().clone();
-
-        assert_eq!(
-            reducer.observe_screen(PlayAttemptScreen::MusicSelect, 13),
-            None
-        );
+        let update = reducer.observe_selection_screen().unwrap();
+        assert_eq!(update, PlayAttemptState::Idle);
         assert!(reducer.observe_selection(None, None, 14).is_empty());
-        assert_eq!(reducer.state(), &result);
+        assert_eq!(reducer.state(), &PlayAttemptState::Idle);
 
         let updates = reducer.observe_selection(Some(8), Some(SelectionSource::Stable), 15);
         let armed = updates.last().unwrap();
@@ -718,6 +728,26 @@ mod tests {
     }
 
     #[test]
+    fn unknown_between_result_and_play_preserves_direct_retry_inheritance() {
+        let mut reducer = PlayAttemptReducer::default();
+        reducer.observe_selection(Some(7), Some(SelectionSource::Stable), 9);
+        reducer.observe_screen(PlayAttemptScreen::Play, 10);
+        reducer.observe_screen(PlayAttemptScreen::Result, 11);
+        reducer.observe_stable_result(7);
+
+        reducer.observe_screen(PlayAttemptScreen::Unknown, 12);
+        reducer.observe_screen(PlayAttemptScreen::Play, 13);
+
+        let retry = attempt(reducer.state());
+        assert_eq!(retry.parent_attempt_id, Some(1));
+        assert_eq!(retry.selected_song, Some(7));
+        assert_eq!(
+            retry.selection_source,
+            Some(SelectionSource::RetryInherited)
+        );
+    }
+
+    #[test]
     fn observed_select_after_result_starts_a_fresh_unidentified_attempt() {
         let mut reducer = PlayAttemptReducer::default();
         reducer.observe_selection(Some(7), Some(SelectionSource::EvidenceAccepted), 9);
@@ -725,7 +755,7 @@ mod tests {
         reducer.observe_screen(PlayAttemptScreen::Result, 11);
         reducer.observe_stable_result(7);
 
-        reducer.observe_selection_screen();
+        let _ = reducer.observe_selection_screen();
         reducer.observe_screen(PlayAttemptScreen::Play, 12);
 
         let fresh = attempt(reducer.state());
