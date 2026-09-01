@@ -45,8 +45,8 @@ fn duration_us(duration: Duration) -> u64 {
 const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const RESULT_HISTORY_CAPACITY: usize = 32;
-const SOCKET_NAME: &str = "observations-v4.sock";
-const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v4";
+const SOCKET_NAME: &str = "observations-v5.sock";
+const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v5";
 const NUMERIC_REQUIRED_OBSERVATIONS: u8 = 2;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -228,6 +228,18 @@ pub enum RunEventKind {
         runner_up_family_support: BTreeMap<EvidenceFamily, EvidenceContribution>,
         observation_count: u32,
     },
+    SelectionDifficultyChanged {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        capture_generation: Option<u64>,
+        screen_episode_id: u64,
+        source_sequence: u64,
+        target: SelectionDifficultyTarget,
+        reason: SelectionDifficultyTransitionReason,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        current: Option<CurrentSelectionDifficulty>,
+    },
     SessionFinished {
         session_id: String,
         capture_generation: u64,
@@ -369,6 +381,23 @@ pub enum ResolverResolutionState {
     Conflict,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionDifficultyTarget {
+    Pending,
+    Incumbent,
+    Successor,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionDifficultyTransitionReason {
+    Changed,
+    PendingApplied,
+    TargetSwitch,
+    Reset,
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct JointKey {
     song_id: ScorepeekSongId,
@@ -430,11 +459,52 @@ struct RankedHypothesis<'a> {
 #[derive(Clone, Debug, Default)]
 struct HypothesisAccumulator {
     candidates: BTreeMap<JointKey, AccumulatedHypothesis>,
-    select_difficulty_support: BTreeMap<Difficulty, u64>,
+    select_difficulty: Option<CurrentSelectionDifficulty>,
     result_chart_factors: BTreeMap<ResultChartFactor, u64>,
     first_observation_ms: Option<u64>,
     last_observation_ms: Option<u64>,
     observation_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CurrentSelectionDifficulty {
+    difficulty: Difficulty,
+    consecutive_known: u32,
+    first_sequence: u64,
+    last_sequence: u64,
+    first_monotonic_ms: u64,
+    last_monotonic_ms: u64,
+}
+
+impl CurrentSelectionDifficulty {
+    fn observed(difficulty: Difficulty, sequence: u64, monotonic_ms: u64) -> Self {
+        Self {
+            difficulty,
+            consecutive_known: 1,
+            first_sequence: sequence,
+            last_sequence: sequence,
+            first_monotonic_ms: monotonic_ms,
+            last_monotonic_ms: monotonic_ms,
+        }
+    }
+
+    fn observe(&mut self, difficulty: Difficulty, sequence: u64, monotonic_ms: u64) -> bool {
+        if sequence <= self.last_sequence || monotonic_ms < self.last_monotonic_ms {
+            return false;
+        }
+        if self.difficulty != difficulty {
+            *self = Self::observed(difficulty, sequence, monotonic_ms);
+            return true;
+        }
+        self.consecutive_known = self.consecutive_known.saturating_add(1);
+        self.last_sequence = sequence;
+        self.last_monotonic_ms = monotonic_ms;
+        false
+    }
+
+    fn support(self) -> u64 {
+        u64::from(self.consecutive_known).saturating_mul(50)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -469,8 +539,9 @@ impl HypothesisSummary {
 }
 
 impl HypothesisAccumulator {
-    fn observe(
+    fn observe_at(
         &mut self,
+        sequence: u64,
         monotonic_ms: u64,
         observation: &JointEvidenceObservation,
         select_difficulty: Option<Difficulty>,
@@ -503,16 +574,29 @@ impl HypothesisAccumulator {
             }
         }
         if let Some(difficulty) = select_difficulty {
-            let value = self
-                .select_difficulty_support
-                .entry(difficulty)
-                .or_default();
-            *value = value.saturating_add(50);
+            self.observe_select_difficulty(difficulty, sequence, monotonic_ms);
         }
         if let Some(factor) = result_chart_factor {
             let value = self.result_chart_factors.entry(factor).or_default();
             *value = value.saturating_add(1);
         }
+    }
+
+    #[cfg(test)]
+    fn observe(
+        &mut self,
+        monotonic_ms: u64,
+        observation: &JointEvidenceObservation,
+        select_difficulty: Option<Difficulty>,
+        result_chart_factor: Option<ResultChartFactor>,
+    ) {
+        self.observe_at(
+            monotonic_ms,
+            monotonic_ms,
+            observation,
+            select_difficulty,
+            result_chart_factor,
+        );
     }
 
     fn add_from(&mut self, other: &Self) {
@@ -533,13 +617,7 @@ impl HypothesisAccumulator {
                 *value = value.saturating_add(*support);
             }
         }
-        for (difficulty, support) in &other.select_difficulty_support {
-            let value = self
-                .select_difficulty_support
-                .entry(*difficulty)
-                .or_default();
-            *value = value.saturating_add(*support);
-        }
+        self.adopt_newer_select_difficulty(other.select_difficulty);
         for (factor, observations) in &other.result_chart_factors {
             let value = self.result_chart_factors.entry(*factor).or_default();
             *value = value.saturating_add(*observations);
@@ -553,11 +631,10 @@ impl HypothesisAccumulator {
     fn summary(&self) -> HypothesisSummary {
         let mut expanded = self.candidates.clone();
         for accumulated in expanded.values_mut() {
-            let select_chart = self
-                .select_difficulty_support
-                .get(&accumulated.candidate.chart.key.difficulty)
-                .copied()
-                .unwrap_or(0);
+            let select_chart = self.select_difficulty.map_or(0, |current| {
+                u64::from(current.difficulty == accumulated.candidate.chart.key.difficulty)
+                    * current.support()
+            });
             if select_chart > 0 {
                 accumulated
                     .family_support
@@ -697,6 +774,33 @@ impl HypothesisAccumulator {
                 .map_or_else(BTreeMap::new, |value| value.family_support.clone()),
         }
     }
+
+    fn observe_select_difficulty(
+        &mut self,
+        difficulty: Difficulty,
+        sequence: u64,
+        monotonic_ms: u64,
+    ) -> bool {
+        if let Some(current) = &mut self.select_difficulty {
+            current.observe(difficulty, sequence, monotonic_ms)
+        } else {
+            self.select_difficulty = Some(CurrentSelectionDifficulty::observed(
+                difficulty,
+                sequence,
+                monotonic_ms,
+            ));
+            true
+        }
+    }
+
+    fn adopt_newer_select_difficulty(&mut self, incoming: Option<CurrentSelectionDifficulty>) {
+        if incoming.is_some_and(|value| {
+            self.select_difficulty
+                .is_none_or(|current| value.last_sequence > current.last_sequence)
+        }) {
+            self.select_difficulty = incoming;
+        }
+    }
 }
 
 fn normalize_family_support(raw: u64, maximum: u64) -> u16 {
@@ -748,55 +852,202 @@ struct SelectionEpochTracker {
     successor: HypothesisAccumulator,
     incumbent_songs: BTreeSet<ScorepeekSongId>,
     successor_songs: BTreeSet<ScorepeekSongId>,
-    pending_difficulty_support: BTreeMap<Difficulty, u64>,
+    pending_difficulty: Option<CurrentSelectionDifficulty>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SelectionDifficultyTransition {
+    target: SelectionDifficultyTarget,
+    reason: SelectionDifficultyTransitionReason,
+    current: Option<CurrentSelectionDifficulty>,
 }
 
 impl SelectionEpochTracker {
-    fn observe(
+    fn active_difficulty_state(
+        &self,
+    ) -> Option<(
+        SelectionDifficultyTarget,
+        Option<CurrentSelectionDifficulty>,
+    )> {
+        if self.successor.observation_count > 0 {
+            Some((
+                SelectionDifficultyTarget::Successor,
+                self.successor.select_difficulty,
+            ))
+        } else if self.incumbent.observation_count > 0 {
+            Some((
+                SelectionDifficultyTarget::Incumbent,
+                self.incumbent.select_difficulty,
+            ))
+        } else {
+            self.pending_difficulty
+                .map(|current| (SelectionDifficultyTarget::Pending, Some(current)))
+        }
+    }
+
+    fn observe_at(
         &mut self,
+        sequence: u64,
         monotonic_ms: u64,
         evidence: &JointEvidenceObservation,
         difficulty: Option<Difficulty>,
-    ) {
+    ) -> Vec<SelectionDifficultyTransition> {
+        let previous_target = self.active_difficulty_state();
+        let mut transitions = Vec::new();
         let credible = credible_song_set(evidence);
         if credible.is_empty() {
-            if let Some(difficulty) = difficulty {
-                let support = self
-                    .pending_difficulty_support
-                    .entry(difficulty)
-                    .or_default();
-                *support = support.saturating_add(50);
-            }
-            return;
+            let mut transitions = difficulty.map_or_else(Vec::new, |difficulty| {
+                self.observe_difficulty_only(sequence, monotonic_ms, difficulty)
+            });
+            push_target_switch(
+                &mut transitions,
+                previous_target,
+                self.active_difficulty_state(),
+            );
+            return transitions;
         }
         if self.incumbent.observation_count == 0 {
-            merge_pending_difficulty(&mut self.incumbent, &mut self.pending_difficulty_support);
+            if let Some(pending) = self.pending_difficulty.take() {
+                self.incumbent.select_difficulty = Some(pending);
+                transitions.push(SelectionDifficultyTransition {
+                    target: SelectionDifficultyTarget::Incumbent,
+                    reason: SelectionDifficultyTransitionReason::PendingApplied,
+                    current: Some(pending),
+                });
+            }
+            let previous = self.incumbent.select_difficulty;
             self.incumbent
-                .observe(monotonic_ms, evidence, difficulty, None);
+                .observe_at(sequence, monotonic_ms, evidence, difficulty, None);
+            push_difficulty_change(
+                &mut transitions,
+                SelectionDifficultyTarget::Incumbent,
+                previous,
+                self.incumbent.select_difficulty,
+            );
             self.incumbent_songs.extend(credible);
-            return;
+            push_target_switch(
+                &mut transitions,
+                previous_target,
+                self.active_difficulty_state(),
+            );
+            return transitions;
         }
         if !self.incumbent_songs.is_disjoint(&credible) {
-            merge_pending_difficulty(&mut self.incumbent, &mut self.pending_difficulty_support);
+            let previous = self.incumbent.select_difficulty;
             self.incumbent
-                .observe(monotonic_ms, evidence, difficulty, None);
+                .observe_at(sequence, monotonic_ms, evidence, difficulty, None);
+            push_difficulty_change(
+                &mut transitions,
+                SelectionDifficultyTarget::Incumbent,
+                previous,
+                self.incumbent.select_difficulty,
+            );
             self.incumbent_songs.extend(credible);
+            if self.successor.select_difficulty.is_some() {
+                transitions.push(SelectionDifficultyTransition {
+                    target: SelectionDifficultyTarget::Successor,
+                    reason: SelectionDifficultyTransitionReason::Reset,
+                    current: None,
+                });
+            }
             self.successor = HypothesisAccumulator::default();
             self.successor_songs.clear();
-            return;
+            push_target_switch(
+                &mut transitions,
+                previous_target,
+                self.active_difficulty_state(),
+            );
+            return transitions;
         }
         if !self.successor_songs.is_empty() && self.successor_songs.is_disjoint(&credible) {
+            if self.successor.select_difficulty.is_some() {
+                transitions.push(SelectionDifficultyTransition {
+                    target: SelectionDifficultyTarget::Successor,
+                    reason: SelectionDifficultyTransitionReason::Reset,
+                    current: None,
+                });
+            }
             self.successor = HypothesisAccumulator::default();
             self.successor_songs.clear();
         }
-        merge_pending_difficulty(&mut self.successor, &mut self.pending_difficulty_support);
+        let previous = self.successor.select_difficulty;
         self.successor
-            .observe(monotonic_ms, evidence, difficulty, None);
+            .observe_at(sequence, monotonic_ms, evidence, difficulty, None);
+        push_difficulty_change(
+            &mut transitions,
+            SelectionDifficultyTarget::Successor,
+            previous,
+            self.successor.select_difficulty,
+        );
         self.successor_songs.extend(credible);
         if self.successor.summary().support >= SELECTION_CHANGE_MARGIN {
             self.incumbent = std::mem::take(&mut self.successor);
             self.incumbent_songs = std::mem::take(&mut self.successor_songs);
         }
+        push_target_switch(
+            &mut transitions,
+            previous_target,
+            self.active_difficulty_state(),
+        );
+        transitions
+    }
+
+    fn observe_difficulty_only(
+        &mut self,
+        sequence: u64,
+        monotonic_ms: u64,
+        difficulty: Difficulty,
+    ) -> Vec<SelectionDifficultyTransition> {
+        let (target, changed, current) = if self.successor.observation_count > 0 {
+            let changed =
+                self.successor
+                    .observe_select_difficulty(difficulty, sequence, monotonic_ms);
+            (
+                SelectionDifficultyTarget::Successor,
+                changed,
+                self.successor.select_difficulty,
+            )
+        } else if self.incumbent.observation_count > 0 {
+            let changed =
+                self.incumbent
+                    .observe_select_difficulty(difficulty, sequence, monotonic_ms);
+            (
+                SelectionDifficultyTarget::Incumbent,
+                changed,
+                self.incumbent.select_difficulty,
+            )
+        } else {
+            let changed = observe_current_difficulty(
+                &mut self.pending_difficulty,
+                difficulty,
+                sequence,
+                monotonic_ms,
+            );
+            (
+                SelectionDifficultyTarget::Pending,
+                changed,
+                self.pending_difficulty,
+            )
+        };
+        if changed {
+            vec![SelectionDifficultyTransition {
+                target,
+                reason: SelectionDifficultyTransitionReason::Changed,
+                current,
+            }]
+        } else {
+            Vec::new()
+        }
+    }
+
+    #[cfg(test)]
+    fn observe(
+        &mut self,
+        monotonic_ms: u64,
+        evidence: &JointEvidenceObservation,
+        difficulty: Option<Difficulty>,
+    ) -> Vec<SelectionDifficultyTransition> {
+        self.observe_at(monotonic_ms, monotonic_ms, evidence, difficulty)
     }
 
     fn handoff(&self) -> HypothesisAccumulator {
@@ -808,16 +1059,68 @@ impl SelectionEpochTracker {
     }
 }
 
-fn merge_pending_difficulty(
-    accumulator: &mut HypothesisAccumulator,
-    pending: &mut BTreeMap<Difficulty, u64>,
+fn observe_current_difficulty(
+    current: &mut Option<CurrentSelectionDifficulty>,
+    difficulty: Difficulty,
+    sequence: u64,
+    monotonic_ms: u64,
+) -> bool {
+    if let Some(current) = current {
+        current.observe(difficulty, sequence, monotonic_ms)
+    } else {
+        *current = Some(CurrentSelectionDifficulty::observed(
+            difficulty,
+            sequence,
+            monotonic_ms,
+        ));
+        true
+    }
+}
+
+fn push_difficulty_change(
+    transitions: &mut Vec<SelectionDifficultyTransition>,
+    target: SelectionDifficultyTarget,
+    previous: Option<CurrentSelectionDifficulty>,
+    current: Option<CurrentSelectionDifficulty>,
 ) {
-    for (difficulty, support) in std::mem::take(pending) {
-        let target = accumulator
-            .select_difficulty_support
-            .entry(difficulty)
-            .or_default();
-        *target = target.saturating_add(support);
+    if previous.map(|value| value.difficulty) != current.map(|value| value.difficulty) {
+        transitions.push(SelectionDifficultyTransition {
+            target,
+            reason: SelectionDifficultyTransitionReason::Changed,
+            current,
+        });
+    }
+}
+
+fn push_target_switch(
+    transitions: &mut Vec<SelectionDifficultyTransition>,
+    previous: Option<(
+        SelectionDifficultyTarget,
+        Option<CurrentSelectionDifficulty>,
+    )>,
+    current: Option<(
+        SelectionDifficultyTarget,
+        Option<CurrentSelectionDifficulty>,
+    )>,
+) {
+    let Some((target, current)) = current else {
+        return;
+    };
+    if previous.map(|(target, _)| target) != Some(target)
+        && !transitions.iter().any(|transition| {
+            transition.target == target
+                && matches!(
+                    transition.reason,
+                    SelectionDifficultyTransitionReason::Changed
+                        | SelectionDifficultyTransitionReason::PendingApplied
+                )
+        })
+    {
+        transitions.push(SelectionDifficultyTransition {
+            target,
+            reason: SelectionDifficultyTransitionReason::TargetSwitch,
+            current,
+        });
     }
 }
 
@@ -915,6 +1218,8 @@ struct ResolverDebugSnapshot {
     source_sequence: Option<u64>,
     latest_field_sequence: Option<u64>,
     latest_field_ms: Option<u64>,
+    selection_difficulty_target: Option<SelectionDifficultyTarget>,
+    selection_difficulty: Option<CurrentSelectionDifficulty>,
     local: Option<ResolverNodeSnapshot>,
     successor: Option<ResolverNodeSnapshot>,
     attempt: Option<AttemptNodeSnapshot>,
@@ -954,6 +1259,7 @@ struct ResolverNodeSnapshot {
     song_margin: u16,
     chart_margin: u16,
     family_contributions: Vec<String>,
+    current_difficulty: Option<CurrentSelectionDifficulty>,
     state: ResolverResolutionState,
 }
 
@@ -1055,7 +1361,9 @@ impl RunViewState {
                 SemanticEpisodePhase::Finalized => self.current_screen = None,
                 SemanticEpisodePhase::Suspended | SemanticEpisodePhase::Closing => {}
             },
-            RunEventKind::ScreenTick { .. } | RunEventKind::ResolverStateChanged { .. } => {}
+            RunEventKind::ScreenTick { .. }
+            | RunEventKind::ResolverStateChanged { .. }
+            | RunEventKind::SelectionDifficultyChanged { .. } => {}
             RunEventKind::FieldObservation { .. } => {
                 self.latest_observation = Some(serialized.clone());
             }
@@ -1368,7 +1676,7 @@ fn accept_clients(
 fn snapshot_bytes(state: &Arc<Mutex<RunViewState>>, health: &ChannelHealth) -> Option<Vec<u8>> {
     let state = state.lock().ok()?.clone();
     let mut bytes = serde_json::to_vec(&json!({
-            "schema": "scorepeek-run-observation-snapshot-v4",
+            "schema": "scorepeek-run-observation-snapshot-v5",
         "state": state,
         "channel": health.value(),
     }))
@@ -1691,6 +1999,7 @@ impl RoutineOutput {
             | RunEventKind::NumericResultChanged { .. }
             | RunEventKind::PlayAttemptChanged { .. }
             | RunEventKind::ResolverStateChanged { .. }
+            | RunEventKind::SelectionDifficultyChanged { .. }
             | RunEventKind::ResultDetected { .. } => self.publish_one(event),
         }
     }
@@ -1890,7 +2199,8 @@ impl RoutineOutput {
         joint_evidence: &JointEvidenceObservation,
         _song_resolution_presentation: &SongResolutionPresentation,
     ) -> Result<(), String> {
-        self.engine.result_hypotheses.observe(
+        self.engine.result_hypotheses.observe_at(
+            sequence,
             monotonic_end_ms,
             joint_evidence,
             None,
@@ -2219,11 +2529,26 @@ impl RoutineOutput {
         joint_evidence: &JointEvidenceObservation,
         _presentation: &SongResolutionPresentation,
     ) -> Result<(), String> {
-        self.engine.selection_epochs.observe(
+        let difficulty_transitions = self.engine.selection_epochs.observe_at(
+            sequence,
             monotonic_end_ms,
             joint_evidence,
             selected_difficulty(fields),
         );
+        for transition in difficulty_transitions {
+            self.publish_one(&RunEvent {
+                schema: RUN_EVENT_SCHEMA.to_owned(),
+                kind: RunEventKind::SelectionDifficultyChanged {
+                    session_id: session_id.cloned(),
+                    capture_generation,
+                    screen_episode_id: self.screen_episode_id,
+                    source_sequence: sequence,
+                    target: transition.target,
+                    reason: transition.reason,
+                    current: transition.current,
+                },
+            })?;
+        }
         let current_summary = self.engine.selection_epochs.incumbent.summary();
         self.publish_resolver_transition(
             session_id,
@@ -2275,6 +2600,9 @@ impl RoutineOutput {
         self.screen_episode_started_ms = Some(*monotonic_end_ms);
         self.screen_episode_last_ms = Some(*monotonic_end_ms);
         let close_result_resolver = screen != "result" && self.result_resolver_active;
+        let selection_difficulty_reset = (screen == "music_select")
+            .then(|| self.engine.selection_epochs.active_difficulty_state())
+            .flatten();
         if close_result_resolver {
             self.result_resolver_active = false;
             self.engine.result_hypotheses = HypothesisAccumulator::default();
@@ -2315,6 +2643,20 @@ impl RoutineOutput {
         }
         if publish_event {
             self.publish_one(event)?;
+        }
+        if let Some((target, _)) = selection_difficulty_reset {
+            self.publish_one(&RunEvent {
+                schema: RUN_EVENT_SCHEMA.to_owned(),
+                kind: RunEventKind::SelectionDifficultyChanged {
+                    session_id: session_id.clone(),
+                    capture_generation: *capture_generation,
+                    screen_episode_id: *screen_episode_id,
+                    source_sequence: *sequence,
+                    target,
+                    reason: SelectionDifficultyTransitionReason::Reset,
+                    current: None,
+                },
+            })?;
         }
         let unresolved = HypothesisAccumulator::default().summary();
         if close_result_resolver {
@@ -2609,6 +2951,7 @@ impl RoutineOutput {
         let latest_field_ms = raw_fields
             .map(|_| now_ms)
             .or(state.resolver.latest_field_ms);
+        let selection_difficulty = self.engine.selection_epochs.active_difficulty_state();
         state.resolver = ResolverDebugSnapshot {
             now_ms,
             raw_screen: state.raw_screen.clone(),
@@ -2620,6 +2963,8 @@ impl RoutineOutput {
             source_sequence,
             latest_field_sequence,
             latest_field_ms,
+            selection_difficulty_target: selection_difficulty.map(|(target, _)| target),
+            selection_difficulty: selection_difficulty.and_then(|(_, current)| current),
             local,
             successor,
             attempt,
@@ -2843,6 +3188,7 @@ fn resolver_node(
         song_margin: summary.song_margin,
         chart_margin: summary.chart_margin,
         family_contributions: family_contribution_labels(&summary.selected_family_support),
+        current_difficulty: accumulator.select_difficulty,
         state: summary.state,
     }
 }
@@ -3283,16 +3629,43 @@ fn resolver_lines(snapshot: &ResolverDebugSnapshot, available_width: usize) -> V
         ),
         Style::default().fg(Color::White),
     )));
-    lines.push(Line::from(fitted_value(
-        "│  TYPED ",
-        &raw.iter()
-            .skip(3)
-            .take(4)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(" "),
-        available_width,
-    )));
+    let marker = snapshot
+        .raw_fields
+        .iter()
+        .find(|(key, _)| key == "marker")
+        .map_or("absent", |(_, value)| value.as_str());
+    let marker_compact = marker.split_whitespace().next().unwrap_or(marker);
+    let current_difficulty = snapshot.selection_difficulty;
+    lines.push(Line::from(vec![
+        Span::styled("│  DIFF marker ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            marker_compact.to_owned(),
+            Style::default().fg(marker_color(marker)),
+        ),
+        Span::raw(" → current "),
+        Span::styled(
+            current_difficulty.map_or_else(
+                || "absent".to_owned(),
+                |current| {
+                    format!(
+                        "{} streak={} target={}",
+                        difficulty_label(current.difficulty),
+                        current.consecutive_known,
+                        snapshot
+                            .selection_difficulty_target
+                            .map_or("-", |target| match target {
+                                SelectionDifficultyTarget::Pending => "pending",
+                                SelectionDifficultyTarget::Incumbent => "incumbent",
+                                SelectionDifficultyTarget::Successor => "successor",
+                            })
+                    )
+                },
+            ),
+            Style::default().fg(current_difficulty.map_or(Color::DarkGray, |current| {
+                difficulty_color(current.difficulty)
+            })),
+        ),
+    ]));
     if let Some(local) = &snapshot.local {
         lines.push(Line::from(vec![
             Span::styled("├─ LOCAL ", Style::default().fg(Color::DarkGray)),
@@ -3479,6 +3852,28 @@ const fn difficulty_color(difficulty: Difficulty) -> Color {
         Difficulty::Hyper => Color::Yellow,
         Difficulty::Another => Color::Red,
         Difficulty::Leggendaria => Color::Magenta,
+    }
+}
+
+fn marker_color(marker: &str) -> Color {
+    if marker.starts_with("known:") {
+        if marker.contains("beginner") {
+            Color::Green
+        } else if marker.contains("normal") {
+            Color::Blue
+        } else if marker.contains("hyper") {
+            Color::Yellow
+        } else if marker.contains("another") {
+            Color::Red
+        } else if marker.contains("leggendaria") {
+            Color::Magenta
+        } else {
+            Color::White
+        }
+    } else if marker == "absent" {
+        Color::DarkGray
+    } else {
+        Color::Yellow
     }
 }
 
@@ -3918,7 +4313,7 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         let snapshot: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v4");
+        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v5");
         assert_eq!(snapshot["state"]["invocation_id"], "invocation-1");
         assert_eq!(snapshot["state"]["next_channel_sequence"], 1);
         assert_eq!(snapshot["channel"]["connected_clients"], 1);
@@ -4273,7 +4668,7 @@ mod tests {
         for reader in &mut readers {
             let mut snapshot = String::new();
             reader.read_line(&mut snapshot).unwrap();
-            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v4"));
+            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v5"));
         }
         channel
             .publish(&json!({
@@ -4664,6 +5059,12 @@ mod tests {
             source_sequence: Some(1_240),
             latest_field_sequence: Some(1_238),
             latest_field_ms: Some(13_000),
+            selection_difficulty_target: Some(SelectionDifficultyTarget::Successor),
+            selection_difficulty: Some(CurrentSelectionDifficulty::observed(
+                Difficulty::Hyper,
+                1_238,
+                13_000,
+            )),
             local: Some(ResolverNodeSnapshot {
                 label: "RESULT resolver",
                 started_ms: Some(3_000),
@@ -4679,6 +5080,7 @@ mod tests {
                 song_margin: 80,
                 chart_margin: 320,
                 family_contributions: vec!["result_title=300".to_owned()],
+                current_difficulty: None,
                 state: ResolverResolutionState::AcceptedJoint,
             }),
             successor: Some(ResolverNodeSnapshot {
@@ -4696,6 +5098,11 @@ mod tests {
                 song_margin: 140,
                 chart_margin: 140,
                 family_contributions: vec!["select_title=140".to_owned()],
+                current_difficulty: Some(CurrentSelectionDifficulty::observed(
+                    Difficulty::Hyper,
+                    1_238,
+                    13_000,
+                )),
                 state: ResolverResolutionState::JointCandidate,
             }),
             attempt: Some(AttemptNodeSnapshot {
@@ -4744,7 +5151,13 @@ mod tests {
                     state: GateState::Inactive,
                 },
             ],
-            raw_fields: vec![("title".to_owned(), "OCR TITLE".to_owned())],
+            raw_fields: vec![
+                (
+                    "marker".to_owned(),
+                    "known:hyper score=500000 margin=250000".to_owned(),
+                ),
+                ("title".to_owned(), "OCR TITLE".to_owned()),
+            ],
         };
         let health = ChannelHealth::default();
         for (width, height) in [(80, 25), (79, 24)] {
@@ -4765,6 +5178,8 @@ mod tests {
                 assert!(rendered.contains("Latest domain"));
                 assert!(rendered.contains("Resolver"));
                 assert!(rendered.contains("episode=#18"));
+                assert!(rendered.contains("marker known:hyper"));
+                assert!(rendered.contains("current HYPER streak=1"));
                 assert!(rendered.contains("#18 12s"));
                 assert!(rendered.contains("ATTEMPT #14"));
                 assert!(rendered.contains("numeric…"));
@@ -4821,6 +5236,9 @@ mod tests {
         assert_eq!(difficulty_color(Difficulty::Hyper), Color::Yellow);
         assert_eq!(difficulty_color(Difficulty::Another), Color::Red);
         assert_eq!(difficulty_color(Difficulty::Leggendaria), Color::Magenta);
+        assert_eq!(marker_color("unknown:- score=0 margin=0"), Color::Yellow);
+        assert_eq!(marker_color("known:another score=1 margin=1"), Color::Red);
+        assert_eq!(marker_color("absent"), Color::DarkGray);
         assert_eq!(clear_type_color("FAILED"), Color::Red);
         assert_eq!(clear_type_color("ASSIST CLEAR"), Color::Yellow);
         assert_eq!(clear_type_color("F-COMBO"), Color::Green);
@@ -5008,13 +5426,19 @@ mod tests {
     fn selection_epoch_retains_difficulty_until_song_evidence_arrives() {
         let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000012\"").unwrap();
         let mut epochs = SelectionEpochTracker::default();
-        epochs.observe(
+        let pending = epochs.observe(
             100,
             &JointEvidenceObservation {
                 catalog_song_count: 2,
                 candidates: Vec::new(),
             },
             Some(Difficulty::Hyper),
+        );
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].target, SelectionDifficultyTarget::Pending);
+        assert_eq!(
+            pending[0].reason,
+            SelectionDifficultyTransitionReason::Changed
         );
         let candidate = |difficulty| JointEvidenceCandidate {
             song_id,
@@ -5035,7 +5459,7 @@ mod tests {
             family_support: BTreeMap::from([(EvidenceFamily::SelectTitle, 300)]),
             support: 300,
         };
-        epochs.observe(
+        let applied = epochs.observe(
             200,
             &JointEvidenceObservation {
                 catalog_song_count: 2,
@@ -5043,13 +5467,168 @@ mod tests {
             },
             None,
         );
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0].target, SelectionDifficultyTarget::Incumbent);
+        assert_eq!(
+            applied[0].reason,
+            SelectionDifficultyTransitionReason::PendingApplied
+        );
         let summary = epochs.incumbent.summary();
         assert_eq!(
             summary.selected.unwrap().chart.key.difficulty,
             Difficulty::Hyper
         );
         assert_eq!(summary.chart_margin, 50);
-        assert!(epochs.pending_difficulty_support.is_empty());
+        assert!(epochs.pending_difficulty.is_none());
+    }
+
+    #[test]
+    fn selection_difficulty_tracks_every_known_change_without_changing_song_evidence() {
+        let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000013\"").unwrap();
+        let candidate = |difficulty| JointEvidenceCandidate {
+            song_id,
+            chart: scorepeek::catalog::Chart {
+                key: scorepeek::catalog::ChartKey {
+                    play_type: PlayType::Single,
+                    difficulty,
+                },
+                level: 10,
+                notes: 1_000,
+            },
+            display_titles: vec!["X".to_owned()],
+            artist: "ARTIST".to_owned(),
+            family_support: BTreeMap::from([(EvidenceFamily::SelectTitle, 300)]),
+            support: 300,
+        };
+        let song_evidence = JointEvidenceObservation {
+            catalog_song_count: 2,
+            candidates: vec![
+                candidate(Difficulty::Normal),
+                candidate(Difficulty::Hyper),
+                candidate(Difficulty::Another),
+            ],
+        };
+        let no_song_evidence = JointEvidenceObservation {
+            catalog_song_count: 2,
+            candidates: Vec::new(),
+        };
+        let mut epochs = SelectionEpochTracker::default();
+        let first = epochs.observe_at(3_240, 324_000, &song_evidence, Some(Difficulty::Hyper));
+        assert_eq!(first.len(), 1);
+        for sequence in 3_241..=3_252 {
+            assert!(
+                epochs
+                    .observe_at(
+                        sequence,
+                        sequence * 100,
+                        &song_evidence,
+                        Some(Difficulty::Hyper)
+                    )
+                    .is_empty()
+            );
+        }
+        let song_support = epochs
+            .incumbent
+            .candidates
+            .values()
+            .next()
+            .unwrap()
+            .family_support[&EvidenceFamily::SelectTitle];
+        let observation_count = epochs.incumbent.observation_count;
+
+        for (sequence, difficulty) in [
+            (3_255, Difficulty::Another),
+            (3_296, Difficulty::Normal),
+            (3_302, Difficulty::Hyper),
+            (3_307, Difficulty::Another),
+        ] {
+            let transitions = epochs.observe_at(
+                sequence,
+                sequence * 100,
+                &no_song_evidence,
+                Some(difficulty),
+            );
+            assert_eq!(transitions.len(), 1);
+            assert_eq!(
+                transitions[0].reason,
+                SelectionDifficultyTransitionReason::Changed
+            );
+            assert_eq!(transitions[0].target, SelectionDifficultyTarget::Incumbent);
+            assert_eq!(transitions[0].current.unwrap().difficulty, difficulty);
+            assert_eq!(
+                epochs
+                    .incumbent
+                    .summary()
+                    .selected
+                    .unwrap()
+                    .chart
+                    .key
+                    .difficulty,
+                difficulty
+            );
+            assert_eq!(epochs.incumbent.observation_count, observation_count);
+            assert_eq!(
+                epochs
+                    .incumbent
+                    .candidates
+                    .values()
+                    .next()
+                    .unwrap()
+                    .family_support[&EvidenceFamily::SelectTitle],
+                song_support
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_difficulty_gap_retains_current_and_emits_no_transition() {
+        let mut accumulator = HypothesisAccumulator::default();
+        assert!(accumulator.observe_select_difficulty(Difficulty::Another, 10, 1_000));
+        let retained = accumulator.select_difficulty.unwrap();
+        let mut epochs = SelectionEpochTracker {
+            incumbent: accumulator,
+            ..SelectionEpochTracker::default()
+        };
+        epochs.incumbent.observation_count = 1;
+        let transitions = epochs.observe_at(
+            11,
+            1_100,
+            &JointEvidenceObservation {
+                catalog_song_count: 2,
+                candidates: Vec::new(),
+            },
+            None,
+        );
+        assert!(transitions.is_empty());
+        assert_eq!(epochs.incumbent.select_difficulty, Some(retained));
+    }
+
+    #[test]
+    fn snapshot_merge_adopts_newer_difficulty_once_instead_of_adding_votes() {
+        let mut retained = HypothesisAccumulator::default();
+        retained.observe_select_difficulty(Difficulty::Hyper, 100, 1_000);
+        for sequence in 101..110 {
+            retained.observe_select_difficulty(Difficulty::Hyper, sequence, sequence * 10);
+        }
+        let mut incoming = HypothesisAccumulator::default();
+        incoming.observe_select_difficulty(Difficulty::Another, 200, 2_000);
+        retained.add_from(&incoming);
+        retained.add_from(&incoming);
+        let current = retained.select_difficulty.unwrap();
+        assert_eq!(current.difficulty, Difficulty::Another);
+        assert_eq!(current.consecutive_known, 1);
+        assert_eq!(current.last_sequence, 200);
+    }
+
+    #[test]
+    fn late_difficulty_observation_cannot_replace_newer_current_state() {
+        let mut accumulator = HypothesisAccumulator::default();
+        assert!(accumulator.observe_select_difficulty(Difficulty::Another, 200, 2_000));
+        assert!(!accumulator.observe_select_difficulty(Difficulty::Normal, 199, 1_990));
+        let current = accumulator.select_difficulty.unwrap();
+        assert_eq!(current.difficulty, Difficulty::Another);
+        assert_eq!(current.consecutive_known, 1);
+        assert_eq!(current.last_sequence, 200);
     }
 
     #[test]
@@ -5327,6 +5906,53 @@ mod tests {
     }
 
     #[test]
+    fn pending_marker_is_visible_before_any_song_evidence() {
+        let shared = state();
+        shared.lock().unwrap().current_screen = Some("music_select".to_owned());
+        let mut output = test_output(Arc::clone(&shared), disconnected_test_channel());
+        let fields = json!({
+            "selected_difficulty": {
+                "state": { "status": "known", "value": "normal" },
+                "winner_score_ppm": 500_000,
+                "margin_ppm": 250_000
+            }
+        });
+        output
+            .reduce_music_select_observation(
+                Some(&"invocation-1-session-1".to_owned()),
+                Some(1),
+                10,
+                1_000,
+                &fields,
+                &JointEvidenceObservation {
+                    catalog_song_count: 2,
+                    candidates: Vec::new(),
+                },
+                &SongResolutionPresentation::Unknown {
+                    reason: json!("test"),
+                    selected: None,
+                    runner_up: None,
+                    evidence_summary: None,
+                },
+            )
+            .unwrap();
+        let snapshot = shared.lock().unwrap().resolver.clone();
+        assert_eq!(
+            snapshot.selection_difficulty_target,
+            Some(SelectionDifficultyTarget::Pending)
+        );
+        assert_eq!(
+            snapshot.selection_difficulty.unwrap().difficulty,
+            Difficulty::Normal
+        );
+        let rendered = resolver_lines(&snapshot, 80)
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect::<String>();
+        assert!(rendered.contains("current NORMAL streak=1 target=pending"));
+    }
+
+    #[test]
     fn music_select_handoff_waits_for_admitted_field_drain() {
         let shared = state();
         let mut output = test_output(Arc::clone(&shared), disconnected_test_channel());
@@ -5462,6 +6088,66 @@ mod tests {
             epochs.handoff().summary().selected.unwrap().song_id,
             incumbent
         );
+    }
+
+    #[test]
+    fn markerless_successor_is_active_without_inheriting_incumbent_difficulty() {
+        let song = |suffix: u8| {
+            serde_json::from_str(&format!("\"00000000-0000-0000-0000-{suffix:012}\"")).unwrap()
+        };
+        let observation = |song_id, support| JointEvidenceObservation {
+            catalog_song_count: 100,
+            candidates: vec![JointEvidenceCandidate {
+                song_id,
+                chart: scorepeek::catalog::Chart {
+                    key: scorepeek::catalog::ChartKey {
+                        play_type: PlayType::Single,
+                        difficulty: Difficulty::Hyper,
+                    },
+                    level: 8,
+                    notes: 764,
+                },
+                display_titles: vec!["TEST".to_owned()],
+                artist: "ARTIST".to_owned(),
+                family_support: BTreeMap::from([(EvidenceFamily::SelectTitle, support)]),
+                support,
+            }],
+        };
+        let incumbent = song(1);
+        let successor = song(2);
+        let mut epochs = SelectionEpochTracker::default();
+        epochs.observe_at(
+            100,
+            1_000,
+            &observation(incumbent, 300),
+            Some(Difficulty::Hyper),
+        );
+        let successor_started = epochs.observe_at(200, 2_000, &observation(successor, 70), None);
+        assert_eq!(
+            epochs.active_difficulty_state(),
+            Some((SelectionDifficultyTarget::Successor, None))
+        );
+        assert!(successor_started.iter().any(|transition| {
+            transition.target == SelectionDifficultyTarget::Successor
+                && transition.reason == SelectionDifficultyTransitionReason::TargetSwitch
+                && transition.current.is_none()
+        }));
+
+        let incumbent_resumed = epochs.observe_at(300, 3_000, &observation(incumbent, 300), None);
+        assert_eq!(
+            epochs
+                .active_difficulty_state()
+                .unwrap()
+                .1
+                .unwrap()
+                .difficulty,
+            Difficulty::Hyper
+        );
+        assert!(incumbent_resumed.iter().any(|transition| {
+            transition.target == SelectionDifficultyTarget::Incumbent
+                && transition.reason == SelectionDifficultyTransitionReason::TargetSwitch
+                && transition.current.is_some()
+        }));
     }
 
     #[test]

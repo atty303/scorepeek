@@ -272,6 +272,15 @@ enum StoredRunEventPayload {
         runner_up_family_support: Value,
         observation_count: u32,
     },
+    SelectionDifficultyChanged {
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        screen_episode_id: u64,
+        source_sequence: u64,
+        target: String,
+        reason: String,
+        current: Option<Value>,
+    },
     SessionFinished {
         session_id: String,
         capture_generation: u64,
@@ -3370,6 +3379,7 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
                 | "scorepeek-run-event-v2"
                 | "scorepeek-run-event-v3"
                 | "scorepeek-run-event-v4"
+                | "scorepeek-run-event-v5"
         ) || event_schema
             .as_deref()
             .is_some_and(|expected| expected != schema)
@@ -3379,7 +3389,10 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
         event_schema.get_or_insert(schema.to_owned());
         if matches!(
             schema,
-            "scorepeek-run-event-v2" | "scorepeek-run-event-v3" | "scorepeek-run-event-v4"
+            "scorepeek-run-event-v2"
+                | "scorepeek-run-event-v3"
+                | "scorepeek-run-event-v4"
+                | "scorepeek-run-event-v5"
         ) {
             serde_json::from_value::<StoredRunEventPayload>(record.clone()).map_err(|_| {
                 CorpusError::InvalidRequest("diagnostic run event payload is invalid".to_owned())
@@ -3698,6 +3711,23 @@ mod tests {
         )
         .unwrap();
         assert!(verify_session_events(&path, &manifest).is_err());
+    }
+
+    #[test]
+    fn v5_run_event_stream_accepts_typed_selection_difficulty_transitions() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events.ndjson");
+        let manifest = diagnostic_manifest();
+        fs::write(
+            &path,
+            concat!(
+                "{\"schema\":\"scorepeek-run-event-v5\",\"event\":\"session_started\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"capture_profile_sha256\":\"profile\",\"normalizer_artifact_sha256\":\"normalizer\",\"channel_sequence\":1}\n",
+                "{\"schema\":\"scorepeek-run-event-v5\",\"event\":\"selection_difficulty_changed\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"screen_episode_id\":22,\"source_sequence\":3255,\"target\":\"incumbent\",\"reason\":\"changed\",\"current\":{\"difficulty\":\"another\",\"consecutive_known\":1,\"first_sequence\":3255,\"last_sequence\":3255,\"first_monotonic_ms\":325500,\"last_monotonic_ms\":325500},\"channel_sequence\":2}\n",
+                "{\"schema\":\"scorepeek-run-event-v5\",\"event\":\"session_finished\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"outcome\":\"ok\",\"report\":{},\"channel_sequence\":3}\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(verify_session_events(&path, &manifest).unwrap(), 3);
     }
 
     #[test]

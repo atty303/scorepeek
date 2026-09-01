@@ -479,8 +479,8 @@ final identity check is outside the operator-trusted private-artifact boundary.
 ### Event API
 
 The ordinary foreground runtime exposes provisional recognition observations at
-`$XDG_RUNTIME_DIR/scorepeek/observations-v4.sock`. A connection begins with a bounded v4
-current-state snapshot and then receives sequenced `scorepeek-run-event-v4` NDJSON. This local
+`$XDG_RUNTIME_DIR/scorepeek/observations-v5.sock`. A connection begins with a bounded v5
+current-state snapshot and then receives sequenced `scorepeek-run-event-v5` NDJSON. This local
 observation surface may include raw OCR, foreground title geometry, joint candidates, and resolver
 metrics. `raw_screen_observed` is separate from semantic episode started, suspended, resumed,
 closing, and finalized transitions; `play_attempt_changed` contains the evidence-linked path and
@@ -497,11 +497,19 @@ song, reports a distinct best other song and best sibling chart, and requires bo
 acceptance. Foreground lexical and geometry title features share one family and contribute their
 maximum rather than two votes.
 
+MUSIC SELECT difficulty is the exception to historical factor accumulation. A typed-known marker
+is current selector state: a different known value replaces it on the first observation, equal
+known observations increase only its bounded chart support, and unknown observations retain the
+last known state. Difficulty-only frames update the active successor or incumbent without adding
+song evidence; before any credible song they replace a single pending state. Snapshot and retry
+composition select the newer source sequence instead of adding difficulty history.
+
 The TUI has one vertical layout: four rows for Watcher, nine for Latest domain, and the remaining
 rows for Resolver. Latest domain retains and renders only the newest accepted v2 result. Resolver
 formats a typed tree containing raw and semantic screens, field age, incumbent/successor or result
 evidence, foreground title geometry, hierarchical runners, family contribution, attempt hierarchy,
-and every promotion gate. Green, cyan, yellow, red, dark gray, and white encode typed semantic
+and every promotion gate. Raw marker and resolver-current difficulty are separate values, including
+the consecutive-known count. Green, cyan, yellow, red, dark gray, and white encode typed semantic
 state consistently while the same labels and gate symbols preserve meaning without color. It
 shows integer-second monotonic durations from the private 10 Hz tick, but that redraw creates no run
 event, socket record, plain-output line, or domain event. Raw OCR is limited to the current screen's

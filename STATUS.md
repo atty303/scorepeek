@@ -9,7 +9,7 @@ outside the checkpoint; implementation history belongs in Git.
 - M4 canonical recognition, evidence-first attempt resolution, and versioned event API: **in
   progress**.
 - `scorepeek-result-detected-v2` remains the accepted public domain contract. Debug output uses
-  run-event v4, observation socket/snapshot v4, and recognition observation v15.
+  run-event v5, observation socket/snapshot v5, and recognition observation v15.
 - Text authority remains the registered PP-OCRv6-small bundle. Numeric authority remains the
   private fixed-cell HOG/MLP model. No model bytes, real crops, complete labels, or generated
   datasets are committed.
@@ -26,8 +26,10 @@ outside the checkpoint; implementation history belongs in Git.
   diagnostic and cannot enter resolution.
 - MUSIC SELECT uses incumbent/successor selection epochs rather than accepted-song arming. An
   unfinished latest successor is handed off only after close-time admitted-field drain, instead of
-  copying an older incumbent at close. A difficulty-only observation waits for the next credible
-  song in the epoch. Attempt state owns screen path and select/result evidence snapshots, not
+  copying an older incumbent at close. Select difficulty is one latest-known state per active epoch:
+  one different typed-known marker replaces it immediately, unknown retains it, and difficulty-only
+  frames update successor/incumbent without adding song evidence. Before any credible song, only the
+  latest pending value is retained and applied once. Attempt state owns screen path and select/result evidence snapshots, not
   separate selected/result songs.
 - MUSIC SELECT and RESULT retain independent title/artist song factors and difficulty/notes/level
   chart factors, then project them onto the full catalog `(song, play type, difficulty)` hierarchy.
@@ -51,13 +53,15 @@ outside the checkpoint; implementation history belongs in Git.
   Latest domain holds only the last accepted v2 event; Resolver shows incumbent/successor/result
   evidence, foreground title geometry, hierarchical runners, family contributions, attempt path,
   and every promotion gate. MUSIC SELECT field observations update this typed snapshot; ticks keep
-  the latest observation, while a new semantic episode or session clears it. The worst-case 80x25
+  the latest observation, while a new semantic episode or session clears it. Raw marker and
+  resolver-current difficulty are displayed separately with the consecutive-known count. The worst-case 80x25
   tree keeps all gates visible. TUI formatting owns no resolver logic.
-- Run-event v4 distinguishes raw screen observations, semantic episode transitions, selection/result
-  and provisional-joint transitions, attempt finalization, and suppression. Recognition observation
+- Run-event v5 distinguishes raw screen observations, semantic episode transitions, current
+  selection-difficulty changes, selection/result and provisional-joint transitions, attempt
+  finalization, and suppression. Recognition observation
   v15 retains title views/geometry, episode binding, fixed-cell numeric evidence, factor support,
-  frame timing, late/drain status, and suppression evidence. Readers accept run-event v2/v3 and
-  run-event v4 and recognition v5 through v15.
+  frame timing, late/drain status, and suppression evidence. Readers accept run-event v2 through v5
+  and recognition v5 through v15.
 
 ## Verification boundary
 
@@ -70,6 +74,9 @@ outside the checkpoint; implementation history belongs in Git.
   long artist, HYPER, empty RESULT title, and RESULT artist/notes evidence for operator-confirmed
   `∀ / SP HYPER / 1136`. A factor-first resolver regression reaches that joint chart without OCR
   rewriting; the other three accepted attempt identities remain prospective replay checks.
+- Saved target diagnostic `run-1788255215-37773013-1050141-session-1` also remains outside the
+  corpus. Its same-song `X` marker cycle at source sequences 3240 through 3319 is the read-only
+  failure oracle for immediate `HYPER → ANOTHER → NORMAL → HYPER → ANOTHER` current-state changes.
 - The saved diagnostic is not a complete current semantic replay: retained-frame reevaluation does
   not reconstruct the original 10 Hz attempt timeline. Prospective target execution is therefore
   still required for end-to-end authority.
@@ -78,7 +85,7 @@ outside the checkpoint; implementation history belongs in Git.
   session-disjoint replacement corpus with zero wrong joint acceptance and zero wrong events.
 - The cargo-dist binary was installed hash-first on `infinitas.lan` at
   `/home/atty/.local/bin/scorepeek`; local and installed executable SHA-256 are both
-  `a175165cfa7dd7cd9b4819414545df17db11dfe16ccdcfb7f5615f1bac145f87`. `doctor` reports the
+  `148cfbd5687028e3d7bb4fe1bca807f3dcf3d217c8230fae182f5e5650ad07d1`. `doctor` reports the
   fixed-slot numeric model active with manifest
   `cf099b27b533a79534db62a912d7c4b4e949ac29b786f57bb5ed6f21cf7766d6`. No scorepeek process was
   running at readback time, so no stale process required restart and no `/proc/<pid>/exe` digest was

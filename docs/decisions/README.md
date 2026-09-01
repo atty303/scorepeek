@@ -297,6 +297,9 @@ authoritative.
 - [ADR 0098: Resolve independent factors on the catalog hierarchy](0098-resolve-independent-factors-on-the-catalog-hierarchy.md)
   retains chart evidence independently of frame-local song candidates, separates competing songs
   from sibling charts, repairs MUSIC SELECT debug updates, and gives the fixed TUI semantic colors.
+- [ADR 0099: Treat MUSIC SELECT difficulty as current selection state](0099-treat-select-difficulty-as-current-state.md)
+  supersedes cumulative select-difficulty voting with one latest-known epoch state while preserving
+  song factors, RESULT authority, and the accepted v2 event.
 
 ## Historical
 
