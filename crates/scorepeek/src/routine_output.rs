@@ -45,7 +45,8 @@ fn duration_us(duration: Duration) -> u64 {
 const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const RESULT_HISTORY_CAPACITY: usize = 32;
-const SOCKET_NAME: &str = "observations-v3.sock";
+const SOCKET_NAME: &str = "observations-v4.sock";
+const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v4";
 const NUMERIC_REQUIRED_OBSERVATIONS: u8 = 2;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -211,8 +212,18 @@ pub enum RunEventKind {
         top: Option<ResolverHypothesisKey>,
         #[serde(skip_serializing_if = "Option::is_none")]
         runner_up: Option<ResolverHypothesisKey>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runner_song: Option<ResolverHypothesisKey>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runner_chart: Option<ResolverHypothesisKey>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        top_candidates: Vec<ResolverHypothesisKey>,
         support: u16,
         margin: u16,
+        #[serde(default)]
+        song_margin: u16,
+        #[serde(default)]
+        chart_margin: u16,
         selected_family_support: BTreeMap<EvidenceFamily, EvidenceContribution>,
         runner_up_family_support: BTreeMap<EvidenceFamily, EvidenceContribution>,
         observation_count: u32,
@@ -405,6 +416,8 @@ struct ResolverTransitionIdentity {
     state: ResolverResolutionState,
     top: Option<ResolverHypothesisKey>,
     runner_up: Option<ResolverHypothesisKey>,
+    runner_song: Option<ResolverHypothesisKey>,
+    runner_chart: Option<ResolverHypothesisKey>,
 }
 
 #[derive(Clone, Debug)]
@@ -417,9 +430,18 @@ struct RankedHypothesis<'a> {
 #[derive(Clone, Debug, Default)]
 struct HypothesisAccumulator {
     candidates: BTreeMap<JointKey, AccumulatedHypothesis>,
+    select_difficulty_support: BTreeMap<Difficulty, u64>,
+    result_chart_factors: BTreeMap<ResultChartFactor, u64>,
     first_observation_ms: Option<u64>,
     last_observation_ms: Option<u64>,
     observation_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ResultChartFactor {
+    difficulty: Option<Difficulty>,
+    notes: Option<u32>,
+    level: Option<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -427,8 +449,13 @@ struct HypothesisSummary {
     state: ResolverResolutionState,
     selected: Option<JointEvidenceCandidate>,
     runner_up: Option<JointEvidenceCandidate>,
+    runner_song: Option<JointEvidenceCandidate>,
+    runner_chart: Option<JointEvidenceCandidate>,
+    top_candidates: Vec<JointEvidenceCandidate>,
     support: u16,
     margin: u16,
+    song_margin: u16,
+    chart_margin: u16,
     selected_family_support: BTreeMap<EvidenceFamily, EvidenceContribution>,
     runner_up_family_support: BTreeMap<EvidenceFamily, EvidenceContribution>,
 }
@@ -442,7 +469,13 @@ impl HypothesisSummary {
 }
 
 impl HypothesisAccumulator {
-    fn observe(&mut self, monotonic_ms: u64, observation: &JointEvidenceObservation) {
+    fn observe(
+        &mut self,
+        monotonic_ms: u64,
+        observation: &JointEvidenceObservation,
+        select_difficulty: Option<Difficulty>,
+        result_chart_factor: Option<ResultChartFactor>,
+    ) {
         self.first_observation_ms.get_or_insert(monotonic_ms);
         self.last_observation_ms = Some(monotonic_ms);
         self.observation_count = self.observation_count.saturating_add(1);
@@ -459,9 +492,26 @@ impl HypothesisAccumulator {
                     family_support: BTreeMap::new(),
                 });
             for (family, delta) in &candidate.family_support {
+                if matches!(
+                    family,
+                    EvidenceFamily::SelectChart | EvidenceFamily::ResultChart
+                ) {
+                    continue;
+                }
                 let value = accumulated.family_support.entry(*family).or_default();
                 *value = value.saturating_add(u64::from(*delta));
             }
+        }
+        if let Some(difficulty) = select_difficulty {
+            let value = self
+                .select_difficulty_support
+                .entry(difficulty)
+                .or_default();
+            *value = value.saturating_add(50);
+        }
+        if let Some(factor) = result_chart_factor {
+            let value = self.result_chart_factors.entry(factor).or_default();
+            *value = value.saturating_add(1);
         }
     }
 
@@ -483,18 +533,64 @@ impl HypothesisAccumulator {
                 *value = value.saturating_add(*support);
             }
         }
+        for (difficulty, support) in &other.select_difficulty_support {
+            let value = self
+                .select_difficulty_support
+                .entry(*difficulty)
+                .or_default();
+            *value = value.saturating_add(*support);
+        }
+        for (factor, observations) in &other.result_chart_factors {
+            let value = self.result_chart_factors.entry(*factor).or_default();
+            *value = value.saturating_add(*observations);
+        }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "hierarchical projection keeps normalization and both runner dimensions together"
+    )]
     fn summary(&self) -> HypothesisSummary {
+        let mut expanded = self.candidates.clone();
+        for accumulated in expanded.values_mut() {
+            let select_chart = self
+                .select_difficulty_support
+                .get(&accumulated.candidate.chart.key.difficulty)
+                .copied()
+                .unwrap_or(0);
+            if select_chart > 0 {
+                accumulated
+                    .family_support
+                    .insert(EvidenceFamily::SelectChart, select_chart);
+            }
+            let result_chart = self
+                .result_chart_factors
+                .iter()
+                .map(|(factor, observations)| {
+                    let difficulty = u64::from(
+                        factor.difficulty == Some(accumulated.candidate.chart.key.difficulty),
+                    ) * 50;
+                    let notes =
+                        u64::from(factor.notes == Some(accumulated.candidate.chart.notes)) * 100;
+                    let level =
+                        u64::from(factor.level == Some(accumulated.candidate.chart.level)) * 10;
+                    difficulty.max(notes).max(level) * observations
+                })
+                .sum();
+            if result_chart > 0 {
+                accumulated
+                    .family_support
+                    .insert(EvidenceFamily::ResultChart, result_chart);
+            }
+        }
         let mut family_maxima = BTreeMap::<EvidenceFamily, u64>::new();
-        for candidate in self.candidates.values() {
+        for candidate in expanded.values() {
             for (family, raw) in &candidate.family_support {
                 let maximum = family_maxima.entry(*family).or_default();
                 *maximum = (*maximum).max(*raw);
             }
         }
-        let mut ranked = self
-            .candidates
+        let mut ranked = expanded
             .values()
             .map(|accumulated| {
                 let family_support = accumulated
@@ -545,8 +641,13 @@ impl HypothesisAccumulator {
                 state: ResolverResolutionState::Unresolved,
                 selected: None,
                 runner_up: None,
+                runner_song: None,
+                runner_chart: None,
+                top_candidates: Vec::new(),
                 support: 0,
                 margin: 0,
+                song_margin: 0,
+                chart_margin: 0,
                 selected_family_support: BTreeMap::new(),
                 runner_up_family_support: BTreeMap::new(),
             };
@@ -555,23 +656,24 @@ impl HypothesisAccumulator {
         let runner_up = ranked.get(1);
         let runner_support = runner_up.map_or(0, |candidate| candidate.support);
         let margin = support.saturating_sub(runner_support);
-        let same_song_charts = ranked
-            .iter()
-            .filter(|candidate| {
-                candidate.accumulated.candidate.song_id == selected.accumulated.candidate.song_id
-            })
-            .count();
-        let runner_is_same_song = runner_up.is_some_and(|runner| {
-            runner.accumulated.candidate.song_id == selected.accumulated.candidate.song_id
+        let runner_song = ranked.iter().find(|candidate| {
+            candidate.accumulated.candidate.song_id != selected.accumulated.candidate.song_id
         });
-        let state = if support >= JOINT_ACCEPT_SUPPORT && margin >= JOINT_ACCEPT_MARGIN {
+        let runner_chart = ranked.iter().find(|candidate| {
+            candidate.accumulated.candidate.song_id == selected.accumulated.candidate.song_id
+                && candidate.accumulated.candidate.chart.key
+                    != selected.accumulated.candidate.chart.key
+        });
+        let song_margin = support.saturating_sub(runner_song.map_or(0, |value| value.support));
+        let chart_margin = support.saturating_sub(runner_chart.map_or(0, |value| value.support));
+        let song_is_resolved = runner_song.is_none() || song_margin >= JOINT_ACCEPT_MARGIN;
+        let chart_is_resolved = runner_chart.is_none() || chart_margin >= JOINT_ACCEPT_MARGIN;
+        let state = if support >= JOINT_ACCEPT_SUPPORT && song_is_resolved && chart_is_resolved {
             ResolverResolutionState::AcceptedJoint
-        } else if support >= JOINT_ACCEPT_SUPPORT && runner_is_same_song {
+        } else if support >= JOINT_ACCEPT_SUPPORT && song_is_resolved {
             ResolverResolutionState::SongProjected
         } else if support >= JOINT_ACCEPT_SUPPORT {
             ResolverResolutionState::Conflict
-        } else if same_song_charts > 1 {
-            ResolverResolutionState::SongProjected
         } else {
             ResolverResolutionState::JointCandidate
         };
@@ -579,8 +681,17 @@ impl HypothesisAccumulator {
             state,
             selected: Some(selected.accumulated.candidate.clone()),
             runner_up: runner_up.map(|value| value.accumulated.candidate.clone()),
+            runner_song: runner_song.map(|value| value.accumulated.candidate.clone()),
+            runner_chart: runner_chart.map(|value| value.accumulated.candidate.clone()),
+            top_candidates: ranked
+                .iter()
+                .take(3)
+                .map(|value| value.accumulated.candidate.clone())
+                .collect(),
             support,
             margin,
+            song_margin,
+            chart_margin,
             selected_family_support: selected.family_support.clone(),
             runner_up_family_support: runner_up
                 .map_or_else(BTreeMap::new, |value| value.family_support.clone()),
@@ -605,7 +716,8 @@ fn credible_song_set(observation: &JointEvidenceObservation) -> BTreeSet<Scorepe
             .filter(|(family, _)| {
                 matches!(
                     family,
-                    EvidenceFamily::SelectTitleLexical
+                    EvidenceFamily::SelectTitle
+                        | EvidenceFamily::SelectTitleLexical
                         | EvidenceFamily::SelectTitleStructural
                         | EvidenceFamily::SelectArtist
                 )
@@ -636,21 +748,38 @@ struct SelectionEpochTracker {
     successor: HypothesisAccumulator,
     incumbent_songs: BTreeSet<ScorepeekSongId>,
     successor_songs: BTreeSet<ScorepeekSongId>,
+    pending_difficulty_support: BTreeMap<Difficulty, u64>,
 }
 
 impl SelectionEpochTracker {
-    fn observe(&mut self, monotonic_ms: u64, evidence: &JointEvidenceObservation) {
+    fn observe(
+        &mut self,
+        monotonic_ms: u64,
+        evidence: &JointEvidenceObservation,
+        difficulty: Option<Difficulty>,
+    ) {
         let credible = credible_song_set(evidence);
         if credible.is_empty() {
+            if let Some(difficulty) = difficulty {
+                let support = self
+                    .pending_difficulty_support
+                    .entry(difficulty)
+                    .or_default();
+                *support = support.saturating_add(50);
+            }
             return;
         }
         if self.incumbent.observation_count == 0 {
-            self.incumbent.observe(monotonic_ms, evidence);
+            merge_pending_difficulty(&mut self.incumbent, &mut self.pending_difficulty_support);
+            self.incumbent
+                .observe(monotonic_ms, evidence, difficulty, None);
             self.incumbent_songs.extend(credible);
             return;
         }
         if !self.incumbent_songs.is_disjoint(&credible) {
-            self.incumbent.observe(monotonic_ms, evidence);
+            merge_pending_difficulty(&mut self.incumbent, &mut self.pending_difficulty_support);
+            self.incumbent
+                .observe(monotonic_ms, evidence, difficulty, None);
             self.incumbent_songs.extend(credible);
             self.successor = HypothesisAccumulator::default();
             self.successor_songs.clear();
@@ -660,7 +789,9 @@ impl SelectionEpochTracker {
             self.successor = HypothesisAccumulator::default();
             self.successor_songs.clear();
         }
-        self.successor.observe(monotonic_ms, evidence);
+        merge_pending_difficulty(&mut self.successor, &mut self.pending_difficulty_support);
+        self.successor
+            .observe(monotonic_ms, evidence, difficulty, None);
         self.successor_songs.extend(credible);
         if self.successor.summary().support >= SELECTION_CHANGE_MARGIN {
             self.incumbent = std::mem::take(&mut self.successor);
@@ -674,6 +805,19 @@ impl SelectionEpochTracker {
         } else {
             self.incumbent.clone()
         }
+    }
+}
+
+fn merge_pending_difficulty(
+    accumulator: &mut HypothesisAccumulator,
+    pending: &mut BTreeMap<Difficulty, u64>,
+) {
+    for (difficulty, support) in std::mem::take(pending) {
+        let target = accumulator
+            .select_difficulty_support
+            .entry(difficulty)
+            .or_default();
+        *target = target.saturating_add(support);
     }
 }
 
@@ -769,11 +913,29 @@ struct ResolverDebugSnapshot {
     screen_episode_id: u64,
     screen_episode_started_ms: Option<u64>,
     source_sequence: Option<u64>,
+    latest_field_sequence: Option<u64>,
+    latest_field_ms: Option<u64>,
     local: Option<ResolverNodeSnapshot>,
     successor: Option<ResolverNodeSnapshot>,
     attempt: Option<AttemptNodeSnapshot>,
     gate: String,
+    gates: Vec<GateSnapshot>,
     raw_fields: Vec<(String, String)>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum GateState {
+    Accepted,
+    Pending,
+    Failed,
+    Inactive,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GateSnapshot {
+    label: &'static str,
+    state: GateState,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -784,8 +946,14 @@ struct ResolverNodeSnapshot {
     observations: u32,
     top: Option<String>,
     runner_up: Option<String>,
+    runner_song: Option<String>,
+    runner_chart: Option<String>,
+    top_candidates: Vec<String>,
     support: u16,
     margin: u16,
+    song_margin: u16,
+    chart_margin: u16,
+    family_contributions: Vec<String>,
     state: ResolverResolutionState,
 }
 
@@ -801,6 +969,12 @@ struct AttemptNodeSnapshot {
     joint_top: Option<String>,
     support: u16,
     margin: u16,
+    song_margin: u16,
+    chart_margin: u16,
+    runner_song: Option<String>,
+    runner_chart: Option<String>,
+    top_candidates: Vec<String>,
+    family_contributions: Vec<String>,
     state: ResolverResolutionState,
 }
 
@@ -1194,7 +1368,7 @@ fn accept_clients(
 fn snapshot_bytes(state: &Arc<Mutex<RunViewState>>, health: &ChannelHealth) -> Option<Vec<u8>> {
     let state = state.lock().ok()?.clone();
     let mut bytes = serde_json::to_vec(&json!({
-            "schema": "scorepeek-run-observation-snapshot-v3",
+            "schema": "scorepeek-run-observation-snapshot-v4",
         "state": state,
         "channel": health.value(),
     }))
@@ -1336,13 +1510,21 @@ impl RoutineOutput {
                 .runner_up
                 .as_ref()
                 .map(ResolverHypothesisKey::from_candidate),
+            runner_song: summary
+                .runner_song
+                .as_ref()
+                .map(ResolverHypothesisKey::from_candidate),
+            runner_chart: summary
+                .runner_chart
+                .as_ref()
+                .map(ResolverHypothesisKey::from_candidate),
         };
         if self.resolver_transitions.get(&scope) == Some(&identity) {
             return Ok(());
         }
         self.resolver_transitions.insert(scope, identity.clone());
         self.publish_one(&RunEvent {
-            schema: "scorepeek-run-event-v3".to_owned(),
+            schema: RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::ResolverStateChanged {
                 session_id: session_id.cloned(),
                 capture_generation,
@@ -1352,8 +1534,17 @@ impl RoutineOutput {
                 state: identity.state,
                 top: identity.top,
                 runner_up: identity.runner_up,
+                runner_song: identity.runner_song,
+                runner_chart: identity.runner_chart,
+                top_candidates: summary
+                    .top_candidates
+                    .iter()
+                    .map(ResolverHypothesisKey::from_candidate)
+                    .collect(),
                 support: summary.support,
                 margin: summary.margin,
+                song_margin: summary.song_margin,
+                chart_margin: summary.chart_margin,
                 selected_family_support: summary.selected_family_support.clone(),
                 runner_up_family_support: summary.runner_up_family_support.clone(),
                 observation_count,
@@ -1467,6 +1658,7 @@ impl RoutineOutput {
                 self.attempt_phase_started_ms = None;
                 self.numeric_evidence.clear();
                 self.completed_event_artifact = None;
+                self.clear_resolver_field_observation()?;
                 self.event_worker =
                     self.event_store.as_deref().zip(session_id.as_deref()).map(
                         |(store, session_id)| RunEventArtifactWorker::start(store, session_id),
@@ -1520,6 +1712,7 @@ impl RoutineOutput {
         match phase {
             SemanticEpisodePhase::Started => {
                 self.semantic_episode_suspended = false;
+                self.clear_resolver_field_observation()?;
                 let legacy = RunEvent {
                     schema: event.schema.clone(),
                     kind: RunEventKind::ScreenChanged {
@@ -1545,15 +1738,14 @@ impl RoutineOutput {
                 self.refresh()
             }
             SemanticEpisodePhase::Closing => {
-                if screen == "music_select" {
-                    self.engine.retained_select = self.engine.selection_epochs.handoff();
-                }
                 self.result_episode_finalizing = screen == "result";
                 self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), None)?;
                 self.refresh()
             }
             SemanticEpisodePhase::Finalized => {
-                if screen == "result" {
+                if screen == "music_select" {
+                    self.engine.retained_select = self.engine.selection_epochs.handoff();
+                } else if screen == "result" {
                     self.finalize_result_attempt(
                         session_id.clone(),
                         *capture_generation,
@@ -1674,6 +1866,7 @@ impl RoutineOutput {
                 *capture_generation,
                 *sequence,
                 *monotonic_end_ms,
+                fields,
                 joint_evidence,
                 song_resolution_presentation,
             ),
@@ -1697,9 +1890,12 @@ impl RoutineOutput {
         joint_evidence: &JointEvidenceObservation,
         _song_resolution_presentation: &SongResolutionPresentation,
     ) -> Result<(), String> {
-        self.engine
-            .result_hypotheses
-            .observe(monotonic_end_ms, joint_evidence);
+        self.engine.result_hypotheses.observe(
+            monotonic_end_ms,
+            joint_evidence,
+            None,
+            parsed_result_fields.map(result_chart_factor),
+        );
         let result_summary = self.engine.result_hypotheses.summary();
         self.publish_resolver_transition(
             session_id,
@@ -1761,7 +1957,7 @@ impl RoutineOutput {
                     Some(&evidence.parsed),
                 ) {
                     self.publish_one(&RunEvent {
-                        schema: "scorepeek-run-event-v3".to_owned(),
+                        schema: RUN_EVENT_SCHEMA.to_owned(),
                         kind: RunEventKind::NumericResultChanged {
                             session_id: session_id.cloned(),
                             capture_generation,
@@ -1984,7 +2180,7 @@ impl RoutineOutput {
         let source_sequence = numeric.source_sequence.max(fallback_sequence);
         let emitted_attempt_id = accepted_attempt.attempt_id;
         self.publish_one(&RunEvent {
-            schema: "scorepeek-run-event-v3".to_owned(),
+            schema: RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::ResultDetected {
                 session_id,
                 capture_generation,
@@ -2009,6 +2205,7 @@ impl RoutineOutput {
     }
 
     #[allow(
+        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "one reducer keeps accumulator, diagnostic temporal state, attempt handoff, and output ordering together"
     )]
@@ -2018,12 +2215,15 @@ impl RoutineOutput {
         capture_generation: Option<u64>,
         sequence: u64,
         monotonic_end_ms: u64,
+        fields: &Value,
         joint_evidence: &JointEvidenceObservation,
         _presentation: &SongResolutionPresentation,
     ) -> Result<(), String> {
-        self.engine
-            .selection_epochs
-            .observe(monotonic_end_ms, joint_evidence);
+        self.engine.selection_epochs.observe(
+            monotonic_end_ms,
+            joint_evidence,
+            selected_difficulty(fields),
+        );
         let current_summary = self.engine.selection_epochs.incumbent.summary();
         self.publish_resolver_transition(
             session_id,
@@ -2044,7 +2244,7 @@ impl RoutineOutput {
                 self.engine.selection_epochs.successor.observation_count,
             )?;
         }
-        self.sync_resolver_snapshot(monotonic_end_ms, Some(sequence), None)?;
+        self.sync_resolver_snapshot(monotonic_end_ms, Some(sequence), Some(fields))?;
         self.refresh()?;
         Ok(())
     }
@@ -2234,7 +2434,7 @@ impl RoutineOutput {
         state: PlayAttemptState,
     ) -> Result<(), String> {
         self.publish_one(&RunEvent {
-            schema: "scorepeek-run-event-v3".to_owned(),
+            schema: RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::PlayAttemptChanged {
                 session_id: session_id.clone(),
                 capture_generation,
@@ -2248,6 +2448,10 @@ impl RoutineOutput {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one typed snapshot derives the complete fixed resolver tree and promotion gates"
+    )]
     fn sync_resolver_snapshot(
         &mut self,
         now_ms: u64,
@@ -2314,12 +2518,97 @@ impl RoutineOutput {
             "ready: domain promotion"
         }
         .to_owned();
+        let emitted = self
+            .engine
+            .play_attempt
+            .accepted_result()
+            .is_some_and(|attempt| self.emitted_attempt_ids.contains(&attempt.attempt_id));
+        let attempt_completed_rejected = matches!(
+            self.engine.play_attempt.state(),
+            PlayAttemptState::Attempt { attempt }
+                if matches!(attempt.phase, crate::play_attempt::PlayAttemptPhase::Completed)
+                    && !attempt.reasons.is_empty()
+        );
+        let linked = matches!(
+            self.engine.play_attempt.state(),
+            PlayAttemptState::Attempt { attempt }
+                if attempt.path.select_observed
+                    && attempt.path.play_observed
+                    && attempt.path.result_observed
+        );
+        let gates = vec![
+            GateSnapshot {
+                label: "link",
+                state: if linked {
+                    GateState::Accepted
+                } else if attempt_completed_rejected {
+                    GateState::Failed
+                } else {
+                    GateState::Pending
+                },
+            },
+            GateSnapshot {
+                label: "identity",
+                state: match joint_summary.state {
+                    ResolverResolutionState::AcceptedJoint => GateState::Accepted,
+                    ResolverResolutionState::Conflict => GateState::Failed,
+                    _ if attempt_completed_rejected => GateState::Failed,
+                    _ => GateState::Pending,
+                },
+            },
+            GateSnapshot {
+                label: "clear",
+                state: if self.accepted_numeric_result.is_some() {
+                    GateState::Accepted
+                } else if attempt_completed_rejected {
+                    GateState::Failed
+                } else {
+                    GateState::Pending
+                },
+            },
+            GateSnapshot {
+                label: "numeric",
+                state: if self.accepted_numeric_result.is_some() {
+                    GateState::Accepted
+                } else if attempt_completed_rejected {
+                    GateState::Failed
+                } else {
+                    GateState::Pending
+                },
+            },
+            GateSnapshot {
+                label: "drain",
+                state: if self.result_episode_finalizing {
+                    GateState::Pending
+                } else if emitted || attempt_completed_rejected {
+                    GateState::Accepted
+                } else {
+                    GateState::Inactive
+                },
+            },
+            GateSnapshot {
+                label: "emit",
+                state: if emitted {
+                    GateState::Accepted
+                } else if attempt_completed_rejected {
+                    GateState::Failed
+                } else {
+                    GateState::Inactive
+                },
+            },
+        ];
         let mut state = self
             .state
             .lock()
             .map_err(|_| "run view state lock was poisoned".to_owned())?;
         let retained_raw =
             raw_fields.map_or_else(|| state.resolver.raw_fields.clone(), important_raw_fields);
+        let latest_field_sequence = raw_fields
+            .and(source_sequence)
+            .or(state.resolver.latest_field_sequence);
+        let latest_field_ms = raw_fields
+            .map(|_| now_ms)
+            .or(state.resolver.latest_field_ms);
         state.resolver = ResolverDebugSnapshot {
             now_ms,
             raw_screen: state.raw_screen.clone(),
@@ -2329,12 +2618,26 @@ impl RoutineOutput {
             screen_episode_id: self.screen_episode_id,
             screen_episode_started_ms: self.screen_episode_started_ms,
             source_sequence,
+            latest_field_sequence,
+            latest_field_ms,
             local,
             successor,
             attempt,
             gate,
+            gates,
             raw_fields: retained_raw,
         };
+        Ok(())
+    }
+
+    fn clear_resolver_field_observation(&mut self) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "run view state lock was poisoned".to_owned())?;
+        state.resolver.raw_fields.clear();
+        state.resolver.latest_field_sequence = None;
+        state.resolver.latest_field_ms = None;
         Ok(())
     }
 
@@ -2342,7 +2645,7 @@ impl RoutineOutput {
         let output_started = Instant::now();
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
-        let mut value = event.to_value()?;
+        let mut value = bounded_run_event_value(event)?;
         if let Some(object) = value.as_object_mut() {
             object.insert("channel_sequence".to_owned(), sequence.into());
         }
@@ -2437,6 +2740,56 @@ impl RoutineOutput {
     }
 }
 
+fn bounded_run_event_value(event: &RunEvent) -> Result<Value, String> {
+    let RunEventKind::FieldObservation {
+        session_id,
+        capture_generation,
+        screen_episode_id,
+        sequence,
+        monotonic_start_ms,
+        monotonic_end_ms,
+        screen,
+        fields,
+        result_song_resolution,
+        music_select_song_resolution,
+        parsed_result_fields,
+        result_chart_resolution,
+        result_performance_resolution,
+        current_score_ocr_resolution,
+        numeric_batch,
+        joint_evidence,
+        processing_timing,
+        song_resolution_presentation,
+    } = &event.kind
+    else {
+        return event.to_value();
+    };
+    RunEvent {
+        schema: event.schema.clone(),
+        kind: RunEventKind::FieldObservation {
+            session_id: session_id.clone(),
+            capture_generation: *capture_generation,
+            screen_episode_id: *screen_episode_id,
+            sequence: *sequence,
+            monotonic_start_ms: *monotonic_start_ms,
+            monotonic_end_ms: *monotonic_end_ms,
+            screen: screen.clone(),
+            fields: fields.clone(),
+            result_song_resolution: result_song_resolution.clone(),
+            music_select_song_resolution: music_select_song_resolution.clone(),
+            parsed_result_fields: parsed_result_fields.clone(),
+            result_chart_resolution: result_chart_resolution.clone(),
+            result_performance_resolution: result_performance_resolution.clone(),
+            current_score_ocr_resolution: current_score_ocr_resolution.clone(),
+            numeric_batch: numeric_batch.clone(),
+            joint_evidence: joint_evidence.diagnostic_top(),
+            processing_timing: processing_timing.clone(),
+            song_resolution_presentation: song_resolution_presentation.clone(),
+        },
+    }
+    .to_value()
+}
+
 fn play_attempt_screen(screen: &str) -> Option<PlayAttemptScreen> {
     match screen {
         "music_select" => Some(PlayAttemptScreen::MusicSelect),
@@ -2444,6 +2797,29 @@ fn play_attempt_screen(screen: &str) -> Option<PlayAttemptScreen> {
         "play" => Some(PlayAttemptScreen::Play),
         "result" => Some(PlayAttemptScreen::Result),
         _ => None,
+    }
+}
+
+fn selected_difficulty(fields: &Value) -> Option<Difficulty> {
+    let value = fields
+        .pointer("/selected_difficulty/state")?
+        .get("value")?
+        .as_str()?;
+    match value {
+        "beginner" => Some(Difficulty::Beginner),
+        "normal" => Some(Difficulty::Normal),
+        "hyper" => Some(Difficulty::Hyper),
+        "another" => Some(Difficulty::Another),
+        "leggendaria" => Some(Difficulty::Leggendaria),
+        _ => None,
+    }
+}
+
+fn result_chart_factor(fields: &ParsedResultFields) -> ResultChartFactor {
+    ResultChartFactor {
+        difficulty: fields.difficulty.known().copied(),
+        notes: fields.notes.known().copied(),
+        level: fields.level.known().copied(),
     }
 }
 
@@ -2459,8 +2835,14 @@ fn resolver_node(
         observations: accumulator.observation_count,
         top: summary.selected.as_ref().map(candidate_label),
         runner_up: summary.runner_up.as_ref().map(candidate_label),
+        runner_song: summary.runner_song.as_ref().map(candidate_label),
+        runner_chart: summary.runner_chart.as_ref().map(candidate_label),
+        top_candidates: summary.top_candidates.iter().map(candidate_label).collect(),
         support: summary.support,
         margin: summary.margin,
+        song_margin: summary.song_margin,
+        chart_margin: summary.chart_margin,
+        family_contributions: family_contribution_labels(&summary.selected_family_support),
         state: summary.state,
     }
 }
@@ -2468,10 +2850,12 @@ fn resolver_node(
 fn candidate_label(candidate: &JointEvidenceCandidate) -> String {
     let title = candidate.display_titles.first().map_or("?", String::as_str);
     format!(
-        "{} / {} Lv{}",
+        "{} / {} {} Lv{} notes={}",
         title,
+        play_type_label(candidate.chart.key.play_type),
         difficulty_label(candidate.chart.key.difficulty),
-        candidate.chart.level
+        candidate.chart.level,
+        candidate.chart.notes,
     )
 }
 
@@ -2521,8 +2905,31 @@ fn attempt_node(
         joint_top: joint.selected.as_ref().map(candidate_label),
         support: joint.support,
         margin: joint.margin,
+        song_margin: joint.song_margin,
+        chart_margin: joint.chart_margin,
+        runner_song: joint.runner_song.as_ref().map(candidate_label),
+        runner_chart: joint.runner_chart.as_ref().map(candidate_label),
+        top_candidates: joint.top_candidates.iter().map(candidate_label).collect(),
+        family_contributions: family_contribution_labels(&joint.selected_family_support),
         state: joint.state,
     })
+}
+
+fn family_contribution_labels(
+    contributions: &BTreeMap<EvidenceFamily, EvidenceContribution>,
+) -> Vec<String> {
+    let mut values = contributions
+        .iter()
+        .map(|(family, contribution)| {
+            format!(
+                "{}={}",
+                format!("{family:?}").to_ascii_lowercase(),
+                contribution.normalized
+            )
+        })
+        .collect::<Vec<_>>();
+    values.sort();
+    values
 }
 
 fn important_raw_fields(fields: &Value) -> Vec<(String, String)> {
@@ -2646,8 +3053,12 @@ fn render(
         .split(area);
 
     frame.render_widget(
-        Paragraph::new(fixed_watcher_lines(state, health))
-            .block(Block::default().borders(Borders::ALL).title("Watcher")),
+        Paragraph::new(fixed_watcher_lines(state, health)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(watcher_color(state, health)))
+                .title("Watcher"),
+        ),
         rows[0],
     );
 
@@ -2655,6 +3066,13 @@ fn render(
         Paragraph::new(fixed_domain_lines(state, available_width)).block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_style(
+                    Style::default().fg(if state.latest_result_detected.is_some() {
+                        Color::Green
+                    } else {
+                        Color::DarkGray
+                    }),
+                )
                 .title("Latest domain"),
         ),
         rows[1],
@@ -2662,7 +3080,12 @@ fn render(
     frame.render_widget(
         Paragraph::new(resolver_lines(&state.resolver, available_width))
             .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title("Resolver")),
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(resolver_color(&state.resolver)))
+                    .title("Resolver"),
+            ),
         rows[2],
     );
 }
@@ -2671,19 +3094,34 @@ fn fixed_watcher_lines(state: &RunViewState, health: &ChannelHealth) -> Vec<Line
     let channel = health.value();
     let resolver = &state.resolver;
     vec![
-        Line::from(format!(
-            "{}  raw={} semantic={}{} episode=#{} {}s  sessions={} gen={}",
-            state.watcher_state,
-            resolver.raw_screen.as_deref().unwrap_or("-"),
-            resolver.screen.as_deref().unwrap_or("-"),
-            if resolver.suspended { " suspended" } else { "" },
-            resolver.screen_episode_id,
-            elapsed_seconds(resolver.now_ms, resolver.screen_episode_started_ms),
-            state.session_count,
-            state
-                .capture_generation
-                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
-        )),
+        Line::from(vec![
+            Span::styled(
+                state.watcher_state.clone(),
+                Style::default().fg(watcher_color(state, health)),
+            ),
+            Span::raw(format!(
+                "  raw={} semantic=",
+                resolver.raw_screen.as_deref().unwrap_or("-"),
+            )),
+            Span::styled(
+                resolver.screen.clone().unwrap_or_else(|| "-".to_owned()),
+                Style::default().fg(if resolver.suspended {
+                    Color::Yellow
+                } else {
+                    Color::Cyan
+                }),
+            ),
+            Span::raw(format!(
+                "{} episode=#{} {}s  sessions={} gen={}",
+                if resolver.suspended { " suspended" } else { "" },
+                resolver.screen_episode_id,
+                elapsed_seconds(resolver.now_ms, resolver.screen_episode_started_ms),
+                state.session_count,
+                state
+                    .capture_generation
+                    .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+            )),
+        ]),
         Line::from(format!(
             "recording={}  channel={} clients={} drop={}  {}",
             state.status_recording,
@@ -2693,6 +3131,73 @@ fn fixed_watcher_lines(state: &RunViewState, health: &ChannelHealth) -> Vec<Line
             state.message,
         )),
     ]
+}
+
+fn watcher_color(state: &RunViewState, health: &ChannelHealth) -> Color {
+    let channel = health.value();
+    if channel["status"].as_str() == Some("degraded")
+        || channel["dropped_events"].as_u64().unwrap_or(0) > 0
+        || state.status_recording == "degraded"
+    {
+        Color::Red
+    } else if state.watcher_state == "stopped" {
+        Color::DarkGray
+    } else if state.watcher_state == "starting" || state.resolver.suspended {
+        Color::Yellow
+    } else {
+        Color::Green
+    }
+}
+
+fn resolution_color(state: ResolverResolutionState) -> Color {
+    match state {
+        ResolverResolutionState::AcceptedJoint => Color::Green,
+        ResolverResolutionState::Conflict => Color::Red,
+        ResolverResolutionState::SongProjected | ResolverResolutionState::JointCandidate => {
+            Color::Cyan
+        }
+        ResolverResolutionState::Unresolved => Color::Yellow,
+    }
+}
+
+fn resolver_color(snapshot: &ResolverDebugSnapshot) -> Color {
+    if snapshot
+        .gates
+        .iter()
+        .any(|gate| gate.state == GateState::Failed)
+    {
+        Color::Red
+    } else if snapshot
+        .gates
+        .iter()
+        .any(|gate| gate.label == "emit" && gate.state == GateState::Accepted)
+    {
+        Color::Green
+    } else if snapshot.suspended || snapshot.finalizing {
+        Color::Yellow
+    } else if snapshot.local.is_some() {
+        Color::Cyan
+    } else {
+        Color::DarkGray
+    }
+}
+
+const fn gate_color(state: GateState) -> Color {
+    match state {
+        GateState::Accepted => Color::Green,
+        GateState::Pending => Color::Yellow,
+        GateState::Failed => Color::Red,
+        GateState::Inactive => Color::DarkGray,
+    }
+}
+
+const fn gate_suffix(state: GateState) -> &'static str {
+    match state {
+        GateState::Accepted => "✓",
+        GateState::Pending => "…",
+        GateState::Failed => "✗",
+        GateState::Inactive => "–",
+    }
 }
 
 fn fixed_domain_lines(state: &RunViewState, available_width: usize) -> Vec<Line<'static>> {
@@ -2707,114 +3212,173 @@ fn fixed_domain_lines(state: &RunViewState, available_width: usize) -> Vec<Line<
     lines
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the fixed ten-line debug tree keeps semantic styles adjacent to their typed values"
+)]
 fn resolver_lines(snapshot: &ResolverDebugSnapshot, available_width: usize) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(format!(
-        "SCREEN raw={} semantic={}{}  episode=#{}  elapsed={}s  sequence={}",
-        snapshot.raw_screen.as_deref().unwrap_or("-"),
-        snapshot.screen.as_deref().unwrap_or("-"),
-        if snapshot.suspended { " suspended" } else { "" },
-        snapshot.screen_episode_id,
-        elapsed_seconds(snapshot.now_ms, snapshot.screen_episode_started_ms),
-        snapshot
-            .source_sequence
-            .map_or_else(|| "-".to_owned(), |value| value.to_string()),
-    ))];
-    if snapshot.finalizing {
-        lines.push(Line::from(
-            "├─ RESULT draining/finalizing admitted field jobs",
-        ));
-    }
-    if let Some(local) = &snapshot.local {
-        lines.push(Line::from(format!(
-            "├─ {}  elapsed={}s obs={} latest-age={}s",
-            local.label,
-            elapsed_seconds(snapshot.now_ms, local.started_ms),
-            local.observations,
-            elapsed_seconds(snapshot.now_ms, local.last_observation_ms),
-        )));
-        if !snapshot.raw_fields.is_empty() {
-            let raw = snapshot
-                .raw_fields
-                .iter()
-                .map(|(key, value)| format!("{key}=\"{value}\""))
-                .collect::<Vec<_>>()
-                .join(" ");
-            lines.push(Line::from(fitted_value(
-                "│  ├─ OCR ",
-                &raw,
-                available_width,
-            )));
-        }
-        lines.push(Line::from(fitted_value(
-            "│  └─ TOP ",
-            &format!(
-                "{} support={} margin={} state={:?}",
-                local.top.as_deref().unwrap_or("-"),
-                local.support,
-                local.margin,
-                local.state
-            ),
+    let semantic_color = if snapshot.suspended {
+        Color::Yellow
+    } else {
+        Color::Cyan
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::raw(format!(
+            "SCREEN raw={} semantic=",
+            snapshot.raw_screen.as_deref().unwrap_or("-")
+        )),
+        Span::styled(
+            snapshot.screen.clone().unwrap_or_else(|| "-".to_owned()),
+            Style::default()
+                .fg(semantic_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            if snapshot.suspended { " suspended" } else { "" },
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(format!(
+            "  episode=#{} {}s seq={}",
+            snapshot.screen_episode_id,
+            elapsed_seconds(snapshot.now_ms, snapshot.screen_episode_started_ms),
+            snapshot
+                .source_sequence
+                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+        )),
+    ])];
+    lines.push(Line::from(vec![
+        Span::styled("├─ FIELD ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            if snapshot.finalizing {
+                "draining"
+            } else {
+                "completed"
+            },
+            Style::default().fg(if snapshot.finalizing {
+                Color::Yellow
+            } else if snapshot.latest_field_sequence.is_some() {
+                Color::Green
+            } else {
+                Color::DarkGray
+            }),
+        ),
+        Span::raw(format!(
+            " seq={} age={}s",
+            snapshot
+                .latest_field_sequence
+                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+            elapsed_seconds(snapshot.now_ms, snapshot.latest_field_ms),
+        )),
+    ]));
+    let raw = snapshot
+        .raw_fields
+        .iter()
+        .map(|(key, value)| format!("{key}=\"{value}\""))
+        .collect::<Vec<_>>();
+    lines.push(Line::from(Span::styled(
+        fitted_value(
+            "│  OCR ",
+            &raw.iter().take(3).cloned().collect::<Vec<_>>().join(" "),
             available_width,
-        )));
-        if let Some(runner_up) = &local.runner_up {
-            lines.push(Line::from(fitted_value(
-                "│     runner-up=",
-                runner_up,
+        ),
+        Style::default().fg(Color::White),
+    )));
+    lines.push(Line::from(fitted_value(
+        "│  TYPED ",
+        &raw.iter()
+            .skip(3)
+            .take(4)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" "),
+        available_width,
+    )));
+    if let Some(local) = &snapshot.local {
+        lines.push(Line::from(vec![
+            Span::styled("├─ LOCAL ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:?}", local.state),
+                Style::default().fg(resolution_color(local.state)),
+            ),
+            Span::raw(format!(
+                " obs={} age={}s support={} songΔ={} chartΔ={}",
+                local.observations,
+                elapsed_seconds(snapshot.now_ms, local.last_observation_ms),
+                local.support,
+                local.song_margin,
+                local.chart_margin,
+            )),
+        ]));
+        lines.push(Line::from(Span::styled(
+            fitted_value(
+                "│  TOP ",
+                local.top.as_deref().unwrap_or("-"),
                 available_width,
-            )));
-        }
-    }
-    if let Some(challenger) = &snapshot.successor {
+            ),
+            Style::default().fg(resolution_color(local.state)),
+        )));
         lines.push(Line::from(fitted_value(
-            "│  └─ SUCCESSOR ",
+            "│  RUN song=",
             &format!(
-                "{} {}s obs={} support={} margin={}",
-                challenger.top.as_deref().unwrap_or("-"),
-                elapsed_seconds(snapshot.now_ms, challenger.started_ms),
-                challenger.observations,
-                challenger.support,
-                challenger.margin
+                "{} chart={} {}={}",
+                local.runner_song.as_deref().unwrap_or("-"),
+                local.runner_chart.as_deref().unwrap_or("-"),
+                if snapshot.successor.is_some() {
+                    "successor"
+                } else {
+                    "#3"
+                },
+                snapshot
+                    .successor
+                    .as_ref()
+                    .and_then(|value| value.top.as_deref())
+                    .unwrap_or_else(|| local.top_candidates.get(2).map_or("-", String::as_str)),
             ),
             available_width,
         )));
     }
     if let Some(attempt) = &snapshot.attempt {
-        lines.push(Line::from(format!(
-            "└─ ATTEMPT {} elapsed={}s phase={}({}s) path={}",
-            attempt
-                .attempt_id
-                .map_or_else(|| "-".to_owned(), |value| format!("#{value}")),
-            elapsed_seconds(snapshot.now_ms, attempt.started_ms),
-            attempt.phase,
-            elapsed_seconds(snapshot.now_ms, attempt.phase_started_ms),
-            attempt.path,
-        )));
-        lines.push(Line::from(fitted_value(
-            "   ├─ SELECT top=",
-            attempt.select_top.as_deref().unwrap_or("-"),
-            available_width,
-        )));
-        lines.push(Line::from(fitted_value(
-            "   ├─ RESULT top=",
-            attempt.result_top.as_deref().unwrap_or("-"),
-            available_width,
-        )));
-        lines.push(Line::from(fitted_value(
-            "   ├─ JOINT ",
-            &format!(
-                "{} support={} margin={} state={:?}",
-                attempt.joint_top.as_deref().unwrap_or("-"),
-                attempt.support,
-                attempt.margin,
-                attempt.state
+        lines.push(Line::from(vec![
+            Span::styled("└─ ATTEMPT ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!(
+                    "{} phase={} path={}",
+                    attempt
+                        .attempt_id
+                        .map_or_else(|| "-".to_owned(), |value| format!("#{value}")),
+                    attempt.phase,
+                    attempt.path,
+                ),
+                Style::default().fg(Color::Cyan),
             ),
+            Span::raw(format!(
+                " {}s",
+                elapsed_seconds(snapshot.now_ms, attempt.started_ms)
+            )),
+        ]));
+        lines.push(Line::from(fitted_value(
+            "   FACTORS ",
+            &attempt.family_contributions.join(" "),
             available_width,
         )));
-        lines.push(Line::from(format!("   └─ GATE {}", snapshot.gate)));
-    } else {
-        lines.push(Line::from(format!("└─ GATE {}", snapshot.gate)));
+    } else if let Some(local) = &snapshot.local {
+        lines.push(Line::from(fitted_value(
+            "│  FACTORS ",
+            &local.family_contributions.join(" "),
+            available_width,
+        )));
     }
+    let mut gate_spans = vec![Span::styled(
+        "   GATES ",
+        Style::default().fg(Color::DarkGray),
+    )];
+    for gate in &snapshot.gates {
+        gate_spans.push(Span::styled(
+            format!("{}{} ", gate.label, gate_suffix(gate.state)),
+            Style::default().fg(gate_color(gate.state)),
+        ));
+    }
+    lines.push(Line::from(gate_spans));
     lines
 }
 
@@ -2844,10 +3408,13 @@ fn expanded_result_history_entry_lines(
                     .fg(clear_type_color(&result.clear_type))
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(format!(
-                "  {} {} Lv{}  EX SCORE {} / {} ({}.{:01}%)",
-                play_type_label(result.play_type),
+            Span::raw(format!("  {} ", play_type_label(result.play_type))),
+            Span::styled(
                 difficulty_label(result.difficulty),
+                Style::default().fg(difficulty_color(result.difficulty)),
+            ),
+            Span::raw(format!(
+                " Lv{}  EX SCORE {} / {} ({}.{:01}%)",
                 result.level,
                 grouped_u32(result.current_score),
                 grouped_u64(maximum_score),
@@ -2902,6 +3469,16 @@ const fn clear_type_color(clear_type: &str) -> Color {
         b"ASSIST CLEAR" | b"EASY CLEAR" => Color::Yellow,
         b"CLEAR" | b"HARD CLEAR" | b"EXH-CLEAR" | b"F-COMBO" => Color::Green,
         _ => Color::White,
+    }
+}
+
+const fn difficulty_color(difficulty: Difficulty) -> Color {
+    match difficulty {
+        Difficulty::Beginner => Color::Green,
+        Difficulty::Normal => Color::Blue,
+        Difficulty::Hyper => Color::Yellow,
+        Difficulty::Another => Color::Red,
+        Difficulty::Leggendaria => Color::Magenta,
     }
 }
 
@@ -3037,6 +3614,19 @@ mod tests {
             completed_event_artifact: None,
             timing_active: false,
             output_us: 0,
+        }
+    }
+
+    fn disconnected_test_channel() -> ObservationChannel {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
+        drop(receiver);
+        ObservationChannel {
+            sender,
+            stop: Arc::new(AtomicBool::new(false)),
+            health: Arc::new(ChannelHealth::default()),
+            thread: None,
+            socket_path: PathBuf::new(),
+            socket_identity: (0, 0),
         }
     }
 
@@ -3328,7 +3918,7 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         let snapshot: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v3");
+        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v4");
         assert_eq!(snapshot["state"]["invocation_id"], "invocation-1");
         assert_eq!(snapshot["state"]["next_channel_sequence"], 1);
         assert_eq!(snapshot["channel"]["connected_clients"], 1);
@@ -3544,6 +4134,8 @@ mod tests {
                     },
                 ],
             },
+            None,
+            None,
         );
         output
             .publish(&screen_event(2, "decide_transition"))
@@ -3681,7 +4273,7 @@ mod tests {
         for reader in &mut readers {
             let mut snapshot = String::new();
             reader.read_line(&mut snapshot).unwrap();
-            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v3"));
+            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v4"));
         }
         channel
             .publish(&json!({
@@ -4053,6 +4645,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the 80x25 fixture spells out every simultaneously visible resolver node and gate"
+    )]
     fn fixed_three_pane_tui_renders_resolver_duration_and_clips_below_minimum() {
         let mut state = RunViewState::new("invocation-1".to_owned(), "a".repeat(64), true);
         state.watcher_state = "session_active".to_owned();
@@ -4066,6 +4662,8 @@ mod tests {
             screen_episode_id: 18,
             screen_episode_started_ms: Some(2_000),
             source_sequence: Some(1_240),
+            latest_field_sequence: Some(1_238),
+            latest_field_ms: Some(13_000),
             local: Some(ResolverNodeSnapshot {
                 label: "RESULT resolver",
                 started_ms: Some(3_000),
@@ -4073,11 +4671,33 @@ mod tests {
                 observations: 6,
                 top: Some("TEST SONG / HYPER Lv8".to_owned()),
                 runner_up: Some("OTHER SONG / HYPER Lv8".to_owned()),
+                runner_song: Some("OTHER SONG / SP HYPER Lv8 notes=764".to_owned()),
+                runner_chart: None,
+                top_candidates: vec!["TEST SONG / SP HYPER Lv8 notes=764".to_owned()],
                 support: 320,
                 margin: 80,
+                song_margin: 80,
+                chart_margin: 320,
+                family_contributions: vec!["result_title=300".to_owned()],
                 state: ResolverResolutionState::AcceptedJoint,
             }),
-            successor: None,
+            successor: Some(ResolverNodeSnapshot {
+                label: "successor",
+                started_ms: Some(13_000),
+                last_observation_ms: Some(14_000),
+                observations: 2,
+                top: Some("NEXT / SP HYPER Lv9 notes=900".to_owned()),
+                runner_up: None,
+                runner_song: None,
+                runner_chart: None,
+                top_candidates: vec!["NEXT / SP HYPER Lv9 notes=900".to_owned()],
+                support: 140,
+                margin: 140,
+                song_margin: 140,
+                chart_margin: 140,
+                family_contributions: vec!["select_title=140".to_owned()],
+                state: ResolverResolutionState::JointCandidate,
+            }),
             attempt: Some(AttemptNodeSnapshot {
                 attempt_id: Some(14),
                 started_ms: Some(1_000),
@@ -4089,9 +4709,41 @@ mod tests {
                 joint_top: Some("TEST SONG / HYPER Lv8".to_owned()),
                 support: 400,
                 margin: 160,
+                song_margin: 160,
+                chart_margin: 400,
+                runner_song: Some("OTHER SONG / SP HYPER Lv8 notes=764".to_owned()),
+                runner_chart: None,
+                top_candidates: vec!["TEST SONG / SP HYPER Lv8 notes=764".to_owned()],
+                family_contributions: vec!["result_title=300".to_owned()],
                 state: ResolverResolutionState::AcceptedJoint,
             }),
             gate: "waiting: numeric performance".to_owned(),
+            gates: vec![
+                GateSnapshot {
+                    label: "link",
+                    state: GateState::Accepted,
+                },
+                GateSnapshot {
+                    label: "identity",
+                    state: GateState::Accepted,
+                },
+                GateSnapshot {
+                    label: "clear",
+                    state: GateState::Accepted,
+                },
+                GateSnapshot {
+                    label: "numeric",
+                    state: GateState::Pending,
+                },
+                GateSnapshot {
+                    label: "drain",
+                    state: GateState::Inactive,
+                },
+                GateSnapshot {
+                    label: "emit",
+                    state: GateState::Inactive,
+                },
+            ],
             raw_fields: vec![("title".to_owned(), "OCR TITLE".to_owned())],
         };
         let health = ChannelHealth::default();
@@ -4113,11 +4765,65 @@ mod tests {
                 assert!(rendered.contains("Latest domain"));
                 assert!(rendered.contains("Resolver"));
                 assert!(rendered.contains("episode=#18"));
-                assert!(rendered.contains("elapsed=12s"));
+                assert!(rendered.contains("#18 12s"));
                 assert!(rendered.contains("ATTEMPT #14"));
-                assert!(rendered.contains("waiting: numeric performance"));
+                assert!(rendered.contains("numeric…"));
+                assert!(rendered.contains("link✓"));
+                assert!(rendered.contains("identity✓"));
+                assert!(rendered.contains("clear✓"));
+                assert!(rendered.contains("drain–"));
+                assert!(rendered.contains("emit–"));
+                assert!(
+                    terminal
+                        .backend()
+                        .buffer()
+                        .content
+                        .iter()
+                        .any(|cell| cell.fg == Color::Green)
+                );
+                assert!(
+                    terminal
+                        .backend()
+                        .buffer()
+                        .content
+                        .iter()
+                        .any(|cell| cell.fg == Color::Yellow)
+                );
             }
         }
+    }
+
+    #[test]
+    fn semantic_palette_keeps_typed_state_and_domain_colors_consistent() {
+        assert_eq!(
+            resolution_color(ResolverResolutionState::AcceptedJoint),
+            Color::Green
+        );
+        assert_eq!(
+            resolution_color(ResolverResolutionState::JointCandidate),
+            Color::Cyan
+        );
+        assert_eq!(
+            resolution_color(ResolverResolutionState::Unresolved),
+            Color::Yellow
+        );
+        assert_eq!(
+            resolution_color(ResolverResolutionState::Conflict),
+            Color::Red
+        );
+        assert_eq!(gate_color(GateState::Inactive), Color::DarkGray);
+        assert_eq!(gate_suffix(GateState::Accepted), "✓");
+        assert_eq!(gate_suffix(GateState::Pending), "…");
+        assert_eq!(gate_suffix(GateState::Failed), "✗");
+        assert_eq!(gate_suffix(GateState::Inactive), "–");
+        assert_eq!(difficulty_color(Difficulty::Beginner), Color::Green);
+        assert_eq!(difficulty_color(Difficulty::Normal), Color::Blue);
+        assert_eq!(difficulty_color(Difficulty::Hyper), Color::Yellow);
+        assert_eq!(difficulty_color(Difficulty::Another), Color::Red);
+        assert_eq!(difficulty_color(Difficulty::Leggendaria), Color::Magenta);
+        assert_eq!(clear_type_color("FAILED"), Color::Red);
+        assert_eq!(clear_type_color("ASSIST CLEAR"), Color::Yellow);
+        assert_eq!(clear_type_color("F-COMBO"), Color::Green);
     }
 
     #[test]
@@ -4147,7 +4853,12 @@ mod tests {
             candidates: vec![candidate],
         };
         let mut accumulator = HypothesisAccumulator::default();
-        accumulator.observe(100, &observation);
+        let chart_factor = ResultChartFactor {
+            difficulty: Some(Difficulty::Hyper),
+            notes: Some(764),
+            level: Some(8),
+        };
+        accumulator.observe(100, &observation, None, Some(chart_factor));
         assert_eq!(
             accumulator.summary().state,
             ResolverResolutionState::JointCandidate
@@ -4158,14 +4869,16 @@ mod tests {
                 catalog_song_count: 0,
                 candidates: Vec::new(),
             },
+            None,
+            None,
         );
-        accumulator.observe(300, &observation);
+        accumulator.observe(300, &observation, None, Some(chart_factor));
         assert_eq!(
             accumulator.summary().state,
             ResolverResolutionState::AcceptedJoint
         );
         for tick in 0..20 {
-            accumulator.observe(400 + tick, &observation);
+            accumulator.observe(400 + tick, &observation, None, None);
         }
         let accepted = accumulator.summary().accepted().unwrap();
         let stored = &accumulator.candidates[&JointKey {
@@ -4202,7 +4915,7 @@ mod tests {
             },
             display_titles: vec!["TEST SONG".to_owned()],
             artist: "TEST ARTIST".to_owned(),
-            family_support: BTreeMap::from([(EvidenceFamily::ResultChart, support)]),
+            family_support: BTreeMap::from([(EvidenceFamily::ResultArtist, support)]),
             support,
         };
         let observation = JointEvidenceObservation {
@@ -4211,25 +4924,502 @@ mod tests {
         };
         let mut accumulator = HypothesisAccumulator::default();
         for tick in 0..3 {
-            accumulator.observe(100 + tick, &observation);
+            accumulator.observe(100 + tick, &observation, None, None);
         }
         let summary = accumulator.summary();
         assert_eq!(summary.support, 300);
         assert_eq!(summary.support.saturating_sub(summary.margin), 123);
         assert_eq!(summary.margin, 177);
         assert_eq!(
-            summary.selected_family_support[&EvidenceFamily::ResultChart],
+            summary.selected_family_support[&EvidenceFamily::ResultArtist],
             EvidenceContribution {
                 raw: 510,
                 normalized: 300,
             }
         );
         assert_eq!(
-            summary.runner_up_family_support[&EvidenceFamily::ResultChart],
+            summary.runner_up_family_support[&EvidenceFamily::ResultArtist],
             EvidenceContribution {
                 raw: 210,
                 normalized: 123,
             }
+        );
+    }
+
+    #[test]
+    fn chart_factors_wait_for_song_evidence_and_apply_to_later_candidates() {
+        let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000011\"").unwrap();
+        let mut accumulator = HypothesisAccumulator::default();
+        accumulator.observe(
+            100,
+            &JointEvidenceObservation {
+                catalog_song_count: 2,
+                candidates: Vec::new(),
+            },
+            Some(Difficulty::Hyper),
+            Some(ResultChartFactor {
+                difficulty: Some(Difficulty::Hyper),
+                notes: Some(1_136),
+                level: Some(10),
+            }),
+        );
+        assert_eq!(
+            accumulator.summary().state,
+            ResolverResolutionState::Unresolved
+        );
+
+        let candidate = |difficulty, notes| JointEvidenceCandidate {
+            song_id,
+            chart: scorepeek::catalog::Chart {
+                key: scorepeek::catalog::ChartKey {
+                    play_type: PlayType::Single,
+                    difficulty,
+                },
+                level: 10,
+                notes,
+            },
+            display_titles: vec!["∀".to_owned()],
+            artist: "BEMANI Sound Team \"HuΣeR\" respect for D.J.Amuro".to_owned(),
+            family_support: BTreeMap::from([(EvidenceFamily::ResultArtist, 220)]),
+            support: 220,
+        };
+        accumulator.observe(
+            200,
+            &JointEvidenceObservation {
+                catalog_song_count: 2,
+                candidates: vec![
+                    candidate(Difficulty::Hyper, 1_136),
+                    candidate(Difficulty::Another, 1_500),
+                ],
+            },
+            None,
+            None,
+        );
+        let summary = accumulator.summary();
+        assert_eq!(
+            summary.selected.unwrap().chart.key.difficulty,
+            Difficulty::Hyper
+        );
+        assert_eq!(summary.support, 370);
+        assert_eq!(summary.chart_margin, 140);
+    }
+
+    #[test]
+    fn selection_epoch_retains_difficulty_until_song_evidence_arrives() {
+        let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000012\"").unwrap();
+        let mut epochs = SelectionEpochTracker::default();
+        epochs.observe(
+            100,
+            &JointEvidenceObservation {
+                catalog_song_count: 2,
+                candidates: Vec::new(),
+            },
+            Some(Difficulty::Hyper),
+        );
+        let candidate = |difficulty| JointEvidenceCandidate {
+            song_id,
+            chart: scorepeek::catalog::Chart {
+                key: scorepeek::catalog::ChartKey {
+                    play_type: PlayType::Single,
+                    difficulty,
+                },
+                level: 10,
+                notes: if difficulty == Difficulty::Hyper {
+                    1_136
+                } else {
+                    1_500
+                },
+            },
+            display_titles: vec!["∀".to_owned()],
+            artist: "ARTIST".to_owned(),
+            family_support: BTreeMap::from([(EvidenceFamily::SelectTitle, 300)]),
+            support: 300,
+        };
+        epochs.observe(
+            200,
+            &JointEvidenceObservation {
+                catalog_song_count: 2,
+                candidates: vec![candidate(Difficulty::Hyper), candidate(Difficulty::Another)],
+            },
+            None,
+        );
+        let summary = epochs.incumbent.summary();
+        assert_eq!(
+            summary.selected.unwrap().chart.key.difficulty,
+            Difficulty::Hyper
+        );
+        assert_eq!(summary.chart_margin, 50);
+        assert!(epochs.pending_difficulty_support.is_empty());
+    }
+
+    #[test]
+    fn diagnostic_top_does_not_truncate_resolver_authority() {
+        let first = serde_json::from_str("\"00000000-0000-0000-0000-000000000051\"").unwrap();
+        let second = serde_json::from_str("\"00000000-0000-0000-0000-000000000052\"").unwrap();
+        let keys = [
+            (PlayType::Single, Difficulty::Beginner),
+            (PlayType::Single, Difficulty::Normal),
+            (PlayType::Single, Difficulty::Hyper),
+            (PlayType::Single, Difficulty::Another),
+            (PlayType::Single, Difficulty::Leggendaria),
+            (PlayType::Double, Difficulty::Normal),
+            (PlayType::Double, Difficulty::Hyper),
+            (PlayType::Double, Difficulty::Another),
+        ];
+        let candidate = |song_id, play_type, difficulty, support| JointEvidenceCandidate {
+            song_id,
+            chart: scorepeek::catalog::Chart {
+                key: scorepeek::catalog::ChartKey {
+                    play_type,
+                    difficulty,
+                },
+                level: 10,
+                notes: 1_000,
+            },
+            display_titles: vec![format!("SONG-{song_id:?}")],
+            artist: "ARTIST".to_owned(),
+            family_support: BTreeMap::from([(EvidenceFamily::ResultArtist, support)]),
+            support,
+        };
+        let mut candidates = keys
+            .into_iter()
+            .map(|(play_type, difficulty)| candidate(first, play_type, difficulty, 300))
+            .collect::<Vec<_>>();
+        candidates.push(candidate(second, PlayType::Single, Difficulty::Hyper, 270));
+        let mut event = accepted_result_event(1);
+        let RunEventKind::FieldObservation { joint_evidence, .. } = &mut event.kind else {
+            unreachable!();
+        };
+        joint_evidence.candidates = candidates;
+        joint_evidence.catalog_song_count = 2;
+
+        let mut authority = HypothesisAccumulator::default();
+        authority.observe(100, joint_evidence, None, None);
+        assert_eq!(authority.summary().state, ResolverResolutionState::Conflict);
+        assert_eq!(joint_evidence.candidates.len(), 9);
+        let diagnostic = bounded_run_event_value(&event).unwrap();
+        assert_eq!(
+            diagnostic["joint_evidence"]["candidates"]
+                .as_array()
+                .unwrap()
+                .len(),
+            8
+        );
+        let RunEventKind::FieldObservation { joint_evidence, .. } = &event.kind else {
+            unreachable!();
+        };
+        assert_eq!(joint_evidence.candidates.len(), 9);
+    }
+
+    #[test]
+    fn runner_song_and_runner_chart_are_independent_hierarchical_competitors() {
+        let first = serde_json::from_str("\"00000000-0000-0000-0000-000000000021\"").unwrap();
+        let second = serde_json::from_str("\"00000000-0000-0000-0000-000000000022\"").unwrap();
+        let candidate = |song_id, play_type, support| JointEvidenceCandidate {
+            song_id,
+            chart: scorepeek::catalog::Chart {
+                key: scorepeek::catalog::ChartKey {
+                    play_type,
+                    difficulty: Difficulty::Hyper,
+                },
+                level: 10,
+                notes: 1_136,
+            },
+            display_titles: vec![format!("SONG-{song_id:?}")],
+            artist: "ARTIST".to_owned(),
+            family_support: BTreeMap::from([(EvidenceFamily::ResultArtist, support)]),
+            support,
+        };
+        let mut accumulator = HypothesisAccumulator::default();
+        accumulator.observe(
+            100,
+            &JointEvidenceObservation {
+                catalog_song_count: 2,
+                candidates: vec![
+                    candidate(first, PlayType::Single, 400),
+                    candidate(first, PlayType::Double, 380),
+                    candidate(second, PlayType::Single, 350),
+                ],
+            },
+            None,
+            None,
+        );
+        let summary = accumulator.summary();
+        assert_eq!(summary.runner_up.as_ref().unwrap().song_id, first);
+        assert_eq!(summary.runner_chart.as_ref().unwrap().song_id, first);
+        assert_eq!(summary.runner_song.as_ref().unwrap().song_id, second);
+        assert_eq!(summary.song_margin, 38);
+        assert_eq!(summary.chart_margin, 15);
+    }
+
+    #[test]
+    fn latest_failure_oracle_resolves_forall_from_cross_screen_factors() {
+        let wrong = serde_json::from_str("\"00000000-0000-0000-0000-000000000031\"").unwrap();
+        let expected = serde_json::from_str("\"00000000-0000-0000-0000-000000000032\"").unwrap();
+        let chart = |song_id, play_type, notes, family, support| JointEvidenceCandidate {
+            song_id,
+            chart: scorepeek::catalog::Chart {
+                key: scorepeek::catalog::ChartKey {
+                    play_type,
+                    difficulty: Difficulty::Hyper,
+                },
+                level: 10,
+                notes,
+            },
+            display_titles: vec![if song_id == expected { "∀" } else { "A" }.to_owned()],
+            artist: if song_id == expected {
+                "BEMANI Sound Team \"HuΣeR\" respect for D.J.Amuro"
+            } else {
+                "OTHER"
+            }
+            .to_owned(),
+            family_support: BTreeMap::from([(family, support)]),
+            support,
+        };
+        let mut select = HypothesisAccumulator::default();
+        select.observe(
+            100,
+            &JointEvidenceObservation {
+                catalog_song_count: 2,
+                candidates: vec![chart(
+                    wrong,
+                    PlayType::Single,
+                    1_000,
+                    EvidenceFamily::SelectTitle,
+                    300,
+                )],
+            },
+            Some(Difficulty::Hyper),
+            None,
+        );
+        let mut result = HypothesisAccumulator::default();
+        result.observe(
+            200,
+            &JointEvidenceObservation {
+                catalog_song_count: 2,
+                candidates: vec![
+                    chart(
+                        expected,
+                        PlayType::Single,
+                        1_136,
+                        EvidenceFamily::ResultArtist,
+                        300,
+                    ),
+                    chart(
+                        expected,
+                        PlayType::Double,
+                        1_500,
+                        EvidenceFamily::ResultArtist,
+                        300,
+                    ),
+                ],
+            },
+            None,
+            Some(ResultChartFactor {
+                difficulty: Some(Difficulty::Hyper),
+                notes: Some(1_136),
+                level: None,
+            }),
+        );
+        select.add_from(&result);
+        let summary = select.summary();
+        let accepted = summary.accepted().expect("∀ SP HYPER should resolve");
+        assert_eq!(accepted.song_id, expected);
+        assert_eq!(accepted.chart.key.play_type, PlayType::Single);
+        assert_eq!(accepted.chart.notes, 1_136);
+        assert_eq!(summary.song_margin, 50);
+        assert_eq!(summary.chart_margin, 50);
+    }
+
+    #[test]
+    fn music_select_fields_update_the_typed_tui_snapshot() {
+        let shared = state();
+        shared.lock().unwrap().current_screen = Some("music_select".to_owned());
+        let mut output = test_output(Arc::clone(&shared), disconnected_test_channel());
+        let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000041\"").unwrap();
+        let fields = json!({
+            "active_list_title": "A",
+            "artist": "BEMANI Sound Team \"HuΣeR\" respect for D.J.Amuro",
+            "selected_difficulty": {
+                "state": { "status": "known", "value": "hyper" },
+                "winner_score_ppm": 500_000,
+                "margin_ppm": 250_000
+            },
+            "title_evidence": {
+                "foreground": { "open_text": "A" },
+                "normalized_scalar_count": 1,
+                "geometry": {
+                    "occupancy_width_ppm": 42000,
+                    "touches_left_edge": false,
+                    "touches_right_edge": false
+                }
+            }
+        });
+        output
+            .reduce_music_select_observation(
+                Some(&"invocation-1-session-1".to_owned()),
+                Some(1),
+                42,
+                4_200,
+                &fields,
+                &JointEvidenceObservation {
+                    catalog_song_count: 2,
+                    candidates: vec![JointEvidenceCandidate {
+                        song_id,
+                        chart: scorepeek::catalog::Chart {
+                            key: scorepeek::catalog::ChartKey {
+                                play_type: PlayType::Single,
+                                difficulty: Difficulty::Hyper,
+                            },
+                            level: 10,
+                            notes: 1_136,
+                        },
+                        display_titles: vec!["∀".to_owned()],
+                        artist: "BEMANI Sound Team \"HuΣeR\" respect for D.J.Amuro".to_owned(),
+                        family_support: BTreeMap::from([
+                            (EvidenceFamily::SelectTitle, 180),
+                            (EvidenceFamily::SelectArtist, 300),
+                        ]),
+                        support: 480,
+                    }],
+                },
+                &SongResolutionPresentation::Unknown {
+                    reason: json!("test"),
+                    selected: None,
+                    runner_up: None,
+                    evidence_summary: None,
+                },
+            )
+            .unwrap();
+        let snapshot = shared.lock().unwrap().resolver.clone();
+        assert_eq!(snapshot.latest_field_sequence, Some(42));
+        assert!(
+            snapshot
+                .raw_fields
+                .iter()
+                .any(|(key, value)| { key == "artist" && value.contains("HuΣeR") })
+        );
+        assert!(
+            snapshot
+                .raw_fields
+                .iter()
+                .any(|(key, value)| { key == "marker" && value.contains("known:hyper") })
+        );
+        assert_eq!(snapshot.local.unwrap().top_candidates.len(), 1);
+        output
+            .publish(&RunEvent {
+                schema: RUN_EVENT_SCHEMA.to_owned(),
+                kind: RunEventKind::SemanticScreenEpisodeChanged {
+                    session_id: Some("invocation-1-session-1".to_owned()),
+                    capture_generation: Some(1),
+                    screen_episode_id: 43,
+                    sequence: 43,
+                    monotonic_end_ms: 4_300,
+                    screen: "play".to_owned(),
+                    phase: SemanticEpisodePhase::Started,
+                },
+            })
+            .unwrap();
+        let snapshot = shared.lock().unwrap().resolver.clone();
+        assert!(snapshot.raw_fields.is_empty());
+        assert_eq!(snapshot.latest_field_sequence, None);
+        assert_eq!(snapshot.latest_field_ms, None);
+    }
+
+    #[test]
+    fn music_select_handoff_waits_for_admitted_field_drain() {
+        let shared = state();
+        let mut output = test_output(Arc::clone(&shared), disconnected_test_channel());
+        let semantic = |sequence, phase| RunEvent {
+            schema: RUN_EVENT_SCHEMA.to_owned(),
+            kind: RunEventKind::SemanticScreenEpisodeChanged {
+                session_id: Some("invocation-1-session-1".to_owned()),
+                capture_generation: Some(1),
+                screen_episode_id: 7,
+                sequence,
+                monotonic_end_ms: sequence * 100,
+                screen: "music_select".to_owned(),
+                phase,
+            },
+        };
+        output
+            .publish(&semantic(70, SemanticEpisodePhase::Started))
+            .unwrap();
+        output
+            .publish(&semantic(71, SemanticEpisodePhase::Closing))
+            .unwrap();
+        assert_eq!(output.engine.retained_select.observation_count, 0);
+
+        let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000061\"").unwrap();
+        output
+            .publish(&RunEvent {
+                schema: RUN_EVENT_SCHEMA.to_owned(),
+                kind: RunEventKind::FieldObservation {
+                    session_id: Some("invocation-1-session-1".to_owned()),
+                    capture_generation: Some(1),
+                    screen_episode_id: 7,
+                    sequence: 70,
+                    monotonic_start_ms: 6_900,
+                    monotonic_end_ms: 7_050,
+                    screen: "music_select".to_owned(),
+                    fields: json!({
+                        "active_list_title": "A",
+                        "artist": "ARTIST",
+                        "selected_difficulty": { "state": { "status": "known", "value": "hyper" } }
+                    }),
+                    result_song_resolution: Value::Null,
+                    music_select_song_resolution: Value::Null,
+                    parsed_result_fields: None,
+                    result_chart_resolution: None,
+                    result_performance_resolution: None,
+                    current_score_ocr_resolution: None,
+                    numeric_batch: None,
+                    joint_evidence: JointEvidenceObservation {
+                        catalog_song_count: 2,
+                        candidates: vec![JointEvidenceCandidate {
+                            song_id,
+                            chart: scorepeek::catalog::Chart {
+                                key: scorepeek::catalog::ChartKey {
+                                    play_type: PlayType::Single,
+                                    difficulty: Difficulty::Hyper,
+                                },
+                                level: 10,
+                                notes: 1_136,
+                            },
+                            display_titles: vec!["∀".to_owned()],
+                            artist: "ARTIST".to_owned(),
+                            family_support: BTreeMap::from([(EvidenceFamily::SelectArtist, 300)]),
+                            support: 300,
+                        }],
+                    },
+                    processing_timing: Value::Null,
+                    song_resolution_presentation: Box::new(SongResolutionPresentation::Unknown {
+                        reason: json!("test"),
+                        selected: None,
+                        runner_up: None,
+                        evidence_summary: None,
+                    }),
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            output.engine.selection_epochs.incumbent.observation_count,
+            1
+        );
+        assert_eq!(output.engine.retained_select.observation_count, 0);
+        output
+            .publish(&semantic(72, SemanticEpisodePhase::Finalized))
+            .unwrap();
+        assert_eq!(output.engine.retained_select.observation_count, 1);
+        assert_eq!(
+            output
+                .engine
+                .retained_select
+                .summary()
+                .selected
+                .unwrap()
+                .song_id,
+            song_id
         );
     }
 
@@ -4259,14 +5449,14 @@ mod tests {
         let incumbent = song(1);
         let successor = song(2);
         let mut epochs = SelectionEpochTracker::default();
-        epochs.observe(100, &observation(incumbent, 300));
-        epochs.observe(200, &observation(successor, 70));
+        epochs.observe(100, &observation(incumbent, 300), None);
+        epochs.observe(200, &observation(successor, 70), None);
         assert_eq!(
             epochs.handoff().summary().selected.unwrap().song_id,
             successor
         );
 
-        epochs.observe(300, &observation(incumbent, 300));
+        epochs.observe(300, &observation(incumbent, 300), None);
         assert!(epochs.successor.candidates.is_empty());
         assert_eq!(
             epochs.handoff().summary().selected.unwrap().song_id,
@@ -4300,6 +5490,8 @@ mod tests {
                 catalog_song_count: 0,
                 candidates: vec![candidate(first_song, EvidenceFamily::ResultTitle)],
             },
+            None,
+            None,
         );
         assert_eq!(
             accumulator.summary().state,
@@ -4311,6 +5503,8 @@ mod tests {
                 catalog_song_count: 0,
                 candidates: vec![candidate(second_song, EvidenceFamily::ResultArtist)],
             },
+            None,
+            None,
         );
         assert_eq!(
             accumulator.summary().state,

@@ -3369,6 +3369,7 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
             "scorepeek-private-diagnostic-event-v1"
                 | "scorepeek-run-event-v2"
                 | "scorepeek-run-event-v3"
+                | "scorepeek-run-event-v4"
         ) || event_schema
             .as_deref()
             .is_some_and(|expected| expected != schema)
@@ -3376,7 +3377,10 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
             return invalid("diagnostic session event schema is invalid");
         }
         event_schema.get_or_insert(schema.to_owned());
-        if matches!(schema, "scorepeek-run-event-v2" | "scorepeek-run-event-v3") {
+        if matches!(
+            schema,
+            "scorepeek-run-event-v2" | "scorepeek-run-event-v3" | "scorepeek-run-event-v4"
+        ) {
             serde_json::from_value::<StoredRunEventPayload>(record.clone()).map_err(|_| {
                 CorpusError::InvalidRequest("diagnostic run event payload is invalid".to_owned())
             })?;

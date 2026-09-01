@@ -581,7 +581,7 @@ fn run_routine_live_session(
         &mut output,
     )?;
     output.publish(&routine_output::RunEvent {
-        schema: "scorepeek-run-event-v3".to_owned(),
+        schema: "scorepeek-run-event-v4".to_owned(),
         kind: routine_output::RunEventKind::WatcherStarted {
             invocation_id: invocation_id.clone(),
             profile_sha256: selected.binding.capture_profile_sha256().to_owned(),
@@ -699,9 +699,9 @@ fn run_routine_live_session(
                     break;
                 }
                 let mut started = false;
-                let mut emit = |value| {
+                let mut emit = |emission: LiveSessionEmission| {
                     let output_started = std::time::Instant::now();
-                    let event = routine_output::RunEvent::from_value(value)?;
+                    let event = run_event_from_live_emission(emission)?;
                     if matches!(
                         &event.kind,
                         routine_output::RunEventKind::SessionStarted { .. }
@@ -755,7 +755,7 @@ fn run_routine_live_session(
                         _ => "error",
                     };
                     output.publish(&routine_output::RunEvent {
-                        schema: "scorepeek-run-event-v3".to_owned(),
+                        schema: "scorepeek-run-event-v4".to_owned(),
                         kind: routine_output::RunEventKind::SessionFinished {
                             session_id: session_id.clone(),
                             capture_generation: generation,
@@ -920,7 +920,7 @@ fn run_routine_live_session(
         &mut output,
     )?;
     output.publish(&routine_output::RunEvent {
-        schema: "scorepeek-run-event-v3".to_owned(),
+        schema: "scorepeek-run-event-v4".to_owned(),
         kind: routine_output::RunEventKind::WatcherStopped {
             invocation_id,
             reason: "signal".to_owned(),
@@ -1074,9 +1074,9 @@ fn run_live_session(
     let stop = monitor.stop_token();
     let stdout = io::stdout();
     let mut output = BufWriter::new(stdout.lock());
-    let mut emit = |event: serde_json::Value| {
+    let mut emit = |emission: LiveSessionEmission| {
         let started = std::time::Instant::now();
-        write_ndjson(&mut output, &event)?;
+        write_ndjson(&mut output, &emission.value)?;
         Ok(capture_live::LiveEventProcessingTiming {
             screen_resolver_us: None,
             attempt_resolver_us: None,
@@ -1109,7 +1109,9 @@ fn execute_live_session(
     session_id: Option<&str>,
     expected_source_node_id: Option<u32>,
     stop: &std::sync::atomic::AtomicBool,
-    emit: &mut impl FnMut(serde_json::Value) -> Result<capture_live::LiveEventProcessingTiming, String>,
+    emit: &mut impl FnMut(
+        LiveSessionEmission,
+    ) -> Result<capture_live::LiveEventProcessingTiming, String>,
 ) -> Result<capture_live::GamescopeFieldObservationGateReport, String> {
     let [
         binding,
@@ -1152,10 +1154,11 @@ fn execute_live_session(
     policy.retention = diagnostic_recording::DiagnosticRetention::ForegroundFailureWindowV1;
     let diagnostic_preflight = prepare_live_diagnostic_root(Path::new(diagnostic_root), &policy);
     if session_id.is_none() {
-        emit(
-            serde_json::to_value(&diagnostic_preflight)
+        emit(LiveSessionEmission {
+            value: serde_json::to_value(&diagnostic_preflight)
                 .map_err(|error| format!("live result serialization failed: {error}"))?,
-        )?;
+            authority_joint_evidence: None,
+        })?;
     }
     let report = capture_live::run_gamescope_live_session(
         capture_live::GamescopeFieldObservationGateConfig {
@@ -1181,10 +1184,23 @@ fn execute_live_session(
         stop,
         &mut |event| {
             let started = std::time::Instant::now();
+            let authority_joint_evidence = if session_id.is_some() {
+                match &event {
+                    capture_live::GamescopeLiveSessionEvent::Observation { output, .. } => {
+                        Some(output.joint_evidence().clone())
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
             let value =
                 live_session_event_value(session_id, session_id.map(|_| generation.get()), event)?;
             let serialization_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
-            let mut timing = emit(value)?;
+            let mut timing = emit(LiveSessionEmission {
+                value,
+                authority_joint_evidence,
+            })?;
             timing.add(capture_live::LiveEventProcessingTiming {
                 screen_resolver_us: None,
                 attempt_resolver_us: None,
@@ -1194,6 +1210,26 @@ fn execute_live_session(
         },
     );
     Ok(report)
+}
+
+struct LiveSessionEmission {
+    value: serde_json::Value,
+    authority_joint_evidence:
+        Option<recognition_live::screen_field_observer::JointEvidenceObservation>,
+}
+
+fn run_event_from_live_emission(
+    emission: LiveSessionEmission,
+) -> Result<routine_output::RunEvent, String> {
+    let mut event = routine_output::RunEvent::from_value(emission.value)?;
+    if let Some(authority_joint_evidence) = emission.authority_joint_evidence {
+        let routine_output::RunEventKind::FieldObservation { joint_evidence, .. } = &mut event.kind
+        else {
+            return Err("full joint evidence was attached to a non-field event".to_owned());
+        };
+        *joint_evidence = authority_joint_evidence;
+    }
+    Ok(event)
 }
 
 fn optional_recognition_root(enabled: bool, root: &Path) -> Option<&Path> {
@@ -1283,7 +1319,7 @@ fn live_session_event_value(
     event: capture_live::GamescopeLiveSessionEvent<'_>,
 ) -> Result<serde_json::Value, String> {
     let schema = if session_id.is_some() {
-        "scorepeek-run-event-v3"
+        "scorepeek-run-event-v4"
     } else {
         "scorepeek-live-session-event-v1"
     };
@@ -3485,10 +3521,10 @@ fn print_usage() {
 mod tests {
     use super::{
         CAPTURE_FIELD_OBSERVATION_FLAGS, CAPTURE_HANDOFF_FLAGS, CAPTURE_RESULT_RECOGNITION_FLAGS,
-        LIVE_SESSION_FLAGS, PrivatePublicationPoint, catalog_paths, catalog_sync_error,
-        command_flag_values, live_session_event_value, optional_recognition_root,
-        prepare_live_diagnostic_root, publish_private_file, publish_private_file_with,
-        run_with_model_initializer,
+        LIVE_SESSION_FLAGS, LiveSessionEmission, PrivatePublicationPoint, catalog_paths,
+        catalog_sync_error, command_flag_values, live_session_event_value,
+        optional_recognition_root, prepare_live_diagnostic_root, publish_private_file,
+        publish_private_file_with, run_event_from_live_emission, run_with_model_initializer,
     };
     use crate::capture_live::GamescopeLiveSessionEvent;
     use crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation;
@@ -3770,7 +3806,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v3");
+        assert_eq!(value["schema"], "scorepeek-run-event-v4");
         assert_eq!(value["event"], "raw_screen_observed");
         assert_eq!(value["semantic_episode_id"], 1);
         assert_eq!(value["session_id"], "invocation-session-2");
@@ -3861,10 +3897,67 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v3");
+        assert_eq!(value["schema"], "scorepeek-run-event-v4");
         assert_eq!(value["session_id"], "invocation-session-2");
         assert_eq!(value["capture_generation"], 2);
         assert_eq!(value["sequence"], 1);
+    }
+
+    #[test]
+    fn routine_live_emission_bounds_json_without_truncating_authority() {
+        let records = (0..9)
+            .map(|index| {
+                tachi_record(
+                    &format!("song-{index}"),
+                    &format!("COMMON TITLE {index}"),
+                    &format!("COMMON ARTIST {index}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let catalog = catalog_from_records(&records);
+        let domain = CatalogCandidateDomain::from_catalog(&catalog).unwrap();
+        let output = RegisteredScreenFieldObservation::from_fields_with_catalog(
+            &domain,
+            &catalog,
+            ScreenFieldObservations::Result(ResultScreenFieldObservations {
+                title: text("COMMON TITLE"),
+                artist: text("COMMON ARTIST"),
+                ..Default::default()
+            }),
+        );
+        let authority = output.joint_evidence().clone();
+        assert!(authority.candidates.len() > 8);
+        let value = live_session_event_value(
+            Some("invocation-session-2"),
+            Some(2),
+            GamescopeLiveSessionEvent::Observation {
+                screen_episode_id: 7,
+                sequence: 8,
+                monotonic_start_ms: 10,
+                monotonic_end_ms: 20,
+                output: &output,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            value["joint_evidence"]["candidates"]
+                .as_array()
+                .unwrap()
+                .len(),
+            8
+        );
+
+        let event = run_event_from_live_emission(LiveSessionEmission {
+            value,
+            authority_joint_evidence: Some(authority.clone()),
+        })
+        .unwrap();
+        let crate::routine_output::RunEventKind::FieldObservation { joint_evidence, .. } =
+            event.kind
+        else {
+            panic!("expected field observation");
+        };
+        assert_eq!(joint_evidence, authority);
     }
 
     #[test]

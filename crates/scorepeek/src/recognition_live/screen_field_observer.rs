@@ -1,4 +1,4 @@
-use scorepeek::catalog::{Catalog, Chart, Difficulty, DisplayVariantKind, ScorepeekSongId};
+use scorepeek::catalog::{Catalog, Chart, DisplayVariantKind, ScorepeekSongId};
 use scorepeek::recognition::{
     CatalogCandidateDomain, CatalogCandidateDomainError, MusicSelectSongResolution,
     NumericBatchInference, OnnxParityError, ParsedResultFields, RegisteredNumericRuntime,
@@ -145,6 +145,9 @@ pub struct TitleEvidenceObservation {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceFamily {
+    SelectTitle,
+    // Legacy v14 readers retain these variants. Production v15 observations
+    // collapse both correlated signals into SelectTitle.
     SelectTitleLexical,
     SelectTitleStructural,
     SelectArtist,
@@ -324,13 +327,7 @@ impl RegisteredScreenFieldObservation {
             )),
             _ => None,
         };
-        let joint_evidence = joint_evidence(
-            catalog,
-            &candidates,
-            parsed_result_fields.as_ref(),
-            &fields,
-            title_evidence.as_ref(),
-        );
+        let joint_evidence = joint_evidence(catalog, &candidates, &fields, title_evidence.as_ref());
         Self {
             fields,
             candidates,
@@ -436,7 +433,6 @@ impl RegisteredScreenFieldObservation {
 fn joint_evidence(
     catalog: &Catalog,
     candidates: &ScreenCatalogCandidateObservations,
-    parsed: Option<&ParsedResultFields>,
     fields: &ScreenFieldObservations,
     title_evidence: Option<&TitleEvidenceObservation>,
 ) -> JointEvidenceObservation {
@@ -451,30 +447,13 @@ fn joint_evidence(
                 ScreenFieldObservations::Result(_) => {
                     family_support.insert(EvidenceFamily::ResultTitle, title_support);
                     family_support.insert(EvidenceFamily::ResultArtist, artist_support);
-                    family_support.insert(
-                        EvidenceFamily::ResultChart,
-                        result_chart_support(
-                            chart,
-                            parsed,
-                            title_support > 0 || artist_support > 0,
-                        ),
-                    );
                 }
-                ScreenFieldObservations::MusicSelect(fields) => {
-                    family_support.insert(EvidenceFamily::SelectTitleLexical, title_support);
+                ScreenFieldObservations::MusicSelect(_) => {
                     family_support.insert(
-                        EvidenceFamily::SelectTitleStructural,
-                        structural_title_support(song, title_evidence),
+                        EvidenceFamily::SelectTitle,
+                        title_support.max(structural_title_support(song, title_evidence)),
                     );
                     family_support.insert(EvidenceFamily::SelectArtist, artist_support);
-                    family_support.insert(
-                        EvidenceFamily::SelectChart,
-                        select_chart_support(
-                            chart,
-                            fields.selected_difficulty.known(),
-                            title_support > 0 || artist_support > 0,
-                        ),
-                    );
                 }
             }
             let support = family_support.values().copied().sum();
@@ -595,58 +574,6 @@ fn similarity_support(edit: usize, matching: usize, compared: usize) -> u16 {
         60..=74 => 15,
         _ => 0,
     }
-}
-
-fn result_chart_support(
-    chart: &Chart,
-    parsed: Option<&ParsedResultFields>,
-    has_song_evidence: bool,
-) -> u16 {
-    if !has_song_evidence {
-        return 0;
-    }
-    let Some(parsed) = parsed else { return 0 };
-    let difficulty_support = u16::from(
-        parsed
-            .difficulty
-            .known()
-            .is_some_and(|value| *value == chart.key.difficulty),
-    ) * 50;
-    let notes_support = u16::from(
-        parsed
-            .notes
-            .known()
-            .is_some_and(|value| *value == chart.notes),
-    ) * 100;
-    let level_support = u16::from(
-        parsed
-            .level
-            .known()
-            .is_some_and(|value| *value == chart.level),
-    ) * 10;
-    let score_support = u16::from(
-        parsed
-            .current_score
-            .known()
-            .is_some_and(|value| *value <= chart.notes.saturating_mul(2)),
-    ) * 10;
-    [
-        difficulty_support,
-        notes_support,
-        level_support,
-        score_support,
-    ]
-    .into_iter()
-    .max()
-    .unwrap_or_default()
-}
-
-fn select_chart_support(
-    chart: &Chart,
-    difficulty: Option<Difficulty>,
-    has_song_evidence: bool,
-) -> u16 {
-    u16::from(has_song_evidence && difficulty == Some(chart.key.difficulty)) * 50
 }
 
 struct ObservedFrameFields {
@@ -852,11 +779,11 @@ fn duration_us(duration: std::time::Duration) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use scorepeek::catalog::{Catalog, ChartKey};
+    use scorepeek::catalog::{Catalog, Difficulty};
     use scorepeek::recognition::{
         DynamicTextObservation, MusicSelectScreenFieldObservations, MusicSelectSongResolution,
-        MusicSelectSongUnknownReason, ResultFieldValue, ResultScreenFieldObservations,
-        ResultSongResolution, ResultSongUnknownReason,
+        MusicSelectSongUnknownReason, ResultScreenFieldObservations, ResultSongResolution,
+        ResultSongUnknownReason,
     };
 
     use super::*;
@@ -959,29 +886,6 @@ mod tests {
                 ..
             })
         ));
-    }
-
-    #[test]
-    fn result_chart_values_do_not_generate_song_identity_without_text_evidence() {
-        let chart = Chart {
-            key: ChartKey {
-                play_type: scorepeek::catalog::PlayType::Single,
-                difficulty: Difficulty::Hyper,
-            },
-            level: 8,
-            notes: 764,
-        };
-        let mut parsed =
-            ParsedResultFields::from_observations(&ResultScreenFieldObservations::default());
-        parsed.difficulty = ResultFieldValue::Known {
-            value: Difficulty::Hyper,
-        };
-        parsed.level = ResultFieldValue::Known { value: 8 };
-        parsed.notes = ResultFieldValue::Known { value: 764 };
-        parsed.current_score = ResultFieldValue::Known { value: 1_286 };
-
-        assert_eq!(result_chart_support(&chart, Some(&parsed), false), 0);
-        assert_eq!(result_chart_support(&chart, Some(&parsed), true), 100);
     }
 
     fn music_select_difficulty(

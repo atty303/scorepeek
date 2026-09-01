@@ -172,23 +172,28 @@ stops admission, drains all already-admitted jobs, applies their results to the 
 and finalizes it before the next known screen changes attempt state. A different generation,
 reversed chronology, or post-close submission is typed late evidence and cannot affect resolution.
 
-The screen adapter converts full-catalog text metrics and typed chart observations into integer
-support for joint `(song, play type, difficulty)` hypotheses. A common accumulator keeps raw `u64`
-candidate sums across different source sequences. Summary normalization finds the largest raw value
-in each family and, only above 300, scales every candidate in that family by the same ratio. This
-caps repeated evidence while preserving candidate margins. Empty or unknown fields add zero and
-never erase earlier support. RESULT keeps one accumulator for its screen episode.
+The screen adapter converts full-catalog text metrics into song factors and retains typed chart
+observations as independent difficulty, notes, and advisory-level factors. A common accumulator
+keeps raw `u64` family sums across different source sequences. Summary projects those factors onto
+the complete catalog hierarchy, then normalizes by the largest raw value in each family and, only
+above 300, scales every candidate in that family by the same ratio. This caps repeated evidence
+while preserving candidate margins. Empty or unknown fields add zero and never erase earlier
+support. RESULT keeps one accumulator for its screen episode. Resolver authority receives the full
+typed candidate hierarchy. Run-event and observation sinks construct only bounded top-candidate
+JSON projections instead of serializing the full authority graph.
 MUSIC SELECT keeps incumbent and successor selection epochs. Intersecting evidence accumulates in
 the incumbent; disjoint evidence accumulates in the successor and replaces it at the calibrated
-change margin. If the screen closes first, the latest unfinished successor is handed off instead
-of the stale incumbent. Empty and catalog-common observations cannot move an epoch.
+change margin. Difficulty observed without song evidence is retained until the next credible song
+observation chooses its epoch. After screen close stops admission, already-admitted fields drain;
+only semantic finalization hands the latest unfinished successor or incumbent to the attempt.
+Empty and catalog-common observations cannot move an epoch.
 
 All active-list titles use one foreground-aware extractor. It masks grayscale values above 80,
 takes the complete foreground bounding box with four horizontal pixels of margin and the original
 ROI height, then runs the registered dynamic PP-OCR runtime. Wide OCR remains raw diagnostic
 evidence; foreground OCR is lexical authority. Empty and whitespace-normalized values are absent.
-Foreground Unicode scalar count and width may add a separate structural family to non-search title
-variants of the same length. Raw `X` remains lexical evidence for catalog `X`; it is never aliased
+Foreground Unicode scalar count and width contribute structural support to the same select-title
+family, using the maximum of lexical and structural support for the crop. Raw `X` remains lexical evidence for catalog `X`; it is never aliased
 to `〆`.
 
 MUSIC SELECT submits only central title, artist, and active-list title to PP-OCR. Difficulty comes
@@ -250,10 +255,11 @@ result without observed play remain typed unlinked rejections.
 
 Every inspected source sequence has one diagnostic field status. Busy, non-applicable, and rejected
 submissions are recorded after the synchronous screen/output path; completed and late outputs are
-recorded after the field worker and attempt/output path return. Recognition observation v14 carries
-title views and geometry, the typed MUSIC SELECT marker, semantic episode binding, joint/numeric
-decisions, and completed/late status. Typed resolver transition events retain
-incumbent/successor/result/joint top, runner, state, and raw/normalized family contributions.
+recorded after the field worker and attempt/output path return. Recognition observation v15 carries
+title views and geometry, the typed MUSIC SELECT marker, semantic episode binding, song factors,
+typed chart observations, numeric decisions, and completed/late status. Typed v4 resolver
+transition events retain incumbent/successor/result/joint top, distinct other-song and sibling-chart
+runners, state, and raw/normalized family contributions.
 Frame timing records actual screen resolver, attempt resolver, and synchronous output durations on
 the originating source sequence; async queue wait is excluded. Optional stage timings distinguish
 an unexecuted stage from a measured zero and never affect recognition or event semantics.
@@ -473,8 +479,8 @@ final identity check is outside the operator-trusted private-artifact boundary.
 ### Event API
 
 The ordinary foreground runtime exposes provisional recognition observations at
-`$XDG_RUNTIME_DIR/scorepeek/observations-v3.sock`. A connection begins with a bounded v3
-current-state snapshot and then receives sequenced `scorepeek-run-event-v3` NDJSON. This local
+`$XDG_RUNTIME_DIR/scorepeek/observations-v4.sock`. A connection begins with a bounded v4
+current-state snapshot and then receives sequenced `scorepeek-run-event-v4` NDJSON. This local
 observation surface may include raw OCR, foreground title geometry, joint candidates, and resolver
 metrics. `raw_screen_observed` is separate from semantic episode started, suspended, resumed,
 closing, and finalized transitions; `play_attempt_changed` contains the evidence-linked path and
@@ -484,13 +490,22 @@ discard an already-represented live record and detect later gaps. It is intentio
 accepted domain events. TTY stdout renders the same typed run state as a TUI, while non-TTY stdout
 reports only human-readable state changes.
 
+Screen-local and attempt resolvers accumulate title and artist song factors independently from
+difficulty, notes, and advisory-level chart factors. Chart factors are retained across observations
+and are projected only onto songs established by text evidence. Summary selects the best chart per
+song, reports a distinct best other song and best sibling chart, and requires both margins for joint
+acceptance. Foreground lexical and geometry title features share one family and contribute their
+maximum rather than two votes.
+
 The TUI has one vertical layout: four rows for Watcher, nine for Latest domain, and the remaining
 rows for Resolver. Latest domain retains and renders only the newest accepted v2 result. Resolver
-formats a typed tree containing raw and semantic screens, incumbent/successor or result evidence,
-foreground title geometry, attempt hierarchy, drain/finalize state, and first blocking gate. It
+formats a typed tree containing raw and semantic screens, field age, incumbent/successor or result
+evidence, foreground title geometry, hierarchical runners, family contribution, attempt hierarchy,
+and every promotion gate. Green, cyan, yellow, red, dark gray, and white encode typed semantic
+state consistently while the same labels and gate symbols preserve meaning without color. It
 shows integer-second monotonic durations from the private 10 Hz tick, but that redraw creates no run
 event, socket record, plain-output line, or domain event. Raw OCR is limited to the current screen's
-important fields; candidates, logits, and frame timing remain in artifacts. Terminals below 80 by
+important fields; full candidate sets, logits, and frame timing remain in artifacts. Terminals below 80 by
 25 are allowed to clip without a second layout.
 
 The first public interface is a same-user Unix socket at

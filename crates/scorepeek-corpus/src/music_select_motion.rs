@@ -41,6 +41,7 @@ const CURRENT_OBSERVATION_SCHEMA_V11: &str = "scorepeek-recognition-observation-
 const CURRENT_OBSERVATION_SCHEMA_V12: &str = "scorepeek-recognition-observation-v12";
 const CURRENT_OBSERVATION_SCHEMA_V13: &str = "scorepeek-recognition-observation-v13";
 const CURRENT_OBSERVATION_SCHEMA_V14: &str = "scorepeek-recognition-observation-v14";
+const CURRENT_OBSERVATION_SCHEMA_V15: &str = "scorepeek-recognition-observation-v15";
 const DRAFT_SCHEMA: &str = "scorepeek-private-music-select-motion-review-draft-v1";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-music-select-motion-review-summary-v1";
 const DECISIONS_SCHEMA: &str = "scorepeek-private-music-select-motion-review-decisions-v2";
@@ -2350,7 +2351,8 @@ fn supported_observation_schema(value: &Value) -> bool {
                 | CURRENT_OBSERVATION_SCHEMA_V11
                 | CURRENT_OBSERVATION_SCHEMA_V12
                 | CURRENT_OBSERVATION_SCHEMA_V13
-                | CURRENT_OBSERVATION_SCHEMA_V14,
+                | CURRENT_OBSERVATION_SCHEMA_V14
+                | CURRENT_OBSERVATION_SCHEMA_V15,
         )
     )
 }
@@ -3221,7 +3223,8 @@ mod tests {
     use super::{
         CURRENT_OBSERVATION_SCHEMA, CURRENT_OBSERVATION_SCHEMA_V8, CURRENT_OBSERVATION_SCHEMA_V9,
         CURRENT_OBSERVATION_SCHEMA_V10, CURRENT_OBSERVATION_SCHEMA_V11,
-        CURRENT_OBSERVATION_SCHEMA_V12, CURRENT_OBSERVATION_SCHEMA_V13, CorrectSongExpectation,
+        CURRENT_OBSERVATION_SCHEMA_V12, CURRENT_OBSERVATION_SCHEMA_V13,
+        CURRENT_OBSERVATION_SCHEMA_V14, CURRENT_OBSERVATION_SCHEMA_V15, CorrectSongExpectation,
         CorrectSongLabel, CorrectSongLabels, LATEST_OBSERVATION_SCHEMA, MAX_PROCESS_STDERR_BYTES,
         MotionEvidence, MotionReviewDecision, MotionReviewDecisions, MusicSelectDwellPolicy,
         MusicSelectTemporalCandidatePolicy, OBSERVATION_SCHEMA, ObservationRecord,
@@ -3247,13 +3250,15 @@ mod tests {
             CURRENT_OBSERVATION_SCHEMA_V11,
             CURRENT_OBSERVATION_SCHEMA_V12,
             CURRENT_OBSERVATION_SCHEMA_V13,
+            CURRENT_OBSERVATION_SCHEMA_V14,
+            CURRENT_OBSERVATION_SCHEMA_V15,
         ] {
             assert!(supported_observation_schema(&serde_json::Value::String(
                 schema.to_owned()
             )));
         }
         assert!(!supported_observation_schema(&serde_json::Value::String(
-            "scorepeek-recognition-observation-v15".to_owned()
+            "scorepeek-recognition-observation-v16".to_owned()
         )));
     }
 

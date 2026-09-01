@@ -294,6 +294,9 @@ authoritative.
   suspends semantic episodes across raw unknown gaps, replaces armed songs with selection/result
   evidence snapshots, finalizes RESULT only after field drain, and unifies active-title foreground
   lexical and structural evidence without changing the accepted v2 event.
+- [ADR 0098: Resolve independent factors on the catalog hierarchy](0098-resolve-independent-factors-on-the-catalog-hierarchy.md)
+  retains chart evidence independently of frame-local song candidates, separates competing songs
+  from sibling charts, repairs MUSIC SELECT debug updates, and gives the fixed TUI semantic colors.
 
 ## Historical
 
