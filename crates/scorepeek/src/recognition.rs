@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::catalog::Difficulty;
+
 mod catalog_candidates;
 mod ctc_sequence;
 mod music_select_resolver;
@@ -108,7 +110,7 @@ const PPM_HEADER: &[u8] = b"P6\n1920 1080\n255\n";
 const CANONICAL_FILE_BYTES: u64 = CANONICAL_BYTES as u64 + PPM_HEADER.len() as u64;
 const LAYOUT_BYTES: &[u8] = include_bytes!("canonical-layout-v1.json");
 const SCREEN_PATH_LAYOUT_BYTES: &[u8] = include_bytes!("screen-path-layout-v1.json");
-const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v2.json");
+const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v3.json");
 const INTEGRATED_CONTEXT_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
 
 fn calibrated_capture_profile(profile: &str) -> bool {
@@ -766,12 +768,41 @@ struct ResultContextLayout {
     artist: Roi,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct MusicSelectContextLayout {
     artist: Roi,
-    selected_chart: Roi,
+    legacy_selected_chart: Roi,
+    selected_difficulty: MusicSelectDifficultyLayout,
     active_list_title: Roi,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct MusicSelectDifficultyLayout {
+    predicate_id: String,
+    panel_pixels_min_ppm: u32,
+    fill_pixels_min_ppm: u32,
+    glyph_pixels_min_ppm: u32,
+    score_min_ppm: u32,
+    winner_margin_min_ppm: u32,
+    beginner: Roi,
+    normal: Roi,
+    hyper: Roi,
+    another: Roi,
+    leggendaria: Roi,
+}
+
+impl MusicSelectDifficultyLayout {
+    const fn slots(&self) -> [(Difficulty, Roi); 5] {
+        [
+            (Difficulty::Beginner, self.beginner),
+            (Difficulty::Normal, self.normal),
+            (Difficulty::Hyper, self.hyper),
+            (Difficulty::Another, self.another),
+            (Difficulty::Leggendaria, self.leggendaria),
+        ]
+    }
 }
 
 /// Canonical regions whose motion must be reviewed separately before music-select dwell is
@@ -794,7 +825,7 @@ impl IntegratedContextLayout {
             .rois()
             .nth(10)
             .ok_or(RecognitionError::InvalidCanonicalLayout)?;
-        if layout.schema != "scorepeek-integrated-context-layout-v2"
+        if layout.schema != "scorepeek-integrated-context-layout-v3"
             || layout.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID
             || layout.canonical_layout_sha256 != CanonicalLayout::sha256()
             || layout.result.artist != canonical.result.artist
@@ -811,10 +842,20 @@ impl IntegratedContextLayout {
         for roi in [
             layout.result.artist,
             layout.music_select.artist,
-            layout.music_select.selected_chart,
+            layout.music_select.legacy_selected_chart,
             layout.music_select.active_list_title,
         ] {
             roi.validate(CANONICAL_WIDTH, CANONICAL_HEIGHT)?;
+        }
+        if layout.music_select.selected_difficulty.predicate_id != "scorepeek-player-marker-rgb-v1"
+        {
+            return Err(RecognitionError::InvalidCanonicalLayout);
+        }
+        for (_, roi) in layout.music_select.selected_difficulty.slots() {
+            roi.validate(CANONICAL_WIDTH, CANONICAL_HEIGHT)?;
+            if roi.width != 128 || roi.height != 30 {
+                return Err(RecognitionError::InvalidCanonicalLayout);
+            }
         }
         Ok(layout)
     }
@@ -957,8 +998,107 @@ pub struct MusicSelectScreenRgb8Crops {
     pub integrated_context_layout_sha256: String,
     pub central_title: Rgb8Crop,
     pub artist: Rgb8Crop,
-    pub selected_chart: Rgb8Crop,
+    pub difficulty_markers: MusicSelectDifficultyMarkerCrops,
     pub active_list_title: Rgb8Crop,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MusicSelectDifficultyMarkerCrops {
+    beginner: Rgb8Crop,
+    normal: Rgb8Crop,
+    hyper: Rgb8Crop,
+    another: Rgb8Crop,
+    leggendaria: Rgb8Crop,
+}
+
+impl MusicSelectDifficultyMarkerCrops {
+    #[must_use]
+    pub fn as_slots(&self) -> [(Difficulty, &Rgb8Crop); 5] {
+        [
+            (Difficulty::Beginner, &self.beginner),
+            (Difficulty::Normal, &self.normal),
+            (Difficulty::Hyper, &self.hyper),
+            (Difficulty::Another, &self.another),
+            (Difficulty::Leggendaria, &self.leggendaria),
+        ]
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MusicSelectDifficultyUnknownReason {
+    NoCandidate,
+    MultipleCandidates,
+    InsufficientMargin,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", content = "value", rename_all = "snake_case")]
+pub enum MusicSelectDifficultyState {
+    Known(Difficulty),
+    Unknown(MusicSelectDifficultyUnknownReason),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct MusicSelectDifficultyMarkerEvidence {
+    pub difficulty: Difficulty,
+    pub panel_pixels_ppm: u32,
+    pub fill_pixels_ppm: u32,
+    pub glyph_pixels_ppm: u32,
+    pub score_ppm: u32,
+    pub qualifies: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct MusicSelectDifficultyObservation {
+    pub predicate_id: &'static str,
+    pub state: MusicSelectDifficultyState,
+    pub winner_score_ppm: u32,
+    pub runner_up_score_ppm: u32,
+    pub margin_ppm: u32,
+    pub slots: [MusicSelectDifficultyMarkerEvidence; 5],
+}
+
+impl MusicSelectDifficultyObservation {
+    #[must_use]
+    pub const fn known(&self) -> Option<Difficulty> {
+        match self.state {
+            MusicSelectDifficultyState::Known(value) => Some(value),
+            MusicSelectDifficultyState::Unknown(_) => None,
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_music_select_difficulty(
+    difficulty: Option<Difficulty>,
+) -> MusicSelectDifficultyObservation {
+    let slots = [
+        Difficulty::Beginner,
+        Difficulty::Normal,
+        Difficulty::Hyper,
+        Difficulty::Another,
+        Difficulty::Leggendaria,
+    ]
+    .map(|value| MusicSelectDifficultyMarkerEvidence {
+        difficulty: value,
+        panel_pixels_ppm: 0,
+        fill_pixels_ppm: 0,
+        glyph_pixels_ppm: 0,
+        score_ppm: 0,
+        qualifies: false,
+    });
+    MusicSelectDifficultyObservation {
+        predicate_id: "scorepeek-player-marker-rgb-v1",
+        state: difficulty.map_or(
+            MusicSelectDifficultyState::Unknown(MusicSelectDifficultyUnknownReason::NoCandidate),
+            MusicSelectDifficultyState::Known,
+        ),
+        winner_score_ppm: 0,
+        runner_up_score_ppm: 0,
+        margin_ppm: 0,
+        slots,
+    }
 }
 
 /// Measured field crops for exactly one classified screen.
@@ -997,7 +1137,6 @@ pub enum ScreenTextField {
     ResultComboBreak,
     MusicSelectCentralTitle,
     MusicSelectArtist,
-    MusicSelectSelectedChart,
     MusicSelectActiveListTitle,
 }
 
@@ -1027,7 +1166,6 @@ impl ScreenTextField {
             Self::ResultComboBreak => "result_combo_break",
             Self::MusicSelectCentralTitle => "music_select_central_title",
             Self::MusicSelectArtist => "music_select_artist",
-            Self::MusicSelectSelectedChart => "music_select_selected_chart",
             Self::MusicSelectActiveListTitle => "music_select_active_list_title",
         }
     }
@@ -1057,7 +1195,6 @@ impl ScreenTextField {
             | Self::ResultPreviousClearType
             | Self::MusicSelectCentralTitle
             | Self::MusicSelectArtist
-            | Self::MusicSelectSelectedChart
             | Self::MusicSelectActiveListTitle => None,
         }
     }
@@ -1092,7 +1229,7 @@ pub struct ResultScreenFieldObservations {
 pub struct MusicSelectScreenFieldObservations {
     pub central_title: DynamicTextObservation,
     pub artist: DynamicTextObservation,
-    pub selected_chart: DynamicTextObservation,
+    pub selected_difficulty: MusicSelectDifficultyObservation,
     pub active_list_title: DynamicTextObservation,
 }
 
@@ -1219,10 +1356,7 @@ pub fn observe_screen_fields<E>(
                     &crops.central_title,
                 )?,
                 artist: observe(ScreenTextField::MusicSelectArtist, &crops.artist)?,
-                selected_chart: observe(
-                    ScreenTextField::MusicSelectSelectedChart,
-                    &crops.selected_chart,
-                )?,
+                selected_difficulty: observe_music_select_difficulty(&crops.difficulty_markers),
                 active_list_title: observe(
                     ScreenTextField::MusicSelectActiveListTitle,
                     &crops.active_list_title,
@@ -2124,7 +2258,17 @@ pub fn export_integrated_context_crops(
                 (IntegratedContextField::MusicSelectArtist, crops.artist),
                 (
                     IntegratedContextField::MusicSelectSelectedChart,
-                    crops.selected_chart,
+                    Rgb8Crop {
+                        roi: IntegratedContextLayout::load()?
+                            .music_select
+                            .legacy_selected_chart,
+                        pixels: crop_canonical_pixels(
+                            frame.pixels(),
+                            IntegratedContextLayout::load()?
+                                .music_select
+                                .legacy_selected_chart,
+                        )?,
+                    },
                 ),
                 (
                     IntegratedContextField::MusicSelectActiveListTitle,
@@ -2224,7 +2368,13 @@ pub fn route_screen_rgb8_crops(
             integrated_context_layout_sha256: IntegratedContextLayout::sha256(),
             central_title: crop(pixels, canonical.music_select.selected_title)?,
             artist: crop(pixels, context.music_select.artist)?,
-            selected_chart: crop(pixels, context.music_select.selected_chart)?,
+            difficulty_markers: MusicSelectDifficultyMarkerCrops {
+                beginner: crop(pixels, context.music_select.selected_difficulty.beginner)?,
+                normal: crop(pixels, context.music_select.selected_difficulty.normal)?,
+                hyper: crop(pixels, context.music_select.selected_difficulty.hyper)?,
+                another: crop(pixels, context.music_select.selected_difficulty.another)?,
+                leggendaria: crop(pixels, context.music_select.selected_difficulty.leggendaria)?,
+            },
             active_list_title: crop(pixels, context.music_select.active_list_title)?,
         })),
         ScreenClass::ModeSelect
@@ -2232,6 +2382,103 @@ pub fn route_screen_rgb8_crops(
         | ScreenClass::Play
         | ScreenClass::Unknown => Err(RecognitionError::InvalidCanonicalFrame),
     }
+}
+
+#[must_use]
+/// Evaluates the five fixed `PLAYER 01` marker slots without invoking OCR.
+///
+/// # Panics
+///
+/// Panics only if the embedded layout, which is validated by the build's layout contract tests,
+/// can no longer be decoded.
+pub fn observe_music_select_difficulty(
+    crops: &MusicSelectDifficultyMarkerCrops,
+) -> MusicSelectDifficultyObservation {
+    let layout = IntegratedContextLayout::load()
+        .expect("the embedded integrated context layout is statically validated");
+    let policy = &layout.music_select.selected_difficulty;
+    let slots = crops.as_slots().map(|(difficulty, crop)| {
+        let panel_pixels_ppm = matching_pixels_ppm(crop, 0, 0, 128, 30, |r, g, b| {
+            (70..=225).contains(&r)
+                && (90..=235).contains(&g)
+                && (120..=240).contains(&b)
+                && b >= g
+                && g >= r
+        });
+        let fill_pixels_ppm = matching_pixels_ppm(crop, 4, 5, 120, 25, |r, g, b| {
+            (45..=160).contains(&r)
+                && (70..=190).contains(&g)
+                && (100..=230).contains(&b)
+                && i16::from(b) - i16::from(r) >= 25
+        });
+        let glyph_pixels_ppm = matching_pixels_ppm(crop, 9, 12, 110, 14, |r, g, b| {
+            r.min(g).min(b) >= 180 && r.max(g).max(b) - r.min(g).min(b) <= 45
+        });
+        let score_ppm = panel_pixels_ppm
+            .min(fill_pixels_ppm)
+            .min(glyph_pixels_ppm.saturating_mul(3));
+        MusicSelectDifficultyMarkerEvidence {
+            difficulty,
+            panel_pixels_ppm,
+            fill_pixels_ppm,
+            glyph_pixels_ppm,
+            score_ppm,
+            qualifies: panel_pixels_ppm >= policy.panel_pixels_min_ppm
+                && fill_pixels_ppm >= policy.fill_pixels_min_ppm
+                && glyph_pixels_ppm >= policy.glyph_pixels_min_ppm
+                && score_ppm >= policy.score_min_ppm,
+        }
+    });
+    let mut ranked = slots;
+    ranked.sort_by(|left, right| {
+        right
+            .score_ppm
+            .cmp(&left.score_ppm)
+            .then_with(|| left.difficulty.cmp(&right.difficulty))
+    });
+    let winner = ranked[0];
+    let runner_up = ranked[1];
+    let margin_ppm = winner.score_ppm.saturating_sub(runner_up.score_ppm);
+    let qualifying = slots.iter().filter(|slot| slot.qualifies).count();
+    let state = match qualifying {
+        0 => MusicSelectDifficultyState::Unknown(MusicSelectDifficultyUnknownReason::NoCandidate),
+        1 if margin_ppm < policy.winner_margin_min_ppm => MusicSelectDifficultyState::Unknown(
+            MusicSelectDifficultyUnknownReason::InsufficientMargin,
+        ),
+        1 => MusicSelectDifficultyState::Known(winner.difficulty),
+        _ => MusicSelectDifficultyState::Unknown(
+            MusicSelectDifficultyUnknownReason::MultipleCandidates,
+        ),
+    };
+    MusicSelectDifficultyObservation {
+        predicate_id: "scorepeek-player-marker-rgb-v1",
+        state,
+        winner_score_ppm: winner.score_ppm,
+        runner_up_score_ppm: runner_up.score_ppm,
+        margin_ppm,
+        slots,
+    }
+}
+
+fn matching_pixels_ppm(
+    crop: &Rgb8Crop,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    matches: impl Fn(u8, u8, u8) -> bool,
+) -> u32 {
+    let crop_width = usize::try_from(crop.roi.width).expect("validated marker width fits usize");
+    let mut count = 0_u64;
+    for row in y..y + height {
+        for column in x..x + width {
+            let offset = (row * crop_width + column) * 3;
+            let pixel = &crop.pixels[offset..offset + 3];
+            count += u64::from(matches(pixel[0], pixel[1], pixel[2]));
+        }
+    }
+    u32::try_from(count * 1_000_000 / u64::try_from(width * height).unwrap_or(u64::MAX))
+        .unwrap_or(1_000_000)
 }
 
 const fn integrated_context_filename(field: IntegratedContextField) -> &'static str {
@@ -2406,7 +2653,7 @@ fn read_integrated_context_crop_artifact(
             (
                 IntegratedContextField::MusicSelectSelectedChart,
                 "music-select-selected-chart.ppm",
-                layout.music_select.selected_chart,
+                layout.music_select.legacy_selected_chart,
             ),
             (
                 IntegratedContextField::MusicSelectActiveListTitle,
@@ -2884,11 +3131,105 @@ mod tests {
         let ScreenFieldObservations::MusicSelect(music) = music else {
             panic!("music-select crops produced another screen output");
         };
-        assert_eq!(music_calls, 4);
+        assert_eq!(music_calls, 3);
         assert_eq!(music.central_title.open_text, "music-1");
         assert_eq!(music.artist.open_text, "music-2");
-        assert_eq!(music.selected_chart.open_text, "music-3");
-        assert_eq!(music.active_list_title.open_text, "music-4");
+        assert_eq!(
+            music.selected_difficulty.state,
+            MusicSelectDifficultyState::Unknown(MusicSelectDifficultyUnknownReason::NoCandidate)
+        );
+        assert_eq!(music.active_list_title.open_text, "music-3");
+    }
+
+    fn marker_crop(selected: bool, glyph_pixels: usize) -> Rgb8Crop {
+        let roi = Roi {
+            x: 0,
+            y: 0,
+            width: 128,
+            height: 30,
+        };
+        let mut pixels = vec![0_u8; 128 * 30 * 3];
+        if selected {
+            for pixel in pixels.chunks_exact_mut(3) {
+                pixel.copy_from_slice(&[100, 130, 180]);
+            }
+        }
+        for index in 0..glyph_pixels.min(110 * 14) {
+            let row = 12 + index / 110;
+            let column = 9 + index % 110;
+            let offset = (row * 128 + column) * 3;
+            pixels[offset..offset + 3].copy_from_slice(&[200, 200, 200]);
+        }
+        Rgb8Crop { roi, pixels }
+    }
+
+    fn marker_crops(selected: &[Difficulty]) -> MusicSelectDifficultyMarkerCrops {
+        let crop = |difficulty| marker_crop(selected.contains(&difficulty), 110 * 14);
+        MusicSelectDifficultyMarkerCrops {
+            beginner: crop(Difficulty::Beginner),
+            normal: crop(Difficulty::Normal),
+            hyper: crop(Difficulty::Hyper),
+            another: crop(Difficulty::Another),
+            leggendaria: crop(Difficulty::Leggendaria),
+        }
+    }
+
+    #[test]
+    fn fixed_music_select_marker_resolves_each_single_slot() {
+        for difficulty in [
+            Difficulty::Beginner,
+            Difficulty::Normal,
+            Difficulty::Hyper,
+            Difficulty::Another,
+            Difficulty::Leggendaria,
+        ] {
+            assert_eq!(
+                observe_music_select_difficulty(&marker_crops(&[difficulty])).known(),
+                Some(difficulty)
+            );
+        }
+    }
+
+    #[test]
+    fn fixed_music_select_marker_fails_closed_for_absent_multiple_and_bright_background() {
+        assert_eq!(
+            observe_music_select_difficulty(&marker_crops(&[])).state,
+            MusicSelectDifficultyState::Unknown(MusicSelectDifficultyUnknownReason::NoCandidate)
+        );
+        assert_eq!(
+            observe_music_select_difficulty(&marker_crops(&[
+                Difficulty::Normal,
+                Difficulty::Hyper,
+            ]))
+            .state,
+            MusicSelectDifficultyState::Unknown(
+                MusicSelectDifficultyUnknownReason::MultipleCandidates
+            )
+        );
+        let bright = marker_crop(false, 110 * 14);
+        let crops = MusicSelectDifficultyMarkerCrops {
+            beginner: bright.clone(),
+            normal: bright.clone(),
+            hyper: bright.clone(),
+            another: bright.clone(),
+            leggendaria: bright,
+        };
+        assert_eq!(
+            observe_music_select_difficulty(&crops).state,
+            MusicSelectDifficultyState::Unknown(MusicSelectDifficultyUnknownReason::NoCandidate)
+        );
+    }
+
+    #[test]
+    fn fixed_music_select_marker_rejects_insufficient_winner_margin() {
+        let mut crops = marker_crops(&[Difficulty::Hyper]);
+        crops.normal = marker_crop(true, 200);
+        assert_eq!(
+            observe_music_select_difficulty(&crops).state,
+            MusicSelectDifficultyState::Unknown(
+                MusicSelectDifficultyUnknownReason::InsufficientMargin
+            )
+        );
     }
 
     #[test]

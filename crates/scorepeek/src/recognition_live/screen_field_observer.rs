@@ -1,4 +1,4 @@
-use scorepeek::catalog::Catalog;
+use scorepeek::catalog::{Catalog, Chart, Difficulty, PlayType, ScorepeekSongId};
 use scorepeek::recognition::{
     CatalogCandidateDomain, CatalogCandidateDomainError, MusicSelectSongResolution,
     NumericBatchInference, OnnxParityError, ParsedResultFields, RegisteredNumericRuntime,
@@ -6,11 +6,12 @@ use scorepeek::recognition::{
     ResultPerformanceResolution, ResultSongResolution, ScreenCatalogCandidateObservations,
     ScreenFieldObservationError, ScreenFieldObservations, ScreenSongResolution,
     assist_unknown_result_song_with_chart, matching_single_play_songs,
-    observe_result_fields_with_numeric, observed_result_difficulty, resolve_clear_type,
-    resolve_music_select_song, resolve_result_chart, resolve_result_performance,
-    resolve_result_song,
+    observe_music_select_difficulty, observe_result_fields_with_numeric,
+    observed_result_difficulty, resolve_clear_type, resolve_music_select_song,
+    resolve_result_chart, resolve_result_performance, resolve_result_song,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::time::Instant;
@@ -110,6 +111,42 @@ pub struct RegisteredScreenFieldObservation {
     current_score_ocr_resolution: Option<CurrentScoreOcrResolution>,
     numeric_batch: Option<NumericBatchInference>,
     processing_timing: RecognitionProcessingTiming,
+    joint_evidence: JointEvidenceObservation,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceFamily {
+    SelectTitle,
+    SelectArtist,
+    SelectChart,
+    ResultTitle,
+    ResultArtist,
+    ResultChart,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct JointEvidenceCandidate {
+    pub song_id: ScorepeekSongId,
+    pub chart: Chart,
+    pub display_titles: Vec<String>,
+    pub artist: String,
+    pub family_support: BTreeMap<EvidenceFamily, u16>,
+    pub support: u16,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct JointEvidenceObservation {
+    pub candidates: Vec<JointEvidenceCandidate>,
+}
+
+impl JointEvidenceObservation {
+    #[must_use]
+    pub fn diagnostic_top(&self) -> Self {
+        Self {
+            candidates: self.candidates.iter().take(8).cloned().collect(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -122,6 +159,7 @@ pub struct RecognitionProcessingTiming {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub numeric_recognition_us: Option<u64>,
     pub join_us: u64,
+    pub catalog_evidence_us: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -174,7 +212,9 @@ impl RegisteredScreenFieldObservation {
         catalog: &Catalog,
         fields: ScreenFieldObservations,
     ) -> Self {
+        let catalog_started = Instant::now();
         let candidates = candidate_domain.observe(&fields);
+        let catalog_evidence_us = duration_us(catalog_started.elapsed());
         let parsed_result_fields = match &fields {
             ScreenFieldObservations::Result(fields) => {
                 Some(ParsedResultFields::from_observations(fields))
@@ -242,6 +282,8 @@ impl RegisteredScreenFieldObservation {
             )),
             _ => None,
         };
+        let joint_evidence =
+            joint_evidence(catalog, &candidates, parsed_result_fields.as_ref(), &fields);
         Self {
             fields,
             candidates,
@@ -260,7 +302,9 @@ impl RegisteredScreenFieldObservation {
                 text_recognition_wall_us: 0,
                 numeric_recognition_us: None,
                 join_us: 0,
+                catalog_evidence_us,
             },
+            joint_evidence,
         }
     }
 
@@ -329,6 +373,194 @@ impl RegisteredScreenFieldObservation {
     pub const fn processing_timing(&self) -> &RecognitionProcessingTiming {
         &self.processing_timing
     }
+
+    #[must_use]
+    pub const fn joint_evidence(&self) -> &JointEvidenceObservation {
+        &self.joint_evidence
+    }
+}
+
+fn joint_evidence(
+    catalog: &Catalog,
+    candidates: &ScreenCatalogCandidateObservations,
+    parsed: Option<&ParsedResultFields>,
+    fields: &ScreenFieldObservations,
+) -> JointEvidenceObservation {
+    let mut ranked = Vec::new();
+    for (song_id, title_support, artist_support) in song_supports(candidates) {
+        let Some(song) = catalog.songs().get(&song_id) else {
+            continue;
+        };
+        for chart in song
+            .charts()
+            .values()
+            .filter(|chart| chart.key.play_type == PlayType::Single)
+        {
+            let mut family_support = BTreeMap::new();
+            match fields {
+                ScreenFieldObservations::Result(_) => {
+                    family_support.insert(EvidenceFamily::ResultTitle, title_support);
+                    family_support.insert(EvidenceFamily::ResultArtist, artist_support);
+                    family_support.insert(
+                        EvidenceFamily::ResultChart,
+                        result_chart_support(
+                            chart,
+                            parsed,
+                            title_support > 0 || artist_support > 0,
+                        ),
+                    );
+                }
+                ScreenFieldObservations::MusicSelect(fields) => {
+                    family_support.insert(EvidenceFamily::SelectTitle, title_support);
+                    family_support.insert(EvidenceFamily::SelectArtist, artist_support);
+                    family_support.insert(
+                        EvidenceFamily::SelectChart,
+                        select_chart_support(
+                            chart,
+                            fields.selected_difficulty.known(),
+                            title_support > 0 || artist_support > 0,
+                        ),
+                    );
+                }
+            }
+            let support = family_support.values().copied().sum();
+            if support == 0 {
+                continue;
+            }
+            ranked.push(JointEvidenceCandidate {
+                song_id,
+                chart: chart.clone(),
+                display_titles: song
+                    .title_variants()
+                    .iter()
+                    .map(|variant| variant.value.clone())
+                    .collect(),
+                artist: song.artist().to_owned(),
+                family_support,
+                support,
+            });
+        }
+    }
+    ranked.sort_by(|left, right| {
+        right
+            .support
+            .cmp(&left.support)
+            .then_with(|| left.song_id.cmp(&right.song_id))
+            .then_with(|| left.chart.key.cmp(&right.chart.key))
+    });
+    JointEvidenceObservation { candidates: ranked }
+}
+
+fn song_supports(
+    candidates: &ScreenCatalogCandidateObservations,
+) -> Vec<(ScorepeekSongId, u16, u16)> {
+    match candidates {
+        ScreenCatalogCandidateObservations::Result { candidates, .. } => candidates
+            .iter()
+            .map(|candidate| {
+                (
+                    candidate.song_id,
+                    text_support(candidate.title),
+                    text_support(candidate.artist),
+                )
+            })
+            .collect(),
+        ScreenCatalogCandidateObservations::MusicSelect { candidates, .. } => candidates
+            .iter()
+            .map(|candidate| {
+                let title = [
+                    text_support(candidate.central_title),
+                    text_support(candidate.active_list_title),
+                    prefix_support(candidate.active_list_title_prefix),
+                ]
+                .into_iter()
+                .max()
+                .unwrap_or(0);
+                (candidate.song_id, title, text_support(candidate.artist))
+            })
+            .collect(),
+    }
+}
+
+fn text_support(score: scorepeek::recognition::CatalogTextCandidateScore) -> u16 {
+    similarity_support(
+        score.minimum_edit_distance,
+        score.maximum_normalized_similarity.matching_units,
+        score.maximum_normalized_similarity.compared_units,
+    )
+}
+
+fn prefix_support(score: scorepeek::recognition::CatalogPrefixCandidateScore) -> u16 {
+    similarity_support(
+        score.minimum_edit_distance,
+        score.maximum_normalized_similarity.matching_units,
+        score.maximum_normalized_similarity.compared_units,
+    )
+}
+
+fn similarity_support(edit: usize, matching: usize, compared: usize) -> u16 {
+    if compared == 0 {
+        return 0;
+    }
+    if edit == 0 {
+        return 300;
+    }
+    let percentage = matching.saturating_mul(100) / compared;
+    match percentage {
+        90..=usize::MAX => 70,
+        75..=89 => 35,
+        60..=74 => 15,
+        _ => 0,
+    }
+}
+
+fn result_chart_support(
+    chart: &Chart,
+    parsed: Option<&ParsedResultFields>,
+    has_song_evidence: bool,
+) -> u16 {
+    if !has_song_evidence {
+        return 0;
+    }
+    let Some(parsed) = parsed else { return 0 };
+    let mut support = 0_u16;
+    let difficulty_matches = parsed
+        .difficulty
+        .known()
+        .is_some_and(|value| *value == chart.key.difficulty);
+    if difficulty_matches {
+        support = support.saturating_add(50);
+    }
+    let notes_match = parsed
+        .notes
+        .known()
+        .is_some_and(|value| *value == chart.notes);
+    if notes_match {
+        support = support.saturating_add(100);
+    }
+    if parsed
+        .level
+        .known()
+        .is_some_and(|value| *value == chart.level)
+    {
+        support = support.saturating_add(10);
+    }
+    if parsed
+        .current_score
+        .known()
+        .is_some_and(|value| *value <= chart.notes.saturating_mul(2))
+    {
+        support = support.saturating_add(10);
+    }
+    support
+}
+
+fn select_chart_support(
+    chart: &Chart,
+    difficulty: Option<Difficulty>,
+    has_song_evidence: bool,
+) -> u16 {
+    u16::from(has_song_evidence && difficulty == Some(chart.key.difficulty)) * 50
 }
 
 struct ObservedFrameFields {
@@ -396,6 +628,7 @@ impl RegisteredScreenFieldObserver {
         crops: &scorepeek::recognition::MusicSelectScreenRgb8Crops,
     ) -> Result<ObservedFrameFields, ScreenFieldObservationError<OnnxParityError>> {
         use scorepeek::recognition::ScreenTextField;
+        let selected_difficulty = observe_music_select_difficulty(&crops.difficulty_markers);
         let pending = self
             .text_pool
             .submit(vec![
@@ -404,10 +637,6 @@ impl RegisteredScreenFieldObserver {
                     crops.central_title.clone(),
                 ),
                 (ScreenTextField::MusicSelectArtist, crops.artist.clone()),
-                (
-                    ScreenTextField::MusicSelectSelectedChart,
-                    crops.selected_chart.clone(),
-                ),
                 (
                     ScreenTextField::MusicSelectActiveListTitle,
                     crops.active_list_title.clone(),
@@ -434,13 +663,7 @@ impl RegisteredScreenFieldObserver {
                         ScreenFieldObservationError::new(ScreenTextField::MusicSelectArtist, source)
                     },
                 )?,
-                selected_chart: take_text(&mut text, ScreenTextField::MusicSelectSelectedChart)
-                    .map_err(|source| {
-                        ScreenFieldObservationError::new(
-                            ScreenTextField::MusicSelectSelectedChart,
-                            source,
-                        )
-                    })?,
+                selected_difficulty,
                 active_list_title: take_text(
                     &mut text,
                     ScreenTextField::MusicSelectActiveListTitle,
@@ -492,6 +715,7 @@ impl FieldObserver for RegisteredScreenFieldObserver {
                 .as_ref()
                 .map(|batch| batch.elapsed_us),
             join_us: duration_us(observed.join_started.elapsed()),
+            catalog_evidence_us: observation.processing_timing.catalog_evidence_us,
         };
         Ok(observation)
     }
@@ -515,11 +739,11 @@ fn duration_us(duration: std::time::Duration) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use scorepeek::catalog::Catalog;
+    use scorepeek::catalog::{Catalog, ChartKey};
     use scorepeek::recognition::{
         DynamicTextObservation, MusicSelectScreenFieldObservations, MusicSelectSongResolution,
-        MusicSelectSongUnknownReason, ResultScreenFieldObservations, ResultSongResolution,
-        ResultSongUnknownReason,
+        MusicSelectSongUnknownReason, ResultFieldValue, ResultScreenFieldObservations,
+        ResultSongResolution, ResultSongUnknownReason,
     };
 
     use super::*;
@@ -608,7 +832,7 @@ mod tests {
         let fields = ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
             central_title: text("texture"),
             artist: text("artist"),
-            selected_chart: text("HYPER 8"),
+            selected_difficulty: music_select_difficulty(Difficulty::Hyper),
             active_list_title: text("TITLE"),
         });
         let output = RegisteredScreenFieldObservation::from_fields(&domain, fields.clone());
@@ -622,5 +846,60 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn result_chart_values_do_not_generate_song_identity_without_text_evidence() {
+        let chart = Chart {
+            key: ChartKey {
+                play_type: PlayType::Single,
+                difficulty: Difficulty::Hyper,
+            },
+            level: 8,
+            notes: 764,
+        };
+        let mut parsed =
+            ParsedResultFields::from_observations(&ResultScreenFieldObservations::default());
+        parsed.difficulty = ResultFieldValue::Known {
+            value: Difficulty::Hyper,
+        };
+        parsed.level = ResultFieldValue::Known { value: 8 };
+        parsed.notes = ResultFieldValue::Known { value: 764 };
+        parsed.current_score = ResultFieldValue::Known { value: 1_286 };
+
+        assert_eq!(result_chart_support(&chart, Some(&parsed), false), 0);
+        assert_eq!(result_chart_support(&chart, Some(&parsed), true), 170);
+    }
+
+    fn music_select_difficulty(
+        selected: Difficulty,
+    ) -> scorepeek::recognition::MusicSelectDifficultyObservation {
+        use scorepeek::recognition::{
+            MusicSelectDifficultyMarkerEvidence, MusicSelectDifficultyObservation,
+            MusicSelectDifficultyState,
+        };
+
+        MusicSelectDifficultyObservation {
+            predicate_id: "scorepeek-player-marker-rgb-v1",
+            state: MusicSelectDifficultyState::Known(selected),
+            winner_score_ppm: 500_000,
+            runner_up_score_ppm: 0,
+            margin_ppm: 500_000,
+            slots: [
+                Difficulty::Beginner,
+                Difficulty::Normal,
+                Difficulty::Hyper,
+                Difficulty::Another,
+                Difficulty::Leggendaria,
+            ]
+            .map(|difficulty| MusicSelectDifficultyMarkerEvidence {
+                difficulty,
+                panel_pixels_ppm: u32::from(difficulty == selected) * 500_000,
+                fill_pixels_ppm: u32::from(difficulty == selected) * 500_000,
+                glyph_pixels_ppm: u32::from(difficulty == selected) * 200_000,
+                score_ppm: u32::from(difficulty == selected) * 500_000,
+                qualifies: difficulty == selected,
+            }),
+        }
     }
 }

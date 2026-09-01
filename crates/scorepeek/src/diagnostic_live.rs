@@ -460,6 +460,50 @@ impl DiagnosticBridge {
         })
     }
 
+    pub fn record_frame_processing_timing(
+        &mut self,
+        timing: crate::recognition_live::FrameProcessingTiming,
+        field_status: crate::diagnostic_recording::FrameFieldStatus,
+        field_timing: Option<
+            &crate::recognition_live::screen_field_observer::RecognitionProcessingTiming,
+        >,
+    ) -> DiagnosticEnqueueOutcome {
+        let screen = match timing.screen {
+            ScreenClass::Result => DiagnosticScreen::Result,
+            ScreenClass::MusicSelect => DiagnosticScreen::MusicSelection,
+            ScreenClass::ModeSelect => DiagnosticScreen::ModeSelection,
+            ScreenClass::DecideTransition => DiagnosticScreen::DecideTransition,
+            ScreenClass::Play => DiagnosticScreen::Gameplay,
+            ScreenClass::Unknown => DiagnosticScreen::Unknown,
+        };
+        self.worker.try_record_fact(DiagnosticFact {
+            sequence: timing.source_sequence,
+            monotonic_start_ms: timing.monotonic_start_ms,
+            monotonic_end_ms: timing.monotonic_end_ms,
+            operation: DiagnosticOperation::InspectRecognition,
+            status: DiagnosticOperationStatus::Success,
+            error_type: None,
+            detail: DiagnosticDetail::FrameProcessingTiming {
+                screen,
+                screen_classification_us: timing.screen_classification_us,
+                crop_prepare_us: timing.crop_prepare_us,
+                text_ocr_wall_us: field_timing.map(|value| value.text_recognition_wall_us),
+                numeric_ocr_us: field_timing.and_then(|value| value.numeric_recognition_us),
+                catalog_evidence_us: field_timing.map(|value| value.catalog_evidence_us),
+                screen_resolver_us: timing.screen_resolver_us,
+                attempt_resolver_us: timing.attempt_resolver_us,
+                output_us: timing.output_us,
+                frame_processing_wall_us: timing
+                    .frame_processing_wall_us
+                    .saturating_add(field_timing.map_or(0, |value| value.frame_total_us))
+                    .saturating_add(timing.screen_resolver_us.unwrap_or(0))
+                    .saturating_add(timing.attempt_resolver_us.unwrap_or(0))
+                    .saturating_add(timing.output_us.unwrap_or(0)),
+                field_status,
+            },
+        })
+    }
+
     /// Records a typed screen-inspection failure without replacing its application error.
     pub fn record_recognition_failure(
         &mut self,
@@ -1017,6 +1061,73 @@ mod tests {
             fact["fact"]["detail"]["music_select_bright_label_pixels_min"],
             4_000
         );
+    }
+
+    #[test]
+    fn frame_timing_retains_each_immediate_field_status_once() {
+        let root = tempfile::tempdir().unwrap();
+        let mut bridge = DiagnosticBridge::start_for_test(
+            root.path(),
+            descriptor("frame-field-status", 1),
+            DiagnosticPolicy::default(),
+            8,
+        );
+        for (sequence, field_status) in [
+            (1, crate::diagnostic_recording::FrameFieldStatus::BusySkip),
+            (
+                2,
+                crate::diagnostic_recording::FrameFieldStatus::NotApplicable,
+            ),
+            (3, crate::diagnostic_recording::FrameFieldStatus::Failed),
+        ] {
+            assert_eq!(
+                bridge.offer(&frame(1, sequence, sequence * 100)),
+                DiagnosticEnqueueOutcome::Enqueued
+            );
+            assert_eq!(
+                bridge.record_frame_processing_timing(
+                    crate::recognition_live::FrameProcessingTiming {
+                        source_sequence: sequence,
+                        monotonic_start_ms: sequence * 100,
+                        monotonic_end_ms: sequence * 100 + 16,
+                        screen: ScreenClass::Unknown,
+                        screen_classification_us: 5,
+                        crop_prepare_us: None,
+                        screen_resolver_us: Some(2),
+                        attempt_resolver_us: None,
+                        output_us: Some(1),
+                        frame_processing_wall_us: 7,
+                    },
+                    field_status,
+                    None,
+                ),
+                DiagnosticEnqueueOutcome::Enqueued
+            );
+        }
+        assert_eq!(
+            bridge
+                .finish(DiagnosticRunStatus::Success, 400)
+                .completeness,
+            Some(DiagnosticCompleteness::Complete)
+        );
+        let facts = fs::read_to_string(root.path().join("frame-field-status/facts.ndjson"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let manifest =
+            fs::read_to_string(root.path().join("frame-field-status/manifest.json")).unwrap();
+        assert_eq!(facts.len(), 3, "{manifest}");
+        assert_eq!(facts[0]["fact"]["detail"]["field_status"], "busy_skip");
+        assert_eq!(facts[0]["fact"]["detail"]["screen_resolver_us"], 2);
+        assert_eq!(
+            facts[0]["fact"]["detail"]["attempt_resolver_us"],
+            serde_json::Value::Null
+        );
+        assert_eq!(facts[0]["fact"]["detail"]["output_us"], 1);
+        assert_eq!(facts[0]["fact"]["detail"]["frame_processing_wall_us"], 10);
+        assert_eq!(facts[1]["fact"]["detail"]["field_status"], "not_applicable");
+        assert_eq!(facts[2]["fact"]["detail"]["field_status"], "failed");
     }
 
     #[test]

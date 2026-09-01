@@ -159,12 +159,21 @@ pub enum GamescopeLiveSessionEvent<'a> {
         normalizer_artifact_sha256: &'a str,
     },
     ScreenChanged {
+        screen_episode_id: u64,
         sequence: u64,
         monotonic_start_ms: u64,
         monotonic_end_ms: u64,
         screen: ScreenClass,
     },
+    ScreenTick {
+        screen_episode_id: u64,
+        sequence: u64,
+        monotonic_end_ms: u64,
+        screen: ScreenClass,
+        timing: crate::recognition_live::FrameProcessingTiming,
+    },
     Observation {
+        screen_episode_id: u64,
         sequence: u64,
         monotonic_start_ms: u64,
         monotonic_end_ms: u64,
@@ -172,8 +181,10 @@ pub enum GamescopeLiveSessionEvent<'a> {
     },
 }
 
-type LiveEventEmitter<'e> =
-    dyn for<'a> FnMut(GamescopeLiveSessionEvent<'a>) -> Result<(), String> + 'e;
+pub use crate::recognition_live::LiveEventProcessingTiming;
+
+type LiveEventEmitter<'e> = dyn for<'a> FnMut(GamescopeLiveSessionEvent<'a>) -> Result<LiveEventProcessingTiming, String>
+    + 'e;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 struct ProcessResourceSnapshot {
@@ -1037,30 +1048,29 @@ pub fn run_gamescope_live_session(
             Some(error.error_type()),
         ));
     }
-    if !matches!(
+    let output_available = !matches!(
         terminal,
         Some((FieldObservationGateErrorType::ResultOutputFailed, _))
-    ) {
-        let drain_error = wait_live_field_observations(
-            &mut session,
-            &mut pending,
-            &mut counters,
-            &mut artifact_worker,
-            emit,
-            minimum_event_sequence,
-        );
-        if let Some(error) = drain_error {
-            if matches!(
-                terminal,
-                Some((
-                    FieldObservationGateErrorType::CaptureFailed,
-                    Some(CaptureErrorType::SourceLost)
-                ))
-            ) {
-                terminal = Some(error);
-            } else {
-                terminal.get_or_insert(error);
-            }
+    );
+    let drain_error = wait_live_field_observations(
+        &mut session,
+        &mut pending,
+        &mut counters,
+        &mut artifact_worker,
+        output_available.then_some(emit),
+        minimum_event_sequence,
+    );
+    if let Some(error) = drain_error {
+        if matches!(
+            terminal,
+            Some((
+                FieldObservationGateErrorType::CaptureFailed,
+                Some(CaptureErrorType::SourceLost)
+            ))
+        ) {
+            terminal = Some(error);
+        } else {
+            terminal.get_or_insert(error);
         }
     }
     session.record_sampling_summary(
@@ -1430,9 +1440,19 @@ fn offer_field_observation_frames(
             *screen_counter = screen_counter.saturating_add(1);
             match result.field_submission {
                 FieldObservationSubmission::BusySkipped => {
+                    let _ = session.record_frame_processing_timing(
+                        result.timing,
+                        crate::diagnostic_recording::FrameFieldStatus::BusySkip,
+                        None,
+                    );
                     unreachable!("offline gate has no pending OCR policy")
                 }
                 FieldObservationSubmission::NotApplicable => {
+                    let _ = session.record_frame_processing_timing(
+                        result.timing,
+                        crate::diagnostic_recording::FrameFieldStatus::NotApplicable,
+                        None,
+                    );
                     source.counters.field_not_applicable =
                         source.counters.field_not_applicable.saturating_add(1);
                 }
@@ -1442,6 +1462,11 @@ fn offer_field_observation_frames(
                     pending.push(observation);
                 }
                 FieldObservationSubmission::Rejected(error) => {
+                    let _ = session.record_frame_processing_timing(
+                        result.timing,
+                        crate::diagnostic_recording::FrameFieldStatus::Failed,
+                        None,
+                    );
                     source.counters.field_rejected =
                         source.counters.field_rejected.saturating_add(1);
                     if matches!(
@@ -1492,6 +1517,7 @@ fn offer_live_field_observation_frames(
 ) -> Option<(FieldObservationGateErrorType, Option<CaptureErrorType>)> {
     let mut cadence = RecognitionCadence::default();
     let mut last_emitted_screen = None;
+    let mut screen_episode_id = 0_u64;
     let mut source = GamescopeCanonicalFrameSource {
         lease,
         counters,
@@ -1542,24 +1568,52 @@ fn offer_live_field_observation_frames(
             };
             *screen_counter = screen_counter.saturating_add(1);
             let screen = result.observation.screen();
-            if last_emitted_screen != Some(screen) {
+            let screen_changed = last_emitted_screen != Some(screen);
+            if screen_changed {
+                screen_episode_id = screen_episode_id.saturating_add(1);
                 if last_emitted_screen.is_some() {
                     *minimum_event_sequence = Some(frame.sequence());
                 }
-                if emit(GamescopeLiveSessionEvent::ScreenChanged {
+            }
+            let mut live_timing = LiveEventProcessingTiming::default();
+            let mut output_failed = false;
+            if screen_changed {
+                match emit(GamescopeLiveSessionEvent::ScreenChanged {
+                    screen_episode_id,
                     sequence: frame.sequence(),
                     monotonic_start_ms: frame.monotonic_start_ms(),
                     monotonic_end_ms: frame.monotonic_end_ms(),
                     screen,
-                })
-                .is_err()
-                {
-                    return Some((FieldObservationGateErrorType::ResultOutputFailed, None));
+                }) {
+                    Ok(timing) => {
+                        live_timing.add(timing);
+                        last_emitted_screen = Some(screen);
+                    }
+                    Err(_) => output_failed = true,
                 }
-                last_emitted_screen = Some(screen);
             }
+            if !output_failed {
+                match emit(GamescopeLiveSessionEvent::ScreenTick {
+                    screen_episode_id,
+                    sequence: frame.sequence(),
+                    monotonic_end_ms: frame.monotonic_end_ms(),
+                    screen,
+                    timing: result.timing,
+                }) {
+                    Ok(timing) => live_timing.add(timing),
+                    Err(_) => output_failed = true,
+                }
+            }
+            let mut frame_timing = result.timing;
+            frame_timing.add_live_processing(live_timing);
+            let mut field_terminal = None;
             match result.field_submission {
                 FieldObservationSubmission::BusySkipped => {
+                    let _ = session.record_frame_processing_timing(
+                        frame_timing,
+                        crate::diagnostic_recording::FrameFieldStatus::BusySkip,
+                        None,
+                    );
                     source.counters.field_observation_busy_skips = source
                         .counters
                         .field_observation_busy_skips
@@ -1576,17 +1630,29 @@ fn offer_live_field_observation_frames(
                         .max(source.counters.consecutive_field_observation_busy_skips);
                 }
                 FieldObservationSubmission::NotApplicable => {
+                    let _ = session.record_frame_processing_timing(
+                        frame_timing,
+                        crate::diagnostic_recording::FrameFieldStatus::NotApplicable,
+                        None,
+                    );
                     source.counters.consecutive_field_observation_busy_skips = 0;
                     source.counters.field_not_applicable =
                         source.counters.field_not_applicable.saturating_add(1);
                 }
-                FieldObservationSubmission::Submitted(observation) => {
+                FieldObservationSubmission::Submitted(mut observation) => {
+                    observation.bind_screen_episode(screen_episode_id);
+                    observation.add_live_processing(live_timing);
                     source.counters.consecutive_field_observation_busy_skips = 0;
                     source.counters.field_submitted =
                         source.counters.field_submitted.saturating_add(1);
                     pending.push(observation);
                 }
                 FieldObservationSubmission::Rejected(error) => {
+                    let _ = session.record_frame_processing_timing(
+                        frame_timing,
+                        crate::diagnostic_recording::FrameFieldStatus::Failed,
+                        None,
+                    );
                     source.counters.consecutive_field_observation_busy_skips = 0;
                     source.counters.field_rejected =
                         source.counters.field_rejected.saturating_add(1);
@@ -1595,12 +1661,18 @@ fn offer_live_field_observation_frames(
                         FieldObserverOfferError::BindingMismatch
                             | FieldObserverOfferError::WorkerUnavailable
                     ) {
-                        return Some((
+                        field_terminal = Some((
                             FieldObservationGateErrorType::FieldObserverUnavailable,
                             None,
                         ));
                     }
                 }
+            }
+            if output_failed {
+                return Some((FieldObservationGateErrorType::ResultOutputFailed, None));
+            }
+            if let Some(error) = field_terminal {
+                return Some(error);
             }
         }
     }
@@ -1673,6 +1745,10 @@ fn wait_field_observations(
     None
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one polling boundary preserves ordered completion, timing, and diagnostic outcomes"
+)]
 fn poll_field_observations(
     session: &mut FieldObservationSession<RegisteredScreenFieldObserver>,
     pending: &mut Vec<PendingSessionFieldObservation<RegisteredFieldOutput>>,
@@ -1695,12 +1771,18 @@ fn poll_field_observations(
                 }
                 index += 1;
             }
-            FieldObservationSessionPoll::Ready { observation, .. } => {
+            FieldObservationSessionPoll::Ready {
+                observation,
+                mut timing,
+                screen_episode_id,
+                ..
+            } => {
                 pending.swap_remove(index);
                 let sequence = observation.sequence();
                 let monotonic_start_ms = observation.monotonic_start_ms();
                 let monotonic_end_ms = observation.monotonic_end_ms();
                 if let Ok(output) = observation.into_output() {
+                    let late = minimum_event_sequence.is_some_and(|minimum| sequence < minimum);
                     counters.field_ready_success = counters.field_ready_success.saturating_add(1);
                     counters.candidate_sets = counters.candidate_sets.saturating_add(1);
                     counters.scored_candidates = counters.scored_candidates.saturating_add(
@@ -1713,23 +1795,49 @@ fn poll_field_observations(
                         counters.result_observations =
                             counters.result_observations.saturating_add(1);
                     }
-                    if minimum_event_sequence.is_none_or(|minimum| sequence >= minimum)
+                    let mut output_failed = false;
+                    let output_timing = if minimum_event_sequence
+                        .is_none_or(|minimum| sequence >= minimum)
                         && let Some(emit) = emit.as_deref_mut()
-                        && emit(GamescopeLiveSessionEvent::Observation {
+                    {
+                        if let Ok(timing) = emit(GamescopeLiveSessionEvent::Observation {
+                            screen_episode_id,
                             sequence,
                             monotonic_start_ms,
                             monotonic_end_ms,
                             output: &output,
-                        })
-                        .is_err()
-                    {
-                        return Some(FieldObservationGateErrorType::ResultOutputFailed);
+                        }) {
+                            Some(timing)
+                        } else {
+                            output_failed = true;
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(output_timing) = output_timing {
+                        timing.add_live_processing(output_timing);
                     }
+                    let _ = session.record_frame_processing_timing(
+                        timing,
+                        if late {
+                            crate::diagnostic_recording::FrameFieldStatus::LateEpisode
+                        } else {
+                            crate::diagnostic_recording::FrameFieldStatus::Completed
+                        },
+                        Some(output.processing_timing()),
+                    );
                     if let Some(worker) = artifact_worker {
-                        let counter = match worker.try_record(
+                        let counter = match worker.try_record_in_episode(
                             sequence,
+                            screen_episode_id,
                             monotonic_start_ms,
                             monotonic_end_ms,
+                            if late {
+                                crate::diagnostic_recording::FrameFieldStatus::LateEpisode
+                            } else {
+                                crate::diagnostic_recording::FrameFieldStatus::Completed
+                            },
                             output,
                         ) {
                             RecognitionArtifactEnqueueOutcome::Enqueued => {
@@ -1744,7 +1852,15 @@ fn poll_field_observations(
                         };
                         *counter = counter.saturating_add(1);
                     }
+                    if output_failed {
+                        return Some(FieldObservationGateErrorType::ResultOutputFailed);
+                    }
                 } else {
+                    let _ = session.record_frame_processing_timing(
+                        timing,
+                        crate::diagnostic_recording::FrameFieldStatus::Failed,
+                        None,
+                    );
                     counters.field_ready_failure = counters.field_ready_failure.saturating_add(1);
                     return Some(FieldObservationGateErrorType::FieldObservationFailed);
                 }
@@ -1772,7 +1888,7 @@ fn wait_live_field_observations(
     pending: &mut Vec<PendingSessionFieldObservation<RegisteredFieldOutput>>,
     counters: &mut FieldObservationCounters,
     artifact_worker: &mut Option<RecognitionArtifactWorker>,
-    emit: &mut LiveEventEmitter<'_>,
+    mut emit: Option<&mut LiveEventEmitter<'_>>,
     minimum_event_sequence: Option<u64>,
 ) -> Option<(FieldObservationGateErrorType, Option<CaptureErrorType>)> {
     let started = Instant::now();
@@ -1787,7 +1903,7 @@ fn wait_live_field_observations(
             counters,
             artifact_worker,
             Some(remaining),
-            Some(emit),
+            emit.as_deref_mut(),
             minimum_event_sequence,
         ) {
             return Some((error, None));

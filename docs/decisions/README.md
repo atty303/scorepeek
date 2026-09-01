@@ -285,6 +285,11 @@ authoritative.
 - [ADR 0095: Parallelize independent field recognition and retain raw timing](0095-parallelize-independent-field-recognition.md)
   fans independent text and numeric jobs out within one current frame, joins difficulty with level
   afterward, and retains raw frame and stage durations without aggregate statistics.
+- [ADR 0096: Resolve screen episodes before play attempts](0096-resolve-screen-episodes-before-attempts.md)
+  replaces title-primary frame decisions with family-normalized screen-episode evidence, reads
+  MUSIC SELECT difficulty from fixed `PLAYER 01` marker slots, combines select and result
+  hypotheses at the attempt layer, and fixes resolver transitions, frame timing, and the three-pane
+  debug TUI without changing the accepted v2 event.
 
 ## Historical
 

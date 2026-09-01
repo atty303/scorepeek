@@ -315,6 +315,16 @@ pub enum DiagnosticEventOutcome {
     NotApplicable,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameFieldStatus {
+    Completed,
+    BusySkip,
+    NotApplicable,
+    Failed,
+    LateEpisode,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RecognitionSamplingSummary {
     pub processed_ticks: u64,
@@ -338,6 +348,19 @@ pub enum DiagnosticDetail {
     RecognitionBusySkip,
     FieldObservationBusySkip {
         screen: DiagnosticScreen,
+    },
+    FrameProcessingTiming {
+        screen: DiagnosticScreen,
+        screen_classification_us: u64,
+        crop_prepare_us: Option<u64>,
+        text_ocr_wall_us: Option<u64>,
+        numeric_ocr_us: Option<u64>,
+        catalog_evidence_us: Option<u64>,
+        screen_resolver_us: Option<u64>,
+        attempt_resolver_us: Option<u64>,
+        output_us: Option<u64>,
+        frame_processing_wall_us: u64,
+        field_status: FrameFieldStatus,
     },
     ScreenObservation {
         screen: DiagnosticScreen,
@@ -1344,6 +1367,7 @@ fn valid_fact(fact: &DiagnosticFact) -> bool {
             DiagnosticDetail::ScreenObservation { .. }
                 | DiagnosticDetail::ScreenPredicateObservation { .. }
                 | DiagnosticDetail::SongDecision { .. }
+                | DiagnosticDetail::FrameProcessingTiming { .. }
         ) | (
             DiagnosticOperation::ObserveFields,
             DiagnosticDetail::FieldObservation { .. }

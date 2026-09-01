@@ -594,7 +594,9 @@ mod tests {
             ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
                 central_title: text("CAT"),
                 artist: text("ALPHA"),
-                selected_chart: text("HYPER 8"),
+                selected_difficulty: crate::recognition::test_music_select_difficulty(Some(
+                    crate::catalog::Difficulty::Hyper,
+                )),
                 active_list_title: text("BAT"),
             });
         let ScreenCatalogCandidateObservations::MusicSelect { candidates, .. } =

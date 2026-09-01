@@ -700,6 +700,7 @@ fn run_routine_live_session(
                 }
                 let mut started = false;
                 let mut emit = |value| {
+                    let output_started = std::time::Instant::now();
                     let event = routine_output::RunEvent::from_value(value)?;
                     if matches!(
                         &event.kind,
@@ -719,7 +720,19 @@ fn run_routine_live_session(
                                 .warning(format!("watcher status recording disabled: {error}"))?;
                         }
                     }
-                    output.publish(&event)
+                    let output_overhead_us =
+                        u64::try_from(output_started.elapsed().as_micros()).unwrap_or(u64::MAX);
+                    let timing = output.publish_timed(&event)?;
+                    Ok(capture_live::LiveEventProcessingTiming {
+                        screen_resolver_us: timing.screen_resolver_us,
+                        attempt_resolver_us: timing.attempt_resolver_us,
+                        output_us: Some(
+                            timing
+                                .output_us
+                                .unwrap_or(0)
+                                .saturating_add(output_overhead_us),
+                        ),
+                    })
                 };
                 let report = execute_live_session(
                     &references,
@@ -1061,7 +1074,15 @@ fn run_live_session(
     let stop = monitor.stop_token();
     let stdout = io::stdout();
     let mut output = BufWriter::new(stdout.lock());
-    let mut emit = |event: serde_json::Value| write_ndjson(&mut output, &event);
+    let mut emit = |event: serde_json::Value| {
+        let started = std::time::Instant::now();
+        write_ndjson(&mut output, &event)?;
+        Ok(capture_live::LiveEventProcessingTiming {
+            screen_resolver_us: None,
+            attempt_resolver_us: None,
+            output_us: Some(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)),
+        })
+    };
     let report = execute_live_session(
         values,
         bundle_root,
@@ -1088,7 +1109,7 @@ fn execute_live_session(
     session_id: Option<&str>,
     expected_source_node_id: Option<u32>,
     stop: &std::sync::atomic::AtomicBool,
-    emit: &mut impl FnMut(serde_json::Value) -> Result<(), String>,
+    emit: &mut impl FnMut(serde_json::Value) -> Result<capture_live::LiveEventProcessingTiming, String>,
 ) -> Result<capture_live::GamescopeFieldObservationGateReport, String> {
     let [
         binding,
@@ -1159,11 +1180,17 @@ fn execute_live_session(
         },
         stop,
         &mut |event| {
-            emit(live_session_event_value(
-                session_id,
-                session_id.map(|_| generation.get()),
-                event,
-            )?)
+            let started = std::time::Instant::now();
+            let value =
+                live_session_event_value(session_id, session_id.map(|_| generation.get()), event)?;
+            let serialization_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            let mut timing = emit(value)?;
+            timing.add(capture_live::LiveEventProcessingTiming {
+                screen_resolver_us: None,
+                attempt_resolver_us: None,
+                output_us: Some(serialization_us),
+            });
+            Ok(timing)
         },
     );
     Ok(report)
@@ -1279,6 +1306,7 @@ fn live_session_event_value(
             value
         }
         capture_live::GamescopeLiveSessionEvent::ScreenChanged {
+            screen_episode_id,
             sequence,
             monotonic_start_ms,
             monotonic_end_ms,
@@ -1287,6 +1315,7 @@ fn live_session_event_value(
             let mut value = serde_json::json!({
                 "schema": schema,
                 "event": "screen_changed",
+                "screen_episode_id": screen_episode_id,
                 "sequence": sequence,
                 "monotonic_start_ms": monotonic_start_ms,
                 "monotonic_end_ms": monotonic_end_ms,
@@ -1298,7 +1327,23 @@ fn live_session_event_value(
             }
             value
         }
+        capture_live::GamescopeLiveSessionEvent::ScreenTick {
+            screen_episode_id,
+            sequence,
+            monotonic_end_ms,
+            screen,
+            timing,
+        } => serde_json::json!({
+            "schema": schema,
+            "event": "screen_tick",
+            "screen_episode_id": screen_episode_id,
+            "sequence": sequence,
+            "monotonic_end_ms": monotonic_end_ms,
+            "screen": screen,
+            "frame_timing": timing,
+        }),
         capture_live::GamescopeLiveSessionEvent::Observation {
+            screen_episode_id,
             sequence,
             monotonic_start_ms,
             monotonic_end_ms,
@@ -1335,7 +1380,7 @@ fn live_session_event_value(
                     serde_json::json!({
                         "central_title": fields.central_title.open_text,
                         "artist": fields.artist.open_text,
-                        "selected_chart": fields.selected_chart.open_text,
+                        "selected_difficulty": fields.selected_difficulty,
                         "active_list_title": fields.active_list_title.open_text,
                     }),
                 ),
@@ -1343,6 +1388,7 @@ fn live_session_event_value(
             let mut value = serde_json::json!({
                 "schema": schema,
                 "event": "field_observation",
+                "screen_episode_id": screen_episode_id,
                 "sequence": sequence,
                 "monotonic_start_ms": monotonic_start_ms,
                 "monotonic_end_ms": monotonic_end_ms,
@@ -1355,6 +1401,8 @@ fn live_session_event_value(
                 "result_performance_resolution": observation.result_performance_resolution(),
                 "current_score_ocr_resolution": observation.current_score_ocr_resolution(),
                 "numeric_batch": observation.numeric_batch(),
+                "joint_evidence": observation.joint_evidence().diagnostic_top(),
+                "processing_timing": observation.processing_timing(),
             });
             if let Some(session_id) = session_id {
                 value["session_id"] = session_id.into();
@@ -3704,6 +3752,7 @@ mod tests {
             Some("invocation-session-2"),
             Some(2),
             GamescopeLiveSessionEvent::ScreenChanged {
+                screen_episode_id: 1,
                 sequence: 41,
                 monotonic_start_ms: 100,
                 monotonic_end_ms: 125,
@@ -3713,6 +3762,7 @@ mod tests {
         .unwrap();
         assert_eq!(value["schema"], "scorepeek-run-event-v2");
         assert_eq!(value["event"], "screen_changed");
+        assert_eq!(value["screen_episode_id"], 1);
         assert_eq!(value["session_id"], "invocation-session-2");
         assert_eq!(value["capture_generation"], 2);
         assert_eq!(value["sequence"], 41);
@@ -3722,6 +3772,7 @@ mod tests {
             Some("invocation-session-2"),
             Some(2),
             GamescopeLiveSessionEvent::ScreenChanged {
+                screen_episode_id: 1,
                 sequence: 42,
                 monotonic_start_ms: 125,
                 monotonic_end_ms: 150,
@@ -3752,6 +3803,7 @@ mod tests {
             None,
             None,
             GamescopeLiveSessionEvent::Observation {
+                screen_episode_id: 0,
                 sequence: 42,
                 monotonic_start_ms: 100,
                 monotonic_end_ms: 125,
@@ -3790,6 +3842,7 @@ mod tests {
             Some("invocation-session-2"),
             Some(2),
             GamescopeLiveSessionEvent::Observation {
+                screen_episode_id: 0,
                 sequence: 1,
                 monotonic_start_ms: 10,
                 monotonic_end_ms: 20,
@@ -3827,6 +3880,7 @@ mod tests {
             Some("invocation-session-1"),
             Some(1),
             GamescopeLiveSessionEvent::Observation {
+                screen_episode_id: 0,
                 sequence: 1,
                 monotonic_start_ms: 10,
                 monotonic_end_ms: 20,

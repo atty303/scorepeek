@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 use scorepeek::recognition::{
     CanonicalLayout, MusicSelectScreenRgb8Crops, RecognitionError, ResultScreenRgb8Crops,
@@ -23,6 +24,10 @@ pub mod field_observer;
 pub mod field_session;
 pub mod screen_field_observer;
 pub mod text_observer_pool;
+
+fn duration_us(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FieldInputPolicy {
@@ -92,6 +97,54 @@ pub struct RecognitionFrameResult<'a> {
     pub field_inputs: Option<BoundScreenRgb8Crops<'a>>,
     pub diagnostic_frame: DiagnosticEnqueueOutcome,
     pub diagnostic_fact: DiagnosticEnqueueOutcome,
+    pub timing: FrameProcessingTiming,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct FrameProcessingTiming {
+    pub source_sequence: u64,
+    pub monotonic_start_ms: u64,
+    pub monotonic_end_ms: u64,
+    pub screen: ScreenClass,
+    pub screen_classification_us: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crop_prepare_us: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen_resolver_us: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt_resolver_us: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_us: Option<u64>,
+    pub frame_processing_wall_us: u64,
+}
+
+impl FrameProcessingTiming {
+    pub(crate) fn add_live_processing(&mut self, timing: LiveEventProcessingTiming) {
+        add_optional_duration(&mut self.screen_resolver_us, timing.screen_resolver_us);
+        add_optional_duration(&mut self.attempt_resolver_us, timing.attempt_resolver_us);
+        add_optional_duration(&mut self.output_us, timing.output_us);
+    }
+}
+
+fn add_optional_duration(total: &mut Option<u64>, value: Option<u64>) {
+    if let Some(value) = value {
+        *total = Some(total.unwrap_or(0).saturating_add(value));
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LiveEventProcessingTiming {
+    pub screen_resolver_us: Option<u64>,
+    pub attempt_resolver_us: Option<u64>,
+    pub output_us: Option<u64>,
+}
+
+impl LiveEventProcessingTiming {
+    pub(crate) fn add(&mut self, other: Self) {
+        add_optional_duration(&mut self.screen_resolver_us, other.screen_resolver_us);
+        add_optional_duration(&mut self.attempt_resolver_us, other.attempt_resolver_us);
+        add_optional_duration(&mut self.output_us, other.output_us);
+    }
 }
 
 /// Screen-local field inputs that remain attached to their admitted live frame owner.
@@ -196,17 +249,21 @@ impl RecognitionSession {
         frame: &'a BoundCanonicalFrame,
         field_policy: FieldInputPolicy,
     ) -> Result<RecognitionFrameResult<'a>, RecognitionSessionError> {
+        let frame_started = Instant::now();
         if !self.bridge.matches_frame(frame) {
             let _ = self.bridge.offer(frame);
             return Err(RecognitionSessionError::FrameBindingMismatch);
         }
         self.last_sequence = Some(frame.sequence());
+        let classification_started = Instant::now();
         let Ok(observation) = RecognitionObservation::inspect(frame) else {
             let _ = self.bridge.offer(frame);
             let _ = self.bridge.record_recognition_failure(frame);
             return Err(RecognitionSessionError::RecognitionFailed);
         };
+        let screen_classification_us = duration_us(classification_started.elapsed());
         let diagnostic_frame = self.bridge.record_frame_for_observation(&observation);
+        let crop_started = Instant::now();
         let field_inputs = match observation.screen() {
             ScreenClass::ModeSelect
             | ScreenClass::DecideTransition
@@ -229,13 +286,39 @@ impl RecognitionSession {
                 })
             }
         };
+        let crop_prepare_us = field_inputs
+            .as_ref()
+            .map(|_| duration_us(crop_started.elapsed()));
         let diagnostic_fact = self.bridge.record_screen_observation(&observation);
+        let timing = FrameProcessingTiming {
+            source_sequence: frame.sequence(),
+            monotonic_start_ms: frame.monotonic_start_ms(),
+            monotonic_end_ms: frame.monotonic_end_ms(),
+            screen: observation.screen(),
+            screen_classification_us,
+            crop_prepare_us,
+            screen_resolver_us: None,
+            attempt_resolver_us: None,
+            output_us: None,
+            frame_processing_wall_us: duration_us(frame_started.elapsed()),
+        };
         Ok(RecognitionFrameResult {
             observation,
             field_inputs,
             diagnostic_frame,
             diagnostic_fact,
+            timing,
         })
+    }
+
+    pub fn record_frame_processing_timing(
+        &mut self,
+        timing: FrameProcessingTiming,
+        field_status: crate::diagnostic_recording::FrameFieldStatus,
+        field_timing: Option<&screen_field_observer::RecognitionProcessingTiming>,
+    ) -> DiagnosticEnqueueOutcome {
+        self.bridge
+            .record_frame_processing_timing(timing, field_status, field_timing)
     }
 
     /// Records value-free diagnostics for one worker-bound field result.
@@ -555,6 +638,10 @@ mod tests {
             RecognitionSession::start(root.path(), descriptor("result-fields", 1), policy.clone())
                 .unwrap();
         let result = result_session.inspect(&result_frame).unwrap();
+        assert_eq!(result.timing.source_sequence, result_frame.sequence());
+        assert_eq!(result.timing.screen, ScreenClass::Result);
+        assert!(result.timing.crop_prepare_us.is_some());
+        assert!(result.timing.frame_processing_wall_us >= result.timing.screen_classification_us);
         let result_fields = result.field_inputs.unwrap();
         assert_eq!(result_fields.screen(), ScreenClass::Result);
         assert!(std::ptr::eq(result_fields.frame(), &raw const result_frame));
@@ -574,6 +661,8 @@ mod tests {
         let mut music_session =
             RecognitionSession::start(root.path(), descriptor("music-fields", 1), policy).unwrap();
         let music = music_session.inspect(&music_frame).unwrap();
+        assert_eq!(music.timing.screen, ScreenClass::MusicSelect);
+        assert!(music.timing.crop_prepare_us.is_some());
         let music_fields = music.field_inputs.unwrap();
         assert_eq!(music_fields.screen(), ScreenClass::MusicSelect);
         assert!(std::ptr::eq(music_fields.frame(), &raw const music_frame));
@@ -583,7 +672,13 @@ mod tests {
         assert_eq!(crops.central_title.roi, layout.music_select.selected_title);
         assert_eq!(crops.central_title.pixels()[..3], [0, 180, 220]);
         assert!(!crops.artist.pixels().is_empty());
-        assert!(!crops.selected_chart.pixels().is_empty());
+        assert!(
+            crops
+                .difficulty_markers
+                .as_slots()
+                .into_iter()
+                .all(|(_, crop)| !crop.pixels().is_empty())
+        );
         assert!(!crops.active_list_title.pixels().is_empty());
     }
 

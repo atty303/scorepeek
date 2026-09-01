@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 
 use scorepeek::catalog::{CatalogStore, ScorepeekSongId};
 use scorepeek::recognition::{
-    CanonicalLayout, CatalogCandidateDomain, DynamicTextObservation, MusicSelectMotionRegions,
+    CanonicalLayout, CatalogCandidateDomain, DynamicTextObservation,
+    MusicSelectDifficultyMarkerEvidence, MusicSelectDifficultyObservation,
+    MusicSelectDifficultyState, MusicSelectDifficultyUnknownReason, MusicSelectMotionRegions,
     MusicSelectScreenFieldObservations, Roi, ScreenCatalogCandidateObservations, ScreenClass,
     ScreenFieldObservations, resolve_music_select_song,
 };
@@ -36,6 +38,8 @@ const CURRENT_OBSERVATION_SCHEMA_V8: &str = "scorepeek-recognition-observation-v
 const CURRENT_OBSERVATION_SCHEMA_V9: &str = "scorepeek-recognition-observation-v9";
 const CURRENT_OBSERVATION_SCHEMA_V10: &str = "scorepeek-recognition-observation-v10";
 const CURRENT_OBSERVATION_SCHEMA_V11: &str = "scorepeek-recognition-observation-v11";
+const CURRENT_OBSERVATION_SCHEMA_V12: &str = "scorepeek-recognition-observation-v12";
+const CURRENT_OBSERVATION_SCHEMA_V13: &str = "scorepeek-recognition-observation-v13";
 const DRAFT_SCHEMA: &str = "scorepeek-private-music-select-motion-review-draft-v1";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-music-select-motion-review-summary-v1";
 const DECISIONS_SCHEMA: &str = "scorepeek-private-music-select-motion-review-decisions-v2";
@@ -1811,7 +1815,30 @@ fn resolve_stored_music_select(
     let observations = ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
         central_title: dynamic(text("central_title")),
         artist: dynamic(text("artist")),
-        selected_chart: dynamic(String::new()),
+        selected_difficulty: MusicSelectDifficultyObservation {
+            predicate_id: "scorepeek-player-marker-rgb-v1",
+            state: MusicSelectDifficultyState::Unknown(
+                MusicSelectDifficultyUnknownReason::NoCandidate,
+            ),
+            winner_score_ppm: 0,
+            runner_up_score_ppm: 0,
+            margin_ppm: 0,
+            slots: [
+                scorepeek::catalog::Difficulty::Beginner,
+                scorepeek::catalog::Difficulty::Normal,
+                scorepeek::catalog::Difficulty::Hyper,
+                scorepeek::catalog::Difficulty::Another,
+                scorepeek::catalog::Difficulty::Leggendaria,
+            ]
+            .map(|difficulty| MusicSelectDifficultyMarkerEvidence {
+                difficulty,
+                panel_pixels_ppm: 0,
+                fill_pixels_ppm: 0,
+                glyph_pixels_ppm: 0,
+                score_ppm: 0,
+                qualifies: false,
+            }),
+        },
         active_list_title: dynamic(text("active_list_title")),
     });
     let candidates = domain.observe(&observations);
@@ -2319,7 +2346,9 @@ fn supported_observation_schema(value: &Value) -> bool {
                 | CURRENT_OBSERVATION_SCHEMA_V8
                 | CURRENT_OBSERVATION_SCHEMA_V9
                 | CURRENT_OBSERVATION_SCHEMA_V10
-                | CURRENT_OBSERVATION_SCHEMA_V11,
+                | CURRENT_OBSERVATION_SCHEMA_V11
+                | CURRENT_OBSERVATION_SCHEMA_V12
+                | CURRENT_OBSERVATION_SCHEMA_V13,
         )
     )
 }
@@ -3189,7 +3218,8 @@ mod tests {
 
     use super::{
         CURRENT_OBSERVATION_SCHEMA, CURRENT_OBSERVATION_SCHEMA_V8, CURRENT_OBSERVATION_SCHEMA_V9,
-        CURRENT_OBSERVATION_SCHEMA_V10, CURRENT_OBSERVATION_SCHEMA_V11, CorrectSongExpectation,
+        CURRENT_OBSERVATION_SCHEMA_V10, CURRENT_OBSERVATION_SCHEMA_V11,
+        CURRENT_OBSERVATION_SCHEMA_V12, CURRENT_OBSERVATION_SCHEMA_V13, CorrectSongExpectation,
         CorrectSongLabel, CorrectSongLabels, LATEST_OBSERVATION_SCHEMA, MAX_PROCESS_STDERR_BYTES,
         MotionEvidence, MotionReviewDecision, MotionReviewDecisions, MusicSelectDwellPolicy,
         MusicSelectTemporalCandidatePolicy, OBSERVATION_SCHEMA, ObservationRecord,
@@ -3213,13 +3243,15 @@ mod tests {
             CURRENT_OBSERVATION_SCHEMA_V9,
             CURRENT_OBSERVATION_SCHEMA_V10,
             CURRENT_OBSERVATION_SCHEMA_V11,
+            CURRENT_OBSERVATION_SCHEMA_V12,
+            CURRENT_OBSERVATION_SCHEMA_V13,
         ] {
             assert!(supported_observation_schema(&serde_json::Value::String(
                 schema.to_owned()
             )));
         }
         assert!(!supported_observation_schema(&serde_json::Value::String(
-            "scorepeek-recognition-observation-v12".to_owned()
+            "scorepeek-recognition-observation-v14".to_owned()
         )));
     }
 

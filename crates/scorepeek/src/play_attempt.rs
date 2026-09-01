@@ -13,6 +13,7 @@ pub enum PlayAttemptScreen {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SelectionSource {
+    EvidenceAccepted,
     Stable,
     LastConfirmedHeld,
     RetryInherited,
@@ -114,6 +115,7 @@ struct SelectionHandoff<S> {
 pub struct PlayAttemptReducer<S> {
     next_attempt_id: u64,
     selection_handoff: Option<SelectionHandoff<S>>,
+    selection_screen_observed: bool,
     state: PlayAttemptState<S>,
 }
 
@@ -122,6 +124,7 @@ impl<S> Default for PlayAttemptReducer<S> {
         Self {
             next_attempt_id: 1,
             selection_handoff: None,
+            selection_screen_observed: false,
             state: PlayAttemptState::Idle,
         }
     }
@@ -129,13 +132,16 @@ impl<S> Default for PlayAttemptReducer<S> {
 
 impl<S: Clone + Eq> PlayAttemptReducer<S> {
     #[must_use]
-    #[cfg(test)]
     pub const fn state(&self) -> &PlayAttemptState<S> {
         &self.state
     }
 
     pub fn reset_session(&mut self) {
         *self = Self::default();
+    }
+
+    pub fn observe_selection_screen(&mut self) {
+        self.selection_screen_observed = true;
     }
 
     #[must_use]
@@ -236,6 +242,10 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
         let previous = self.state.clone();
         match &mut self.state {
             PlayAttemptState::Attempt { attempt } if attempt.phase == PlayAttemptPhase::Result => {
+                if attempt.selected_song.is_none() && attempt.path.select_observed {
+                    attempt.selected_song = Some(song.clone());
+                    attempt.selection_source = Some(SelectionSource::EvidenceAccepted);
+                }
                 attempt.result_song = Some(song.clone());
                 attempt.result_relation = match attempt.selected_song.as_ref() {
                     Some(selected) if *selected == song => PlayAttemptResultRelation::Confirmed,
@@ -284,6 +294,8 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
             return;
         }
         let handoff = self.selection_handoff.take();
+        let select_observed = self.selection_screen_observed || handoff.is_some();
+        self.selection_screen_observed = false;
         let mut reasons = Vec::new();
         if handoff.is_none() {
             reasons.push(PlayAttemptReason::NoStableSelection);
@@ -294,7 +306,7 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
                 parent_attempt_id: None,
                 phase: PlayAttemptPhase::Decided,
                 path: PlayAttemptPath {
-                    select_observed: handoff.is_some(),
+                    select_observed,
                     decide_observed: true,
                     ..PlayAttemptPath::default()
                 },
@@ -309,6 +321,7 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
 
     fn observe_play(&mut self) {
         let retry = match &self.state {
+            _ if self.selection_screen_observed => None,
             PlayAttemptState::Attempt { attempt } if attempt.phase == PlayAttemptPhase::Result => {
                 Some((
                     Some(attempt.attempt_id),
@@ -359,6 +372,8 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
         }
 
         let handoff = self.selection_handoff.take();
+        let select_observed = self.selection_screen_observed || handoff.is_some();
+        self.selection_screen_observed = false;
         let mut reasons = vec![PlayAttemptReason::DecideNotObserved];
         if handoff.is_none() {
             reasons.push(PlayAttemptReason::NoStableSelection);
@@ -369,7 +384,7 @@ impl<S: Clone + Eq> PlayAttemptReducer<S> {
                 parent_attempt_id: None,
                 phase: PlayAttemptPhase::Playing,
                 path: PlayAttemptPath {
-                    select_observed: handoff.is_some(),
+                    select_observed,
                     play_observed: true,
                     ..PlayAttemptPath::default()
                 },
@@ -549,6 +564,26 @@ mod tests {
     }
 
     #[test]
+    fn observed_select_without_identity_is_linked_by_later_joint_result() {
+        let mut reducer = PlayAttemptReducer::default();
+        reducer.observe_selection_screen();
+        reducer.observe_screen(PlayAttemptScreen::Play, 10);
+        reducer.observe_screen(PlayAttemptScreen::Result, 20);
+        reducer.observe_stable_result(7);
+
+        let accepted = reducer.accepted_result().unwrap();
+        assert_eq!(*accepted.song, 7);
+        let PlayAttemptState::Attempt { attempt } = reducer.state() else {
+            panic!("attempt must remain observable");
+        };
+        assert!(attempt.path.select_observed);
+        assert_eq!(
+            attempt.result_relation,
+            PlayAttemptResultRelation::Confirmed
+        );
+    }
+
+    #[test]
     fn missing_play_conflict_unlinked_and_abandoned_are_not_accepted() {
         let mut missing_play = PlayAttemptReducer::default();
         missing_play.observe_selection(Some(7), Some(SelectionSource::Stable), 1);
@@ -680,6 +715,26 @@ mod tests {
                 song: &8,
             })
         );
+    }
+
+    #[test]
+    fn observed_select_after_result_starts_a_fresh_unidentified_attempt() {
+        let mut reducer = PlayAttemptReducer::default();
+        reducer.observe_selection(Some(7), Some(SelectionSource::EvidenceAccepted), 9);
+        reducer.observe_screen(PlayAttemptScreen::Play, 10);
+        reducer.observe_screen(PlayAttemptScreen::Result, 11);
+        reducer.observe_stable_result(7);
+
+        reducer.observe_selection_screen();
+        reducer.observe_screen(PlayAttemptScreen::Play, 12);
+
+        let fresh = attempt(reducer.state());
+        assert_eq!(fresh.attempt_id, 2);
+        assert_eq!(fresh.parent_attempt_id, None);
+        assert_eq!(fresh.selected_song, None);
+        assert_eq!(fresh.selection_source, None);
+        assert!(fresh.path.select_observed);
+        assert!(fresh.path.play_observed);
     }
 
     #[test]

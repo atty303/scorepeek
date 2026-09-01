@@ -47,6 +47,18 @@ pub struct PendingSessionFieldObservation<T> {
     pending: PendingFieldObservation<T>,
     owner: Arc<()>,
     identity: Arc<()>,
+    timing: super::FrameProcessingTiming,
+    screen_episode_id: u64,
+}
+
+impl<T> PendingSessionFieldObservation<T> {
+    pub fn bind_screen_episode(&mut self, screen_episode_id: u64) {
+        self.screen_episode_id = screen_episode_id;
+    }
+
+    pub fn add_live_processing(&mut self, timing: super::LiveEventProcessingTiming) {
+        self.timing.add_live_processing(timing);
+    }
 }
 
 #[derive(Debug)]
@@ -55,6 +67,7 @@ pub struct FieldObservationFrameResult<'a, T> {
     pub field_submission: FieldObservationSubmission<T>,
     pub diagnostic_frame: DiagnosticEnqueueOutcome,
     pub diagnostic_screen_fact: DiagnosticEnqueueOutcome,
+    pub timing: super::FrameProcessingTiming,
 }
 
 #[derive(Debug)]
@@ -63,6 +76,8 @@ pub enum FieldObservationSessionPoll<T> {
     Ready {
         observation: BoundFieldObservation<T>,
         diagnostic_field_fact: DiagnosticEnqueueOutcome,
+        timing: super::FrameProcessingTiming,
+        screen_episode_id: u64,
     },
     Consumed,
     BindingMismatch,
@@ -156,6 +171,7 @@ impl<O: FieldObserver> FieldObservationSession<O> {
             field_inputs,
             diagnostic_frame,
             diagnostic_fact,
+            timing,
         } = self
             .recognition
             .inspect_with_field_policy(frame, field_policy)?;
@@ -182,6 +198,8 @@ impl<O: FieldObserver> FieldObservationSession<O> {
                         pending,
                         owner: Arc::clone(&self.owner),
                         identity,
+                        timing,
+                        screen_episode_id: 0,
                     })
                 }
                 Err(error) => {
@@ -196,6 +214,7 @@ impl<O: FieldObserver> FieldObservationSession<O> {
             field_submission,
             diagnostic_frame,
             diagnostic_screen_fact: diagnostic_fact,
+            timing,
         })
     }
 
@@ -362,6 +381,16 @@ impl<O: FieldObserver> FieldObservationSession<O> {
         )
     }
 
+    pub fn record_frame_processing_timing(
+        &mut self,
+        timing: super::FrameProcessingTiming,
+        field_status: crate::diagnostic_recording::FrameFieldStatus,
+        field_timing: Option<&super::screen_field_observer::RecognitionProcessingTiming>,
+    ) -> DiagnosticEnqueueOutcome {
+        self.recognition
+            .record_frame_processing_timing(timing, field_status, field_timing)
+    }
+
     fn poll_owned_field_observation<T, E>(
         &mut self,
         pending: &PendingSessionFieldObservation<O::Output>,
@@ -404,6 +433,8 @@ impl<O: FieldObserver> FieldObservationSession<O> {
                 FieldObservationSessionPoll::Ready {
                     observation,
                     diagnostic_field_fact,
+                    timing: pending.timing,
+                    screen_episode_id: pending.screen_episode_id,
                 }
             }
             FieldObservationPoll::Consumed => {
@@ -527,6 +558,7 @@ mod tests {
         let FieldObservationSessionPoll::Ready {
             observation,
             diagnostic_field_fact,
+            ..
         } = session.wait_field_observation(&pending, Duration::from_secs(1))
         else {
             panic!("field observation did not complete");
@@ -609,6 +641,7 @@ mod tests {
         let FieldObservationSessionPoll::Ready {
             observation,
             diagnostic_field_fact,
+            ..
         } = session.wait_field_observation(&pending, Duration::from_secs(1))
         else {
             panic!("field observation did not complete");

@@ -1,0 +1,26 @@
+{
+  "schema": "scorepeek-integrated-context-layout-v3",
+  "canonical_frame_contract_id": "scorepeek-canonical-rgb8-1920x1080-v1",
+  "canonical_layout_sha256": "a20cf2489b580c2b014bb1fb6a3792ebdad4b36bd4646a705e59cdb9a28ad4d4",
+  "result": {
+    "artist": { "x": 650, "y": 990, "width": 650, "height": 40 }
+  },
+  "music_select": {
+    "artist": { "x": 140, "y": 410, "width": 820, "height": 55 },
+    "legacy_selected_chart": { "x": 110, "y": 500, "width": 820, "height": 110 },
+    "selected_difficulty": {
+      "predicate_id": "scorepeek-player-marker-rgb-v1",
+      "panel_pixels_min_ppm": 450000,
+      "fill_pixels_min_ppm": 450000,
+      "glyph_pixels_min_ppm": 140000,
+      "score_min_ppm": 400000,
+      "winner_margin_min_ppm": 100000,
+      "beginner": { "x": 131, "y": 605, "width": 128, "height": 30 },
+      "normal": { "x": 296, "y": 605, "width": 128, "height": 30 },
+      "hyper": { "x": 461, "y": 605, "width": 128, "height": 30 },
+      "another": { "x": 626, "y": 605, "width": 128, "height": 30 },
+      "leggendaria": { "x": 791, "y": 605, "width": 128, "height": 30 }
+    },
+    "active_list_title": { "x": 1305, "y": 525, "width": 505, "height": 30 }
+  }
+}

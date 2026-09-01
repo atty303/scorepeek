@@ -19,7 +19,7 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 const CATALOG_SCHEMA: &str = "scorepeek-recognition-catalog-evidence-v1";
-const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v11";
+const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v13";
 const MANIFEST_SCHEMA: &str = "scorepeek-recognition-evidence-manifest-v3";
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -50,6 +50,8 @@ struct StoredCatalog<'a> {
 struct StoredObservation<'a> {
     schema: &'static str,
     tick_sequence: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    screen_episode_id: Option<u64>,
     timing: RecognitionArtifactTiming,
     fields: StoredFields<'a>,
     candidates: StoredCandidates,
@@ -65,9 +67,13 @@ struct StoredObservation<'a> {
         Option<&'a crate::recognition_live::screen_field_observer::CurrentScoreOcrResolution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     numeric_batch: Option<&'a NumericBatchInference>,
+    joint_evidence:
+        Option<&'a crate::recognition_live::screen_field_observer::JointEvidenceObservation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     processing_timing:
         Option<&'a crate::recognition_live::screen_field_observer::RecognitionProcessingTiming>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    field_status: Option<crate::diagnostic_recording::FrameFieldStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     level_catalog_mismatch: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -135,7 +141,7 @@ enum StoredFields<'a> {
     MusicSelect {
         central_title: StoredText<'a>,
         artist: StoredText<'a>,
-        selected_chart: StoredText<'a>,
+        selected_difficulty: &'a scorepeek::recognition::MusicSelectDifficultyObservation,
         active_list_title: StoredText<'a>,
     },
 }
@@ -249,11 +255,14 @@ impl RecognitionArtifactWriter {
         };
         self.record_with_result_context(
             sequence,
+            None,
             timing,
             fields,
             candidates,
             song_resolution,
             parsed.as_ref(),
+            None,
+            None,
             None,
             None,
             None,
@@ -272,6 +281,7 @@ impl RecognitionArtifactWriter {
     ) -> Result<(), String> {
         self.record_with_result_context(
             sequence,
+            None,
             timing,
             output.fields(),
             output.candidates(),
@@ -281,8 +291,37 @@ impl RecognitionArtifactWriter {
             output.result_performance_resolution(),
             output.current_score_ocr_resolution(),
             output.numeric_batch(),
+            Some(output.joint_evidence()),
             Some(output.processing_timing()),
+            None,
             expected,
+        )
+    }
+
+    fn record_live_observation(
+        &mut self,
+        sequence: u64,
+        screen_episode_id: u64,
+        timing: RecognitionArtifactTiming,
+        field_status: crate::diagnostic_recording::FrameFieldStatus,
+        output: &crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+    ) -> Result<(), String> {
+        self.record_with_result_context(
+            sequence,
+            Some(screen_episode_id),
+            timing,
+            output.fields(),
+            output.candidates(),
+            output.song_resolution(),
+            output.parsed_result_fields(),
+            output.result_chart_resolution(),
+            output.result_performance_resolution(),
+            output.current_score_ocr_resolution(),
+            output.numeric_batch(),
+            Some(output.joint_evidence()),
+            Some(output.processing_timing()),
+            Some(field_status),
+            None,
         )
     }
 
@@ -290,6 +329,7 @@ impl RecognitionArtifactWriter {
     fn record_with_result_context(
         &mut self,
         sequence: u64,
+        screen_episode_id: Option<u64>,
         timing: RecognitionArtifactTiming,
         fields: &ScreenFieldObservations,
         candidates: &ScreenCatalogCandidateObservations,
@@ -301,9 +341,13 @@ impl RecognitionArtifactWriter {
             &crate::recognition_live::screen_field_observer::CurrentScoreOcrResolution,
         >,
         numeric_batch: Option<&NumericBatchInference>,
+        joint_evidence: Option<
+            &crate::recognition_live::screen_field_observer::JointEvidenceObservation,
+        >,
         processing_timing: Option<
             &crate::recognition_live::screen_field_observer::RecognitionProcessingTiming,
         >,
+        field_status: Option<crate::diagnostic_recording::FrameFieldStatus>,
         expected: Option<RecognitionArtifactExpected<'_>>,
     ) -> Result<(), String> {
         if self.observation_count >= MAX_OBSERVATIONS {
@@ -320,9 +364,13 @@ impl RecognitionArtifactWriter {
             ) => StoredDecision::MusicSelect { resolution },
             _ => return Err("recognition artifact decision does not match screen".to_owned()),
         };
+        let diagnostic_joint_evidence = joint_evidence.map(
+            crate::recognition_live::screen_field_observer::JointEvidenceObservation::diagnostic_top,
+        );
         let stored = StoredObservation {
             schema: OBSERVATION_SCHEMA,
             tick_sequence: sequence,
+            screen_episode_id,
             timing,
             fields: StoredFields::from(fields),
             candidates: StoredCandidates::try_from(candidates)?,
@@ -332,7 +380,9 @@ impl RecognitionArtifactWriter {
             result_performance_resolution,
             current_score_ocr_resolution,
             numeric_batch,
+            joint_evidence: diagnostic_joint_evidence.as_ref(),
             processing_timing,
+            field_status,
             level_catalog_mismatch: observed_level_catalog_mismatch(
                 parsed_result_fields,
                 result_chart_resolution,
@@ -472,8 +522,10 @@ pub struct RecognitionArtifactFinishOutcome {
 
 struct LiveRecord {
     sequence: u64,
+    screen_episode_id: u64,
     monotonic_start_ms: u64,
     monotonic_end_ms: u64,
+    field_status: crate::diagnostic_recording::FrameFieldStatus,
     observation: crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
 }
 
@@ -569,6 +621,7 @@ impl RecognitionArtifactWorker {
         Self { sender }
     }
 
+    #[cfg(test)]
     pub fn try_record(
         &mut self,
         sequence: u64,
@@ -576,13 +629,34 @@ impl RecognitionArtifactWorker {
         monotonic_end_ms: u64,
         observation: crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
     ) -> RecognitionArtifactEnqueueOutcome {
+        self.try_record_in_episode(
+            sequence,
+            0,
+            monotonic_start_ms,
+            monotonic_end_ms,
+            crate::diagnostic_recording::FrameFieldStatus::Completed,
+            observation,
+        )
+    }
+
+    pub fn try_record_in_episode(
+        &mut self,
+        sequence: u64,
+        screen_episode_id: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+        field_status: crate::diagnostic_recording::FrameFieldStatus,
+        observation: crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+    ) -> RecognitionArtifactEnqueueOutcome {
         let Some(sender) = &self.sender else {
             return RecognitionArtifactEnqueueOutcome::WorkerUnavailable;
         };
         match sender.try_send(LiveWriterMessage::Record(Box::new(LiveRecord {
             sequence,
+            screen_episode_id,
             monotonic_start_ms,
             monotonic_end_ms,
+            field_status,
             observation,
         }))) {
             Ok(()) => RecognitionArtifactEnqueueOutcome::Enqueued,
@@ -799,14 +873,15 @@ fn run_live_writer(
 }
 
 fn record_live(writer: &mut RecognitionArtifactWriter, record: &LiveRecord) -> Result<(), String> {
-    writer.record_observation(
+    writer.record_live_observation(
         record.sequence,
+        record.screen_episode_id,
         RecognitionArtifactTiming::Live {
             monotonic_start_ms: record.monotonic_start_ms,
             monotonic_end_ms: record.monotonic_end_ms,
         },
+        record.field_status,
         &record.observation,
-        None,
     )
 }
 
@@ -859,7 +934,7 @@ impl<'a> From<&'a ScreenFieldObservations> for StoredFields<'a> {
             ScreenFieldObservations::MusicSelect(fields) => Self::MusicSelect {
                 central_title: StoredText::from(&fields.central_title),
                 artist: StoredText::from(&fields.artist),
-                selected_chart: StoredText::from(&fields.selected_chart),
+                selected_difficulty: &fields.selected_difficulty,
                 active_list_title: StoredText::from(&fields.active_list_title),
             },
         }
@@ -1039,9 +1114,42 @@ mod tests {
         ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
             central_title: text("texture"),
             artist: text("artist"),
-            selected_chart: text("HYPER 8"),
+            selected_difficulty: music_select_difficulty(scorepeek::catalog::Difficulty::Hyper),
             active_list_title: text("VISIBLE TITLE"),
         })
+    }
+
+    fn music_select_difficulty(
+        selected: scorepeek::catalog::Difficulty,
+    ) -> scorepeek::recognition::MusicSelectDifficultyObservation {
+        use scorepeek::catalog::Difficulty;
+        use scorepeek::recognition::{
+            MusicSelectDifficultyMarkerEvidence, MusicSelectDifficultyObservation,
+            MusicSelectDifficultyState,
+        };
+
+        MusicSelectDifficultyObservation {
+            predicate_id: "scorepeek-player-marker-rgb-v1",
+            state: MusicSelectDifficultyState::Known(selected),
+            winner_score_ppm: 500_000,
+            runner_up_score_ppm: 0,
+            margin_ppm: 500_000,
+            slots: [
+                Difficulty::Beginner,
+                Difficulty::Normal,
+                Difficulty::Hyper,
+                Difficulty::Another,
+                Difficulty::Leggendaria,
+            ]
+            .map(|difficulty| MusicSelectDifficultyMarkerEvidence {
+                difficulty,
+                panel_pixels_ppm: u32::from(difficulty == selected) * 500_000,
+                fill_pixels_ppm: u32::from(difficulty == selected) * 500_000,
+                glyph_pixels_ppm: u32::from(difficulty == selected) * 200_000,
+                score_ppm: u32::from(difficulty == selected) * 500_000,
+                qualifies: difficulty == selected,
+            }),
+        }
     }
 
     fn empty_candidates() -> ScreenCatalogCandidateObservations {
@@ -1308,8 +1416,9 @@ mod tests {
         assert_eq!(outcome.status, RecognitionArtifactFinishStatus::Complete);
         assert_eq!(outcome.manifest_sha256.unwrap().len(), 64);
         let stored = fs::read_to_string(root.join("observations.ndjson")).unwrap();
-        assert!(stored.contains("scorepeek-recognition-observation-v11"));
+        assert!(stored.contains("scorepeek-recognition-observation-v13"));
         assert!(stored.contains("\"processing_timing\""));
+        assert!(stored.contains("\"field_status\":\"completed\""));
         assert!(stored.contains("\"frame_total_us\":0"));
         assert!(stored.contains("\"open_text\":\"只\""));
         assert!(stored.contains("\"constrained_text\":\"0\""));

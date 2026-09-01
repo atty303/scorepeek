@@ -25,7 +25,8 @@ const DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v4";
 const LEGACY_DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v3";
 const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v1";
 const DRAFT_SCHEMA: &str = "scorepeek-private-session-review-draft-v1";
-const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v3";
+const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v4";
+const PREVIOUS_LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v3";
 const LEGACY_LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v2";
 const SUITE_SCHEMA: &str = "scorepeek-private-regression-suite-v1";
 const ACTIVE_SCHEMA: &str = "scorepeek-private-regression-suite-active-v1";
@@ -375,6 +376,38 @@ struct RegressionEpisode {
     expected_clear_type: String,
     expected_result: ExpectedResult,
     stable_sequences: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attempt: Option<AttemptTruth>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AttemptTruth {
+    attempt_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_attempt_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    select_span: Option<SequenceSpan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    play_span: Option<SequenceSpan>,
+    result_span: SequenceSpan,
+    outcome: AttemptOutcome,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SequenceSpan {
+    first_sequence: u64,
+    last_sequence: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AttemptOutcome {
+    Accepted,
+    Abandoned,
+    Unlinked,
+    NoResult,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1755,7 +1788,7 @@ pub fn author_numeric_dataset(
                 .join("labels")
                 .join(format!("{}.json", entry.label_sha256)),
         )?;
-        if label.schema != LABEL_SCHEMA {
+        if !matches!(label.schema.as_str(), LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA) {
             return invalid("numeric dataset requires v3 labels for every active session");
         }
         let screen_sequences = numeric_screen_sequences(store, &session)?;
@@ -2922,7 +2955,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), CorpusError> {
 
 fn validate_label(draft: &ReviewDraft, label: &RegressionLabel) -> Result<(), CorpusError> {
     if draft.schema != DRAFT_SCHEMA
-        || label.schema != LABEL_SCHEMA
+        || !matches!(label.schema.as_str(), LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA)
         || label.session_sha256 != draft.session_sha256
     {
         return invalid("review label does not bind the draft session");
@@ -2958,6 +2991,17 @@ fn validate_label(draft: &ReviewDraft, label: &RegressionLabel) -> Result<(), Co
                     .first()
                     .is_some_and(|first| *first <= previous)
             })
+            || episode.attempt.as_ref().is_some_and(|attempt| {
+                attempt.attempt_key.is_empty()
+                    || attempt.parent_attempt_key.as_deref() == Some("")
+                    || !valid_span(attempt.result_span, &available)
+                    || attempt
+                        .select_span
+                        .is_some_and(|span| !valid_span(span, &available))
+                    || attempt
+                        .play_span
+                        .is_some_and(|span| !valid_span(span, &available))
+            })
         {
             return invalid("review episode is invalid");
         }
@@ -2971,6 +3015,12 @@ fn validate_label(draft: &ReviewDraft, label: &RegressionLabel) -> Result<(), Co
         return invalid("review negative frame is invalid");
     }
     Ok(())
+}
+
+fn valid_span(span: SequenceSpan, available: &BTreeSet<u64>) -> bool {
+    span.first_sequence <= span.last_sequence
+        && available.contains(&span.first_sequence)
+        && available.contains(&span.last_sequence)
 }
 
 fn valid_expected_result(expected: &ExpectedResult) -> bool {
@@ -3363,7 +3413,7 @@ fn read_regression_label(path: &Path) -> Result<(RegressionLabel, Vec<u8>), Corp
     let bytes = fs::read(path)?;
     let value = serde_json::from_slice::<Value>(&bytes)?;
     match value.get("schema").and_then(Value::as_str) {
-        Some(LABEL_SCHEMA) => Ok((serde_json::from_value(value)?, bytes)),
+        Some(LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA) => Ok((serde_json::from_value(value)?, bytes)),
         Some(LEGACY_LABEL_SCHEMA) => {
             let legacy = serde_json::from_value::<LegacyRegressionLabel>(value)?;
             if legacy
@@ -3399,6 +3449,7 @@ fn read_regression_label(path: &Path) -> Result<(RegressionLabel, Vec<u8>), Corp
                             previous_best: None,
                         },
                         stable_sequences: episode.stable_sequences,
+                        attempt: None,
                     })
                     .collect(),
                 negative_frames: legacy.negative_frames,
@@ -3797,6 +3848,7 @@ mod tests {
                 expected_clear_type: "CLEAR".to_owned(),
                 expected_result: invalid_result,
                 stable_sequences: vec![1],
+                attempt: None,
             }],
             negative_frames: Vec::new(),
         };

@@ -344,6 +344,7 @@ pub fn reevaluate(
                             None,
                             None,
                             GamescopeLiveSessionEvent::Observation {
+                                screen_episode_id: 0,
                                 sequence: frame_reference.sequence,
                                 monotonic_start_ms: frame_reference.monotonic_start_ms,
                                 monotonic_end_ms: frame_reference.monotonic_end_ms,

@@ -19,7 +19,8 @@ const SUITE_SCHEMA: &str = "scorepeek-private-regression-suite-v1";
 const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v1";
 const LEGACY_LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v1";
 const PREVIOUS_LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v2";
-const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v3";
+const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v4";
+const CURRENT_LABEL_SCHEMA_V3: &str = "scorepeek-private-session-regression-label-v3";
 const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v5";
 const CURRENT_OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v6";
 const LATEST_OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v7";
@@ -27,6 +28,8 @@ const CURRENT_OBSERVATION_SCHEMA_V8: &str = "scorepeek-recognition-observation-v
 const CURRENT_OBSERVATION_SCHEMA_V9: &str = "scorepeek-recognition-observation-v9";
 const CURRENT_OBSERVATION_SCHEMA_V10: &str = "scorepeek-recognition-observation-v10";
 const CURRENT_OBSERVATION_SCHEMA_V11: &str = "scorepeek-recognition-observation-v11";
+const CURRENT_OBSERVATION_SCHEMA_V12: &str = "scorepeek-recognition-observation-v12";
+const CURRENT_OBSERVATION_SCHEMA_V13: &str = "scorepeek-recognition-observation-v13";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-temporal-evaluation-v1";
 const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -332,7 +335,7 @@ pub fn evaluate_temporal_corpus(
 fn supported_label_schema(schema: &str) -> bool {
     matches!(
         schema,
-        LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA | LEGACY_LABEL_SCHEMA
+        LABEL_SCHEMA | CURRENT_LABEL_SCHEMA_V3 | PREVIOUS_LABEL_SCHEMA | LEGACY_LABEL_SCHEMA
     )
 }
 
@@ -717,6 +720,8 @@ fn parse_record(value: &Value) -> Result<TemporalRecord, CorpusError> {
         && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V9
         && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V10
         && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V11
+        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V12
+        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V13
     {
         return invalid("temporal evaluation observation schema differs");
     }
