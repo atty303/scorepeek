@@ -147,15 +147,15 @@ outside the checkpoint; implementation history belongs in Git.
   and one negative frame when run against an isolated temporary activation of the rebound numeric
   manifest. The temporary store was removed afterward; the operator's normal private store and
   active corpus pointer were not changed.
-- The previous cargo-dist binary was installed hash-first on `infinitas.lan` at
-  `/home/atty/.local/bin/scorepeek`; local and installed executable SHA-256 are both
-  `148cfbd5687028e3d7bb4fe1bca807f3dcf3d217c8230fae182f5e5650ad07d1`. `doctor` reports the
+- The shared-memory/deferred-verification recorder revision was built through the cargo-dist path and
+  installed hash-first on `infinitas.lan` at `/home/atty/.local/bin/scorepeek`; local, transferred,
+  and installed executable SHA-256 are all
+  `9be36525987e9565e30a41fe20f02763037778f25602d12115d2c267bfa09057`. `doctor` reports the
   fixed-slot numeric model active with manifest
-  `cf099b27b533a79534db62a912d7c4b4e949ac29b786f57bb5ed6f21cf7766d6`. No scorepeek process was
-  running at readback time, so no stale process required restart and no `/proc/<pid>/exe` digest was
-  available to compare.
-- The shared-memory/deferred-verification recorder revision in this checkpoint has not been built or
-  installed on the target. Its target behavior and recording-ready lifecycle remain unverified.
+  `5e5b545d57a6197f4aaa6a863595f237cb19095903baa135960e4c257cda2137`. No scorepeek process was
+  running before or after replacement, so no stale process required restart and no
+  `/proc/<pid>/exe` digest was available to compare. Target recording behavior and the
+  recording-ready lifecycle remain unverified.
 - Public `/v1.sock` authority, target support, prospective target behavior, push, release, and model
   publication remain unverified boundaries.
 - The canonical layout digest changed when the play-option panel was added. A later target install
@@ -164,8 +164,8 @@ outside the checkpoint; implementation history belongs in Git.
 
 ## Next executable task
 
-Explicitly install this recorder revision on the target. Record a fresh joined-session v5 run and
-confirm no frame-admission loss, visible memory health, facts-only capture diagnostics, and
+Record a fresh joined-session v5 run on the installed target revision and confirm no frame-admission
+loss, visible memory health, facts-only capture diagnostics, and
 `recording_ready` after session end. Import and operator-review label v5 truth, then compare the
 same suite with one text worker and the default pool. Require identical domain events plus reduced
 OCR and whole-suite wall time before claiming speedup. After that, publish a numeric manifest rebound
