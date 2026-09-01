@@ -6,78 +6,76 @@ outside the checkpoint; implementation history belongs in Git.
 ## Current milestone
 
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
-- M4 canonical recognition, attempt resolution, and versioned event API: **in progress**.
-- The runtime uses the fixed-cell numeric HOG/MLP model registered by private manifest v2. Text
-  fields continue to use the registered PP-OCRv6-small bundle. Numeric model bytes, real crops,
-  complete labels, and generated datasets remain outside the repository.
-- `scorepeek-result-detected-v2` remains the accepted domain contract. Public `/v1.sock` authority,
-  target support, push, and release remain separate unverified boundaries. The current cargo-dist
-  binary is installed on the operator target, but prospective runtime behavior is not yet verified.
+- M4 canonical recognition, evidence-first attempt resolution, and versioned event API: **in
+  progress**.
+- `scorepeek-result-detected-v2` remains the accepted public domain contract. Debug output uses
+  run-event v3, observation socket/snapshot v3, and recognition observation v14.
+- Text authority remains the registered PP-OCRv6-small bundle. Numeric authority remains the
+  private fixed-cell HOG/MLP model. No model bytes, real crops, complete labels, or generated
+  datasets are committed.
 
 ## Implemented authority
 
-- Every due 100 ms frame classifies screen state before field admission. Field-worker busy skips
-  crop submission only; screen changes and attempt paths continue at screen cadence.
-- Screen changes own monotonic episode IDs. MUSIC SELECT and RESULT field observations are adapted
-  to bounded integer support over joint `(song, play type, difficulty)` catalog hypotheses. Raw
-  candidate support accumulates as `u64`; summary normalization scales every candidate in an
-  over-cap family by the same factor, preserving its margin. Empty observations do not erase prior
-  evidence.
-- MUSIC SELECT has current and challenger accumulators. RESULT has one accumulator per screen
-  episode. MUSIC SELECT difficulty comes from five fixed canonical `PLAYER 01` marker slots; only
-  central title, artist, and active-list title use PP-OCR. Difficulty narrows an already
-  text-supported song and cannot generate identity. Level is positive advisory evidence only and
-  never vetoes a candidate.
-- The attempt reducer records selection-screen presence even without accepted identity. Sufficient
-  result evidence may complete an observed select/play/result path; missing select/retry linkage or
-  missing play remains non-authoritative. Confirmed attempt transition precedes the attempt's one
-  domain result event. The first boundary out of RESULT closes result-local and attempt-joint debug
-  evidence. A MUSIC SELECT boundary clears the completed attempt even before identity is known and
-  prevents retry inheritance; only a direct RESULT-to-PLAY path inherits. Emitted attempt IDs remain
-  deduplicated across transient screen-episode breaks.
-- Current score and PGREAT/GREAT obey the score invariant. PGREAT/GREAT/GOOD/BAD are individually
-  bounded by chart notes. Judgment totals, POOR, miss, FAST/SLOW, and combo break are not bounded by
-  notes. Optional values remain typed and do not suppress an otherwise complete performance.
-- Recognition artifact v13 retains raw fields, typed marker evidence, fixed-cell numeric evidence,
-  joint catalog evidence, raw per-frame/stage microseconds, and completed/late field status.
-  `resolver_state_changed` records only meaningful current/challenger/result/attempt transitions
-  with raw and normalized family contributions. Bounded frame timing records measured screen
-  resolver, attempt resolver, and synchronous output work exactly once for completed, busy-skip,
-  not-applicable, failed, or late-episode paths. Readers continue to accept v5 through v12.
-- Private regression label v4 can bind attempt and parent keys, select/play/result spans, and typed
-  outcomes. Immutable v2/v3 labels remain readable; historical result-only sessions are not given
-  inferred linkage.
-- TTY output has exactly three vertical panes: Watcher (4 rows), Latest domain (9 rows), and Resolver
-  (remaining rows). Latest domain reads only accepted v2 events. Resolver formats one typed snapshot
-  with screen-local and attempt hierarchy. Private 10 Hz ticks update integer-second durations
-  without adding run events, socket records, plain-output lines, or domain events. Rendering below
-  80 by 25 is no-panic only.
+- The 10 Hz classifier emits raw known/unknown observations independently of field-worker busy
+  state. `ScreenEpisodeResolver` owns monotonic semantic episodes. Raw unknown suspends the active
+  known screen; the same screen resumes it; only another known screen, session boundary, or reversed
+  chronology closes it.
+- Field jobs are bound to the semantic episode that admitted them. Episode close stops admission,
+  drains already-submitted work, applies it to the closing episode, finalizes RESULT, and only then
+  starts the next known-screen attempt transition. Late generation/chronology evidence remains
+  diagnostic and cannot enter resolution.
+- MUSIC SELECT uses incumbent/successor selection epochs rather than accepted-song arming. An
+  unfinished latest successor is handed off on close instead of an older incumbent. Attempt state
+  owns screen path and select/result evidence snapshots, not separate selected/result songs.
+- MUSIC SELECT and RESULT evidence accumulate on the full catalog `(song, play type, difficulty)`
+  hierarchy, including SP and DP. Empty/whitespace observations add no support. Correlated features
+  use one family delta per frame; cross-frame raw `u64` sums are normalized proportionally by family
+  above the 300 cap. Difficulty, notes, and level provide positive chart support only; level never
+  vetoes.
+- All active-list titles use the registered foreground extractor: grayscale greater than 80,
+  complete foreground bounds, four horizontal pixels of margin, and full ROI height. Foreground
+  PP-OCR is lexical authority; wide OCR remains raw diagnostic evidence. Unicode scalar count and
+  foreground width add an independent structural family for non-search catalog variants. Raw `X`
+  remains `X`; no alias or song-specific correction exists.
+- RESULT is provisional while displayed. Only semantic RESULT close after field drain can confirm
+  an attempt and emit. Confirmation is recorded before the attempt's sole v2 domain event.
+  Unresolved/conflicting identity, missing linkage/play, abandoned attempts, or incomplete required
+  numeric tuples complete with typed rejection and emit no result. Direct RESULT-to-PLAY retry
+  inherits the parent selection context once without re-adding frame support.
+- The TUI retains one three-pane layout. Watcher shows raw and semantic screen plus suspension;
+  Latest domain holds only the last accepted v2 event; Resolver shows incumbent/successor/result
+  evidence, foreground title geometry, attempt path, and drain/finalize gate. TUI formatting owns no
+  resolver logic.
+- Run-event v3 distinguishes raw screen observations, semantic episode transitions, selection/result
+  and provisional-joint transitions, attempt finalization, and suppression. Recognition observation
+  v14 retains title views/geometry, episode binding, fixed-cell numeric evidence, joint support,
+  frame timing, late/drain status, and suppression evidence. Readers accept run-event v2/v3 and
+  recognition v5 through v14.
 
 ## Verification boundary
 
-- `mise run test` passes, including Rust runtime/corpus tests and the offline OCR tests.
-- Resolver regressions verify that RESULT-to-MUSIC SELECT records typed result and attempt-joint
-  resets, removes the completed attempt from the Resolver snapshot, retains Latest domain, and does
-  not change direct retry inheritance through an UNKNOWN interstitial.
-- The saved target session `run-1788227723-404993416-858800-session-1` was used only as a read-only
-  failure oracle. The fixed marker predicate resolves its final selection frames as attempt 1
-  NORMAL and attempts 2--6 HYPER, matching operator truth. It was not imported or labeled.
-- Active private generation `ecbc46bdfd428fbd337ec7de8af3c5d3c811b525a8f47aa7f6034f3fe1b887e1`
-  replays 8 sessions, 34 episodes, 2,888 canonical frames, and one retained negative frame.
-- The existing active private suite was not changed. The operator plans to replace it, so the new
-  resolver policy still requires evaluation against a newly reviewed corpus with zero wrong joint
-  acceptance and zero wrong domain events before replacing target authority.
-- Target cadence, stage p50/p95/max, field busy skips, accepted attempts, one event per attempt, and
-  event drop count have not yet been re-verified with this source checkpoint.
-- Cargo-dist binary
-  `a77d63d65f519f30acff3d171dcddcdf58b869b463083f4ed1186539c7252f43` is installed at
-  `/home/atty/.local/bin/scorepeek` on `infinitas.lan`; remote hash, version 0.1.0, doctor, and active
-  numeric model identity were read back. PID 944238 was still executing the replaced binary with a
-  different hash, so a fresh target run requires an operator restart.
+- Targeted Rust library and binary suites pass after removal of production result/music-select
+  temporal reducers. Regression tests require no domain event before RESULT finalization, require
+  confirmed attempt before the one event, preserve family ratios, allow accepted state to return to
+  conflict before close, and keep direct retry deduplicated.
+- Saved target diagnostic `run-1788237882-267982854-944238-session-1` remains outside the corpus and
+  was verified read-only as 82 retained canonical frames and 2,190 observations. Current per-frame
+  reevaluation observes the `〆` selection as foreground raw `X`, one-character geometry, artist
+  `lapix`, ANOTHER, and both SP/DP catalog candidates; RESULT observations retain artist `lapix`,
+  SP ANOTHER notes 1877, FAILED, POOR 5, and combo break 5. A resolver regression reproduces the
+  catalog `X` and `Flying Castle` collisions and reaches one event only after RESULT finalization.
+- The saved diagnostic is not a complete current semantic replay: retained-frame reevaluation does
+  not reconstruct the original 10 Hz attempt timeline. Prospective target execution is therefore
+  still required for end-to-end authority.
+- The existing private corpus and active suite were not changed. The operator plans to rebuild
+  them. Title-view/support calibration and wrong-event authority still require a reviewed,
+  session-disjoint replacement corpus with zero wrong joint acceptance and zero wrong events.
+- Public `/v1.sock` authority, target support, push, release, and model publication remain
+  unverified boundaries. Target install/readback for this commit is recorded only after it occurs.
 
 ## Next executable task
 
-Build the replacement reviewed corpus, implement the v4 attempt-policy evaluator and its `mise`
-entry point, then run it and inspect wrong or unresolved joint outcomes before changing policy
-constants. After restarting the installed binary, prospective session validation remains the next
-target boundary.
+Run a prospective target session with the installed binary. Verify semantic RESULT close latency,
+10 Hz raw cadence, admitted-field drain, foreground-title wall time, busy skips, confirmed attempt
+ordering, one event per accepted attempt, and event drop zero. Then rebuild and review private v4
+corpus truth before selecting title/support policy authority.

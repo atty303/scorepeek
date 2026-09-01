@@ -14,7 +14,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::play_attempt::{
-    PlayAttemptReducer, PlayAttemptScreen, PlayAttemptState, SelectionSource,
+    PlayAttemptReason, PlayAttemptReducer, PlayAttemptScreen, PlayAttemptState,
 };
 use crate::recognition_live::screen_field_observer::{
     EvidenceFamily, JointEvidenceCandidate, JointEvidenceObservation,
@@ -32,9 +32,8 @@ use scorepeek::recognition::{
     ResultPerformanceResolution, ResultTiming, SupplementalResultValue, resolve_result_performance,
 };
 use scorepeek::temporal_recognition::{
-    MusicSelectTemporalPolicy, MusicSelectTemporalReducer, MusicSelectTemporalState,
-    MusicSelectTemporalTransitionReason, ResultTemporalReducer, ResultTemporalState,
-    TemporalFieldTransition, TemporalPolicy, TemporalTransitionReason,
+    MusicSelectTemporalState, MusicSelectTemporalTransitionReason, ResultTemporalState,
+    TemporalFieldTransition,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -46,8 +45,8 @@ fn duration_us(duration: Duration) -> u64 {
 const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const RESULT_HISTORY_CAPACITY: usize = 32;
-const SOCKET_NAME: &str = "observations-v2.sock";
-const RESULT_TEMPORAL_REQUIRED_OBSERVATIONS: u8 = 2;
+const SOCKET_NAME: &str = "observations-v3.sock";
+const NUMERIC_REQUIRED_OBSERVATIONS: u8 = 2;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RunEvent {
@@ -73,6 +72,31 @@ pub enum RunEventKind {
         capture_generation: u64,
         capture_profile_sha256: String,
         normalizer_artifact_sha256: String,
+    },
+    RawScreenObserved {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        capture_generation: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        semantic_episode_id: Option<u64>,
+        sequence: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+        screen: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        unknown_reason: Option<String>,
+    },
+    SemanticScreenEpisodeChanged {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        capture_generation: Option<u64>,
+        screen_episode_id: u64,
+        sequence: u64,
+        monotonic_end_ms: u64,
+        screen: String,
+        phase: SemanticEpisodePhase,
     },
     ScreenChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,6 +149,8 @@ pub enum RunEventKind {
         session_id: String,
         capture_generation: u64,
         source_sequence: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        song: Option<SongPresentation>,
         result: ResultDomainEvent,
     },
     TemporalResultChanged {
@@ -170,7 +196,7 @@ pub enum RunEventKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         capture_generation: Option<u64>,
         source_sequence: Option<u64>,
-        state: PlayAttemptState<SongPresentation>,
+        state: PlayAttemptState,
     },
     ResolverStateChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -201,6 +227,16 @@ pub enum RunEventKind {
         invocation_id: String,
         reason: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticEpisodePhase {
+    Started,
+    Suspended,
+    Resumed,
+    Closing,
+    Finalized,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -272,6 +308,10 @@ struct PendingNumericResult {
     observations: u8,
 }
 
+fn joint_matches_numeric(candidate: &JointEvidenceCandidate, numeric: &NumericResultView) -> bool {
+    candidate.song_id == numeric.song_id && candidate.chart == numeric.chart
+}
+
 #[derive(Clone, Debug)]
 struct RawNumericEvidence {
     sequence: u64,
@@ -339,8 +379,8 @@ pub struct EvidenceContribution {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolverScope {
-    MusicSelectCurrent,
-    MusicSelectChallenger,
+    SelectionIncumbent,
+    SelectionSuccessor,
     Result,
     AttemptJoint,
 }
@@ -546,13 +586,6 @@ impl HypothesisAccumulator {
                 .map_or_else(BTreeMap::new, |value| value.family_support.clone()),
         }
     }
-
-    fn accepted(&self) -> Option<JointEvidenceCandidate> {
-        let summary = self.summary();
-        (summary.state == ResolverResolutionState::AcceptedJoint)
-            .then_some(summary.selected)
-            .flatten()
-    }
 }
 
 fn normalize_family_support(raw: u64, maximum: u64) -> u16 {
@@ -561,6 +594,97 @@ fn normalize_family_support(raw: u64, maximum: u64) -> u16 {
     }
     let scaled = u128::from(raw) * u128::from(EVIDENCE_FAMILY_CAP) / u128::from(maximum);
     u16::try_from(scaled).unwrap_or(EVIDENCE_FAMILY_CAP)
+}
+
+fn credible_song_set(observation: &JointEvidenceObservation) -> BTreeSet<ScorepeekSongId> {
+    let mut support_by_song = BTreeMap::<ScorepeekSongId, u16>::new();
+    for candidate in &observation.candidates {
+        let support = candidate
+            .family_support
+            .iter()
+            .filter(|(family, _)| {
+                matches!(
+                    family,
+                    EvidenceFamily::SelectTitleLexical
+                        | EvidenceFamily::SelectTitleStructural
+                        | EvidenceFamily::SelectArtist
+                )
+            })
+            .fold(0_u16, |total, (_, value)| total.saturating_add(*value));
+        let current = support_by_song.entry(candidate.song_id).or_default();
+        *current = (*current).max(support);
+    }
+    let maximum = support_by_song.values().copied().max().unwrap_or(0);
+    if maximum == 0 {
+        return BTreeSet::new();
+    }
+    let credible = support_by_song
+        .iter()
+        .filter_map(|(song, support)| (*support == maximum).then_some(*song))
+        .collect::<BTreeSet<_>>();
+    if observation.catalog_song_count > 0 && credible.len() == observation.catalog_song_count {
+        BTreeSet::new()
+    } else {
+        credible
+    }
+}
+
+/// Pure MUSIC SELECT epoch state. It owns evidence handoff, never attempt or output authority.
+#[derive(Clone, Debug, Default)]
+struct SelectionEpochTracker {
+    incumbent: HypothesisAccumulator,
+    successor: HypothesisAccumulator,
+    incumbent_songs: BTreeSet<ScorepeekSongId>,
+    successor_songs: BTreeSet<ScorepeekSongId>,
+}
+
+impl SelectionEpochTracker {
+    fn observe(&mut self, monotonic_ms: u64, evidence: &JointEvidenceObservation) {
+        let credible = credible_song_set(evidence);
+        if credible.is_empty() {
+            return;
+        }
+        if self.incumbent.observation_count == 0 {
+            self.incumbent.observe(monotonic_ms, evidence);
+            self.incumbent_songs.extend(credible);
+            return;
+        }
+        if !self.incumbent_songs.is_disjoint(&credible) {
+            self.incumbent.observe(monotonic_ms, evidence);
+            self.incumbent_songs.extend(credible);
+            self.successor = HypothesisAccumulator::default();
+            self.successor_songs.clear();
+            return;
+        }
+        if !self.successor_songs.is_empty() && self.successor_songs.is_disjoint(&credible) {
+            self.successor = HypothesisAccumulator::default();
+            self.successor_songs.clear();
+        }
+        self.successor.observe(monotonic_ms, evidence);
+        self.successor_songs.extend(credible);
+        if self.successor.summary().support >= SELECTION_CHANGE_MARGIN {
+            self.incumbent = std::mem::take(&mut self.successor);
+            self.incumbent_songs = std::mem::take(&mut self.successor_songs);
+        }
+    }
+
+    fn handoff(&self) -> HypothesisAccumulator {
+        if self.successor.observation_count > 0 {
+            self.successor.clone()
+        } else {
+            self.incumbent.clone()
+        }
+    }
+}
+
+/// Pure ordered resolver state. Output sinks consume its typed state but do not own identity.
+#[derive(Clone, Debug, Default)]
+struct ResolverEngine {
+    play_attempt: PlayAttemptReducer,
+    selection_epochs: SelectionEpochTracker,
+    retained_select: HypothesisAccumulator,
+    result_hypotheses: HypothesisAccumulator,
+    provisional_joint: Option<JointEvidenceCandidate>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -612,6 +736,7 @@ pub struct RunViewState {
     active_session_id: Option<String>,
     capture_generation: Option<u64>,
     current_screen: Option<String>,
+    raw_screen: Option<String>,
     #[serde(skip)]
     latest_observation: Option<Value>,
     #[serde(skip)]
@@ -637,12 +762,15 @@ pub struct RunViewState {
 #[derive(Clone, Debug, Default, Serialize)]
 struct ResolverDebugSnapshot {
     now_ms: u64,
+    raw_screen: Option<String>,
     screen: Option<String>,
+    suspended: bool,
+    finalizing: bool,
     screen_episode_id: u64,
     screen_episode_started_ms: Option<u64>,
     source_sequence: Option<u64>,
     local: Option<ResolverNodeSnapshot>,
-    challenger: Option<ResolverNodeSnapshot>,
+    successor: Option<ResolverNodeSnapshot>,
     attempt: Option<AttemptNodeSnapshot>,
     gate: String,
     raw_fields: Vec<(String, String)>,
@@ -691,6 +819,7 @@ impl RunViewState {
             active_session_id: None,
             capture_generation: None,
             current_screen: None,
+            raw_screen: None,
             latest_observation: None,
             latest_stabilized_result: None,
             latest_temporal_music_select: None,
@@ -712,6 +841,7 @@ impl RunViewState {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn reduce(&mut self, event: &RunEvent, serialized: &Value) {
         match &event.kind {
             RunEventKind::WatcherStarted { .. } => "starting".clone_into(&mut self.watcher_state),
@@ -725,6 +855,7 @@ impl RunViewState {
                 self.active_session_id.clone_from(session_id);
                 self.capture_generation = Some(*capture_generation);
                 self.current_screen = None;
+                self.raw_screen = None;
                 self.latest_observation = None;
                 self.latest_stabilized_result = None;
                 self.latest_temporal_music_select = None;
@@ -740,6 +871,16 @@ impl RunViewState {
                 }
                 self.current_screen = Some(screen.clone());
             }
+            RunEventKind::RawScreenObserved { screen, .. } => {
+                self.raw_screen = Some(screen.clone());
+            }
+            RunEventKind::SemanticScreenEpisodeChanged { screen, phase, .. } => match phase {
+                SemanticEpisodePhase::Started | SemanticEpisodePhase::Resumed => {
+                    self.current_screen = Some(screen.clone());
+                }
+                SemanticEpisodePhase::Finalized => self.current_screen = None,
+                SemanticEpisodePhase::Suspended | SemanticEpisodePhase::Closing => {}
+            },
             RunEventKind::ScreenTick { .. } | RunEventKind::ResolverStateChanged { .. } => {}
             RunEventKind::FieldObservation { .. } => {
                 self.latest_observation = Some(serialized.clone());
@@ -761,12 +902,12 @@ impl RunViewState {
                 session_id,
                 capture_generation,
                 source_sequence,
+                song,
                 result,
             } => {
                 self.latest_result_detected = Some(serialized.clone());
                 self.result_count = self.result_count.saturating_add(1);
-                let song = self
-                    .stable_result_song
+                let song = song
                     .as_ref()
                     .filter(|song| song.scorepeek_song_id == result.scorepeek_song_id)
                     .cloned();
@@ -789,6 +930,7 @@ impl RunViewState {
                 self.active_session_id = None;
                 self.capture_generation = None;
                 self.current_screen = None;
+                self.raw_screen = None;
                 self.latest_report = Some(report.clone());
                 self.message = format!("session finished: {outcome}");
             }
@@ -797,6 +939,7 @@ impl RunViewState {
                 self.active_session_id = None;
                 self.capture_generation = None;
                 self.current_screen = None;
+                self.raw_screen = None;
                 self.latest_observation = None;
                 self.latest_stabilized_result = None;
                 self.latest_temporal_music_select = None;
@@ -1051,7 +1194,7 @@ fn accept_clients(
 fn snapshot_bytes(state: &Arc<Mutex<RunViewState>>, health: &ChannelHealth) -> Option<Vec<u8>> {
     let state = state.lock().ok()?.clone();
     let mut bytes = serde_json::to_vec(&json!({
-        "schema": "scorepeek-run-observation-snapshot-v1",
+            "schema": "scorepeek-run-observation-snapshot-v3",
         "state": state,
         "channel": health.value(),
     }))
@@ -1132,17 +1275,13 @@ impl Drop for TerminalGuard {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct RoutineOutput {
     state: Arc<Mutex<RunViewState>>,
     channel: ObservationChannel,
     display: Display,
     next_sequence: u64,
-    temporal_result: ResultTemporalReducer<scorepeek::catalog::ScorepeekSongId>,
-    stable_result_song: Option<SongPresentation>,
-    temporal_music_select: MusicSelectTemporalReducer<scorepeek::catalog::ScorepeekSongId>,
-    retained_music_select_song: Option<SongPresentation>,
-    candidate_music_select_song: Option<SongPresentation>,
-    play_attempt: PlayAttemptReducer<SongPresentation>,
+    engine: ResolverEngine,
     pending_numeric_result: Option<PendingNumericResult>,
     accepted_numeric_result: Option<NumericResultView>,
     numeric_evidence: VecDeque<RawNumericEvidence>,
@@ -1153,11 +1292,9 @@ pub struct RoutineOutput {
     screen_episode_id: u64,
     screen_episode_started_ms: Option<u64>,
     screen_episode_last_ms: Option<u64>,
-    music_select_current: HypothesisAccumulator,
-    music_select_challenger: HypothesisAccumulator,
-    retained_select: HypothesisAccumulator,
-    result_hypotheses: HypothesisAccumulator,
     result_resolver_active: bool,
+    result_episode_finalizing: bool,
+    semantic_episode_suspended: bool,
     resolver_transitions: BTreeMap<ResolverScope, ResolverTransitionIdentity>,
     attempt_started_ms: Option<u64>,
     attempt_phase_started_ms: Option<u64>,
@@ -1205,7 +1342,7 @@ impl RoutineOutput {
         }
         self.resolver_transitions.insert(scope, identity.clone());
         self.publish_one(&RunEvent {
-            schema: "scorepeek-run-event-v2".to_owned(),
+            schema: "scorepeek-run-event-v3".to_owned(),
             kind: RunEventKind::ResolverStateChanged {
                 session_id: session_id.cloned(),
                 capture_generation,
@@ -1249,18 +1386,7 @@ impl RoutineOutput {
             channel,
             display,
             next_sequence: 1,
-            temporal_result: ResultTemporalReducer::new(
-                TemporalPolicy::for_episode(RESULT_TEMPORAL_REQUIRED_OBSERVATIONS)
-                    .expect("fixed result temporal policy is valid"),
-            ),
-            stable_result_song: None,
-            temporal_music_select: MusicSelectTemporalReducer::new(
-                MusicSelectTemporalPolicy::new(200, 200, 250)
-                    .expect("fixed music-select temporal policy is valid"),
-            ),
-            retained_music_select_song: None,
-            candidate_music_select_song: None,
-            play_attempt: PlayAttemptReducer::default(),
+            engine: ResolverEngine::default(),
             resolver_transitions: BTreeMap::new(),
             pending_numeric_result: None,
             accepted_numeric_result: None,
@@ -1272,11 +1398,9 @@ impl RoutineOutput {
             screen_episode_id: 0,
             screen_episode_started_ms: None,
             screen_episode_last_ms: None,
-            music_select_current: HypothesisAccumulator::default(),
-            music_select_challenger: HypothesisAccumulator::default(),
-            retained_select: HypothesisAccumulator::default(),
-            result_hypotheses: HypothesisAccumulator::default(),
             result_resolver_active: false,
+            result_episode_finalizing: false,
+            semantic_episode_suspended: false,
             attempt_started_ms: None,
             attempt_phase_started_ms: None,
             event_store,
@@ -1307,9 +1431,10 @@ impl RoutineOutput {
         let resolver_us = total_us.saturating_sub(output_us);
         result?;
         let (screen_resolver_us, attempt_resolver_us) = match &event.kind {
-            RunEventKind::ScreenChanged { .. } | RunEventKind::ScreenTick { .. } => {
-                (Some(resolver_us), None)
-            }
+            RunEventKind::RawScreenObserved { .. }
+            | RunEventKind::SemanticScreenEpisodeChanged { .. }
+            | RunEventKind::ScreenChanged { .. }
+            | RunEventKind::ScreenTick { .. } => (Some(resolver_us), None),
             RunEventKind::FieldObservation { .. } => (None, Some(resolver_us)),
             _ => (None, None),
         };
@@ -1323,25 +1448,20 @@ impl RoutineOutput {
     fn publish_internal(&mut self, event: &RunEvent) -> Result<(), String> {
         match &event.kind {
             RunEventKind::SessionStarted { session_id, .. } => {
-                self.temporal_result
-                    .reset(TemporalTransitionReason::ResetBySessionBoundary);
-                self.stable_result_song = None;
-                self.temporal_music_select
-                    .reset(MusicSelectTemporalTransitionReason::ResetBySessionBoundary);
-                self.retained_music_select_song = None;
-                self.candidate_music_select_song = None;
-                self.play_attempt.reset_session();
+                self.engine.play_attempt.reset_session();
                 self.reset_numeric_result();
                 self.emitted_attempt_ids.clear();
                 self.latest_screen_boundary_sequence = None;
                 self.screen_episode_id = 0;
                 self.screen_episode_started_ms = None;
                 self.screen_episode_last_ms = None;
-                self.music_select_current = HypothesisAccumulator::default();
-                self.music_select_challenger = HypothesisAccumulator::default();
-                self.retained_select = HypothesisAccumulator::default();
-                self.result_hypotheses = HypothesisAccumulator::default();
+                self.engine.selection_epochs = SelectionEpochTracker::default();
+                self.engine.retained_select = HypothesisAccumulator::default();
+                self.engine.result_hypotheses = HypothesisAccumulator::default();
+                self.engine.provisional_joint = None;
                 self.result_resolver_active = false;
+                self.result_episode_finalizing = false;
+                self.semantic_episode_suspended = false;
                 self.resolver_transitions.clear();
                 self.attempt_started_ms = None;
                 self.attempt_phase_started_ms = None;
@@ -1355,7 +1475,18 @@ impl RoutineOutput {
             }
             RunEventKind::WatcherStopped { .. } => self.publish_watcher_stopped(event),
             RunEventKind::FieldObservation { .. } => self.publish_field_observation(event),
-            RunEventKind::ScreenChanged { .. } => self.publish_screen_change(event),
+            RunEventKind::RawScreenObserved {
+                sequence,
+                monotonic_end_ms,
+                ..
+            } => {
+                self.publish_one(event)?;
+                self.publish_screen_tick(*sequence, *monotonic_end_ms)
+            }
+            RunEventKind::SemanticScreenEpisodeChanged { .. } => {
+                self.publish_semantic_screen_episode(event)
+            }
+            RunEventKind::ScreenChanged { .. } => self.publish_screen_change(event, true),
             RunEventKind::ScreenTick {
                 sequence,
                 monotonic_end_ms,
@@ -1370,6 +1501,104 @@ impl RoutineOutput {
             | RunEventKind::ResolverStateChanged { .. }
             | RunEventKind::ResultDetected { .. } => self.publish_one(event),
         }
+    }
+
+    fn publish_semantic_screen_episode(&mut self, event: &RunEvent) -> Result<(), String> {
+        let RunEventKind::SemanticScreenEpisodeChanged {
+            session_id,
+            capture_generation,
+            screen_episode_id,
+            sequence,
+            monotonic_end_ms,
+            screen,
+            phase,
+        } = &event.kind
+        else {
+            unreachable!("semantic episode dispatcher preserves event kind");
+        };
+        self.publish_one(event)?;
+        match phase {
+            SemanticEpisodePhase::Started => {
+                self.semantic_episode_suspended = false;
+                let legacy = RunEvent {
+                    schema: event.schema.clone(),
+                    kind: RunEventKind::ScreenChanged {
+                        session_id: session_id.clone(),
+                        capture_generation: *capture_generation,
+                        screen_episode_id: *screen_episode_id,
+                        sequence: *sequence,
+                        monotonic_start_ms: *monotonic_end_ms,
+                        monotonic_end_ms: *monotonic_end_ms,
+                        screen: screen.clone(),
+                    },
+                };
+                self.publish_screen_change(&legacy, false)
+            }
+            SemanticEpisodePhase::Suspended => {
+                self.semantic_episode_suspended = true;
+                self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), None)?;
+                self.refresh()
+            }
+            SemanticEpisodePhase::Resumed => {
+                self.semantic_episode_suspended = false;
+                self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), None)?;
+                self.refresh()
+            }
+            SemanticEpisodePhase::Closing => {
+                if screen == "music_select" {
+                    self.engine.retained_select = self.engine.selection_epochs.handoff();
+                }
+                self.result_episode_finalizing = screen == "result";
+                self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), None)?;
+                self.refresh()
+            }
+            SemanticEpisodePhase::Finalized => {
+                if screen == "result" {
+                    self.finalize_result_attempt(
+                        session_id.clone(),
+                        *capture_generation,
+                        *sequence,
+                    )?;
+                }
+                self.result_episode_finalizing = false;
+                self.semantic_episode_suspended = false;
+                self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), None)?;
+                self.refresh()
+            }
+        }
+    }
+
+    fn finalize_result_attempt(
+        &mut self,
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        sequence: u64,
+    ) -> Result<(), String> {
+        self.result_episode_finalizing = true;
+        let rejection = match (
+            self.engine.provisional_joint.as_ref(),
+            self.accepted_numeric_result.as_ref(),
+        ) {
+            (None, _) => Some(PlayAttemptReason::JointIdentityUnresolved),
+            (Some(_), None) => Some(PlayAttemptReason::ResultEvidenceUnresolved),
+            (Some(joint), Some(numeric)) if !joint_matches_numeric(joint, numeric) => {
+                Some(PlayAttemptReason::LinkageConflict)
+            }
+            (Some(_), Some(_)) => None,
+        };
+        if let Some(state) = self
+            .engine
+            .play_attempt
+            .resolve_result_with_reason(rejection)
+        {
+            self.publish_play_attempt_update(
+                session_id.clone(),
+                capture_generation,
+                Some(sequence),
+                state,
+            )?;
+        }
+        self.try_emit_result(session_id, capture_generation, sequence)
     }
 
     fn publish_screen_tick(&mut self, sequence: u64, monotonic_end_ms: u64) -> Result<(), String> {
@@ -1395,30 +1624,10 @@ impl RoutineOutput {
                 .map_err(|_| "run view state lock was poisoned".to_owned())?;
             (state.active_session_id.clone(), state.capture_generation)
         };
-        if let Some(state) = self.play_attempt.finish_session() {
+        if let Some(state) = self.engine.play_attempt.finish_session() {
             self.publish_play_attempt_update(session_id.clone(), capture_generation, None, state)?;
         }
         self.publish_one(event)?;
-        if let Some(update) = self
-            .temporal_result
-            .reset(TemporalTransitionReason::ResetBySessionBoundary)
-        {
-            self.stable_result_song = None;
-            self.publish_temporal_update(session_id.clone(), capture_generation, None, update)?;
-        }
-        if let Some(update) = self
-            .temporal_music_select
-            .reset(MusicSelectTemporalTransitionReason::ResetBySessionBoundary)
-        {
-            self.retained_music_select_song = None;
-            self.candidate_music_select_song = None;
-            self.publish_music_select_temporal_update(
-                session_id,
-                capture_generation,
-                None,
-                update,
-            )?;
-        }
         self.completed_event_artifact =
             self.event_worker.take().map(RunEventArtifactWorker::finish);
         Ok(())
@@ -1488,19 +1697,20 @@ impl RoutineOutput {
         joint_evidence: &JointEvidenceObservation,
         _song_resolution_presentation: &SongResolutionPresentation,
     ) -> Result<(), String> {
-        self.result_hypotheses
+        self.engine
+            .result_hypotheses
             .observe(monotonic_end_ms, joint_evidence);
-        let result_summary = self.result_hypotheses.summary();
+        let result_summary = self.engine.result_hypotheses.summary();
         self.publish_resolver_transition(
             session_id,
             capture_generation,
             sequence,
             ResolverScope::Result,
             &result_summary,
-            self.result_hypotheses.observation_count,
+            self.engine.result_hypotheses.observation_count,
         )?;
-        let mut joint = self.retained_select.clone();
-        joint.add_from(&self.result_hypotheses);
+        let mut joint = self.engine.retained_select.clone();
+        joint.add_from(&self.engine.result_hypotheses);
         let joint_summary = joint.summary();
         self.publish_resolver_transition(
             session_id,
@@ -1508,41 +1718,17 @@ impl RoutineOutput {
             sequence,
             ResolverScope::AttemptJoint,
             &joint_summary,
-            self.retained_select
+            self.engine
+                .retained_select
                 .observation_count
-                .saturating_add(self.result_hypotheses.observation_count),
+                .saturating_add(self.engine.result_hypotheses.observation_count),
         )?;
         let accepted_joint = joint_summary.accepted();
+        self.engine.provisional_joint.clone_from(&accepted_joint);
         let observed_clear_type = fields
             .get("clear_type")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned);
-        if let Some(update) = self.temporal_result.observe_result(
-            sequence,
-            monotonic_end_ms,
-            accepted_joint.as_ref().map(|candidate| candidate.song_id),
-            observed_clear_type.clone(),
-        ) {
-            self.stable_result_song = accepted_joint.as_ref().map(candidate_song_presentation);
-            self.publish_temporal_update(
-                session_id.cloned(),
-                capture_generation,
-                Some(sequence),
-                update,
-            )?;
-        }
-        if let Some(candidate) = accepted_joint.as_ref()
-            && let Some(state) = self
-                .play_attempt
-                .observe_stable_result(candidate_song_presentation(candidate))
-        {
-            self.publish_play_attempt_update(
-                session_id.cloned(),
-                capture_generation,
-                Some(sequence),
-                state,
-            )?;
-        }
         if let (Some(clear_type), Some(parsed)) =
             (observed_clear_type.clone(), parsed_result_fields.cloned())
         {
@@ -1575,7 +1761,7 @@ impl RoutineOutput {
                     Some(&evidence.parsed),
                 ) {
                     self.publish_one(&RunEvent {
-                        schema: "scorepeek-run-event-v2".to_owned(),
+                        schema: "scorepeek-run-event-v3".to_owned(),
                         kind: RunEventKind::NumericResultChanged {
                             session_id: session_id.cloned(),
                             capture_generation,
@@ -1663,7 +1849,7 @@ impl RoutineOutput {
             Some(pending) if same_numeric_tuple(&pending.view, &view) => {
                 pending.observations = pending.observations.saturating_add(1);
                 pending.view.source_sequence = sequence;
-                if pending.observations >= RESULT_TEMPORAL_REQUIRED_OBSERVATIONS {
+                if pending.observations >= NUMERIC_REQUIRED_OBSERVATIONS {
                     self.accepted_numeric_result = Some(pending.view.clone());
                     self.pending_numeric_result = None;
                     Some((
@@ -1704,6 +1890,7 @@ impl RoutineOutput {
         capture_generation: Option<u64>,
     ) -> Option<NumericResultEventSuppressionReason> {
         if self
+            .engine
             .play_attempt
             .accepted_result()
             .is_some_and(|attempt| self.emitted_attempt_ids.contains(&attempt.attempt_id))
@@ -1716,15 +1903,16 @@ impl RoutineOutput {
         let Some(numeric) = self.accepted_numeric_result.as_ref() else {
             return Some(NumericResultEventSuppressionReason::NumericNotAccepted);
         };
-        let Some(stable_clear_type) = self.temporal_result.state().clear_type.stable_value() else {
-            return Some(NumericResultEventSuppressionReason::ClearTypeNotStable);
-        };
-        let Some(accepted_attempt) = self.play_attempt.accepted_result() else {
+        let Some(accepted_attempt) = self.engine.play_attempt.accepted_result() else {
             return Some(NumericResultEventSuppressionReason::PlayAttemptNotAccepted);
         };
-        (stable_clear_type != &numeric.clear_type
-            || accepted_attempt.song.scorepeek_song_id != numeric.song_id)
-            .then_some(NumericResultEventSuppressionReason::LinkageConflict)
+        let _ = accepted_attempt;
+        (!self
+            .engine
+            .provisional_joint
+            .as_ref()
+            .is_some_and(|candidate| joint_matches_numeric(candidate, numeric)))
+        .then_some(NumericResultEventSuppressionReason::LinkageConflict)
     }
 
     fn try_emit_result(
@@ -1733,16 +1921,16 @@ impl RoutineOutput {
         capture_generation: Option<u64>,
         fallback_sequence: u64,
     ) -> Result<(), String> {
+        if !self.result_episode_finalizing {
+            return Ok(());
+        }
         let (Some(session_id), Some(capture_generation)) = (session_id, capture_generation) else {
             return Ok(());
         };
         let Some(numeric) = self.accepted_numeric_result.as_ref() else {
             return Ok(());
         };
-        let Some(stable_clear_type) = self.temporal_result.state().clear_type.stable_value() else {
-            return Ok(());
-        };
-        let Some(accepted_attempt) = self.play_attempt.accepted_result() else {
+        let Some(accepted_attempt) = self.engine.play_attempt.accepted_result() else {
             return Ok(());
         };
         if self
@@ -1751,8 +1939,11 @@ impl RoutineOutput {
         {
             return Ok(());
         }
-        if stable_clear_type != &numeric.clear_type
-            || accepted_attempt.song.scorepeek_song_id != numeric.song_id
+        if !self
+            .engine
+            .provisional_joint
+            .as_ref()
+            .is_some_and(|candidate| joint_matches_numeric(candidate, numeric))
         {
             return Ok(());
         }
@@ -1773,7 +1964,11 @@ impl RoutineOutput {
             parent_attempt_id: accepted_attempt.parent_attempt_id,
             scorepeek_song_id: numeric.song_id,
             play_side: "one_player".to_owned(),
-            play_mode: "single_play".to_owned(),
+            play_mode: match numeric.chart.key.play_type {
+                PlayType::Single => "single_play",
+                PlayType::Double => "double_play",
+            }
+            .to_owned(),
             play_type: numeric.chart.key.play_type,
             difficulty: numeric.chart.key.difficulty,
             level: numeric.chart.level,
@@ -1789,11 +1984,16 @@ impl RoutineOutput {
         let source_sequence = numeric.source_sequence.max(fallback_sequence);
         let emitted_attempt_id = accepted_attempt.attempt_id;
         self.publish_one(&RunEvent {
-            schema: "scorepeek-run-event-v2".to_owned(),
+            schema: "scorepeek-run-event-v3".to_owned(),
             kind: RunEventKind::ResultDetected {
                 session_id,
                 capture_generation,
                 source_sequence,
+                song: self
+                    .engine
+                    .provisional_joint
+                    .as_ref()
+                    .map(candidate_song_presentation),
                 result,
             },
         })?;
@@ -1821,129 +2021,27 @@ impl RoutineOutput {
         joint_evidence: &JointEvidenceObservation,
         _presentation: &SongResolutionPresentation,
     ) -> Result<(), String> {
-        let accepted_before = self.music_select_current.accepted();
-        let observed_top = joint_evidence.candidates.first();
-        let current_top = self.music_select_current.summary().selected;
-        if self.music_select_current.observation_count == 0
-            || observed_top.is_some_and(|observed| {
-                current_top
-                    .as_ref()
-                    .is_none_or(|current| current.song_id == observed.song_id)
-            })
-        {
-            self.music_select_current
-                .observe(monotonic_end_ms, joint_evidence);
-        } else {
-            self.music_select_challenger
-                .observe(monotonic_end_ms, joint_evidence);
-            let challenger_support = self.music_select_challenger.summary().support;
-            if challenger_support >= SELECTION_CHANGE_MARGIN {
-                self.music_select_current = std::mem::take(&mut self.music_select_challenger);
-            }
-        }
-        self.retained_select = self.music_select_current.clone();
-        let current_summary = self.music_select_current.summary();
+        self.engine
+            .selection_epochs
+            .observe(monotonic_end_ms, joint_evidence);
+        let current_summary = self.engine.selection_epochs.incumbent.summary();
         self.publish_resolver_transition(
             session_id,
             capture_generation,
             sequence,
-            ResolverScope::MusicSelectCurrent,
+            ResolverScope::SelectionIncumbent,
             &current_summary,
-            self.music_select_current.observation_count,
+            self.engine.selection_epochs.incumbent.observation_count,
         )?;
-        if self.music_select_challenger.observation_count > 0 {
-            let challenger_summary = self.music_select_challenger.summary();
+        if self.engine.selection_epochs.successor.observation_count > 0 {
+            let challenger_summary = self.engine.selection_epochs.successor.summary();
             self.publish_resolver_transition(
                 session_id,
                 capture_generation,
                 sequence,
-                ResolverScope::MusicSelectChallenger,
+                ResolverScope::SelectionSuccessor,
                 &challenger_summary,
-                self.music_select_challenger.observation_count,
-            )?;
-        }
-        let selected = current_summary
-            .accepted()
-            .map(|candidate| candidate_song_presentation(&candidate));
-        let Some(update) = self.temporal_music_select.observe(
-            sequence,
-            monotonic_end_ms,
-            selected.as_ref().map(|song| song.scorepeek_song_id),
-        ) else {
-            return Ok(());
-        };
-        match &update.state {
-            MusicSelectTemporalState::Empty => {
-                self.retained_music_select_song = None;
-                self.candidate_music_select_song = None;
-            }
-            MusicSelectTemporalState::Pending { candidate, .. } => {
-                self.retained_music_select_song = None;
-                self.candidate_music_select_song = selected
-                    .as_ref()
-                    .filter(|song| song.scorepeek_song_id == *candidate)
-                    .cloned();
-            }
-            MusicSelectTemporalState::Stable { value, .. } => {
-                if let Some(song) = selected
-                    .as_ref()
-                    .filter(|song| song.scorepeek_song_id == *value)
-                {
-                    self.retained_music_select_song = Some(song.clone());
-                }
-                self.candidate_music_select_song = None;
-            }
-            MusicSelectTemporalState::HeldUnknown { .. } => {
-                self.candidate_music_select_song = None;
-            }
-            MusicSelectTemporalState::Changing { candidate, .. } => {
-                self.candidate_music_select_song = selected
-                    .as_ref()
-                    .filter(|song| song.scorepeek_song_id == *candidate)
-                    .cloned();
-            }
-        }
-        let accepted_selection = current_summary
-            .accepted()
-            .map(|candidate| candidate_song_presentation(&candidate));
-        let accepted_changed = accepted_selection
-            .as_ref()
-            .map(|song| song.scorepeek_song_id)
-            != accepted_before.as_ref().map(|candidate| candidate.song_id);
-        let play_attempt_updates = if accepted_changed && accepted_selection.is_some() {
-            self.play_attempt.observe_selection(
-                accepted_selection,
-                Some(SelectionSource::EvidenceAccepted),
-                sequence,
-            )
-        } else if accepted_before.is_none()
-            && let Some(candidate) = current_summary.selected.as_ref()
-        {
-            self.play_attempt
-                .observe_selection_candidate(Some(&candidate_song_presentation(candidate)))
-                .into_iter()
-                .collect()
-        } else {
-            Vec::new()
-        };
-        self.publish_one(&RunEvent {
-            schema: "scorepeek-run-event-v2".to_owned(),
-            kind: RunEventKind::TemporalMusicSelectChanged {
-                session_id: session_id.cloned(),
-                capture_generation,
-                source_sequence: Some(sequence),
-                reasons: update.reasons,
-                state: update.state,
-                retained_song: self.retained_music_select_song.clone(),
-                candidate_song: self.candidate_music_select_song.clone(),
-            },
-        })?;
-        for state in play_attempt_updates {
-            self.publish_play_attempt_update(
-                session_id.cloned(),
-                capture_generation,
-                Some(sequence),
-                state,
+                self.engine.selection_epochs.successor.observation_count,
             )?;
         }
         self.sync_resolver_snapshot(monotonic_end_ms, Some(sequence), None)?;
@@ -1955,7 +2053,11 @@ impl RoutineOutput {
         clippy::too_many_lines,
         reason = "one owner preserves ordered screen, attempt, reset, and diagnostic transitions"
     )]
-    fn publish_screen_change(&mut self, event: &RunEvent) -> Result<(), String> {
+    fn publish_screen_change(
+        &mut self,
+        event: &RunEvent,
+        publish_event: bool,
+    ) -> Result<(), String> {
         let RunEventKind::ScreenChanged {
             session_id,
             capture_generation,
@@ -1975,26 +2077,29 @@ impl RoutineOutput {
         let close_result_resolver = screen != "result" && self.result_resolver_active;
         if close_result_resolver {
             self.result_resolver_active = false;
-            self.result_hypotheses = HypothesisAccumulator::default();
-            self.retained_select = HypothesisAccumulator::default();
+            self.engine.result_hypotheses = HypothesisAccumulator::default();
+            self.engine.provisional_joint = None;
+            if screen != "play" {
+                self.engine.retained_select = HypothesisAccumulator::default();
+            }
             self.resolver_transitions.remove(&ResolverScope::Result);
             self.resolver_transitions
                 .remove(&ResolverScope::AttemptJoint);
         }
         let mut selection_screen_attempt_update = None;
         if screen == "music_select" {
-            self.music_select_current = HypothesisAccumulator::default();
-            self.music_select_challenger = HypothesisAccumulator::default();
-            self.retained_select = HypothesisAccumulator::default();
+            self.engine.selection_epochs = SelectionEpochTracker::default();
+            self.engine.retained_select = HypothesisAccumulator::default();
             self.resolver_transitions
-                .remove(&ResolverScope::MusicSelectCurrent);
+                .remove(&ResolverScope::SelectionIncumbent);
             self.resolver_transitions
-                .remove(&ResolverScope::MusicSelectChallenger);
-            selection_screen_attempt_update = self.play_attempt.observe_selection_screen();
+                .remove(&ResolverScope::SelectionSuccessor);
+            selection_screen_attempt_update = self.engine.play_attempt.observe_selection_screen();
         }
         if screen == "result" {
             self.result_resolver_active = true;
-            self.result_hypotheses = HypothesisAccumulator::default();
+            self.engine.result_hypotheses = HypothesisAccumulator::default();
+            self.engine.provisional_joint = None;
             self.resolver_transitions.remove(&ResolverScope::Result);
             self.resolver_transitions
                 .remove(&ResolverScope::AttemptJoint);
@@ -2008,7 +2113,9 @@ impl RoutineOutput {
         if matches!(screen.as_str(), "decide_transition" | "play" | "result") {
             self.attempt_phase_started_ms = Some(*monotonic_end_ms);
         }
-        self.publish_one(event)?;
+        if publish_event {
+            self.publish_one(event)?;
+        }
         let unresolved = HypothesisAccumulator::default().summary();
         if close_result_resolver {
             self.publish_resolver_transition(
@@ -2033,7 +2140,7 @@ impl RoutineOutput {
                 session_id.as_ref(),
                 *capture_generation,
                 *sequence,
-                ResolverScope::MusicSelectCurrent,
+                ResolverScope::SelectionIncumbent,
                 &unresolved,
                 0,
             )?;
@@ -2041,7 +2148,7 @@ impl RoutineOutput {
                 session_id.as_ref(),
                 *capture_generation,
                 *sequence,
-                ResolverScope::MusicSelectChallenger,
+                ResolverScope::SelectionSuccessor,
                 &unresolved,
                 0,
             )?;
@@ -2065,7 +2172,10 @@ impl RoutineOutput {
             )?;
         }
         if let Some(attempt_screen) = play_attempt_screen(screen)
-            && let Some(state) = self.play_attempt.observe_screen(attempt_screen, *sequence)
+            && let Some(state) = self
+                .engine
+                .play_attempt
+                .observe_screen(attempt_screen, *sequence)
         {
             self.publish_play_attempt_update(
                 session_id.clone(),
@@ -2084,34 +2194,9 @@ impl RoutineOutput {
                 state,
             )?;
         }
-        if screen != "result"
-            && let Some(update) = self
-                .temporal_result
-                .reset(TemporalTransitionReason::ResetByScreenChange)
-        {
-            self.stable_result_song = None;
+        if screen != "result" {
             self.reset_numeric_result();
             self.numeric_evidence.clear();
-            self.publish_temporal_update(
-                session_id.clone(),
-                *capture_generation,
-                Some(*sequence),
-                update,
-            )?;
-        }
-        if screen != "music_select"
-            && let Some(update) = self
-                .temporal_music_select
-                .reset(MusicSelectTemporalTransitionReason::ResetByScreenChange)
-        {
-            self.retained_music_select_song = None;
-            self.candidate_music_select_song = None;
-            self.publish_music_select_temporal_update(
-                session_id.clone(),
-                *capture_generation,
-                Some(*sequence),
-                update,
-            )?;
         }
         self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), None)?;
         self.refresh()?;
@@ -2128,7 +2213,7 @@ impl RoutineOutput {
             unreachable!("session-finished dispatcher preserves event kind");
         };
         self.publish_one(event)?;
-        if let Some(state) = self.play_attempt.finish_session() {
+        if let Some(state) = self.engine.play_attempt.finish_session() {
             self.publish_play_attempt_update(
                 Some(session_id.clone()),
                 Some(*capture_generation),
@@ -2136,79 +2221,9 @@ impl RoutineOutput {
                 state,
             )?;
         }
-        if let Some(update) = self
-            .temporal_result
-            .reset(TemporalTransitionReason::ResetBySessionBoundary)
-        {
-            self.stable_result_song = None;
-            self.publish_temporal_update(
-                Some(session_id.clone()),
-                Some(*capture_generation),
-                None,
-                update,
-            )?;
-        }
-        if let Some(update) = self
-            .temporal_music_select
-            .reset(MusicSelectTemporalTransitionReason::ResetBySessionBoundary)
-        {
-            self.retained_music_select_song = None;
-            self.candidate_music_select_song = None;
-            self.publish_music_select_temporal_update(
-                Some(session_id.clone()),
-                Some(*capture_generation),
-                None,
-                update,
-            )?;
-        }
         self.completed_event_artifact =
             self.event_worker.take().map(RunEventArtifactWorker::finish);
         Ok(())
-    }
-
-    fn publish_temporal_update(
-        &mut self,
-        session_id: Option<String>,
-        capture_generation: Option<u64>,
-        source_sequence: Option<u64>,
-        update: scorepeek::temporal_recognition::ResultTemporalUpdate<
-            scorepeek::catalog::ScorepeekSongId,
-        >,
-    ) -> Result<(), String> {
-        self.publish_one(&RunEvent {
-            schema: "scorepeek-run-event-v2".to_owned(),
-            kind: RunEventKind::TemporalResultChanged {
-                session_id,
-                capture_generation,
-                source_sequence,
-                transitions: update.transitions,
-                state: update.state,
-                stable_song: self.stable_result_song.clone(),
-            },
-        })
-    }
-
-    fn publish_music_select_temporal_update(
-        &mut self,
-        session_id: Option<String>,
-        capture_generation: Option<u64>,
-        source_sequence: Option<u64>,
-        update: scorepeek::temporal_recognition::MusicSelectTemporalUpdate<
-            scorepeek::catalog::ScorepeekSongId,
-        >,
-    ) -> Result<(), String> {
-        self.publish_one(&RunEvent {
-            schema: "scorepeek-run-event-v2".to_owned(),
-            kind: RunEventKind::TemporalMusicSelectChanged {
-                session_id,
-                capture_generation,
-                source_sequence,
-                reasons: update.reasons,
-                state: update.state,
-                retained_song: self.retained_music_select_song.clone(),
-                candidate_song: self.candidate_music_select_song.clone(),
-            },
-        })
     }
 
     fn publish_play_attempt_update(
@@ -2216,10 +2231,10 @@ impl RoutineOutput {
         session_id: Option<String>,
         capture_generation: Option<u64>,
         source_sequence: Option<u64>,
-        state: PlayAttemptState<SongPresentation>,
+        state: PlayAttemptState,
     ) -> Result<(), String> {
         self.publish_one(&RunEvent {
-            schema: "scorepeek-run-event-v2".to_owned(),
+            schema: "scorepeek-run-event-v3".to_owned(),
             kind: RunEventKind::PlayAttemptChanged {
                 session_id: session_id.clone(),
                 capture_generation,
@@ -2246,43 +2261,44 @@ impl RoutineOutput {
             .map_err(|_| "run view state lock was poisoned".to_owned())?
             .current_screen
             .clone();
-        let current_summary = self.music_select_current.summary();
-        let challenger_summary = self.music_select_challenger.summary();
-        let result_summary = self.result_hypotheses.summary();
-        let mut joint = self.retained_select.clone();
-        joint.add_from(&self.result_hypotheses);
+        let current_summary = self.engine.selection_epochs.incumbent.summary();
+        let challenger_summary = self.engine.selection_epochs.successor.summary();
+        let result_summary = self.engine.result_hypotheses.summary();
+        let mut joint = self.engine.retained_select.clone();
+        joint.add_from(&self.engine.result_hypotheses);
         let joint_summary = joint.summary();
         let local = match current_screen.as_deref() {
             Some("music_select") => Some(resolver_node(
                 "MUSIC SELECT resolver",
-                &self.music_select_current,
+                &self.engine.selection_epochs.incumbent,
                 &current_summary,
             )),
             Some("result") => Some(resolver_node(
                 "RESULT resolver",
-                &self.result_hypotheses,
+                &self.engine.result_hypotheses,
                 &result_summary,
             )),
             _ => None,
         };
-        let challenger = (current_screen.as_deref() == Some("music_select")
-            && self.music_select_challenger.observation_count > 0)
+        let successor = (current_screen.as_deref() == Some("music_select")
+            && self.engine.selection_epochs.successor.observation_count > 0)
             .then(|| {
                 resolver_node(
-                    "challenger",
-                    &self.music_select_challenger,
+                    "successor",
+                    &self.engine.selection_epochs.successor,
                     &challenger_summary,
                 )
             });
         let attempt = attempt_node(
-            self.play_attempt.state(),
+            self.engine.play_attempt.state(),
             self.attempt_started_ms,
             self.attempt_phase_started_ms,
-            &self.retained_select.summary(),
+            &self.engine.retained_select.summary(),
             &result_summary,
             &joint_summary,
         );
         let gate = if self
+            .engine
             .play_attempt
             .accepted_result()
             .is_some_and(|attempt| self.emitted_attempt_ids.contains(&attempt.attempt_id))
@@ -2290,17 +2306,9 @@ impl RoutineOutput {
             "accepted: result_detected emitted"
         } else if joint_summary.state != ResolverResolutionState::AcceptedJoint {
             "waiting: joint identity"
-        } else if self
-            .temporal_result
-            .state()
-            .clear_type
-            .stable_value()
-            .is_none()
-        {
-            "waiting: clear type"
         } else if self.accepted_numeric_result.is_none() {
             "waiting: numeric performance"
-        } else if self.play_attempt.accepted_result().is_none() {
+        } else if self.engine.play_attempt.accepted_result().is_none() {
             "waiting: linked play attempt"
         } else {
             "ready: domain promotion"
@@ -2314,12 +2322,15 @@ impl RoutineOutput {
             raw_fields.map_or_else(|| state.resolver.raw_fields.clone(), important_raw_fields);
         state.resolver = ResolverDebugSnapshot {
             now_ms,
+            raw_screen: state.raw_screen.clone(),
             screen: current_screen,
+            suspended: self.semantic_episode_suspended,
+            finalizing: self.result_episode_finalizing,
             screen_episode_id: self.screen_episode_id,
             screen_episode_started_ms: self.screen_episode_started_ms,
             source_sequence,
             local,
-            challenger,
+            successor,
             attempt,
             gate,
             raw_fields: retained_raw,
@@ -2432,7 +2443,6 @@ fn play_attempt_screen(screen: &str) -> Option<PlayAttemptScreen> {
         "decide_transition" => Some(PlayAttemptScreen::DecideTransition),
         "play" => Some(PlayAttemptScreen::Play),
         "result" => Some(PlayAttemptScreen::Result),
-        "unknown" => Some(PlayAttemptScreen::Unknown),
         _ => None,
     }
 }
@@ -2466,7 +2476,7 @@ fn candidate_label(candidate: &JointEvidenceCandidate) -> String {
 }
 
 fn attempt_node(
-    state: &PlayAttemptState<SongPresentation>,
+    state: &PlayAttemptState,
     started_ms: Option<u64>,
     phase_started_ms: Option<u64>,
     select: &HypothesisSummary,
@@ -2475,7 +2485,6 @@ fn attempt_node(
 ) -> Option<AttemptNodeSnapshot> {
     let (attempt_id, phase, path) = match state {
         PlayAttemptState::Idle => return None,
-        PlayAttemptState::Armed { .. } => (None, "armed".to_owned(), "S".to_owned()),
         PlayAttemptState::UnlinkedResult { .. } => {
             (None, "unlinked_result".to_owned(), "R".to_owned())
         }
@@ -2547,8 +2556,45 @@ fn important_raw_fields(fields: &Value) -> Vec<(String, String)> {
         "bad",
         "poor",
     ];
+    let title_foreground = fields.get("title_evidence").map(|evidence| {
+        let raw = evidence
+            .pointer("/foreground/open_text")
+            .and_then(Value::as_str)
+            .unwrap_or("-");
+        let scalar_count = evidence
+            .get("normalized_scalar_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let width = evidence
+            .pointer("/geometry/occupancy_width_ppm")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let edge = evidence
+            .get("geometry")
+            .map(|geometry| {
+                format!(
+                    "{}{}",
+                    if geometry["touches_left_edge"].as_bool().unwrap_or(false) {
+                        "L"
+                    } else {
+                        ""
+                    },
+                    if geometry["touches_right_edge"].as_bool().unwrap_or(false) {
+                        "R"
+                    } else {
+                        ""
+                    }
+                )
+            })
+            .unwrap_or_default();
+        (
+            "title_fg".to_owned(),
+            format!("{raw} chars={scalar_count} width_ppm={width} edge={edge}"),
+        )
+    });
     marker
         .into_iter()
+        .chain(title_foreground)
         .chain(keys.into_iter().filter_map(|key| {
             fields
                 .get(key)
@@ -2626,9 +2672,11 @@ fn fixed_watcher_lines(state: &RunViewState, health: &ChannelHealth) -> Vec<Line
     let resolver = &state.resolver;
     vec![
         Line::from(format!(
-            "{}  screen={} episode=#{} {}s  sessions={} gen={}",
+            "{}  raw={} semantic={}{} episode=#{} {}s  sessions={} gen={}",
             state.watcher_state,
+            resolver.raw_screen.as_deref().unwrap_or("-"),
             resolver.screen.as_deref().unwrap_or("-"),
+            if resolver.suspended { " suspended" } else { "" },
             resolver.screen_episode_id,
             elapsed_seconds(resolver.now_ms, resolver.screen_episode_started_ms),
             state.session_count,
@@ -2659,16 +2707,24 @@ fn fixed_domain_lines(state: &RunViewState, available_width: usize) -> Vec<Line<
     lines
 }
 
+#[allow(clippy::too_many_lines)]
 fn resolver_lines(snapshot: &ResolverDebugSnapshot, available_width: usize) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(format!(
-        "SCREEN {}  episode=#{}  elapsed={}s  sequence={}",
+        "SCREEN raw={} semantic={}{}  episode=#{}  elapsed={}s  sequence={}",
+        snapshot.raw_screen.as_deref().unwrap_or("-"),
         snapshot.screen.as_deref().unwrap_or("-"),
+        if snapshot.suspended { " suspended" } else { "" },
         snapshot.screen_episode_id,
         elapsed_seconds(snapshot.now_ms, snapshot.screen_episode_started_ms),
         snapshot
             .source_sequence
             .map_or_else(|| "-".to_owned(), |value| value.to_string()),
     ))];
+    if snapshot.finalizing {
+        lines.push(Line::from(
+            "├─ RESULT draining/finalizing admitted field jobs",
+        ));
+    }
     if let Some(local) = &snapshot.local {
         lines.push(Line::from(format!(
             "├─ {}  elapsed={}s obs={} latest-age={}s",
@@ -2709,9 +2765,9 @@ fn resolver_lines(snapshot: &ResolverDebugSnapshot, available_width: usize) -> V
             )));
         }
     }
-    if let Some(challenger) = &snapshot.challenger {
+    if let Some(challenger) = &snapshot.successor {
         lines.push(Line::from(fitted_value(
-            "│  └─ CHALLENGER ",
+            "│  └─ SUCCESSOR ",
             &format!(
                 "{} {}s obs={} support={} margin={}",
                 challenger.top.as_deref().unwrap_or("-"),
@@ -2959,16 +3015,7 @@ mod tests {
                 last_line: None,
             },
             next_sequence: 1,
-            temporal_result: ResultTemporalReducer::new(
-                TemporalPolicy::for_episode(RESULT_TEMPORAL_REQUIRED_OBSERVATIONS).unwrap(),
-            ),
-            stable_result_song: None,
-            temporal_music_select: MusicSelectTemporalReducer::new(
-                MusicSelectTemporalPolicy::new(200, 200, 250).unwrap(),
-            ),
-            retained_music_select_song: None,
-            candidate_music_select_song: None,
-            play_attempt: PlayAttemptReducer::default(),
+            engine: ResolverEngine::default(),
             pending_numeric_result: None,
             accepted_numeric_result: None,
             numeric_evidence: VecDeque::with_capacity(8),
@@ -2979,11 +3026,9 @@ mod tests {
             screen_episode_id: 0,
             screen_episode_started_ms: None,
             screen_episode_last_ms: None,
-            music_select_current: HypothesisAccumulator::default(),
-            music_select_challenger: HypothesisAccumulator::default(),
-            retained_select: HypothesisAccumulator::default(),
-            result_hypotheses: HypothesisAccumulator::default(),
             result_resolver_active: false,
+            result_episode_finalizing: false,
+            semantic_episode_suspended: false,
             resolver_transitions: BTreeMap::new(),
             attempt_started_ms: None,
             attempt_phase_started_ms: None,
@@ -3002,7 +3047,7 @@ mod tests {
     fn accepted_result_event(sequence: u64) -> RunEvent {
         let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
         RunEvent {
-            schema: "scorepeek-run-event-v2".to_owned(),
+            schema: "scorepeek-run-event-v3".to_owned(),
             kind: RunEventKind::FieldObservation {
                 session_id: Some("invocation-1-session-1".to_owned()),
                 capture_generation: Some(1),
@@ -3080,6 +3125,7 @@ mod tests {
                 current_score_ocr_resolution: None,
                 numeric_batch: None,
                 joint_evidence: JointEvidenceObservation {
+                    catalog_song_count: 0,
                     candidates: vec![JointEvidenceCandidate {
                         song_id,
                         chart: scorepeek::catalog::Chart {
@@ -3129,54 +3175,27 @@ mod tests {
         result: ResultDomainEvent,
     ) -> RunEvent {
         RunEvent {
-            schema: "scorepeek-run-event-v2".to_owned(),
+            schema: "scorepeek-run-event-v3".to_owned(),
             kind: RunEventKind::ResultDetected {
                 session_id: session_id.to_owned(),
                 capture_generation,
                 source_sequence,
+                song: None,
                 result,
             },
         }
     }
 
     fn prepare_accepted_attempt(output: &mut RoutineOutput) {
-        let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
-        let song = SongPresentation {
-            scorepeek_song_id: song_id,
-            display_titles: vec!["CATALOG TITLE".to_owned()],
-            artist: "CATALOG ARTIST".to_owned(),
-        };
+        output.engine.play_attempt.observe_selection_screen();
         output
-            .play_attempt
-            .observe_selection(Some(song), Some(SelectionSource::Stable), 0);
-        output
+            .engine
             .play_attempt
             .observe_screen(PlayAttemptScreen::Play, 0);
         output
+            .engine
             .play_attempt
             .observe_screen(PlayAttemptScreen::Result, 0);
-    }
-
-    fn unknown_result_event(sequence: u64) -> RunEvent {
-        let mut event = accepted_result_event(sequence);
-        let RunEventKind::FieldObservation {
-            fields,
-            result_song_resolution,
-            song_resolution_presentation,
-            ..
-        } = &mut event.kind
-        else {
-            unreachable!();
-        };
-        fields["clear_type"] = Value::Null;
-        *result_song_resolution = json!({ "status": "unknown" });
-        **song_resolution_presentation = SongResolutionPresentation::Unknown {
-            reason: json!("artist_similarity_too_low"),
-            selected: None,
-            runner_up: None,
-            evidence_summary: None,
-        };
-        event
     }
 
     fn accepted_result_without_joint_identity(sequence: u64) -> RunEvent {
@@ -3188,54 +3207,9 @@ mod tests {
         event
     }
 
-    fn accepted_music_select_event(sequence: u64) -> RunEvent {
-        let mut event = accepted_result_event(sequence);
-        let RunEventKind::FieldObservation {
-            screen,
-            fields,
-            result_song_resolution,
-            music_select_song_resolution,
-            ..
-        } = &mut event.kind
-        else {
-            unreachable!();
-        };
-        *screen = "music_select".to_owned();
-        *fields = json!({
-            "active_list_title": "OCR ACTIVE",
-            "central_title": "OCR CENTRAL",
-            "artist": "OCR ARTIST"
-        });
-        *result_song_resolution = Value::Null;
-        *music_select_song_resolution = json!({ "status": "accepted" });
-        event
-    }
-
-    fn unknown_music_select_event(sequence: u64) -> RunEvent {
-        let mut event = accepted_music_select_event(sequence);
-        let RunEventKind::FieldObservation {
-            music_select_song_resolution,
-            song_resolution_presentation,
-            joint_evidence,
-            ..
-        } = &mut event.kind
-        else {
-            unreachable!();
-        };
-        *music_select_song_resolution = json!({ "status": "unknown" });
-        joint_evidence.candidates.clear();
-        **song_resolution_presentation = SongResolutionPresentation::Unknown {
-            reason: json!("active_prefix_too_weak"),
-            selected: None,
-            runner_up: None,
-            evidence_summary: None,
-        };
-        event
-    }
-
     fn screen_event(sequence: u64, screen: &str) -> RunEvent {
         RunEvent {
-            schema: "scorepeek-run-event-v2".to_owned(),
+            schema: "scorepeek-run-event-v3".to_owned(),
             kind: RunEventKind::ScreenChanged {
                 session_id: Some("invocation-1-session-1".to_owned()),
                 capture_generation: Some(1),
@@ -3246,6 +3220,37 @@ mod tests {
                 screen: screen.to_owned(),
             },
         }
+    }
+
+    fn semantic_episode_event(
+        sequence: u64,
+        screen: &str,
+        phase: SemanticEpisodePhase,
+    ) -> RunEvent {
+        RunEvent {
+            schema: "scorepeek-run-event-v3".to_owned(),
+            kind: RunEventKind::SemanticScreenEpisodeChanged {
+                session_id: Some("invocation-1-session-1".to_owned()),
+                capture_generation: Some(1),
+                screen_episode_id: sequence,
+                sequence,
+                monotonic_end_ms: sequence.saturating_mul(100).saturating_add(25),
+                screen: screen.to_owned(),
+                phase,
+            },
+        }
+    }
+
+    fn failed_session_finished_event() -> RunEvent {
+        RunEvent::from_value(json!({
+            "schema": "scorepeek-run-event-v3",
+            "event": "session_finished",
+            "session_id": "invocation-1-session-1",
+            "capture_generation": 1,
+            "outcome": "error",
+            "report": { "error_type": "field_observer_finish_failed" }
+        }))
+        .unwrap()
     }
 
     fn read_events(reader: &mut BufReader<UnixStream>, count: usize) -> Vec<Value> {
@@ -3280,94 +3285,6 @@ mod tests {
             }
         }
         panic!("event {terminal_event} was not observed within {maximum} events");
-    }
-
-    fn publish_transitional_music_select_false_positive(
-        output: &mut RoutineOutput,
-        reader: &mut BufReader<UnixStream>,
-    ) {
-        output.publish(&screen_event(4, "unknown")).unwrap();
-        let transition_start = read_events(reader, 2);
-        assert_eq!(transition_start[0]["event"], "screen_changed");
-        assert_eq!(
-            transition_start[1]["event"],
-            "temporal_music_select_changed"
-        );
-
-        output.publish(&screen_event(5, "music_select")).unwrap();
-        let false_positive = read_events(reader, 1);
-        assert_eq!(false_positive[0]["event"], "screen_changed");
-        output.publish(&unknown_music_select_event(5)).unwrap();
-        let empty_ocr = read_events(reader, 1);
-        assert_eq!(empty_ocr[0]["event"], "field_observation");
-
-        output.publish(&screen_event(6, "unknown")).unwrap();
-        let transition_continues = read_events(reader, 1);
-        assert_eq!(transition_continues[0]["event"], "screen_changed");
-    }
-
-    fn publish_transitional_result_false_positive(
-        output: &mut RoutineOutput,
-        reader: &mut BufReader<UnixStream>,
-    ) {
-        output.publish(&screen_event(9, "unknown")).unwrap();
-        assert_eq!(read_events(reader, 1)[0]["event"], "screen_changed");
-        output.publish(&screen_event(10, "music_select")).unwrap();
-        assert_eq!(read_events(reader, 1)[0]["event"], "screen_changed");
-        output.publish(&unknown_music_select_event(10)).unwrap();
-        assert_eq!(read_events(reader, 1)[0]["event"], "field_observation");
-        output.publish(&screen_event(11, "unknown")).unwrap();
-        assert_eq!(read_events(reader, 1)[0]["event"], "screen_changed");
-    }
-
-    fn return_to_music_select_closes_result_resolver(
-        output: &mut RoutineOutput,
-        reader: &mut BufReader<UnixStream>,
-    ) -> Value {
-        output.publish(&screen_event(15, "music_select")).unwrap();
-        let mut boundary_events = Vec::new();
-        while boundary_events.len() < 8 {
-            let event = read_raw_event(reader);
-            let complete = event["event"] == "temporal_result_changed";
-            boundary_events.push(event);
-            if complete {
-                break;
-            }
-        }
-        let reset_scopes = boundary_events
-            .iter()
-            .filter(|event| {
-                event["event"] == "resolver_state_changed" && event["state"] == "unresolved"
-            })
-            .filter_map(|event| event["scope"].as_str())
-            .collect::<BTreeSet<_>>();
-        assert!(reset_scopes.contains("result"));
-        assert!(reset_scopes.contains("attempt_joint"));
-        assert!(boundary_events.iter().any(|event| {
-            event["event"] == "play_attempt_changed" && event["state"]["status"] == "idle"
-        }));
-
-        read_snapshot(&output.channel.socket_path)
-    }
-
-    fn read_snapshot(socket_path: &Path) -> Value {
-        let stream = UnixStream::connect(socket_path).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        let mut reader = BufReader::new(stream);
-        let mut snapshot = String::new();
-        reader.read_line(&mut snapshot).unwrap();
-        serde_json::from_str(&snapshot).unwrap()
-    }
-
-    fn assert_stabilized_fields(state: &RunViewState, expected: &str) {
-        let stabilized = state.latest_stabilized_result.as_ref().unwrap();
-        assert_eq!(stabilized.pointer("/state/song/status").unwrap(), expected);
-        assert_eq!(
-            stabilized.pointer("/state/clear_type/status").unwrap(),
-            expected
-        );
     }
 
     #[derive(Default)]
@@ -3411,14 +3328,14 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         let snapshot: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v1");
+        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v3");
         assert_eq!(snapshot["state"]["invocation_id"], "invocation-1");
         assert_eq!(snapshot["state"]["next_channel_sequence"], 1);
         assert_eq!(snapshot["channel"]["connected_clients"], 1);
 
         channel
             .publish(&json!({
-                "schema": "scorepeek-run-event-v2",
+                "schema": "scorepeek-run-event-v3",
                 "event": "watcher_started",
                 "channel_sequence": 1,
             }))
@@ -3429,173 +3346,6 @@ mod tests {
         assert_eq!(event["event"], "watcher_started");
         drop(channel);
         assert!(!socket_path.exists());
-    }
-
-    #[test]
-    #[allow(clippy::too_many_lines)]
-    fn raw_result_events_are_followed_by_bounded_temporal_transitions() {
-        let temporary = tempfile::tempdir().unwrap();
-        let state = state();
-        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
-        let stream = UnixStream::connect(&channel.socket_path).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        let mut reader = BufReader::new(stream);
-        let mut snapshot = String::new();
-        reader.read_line(&mut snapshot).unwrap();
-        let mut output = test_output(state, channel);
-        prepare_accepted_attempt(&mut output);
-
-        output.publish(&accepted_result_event(1)).unwrap();
-        output.publish(&accepted_result_event(2)).unwrap();
-        let events = read_events(&mut reader, 8);
-        assert_eq!(events[0]["event"], "field_observation");
-        assert_eq!(events[1]["event"], "temporal_result_changed");
-        assert_eq!(events[1]["state"]["song"]["status"], "pending");
-        assert_eq!(events[2]["event"], "play_attempt_changed");
-        assert_eq!(
-            events[2]["state"]["attempt"]["result_relation"],
-            "confirmed"
-        );
-        assert_eq!(events[3]["event"], "numeric_result_changed");
-        assert_eq!(events[4]["event"], "field_observation");
-        assert_eq!(events[5]["event"], "temporal_result_changed");
-        assert_eq!(events[5]["state"]["song"]["status"], "stable");
-        assert_eq!(events[5]["state"]["clear_type"]["status"], "stable");
-        assert_eq!(events[6]["event"], "numeric_result_changed");
-        assert_eq!(events[6]["state"]["status"], "accepted");
-        assert!(events[6].get("event_suppression_reason").is_none());
-        assert_eq!(events[7]["event"], "result_detected");
-        assert_eq!(
-            events[7]["result"]["contract"],
-            "scorepeek-result-detected-v2"
-        );
-        assert_eq!(events[7]["result"]["attempt_id"], 1);
-        assert!(events[7]["result"].get("savable").is_none());
-        assert_eq!(events[7]["result"]["play_side"], "one_player");
-        assert_eq!(events[7]["result"]["play_mode"], "single_play");
-        assert_eq!(events[7]["result"]["difficulty"], "hyper");
-        assert_eq!(events[7]["result"]["current_score"], 1_286);
-        assert_eq!(events[7]["result"]["judgments"]["pgreat"], 600);
-        assert_eq!(
-            events[5]["stable_song"]["display_titles"][0],
-            "CATALOG TITLE"
-        );
-        let channel_sequences = events
-            .iter()
-            .map(|event| event["channel_sequence"].as_u64().unwrap())
-            .collect::<Vec<_>>();
-        assert!(channel_sequences.windows(2).all(|pair| pair[0] < pair[1]));
-        assert_eq!(channel_sequences.first(), Some(&1));
-        assert_eq!(channel_sequences.last(), Some(&10));
-
-        output.publish(&unknown_result_event(3)).unwrap();
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        let raw_unknown: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(raw_unknown["event"], "field_observation");
-        assert_eq!(raw_unknown["channel_sequence"], 11);
-        let state = output.state.lock().unwrap();
-        assert_stabilized_fields(&state, "stable");
-        drop(state);
-
-        output
-            .publish(&RunEvent {
-                schema: "scorepeek-run-event-v2".to_owned(),
-                kind: RunEventKind::ScreenChanged {
-                    session_id: Some("invocation-1-session-1".to_owned()),
-                    capture_generation: Some(1),
-                    screen_episode_id: 2,
-                    sequence: 4,
-                    monotonic_start_ms: 400,
-                    monotonic_end_ms: 425,
-                    screen: "unknown".to_owned(),
-                },
-            })
-            .unwrap();
-        let boundary_events = read_events(&mut reader, 2);
-        assert_eq!(boundary_events[0]["event"], "screen_changed");
-        assert_eq!(boundary_events[1]["event"], "temporal_result_changed");
-        assert_eq!(boundary_events[1]["state"]["song"]["status"], "empty");
-        assert!(
-            boundary_events[1]["channel_sequence"].as_u64().unwrap()
-                > boundary_events[0]["channel_sequence"].as_u64().unwrap()
-        );
-
-        output.publish(&accepted_result_event(5)).unwrap();
-        let after_boundary = read_events(&mut reader, 3);
-        assert_eq!(after_boundary[0]["event"], "field_observation");
-        assert_eq!(after_boundary[1]["state"]["song"]["status"], "pending");
-        assert_eq!(after_boundary[2]["event"], "numeric_result_changed");
-
-        output
-            .publish(&RunEvent {
-                schema: "scorepeek-run-event-v2".to_owned(),
-                kind: RunEventKind::SessionFinished {
-                    session_id: "invocation-1-session-1".to_owned(),
-                    capture_generation: 1,
-                    outcome: "stopped".to_owned(),
-                    report: json!({}),
-                },
-            })
-            .unwrap();
-        let session_events = read_events(&mut reader, 2);
-        assert_eq!(session_events[0]["event"], "session_finished");
-        assert_eq!(session_events[1]["event"], "temporal_result_changed");
-        assert!(
-            session_events[1]["channel_sequence"].as_u64().unwrap()
-                > session_events[0]["channel_sequence"].as_u64().unwrap()
-        );
-    }
-
-    #[test]
-    fn production_result_policy_stabilizes_across_long_field_ocr_spacing() {
-        let mut reducer = ResultTemporalReducer::new(
-            TemporalPolicy::for_episode(RESULT_TEMPORAL_REQUIRED_OBSERVATIONS).unwrap(),
-        );
-        reducer.observe_result(1, 100, Some(7), Some("CLEAR".to_owned()));
-        let update = reducer
-            .observe_result(8, 800, Some(7), Some("CLEAR".to_owned()))
-            .unwrap();
-        assert_eq!(update.state.song.stable_value(), Some(&7));
-        assert_eq!(
-            update.state.clear_type.stable_value().map(String::as_str),
-            Some("CLEAR")
-        );
-    }
-
-    #[test]
-    fn field_observation_older_than_an_observed_screen_boundary_cannot_reenter_temporal_state() {
-        let temporary = tempfile::tempdir().unwrap();
-        let state = state();
-        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
-        let mut output = test_output(state, channel);
-
-        output.publish(&screen_event(1, "result")).unwrap();
-        output.publish(&accepted_result_event(1)).unwrap();
-        assert!(matches!(
-            output.temporal_result.state().song,
-            scorepeek::temporal_recognition::TemporalFieldState::Pending { .. }
-        ));
-        output.publish(&screen_event(2, "unknown")).unwrap();
-        assert_eq!(
-            output.temporal_result.state(),
-            &ResultTemporalState::default()
-        );
-
-        output.publish(&accepted_result_event(1)).unwrap();
-        assert_eq!(
-            output.temporal_result.state(),
-            &ResultTemporalState::default()
-        );
-
-        output.publish(&screen_event(3, "result")).unwrap();
-        output.publish(&accepted_result_event(3)).unwrap();
-        assert!(matches!(
-            output.temporal_result.state().song,
-            scorepeek::temporal_recognition::TemporalFieldState::Pending { .. }
-        ));
     }
 
     #[test]
@@ -3620,7 +3370,21 @@ mod tests {
             .publish(&accepted_result_without_joint_identity(2))
             .unwrap();
         output.publish(&accepted_result_event(3)).unwrap();
-        let completed = read_events_through(&mut reader, "result_detected", 12);
+        output
+            .publish(&semantic_episode_event(
+                4,
+                "result",
+                SemanticEpisodePhase::Closing,
+            ))
+            .unwrap();
+        output
+            .publish(&semantic_episode_event(
+                4,
+                "result",
+                SemanticEpisodePhase::Finalized,
+            ))
+            .unwrap();
+        let completed = read_events_through(&mut reader, "result_detected", 20);
         let confirmation = completed
             .iter()
             .position(|event| {
@@ -3636,13 +3400,98 @@ mod tests {
         assert!(completed.iter().any(|event| {
             event["event"] == "numeric_result_changed" && event["state"]["status"] == "accepted"
         }));
-        assert_eq!(completed[result]["source_sequence"], 3);
+        assert_eq!(completed[result]["source_sequence"], 4);
 
         output.publish(&accepted_result_event(4)).unwrap();
         assert_eq!(read_events(&mut reader, 1)[0]["event"], "field_observation");
     }
 
     #[test]
+    fn incomplete_numeric_finalizes_the_attempt_as_rejected() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = state();
+        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
+        let mut output = test_output(state, channel);
+        prepare_accepted_attempt(&mut output);
+
+        output.publish(&accepted_result_event(1)).unwrap();
+        output
+            .publish(&semantic_episode_event(
+                2,
+                "result",
+                SemanticEpisodePhase::Finalized,
+            ))
+            .unwrap();
+
+        assert!(output.emitted_attempt_ids.is_empty());
+        assert!(matches!(
+            output.engine.play_attempt.state(),
+            PlayAttemptState::Attempt { attempt }
+                if attempt.result_relation
+                    == crate::play_attempt::PlayAttemptResultRelation::Conflict
+                    && attempt.reasons.contains(&PlayAttemptReason::ResultEvidenceUnresolved)
+        ));
+    }
+
+    #[test]
+    fn stale_numeric_from_another_chart_cannot_confirm_the_attempt() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = state();
+        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
+        let mut output = test_output(state, channel);
+        prepare_accepted_attempt(&mut output);
+
+        output.publish(&accepted_result_event(1)).unwrap();
+        output.publish(&accepted_result_event(2)).unwrap();
+        output
+            .engine
+            .provisional_joint
+            .as_mut()
+            .unwrap()
+            .chart
+            .key
+            .difficulty = Difficulty::Another;
+        output
+            .publish(&semantic_episode_event(
+                3,
+                "result",
+                SemanticEpisodePhase::Finalized,
+            ))
+            .unwrap();
+
+        assert!(output.emitted_attempt_ids.is_empty());
+        assert!(matches!(
+            output.engine.play_attempt.state(),
+            PlayAttemptState::Attempt { attempt }
+                if attempt.result_relation
+                    == crate::play_attempt::PlayAttemptResultRelation::Conflict
+                    && attempt.reasons.contains(&PlayAttemptReason::LinkageConflict)
+        ));
+    }
+
+    #[test]
+    fn failed_session_boundary_cannot_replace_semantic_result_finalization() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = state();
+        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
+        let mut output = test_output(state, channel);
+        prepare_accepted_attempt(&mut output);
+
+        output.publish(&accepted_result_event(1)).unwrap();
+        output.publish(&accepted_result_event(2)).unwrap();
+        output.publish(&failed_session_finished_event()).unwrap();
+
+        assert!(output.emitted_attempt_ids.is_empty());
+        assert!(matches!(
+            output.engine.play_attempt.state(),
+            PlayAttemptState::Attempt { attempt }
+                if attempt.phase == crate::play_attempt::PlayAttemptPhase::Abandoned
+                    && attempt.reasons.contains(&PlayAttemptReason::SessionEnded)
+        ));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
     fn normalized_result_evidence_completes_an_attempt_despite_wrong_select_title() {
         let temporary = tempfile::tempdir().unwrap();
         let state = state();
@@ -3652,6 +3501,8 @@ mod tests {
             serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
         let wrong_song_id =
             serde_json::from_str("\"00000000-0000-0000-0000-000000000002\"").unwrap();
+        let collision_song_id =
+            serde_json::from_str("\"00000000-0000-0000-0000-000000000003\"").unwrap();
         let chart = scorepeek::catalog::Chart {
             key: scorepeek::catalog::ChartKey {
                 play_type: PlayType::Single,
@@ -3662,17 +3513,36 @@ mod tests {
         };
 
         output.publish(&screen_event(1, "music_select")).unwrap();
-        output.retained_select.observe(
+        output.engine.retained_select.observe(
             100,
             &JointEvidenceObservation {
-                candidates: vec![JointEvidenceCandidate {
-                    song_id: wrong_song_id,
-                    chart: chart.clone(),
-                    display_titles: vec!["WRONG SELECT".to_owned()],
-                    artist: "WRONG ARTIST".to_owned(),
-                    family_support: BTreeMap::from([(EvidenceFamily::SelectTitle, 300)]),
-                    support: 300,
-                }],
+                catalog_song_count: 0,
+                candidates: vec![
+                    JointEvidenceCandidate {
+                        song_id: wrong_song_id,
+                        chart: chart.clone(),
+                        display_titles: vec!["X".to_owned()],
+                        artist: "D.J.Amuro".to_owned(),
+                        family_support: BTreeMap::from([
+                            (EvidenceFamily::SelectTitleLexical, 300),
+                            (EvidenceFamily::SelectTitleStructural, 60),
+                            (EvidenceFamily::SelectChart, 50),
+                        ]),
+                        support: 410,
+                    },
+                    JointEvidenceCandidate {
+                        song_id: correct_song_id,
+                        chart: chart.clone(),
+                        display_titles: vec!["〆".to_owned()],
+                        artist: "lapix".to_owned(),
+                        family_support: BTreeMap::from([
+                            (EvidenceFamily::SelectTitleStructural, 60),
+                            (EvidenceFamily::SelectArtist, 300),
+                            (EvidenceFamily::SelectChart, 50),
+                        ]),
+                        support: 410,
+                    },
+                ],
             },
         );
         output
@@ -3690,8 +3560,8 @@ mod tests {
                 JointEvidenceCandidate {
                     song_id: correct_song_id,
                     chart: chart.clone(),
-                    display_titles: vec!["CORRECT RESULT".to_owned()],
-                    artist: "CORRECT ARTIST".to_owned(),
+                    display_titles: vec!["〆".to_owned()],
+                    artist: "lapix".to_owned(),
                     family_support: BTreeMap::from([
                         (EvidenceFamily::ResultArtist, 300),
                         (EvidenceFamily::ResultChart, 170),
@@ -3706,16 +3576,55 @@ mod tests {
                     family_support: BTreeMap::from([(EvidenceFamily::ResultChart, 70)]),
                     support: 70,
                 },
+                JointEvidenceCandidate {
+                    song_id: collision_song_id,
+                    chart: chart.clone(),
+                    display_titles: vec!["Flying Castle".to_owned()],
+                    artist: "lapix".to_owned(),
+                    family_support: BTreeMap::from([
+                        (EvidenceFamily::ResultArtist, 300),
+                        (EvidenceFamily::ResultChart, 170),
+                    ]),
+                    support: 470,
+                },
             ];
             event
         };
         output.publish(&result(5)).unwrap();
         output.publish(&result(6)).unwrap();
 
+        assert_eq!(output.emitted_attempt_ids.len(), 0);
+        output
+            .publish(&semantic_episode_event(
+                7,
+                "result",
+                SemanticEpisodePhase::Closing,
+            ))
+            .unwrap();
+        output
+            .publish(&semantic_episode_event(
+                7,
+                "result",
+                SemanticEpisodePhase::Finalized,
+            ))
+            .unwrap();
         assert_eq!(output.emitted_attempt_ids.len(), 1);
         assert_eq!(state.lock().unwrap().result_count, 1);
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .result_history
+                .back()
+                .unwrap()
+                .song
+                .as_ref()
+                .unwrap()
+                .display_titles[0],
+            "〆"
+        );
         assert!(matches!(
-            output.play_attempt.state(),
+            output.engine.play_attempt.state(),
             PlayAttemptState::Attempt { attempt }
                 if attempt.result_relation
                     == crate::play_attempt::PlayAttemptResultRelation::Confirmed
@@ -3732,186 +3641,28 @@ mod tests {
 
         output.publish(&accepted_result_event(1)).unwrap();
         output.publish(&accepted_result_event(2)).unwrap();
+        assert_eq!(state.lock().unwrap().result_count, 0);
+        output
+            .publish(&semantic_episode_event(
+                3,
+                "result",
+                SemanticEpisodePhase::Closing,
+            ))
+            .unwrap();
+        output
+            .publish(&semantic_episode_event(
+                3,
+                "result",
+                SemanticEpisodePhase::Finalized,
+            ))
+            .unwrap();
         assert_eq!(state.lock().unwrap().result_count, 1);
 
-        output.publish(&screen_event(3, "unknown")).unwrap();
         output.publish(&screen_event(4, "result")).unwrap();
         output.publish(&accepted_result_event(5)).unwrap();
         output.publish(&accepted_result_event(6)).unwrap();
 
         assert_eq!(state.lock().unwrap().result_count, 1);
-    }
-
-    #[test]
-    fn music_select_temporal_events_follow_raw_observations_and_hold_unknown() {
-        let temporary = tempfile::tempdir().unwrap();
-        let state = state();
-        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
-        let stream = UnixStream::connect(&channel.socket_path).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        let mut reader = BufReader::new(stream);
-        let mut snapshot = String::new();
-        reader.read_line(&mut snapshot).unwrap();
-        let mut output = test_output(state, channel);
-
-        for sequence in 1..=3 {
-            output
-                .publish(&accepted_music_select_event(sequence))
-                .unwrap();
-        }
-        let events = read_events(&mut reader, 7);
-        assert_eq!(events[0]["event"], "field_observation");
-        assert_eq!(events[1]["event"], "temporal_music_select_changed");
-        assert_eq!(events[2]["event"], "play_attempt_changed");
-        assert_eq!(events[6]["state"]["status"], "stable");
-        assert_eq!(
-            events[6]["retained_song"]["display_titles"][0],
-            "CATALOG TITLE"
-        );
-        assert_eq!(events[2]["state"]["status"], "armed");
-        assert_eq!(events[2]["state"]["selection_source"], "evidence_accepted");
-
-        output.publish(&unknown_music_select_event(4)).unwrap();
-        let held = read_events(&mut reader, 1);
-        assert_eq!(held[0]["event"], "field_observation");
-
-        output.publish(&accepted_music_select_event(5)).unwrap();
-        let recovered = read_events(&mut reader, 1);
-        assert_eq!(recovered[0]["event"], "field_observation");
-
-        output
-            .publish(&RunEvent {
-                schema: "scorepeek-run-event-v2".to_owned(),
-                kind: RunEventKind::WatcherStopped {
-                    invocation_id: "invocation-1".to_owned(),
-                    reason: "signal".to_owned(),
-                },
-            })
-            .unwrap();
-        let stopped = read_events(&mut reader, 3);
-        assert_eq!(stopped[0]["event"], "play_attempt_changed");
-        assert_eq!(stopped[0]["state"]["status"], "idle");
-        assert_eq!(stopped[1]["event"], "watcher_stopped");
-        assert_eq!(stopped[2]["event"], "temporal_music_select_changed");
-        assert_eq!(stopped[2]["state"]["status"], "empty");
-        let state = output.state.lock().unwrap();
-        assert!(state.latest_observation.is_none());
-        assert_eq!(
-            state.latest_temporal_music_select.as_ref().unwrap()["state"]["status"],
-            "empty"
-        );
-    }
-
-    #[test]
-    fn play_attempt_events_follow_raw_causes_and_snapshot_retains_confirmation() {
-        let temporary = tempfile::tempdir().unwrap();
-        let state = state();
-        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
-        let stream = UnixStream::connect(&channel.socket_path).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        let mut reader = BufReader::new(stream);
-        let mut snapshot = String::new();
-        reader.read_line(&mut snapshot).unwrap();
-        let mut output = test_output(state, channel);
-
-        for sequence in 1..=3 {
-            output
-                .publish(&accepted_music_select_event(sequence))
-                .unwrap();
-        }
-        let armed = read_events(&mut reader, 7);
-        assert_eq!(armed[2]["event"], "play_attempt_changed");
-        assert_eq!(armed[2]["state"]["status"], "armed");
-
-        publish_transitional_music_select_false_positive(&mut output, &mut reader);
-
-        output
-            .publish(&screen_event(7, "decide_transition"))
-            .unwrap();
-        let decide = read_events(&mut reader, 2);
-        assert_eq!(decide[0]["event"], "screen_changed");
-        assert_eq!(decide[1]["event"], "play_attempt_changed");
-        assert_eq!(decide[1]["state"]["attempt"]["phase"], "decided");
-        assert_eq!(
-            decide[1]["state"]["attempt"]["selection_source"],
-            "evidence_accepted"
-        );
-        assert_eq!(
-            decide[1]["state"]["attempt"]["path"]["select_observed"],
-            true
-        );
-
-        output.publish(&screen_event(8, "play")).unwrap();
-        let play = read_events(&mut reader, 2);
-        assert_eq!(play[0]["event"], "screen_changed");
-        assert_eq!(play[1]["state"]["attempt"]["phase"], "playing");
-
-        publish_transitional_result_false_positive(&mut output, &mut reader);
-
-        output.publish(&screen_event(12, "result")).unwrap();
-        let result_screen = read_events(&mut reader, 2);
-        assert_eq!(result_screen[0]["event"], "screen_changed");
-        assert_eq!(
-            result_screen[1]["state"]["attempt"]["result_relation"],
-            "pending"
-        );
-
-        output.publish(&accepted_result_event(13)).unwrap();
-        output.publish(&accepted_result_event(14)).unwrap();
-        let result = read_events(&mut reader, 8);
-        assert_eq!(result[0]["event"], "field_observation");
-        assert_eq!(result[1]["event"], "temporal_result_changed");
-        assert_eq!(result[2]["event"], "play_attempt_changed");
-        assert_eq!(result[3]["event"], "numeric_result_changed");
-        assert_eq!(result[4]["event"], "field_observation");
-        assert_eq!(result[5]["event"], "temporal_result_changed");
-        assert_eq!(result[6]["event"], "numeric_result_changed");
-        assert_eq!(result[7]["event"], "result_detected");
-        assert_eq!(
-            result[2]["state"]["attempt"]["result_relation"],
-            "confirmed"
-        );
-
-        let snapshot = read_snapshot(&output.channel.socket_path);
-        assert_eq!(
-            snapshot["state"]["resolver"]["gate"],
-            "accepted: result_detected emitted"
-        );
-
-        let snapshot = return_to_music_select_closes_result_resolver(&mut output, &mut reader);
-        assert_eq!(
-            snapshot["state"]["latest_result_detected"]["result"]["contract"],
-            "scorepeek-result-detected-v2"
-        );
-        assert_eq!(snapshot["state"]["resolver"]["screen"], "music_select");
-        assert_eq!(snapshot["state"]["resolver"]["attempt"], Value::Null);
-        assert_eq!(
-            snapshot["state"]["resolver"]["gate"],
-            "waiting: joint identity"
-        );
-
-        for sequence in 16..=18 {
-            output
-                .publish(&accepted_music_select_event(sequence))
-                .unwrap();
-        }
-        let snapshot = read_snapshot(&output.channel.socket_path);
-        assert_eq!(snapshot["state"]["resolver"]["attempt"]["phase"], "armed");
-        let retained_observations = output.retained_select.observation_count;
-        assert!(retained_observations > 0);
-
-        output
-            .publish(&screen_event(19, "decide_transition"))
-            .unwrap();
-        assert_eq!(
-            output.retained_select.observation_count,
-            retained_observations
-        );
-        assert!(!output.result_resolver_active);
     }
 
     #[test]
@@ -3930,11 +3681,11 @@ mod tests {
         for reader in &mut readers {
             let mut snapshot = String::new();
             reader.read_line(&mut snapshot).unwrap();
-            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v1"));
+            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v3"));
         }
         channel
             .publish(&json!({
-                "schema": "scorepeek-run-event-v2",
+                "schema": "scorepeek-run-event-v3",
                 "event": "watcher_started",
                 "channel_sequence": 1,
             }))
@@ -3955,7 +3706,7 @@ mod tests {
         let channel = ObservationChannel::start_at(temporary.path(), state()).unwrap();
         channel
             .publish(&json!({
-                "schema": "scorepeek-run-event-v2",
+                "schema": "scorepeek-run-event-v3",
                 "event": "watcher_started",
                 "channel_sequence": 1,
             }))
@@ -3978,7 +3729,7 @@ mod tests {
         reader.read_line(&mut snapshot).unwrap();
         channel
             .publish(&json!({
-                "schema": "scorepeek-run-event-v2",
+                "schema": "scorepeek-run-event-v3",
                 "event": "field_observation",
                 "channel_sequence": 1,
                 "payload": "x".repeat(2 * 1024 * 1024),
@@ -4122,7 +3873,7 @@ mod tests {
     fn typed_reducer_tracks_session_report_and_stop_transitions() {
         let mut state = RunViewState::new("invocation-1".to_owned(), "d".repeat(64), true);
         let started = RunEvent::from_value(json!({
-            "schema": "scorepeek-run-event-v2",
+            "schema": "scorepeek-run-event-v3",
             "event": "session_started",
             "session_id": "invocation-1-session-1",
             "capture_generation": 1,
@@ -4139,7 +3890,7 @@ mod tests {
         );
 
         let finished = RunEvent::from_value(json!({
-            "schema": "scorepeek-run-event-v2",
+            "schema": "scorepeek-run-event-v3",
             "event": "session_finished",
             "session_id": "invocation-1-session-1",
             "capture_generation": 1,
@@ -4158,7 +3909,7 @@ mod tests {
         state.latest_stabilized_result = Some(json!({ "state": { "song": "stable" } }));
         state.latest_temporal_music_select = Some(json!({ "state": { "status": "changing" } }));
         let next_started = RunEvent::from_value(json!({
-            "schema": "scorepeek-run-event-v2",
+            "schema": "scorepeek-run-event-v3",
             "event": "session_started",
             "session_id": "invocation-1-session-2",
             "capture_generation": 2,
@@ -4175,7 +3926,7 @@ mod tests {
         assert!(state.latest_report.is_none());
 
         let stopped = RunEvent::from_value(json!({
-            "schema": "scorepeek-run-event-v2",
+            "schema": "scorepeek-run-event-v3",
             "event": "watcher_stopped",
             "invocation_id": "invocation-1",
             "reason": "signal"
@@ -4246,7 +3997,7 @@ mod tests {
         );
 
         let next_session = RunEvent {
-            schema: "scorepeek-run-event-v2".to_owned(),
+            schema: "scorepeek-run-event-v3".to_owned(),
             kind: RunEventKind::SessionStarted {
                 session_id: Some("session-2".to_owned()),
                 capture_generation: 2,
@@ -4308,7 +4059,10 @@ mod tests {
         state.capture_generation = Some(3);
         state.resolver = ResolverDebugSnapshot {
             now_ms: 14_900,
+            raw_screen: Some("result".to_owned()),
             screen: Some("result".to_owned()),
+            suspended: false,
+            finalizing: false,
             screen_episode_id: 18,
             screen_episode_started_ms: Some(2_000),
             source_sequence: Some(1_240),
@@ -4323,7 +4077,7 @@ mod tests {
                 margin: 80,
                 state: ResolverResolutionState::AcceptedJoint,
             }),
-            challenger: None,
+            successor: None,
             attempt: Some(AttemptNodeSnapshot {
                 attempt_id: Some(14),
                 started_ms: Some(1_000),
@@ -4389,6 +4143,7 @@ mod tests {
             support: 155,
         };
         let observation = JointEvidenceObservation {
+            catalog_song_count: 0,
             candidates: vec![candidate],
         };
         let mut accumulator = HypothesisAccumulator::default();
@@ -4400,6 +4155,7 @@ mod tests {
         accumulator.observe(
             200,
             &JointEvidenceObservation {
+                catalog_song_count: 0,
                 candidates: Vec::new(),
             },
         );
@@ -4411,7 +4167,7 @@ mod tests {
         for tick in 0..20 {
             accumulator.observe(400 + tick, &observation);
         }
-        let accepted = accumulator.accepted().unwrap();
+        let accepted = accumulator.summary().accepted().unwrap();
         let stored = &accumulator.candidates[&JointKey {
             song_id,
             chart_key: accepted.chart.key,
@@ -4450,6 +4206,7 @@ mod tests {
             support,
         };
         let observation = JointEvidenceObservation {
+            catalog_song_count: 0,
             candidates: vec![make(Difficulty::Hyper, 170), make(Difficulty::Another, 70)],
         };
         let mut accumulator = HypothesisAccumulator::default();
@@ -4477,6 +4234,47 @@ mod tests {
     }
 
     #[test]
+    fn selection_epoch_hands_off_only_the_latest_unfinished_successor() {
+        let song = |suffix: u8| {
+            serde_json::from_str(&format!("\"00000000-0000-0000-0000-{suffix:012}\"")).unwrap()
+        };
+        let observation = |song_id, support| JointEvidenceObservation {
+            catalog_song_count: 100,
+            candidates: vec![JointEvidenceCandidate {
+                song_id,
+                chart: scorepeek::catalog::Chart {
+                    key: scorepeek::catalog::ChartKey {
+                        play_type: PlayType::Single,
+                        difficulty: Difficulty::Hyper,
+                    },
+                    level: 8,
+                    notes: 764,
+                },
+                display_titles: vec![format!("SONG {song_id:?}")],
+                artist: "ARTIST".to_owned(),
+                family_support: BTreeMap::from([(EvidenceFamily::SelectTitleLexical, support)]),
+                support,
+            }],
+        };
+        let incumbent = song(1);
+        let successor = song(2);
+        let mut epochs = SelectionEpochTracker::default();
+        epochs.observe(100, &observation(incumbent, 300));
+        epochs.observe(200, &observation(successor, 70));
+        assert_eq!(
+            epochs.handoff().summary().selected.unwrap().song_id,
+            successor
+        );
+
+        epochs.observe(300, &observation(incumbent, 300));
+        assert!(epochs.successor.candidates.is_empty());
+        assert_eq!(
+            epochs.handoff().summary().selected.unwrap().song_id,
+            incumbent
+        );
+    }
+
+    #[test]
     fn accepted_hypothesis_can_return_to_conflict_on_new_contradictory_evidence() {
         let first_song = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
         let second_song = serde_json::from_str("\"00000000-0000-0000-0000-000000000002\"").unwrap();
@@ -4499,6 +4297,7 @@ mod tests {
         accumulator.observe(
             100,
             &JointEvidenceObservation {
+                catalog_song_count: 0,
                 candidates: vec![candidate(first_song, EvidenceFamily::ResultTitle)],
             },
         );
@@ -4509,6 +4308,7 @@ mod tests {
         accumulator.observe(
             200,
             &JointEvidenceObservation {
+                catalog_song_count: 0,
                 candidates: vec![candidate(second_song, EvidenceFamily::ResultArtist)],
             },
         );

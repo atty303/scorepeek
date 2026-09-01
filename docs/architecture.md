@@ -19,7 +19,8 @@ flowchart LR
   TX["Textage"] --> AD
   D["INFINITAS roster signal"] --> AD
   AD --> FC["Federated catalog snapshot"]
-  CF --> SCR["10 Hz screen resolver\nepisode owner"]
+  CF --> SC["10 Hz screen classifier\nknown or unknown"]
+  SC --> SCR["Semantic screen episode\nsuspend, drain, finalize"]
   SCR --> RE["Screen-specific field observers"]
   TM["PP-OCR text model"] --> RE
   NM["Fixed-cell HOG/MLP numeric model"] --> RE
@@ -27,7 +28,8 @@ flowchart LR
   RE --> ER
   ER --> AR["Play-attempt resolver"]
   SCR --> AR
-  AR --> DE["Accepted domain event"]
+  AR --> RF["RESULT-close finalizer"]
+  RF --> DE["Accepted domain event"]
   DE --> ENV["Daemon transport envelope"]
   ENV --> API["Unix socket NDJSON v1"]
   API --> UI["Future UI and consumers"]
@@ -153,20 +155,22 @@ Display dashes are a separate fixed marker predicate rather than an MLP class. O
 accuracy uses only operator-selected stable result frames; transition rows remain unsupervised
 source evidence. The measured level variants cover one-digit ANOTHER/BEGINNER/HYPER and two-digit
 ANOTHER/HYPER, while unmeasured variants fail closed.
-Every due 100 ms tick evaluates the screen predicate independently of the bounded field
-worker. While that worker is occupied, result/music-select crop routing and submission alone are
-skipped and recorded as `field_observation_busy_skip`; screen transitions and play-attempt state
-continue at the screen cadence. Numeric model, preprocessor, candidate, joint-score, and typed
-decisions remain debug artifacts; only a temporally accepted result can reach the domain event.
-Level remains advisory. Before song acceptance, a calibrated known level may only narrow candidates
-already established by text, difficulty, and notes. For an already accepted result song, chart
-resolution ignores observed level, keeps its mismatch as debug evidence, and selects the unique
-single-play chart from accepted difficulty and any known notes. Zero or multiple matches remain
-unknown; the catalog supplies the accepted chart level.
-The screen resolver owns continuity before any field worker result. It assigns a monotonically
-increasing episode ID at each classified-screen change and keeps first/last source sequence and
-monotonic duration while OCR is busy. A field result applies only to the episode under which it was
-submitted; late results remain diagnostic evidence.
+Every due 100 ms tick evaluates the raw screen predicate independently of the bounded field worker.
+The classifier produces only a known screen or typed unknown reason. `ScreenEpisodeResolver` owns
+semantic continuity: raw unknown suspends the current known episode, the same known screen resumes
+it, and only a different known screen, session boundary, or reversed chronology closes it. While
+the field worker is occupied, crop submission alone is skipped as `field_observation_busy_skip`;
+raw observation, semantic duration, and attempt path continue at screen cadence. Numeric model,
+title geometry, candidates, and provisional decisions remain debug evidence.
+Level remains advisory. A calibrated known level may add support only to candidates already
+established by non-level song evidence and never rejects an otherwise supported chart. SP and DP
+charts remain in the joint catalog distribution; difficulty and known notes distinguish siblings.
+The catalog supplies the level of the accepted joint chart, while observed mismatch remains debug
+evidence.
+Each admitted field request carries its semantic episode ID and source sequence. Closing an episode
+stops admission, drains all already-admitted jobs, applies their results to the closing episode,
+and finalizes it before the next known screen changes attempt state. A different generation,
+reversed chronology, or post-close submission is typed late evidence and cannot affect resolution.
 
 The screen adapter converts full-catalog text metrics and typed chart observations into integer
 support for joint `(song, play type, difficulty)` hypotheses. A common accumulator keeps raw `u64`
@@ -174,10 +178,18 @@ candidate sums across different source sequences. Summary normalization finds th
 in each family and, only above 300, scales every candidate in that family by the same ratio. This
 caps repeated evidence while preserving candidate margins. Empty or unknown fields add zero and
 never erase earlier support. RESULT keeps one accumulator for its screen episode.
-MUSIC SELECT keeps current and challenger accumulators and changes current only after a disjoint
-challenger exceeds the calibrated change margin. Central, active-full, and active-prefix title
-presentations share one family per frame rather than becoming independent votes. Level is positive
-advice only and never vetoes a joint candidate.
+MUSIC SELECT keeps incumbent and successor selection epochs. Intersecting evidence accumulates in
+the incumbent; disjoint evidence accumulates in the successor and replaces it at the calibrated
+change margin. If the screen closes first, the latest unfinished successor is handed off instead
+of the stale incumbent. Empty and catalog-common observations cannot move an epoch.
+
+All active-list titles use one foreground-aware extractor. It masks grayscale values above 80,
+takes the complete foreground bounding box with four horizontal pixels of margin and the original
+ROI height, then runs the registered dynamic PP-OCR runtime. Wide OCR remains raw diagnostic
+evidence; foreground OCR is lexical authority. Empty and whitespace-normalized values are absent.
+Foreground Unicode scalar count and width may add a separate structural family to non-search title
+variants of the same length. Raw `X` remains lexical evidence for catalog `X`; it is never aliased
+to `〆`.
 
 MUSIC SELECT submits only central title, artist, and active-list title to PP-OCR. Difficulty comes
 from five fixed canonical `PLAYER 01` marker slots in integrated-context layout v3. The shared RGB
@@ -185,14 +197,19 @@ panel/fill/glyph predicate requires exactly one winner above both a minimum and 
 states remain typed unknown. Difficulty support narrows charts only under an already text-supported
 song and cannot generate song identity.
 
-The attempt resolver combines retained select and result distributions on the same joint catalog
-hierarchy. A select screen can preserve linkage without an accepted identity, allowing sufficient
-result evidence to finish an observed select/play/result path. Returning through MUSIC SELECT
-clears the prior select distribution and starts a fresh parentless path; only direct RESULT-to-PLAY
-inherits retry evidence. Emitted attempt IDs remain deduplicated across screen-episode changes.
-Clear type and fixed-cell numeric
-performance remain independent typed gates. OCR never ranks catalog candidates, owns stability, or
-accepts a song/chart.
+The attempt resolver owns select and result evidence snapshots rather than an armed song and a
+separate result song. It combines them once on the same `(song, play type, difficulty)` catalog
+hierarchy. SP and DP remain sibling candidates until difficulty and notes distinguish them. A
+select screen preserves linkage without accepted identity, allowing sufficient RESULT evidence to
+finish an observed select/play/result path. Returning through MUSIC SELECT starts a fresh context;
+only direct RESULT-to-PLAY inherits its parent selection once without re-adding frame support.
+
+RESULT identity, clear type, and fixed-cell numeric performance remain provisional while the screen
+is displayed. After semantic RESULT close and admitted-field drain, finalization validates path,
+joint identity, clear type, score invariants, and required numeric tuple exactly once. It records a
+confirmed `play_attempt_changed` before the attempt's sole v2 domain event. Unresolved or conflicting
+final state completes the attempt with a typed reason and emits no domain result. OCR produces raw
+and typed observations; it never owns catalog acceptance or stability.
 
 The active-suite video-replay path can produce an
 immutable operator-review draft. It reproduces 10 Hz packet-order sampling and measures the right
@@ -227,17 +244,16 @@ presentation described above. Operator truth remains evaluation-only and never e
 raw central-title text variation remains separate from song-ID state. Neither the offline evidence
 surface nor `temporal_music_select_changed` grants accepted event authority.
 
-Independent canonical predicates classify decision and gameplay without routing OCR. The attempt
-reducer records select/decide/play/result sequence spans, accepts a missing decision transition,
-inherits retry evidence once, and leaves PLAY or RESULT without select/retry linkage unlinked. Every
-identity, clear, numeric, or path transition re-evaluates promotion. A confirmed
-`play_attempt_changed` is recorded before the attempt's one accepted result event.
+Independent canonical predicates classify decision and gameplay without routing OCR. Missing
+decision transition remains acceptable, while PLAY or RESULT without select/retry linkage and a
+result without observed play remain typed unlinked rejections.
 
 Every inspected source sequence has one diagnostic field status. Busy, non-applicable, and rejected
 submissions are recorded after the synchronous screen/output path; completed and late outputs are
-recorded after the field worker and attempt/output path return. Recognition observation v13 carries
-the typed MUSIC SELECT marker and completed/late status with the retained field output. Typed
-resolver transition events retain top/runner/state changes and raw/normalized family contributions.
+recorded after the field worker and attempt/output path return. Recognition observation v14 carries
+title views and geometry, the typed MUSIC SELECT marker, semantic episode binding, joint/numeric
+decisions, and completed/late status. Typed resolver transition events retain
+incumbent/successor/result/joint top, runner, state, and raw/normalized family contributions.
 Frame timing records actual screen resolver, attempt resolver, and synchronous output durations on
 the originating source sequence; async queue wait is excluded. Optional stage timings distinguish
 an unexecuted stage from a measured zero and never affect recognition or event semantics.
@@ -264,15 +280,9 @@ The session output is deterministic for recorded inputs. UUIDv7 IDs and wall
 clock delivery timestamps belong to a daemon-owned transport envelope, not the
 recognition result compared by replay tests.
 
-A screen-local episode stabilizes its own fields. The stateful recognition
-boundary retains only the last stable music-selection candidate set. Result
-candidates may intersect with it to improve song uniqueness, but context never
-substitutes for result detection, savability, or result-only fields. Neutral or
-unrecognized scenes preserve context; a new stable selection replaces it; a
-confident title/session end, coverage gap, or recognition-binding change clears
-it. Result processing does not consume it because result-to-gameplay replay can
-occur without another selection. Mode, attempts, retry count, and full-session
-composition remain outside recognition-core ownership.
+Screen-local evidence remains provisional and is never a domain event. Semantic episode close and
+attempt finalization are the only promotion boundary; completed attempts, retry parentage, and
+event deduplication therefore belong to the resolver rather than OCR or output presentation.
 
 Development uses a small number of scenario recordings, including a retained
 ordinary full-session recording. The complete game flow remains validation
@@ -462,13 +472,13 @@ final identity check is outside the operator-trusted private-artifact boundary.
 
 ### Event API
 
-The ordinary foreground runtime currently exposes provisional recognition observations at
-`$XDG_RUNTIME_DIR/scorepeek/observations-v2.sock`. A connection begins with a bounded current-state
-snapshot and then receives sequenced `scorepeek-run-event-v2` NDJSON. This local observation surface
-may include raw OCR, catalog-backed selected and runner-up song presentations, and resolver metrics;
-bounded `screen_changed` records expose synchronous predicate boundaries and episode IDs without
-publishing the private duration tick; additive `play_attempt_changed` records expose selection arming before decision plus the
-latest provisional selection-to-result path and retry link without altering raw recognition;
+The ordinary foreground runtime exposes provisional recognition observations at
+`$XDG_RUNTIME_DIR/scorepeek/observations-v3.sock`. A connection begins with a bounded v3
+current-state snapshot and then receives sequenced `scorepeek-run-event-v3` NDJSON. This local
+observation surface may include raw OCR, foreground title geometry, joint candidates, and resolver
+metrics. `raw_screen_observed` is separate from semantic episode started, suspended, resumed,
+closing, and finalized transitions; `play_attempt_changed` contains the evidence-linked path and
+typed final relation without altering raw recognition;
 `next_channel_sequence` marks the first event not represented by the snapshot so a client can
 discard an already-represented live record and detect later gaps. It is intentionally separate from
 accepted domain events. TTY stdout renders the same typed run state as a TUI, while non-TTY stdout
@@ -476,11 +486,12 @@ reports only human-readable state changes.
 
 The TUI has one vertical layout: four rows for Watcher, nine for Latest domain, and the remaining
 rows for Resolver. Latest domain retains and renders only the newest accepted v2 result. Resolver
-formats a typed tree containing the screen episode, current/challenger or result accumulator,
-attempt hierarchy, and first blocking gate. It shows integer-second monotonic durations from the
-private 10 Hz tick, but that redraw creates no run event, socket record, plain-output line, or domain
-event. Raw OCR is limited to the current screen's important fields; candidates, logits, and frame
-timing remain in artifacts. Terminals below 80 by 25 are allowed to clip without a second layout.
+formats a typed tree containing raw and semantic screens, incumbent/successor or result evidence,
+foreground title geometry, attempt hierarchy, drain/finalize state, and first blocking gate. It
+shows integer-second monotonic durations from the private 10 Hz tick, but that redraw creates no run
+event, socket record, plain-output line, or domain event. Raw OCR is limited to the current screen's
+important fields; candidates, logits, and frame timing remain in artifacts. Terminals below 80 by
+25 are allowed to clip without a second layout.
 
 The first public interface is a same-user Unix socket at
 `$XDG_RUNTIME_DIR/scorepeek/v1.sock`. It streams versioned NDJSON accepted

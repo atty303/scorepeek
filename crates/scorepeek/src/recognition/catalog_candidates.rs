@@ -335,14 +335,25 @@ struct ObservationForms {
 }
 
 fn observation_forms(value: &str) -> ObservationForms {
+    if value.trim().is_empty() {
+        return ObservationForms {
+            raw_and_exact: vec![Vec::new()],
+            folded: Vec::new(),
+        };
+    }
+    let exact = exact_comparison_key(value);
+    let folded = folded_comparison_key(value);
+    if exact.is_empty() && folded.is_empty() {
+        return ObservationForms {
+            raw_and_exact: vec![Vec::new()],
+            folded: Vec::new(),
+        };
+    }
     ObservationForms {
-        raw_and_exact: BTreeSet::from([
-            value.chars().collect(),
-            exact_comparison_key(value).chars().collect(),
-        ])
-        .into_iter()
-        .collect(),
-        folded: folded_comparison_key(value).chars().collect(),
+        raw_and_exact: BTreeSet::from([value.chars().collect(), exact.chars().collect()])
+            .into_iter()
+            .collect(),
+        folded: folded.chars().collect(),
     }
 }
 
@@ -350,6 +361,15 @@ fn score_text(
     observations: &ObservationForms,
     candidates: &TextCandidateDomain,
 ) -> CatalogTextCandidateScore {
+    if observations.folded.is_empty() && observations.raw_and_exact.iter().all(Vec::is_empty) {
+        return CatalogTextCandidateScore {
+            minimum_edit_distance: usize::MAX,
+            maximum_normalized_similarity: CatalogNormalizedSimilarity {
+                matching_units: 0,
+                compared_units: 0,
+            },
+        };
+    }
     let mut minimum_edit_distance = usize::MAX;
     let mut maximum_normalized_similarity = None;
     for (observation, candidate) in observations
@@ -392,6 +412,15 @@ fn score_prefix(
     observations: &ObservationForms,
     candidates: &TextCandidateDomain,
 ) -> CatalogPrefixCandidateScore {
+    if observations.folded.is_empty() && observations.raw_and_exact.iter().all(Vec::is_empty) {
+        return CatalogPrefixCandidateScore {
+            minimum_edit_distance: usize::MAX,
+            maximum_normalized_similarity: CatalogNormalizedSimilarity {
+                matching_units: 0,
+                compared_units: 0,
+            },
+        };
+    }
     let mut minimum_edit_distance = usize::MAX;
     let mut maximum_normalized_similarity = None;
     for (observation, candidate) in observations
@@ -585,6 +614,37 @@ mod tests {
                 .unwrap()
                 .song_id
         );
+    }
+
+    #[test]
+    fn empty_and_whitespace_text_are_absent_instead_of_exact_prefix_evidence() {
+        let domain = CatalogCandidateDomain::from_catalog(&catalog()).unwrap();
+        for value in ["", " \t\n"] {
+            let observations =
+                ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
+                    central_title: text(value),
+                    artist: text(value),
+                    selected_difficulty: crate::recognition::test_music_select_difficulty(None),
+                    active_list_title: text(value),
+                });
+            let ScreenCatalogCandidateObservations::MusicSelect { candidates, .. } =
+                domain.observe(&observations)
+            else {
+                panic!("music-select observations changed screen");
+            };
+            assert!(candidates.iter().all(|candidate| {
+                candidate
+                    .active_list_title
+                    .maximum_normalized_similarity
+                    .compared_units
+                    == 0
+                    && candidate
+                        .active_list_title_prefix
+                        .maximum_normalized_similarity
+                        .compared_units
+                        == 0
+            }));
+        }
     }
 
     #[test]

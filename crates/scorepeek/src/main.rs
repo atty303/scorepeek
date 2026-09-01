@@ -581,7 +581,7 @@ fn run_routine_live_session(
         &mut output,
     )?;
     output.publish(&routine_output::RunEvent {
-        schema: "scorepeek-run-event-v2".to_owned(),
+        schema: "scorepeek-run-event-v3".to_owned(),
         kind: routine_output::RunEventKind::WatcherStarted {
             invocation_id: invocation_id.clone(),
             profile_sha256: selected.binding.capture_profile_sha256().to_owned(),
@@ -755,7 +755,7 @@ fn run_routine_live_session(
                         _ => "error",
                     };
                     output.publish(&routine_output::RunEvent {
-                        schema: "scorepeek-run-event-v2".to_owned(),
+                        schema: "scorepeek-run-event-v3".to_owned(),
                         kind: routine_output::RunEventKind::SessionFinished {
                             session_id: session_id.clone(),
                             capture_generation: generation,
@@ -920,7 +920,7 @@ fn run_routine_live_session(
         &mut output,
     )?;
     output.publish(&routine_output::RunEvent {
-        schema: "scorepeek-run-event-v2".to_owned(),
+        schema: "scorepeek-run-event-v3".to_owned(),
         kind: routine_output::RunEventKind::WatcherStopped {
             invocation_id,
             reason: "signal".to_owned(),
@@ -1283,7 +1283,7 @@ fn live_session_event_value(
     event: capture_live::GamescopeLiveSessionEvent<'_>,
 ) -> Result<serde_json::Value, String> {
     let schema = if session_id.is_some() {
-        "scorepeek-run-event-v2"
+        "scorepeek-run-event-v3"
     } else {
         "scorepeek-live-session-event-v1"
     };
@@ -1305,8 +1305,8 @@ fn live_session_event_value(
             }
             value
         }
-        capture_live::GamescopeLiveSessionEvent::ScreenChanged {
-            screen_episode_id,
+        capture_live::GamescopeLiveSessionEvent::RawScreenObserved {
+            semantic_episode_id,
             sequence,
             monotonic_start_ms,
             monotonic_end_ms,
@@ -1314,12 +1314,14 @@ fn live_session_event_value(
         } => {
             let mut value = serde_json::json!({
                 "schema": schema,
-                "event": "screen_changed",
-                "screen_episode_id": screen_episode_id,
+                "event": "raw_screen_observed",
+                "semantic_episode_id": semantic_episode_id,
                 "sequence": sequence,
                 "monotonic_start_ms": monotonic_start_ms,
                 "monotonic_end_ms": monotonic_end_ms,
                 "screen": screen,
+                "unknown_reason": (screen == scorepeek::recognition::ScreenClass::Unknown)
+                    .then_some("predicate_not_matched"),
             });
             if let Some(session_id) = session_id {
                 value["session_id"] = session_id.into();
@@ -1327,21 +1329,28 @@ fn live_session_event_value(
             }
             value
         }
-        capture_live::GamescopeLiveSessionEvent::ScreenTick {
+        capture_live::GamescopeLiveSessionEvent::SemanticScreenEpisode {
             screen_episode_id,
             sequence,
             monotonic_end_ms,
             screen,
-            timing,
-        } => serde_json::json!({
-            "schema": schema,
-            "event": "screen_tick",
-            "screen_episode_id": screen_episode_id,
-            "sequence": sequence,
-            "monotonic_end_ms": monotonic_end_ms,
-            "screen": screen,
-            "frame_timing": timing,
-        }),
+            phase,
+        } => {
+            let mut value = serde_json::json!({
+                "schema": schema,
+                "event": "semantic_screen_episode_changed",
+                "screen_episode_id": screen_episode_id,
+                "sequence": sequence,
+                "monotonic_end_ms": monotonic_end_ms,
+                "screen": screen,
+                "phase": phase,
+            });
+            if let Some(session_id) = session_id {
+                value["session_id"] = session_id.into();
+                value["capture_generation"] = routine_generation.into();
+            }
+            value
+        }
         capture_live::GamescopeLiveSessionEvent::Observation {
             screen_episode_id,
             sequence,
@@ -1382,6 +1391,7 @@ fn live_session_event_value(
                         "artist": fields.artist.open_text,
                         "selected_difficulty": fields.selected_difficulty,
                         "active_list_title": fields.active_list_title.open_text,
+                        "title_evidence": observation.title_evidence(),
                     }),
                 ),
             };
@@ -3747,12 +3757,12 @@ mod tests {
     }
 
     #[test]
-    fn routine_screen_change_binds_raw_screen_boundary() {
+    fn routine_screen_events_separate_raw_observation_and_semantic_episode() {
         let value = live_session_event_value(
             Some("invocation-session-2"),
             Some(2),
-            GamescopeLiveSessionEvent::ScreenChanged {
-                screen_episode_id: 1,
+            GamescopeLiveSessionEvent::RawScreenObserved {
+                semantic_episode_id: Some(1),
                 sequence: 41,
                 monotonic_start_ms: 100,
                 monotonic_end_ms: 125,
@@ -3760,9 +3770,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v2");
-        assert_eq!(value["event"], "screen_changed");
-        assert_eq!(value["screen_episode_id"], 1);
+        assert_eq!(value["schema"], "scorepeek-run-event-v3");
+        assert_eq!(value["event"], "raw_screen_observed");
+        assert_eq!(value["semantic_episode_id"], 1);
         assert_eq!(value["session_id"], "invocation-session-2");
         assert_eq!(value["capture_generation"], 2);
         assert_eq!(value["sequence"], 41);
@@ -3771,16 +3781,17 @@ mod tests {
         let mode = live_session_event_value(
             Some("invocation-session-2"),
             Some(2),
-            GamescopeLiveSessionEvent::ScreenChanged {
+            GamescopeLiveSessionEvent::SemanticScreenEpisode {
                 screen_episode_id: 1,
                 sequence: 42,
-                monotonic_start_ms: 125,
                 monotonic_end_ms: 150,
                 screen: scorepeek::recognition::ScreenClass::ModeSelect,
+                phase: crate::capture_live::SemanticScreenEpisodePhase::Started,
             },
         )
         .unwrap();
         assert_eq!(mode["screen"], "mode_select");
+        assert_eq!(mode["phase"], "started");
     }
 
     #[test]
@@ -3850,7 +3861,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v2");
+        assert_eq!(value["schema"], "scorepeek-run-event-v3");
         assert_eq!(value["session_id"], "invocation-session-2");
         assert_eq!(value["capture_generation"], 2);
         assert_eq!(value["sequence"], 1);

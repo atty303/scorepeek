@@ -18,6 +18,7 @@ mod recognition_artifact;
 pub mod recognition_cadence;
 #[allow(dead_code)]
 pub mod recognition_live;
+pub mod screen_episode;
 pub mod song_context;
 pub mod temporal_recognition;
 

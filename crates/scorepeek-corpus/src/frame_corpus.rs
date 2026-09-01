@@ -180,6 +180,31 @@ enum StoredRunEventPayload {
         monotonic_end_ms: u64,
         screen: String,
     },
+    RawScreenObserved {
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        semantic_episode_id: Option<u64>,
+        sequence: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+        screen: String,
+        unknown_reason: Option<String>,
+    },
+    SemanticScreenEpisodeChanged {
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        screen_episode_id: u64,
+        sequence: u64,
+        monotonic_end_ms: u64,
+        screen: String,
+        phase: String,
+    },
+    ScreenTick {
+        screen_episode_id: u64,
+        sequence: u64,
+        monotonic_end_ms: u64,
+        screen: String,
+    },
     FieldObservation {
         session_id: Option<String>,
         capture_generation: Option<u64>,
@@ -231,6 +256,21 @@ enum StoredRunEventPayload {
         capture_generation: Option<u64>,
         source_sequence: Option<u64>,
         state: Value,
+    },
+    ResolverStateChanged {
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        screen_episode_id: u64,
+        source_sequence: u64,
+        scope: String,
+        state: String,
+        top: Option<Value>,
+        runner_up: Option<Value>,
+        support: u16,
+        margin: u16,
+        selected_family_support: Value,
+        runner_up_family_support: Value,
+        observation_count: u32,
     },
     SessionFinished {
         session_id: String,
@@ -3326,7 +3366,9 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
         })?;
         if !matches!(
             schema,
-            "scorepeek-private-diagnostic-event-v1" | "scorepeek-run-event-v2"
+            "scorepeek-private-diagnostic-event-v1"
+                | "scorepeek-run-event-v2"
+                | "scorepeek-run-event-v3"
         ) || event_schema
             .as_deref()
             .is_some_and(|expected| expected != schema)
@@ -3334,7 +3376,7 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
             return invalid("diagnostic session event schema is invalid");
         }
         event_schema.get_or_insert(schema.to_owned());
-        if schema == "scorepeek-run-event-v2" {
+        if matches!(schema, "scorepeek-run-event-v2" | "scorepeek-run-event-v3") {
             serde_json::from_value::<StoredRunEventPayload>(record.clone()).map_err(|_| {
                 CorpusError::InvalidRequest("diagnostic run event payload is invalid".to_owned())
             })?;

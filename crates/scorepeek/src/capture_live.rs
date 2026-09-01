@@ -41,6 +41,9 @@ use scorepeek::recognition::{
     ScreenFieldObservationError,
 };
 use scorepeek::recognition_cadence::{CadenceDecision, RecognitionCadence};
+use scorepeek::screen_episode::{
+    RawScreenState, ScreenEpisodeResolver, ScreenEpisodeTransition, SemanticScreenEpisode,
+};
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(2);
 const RECEIVER_START_TIMEOUT: Duration = Duration::from_secs(2);
@@ -151,6 +154,16 @@ pub enum LiveSessionStartupRetry {
     Catalog,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticScreenEpisodePhase {
+    Started,
+    Suspended,
+    Resumed,
+    Closing,
+    Finalized,
+}
+
 #[derive(Clone, Copy)]
 pub enum GamescopeLiveSessionEvent<'a> {
     Started {
@@ -158,19 +171,19 @@ pub enum GamescopeLiveSessionEvent<'a> {
         capture_profile_sha256: &'a str,
         normalizer_artifact_sha256: &'a str,
     },
-    ScreenChanged {
-        screen_episode_id: u64,
+    RawScreenObserved {
+        semantic_episode_id: Option<u64>,
         sequence: u64,
         monotonic_start_ms: u64,
         monotonic_end_ms: u64,
         screen: ScreenClass,
     },
-    ScreenTick {
+    SemanticScreenEpisode {
         screen_episode_id: u64,
         sequence: u64,
         monotonic_end_ms: u64,
         screen: ScreenClass,
-        timing: crate::recognition_live::FrameProcessingTiming,
+        phase: SemanticScreenEpisodePhase,
     },
     Observation {
         screen_episode_id: u64,
@@ -1513,17 +1526,18 @@ fn offer_live_field_observation_frames(
     artifact_worker: &mut Option<RecognitionArtifactWorker>,
     sink: &mut BoundedDiagnosticSink,
     emit: &mut LiveEventEmitter<'_>,
-    minimum_event_sequence: &mut Option<u64>,
+    _minimum_event_sequence: &mut Option<u64>,
 ) -> Option<(FieldObservationGateErrorType, Option<CaptureErrorType>)> {
     let mut cadence = RecognitionCadence::default();
-    let mut last_emitted_screen = None;
-    let mut screen_episode_id = 0_u64;
+    let mut episodes = ScreenEpisodeResolver::default();
     let mut source = GamescopeCanonicalFrameSource {
         lease,
         counters,
         sink,
     };
-    while !stop.load(Ordering::Acquire) {
+    let mut terminal = None;
+    let mut semantic_close_failed = false;
+    'capture: while !stop.load(Ordering::Acquire) {
         if let Some(error) = poll_field_observations(
             session,
             pending,
@@ -1531,13 +1545,17 @@ fn offer_live_field_observation_frames(
             artifact_worker,
             None,
             Some(emit),
-            *minimum_event_sequence,
+            None,
         ) {
-            return Some((error, None));
+            terminal = Some((error, None));
+            break 'capture;
         }
         let frame = match source.next_frame(LIVE_SESSION_POLL_INTERVAL) {
             Ok(frame) => frame,
-            Err(error) => return Some(error),
+            Err(error) => {
+                terminal = Some(error);
+                break 'capture;
+            }
         };
         if let Some(mut frame) = frame {
             match cadence.observe(frame.monotonic_end_ms()) {
@@ -1555,7 +1573,8 @@ fn offer_live_field_observation_frames(
                 session.inspect(&frame)
             };
             let Ok(result) = inspected else {
-                return Some((FieldObservationGateErrorType::RecognitionFailed, None));
+                terminal = Some((FieldObservationGateErrorType::RecognitionFailed, None));
+                break 'capture;
             };
             source.counters.inspected_frames = source.counters.inspected_frames.saturating_add(1);
             let screen_counter = match result.observation.screen() {
@@ -1568,44 +1587,140 @@ fn offer_live_field_observation_frames(
             };
             *screen_counter = screen_counter.saturating_add(1);
             let screen = result.observation.screen();
-            let screen_changed = last_emitted_screen != Some(screen);
-            if screen_changed {
-                screen_episode_id = screen_episode_id.saturating_add(1);
-                if last_emitted_screen.is_some() {
-                    *minimum_event_sequence = Some(frame.sequence());
-                }
-            }
+            let episode_transition = episodes.observe(
+                RawScreenState::from(screen),
+                frame.sequence(),
+                frame.monotonic_end_ms(),
+            );
             let mut live_timing = LiveEventProcessingTiming::default();
             let mut output_failed = false;
-            if screen_changed {
-                match emit(GamescopeLiveSessionEvent::ScreenChanged {
-                    screen_episode_id,
-                    sequence: frame.sequence(),
-                    monotonic_start_ms: frame.monotonic_start_ms(),
-                    monotonic_end_ms: frame.monotonic_end_ms(),
-                    screen,
-                }) {
-                    Ok(timing) => {
-                        live_timing.add(timing);
-                        last_emitted_screen = Some(screen);
+            match emit(GamescopeLiveSessionEvent::RawScreenObserved {
+                semantic_episode_id: episodes.active().map(|episode| episode.id),
+                sequence: frame.sequence(),
+                monotonic_start_ms: frame.monotonic_start_ms(),
+                monotonic_end_ms: frame.monotonic_end_ms(),
+                screen,
+            }) {
+                Ok(timing) => live_timing.add(timing),
+                Err(_) => output_failed = true,
+            }
+
+            let transition_result: Result<(), FieldObservationGateErrorType> =
+                (|| match episode_transition {
+                    ScreenEpisodeTransition::None | ScreenEpisodeTransition::Continued(_) => Ok(()),
+                    ScreenEpisodeTransition::Started(started) => {
+                        live_timing.add(emit_semantic_episode(
+                            emit,
+                            started,
+                            frame.sequence(),
+                            frame.monotonic_end_ms(),
+                            SemanticScreenEpisodePhase::Started,
+                        )?);
+                        Ok(())
                     }
-                    Err(_) => output_failed = true,
-                }
-            }
-            if !output_failed {
-                match emit(GamescopeLiveSessionEvent::ScreenTick {
-                    screen_episode_id,
-                    sequence: frame.sequence(),
-                    monotonic_end_ms: frame.monotonic_end_ms(),
-                    screen,
-                    timing: result.timing,
-                }) {
-                    Ok(timing) => live_timing.add(timing),
-                    Err(_) => output_failed = true,
-                }
-            }
+                    ScreenEpisodeTransition::Suspended(active) => {
+                        live_timing.add(emit_semantic_episode(
+                            emit,
+                            active,
+                            frame.sequence(),
+                            frame.monotonic_end_ms(),
+                            SemanticScreenEpisodePhase::Suspended,
+                        )?);
+                        Ok(())
+                    }
+                    ScreenEpisodeTransition::Resumed(active) => {
+                        live_timing.add(emit_semantic_episode(
+                            emit,
+                            active,
+                            frame.sequence(),
+                            frame.monotonic_end_ms(),
+                            SemanticScreenEpisodePhase::Resumed,
+                        )?);
+                        Ok(())
+                    }
+                    ScreenEpisodeTransition::Replaced { closed, started } => {
+                        live_timing.add(emit_semantic_episode(
+                            emit,
+                            closed,
+                            frame.sequence(),
+                            frame.monotonic_end_ms(),
+                            SemanticScreenEpisodePhase::Closing,
+                        )?);
+                        if let Some((error, _)) = wait_live_field_observations(
+                            session,
+                            pending,
+                            source.counters,
+                            artifact_worker,
+                            Some(emit),
+                            None,
+                        ) {
+                            return Err(error);
+                        }
+                        live_timing.add(emit_semantic_episode(
+                            emit,
+                            closed,
+                            frame.sequence(),
+                            frame.monotonic_end_ms(),
+                            SemanticScreenEpisodePhase::Finalized,
+                        )?);
+                        live_timing.add(emit_semantic_episode(
+                            emit,
+                            started,
+                            frame.sequence(),
+                            frame.monotonic_end_ms(),
+                            SemanticScreenEpisodePhase::Started,
+                        )?);
+                        Ok(())
+                    }
+                    ScreenEpisodeTransition::ChronologyReset { closed, started } => {
+                        live_timing.add(emit_semantic_episode(
+                            emit,
+                            closed,
+                            frame.sequence(),
+                            frame.monotonic_end_ms(),
+                            SemanticScreenEpisodePhase::Closing,
+                        )?);
+                        if let Some((error, _)) = wait_live_field_observations(
+                            session,
+                            pending,
+                            source.counters,
+                            artifact_worker,
+                            Some(emit),
+                            None,
+                        ) {
+                            return Err(error);
+                        }
+                        live_timing.add(emit_semantic_episode(
+                            emit,
+                            closed,
+                            frame.sequence(),
+                            frame.monotonic_end_ms(),
+                            SemanticScreenEpisodePhase::Finalized,
+                        )?);
+                        if let Some(started) = started {
+                            live_timing.add(emit_semantic_episode(
+                                emit,
+                                started,
+                                frame.sequence(),
+                                frame.monotonic_end_ms(),
+                                SemanticScreenEpisodePhase::Started,
+                            )?);
+                        }
+                        Ok(())
+                    }
+                })();
             let mut frame_timing = result.timing;
             frame_timing.add_live_processing(live_timing);
+            if let Err(error) = transition_result {
+                let _ = session.record_frame_processing_timing(
+                    frame_timing,
+                    crate::diagnostic_recording::FrameFieldStatus::Failed,
+                    None,
+                );
+                semantic_close_failed = true;
+                terminal = Some((error, None));
+                break 'capture;
+            }
             let mut field_terminal = None;
             match result.field_submission {
                 FieldObservationSubmission::BusySkipped => {
@@ -1640,6 +1755,15 @@ fn offer_live_field_observation_frames(
                         source.counters.field_not_applicable.saturating_add(1);
                 }
                 FieldObservationSubmission::Submitted(mut observation) => {
+                    let Some(screen_episode_id) = episodes.active().map(|episode| episode.id)
+                    else {
+                        let _ = session.record_frame_processing_timing(
+                            frame_timing,
+                            crate::diagnostic_recording::FrameFieldStatus::NotApplicable,
+                            None,
+                        );
+                        continue;
+                    };
                     observation.bind_screen_episode(screen_episode_id);
                     observation.add_live_processing(live_timing);
                     source.counters.consecutive_field_observation_busy_skips = 0;
@@ -1669,14 +1793,67 @@ fn offer_live_field_observation_frames(
                 }
             }
             if output_failed {
-                return Some((FieldObservationGateErrorType::ResultOutputFailed, None));
+                terminal = Some((FieldObservationGateErrorType::ResultOutputFailed, None));
+                break 'capture;
             }
             if let Some(error) = field_terminal {
-                return Some(error);
+                terminal = Some(error);
+                break 'capture;
             }
         }
     }
-    None
+    if !semantic_close_failed && let Some(active) = episodes.finish() {
+        if emit_semantic_episode(
+            emit,
+            active,
+            active.last_sequence,
+            active.last_ms,
+            SemanticScreenEpisodePhase::Closing,
+        )
+        .is_err()
+        {
+            return Some((FieldObservationGateErrorType::ResultOutputFailed, None));
+        }
+        if let Some(error) = wait_live_field_observations(
+            session,
+            pending,
+            source.counters,
+            artifact_worker,
+            Some(emit),
+            None,
+        ) {
+            return Some(error);
+        }
+        if emit_semantic_episode(
+            emit,
+            active,
+            active.last_sequence,
+            active.last_ms,
+            SemanticScreenEpisodePhase::Finalized,
+        )
+        .is_err()
+        {
+            return Some((FieldObservationGateErrorType::ResultOutputFailed, None));
+        }
+    }
+    terminal
+}
+
+fn emit_semantic_episode(
+    emit: &mut LiveEventEmitter<'_>,
+    episode: SemanticScreenEpisode,
+    sequence: u64,
+    monotonic_end_ms: u64,
+    phase: SemanticScreenEpisodePhase,
+) -> Result<LiveEventProcessingTiming, FieldObservationGateErrorType> {
+    emit(GamescopeLiveSessionEvent::SemanticScreenEpisode {
+        screen_episode_id: episode.id,
+        sequence,
+        monotonic_end_ms,
+        screen: episode.screen,
+        phase,
+    })
+    .map_err(|_| FieldObservationGateErrorType::ResultOutputFailed)
 }
 
 struct GamescopeCanonicalFrameSource<'a> {
@@ -1742,7 +1919,10 @@ fn wait_field_observations(
             return Some((error, None));
         }
     }
-    None
+    (!pending.is_empty()).then_some((
+        FieldObservationGateErrorType::FieldObserverFinishFailed,
+        None,
+    ))
 }
 
 #[allow(
@@ -1909,7 +2089,10 @@ fn wait_live_field_observations(
             return Some((error, None));
         }
     }
-    None
+    (!pending.is_empty()).then_some((
+        FieldObservationGateErrorType::FieldObserverFinishFailed,
+        None,
+    ))
 }
 
 struct FieldObservationFinishOutcomes {

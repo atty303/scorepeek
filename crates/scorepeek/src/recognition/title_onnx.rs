@@ -330,7 +330,7 @@ impl LiveRuntimeManifest {
 }
 
 /// One open-text observation produced without granting field or song authority.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct DynamicTextObservation {
     pub input_width: usize,
     pub output_timesteps: usize,

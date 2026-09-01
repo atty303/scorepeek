@@ -69,6 +69,11 @@ pub use title::{
     ProvisionalTitleCandidate, ProvisionalTitleCandidateDomain, ProvisionalTitleCandidateSet,
     diagnostic_title_candidate, provisional_title_candidates,
 };
+
+#[must_use]
+pub fn normalized_title_key(value: &str) -> String {
+    title::folded_comparison_key(value)
+}
 pub use title_decoder::{
     CatalogTitleDecision, CatalogTitleDecoderError, CatalogTitleDictionaryAudit,
     CatalogTitleUnknownReason, DiagnosticTitleThresholds, TITLE_DICTIONARY_SHA256,
@@ -916,10 +921,114 @@ pub struct Rgb8Crop {
     pixels: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct TitleForegroundGeometry {
+    pub bbox: Roi,
+    pub occupancy_width_ppm: u32,
+    pub touches_left_edge: bool,
+    pub touches_right_edge: bool,
+}
+
+/// The single registered active-list title view used by production recognition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TitleEvidenceExtractor {
+    grayscale_threshold: u8,
+    horizontal_margin: u32,
+}
+
+impl TitleEvidenceExtractor {
+    pub const REGISTERED: Self = Self {
+        grayscale_threshold: 80,
+        horizontal_margin: 4,
+    };
+
+    #[must_use]
+    pub fn extract(self, source: &Rgb8Crop) -> Option<(Rgb8Crop, TitleForegroundGeometry)> {
+        source.extract_title_foreground(self.grayscale_threshold, self.horizontal_margin)
+    }
+}
+
 impl Rgb8Crop {
     #[must_use]
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
+    }
+
+    /// Extracts the registered active-title foreground view without interpreting its text.
+    #[must_use]
+    pub fn title_foreground_crop(&self) -> Option<(Self, TitleForegroundGeometry)> {
+        TitleEvidenceExtractor::REGISTERED.extract(self)
+    }
+
+    fn extract_title_foreground(
+        &self,
+        grayscale_threshold: u8,
+        horizontal_margin: u32,
+    ) -> Option<(Self, TitleForegroundGeometry)> {
+        let width = usize::try_from(self.roi.width).ok()?;
+        let height = usize::try_from(self.roi.height).ok()?;
+        let mut minimum_x = width;
+        let mut minimum_y = height;
+        let mut maximum_x = 0_usize;
+        let mut maximum_y = 0_usize;
+        let mut observed = false;
+        for y in 0..height {
+            for x in 0..width {
+                let offset = (y * width + x) * 3;
+                let [red, green, blue] = self.pixels.get(offset..offset + 3)? else {
+                    return None;
+                };
+                let grayscale =
+                    (u32::from(*red) * 77 + u32::from(*green) * 150 + u32::from(*blue) * 29) / 256;
+                if grayscale > u32::from(grayscale_threshold) {
+                    observed = true;
+                    minimum_x = minimum_x.min(x);
+                    minimum_y = minimum_y.min(y);
+                    maximum_x = maximum_x.max(x);
+                    maximum_y = maximum_y.max(y);
+                }
+            }
+        }
+        if !observed {
+            return None;
+        }
+        let horizontal_margin = usize::try_from(horizontal_margin).ok()?;
+        let crop_minimum_x = minimum_x.saturating_sub(horizontal_margin);
+        let crop_maximum_x = maximum_x.saturating_add(horizontal_margin).min(width - 1);
+        let crop_width = crop_maximum_x - crop_minimum_x + 1;
+        let mut pixels = Vec::with_capacity(crop_width * height * 3);
+        for y in 0..height {
+            let start = (y * width + crop_minimum_x) * 3;
+            let end = start + crop_width * 3;
+            pixels.extend_from_slice(self.pixels.get(start..end)?);
+        }
+        let foreground_width = maximum_x - minimum_x + 1;
+        let geometry = TitleForegroundGeometry {
+            bbox: Roi {
+                x: self.roi.x + u32::try_from(minimum_x).ok()?,
+                y: self.roi.y + u32::try_from(minimum_y).ok()?,
+                width: u32::try_from(foreground_width).ok()?,
+                height: u32::try_from(maximum_y - minimum_y + 1).ok()?,
+            },
+            occupancy_width_ppm: u32::try_from(
+                foreground_width.saturating_mul(1_000_000) / width.max(1),
+            )
+            .ok()?,
+            touches_left_edge: minimum_x == 0,
+            touches_right_edge: maximum_x + 1 == width,
+        };
+        Some((
+            Self {
+                roi: Roi {
+                    x: self.roi.x + u32::try_from(crop_minimum_x).ok()?,
+                    y: self.roi.y,
+                    width: u32::try_from(crop_width).ok()?,
+                    height: self.roi.height,
+                },
+                pixels,
+            },
+            geometry,
+        ))
     }
 
     /// Returns the tight score-colored content crop used by the numeric result recognizer.
@@ -3074,6 +3183,59 @@ mod tests {
                 .unwrap(),
             [1, 2, 3]
         );
+    }
+
+    #[test]
+    fn active_title_foreground_uses_fixed_gray_bbox_and_horizontal_margin() {
+        let mut pixels = vec![0_u8; 20 * 4 * 3];
+        for y in 1..=2 {
+            for x in 8..=10 {
+                let offset = (y * 20 + x) * 3;
+                pixels[offset..offset + 3].copy_from_slice(&[255, 255, 255]);
+            }
+        }
+        let crop = Rgb8Crop {
+            roi: Roi {
+                x: 100,
+                y: 200,
+                width: 20,
+                height: 4,
+            },
+            pixels,
+        };
+        let (foreground, geometry) = crop.title_foreground_crop().unwrap();
+        assert_eq!(
+            foreground.roi,
+            Roi {
+                x: 104,
+                y: 200,
+                width: 11,
+                height: 4
+            }
+        );
+        assert_eq!(
+            geometry.bbox,
+            Roi {
+                x: 108,
+                y: 201,
+                width: 3,
+                height: 2
+            }
+        );
+        assert_eq!(geometry.occupancy_width_ppm, 150_000);
+        assert!(!geometry.touches_left_edge);
+        assert!(!geometry.touches_right_edge);
+
+        let empty = Rgb8Crop {
+            roi: Roi {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+            pixels: vec![0; 12],
+        };
+        assert!(empty.title_foreground_crop().is_none());
     }
 
     #[test]

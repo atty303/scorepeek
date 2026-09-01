@@ -1921,6 +1921,7 @@ mod tests {
     #[test]
     fn frame_end_regression_is_partial_and_overlap_keeps_the_coverage_frontier() {
         let root = tempfile::tempdir().unwrap();
+        let overlap_root = tempfile::tempdir().unwrap();
         let input = pixels(25);
         let mut regressing = DiagnosticRecorder::start(
             root.path(),
@@ -1957,7 +1958,7 @@ mod tests {
         );
 
         let mut overlapping = DiagnosticRecorder::start(
-            root.path(),
+            overlap_root.path(),
             &descriptor("overlap-run"),
             DiagnosticPolicy::default(),
         );
@@ -1976,7 +1977,7 @@ mod tests {
         let outcome = overlapping.finish(DiagnosticRunStatus::Success, 6_000);
         assert_eq!(outcome.completeness, Some(DiagnosticCompleteness::Complete));
         let manifest: serde_json::Value = serde_json::from_slice(
-            &fs::read(root.path().join("overlap-run/manifest.json")).unwrap(),
+            &fs::read(overlap_root.path().join("overlap-run/manifest.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(manifest["maximum_observation_gap_ms"], 0);

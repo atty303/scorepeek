@@ -30,6 +30,7 @@ const CURRENT_OBSERVATION_SCHEMA_V10: &str = "scorepeek-recognition-observation-
 const CURRENT_OBSERVATION_SCHEMA_V11: &str = "scorepeek-recognition-observation-v11";
 const CURRENT_OBSERVATION_SCHEMA_V12: &str = "scorepeek-recognition-observation-v12";
 const CURRENT_OBSERVATION_SCHEMA_V13: &str = "scorepeek-recognition-observation-v13";
+const CURRENT_OBSERVATION_SCHEMA_V14: &str = "scorepeek-recognition-observation-v14";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-temporal-evaluation-v1";
 const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -722,6 +723,7 @@ fn parse_record(value: &Value) -> Result<TemporalRecord, CorpusError> {
         && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V11
         && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V12
         && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V13
+        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V14
     {
         return invalid("temporal evaluation observation schema differs");
     }

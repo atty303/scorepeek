@@ -290,6 +290,10 @@ authoritative.
   MUSIC SELECT difficulty from fixed `PLAYER 01` marker slots, combines select and result
   hypotheses at the attempt layer, and fixes resolver transitions, frame timing, and the three-pane
   debug TUI without changing the accepted v2 event.
+- [ADR 0097: Finalize evidence-first attempts after semantic results](0097-finalize-evidence-first-attempts-after-semantic-results.md)
+  suspends semantic episodes across raw unknown gaps, replaces armed songs with selection/result
+  evidence snapshots, finalizes RESULT only after field drain, and unifies active-title foreground
+  lexical and structural evidence without changing the accepted v2 event.
 
 ## Historical
 
