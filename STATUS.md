@@ -8,8 +8,9 @@ outside the checkpoint; implementation history belongs in Git.
 - M3 common PipeWire receiver and Gamescope observed-frame profile: **in progress**.
 - M4 canonical recognition, evidence-first attempt resolution, and versioned event API: **in
   progress**.
-- `scorepeek-result-detected-v2` remains the accepted public domain contract. Debug output uses
-  run-event v5, observation socket/snapshot v5, and recognition observation v15.
+- `scorepeek-result-detected-v2` remains the accepted public domain contract and now carries typed
+  ordered `play_options`. Debug output uses run-event v6, observation socket/snapshot v6, and
+  recognition observation v16.
 - Text authority remains the registered PP-OCRv6-small bundle. Numeric authority remains the
   private fixed-cell HOG/MLP model. No model bytes, real crops, complete labels, or generated
   datasets are committed.
@@ -49,6 +50,12 @@ outside the checkpoint; implementation history belongs in Git.
   Unresolved/conflicting identity, missing linkage/play, abandoned attempts, or incomplete required
   numeric tuples complete with typed rejection and emit no result. Direct RESULT-to-PLAY retry
   inherits the parent selection context once without re-adding frame support.
+- RESULT play options use the measured whole label panel at `(30,318,530,50)`. A sixth PP-OCR text
+  job reads the complete `USE OPTION ...` display; a fixed orange marker separately distinguishes a
+  positively absent label from inconclusive blank OCR. The finite ordered vocabulary permits a
+  unique whole-display edit distance of at most one. Two matching typed observations in the same
+  semantic RESULT episode produce a known ordered list. Conflict, OCR failure, and incomplete
+  evidence remain typed optional unknown and never suppress an otherwise accepted result event.
 - The TUI retains one three-pane layout and semantic state palette. Watcher shows raw and semantic screen plus suspension;
   Latest domain holds only the last accepted v2 event; Resolver shows incumbent/successor/result
   evidence, foreground title geometry, hierarchical runners, family contributions, attempt path,
@@ -56,12 +63,12 @@ outside the checkpoint; implementation history belongs in Git.
   the latest observation, while a new semantic episode or session clears it. Raw marker and
   resolver-current difficulty are displayed separately with the consecutive-known count. The worst-case 80x25
   tree keeps all gates visible. TUI formatting owns no resolver logic.
-- Run-event v5 distinguishes raw screen observations, semantic episode transitions, current
+- Run-event v6 distinguishes raw screen observations, semantic episode transitions, current
   selection-difficulty changes, selection/result and provisional-joint transitions, attempt
   finalization, and suppression. Recognition observation
-  v15 retains title views/geometry, episode binding, fixed-cell numeric evidence, factor support,
-  frame timing, late/drain status, and suppression evidence. Readers accept run-event v2 through v5
-  and recognition v5 through v15.
+  v16 retains title views/geometry, episode binding, fixed-cell numeric evidence, play-option raw
+  OCR/marker/typed state, factor support, frame timing, late/drain status, and suppression evidence.
+  Readers accept run-event v2 through v6 and recognition v5 through v16.
 
 ## Verification boundary
 
@@ -81,8 +88,19 @@ outside the checkpoint; implementation history belongs in Git.
   not reconstruct the original 10 Hz attempt timeline. Prospective target execution is therefore
   still required for end-to-end authority.
 - The existing private corpus and active suite were not changed. The operator plans to rebuild
-  them. Title-view/support calibration and wrong-event authority still require a reviewed,
+  them. Future regression labels use v5 and require ordered play-option truth; immutable v2-v4
+  labels remain readable. The current 34 RESULT episodes are a read-only play-option oracle covering
+  no option, every supported single option, and `RANDOM,LEGACY`, but do not advance the active
+  suite. Title-view/support calibration and wrong-event authority still require a reviewed,
   session-disjoint replacement corpus with zero wrong joint acceptance and zero wrong events.
+- Read-only whole-panel evaluation over those 34 stable QOIs produced exact registered PP-OCR text
+  for every displayed option. The set includes a positively blank panel, R-RANDOM, S-RANDOM,
+  MIRROR, A-SCR, two LEGACY results, and `RANDOM,LEGACY`; the orange-marker count separated the
+  blank panel (0) from every nonblank example (minimum 2,288).
+- The read-only active suite replay passes with 8 sessions, 34 episodes, 2,888 canonical frames,
+  and one negative frame when run against an isolated temporary activation of the rebound numeric
+  manifest. The temporary store was removed afterward; the operator's normal private store and
+  active corpus pointer were not changed.
 - The cargo-dist binary was installed hash-first on `infinitas.lan` at
   `/home/atty/.local/bin/scorepeek`; local and installed executable SHA-256 are both
   `148cfbd5687028e3d7bb4fe1bca807f3dcf3d217c8230fae182f5e5650ad07d1`. `doctor` reports the
@@ -92,10 +110,14 @@ outside the checkpoint; implementation history belongs in Git.
   available to compare.
 - Public `/v1.sock` authority, target support, prospective target behavior, push, release, and model
   publication remain unverified boundaries.
+- The canonical layout digest changed when the play-option panel was added. A later target install
+  must publish/activate a private numeric manifest bound to the new layout digest while reusing the
+  same model bytes; this checkpoint does not mutate the target model store or installed binary.
 
 ## Next executable task
 
-Run a prospective target session. Verify MUSIC SELECT field and semantic-color TUI updates, semantic
-RESULT close latency, 10 Hz raw cadence, admitted-field drain, busy skips, confirmed attempt
-ordering, one event per accepted attempt, and event drop zero. Then rebuild and review private v4
-corpus truth before selecting factor policy authority.
+Rebuild and operator-review private v5 corpus truth, including ordered play options, then publish a
+numeric manifest rebound to the new canonical-layout digest and explicitly install the binary plus
+manifest on the target. In the following prospective session, verify RESULT-close option payloads,
+six-job wall time/busy skips, 10 Hz raw cadence, confirmed-attempt ordering, one event per accepted
+attempt, and event drop zero before changing target or public-socket authority.

@@ -581,7 +581,7 @@ fn run_routine_live_session(
         &mut output,
     )?;
     output.publish(&routine_output::RunEvent {
-        schema: "scorepeek-run-event-v5".to_owned(),
+        schema: "scorepeek-run-event-v6".to_owned(),
         kind: routine_output::RunEventKind::WatcherStarted {
             invocation_id: invocation_id.clone(),
             profile_sha256: selected.binding.capture_profile_sha256().to_owned(),
@@ -755,7 +755,7 @@ fn run_routine_live_session(
                         _ => "error",
                     };
                     output.publish(&routine_output::RunEvent {
-                        schema: "scorepeek-run-event-v5".to_owned(),
+                        schema: "scorepeek-run-event-v6".to_owned(),
                         kind: routine_output::RunEventKind::SessionFinished {
                             session_id: session_id.clone(),
                             capture_generation: generation,
@@ -920,7 +920,7 @@ fn run_routine_live_session(
         &mut output,
     )?;
     output.publish(&routine_output::RunEvent {
-        schema: "scorepeek-run-event-v5".to_owned(),
+        schema: "scorepeek-run-event-v6".to_owned(),
         kind: routine_output::RunEventKind::WatcherStopped {
             invocation_id,
             reason: "signal".to_owned(),
@@ -1319,7 +1319,7 @@ fn live_session_event_value(
     event: capture_live::GamescopeLiveSessionEvent<'_>,
 ) -> Result<serde_json::Value, String> {
     let schema = if session_id.is_some() {
-        "scorepeek-run-event-v5"
+        "scorepeek-run-event-v6"
     } else {
         "scorepeek-live-session-event-v1"
     };
@@ -1418,6 +1418,7 @@ fn live_session_event_value(
                         "fast": fields.fast.open_text,
                         "slow": fields.slow.open_text,
                         "combo_break": fields.combo_break.open_text,
+                        "play_options": fields.play_options,
                     }),
                 ),
                 scorepeek::recognition::ScreenFieldObservations::MusicSelect(fields) => (
@@ -3806,7 +3807,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v5");
+        assert_eq!(value["schema"], "scorepeek-run-event-v6");
         assert_eq!(value["event"], "raw_screen_observed");
         assert_eq!(value["semantic_episode_id"], 1);
         assert_eq!(value["session_id"], "invocation-session-2");
@@ -3897,7 +3898,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v5");
+        assert_eq!(value["schema"], "scorepeek-run-event-v6");
         assert_eq!(value["session_id"], "invocation-session-2");
         assert_eq!(value["capture_generation"], 2);
         assert_eq!(value["sequence"], 1);

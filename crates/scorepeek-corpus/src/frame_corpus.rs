@@ -11,9 +11,10 @@ use std::time::Duration;
 
 use scorepeek::catalog::{Difficulty, PlayType};
 use scorepeek::recognition::{
-    NumericField, PreviousBest, PreviousBestValue, ResultChartResolution, ResultJudgments,
-    ResultPerformanceResolution, ResultTiming, Rgb8Crop, ScreenClass, ScreenRgb8Crops,
-    SupplementalResultValue, inspect_canonical_rgb8, resolve_clear_type, route_screen_rgb8_crops,
+    NumericField, PlayOption, PlayOptions, PreviousBest, PreviousBestValue, ResultChartResolution,
+    ResultJudgments, ResultPerformanceResolution, ResultTiming, Rgb8Crop, ScreenClass,
+    ScreenRgb8Crops, SupplementalResultValue, inspect_canonical_rgb8, resolve_clear_type,
+    route_screen_rgb8_crops,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -25,8 +26,9 @@ const DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v4";
 const LEGACY_DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v3";
 const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v1";
 const DRAFT_SCHEMA: &str = "scorepeek-private-session-review-draft-v1";
-const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v4";
-const PREVIOUS_LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v3";
+const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v5";
+const PREVIOUS_LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v4";
+const PREVIOUS_LABEL_SCHEMA_V3: &str = "scorepeek-private-session-regression-label-v3";
 const LEGACY_LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v2";
 const SUITE_SCHEMA: &str = "scorepeek-private-regression-suite-v1";
 const ACTIVE_SCHEMA: &str = "scorepeek-private-regression-suite-active-v1";
@@ -479,6 +481,8 @@ struct ExpectedResult {
     combo_break: Option<SupplementalResultValue<u32>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     previous_best: Option<PreviousBest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    play_options: Option<Vec<PlayOption>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1837,8 +1841,11 @@ pub fn author_numeric_dataset(
                 .join("labels")
                 .join(format!("{}.json", entry.label_sha256)),
         )?;
-        if !matches!(label.schema.as_str(), LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA) {
-            return invalid("numeric dataset requires v3 labels for every active session");
+        if !matches!(
+            label.schema.as_str(),
+            LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA_V3
+        ) {
+            return invalid("numeric dataset requires v3-v5 labels for every active session");
         }
         let screen_sequences = numeric_screen_sequences(store, &session)?;
         for episode in &label.episodes {
@@ -2471,6 +2478,18 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
                     ));
                 }
                 let expected = &episode.expected_result;
+                if !expected_play_options_match(
+                    &fields.play_options.parsed,
+                    expected.play_options.as_deref(),
+                ) {
+                    replay_failures.push(format!(
+                        "episode {} tick {} play options differ: expected={:?}, observed={:?}",
+                        episode.episode_id,
+                        sequence,
+                        expected.play_options,
+                        fields.play_options.parsed,
+                    ));
+                }
                 match output.result_chart_resolution() {
                     Some(ResultChartResolution::Accepted {
                         chart,
@@ -2596,6 +2615,12 @@ fn optional_previous_matches<T: PartialEq>(
     expected: &PreviousBestValue<T>,
 ) -> bool {
     observed == expected || matches!(observed, PreviousBestValue::Unknown { .. })
+}
+
+fn expected_play_options_match(observed: &PlayOptions, expected: Option<&[PlayOption]>) -> bool {
+    expected.is_none_or(
+        |expected| matches!(observed, PlayOptions::Known { values } if values == expected),
+    )
 }
 
 #[derive(Deserialize)]
@@ -3004,7 +3029,10 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), CorpusError> {
 
 fn validate_label(draft: &ReviewDraft, label: &RegressionLabel) -> Result<(), CorpusError> {
     if draft.schema != DRAFT_SCHEMA
-        || !matches!(label.schema.as_str(), LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA)
+        || !matches!(
+            label.schema.as_str(),
+            LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA_V3
+        )
         || label.session_sha256 != draft.session_sha256
     {
         return invalid("review label does not bind the draft session");
@@ -3025,6 +3053,8 @@ fn validate_label(draft: &ReviewDraft, label: &RegressionLabel) -> Result<(), Co
             || episode.expected_result.play_type != PlayType::Single
             || !(1..=12).contains(&episode.expected_result.level)
             || !valid_expected_result(&episode.expected_result)
+            || (label.schema == LABEL_SCHEMA
+                && !valid_play_options(episode.expected_result.play_options.as_deref()))
             || episode.stable_sequences.is_empty()
             || episode
                 .stable_sequences
@@ -3070,6 +3100,14 @@ fn valid_span(span: SequenceSpan, available: &BTreeSet<u64>) -> bool {
     span.first_sequence <= span.last_sequence
         && available.contains(&span.first_sequence)
         && available.contains(&span.last_sequence)
+}
+
+fn valid_play_options(options: Option<&[PlayOption]>) -> bool {
+    let Some(options) = options else {
+        return false;
+    };
+    options.len() <= PlayOption::ALL.len()
+        && options.iter().copied().collect::<BTreeSet<_>>().len() == options.len()
 }
 
 fn valid_expected_result(expected: &ExpectedResult) -> bool {
@@ -3380,6 +3418,7 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
                 | "scorepeek-run-event-v3"
                 | "scorepeek-run-event-v4"
                 | "scorepeek-run-event-v5"
+                | "scorepeek-run-event-v6"
         ) || event_schema
             .as_deref()
             .is_some_and(|expected| expected != schema)
@@ -3393,6 +3432,7 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
                 | "scorepeek-run-event-v3"
                 | "scorepeek-run-event-v4"
                 | "scorepeek-run-event-v5"
+                | "scorepeek-run-event-v6"
         ) {
             serde_json::from_value::<StoredRunEventPayload>(record.clone()).map_err(|_| {
                 CorpusError::InvalidRequest("diagnostic run event payload is invalid".to_owned())
@@ -3472,7 +3512,9 @@ fn read_regression_label(path: &Path) -> Result<(RegressionLabel, Vec<u8>), Corp
     let bytes = fs::read(path)?;
     let value = serde_json::from_slice::<Value>(&bytes)?;
     match value.get("schema").and_then(Value::as_str) {
-        Some(LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA) => Ok((serde_json::from_value(value)?, bytes)),
+        Some(LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA_V3) => {
+            Ok((serde_json::from_value(value)?, bytes))
+        }
         Some(LEGACY_LABEL_SCHEMA) => {
             let legacy = serde_json::from_value::<LegacyRegressionLabel>(value)?;
             if legacy
@@ -3506,6 +3548,7 @@ fn read_regression_label(path: &Path) -> Result<(RegressionLabel, Vec<u8>), Corp
                             timing: None,
                             combo_break: None,
                             previous_best: None,
+                            play_options: None,
                         },
                         stable_sequences: episode.stable_sequences,
                         attempt: None,
@@ -3731,6 +3774,22 @@ mod tests {
     }
 
     #[test]
+    fn v6_run_event_stream_is_current_and_v5_remains_readable() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events.ndjson");
+        let manifest = diagnostic_manifest();
+        fs::write(
+            &path,
+            concat!(
+                "{\"schema\":\"scorepeek-run-event-v6\",\"event\":\"session_started\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"capture_profile_sha256\":\"profile\",\"normalizer_artifact_sha256\":\"normalizer\",\"channel_sequence\":1}\n",
+                "{\"schema\":\"scorepeek-run-event-v6\",\"event\":\"session_finished\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"outcome\":\"ok\",\"report\":{},\"channel_sequence\":2}\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(verify_session_events(&path, &manifest).unwrap(), 2);
+    }
+
+    #[test]
     fn legacy_diagnostic_event_stream_still_requires_a_finished_session() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("events.ndjson");
@@ -3777,6 +3836,7 @@ mod tests {
                 score: PreviousBestValue::Known { value: 140 },
                 miss_count: PreviousBestValue::Known { value: 3 },
             }),
+            play_options: Some(vec![PlayOption::Random, PlayOption::Legacy]),
         }
     }
 
@@ -3847,7 +3907,7 @@ mod tests {
     }
 
     #[test]
-    fn v3_result_validation_rejects_unreplayable_typed_values() {
+    fn v5_result_validation_rejects_unreplayable_typed_values() {
         assert!(valid_expected_result(&expected_result()));
 
         let mut unbounded = expected_result();
@@ -3894,7 +3954,82 @@ mod tests {
     }
 
     #[test]
-    fn invalid_v3_result_does_not_publish_an_active_suite() {
+    fn v5_play_options_require_an_ordered_distinct_list() {
+        assert!(!valid_play_options(None));
+        assert!(valid_play_options(Some(&[])));
+        assert!(valid_play_options(Some(&[
+            PlayOption::Random,
+            PlayOption::Legacy,
+        ])));
+        assert!(!valid_play_options(Some(&[
+            PlayOption::Random,
+            PlayOption::Random,
+        ])));
+    }
+
+    #[test]
+    fn v5_replay_requires_exact_known_play_options_in_display_order() {
+        let expected = [PlayOption::Random, PlayOption::Legacy];
+        assert!(expected_play_options_match(
+            &PlayOptions::Known {
+                values: expected.to_vec(),
+            },
+            Some(&expected),
+        ));
+        assert!(!expected_play_options_match(
+            &PlayOptions::Known {
+                values: vec![PlayOption::Legacy, PlayOption::Random],
+            },
+            Some(&expected),
+        ));
+        assert!(!expected_play_options_match(
+            &PlayOptions::Unknown {
+                reason: scorepeek::recognition::PlayOptionsUnknownReason::Unrecognized,
+            },
+            Some(&expected),
+        ));
+    }
+
+    #[test]
+    fn legacy_replay_ignores_play_options_without_truth() {
+        assert!(expected_play_options_match(
+            &PlayOptions::Unknown {
+                reason: scorepeek::recognition::PlayOptionsUnknownReason::NotObserved,
+            },
+            None,
+        ));
+    }
+
+    #[test]
+    fn v4_labels_remain_readable_without_play_options() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("label.json");
+        let mut value = serde_json::to_value(RegressionLabel {
+            schema: PREVIOUS_LABEL_SCHEMA.to_owned(),
+            session_sha256: "1".repeat(64),
+            disposition: LabelDisposition::Include,
+            episodes: vec![RegressionEpisode {
+                episode_id: "episode-1".to_owned(),
+                expected_song_id: "song-1".to_owned(),
+                expected_clear_type: "CLEAR".to_owned(),
+                expected_result: expected_result(),
+                stable_sequences: vec![1],
+                attempt: None,
+            }],
+            negative_frames: Vec::new(),
+        })
+        .unwrap();
+        value["episodes"][0]["expected_result"]
+            .as_object_mut()
+            .unwrap()
+            .remove("play_options");
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let (label, _) = read_regression_label(&path).unwrap();
+        assert!(label.episodes[0].expected_result.play_options.is_none());
+    }
+
+    #[test]
+    fn invalid_v5_result_does_not_publish_an_active_suite() {
         let temporary = tempfile::tempdir().unwrap();
         let store = temporary.path().join("store");
         let draft_path = temporary.path().join("draft.json");

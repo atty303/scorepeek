@@ -112,7 +112,8 @@
   sampling、coverage labelの全resultを一対一で覆うepisode windowとexact `CLEAR TYPE`をbindする。ADR 0083ではplay/result観測とselectedまたはretry-inherited songの一致をaccepted attemptとし、
   `savable`固定値を廃止した。result v2 eventはattempt ID、5 judgement、typed miss/timing/combo、typed previous-best snapshotを持ち、`current_score == 2 * pgreat + great`を必須とする。
   ADR 0084ではTUIのaccepted result eventからjudgement、miss/timing/comboおよびprevious-bestを表示する。ADR 0088ではその表示を最新event 1件に限定し、play-attempt面をevent昇格gateへ変更した。ADR 0089では最上部を2行のcurrent watcher stateとし、各panelを内容高へ縮小し、promotion面へtypedな必須score/judgement tupleと全calibration rejectionを表示する。observation channel、machine-readable observation、保持済み履歴およびevent authorityは変更しない。
-  `play_options`は複数optionの実画像とclosed vocabularyを確定する次checkpointまで追加しない。result presenceは固定headerと2本のpanel境界で判定し、可変な背景色や
+  `play_options`は複数optionの実画像から確定した固定panel ROIをPP-OCRで読み、closed vocabularyの
+  順序付きlistとしてresult v2 eventへ保存する。認識不能はtyped unknownとしてevent acceptanceから分離する。result presenceは固定headerと2本のpanel境界で判定し、可変な背景色や
   背景絵を使わない。対象録画459 framesでは2 `FAILED`と1 `CLEAR`の3 episode、120 field observations、全song scoring、complete
   diagnosticを同じproduction worker経路で確認済み。これはaccepted result、他clear type、別背景variant、live supportまたは性能の根拠ではない。
   OBS/obs-vkcapture並行、

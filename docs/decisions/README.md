@@ -300,6 +300,9 @@ authoritative.
 - [ADR 0099: Treat MUSIC SELECT difficulty as current selection state](0099-treat-select-difficulty-as-current-state.md)
   supersedes cumulative select-difficulty voting with one latest-known epoch state while preserving
   song factors, RESULT authority, and the accepted v2 event.
+- [ADR 0100: Recognize ordered play options from the RESULT panel](0100-recognize-result-play-options.md)
+  adds the measured whole-panel ROI, bounded full-display fuzzy parser, optional episode-stable
+  typed list, and direct v2 event field while preserving result acceptance gates.
 
 ## Historical
 

@@ -601,6 +601,10 @@ impl RegisteredScreenFieldObserver {
                     ScreenTextField::ResultPreviousClearType,
                     crops.previous_clear_type.clone(),
                 ),
+                (
+                    ScreenTextField::ResultPlayOptions,
+                    crops.play_options.clone(),
+                ),
             ])
             .map_err(|source| {
                 ScreenFieldObservationError::new(ScreenTextField::ResultDifficulty, source)
@@ -622,13 +626,22 @@ impl RegisteredScreenFieldObserver {
             .map_err(|source| {
                 ScreenFieldObservationError::new(ScreenTextField::ResultNumericBatch, source)
             })?;
-        let fields = observe_result_fields_with_numeric(crops, &numeric, |field, _| {
+        let mut fields = observe_result_fields_with_numeric(crops, &numeric, |field, _| {
             if field == ScreenTextField::ResultDifficulty {
                 Ok(difficulty.clone())
             } else {
                 take_text(&mut text, field)
             }
         })?;
+        fields.play_options = match take_text_result(&mut text, ScreenTextField::ResultPlayOptions)
+            .map_err(|source| {
+                ScreenFieldObservationError::new(ScreenTextField::ResultPlayOptions, source)
+            })? {
+            Ok(observation) => {
+                scorepeek::recognition::observe_play_options(&crops.play_options, &observation)
+            }
+            Err(_) => scorepeek::recognition::PlayOptionsObservation::failed(&crops.play_options),
+        };
         Ok(ObservedFrameFields {
             fields: ScreenFieldObservations::Result(fields),
             numeric_batch: Some(numeric),
@@ -765,12 +778,20 @@ fn take_text(
     batch: &mut TextObservationBatch,
     field: scorepeek::recognition::ScreenTextField,
 ) -> Result<scorepeek::recognition::DynamicTextObservation, OnnxParityError> {
+    take_text_result(batch, field)?
+}
+
+fn take_text_result(
+    batch: &mut TextObservationBatch,
+    field: scorepeek::recognition::ScreenTextField,
+) -> Result<Result<scorepeek::recognition::DynamicTextObservation, OnnxParityError>, OnnxParityError>
+{
     let index = batch
         .observations
         .iter()
         .position(|(candidate, _)| *candidate == field)
         .ok_or(OnnxParityError::InvalidArtifact)?;
-    batch.observations.remove(index).1
+    Ok(batch.observations.remove(index).1)
 }
 
 fn duration_us(duration: std::time::Duration) -> u64 {

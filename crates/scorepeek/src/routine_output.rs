@@ -28,7 +28,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use scorepeek::catalog::{Difficulty, PlayType, ScorepeekSongId};
 use scorepeek::recognition::{
-    ParsedResultFields, PreviousBest, PreviousBestValue, ResultChartResolution, ResultJudgments,
+    ParsedResultFields, PlayOption, PlayOptions, PlayOptionsObservation, PlayOptionsUnknownReason,
+    PreviousBest, PreviousBestValue, ResultChartResolution, ResultJudgments,
     ResultPerformanceResolution, ResultTiming, SupplementalResultValue, resolve_result_performance,
 };
 use scorepeek::temporal_recognition::{
@@ -45,9 +46,10 @@ fn duration_us(duration: Duration) -> u64 {
 const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const RESULT_HISTORY_CAPACITY: usize = 32;
-const SOCKET_NAME: &str = "observations-v5.sock";
-const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v5";
+const SOCKET_NAME: &str = "observations-v6.sock";
+const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v6";
 const NUMERIC_REQUIRED_OBSERVATIONS: u8 = 2;
+const PLAY_OPTIONS_REQUIRED_OBSERVATIONS: u8 = 2;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RunEvent {
@@ -313,6 +315,7 @@ pub struct ResultDomainEvent {
     pub timing: ResultTiming,
     pub combo_break: SupplementalResultValue<u32>,
     pub previous_best: PreviousBest,
+    pub play_options: PlayOptions,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -329,6 +332,66 @@ struct NumericResultView {
 struct PendingNumericResult {
     view: NumericResultView,
     observations: u8,
+}
+
+#[derive(Clone, Debug, Default)]
+struct PlayOptionsEpisodeAccumulator {
+    candidate: Option<Vec<PlayOption>>,
+    observations: u8,
+    conflicting: bool,
+    fallback_reason: Option<PlayOptionsUnknownReason>,
+    latest: Option<PlayOptionsObservation>,
+    last_sequence: Option<u64>,
+}
+
+impl PlayOptionsEpisodeAccumulator {
+    fn observe(&mut self, sequence: u64, observation: PlayOptionsObservation) {
+        if self
+            .last_sequence
+            .is_some_and(|previous| sequence <= previous)
+        {
+            return;
+        }
+        match &observation.parsed {
+            PlayOptions::Known { values } => match &self.candidate {
+                Some(candidate) if candidate == values => {
+                    self.observations = self.observations.saturating_add(1);
+                }
+                Some(_) => self.conflicting = true,
+                None => {
+                    self.candidate = Some(values.clone());
+                    self.observations = 1;
+                }
+            },
+            PlayOptions::Unknown { reason } => self.fallback_reason = Some(*reason),
+        }
+        self.latest = Some(observation);
+        self.last_sequence = Some(sequence);
+    }
+
+    fn resolved(&self) -> PlayOptions {
+        if self.conflicting {
+            return PlayOptions::Unknown {
+                reason: PlayOptionsUnknownReason::ConflictingObservations,
+            };
+        }
+        if let Some(values) = &self.candidate {
+            return if self.observations >= PLAY_OPTIONS_REQUIRED_OBSERVATIONS {
+                PlayOptions::Known {
+                    values: values.clone(),
+                }
+            } else {
+                PlayOptions::Unknown {
+                    reason: PlayOptionsUnknownReason::InsufficientObservations,
+                }
+            };
+        }
+        PlayOptions::Unknown {
+            reason: self
+                .fallback_reason
+                .unwrap_or(PlayOptionsUnknownReason::NotObserved),
+        }
+    }
 }
 
 fn joint_matches_numeric(candidate: &JointEvidenceCandidate, numeric: &NumericResultView) -> bool {
@@ -1226,6 +1289,15 @@ struct ResolverDebugSnapshot {
     gate: String,
     gates: Vec<GateSnapshot>,
     raw_fields: Vec<(String, String)>,
+    play_options: Option<PlayOptionsDebugSnapshot>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct PlayOptionsDebugSnapshot {
+    latest: PlayOptionsObservation,
+    observations: u8,
+    conflicting: bool,
+    resolved: PlayOptions,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -1676,7 +1748,7 @@ fn accept_clients(
 fn snapshot_bytes(state: &Arc<Mutex<RunViewState>>, health: &ChannelHealth) -> Option<Vec<u8>> {
     let state = state.lock().ok()?.clone();
     let mut bytes = serde_json::to_vec(&json!({
-            "schema": "scorepeek-run-observation-snapshot-v5",
+            "schema": "scorepeek-run-observation-snapshot-v6",
         "state": state,
         "channel": health.value(),
     }))
@@ -1766,6 +1838,7 @@ pub struct RoutineOutput {
     engine: ResolverEngine,
     pending_numeric_result: Option<PendingNumericResult>,
     accepted_numeric_result: Option<NumericResultView>,
+    play_options: PlayOptionsEpisodeAccumulator,
     numeric_evidence: VecDeque<RawNumericEvidence>,
     last_numeric_sequence: Option<u64>,
     last_numeric_monotonic_ms: Option<u64>,
@@ -1889,6 +1962,7 @@ impl RoutineOutput {
             resolver_transitions: BTreeMap::new(),
             pending_numeric_result: None,
             accepted_numeric_result: None,
+            play_options: PlayOptionsEpisodeAccumulator::default(),
             numeric_evidence: VecDeque::with_capacity(8),
             last_numeric_sequence: None,
             last_numeric_monotonic_ms: None,
@@ -1965,6 +2039,7 @@ impl RoutineOutput {
                 self.attempt_started_ms = None;
                 self.attempt_phase_started_ms = None;
                 self.numeric_evidence.clear();
+                self.play_options = PlayOptionsEpisodeAccumulator::default();
                 self.completed_event_artifact = None;
                 self.clear_resolver_field_observation()?;
                 self.event_worker =
@@ -2206,6 +2281,13 @@ impl RoutineOutput {
             None,
             parsed_result_fields.map(result_chart_factor),
         );
+        if let Some(observation) = fields
+            .get("play_options")
+            .cloned()
+            .and_then(|value| serde_json::from_value::<PlayOptionsObservation>(value).ok())
+        {
+            self.play_options.observe(sequence, observation);
+        }
         let result_summary = self.engine.result_hypotheses.summary();
         self.publish_resolver_transition(
             session_id,
@@ -2486,6 +2568,7 @@ impl RoutineOutput {
             timing: timing.clone(),
             combo_break: combo_break.clone(),
             previous_best: previous_best.clone(),
+            play_options: self.play_options.resolved(),
         };
         let source_sequence = numeric.source_sequence.max(fallback_sequence);
         let emitted_attempt_id = accepted_attempt.attempt_id;
@@ -2632,6 +2715,7 @@ impl RoutineOutput {
             self.resolver_transitions
                 .remove(&ResolverScope::AttemptJoint);
             self.numeric_evidence.clear();
+            self.play_options = PlayOptionsEpisodeAccumulator::default();
         }
         if matches!(screen.as_str(), "decide_transition" | "play")
             && self.attempt_started_ms.is_none()
@@ -2739,6 +2823,7 @@ impl RoutineOutput {
         if screen != "result" {
             self.reset_numeric_result();
             self.numeric_evidence.clear();
+            self.play_options = PlayOptionsEpisodeAccumulator::default();
         }
         self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), None)?;
         self.refresh()?;
@@ -2952,26 +3037,35 @@ impl RoutineOutput {
             .map(|_| now_ms)
             .or(state.resolver.latest_field_ms);
         let selection_difficulty = self.engine.selection_epochs.active_difficulty_state();
-        state.resolver = ResolverDebugSnapshot {
-            now_ms,
-            raw_screen: state.raw_screen.clone(),
-            screen: current_screen,
-            suspended: self.semantic_episode_suspended,
-            finalizing: self.result_episode_finalizing,
-            screen_episode_id: self.screen_episode_id,
-            screen_episode_started_ms: self.screen_episode_started_ms,
-            source_sequence,
-            latest_field_sequence,
-            latest_field_ms,
-            selection_difficulty_target: selection_difficulty.map(|(target, _)| target),
-            selection_difficulty: selection_difficulty.and_then(|(_, current)| current),
-            local,
-            successor,
-            attempt,
-            gate,
-            gates,
-            raw_fields: retained_raw,
-        };
+        state.resolver =
+            ResolverDebugSnapshot {
+                now_ms,
+                raw_screen: state.raw_screen.clone(),
+                screen: current_screen,
+                suspended: self.semantic_episode_suspended,
+                finalizing: self.result_episode_finalizing,
+                screen_episode_id: self.screen_episode_id,
+                screen_episode_started_ms: self.screen_episode_started_ms,
+                source_sequence,
+                latest_field_sequence,
+                latest_field_ms,
+                selection_difficulty_target: selection_difficulty.map(|(target, _)| target),
+                selection_difficulty: selection_difficulty.and_then(|(_, current)| current),
+                local,
+                successor,
+                attempt,
+                gate,
+                gates,
+                raw_fields: retained_raw,
+                play_options: self.play_options.latest.clone().map(|latest| {
+                    PlayOptionsDebugSnapshot {
+                        latest,
+                        observations: self.play_options.observations,
+                        conflicting: self.play_options.conflicting,
+                        resolved: self.play_options.resolved(),
+                    }
+                }),
+            };
         Ok(())
     }
 
@@ -3629,43 +3723,83 @@ fn resolver_lines(snapshot: &ResolverDebugSnapshot, available_width: usize) -> V
         ),
         Style::default().fg(Color::White),
     )));
-    let marker = snapshot
-        .raw_fields
-        .iter()
-        .find(|(key, _)| key == "marker")
-        .map_or("absent", |(_, value)| value.as_str());
-    let marker_compact = marker.split_whitespace().next().unwrap_or(marker);
-    let current_difficulty = snapshot.selection_difficulty;
-    lines.push(Line::from(vec![
-        Span::styled("│  DIFF marker ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            marker_compact.to_owned(),
-            Style::default().fg(marker_color(marker)),
-        ),
-        Span::raw(" → current "),
-        Span::styled(
-            current_difficulty.map_or_else(
-                || "absent".to_owned(),
-                |current| {
+    if snapshot.screen.as_deref() == Some("result") {
+        let (text, color) = snapshot.play_options.as_ref().map_or_else(
+            || {
+                (
+                    "raw=- marker=- typed=unknown(not_observed)".to_owned(),
+                    Color::DarkGray,
+                )
+            },
+            |options| {
+                let raw = options.latest.raw_text.as_deref().unwrap_or("-");
+                let marker = format!(
+                    "{:?}:{}",
+                    options.latest.marker.state, options.latest.marker.orange_pixels
+                )
+                .to_ascii_lowercase();
+                let typed = play_options_text(&options.resolved);
+                let color = match options.resolved {
+                    PlayOptions::Known { .. } => Color::Green,
+                    PlayOptions::Unknown {
+                        reason: PlayOptionsUnknownReason::ConflictingObservations,
+                    } => Color::Red,
+                    PlayOptions::Unknown { .. } => Color::Yellow,
+                };
+                (
                     format!(
-                        "{} streak={} target={}",
-                        difficulty_label(current.difficulty),
-                        current.consecutive_known,
-                        snapshot
-                            .selection_difficulty_target
-                            .map_or("-", |target| match target {
-                                SelectionDifficultyTarget::Pending => "pending",
-                                SelectionDifficultyTarget::Incumbent => "incumbent",
-                                SelectionDifficultyTarget::Successor => "successor",
-                            })
-                    )
-                },
+                        "raw=\"{raw}\" marker={marker} typed={typed} stable={}{}",
+                        options.observations,
+                        if options.conflicting { " conflict" } else { "" },
+                    ),
+                    color,
+                )
+            },
+        );
+        lines.push(Line::from(Span::styled(
+            fitted_value("│  OPT ", &text, available_width),
+            Style::default().fg(color),
+        )));
+    } else {
+        let marker = snapshot
+            .raw_fields
+            .iter()
+            .find(|(key, _)| key == "marker")
+            .map_or("absent", |(_, value)| value.as_str());
+        let marker_compact = marker.split_whitespace().next().unwrap_or(marker);
+        let current_difficulty = snapshot.selection_difficulty;
+        lines.push(Line::from(vec![
+            Span::styled("│  DIFF marker ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                marker_compact.to_owned(),
+                Style::default().fg(marker_color(marker)),
             ),
-            Style::default().fg(current_difficulty.map_or(Color::DarkGray, |current| {
-                difficulty_color(current.difficulty)
-            })),
-        ),
-    ]));
+            Span::raw(" → current "),
+            Span::styled(
+                current_difficulty.map_or_else(
+                    || "absent".to_owned(),
+                    |current| {
+                        format!(
+                            "{} streak={} target={}",
+                            difficulty_label(current.difficulty),
+                            current.consecutive_known,
+                            snapshot.selection_difficulty_target.map_or(
+                                "-",
+                                |target| match target {
+                                    SelectionDifficultyTarget::Pending => "pending",
+                                    SelectionDifficultyTarget::Incumbent => "incumbent",
+                                    SelectionDifficultyTarget::Successor => "successor",
+                                }
+                            )
+                        )
+                    },
+                ),
+                Style::default().fg(current_difficulty.map_or(Color::DarkGray, |current| {
+                    difficulty_color(current.difficulty)
+                })),
+            ),
+        ]));
+    }
     if let Some(local) = &snapshot.local {
         lines.push(Line::from(vec![
             Span::styled("├─ LOCAL ", Style::default().fg(Color::DarkGray)),
@@ -3819,7 +3953,11 @@ fn expanded_result_history_entry_lines(
         )),
         Line::from(fitted_value(
             "Artist: ",
-            entry.song.as_ref().map_or("-", |song| song.artist.as_str()),
+            &format!(
+                "{}  Options: {}",
+                entry.song.as_ref().map_or("-", |song| song.artist.as_str()),
+                play_options_text(&result.play_options),
+            ),
             available_width,
         )),
         Line::from(format!(
@@ -3918,6 +4056,27 @@ fn supplemental_u32(value: &SupplementalResultValue<u32>) -> String {
     }
 }
 
+fn play_options_text(value: &PlayOptions) -> String {
+    match value {
+        PlayOptions::Known { values } if values.is_empty() => "none".to_owned(),
+        PlayOptions::Known { values } => values
+            .iter()
+            .map(|value| match value {
+                PlayOption::Random => "RANDOM",
+                PlayOption::RRandom => "R-RANDOM",
+                PlayOption::SRandom => "S-RANDOM",
+                PlayOption::Mirror => "MIRROR",
+                PlayOption::AutoScratch => "A-SCR",
+                PlayOption::Legacy => "LEGACY",
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+        PlayOptions::Unknown { reason } => {
+            format!("unknown({})", format!("{reason:?}").to_ascii_lowercase())
+        }
+    }
+}
+
 fn previous_u32(value: &PreviousBestValue<u32>) -> String {
     match value {
         PreviousBestValue::Known { value } => grouped_u32(*value),
@@ -3991,6 +4150,7 @@ mod tests {
             pending_numeric_result: None,
             accepted_numeric_result: None,
             numeric_evidence: VecDeque::with_capacity(8),
+            play_options: PlayOptionsEpisodeAccumulator::default(),
             last_numeric_sequence: None,
             last_numeric_monotonic_ms: None,
             emitted_attempt_ids: BTreeSet::new(),
@@ -4045,7 +4205,14 @@ mod tests {
                     "title": "OCR TITLE",
                     "artist": "OCR ARTIST",
                     "clear_type": "CLEAR",
-                    "clear_type_ocr": "CLEAR"
+                    "clear_type_ocr": "CLEAR",
+                    "play_options": PlayOptionsObservation {
+                        raw_text: Some("USE OPTION RANDOM,LEGACY".to_owned()),
+                        parsed: PlayOptions::Known {
+                            values: vec![PlayOption::Random, PlayOption::Legacy],
+                        },
+                        ..PlayOptionsObservation::default()
+                    }
                 }),
                 result_song_resolution: json!({ "status": "accepted" }),
                 music_select_song_resolution: Value::Null,
@@ -4183,6 +4350,45 @@ mod tests {
             .observe_screen(PlayAttemptScreen::Result, 0);
     }
 
+    fn play_options_observation(values: Vec<PlayOption>) -> PlayOptionsObservation {
+        PlayOptionsObservation {
+            parsed: PlayOptions::Known { values },
+            ..PlayOptionsObservation::default()
+        }
+    }
+
+    #[test]
+    fn play_options_require_two_matching_episode_observations() {
+        let expected = vec![PlayOption::Random, PlayOption::Legacy];
+        let mut accumulator = PlayOptionsEpisodeAccumulator::default();
+        accumulator.observe(1, play_options_observation(expected.clone()));
+        accumulator.observe(1, play_options_observation(expected.clone()));
+        assert_eq!(
+            accumulator.resolved(),
+            PlayOptions::Unknown {
+                reason: PlayOptionsUnknownReason::InsufficientObservations
+            }
+        );
+        accumulator.observe(2, play_options_observation(expected.clone()));
+        assert_eq!(
+            accumulator.resolved(),
+            PlayOptions::Known { values: expected }
+        );
+    }
+
+    #[test]
+    fn conflicting_play_options_remain_optional_unknown() {
+        let mut accumulator = PlayOptionsEpisodeAccumulator::default();
+        accumulator.observe(1, play_options_observation(vec![PlayOption::Random]));
+        accumulator.observe(2, play_options_observation(vec![PlayOption::Mirror]));
+        assert_eq!(
+            accumulator.resolved(),
+            PlayOptions::Unknown {
+                reason: PlayOptionsUnknownReason::ConflictingObservations
+            }
+        );
+    }
+
     fn accepted_result_without_joint_identity(sequence: u64) -> RunEvent {
         let mut event = accepted_result_event(sequence);
         let RunEventKind::FieldObservation { joint_evidence, .. } = &mut event.kind else {
@@ -4313,7 +4519,7 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         let snapshot: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v5");
+        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v6");
         assert_eq!(snapshot["state"]["invocation_id"], "invocation-1");
         assert_eq!(snapshot["state"]["next_channel_sequence"], 1);
         assert_eq!(snapshot["channel"]["connected_clients"], 1);
@@ -4604,6 +4810,19 @@ mod tests {
                 .result_history
                 .back()
                 .unwrap()
+                .result
+                .play_options,
+            PlayOptions::Known {
+                values: vec![PlayOption::Random, PlayOption::Legacy]
+            }
+        );
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .result_history
+                .back()
+                .unwrap()
                 .song
                 .as_ref()
                 .unwrap()
@@ -4668,7 +4887,7 @@ mod tests {
         for reader in &mut readers {
             let mut snapshot = String::new();
             reader.read_line(&mut snapshot).unwrap();
-            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v5"));
+            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v6"));
         }
         channel
             .publish(&json!({
@@ -4971,6 +5190,7 @@ mod tests {
                         score: scorepeek::recognition::PreviousBestValue::NotPlayed,
                         miss_count: scorepeek::recognition::PreviousBestValue::NotPlayed,
                     },
+                    play_options: PlayOptions::Known { values: Vec::new() },
                 },
             );
             state.reduce(&result, &result.to_value().unwrap());
@@ -5059,6 +5279,20 @@ mod tests {
             source_sequence: Some(1_240),
             latest_field_sequence: Some(1_238),
             latest_field_ms: Some(13_000),
+            play_options: Some(PlayOptionsDebugSnapshot {
+                latest: PlayOptionsObservation {
+                    raw_text: Some("USE OPTION RANDOM".to_owned()),
+                    parsed: PlayOptions::Known {
+                        values: vec![PlayOption::Random],
+                    },
+                    ..PlayOptionsObservation::default()
+                },
+                observations: 2,
+                conflicting: false,
+                resolved: PlayOptions::Known {
+                    values: vec![PlayOption::Random],
+                },
+            }),
             selection_difficulty_target: Some(SelectionDifficultyTarget::Successor),
             selection_difficulty: Some(CurrentSelectionDifficulty::observed(
                 Difficulty::Hyper,
@@ -5178,8 +5412,8 @@ mod tests {
                 assert!(rendered.contains("Latest domain"));
                 assert!(rendered.contains("Resolver"));
                 assert!(rendered.contains("episode=#18"));
-                assert!(rendered.contains("marker known:hyper"));
-                assert!(rendered.contains("current HYPER streak=1"));
+                assert!(rendered.contains("OPT raw=\"USE OPTION RANDOM\""));
+                assert!(rendered.contains("typed=RANDOM"));
                 assert!(rendered.contains("#18 12s"));
                 assert!(rendered.contains("ATTEMPT #14"));
                 assert!(rendered.contains("numeric…"));

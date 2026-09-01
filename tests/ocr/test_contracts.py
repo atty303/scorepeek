@@ -1557,7 +1557,7 @@ class ContractTests(unittest.TestCase):
             (directory / "manifest.json").write_bytes(manifest_bytes)
             digest = hashlib.sha256(manifest_bytes).hexdigest()
             _, crops = load_crops(directory, digest)
-            self.assertEqual(len(crops), 19)
+            self.assertEqual(len(crops), 20)
 
             manifest["crops"][0]["roi"] = {
                 **manifest["crops"][0]["roi"],

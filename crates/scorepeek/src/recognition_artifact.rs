@@ -19,7 +19,7 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 const CATALOG_SCHEMA: &str = "scorepeek-recognition-catalog-evidence-v1";
-const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v15";
+const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v16";
 const MANIFEST_SCHEMA: &str = "scorepeek-recognition-evidence-manifest-v3";
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -140,6 +140,7 @@ enum StoredFields<'a> {
         fast: StoredText<'a>,
         slow: StoredText<'a>,
         combo_break: StoredText<'a>,
+        play_options: &'a scorepeek::recognition::PlayOptionsObservation,
     },
     MusicSelect {
         central_title: StoredText<'a>,
@@ -940,6 +941,7 @@ impl<'a> From<&'a ScreenFieldObservations> for StoredFields<'a> {
                 fast: StoredText::from(&fields.fast),
                 slow: StoredText::from(&fields.slow),
                 combo_break: StoredText::from(&fields.combo_break),
+                play_options: &fields.play_options,
             },
             ScreenFieldObservations::MusicSelect(fields) => Self::MusicSelect {
                 central_title: StoredText::from(&fields.central_title),
@@ -1426,7 +1428,7 @@ mod tests {
         assert_eq!(outcome.status, RecognitionArtifactFinishStatus::Complete);
         assert_eq!(outcome.manifest_sha256.unwrap().len(), 64);
         let stored = fs::read_to_string(root.join("observations.ndjson")).unwrap();
-        assert!(stored.contains("scorepeek-recognition-observation-v15"));
+        assert!(stored.contains("scorepeek-recognition-observation-v16"));
         assert!(stored.contains("\"processing_timing\""));
         assert!(stored.contains("\"field_status\":\"completed\""));
         assert!(stored.contains("\"frame_total_us\":0"));

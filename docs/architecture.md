@@ -479,8 +479,8 @@ final identity check is outside the operator-trusted private-artifact boundary.
 ### Event API
 
 The ordinary foreground runtime exposes provisional recognition observations at
-`$XDG_RUNTIME_DIR/scorepeek/observations-v5.sock`. A connection begins with a bounded v5
-current-state snapshot and then receives sequenced `scorepeek-run-event-v5` NDJSON. This local
+`$XDG_RUNTIME_DIR/scorepeek/observations-v6.sock`. A connection begins with a bounded v6
+current-state snapshot and then receives sequenced `scorepeek-run-event-v6` NDJSON. This local
 observation surface may include raw OCR, foreground title geometry, joint candidates, and resolver
 metrics. `raw_screen_observed` is separate from semantic episode started, suspended, resumed,
 closing, and finalized transitions; `play_attempt_changed` contains the evidence-linked path and
@@ -496,6 +496,14 @@ and are projected only onto songs established by text evidence. Summary selects 
 song, reports a distinct best other song and best sibling chart, and requires both margins for joint
 acceptance. Foreground lexical and geometry title features share one family and contribute their
 maximum rather than two votes.
+
+RESULT play options use the canonical whole-panel ROI `(30, 318, 530, 50)`. PP-OCR reads the whole
+label while a fixed orange-marker predicate independently distinguishes a positively absent label
+from inconclusive blank OCR. The parser compares the normalized observation against the complete
+finite language of ordered, distinct RANDOM, R-RANDOM, S-RANDOM, MIRROR, A-SCR, and LEGACY displays
+and accepts only a unique minimum at edit distance zero or one. Two matching typed observations in
+one semantic RESULT episode produce a known ordered list; conflict or incomplete evidence remains
+optional unknown and cannot suppress an otherwise accepted result.
 
 MUSIC SELECT difficulty is the exception to historical factor accumulation. A typed-known marker
 is current selector state: a different known value replaces it on the first observation, equal

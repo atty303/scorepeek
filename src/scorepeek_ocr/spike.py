@@ -124,6 +124,7 @@ def load_layout_contract(
             "fast",
             "slow",
             "combo_break",
+            "play_options",
         },
         "canonical result layout",
     )
@@ -147,6 +148,7 @@ def load_layout_contract(
         "fast": "fast.ppm",
         "slow": "slow.ppm",
         "combo_break": "combo-break.ppm",
+        "play_options": "play-options.ppm",
     }
     _exact_object(
         result["presence"],

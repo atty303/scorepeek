@@ -16,6 +16,7 @@ mod numeric_character_layout;
 mod numeric_fixed_slot;
 mod numeric_onnx;
 mod numeric_specialist;
+mod play_options;
 mod result_fields;
 mod result_resolver;
 mod screen_reference;
@@ -49,6 +50,10 @@ pub use numeric_specialist::{
     NumericCandidate, NumericField, NumericFieldInference, ScoreBreakdownCandidate,
     ScoreBreakdownDecision, rank_numeric_probabilities, rank_numeric_sequences,
     select_score_breakdown,
+};
+pub use play_options::{
+    PlayOption, PlayOptionMarkerObservation, PlayOptionMarkerState, PlayOptions,
+    PlayOptionsObservation, PlayOptionsUnknownReason, observe_play_options,
 };
 pub use result_fields::{
     ParsedResultFields, PreviousBest, PreviousBestValue, RESULT_FIELD_RESOLVER_ID,
@@ -544,6 +549,7 @@ pub struct ResultLayout {
     pub fast: Roi,
     pub slow: Roi,
     pub combo_break: Roi,
+    pub play_options: Roi,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
@@ -717,6 +723,7 @@ pub enum ResultCropField {
     Fast,
     Slow,
     ComboBreak,
+    PlayOptions,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1098,6 +1105,7 @@ pub struct ResultScreenRgb8Crops {
     pub fast: Rgb8Crop,
     pub slow: Rgb8Crop,
     pub combo_break: Rgb8Crop,
+    pub play_options: Rgb8Crop,
 }
 
 /// Every currently measured music-select field crop used by one selection observation.
@@ -1244,6 +1252,7 @@ pub enum ScreenTextField {
     ResultFast,
     ResultSlow,
     ResultComboBreak,
+    ResultPlayOptions,
     MusicSelectCentralTitle,
     MusicSelectArtist,
     MusicSelectActiveListTitle,
@@ -1273,6 +1282,7 @@ impl ScreenTextField {
             Self::ResultFast => "result_fast",
             Self::ResultSlow => "result_slow",
             Self::ResultComboBreak => "result_combo_break",
+            Self::ResultPlayOptions => "result_play_options",
             Self::MusicSelectCentralTitle => "music_select_central_title",
             Self::MusicSelectArtist => "music_select_artist",
             Self::MusicSelectActiveListTitle => "music_select_active_list_title",
@@ -1302,6 +1312,7 @@ impl ScreenTextField {
             | Self::ResultClearType
             | Self::ResultDifficulty
             | Self::ResultPreviousClearType
+            | Self::ResultPlayOptions
             | Self::MusicSelectCentralTitle
             | Self::MusicSelectArtist
             | Self::MusicSelectActiveListTitle => None,
@@ -1331,6 +1342,7 @@ pub struct ResultScreenFieldObservations {
     pub fast: DynamicTextObservation,
     pub slow: DynamicTextObservation,
     pub combo_break: DynamicTextObservation,
+    pub play_options: PlayOptionsObservation,
 }
 
 /// Complete music-select field observations from the currently registered observers.
@@ -1456,6 +1468,10 @@ pub fn observe_screen_fields<E>(
                 fast: observe(ScreenTextField::ResultFast, &crops.fast)?,
                 slow: observe(ScreenTextField::ResultSlow, &crops.slow)?,
                 combo_break: observe(ScreenTextField::ResultComboBreak, &crops.combo_break)?,
+                play_options: {
+                    let raw = observe(ScreenTextField::ResultPlayOptions, &crops.play_options)?;
+                    observe_play_options(&crops.play_options, &raw)
+                },
             })
         }
         ScreenRgb8Crops::MusicSelect(crops) => {
@@ -1475,7 +1491,7 @@ pub fn observe_screen_fields<E>(
     })
 }
 
-/// Combines one specialist numeric batch with only the five registered general-text result fields.
+/// Combines one specialist numeric batch with the independently registered result text fields.
 ///
 /// # Errors
 /// Returns the exact failed text field without running PP-OCR for any numeric ROI.
@@ -1510,6 +1526,7 @@ pub fn observe_result_fields_with_numeric<E>(
         fast: numeric.text_observation(NumericField::Fast),
         slow: numeric.text_observation(NumericField::Slow),
         combo_break: numeric.text_observation(NumericField::ComboBreak),
+        play_options: PlayOptionsObservation::default(),
     })
 }
 
@@ -1686,6 +1703,7 @@ impl CanonicalLayout {
             layout.result.fast,
             layout.result.slow,
             layout.result.combo_break,
+            layout.result.play_options,
             layout.music_select.header,
             layout.music_select.label,
             layout.music_select.level_column,
@@ -2140,33 +2158,10 @@ fn crop_canonical_pixels(pixels: &[u8], roi: Roi) -> Result<Vec<u8>, Recognition
     Ok(crop)
 }
 
-/// Exports the fixed result-layout crops from a validated canonical frame.
-///
-/// The output directory must not exist. `manifest.json` is written last, so a partial export is
-/// never accepted as a complete crop artifact.
-///
-/// # Errors
-/// Returns an error for a non-result screen, an invalid layout, or any output I/O failure.
-pub fn export_result_crops(
-    frame: &CanonicalFrame,
-    frame_id: &str,
-    output: impl AsRef<Path>,
-) -> Result<ResultCropExportSummary, RecognitionError> {
-    if frame_id.is_empty() || frame_id.len() > 256 || frame_id.chars().any(char::is_control) {
-        return Err(RecognitionError::InvalidCanonicalFrame);
-    }
-    let snapshot = inspect(frame)?;
-    if snapshot.screen != ScreenClass::Result {
-        return Err(RecognitionError::NotResultScreen);
-    }
-    let output = output.as_ref();
-    fs::create_dir(output)?;
-
-    let ScreenRgb8Crops::Result(routed) = route_screen_rgb8_crops(frame.pixels(), snapshot.screen)?
-    else {
-        return Err(RecognitionError::NotResultScreen);
-    };
-    let selections = [
+fn result_crop_selections(
+    routed: ResultScreenRgb8Crops,
+) -> [(ResultCropField, &'static str, Rgb8Crop); 20] {
+    [
         (ResultCropField::Title, "title.ppm", routed.title),
         (ResultCropField::Artist, "artist.ppm", routed.artist),
         (
@@ -2218,7 +2213,41 @@ pub fn export_result_crops(
             "combo-break.ppm",
             routed.combo_break,
         ),
-    ];
+        (
+            ResultCropField::PlayOptions,
+            "play-options.ppm",
+            routed.play_options,
+        ),
+    ]
+}
+
+/// Exports the fixed result-layout crops from a validated canonical frame.
+///
+/// The output directory must not exist. `manifest.json` is written last, so a partial export is
+/// never accepted as a complete crop artifact.
+///
+/// # Errors
+/// Returns an error for a non-result screen, an invalid layout, or any output I/O failure.
+pub fn export_result_crops(
+    frame: &CanonicalFrame,
+    frame_id: &str,
+    output: impl AsRef<Path>,
+) -> Result<ResultCropExportSummary, RecognitionError> {
+    if frame_id.is_empty() || frame_id.len() > 256 || frame_id.chars().any(char::is_control) {
+        return Err(RecognitionError::InvalidCanonicalFrame);
+    }
+    let snapshot = inspect(frame)?;
+    if snapshot.screen != ScreenClass::Result {
+        return Err(RecognitionError::NotResultScreen);
+    }
+    let output = output.as_ref();
+    fs::create_dir(output)?;
+
+    let ScreenRgb8Crops::Result(routed) = route_screen_rgb8_crops(frame.pixels(), snapshot.screen)?
+    else {
+        return Err(RecognitionError::NotResultScreen);
+    };
+    let selections = result_crop_selections(routed);
     let mut crops = Vec::with_capacity(selections.len());
     for (field, filename, crop) in selections {
         let roi = crop.roi;
@@ -2471,6 +2500,7 @@ pub fn route_screen_rgb8_crops(
             fast: crop(pixels, canonical.result.fast)?,
             slow: crop(pixels, canonical.result.slow)?,
             combo_break: crop(pixels, canonical.result.combo_break)?,
+            play_options: crop(pixels, canonical.result.play_options)?,
         })),
         ScreenClass::MusicSelect => Ok(ScreenRgb8Crops::MusicSelect(MusicSelectScreenRgb8Crops {
             canonical_layout_sha256: CanonicalLayout::sha256(),
@@ -2897,6 +2927,11 @@ pub(super) fn read_title_crop_artifact(
             "combo-break.ppm",
             layout.result.combo_break,
         ),
+        (
+            ResultCropField::PlayOptions,
+            "play-options.ppm",
+            layout.result.play_options,
+        ),
     ];
     if artifact.crops.len() != expected.len() {
         return Err(RecognitionError::InvalidCanonicalFrame);
@@ -3256,7 +3291,7 @@ mod tests {
         let ScreenFieldObservations::Result(result) = result else {
             panic!("result crops produced another screen output");
         };
-        assert_eq!(result_calls, 19);
+        assert_eq!(result_calls, 20);
         assert_eq!(result.title.open_text, "result-1");
         assert_eq!(result.artist.open_text, "result-2");
         assert_eq!(result.clear_type.open_text, "result-3");
@@ -3760,12 +3795,14 @@ mod tests {
             artifact.schema,
             "scorepeek-private-canonical-result-crops-v2"
         );
-        assert_eq!(artifact.crops.len(), 19);
+        assert_eq!(artifact.crops.len(), 20);
         assert_eq!(artifact.crops[0].field, "title");
         assert_eq!(artifact.crops[0].roi, layout.result.title);
         assert_eq!(artifact.crops[0].bytes, 600 * 50 * 3 + 14);
         assert_eq!(artifact.crops[0].file_sha256.len(), 64);
         assert_eq!(artifact.crops[0].pixel_sha256.len(), 64);
+        assert_eq!(artifact.crops[19].field, "play_options");
+        assert_eq!(artifact.crops[19].roi, layout.result.play_options);
         assert!(
             export_result_crops(
                 &test_frame(vec![0; CANONICAL_BYTES]),

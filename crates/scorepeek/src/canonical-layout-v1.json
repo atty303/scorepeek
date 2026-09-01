@@ -26,7 +26,8 @@
     "poor": { "x": 370, "y": 898, "width": 150, "height": 30 },
     "fast": { "x": 105, "y": 970, "width": 80, "height": 30 },
     "slow": { "x": 105, "y": 995, "width": 80, "height": 30 },
-    "combo_break": { "x": 440, "y": 970, "width": 110, "height": 50 }
+    "combo_break": { "x": 440, "y": 970, "width": 110, "height": 50 },
+    "play_options": { "x": 30, "y": 318, "width": 530, "height": 50 }
   },
   "music_select": {
     "presence": {

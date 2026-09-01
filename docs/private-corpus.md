@@ -22,15 +22,17 @@ Value-bearing records keep exact OCR and resolver output but bind a candidate co
 exact catalog object instead of duplicating every recomputable per-song metric at every tick. The
 complete observation stream is bounded to 512 MiB.
 
-New regression labels use `scorepeek-private-session-regression-label-v4`. Each included episode
+New regression labels use `scorepeek-private-session-regression-label-v5`. Each included episode
 binds the accepted song and clear type plus play side, play mode/type, difficulty, level, notes,
 current score, all five judgments, typed miss/timing/combo values, and the typed previous-best
-snapshot. It can additionally bind an attempt key and parent, select/play/result sequence spans,
+snapshot. It also binds the ordered `play_options` list, including an empty list when the label is
+positively absent, and can bind an attempt key and parent plus select/play/result sequence spans
 and `accepted`, `abandoned`, `unlinked`, or `no_result` outcome. Result-only historical sessions
 remain explicitly unlinked instead of receiving inferred select spans. Immutable v2/v3 labels and
 suites remain readable and replayable; they do not acquire attempt or performance truth
-retroactively. Replay requires every value present in the label generation to agree with the
-catalog-constrained production observation. A review apply accepts v4 and readable v3 labels,
+retroactively. Immutable v4 labels also remain readable without inferred play-option truth. Replay
+requires every value present in the label generation to agree with the
+catalog-constrained production observation. A review apply accepts v5 and readable v3/v4 labels,
 publishes immutable label and suite objects, and atomically advances the active generation pointer;
 the operator must confirm every new value before that apply.
 

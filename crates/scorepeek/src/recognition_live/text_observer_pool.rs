@@ -7,7 +7,7 @@ use scorepeek::recognition::{
     ScreenTextField,
 };
 
-const MAX_TEXT_JOBS_PER_FRAME: usize = 5;
+const MAX_TEXT_JOBS_PER_FRAME: usize = 6;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecognitionExecutionMode {
@@ -241,7 +241,7 @@ mod tests {
         );
         assert_eq!(
             select_text_worker_count(RecognitionExecutionMode::Live, 32),
-            5
+            6
         );
         assert_eq!(
             select_text_worker_count(RecognitionExecutionMode::Offline, 1),
@@ -253,7 +253,7 @@ mod tests {
         );
         assert_eq!(
             select_text_worker_count(RecognitionExecutionMode::Offline, 32),
-            5
+            6
         );
     }
 }
