@@ -76,6 +76,28 @@ pub enum RunEventKind {
         capture_profile_sha256: String,
         normalizer_artifact_sha256: String,
     },
+    RecordingHealthChanged {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        capture_generation: Option<u64>,
+        state: String,
+        memory_limit_bytes: u64,
+        memory_used_bytes: u64,
+        memory_high_water_bytes: u64,
+        dropped_frames: u64,
+    },
+    RecordingFinalizing {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        capture_generation: Option<u64>,
+    },
+    RecordingReady {
+        session_id: String,
+        directory: String,
+        manifest_sha256: String,
+    },
     RawScreenObserved {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
@@ -1454,6 +1476,10 @@ pub struct RunViewState {
     stable_result_song: Option<SongPresentation>,
     latest_report: Option<Value>,
     status_recording: &'static str,
+    recording_memory_limit_bytes: u64,
+    recording_memory_used_bytes: u64,
+    recording_memory_high_water_bytes: u64,
+    recording_dropped_frames: u64,
     next_channel_sequence: u64,
     message: String,
     resolver: ResolverDebugSnapshot,
@@ -1573,10 +1599,14 @@ impl RunViewState {
             stable_result_song: None,
             latest_report: None,
             status_recording: if recording_enabled {
-                "ready"
+                "armed"
             } else {
                 "disabled"
             },
+            recording_memory_limit_bytes: 0,
+            recording_memory_used_bytes: 0,
+            recording_memory_high_water_bytes: 0,
+            recording_dropped_frames: 0,
             next_channel_sequence: 1,
             message: "initializing".to_owned(),
             resolver: ResolverDebugSnapshot::default(),
@@ -1605,7 +1635,38 @@ impl RunViewState {
                 self.latest_numeric_result = None;
                 self.stable_result_song = None;
                 self.latest_report = None;
+                if self.recording == "enabled" && self.status_recording != "degraded" {
+                    self.status_recording = "armed";
+                }
                 "Gamescope session admitted".clone_into(&mut self.message);
+            }
+            RunEventKind::RecordingHealthChanged {
+                state,
+                memory_limit_bytes,
+                memory_used_bytes,
+                memory_high_water_bytes,
+                dropped_frames,
+                ..
+            } => {
+                self.status_recording = match state.as_str() {
+                    "active" => "active",
+                    "pressured" => "pressured",
+                    _ => "degraded",
+                };
+                self.recording_memory_limit_bytes = *memory_limit_bytes;
+                self.recording_memory_used_bytes = *memory_used_bytes;
+                self.recording_memory_high_water_bytes = *memory_high_water_bytes;
+                self.recording_dropped_frames = *dropped_frames;
+            }
+            RunEventKind::RecordingFinalizing { .. } => {
+                if self.status_recording != "degraded" {
+                    self.status_recording = "finalizing";
+                }
+                "session recording finalizing".clone_into(&mut self.message);
+            }
+            RunEventKind::RecordingReady { session_id, .. } => {
+                self.status_recording = "ready";
+                self.message = format!("session recording ready: {session_id}");
             }
             RunEventKind::ScreenChanged { screen, .. } => {
                 if screen == "result" {
@@ -1677,6 +1738,9 @@ impl RunViewState {
                 self.raw_screen = None;
                 self.latest_report = Some(report.clone());
                 self.message = format!("session finished: {outcome}");
+                if self.recording != "disabled" && self.status_recording != "degraded" {
+                    self.status_recording = "finalizing";
+                }
             }
             RunEventKind::WatcherStopped { .. } => {
                 "stopped".clone_into(&mut self.watcher_state);
@@ -2311,6 +2375,9 @@ impl RoutineOutput {
             } => self.publish_screen_tick(*sequence, *monotonic_end_ms),
             RunEventKind::SessionFinished { .. } => self.publish_session_finished(event),
             RunEventKind::WatcherStarted { .. }
+            | RunEventKind::RecordingHealthChanged { .. }
+            | RunEventKind::RecordingFinalizing { .. }
+            | RunEventKind::RecordingReady { .. }
             | RunEventKind::TemporalResultChanged { .. }
             | RunEventKind::TemporalMusicSelectChanged { .. }
             | RunEventKind::NumericResultChanged { .. }
@@ -3707,6 +3774,33 @@ fn elapsed_seconds(now_ms: u64, started_ms: Option<u64>) -> u64 {
     started_ms.map_or(0, |started| now_ms.saturating_sub(started) / 1_000)
 }
 
+fn human_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = KIB * 1024;
+    const GIB: u64 = MIB * 1024;
+    if bytes >= GIB {
+        format!(
+            "{}.{:02}GiB",
+            bytes / GIB,
+            (bytes % GIB).saturating_mul(100) / GIB
+        )
+    } else if bytes >= MIB {
+        format!(
+            "{}.{}MiB",
+            bytes / MIB,
+            (bytes % MIB).saturating_mul(10) / MIB
+        )
+    } else if bytes >= KIB {
+        format!(
+            "{}.{}KiB",
+            bytes / KIB,
+            (bytes % KIB).saturating_mul(10) / KIB
+        )
+    } else {
+        format!("{bytes}B")
+    }
+}
+
 fn plain_status_line(state: &RunViewState, health: &ChannelHealth) -> String {
     let channel = health.value();
     format!(
@@ -3813,8 +3907,12 @@ fn fixed_watcher_lines(state: &RunViewState, health: &ChannelHealth) -> Vec<Line
             )),
         ]),
         Line::from(format!(
-            "recording={}  channel={} clients={} drop={}  {}",
+            "recording={} mem={}/{} high={} frame_drop={}  channel={} clients={} drop={}  {}",
             state.status_recording,
+            human_bytes(state.recording_memory_used_bytes),
+            human_bytes(state.recording_memory_limit_bytes),
+            human_bytes(state.recording_memory_high_water_bytes),
+            state.recording_dropped_frames,
             channel["status"].as_str().unwrap_or("degraded"),
             channel["connected_clients"].as_u64().unwrap_or(0),
             channel["dropped_events"].as_u64().unwrap_or(0),
@@ -5394,6 +5492,51 @@ mod tests {
         assert!(state.latest_observation.is_none());
         assert!(state.latest_stabilized_result.is_none());
         assert!(state.latest_temporal_music_select.is_none());
+    }
+
+    #[test]
+    fn recording_health_and_ready_lifecycle_are_visible_in_the_typed_state() {
+        let mut state = RunViewState::new("invocation-1".to_owned(), "a".repeat(64), true);
+        assert_eq!(state.status_recording, "armed");
+        let health = RunEvent::from_value(json!({
+            "schema": "scorepeek-run-event-v6",
+            "event": "recording_health_changed",
+            "session_id": "session-1",
+            "capture_generation": 1,
+            "state": "pressured",
+            "memory_limit_bytes": 1_073_741_824_u64,
+            "memory_used_bytes": 900_000_000_u64,
+            "memory_high_water_bytes": 950_000_000_u64,
+            "dropped_frames": 0
+        }))
+        .unwrap();
+        state.reduce(&health, &health.to_value().unwrap());
+        assert_eq!(state.status_recording, "pressured");
+        assert_eq!(state.recording_memory_used_bytes, 900_000_000);
+
+        let finished = RunEvent::from_value(json!({
+            "schema": "scorepeek-run-event-v6",
+            "event": "session_finished",
+            "session_id": "session-1",
+            "capture_generation": 1,
+            "outcome": "source_ended",
+            "report": {}
+        }))
+        .unwrap();
+        state.reduce(&finished, &finished.to_value().unwrap());
+        assert_eq!(state.status_recording, "finalizing");
+
+        let ready = RunEvent::from_value(json!({
+            "schema": "scorepeek-run-event-v6",
+            "event": "recording_ready",
+            "session_id": "session-1",
+            "directory": "/private/session-1",
+            "manifest_sha256": "1".repeat(64)
+        }))
+        .unwrap();
+        state.reduce(&ready, &ready.to_value().unwrap());
+        assert_eq!(state.status_recording, "ready");
+        assert!(state.message.contains("session-1"));
     }
 
     #[test]

@@ -123,6 +123,7 @@ pub struct DiagnosticPolicy {
 pub enum DiagnosticRetention {
     CompleteCadence,
     ForegroundFailureWindowV1,
+    FactsOnly,
 }
 
 impl Default for DiagnosticPolicy {

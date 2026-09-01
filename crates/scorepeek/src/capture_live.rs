@@ -171,6 +171,10 @@ pub enum GamescopeLiveSessionEvent<'a> {
         capture_profile_sha256: &'a str,
         normalizer_artifact_sha256: &'a str,
     },
+    RecordingHealth {
+        snapshot: crate::canonical_recording::RecordingHealthSnapshot,
+    },
+    RecordingFinalizing,
     RawScreenObserved {
         semantic_episode_id: Option<u64>,
         sequence: u64,
@@ -670,6 +674,7 @@ pub struct GamescopeFieldObservationGateConfig<'a> {
     pub bundle_root: &'a std::path::Path,
     pub recognition_artifact_root: Option<&'a std::path::Path>,
     pub recognition_artifact_retention: RecognitionArtifactRetention,
+    pub recording_memory_limit: crate::canonical_recording::RecordingMemoryLimit,
 }
 
 impl HandoffCounters {
@@ -942,6 +947,7 @@ pub fn run_gamescope_field_observation_gate(
         artifact_requested,
         canonical_recorder,
         canonical_recording_start_failed: _,
+        recording_memory_limit: _,
         recognition_artifact_root: _,
         mut sink,
     } = match start_field_observation_gate(config) {
@@ -1043,6 +1049,7 @@ pub fn run_gamescope_live_session(
         artifact_requested,
         canonical_recorder,
         canonical_recording_start_failed,
+        recording_memory_limit,
         recognition_artifact_root,
         mut sink,
     } = match start_field_observation_gate(config) {
@@ -1061,6 +1068,21 @@ pub fn run_gamescope_live_session(
     })
     .err()
     .map(|_| (FieldObservationGateErrorType::ResultOutputFailed, None));
+    if terminal.is_none()
+        && canonical_recording_start_failed
+        && emit(GamescopeLiveSessionEvent::RecordingHealth {
+            snapshot: crate::canonical_recording::RecordingHealthSnapshot {
+                state: crate::canonical_recording::RecordingHealthState::Degraded,
+                memory_limit_bytes: recording_memory_limit.bytes(),
+                memory_used_bytes: 0,
+                memory_high_water_bytes: 0,
+                dropped_frames: 0,
+            },
+        })
+        .is_err()
+    {
+        terminal = Some((FieldObservationGateErrorType::ResultOutputFailed, None));
+    }
     let mut counters = FieldObservationCounters::default();
     let mut pending = Vec::<PendingSessionFieldObservation<RegisteredFieldOutput>>::new();
     let mut minimum_event_sequence = None;
@@ -1154,7 +1176,17 @@ pub fn run_gamescope_live_session(
         canonical_recording_start_failed.then_some(CanonicalRecordingCompleteness::Partial);
     let mut canonical_recording_manifest_sha256 = None;
     if let Some(recorder) = canonical_recorder {
+        if emit(GamescopeLiveSessionEvent::RecordingFinalizing).is_err() {
+            terminal = Some((FieldObservationGateErrorType::ResultOutputFailed, None));
+        }
         let outcome = recorder.finish();
+        if emit(GamescopeLiveSessionEvent::RecordingHealth {
+            snapshot: outcome.final_health,
+        })
+        .is_err()
+        {
+            terminal = Some((FieldObservationGateErrorType::ResultOutputFailed, None));
+        }
         canonical_recording_completeness = Some(outcome.completeness);
         canonical_recording_manifest_sha256.clone_from(&outcome.manifest_sha256);
         if let Some(root) = recognition_artifact_root.as_deref() {
@@ -1216,6 +1248,7 @@ struct StartedFieldObservationGate {
     artifact_requested: bool,
     canonical_recorder: Option<CanonicalRecordingWorker>,
     canonical_recording_start_failed: bool,
+    recording_memory_limit: crate::canonical_recording::RecordingMemoryLimit,
     recognition_artifact_root: Option<std::path::PathBuf>,
     sink: BoundedDiagnosticSink,
 }
@@ -1360,6 +1393,7 @@ fn start_field_observation_gate(
                             CanonicalRecordingWorker::start(
                                 &root.join("canonical-recordings"),
                                 session_id,
+                                config.recording_memory_limit,
                             )
                         })
                 });
@@ -1368,7 +1402,7 @@ fn start_field_observation_gate(
                 Some(Err(_)) | None => (None, true),
             }
         } else {
-            (None, false)
+            (None, artifact_requested)
         };
     Ok(StartedFieldObservationGate {
         lease,
@@ -1377,6 +1411,7 @@ fn start_field_observation_gate(
         artifact_requested,
         canonical_recorder,
         canonical_recording_start_failed,
+        recording_memory_limit: config.recording_memory_limit,
         recognition_artifact_root: config
             .recognition_artifact_root
             .map(std::path::Path::to_path_buf),
@@ -1623,6 +1658,8 @@ fn offer_live_field_observation_frames(
     };
     let mut terminal = None;
     let mut semantic_close_failed = false;
+    let mut last_recording_health = None;
+    let mut last_recording_health_emit = None;
     'capture: while !stop.load(Ordering::Acquire) {
         if let Some(error) = poll_field_observations(
             session,
@@ -1635,6 +1672,27 @@ fn offer_live_field_observation_frames(
         ) {
             terminal = Some((error, None));
             break 'capture;
+        }
+        if let Some(recorder) = canonical_recorder {
+            let snapshot = recorder.health();
+            let changed = last_recording_health.is_none_or(
+                |previous: crate::canonical_recording::RecordingHealthSnapshot| {
+                    previous.state != snapshot.state
+                        || previous.dropped_frames != snapshot.dropped_frames
+                },
+            );
+            let due = last_recording_health_emit
+                .is_none_or(|previous: Instant| previous.elapsed() >= Duration::from_secs(1));
+            if (changed || due)
+                && emit(GamescopeLiveSessionEvent::RecordingHealth { snapshot }).is_err()
+            {
+                terminal = Some((FieldObservationGateErrorType::ResultOutputFailed, None));
+                break 'capture;
+            }
+            if changed || due {
+                last_recording_health_emit = Some(Instant::now());
+            }
+            last_recording_health = Some(snapshot);
         }
         let frame = match source.next_frame(LIVE_SESSION_POLL_INTERVAL) {
             Ok(frame) => frame,

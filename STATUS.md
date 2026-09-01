@@ -28,8 +28,11 @@ outside the checkpoint; implementation history belongs in Git.
 - Canonical recording retains every MUSIC SELECT, DECIDE TRANSITION, and RESULT tick plus the first,
   last, and raw-screen transition windows. Stable PLAY, MODE SELECT, and UNKNOWN interiors are typed
   intentional gaps. Retained RGB24 frames are streamed to external lossless `libx264rgb` Matroska
-  segments, then decoded and checked against input digest and frame count before complete
-  publication.
+  segments. One shared configurable memory account defaults to 1024 MiB; its input channel has no
+  independent item capacity. Limit rejection or encoder failure degrades recording without changing
+  domain processing, and the TUI exposes current/limit/high-water bytes and frame loss. Intentional
+  gaps stay inside a segment. The realtime path records input and encoded digests but defers decode
+  and RGB digest verification to corpus verify/import.
 - Field jobs are bound to the semantic episode that admitted them. Episode close stops admission,
   drains already-submitted work, applies it to the closing episode, finalizes RESULT, and only then
   starts the next known-screen attempt transition. Late generation/chronology evidence remains
@@ -86,8 +89,34 @@ outside the checkpoint; implementation history belongs in Git.
   screen-episode and run-event reducers, and rejects missing/elided DECIDE TRANSITION or RESULT
   truth. Event comparison normalizes runtime IDs while preserving attempt-parent and ordered
   play-option relations.
+- Routine `--record` capture diagnostics are facts-only and retain no legacy canonical/source QOI
+  pixels beside the canonical segment. `session_finished` moves recording to finalizing; an explicit
+  `recording_ready` is emitted only after atomic joined-session publication, so that immutable
+  session is importable while the watcher continues.
 
 ## Verification boundary
+
+- The target session `run-1788272474-298014477-1183660-session-1` is the recorder failure oracle:
+  5,626 recognition ticks produced 5,536 canonical tick records and 90 queue drops. The first large
+  segment contained 563 frames; synchronous segment decode in the recorder stalled its two-frame
+  queue, and each resulting sequence gap forced another close. The current implementation removes
+  both causes. Local synthetic coverage now verifies the shared-limit recovery/sticky degradation,
+  retention and chronology-reset windows, streamed tick-index digest/count, facts-only QOI
+  suppression, recording health/finalizing/ready lifecycle, broken encoder stdin cleanup, and
+  lossless FFmpeg round trip. Corpus decode now has bounded timeout/kill/reap behavior, and segment
+  binding follows retained frame order; a chronology reset fails the sequence-only label-v5
+  completeness boundary. After the first encoder failure, already-admitted frames drain as loss
+  without repeated child restarts. Numeric dataset authoring now consumes the same segment/tick
+  iterator as replay instead of treating a segment-backed frame as QOI. Canonical import requires
+  the joined tick artifact and rejects sequence/time reversal before object publication; encoder
+  early failures reap the child and remove unpublished output. Recording lifecycle events retain
+  session/generation binding through run-event serialization; canonical v2 memory/integrity fields
+  are fail-closed, tick parsing is streaming bounded, and numeric authoring uses two decode passes
+  per session. `mise run check`, pedantic workspace clippy, and the complete serial `mise run test`
+  suite pass after these final review fixes. Parallel
+  full-suite
+  runs exposed three existing `diagnostic_control` worker-availability flakes; every failing test
+  passed when rerun alone. Fresh target and real import timing verification is still pending.
 
 - Targeted Rust library and binary suites pass after removal of production result/music-select
   temporal reducers. Regression tests require no domain event before RESULT finalization, require
@@ -118,13 +147,15 @@ outside the checkpoint; implementation history belongs in Git.
   and one negative frame when run against an isolated temporary activation of the rebound numeric
   manifest. The temporary store was removed afterward; the operator's normal private store and
   active corpus pointer were not changed.
-- The cargo-dist binary was installed hash-first on `infinitas.lan` at
+- The previous cargo-dist binary was installed hash-first on `infinitas.lan` at
   `/home/atty/.local/bin/scorepeek`; local and installed executable SHA-256 are both
   `148cfbd5687028e3d7bb4fe1bca807f3dcf3d217c8230fae182f5e5650ad07d1`. `doctor` reports the
   fixed-slot numeric model active with manifest
   `cf099b27b533a79534db62a912d7c4b4e949ac29b786f57bb5ed6f21cf7766d6`. No scorepeek process was
   running at readback time, so no stale process required restart and no `/proc/<pid>/exe` digest was
   available to compare.
+- The shared-memory/deferred-verification recorder revision in this checkpoint has not been built or
+  installed on the target. Its target behavior and recording-ready lifecycle remain unverified.
 - Public `/v1.sock` authority, target support, prospective target behavior, push, release, and model
   publication remain unverified boundaries.
 - The canonical layout digest changed when the play-option panel was added. A later target install
@@ -133,7 +164,9 @@ outside the checkpoint; implementation history belongs in Git.
 
 ## Next executable task
 
-Record a fresh joined-session v5 run, import and operator-review label v5 truth, then compare the
+Explicitly install this recorder revision on the target. Record a fresh joined-session v5 run and
+confirm no frame-admission loss, visible memory health, facts-only capture diagnostics, and
+`recording_ready` after session end. Import and operator-review label v5 truth, then compare the
 same suite with one text worker and the default pool. Require identical domain events plus reduced
 OCR and whole-suite wall time before claiming speedup. After that, publish a numeric manifest rebound
 to the new canonical-layout digest and explicitly install the binary plus

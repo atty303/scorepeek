@@ -7,8 +7,10 @@ use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use scorepeek::catalog::{Difficulty, PlayType};
 use scorepeek::recognition::{
@@ -37,6 +39,8 @@ const MAX_NDJSON_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_EVIDENCE_FRAMES: usize = 1_024;
 const MAX_EVIDENCE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_QOI_BYTES: u64 = 16 * 1024 * 1024;
+const CANONICAL_DECODE_TIMEOUT: Duration = Duration::from_mins(2);
+const CANONICAL_DECODE_STDERR_BYTES: usize = 64 * 1024;
 const NUMERIC_DATASET_SCHEMA: &str = "scorepeek-private-numeric-ctc-dataset-v1";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -94,6 +98,9 @@ struct CanonicalRecordingManifest {
     segments: Vec<CanonicalSegment>,
     dropped_frames: u64,
     completeness_reasons: Vec<String>,
+    memory_limit_bytes: u64,
+    memory_high_water_bytes: u64,
+    integrity_verification: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -209,6 +216,19 @@ enum StoredRunEventPayload {
         capture_generation: u64,
         capture_profile_sha256: String,
         normalizer_artifact_sha256: String,
+    },
+    RecordingHealthChanged {
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        state: String,
+        memory_limit_bytes: u64,
+        memory_used_bytes: u64,
+        memory_high_water_bytes: u64,
+        dropped_frames: u64,
+    },
+    RecordingFinalizing {
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
     },
     ScreenChanged {
         session_id: Option<String>,
@@ -594,6 +614,15 @@ struct NumericDatasetSample {
     crop_sha256: String,
     filename: String,
     roi: scorepeek::recognition::Roi,
+}
+
+struct NumericEpisodePlan<'a> {
+    episode: &'a RegressionEpisode,
+    field_labels: BTreeMap<NumericField, String>,
+    requested: BTreeSet<u64>,
+    observed: BTreeSet<u64>,
+    crops: BTreeSet<(NumericField, String)>,
+    field_counts: BTreeMap<NumericField, usize>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1664,7 +1693,7 @@ fn verify_canonical_diagnostic(
     }
     let (canonical, _) =
         read_json::<CanonicalRecordingManifest>(&path.join("recognition/canonical-manifest.json"))?;
-    if canonical.schema != "scorepeek-canonical-session-recording-v1"
+    if canonical.schema != "scorepeek-canonical-session-recording-v2"
         || canonical.completeness
             != manifest
                 .canonical_completeness
@@ -1674,13 +1703,24 @@ fn verify_canonical_diagnostic(
         || canonical.ffmpeg_version.is_empty()
         || !valid_sha256(&canonical.tick_index_sha256)
         || canonical.segments.len() > MAX_ARTIFACTS
+        || !(128 * 1024 * 1024..=16 * 1024 * 1024 * 1024).contains(&canonical.memory_limit_bytes)
+        || canonical.memory_high_water_bytes > canonical.memory_limit_bytes
+        || canonical.integrity_verification != "deferred_to_import"
         || (canonical.completeness == "complete"
             && (canonical.dropped_frames != 0 || !canonical.completeness_reasons.is_empty()))
     {
         return invalid("canonical recording manifest is invalid");
     }
+    let tick_artifact = manifest_artifact(&manifest, "recognition/canonical-ticks.ndjson")?;
     let tick_path = path.join("recognition/canonical-ticks.ndjson");
-    if digest(&fs::read(&tick_path)?) != canonical.tick_index_sha256 {
+    if tick_artifact.sha256 != canonical.tick_index_sha256
+        || verify_file(
+            &tick_path,
+            &canonical.tick_index_sha256,
+            tick_artifact.bytes,
+        )
+        .is_err()
+    {
         return invalid("canonical tick index binding differs");
     }
     let ticks = read_canonical_ticks(&tick_path)?;
@@ -1690,9 +1730,7 @@ fn verify_canonical_diagnostic(
     let mut retained = Vec::new();
     let mut previous = None;
     for tick in &ticks {
-        if previous.is_some_and(|(sequence, monotonic)| {
-            tick.sequence == sequence && tick.monotonic_ms == monotonic
-        }) {
+        if !canonical_tick_follows(previous, tick) {
             return invalid("canonical tick chronology is invalid");
         }
         previous = Some((tick.sequence, tick.monotonic_ms));
@@ -1718,9 +1756,6 @@ fn verify_canonical_diagnostic(
         if segment.frames == 0
             || segment.frames > 600
             || segment.last_sequence < segment.first_sequence
-            || segment.frames
-                != usize::try_from(segment.last_sequence - segment.first_sequence + 1)
-                    .unwrap_or(usize::MAX)
             || !valid_sha256(&segment.raw_rgb24_sha256)
             || !valid_sha256(&segment.encoded_sha256)
             || segment.bytes == 0
@@ -1742,14 +1777,13 @@ fn verify_canonical_diagnostic(
             })?;
         if expected.first() != Some(&segment.first_sequence)
             || expected.last() != Some(&segment.last_sequence)
-            || !expected
-                .windows(2)
-                .all(|pair| pair[1] == pair[0].saturating_add(1))
         {
             return invalid("canonical segment chronology differs from tick index");
         }
-        let (decoded_sha256, decoded_frames) =
-            decode_canonical_segment(&path.join("recognition").join(&segment.path))?;
+        let (decoded_sha256, decoded_frames) = decode_canonical_segment(
+            &path.join("recognition").join(&segment.path),
+            segment.frames,
+        )?;
         if decoded_sha256 != segment.raw_rgb24_sha256 || decoded_frames != segment.frames {
             return invalid("canonical segment lossless decode differs");
         }
@@ -1769,54 +1803,207 @@ fn verify_canonical_diagnostic(
     })
 }
 
-fn decode_canonical_segment(path: &Path) -> Result<(String, usize), CorpusError> {
+fn canonical_tick_follows(previous: Option<(u64, u64)>, tick: &CanonicalTick) -> bool {
+    previous.is_none_or(|(sequence, monotonic)| {
+        tick.sequence > sequence && tick.monotonic_ms >= monotonic
+    })
+}
+
+fn decode_canonical_segment(path: &Path, frames: usize) -> Result<(String, usize), CorpusError> {
+    let digest = decode_canonical_frames(path, frames, DecodeContext::Verify, |_, _| Ok(()))?;
+    Ok((digest, frames))
+}
+
+#[derive(Clone, Copy)]
+enum DecodeContext {
+    Verify,
+    Replay,
+}
+
+fn decode_canonical_frames(
+    path: &Path,
+    expected_frames: usize,
+    context: DecodeContext,
+    mut observe: impl FnMut(usize, Box<[u8]>) -> Result<(), CorpusError>,
+) -> Result<String, CorpusError> {
     let mut child = Command::new("ffmpeg")
         .args(["-hide_banner", "-loglevel", "error", "-i"])
         .arg(path)
         .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| CorpusError::InvalidRequest(format!("ffmpeg decode failed: {error}")))?;
-    let mut stdout = child.stdout.take().ok_or_else(|| {
-        CorpusError::InvalidRequest("ffmpeg decoder stdout is unavailable".to_owned())
-    })?;
-    let mut hasher = Sha256::new();
-    let mut bytes = 0usize;
-    let mut buffer = vec![0u8; 64 * 1024].into_boxed_slice();
-    loop {
-        let read = stdout.read(&mut buffer)?;
-        if read == 0 {
-            break;
+        .map_err(|error| decode_error(context, format!("ffmpeg decode failed: {error}")))?;
+    let Some(mut stdout) = child.stdout.take() else {
+        kill_and_reap(&mut child);
+        return Err(decode_error(
+            context,
+            "ffmpeg decoder stdout is unavailable".to_owned(),
+        ));
+    };
+    let Some(stderr) = child.stderr.take() else {
+        kill_and_reap(&mut child);
+        return Err(decode_error(
+            context,
+            "ffmpeg decoder stderr is unavailable".to_owned(),
+        ));
+    };
+    let stderr = bounded_decode_stderr(stderr);
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let reader = thread::spawn(move || -> Result<String, String> {
+        let mut digest = Sha256::new();
+        for _ in 0..expected_frames {
+            let mut pixels = vec![0u8; 1920 * 1080 * 3].into_boxed_slice();
+            stdout
+                .read_exact(&mut pixels)
+                .map_err(|error| format!("canonical RGB frame read failed: {error}"))?;
+            digest.update(&pixels);
+            sender
+                .send(pixels)
+                .map_err(|_| "canonical decoder consumer stopped".to_owned())?;
         }
-        bytes = bytes.checked_add(read).ok_or_else(|| {
-            CorpusError::InvalidRequest("decoded canonical bytes overflowed".to_owned())
-        })?;
-        hasher.update(&buffer[..read]);
+        let mut extra = [0_u8; 1];
+        if stdout
+            .read(&mut extra)
+            .map_err(|error| format!("canonical RGB trailer read failed: {error}"))?
+            != 0
+        {
+            return Err("canonical segment decoded more frames than declared".to_owned());
+        }
+        Ok(hex_digest(digest.finalize().as_slice()))
+    });
+    let started = Instant::now();
+    for index in 0..expected_frames {
+        let pixels = loop {
+            match receiver.recv_timeout(Duration::from_millis(100)) {
+                Ok(pixels) => break pixels,
+                Err(RecvTimeoutError::Timeout) if started.elapsed() < CANONICAL_DECODE_TIMEOUT => {}
+                Err(RecvTimeoutError::Timeout) => {
+                    drop(receiver);
+                    abort_decoder(&mut child, reader, stderr);
+                    return Err(decode_error(
+                        context,
+                        "canonical decode timed out".to_owned(),
+                    ));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    let detail = finish_failed_decoder(&mut child, reader, stderr);
+                    return Err(decode_error(context, detail));
+                }
+            }
+        };
+        if let Err(error) = observe(index, pixels) {
+            drop(receiver);
+            abort_decoder(&mut child, reader, stderr);
+            return Err(error);
+        }
     }
-    if !child.wait()?.success() {
-        return invalid("ffmpeg canonical decode failed");
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                abort_decoder(&mut child, reader, stderr);
+                return Err(decode_error(
+                    context,
+                    format!("ffmpeg wait failed: {error}"),
+                ));
+            }
+        }
+        if started.elapsed() >= CANONICAL_DECODE_TIMEOUT {
+            drop(receiver);
+            abort_decoder(&mut child, reader, stderr);
+            return Err(decode_error(
+                context,
+                "canonical decode timed out".to_owned(),
+            ));
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    drop(receiver);
+    let stderr_bytes = stderr.join().unwrap_or_default();
+    let digest = reader
+        .join()
+        .map_err(|_| decode_error(context, "canonical decoder reader panicked".to_owned()))?
+        .map_err(|detail| decode_error(context, detail))?;
+    if !status.success() {
+        return Err(decode_error(
+            context,
+            format!(
+                "ffmpeg canonical decode failed: {}",
+                String::from_utf8_lossy(&stderr_bytes)
+            ),
+        ));
     }
-    let frame_bytes = 1920usize * 1080 * 3;
-    if !bytes.is_multiple_of(frame_bytes) {
-        return invalid("ffmpeg canonical decode ended with a partial frame");
+    Ok(digest)
+}
+
+fn decode_error(context: DecodeContext, detail: String) -> CorpusError {
+    match context {
+        DecodeContext::Verify => CorpusError::InvalidRequest(detail),
+        DecodeContext::Replay => CorpusError::InvalidReplay(detail),
     }
-    Ok((
-        hex_digest(hasher.finalize().as_slice()),
-        bytes / frame_bytes,
-    ))
+}
+
+fn kill_and_reap(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn abort_decoder(
+    child: &mut Child,
+    reader: JoinHandle<Result<String, String>>,
+    stderr: JoinHandle<Vec<u8>>,
+) {
+    kill_and_reap(child);
+    let _ = reader.join();
+    let _ = stderr.join();
+}
+
+fn finish_failed_decoder(
+    child: &mut Child,
+    reader: JoinHandle<Result<String, String>>,
+    stderr: JoinHandle<Vec<u8>>,
+) -> String {
+    kill_and_reap(child);
+    let reader = reader.join();
+    let stderr = stderr.join().unwrap_or_default();
+    match reader {
+        Ok(Err(detail)) => detail,
+        Err(_) => "canonical decoder reader panicked".to_owned(),
+        Ok(Ok(_)) => format!(
+            "ffmpeg canonical decode ended before all frames: stderr={}",
+            String::from_utf8_lossy(&stderr)
+        ),
+    }
+}
+
+fn bounded_decode_stderr(mut stderr: impl std::io::Read + Send + 'static) -> JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut retained = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        while let Ok(read) = stderr.read(&mut buffer) {
+            if read == 0 {
+                break;
+            }
+            let available = CANONICAL_DECODE_STDERR_BYTES.saturating_sub(retained.len());
+            retained.extend_from_slice(&buffer[..read.min(available)]);
+        }
+        retained
+    })
 }
 
 fn read_canonical_ticks(path: &Path) -> Result<Vec<CanonicalTick>, CorpusError> {
     let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
     let mut ticks = Vec::new();
-    for line in BufReader::new(file).lines() {
-        let line = line?;
-        if line.len() > MAX_NDJSON_RECORD_BYTES || ticks.len() == MAX_NDJSON_RECORDS {
+    while read_bounded_ndjson_line(&mut reader, &mut line)? {
+        if ticks.len() == MAX_NDJSON_RECORDS {
             return invalid("canonical tick index exceeds its capacity");
         }
-        ticks.push(serde_json::from_str(&line)?);
+        ticks.push(serde_json::from_slice(&line)?);
     }
     Ok(ticks)
 }
@@ -1963,21 +2150,30 @@ fn import_canonical_diagnostic(
         &diagnostic.join("recognition/canonical-manifest.json"),
     )?;
     let ticks = read_canonical_ticks(&diagnostic.join("recognition/canonical-ticks.ndjson"))?;
-    let mut frames = Vec::new();
-    for tick in ticks.iter().filter(|tick| tick.disposition == "retained") {
-        let segment = canonical
-            .segments
-            .iter()
-            .find(|segment| {
-                (segment.first_sequence..=segment.last_sequence).contains(&tick.sequence)
-            })
+    let retained = ticks
+        .iter()
+        .filter(|tick| tick.disposition == "retained")
+        .collect::<Vec<_>>();
+    let mut frames = Vec::with_capacity(retained.len());
+    let mut offset = 0usize;
+    for segment in &canonical.segments {
+        let expected = retained
+            .get(offset..offset.saturating_add(segment.frames))
             .ok_or_else(|| {
-                CorpusError::InvalidRequest("retained tick has no canonical segment".to_owned())
+                CorpusError::InvalidRequest(
+                    "canonical segment exceeds retained tick index".to_owned(),
+                )
             })?;
-        frames.push(ReviewFrame {
-            sequence: tick.sequence,
-            artifact_sha256: segment.raw_rgb24_sha256.clone(),
-        });
+        for tick in expected {
+            frames.push(ReviewFrame {
+                sequence: tick.sequence,
+                artifact_sha256: segment.encoded_sha256.clone(),
+            });
+        }
+        offset = offset.saturating_add(segment.frames);
+    }
+    if offset != retained.len() {
+        return invalid("canonical retained tick coverage differs");
     }
     let mut artifacts = Vec::with_capacity(manifest.artifacts.len());
     for artifact in &manifest.artifacts {
@@ -2144,60 +2340,64 @@ pub fn author_numeric_dataset(
             return invalid("numeric dataset requires v5 labels for every active session");
         }
         let screen_sequences = numeric_screen_sequences(store, &session)?;
+        let mut plans = Vec::with_capacity(label.episodes.len());
+        let mut requested_sequences = BTreeSet::new();
         for episode in &label.episodes {
             episode_count += 1;
             let field_labels = numeric_field_labels(&episode.expected_result)?;
-            let mut episode_crops = BTreeSet::new();
-            let mut episode_field_counts = BTreeMap::<NumericField, usize>::new();
-            for sequence in
-                numeric_episode_sequences(&screen_sequences, &episode.stable_sequences, usize::MAX)?
+            let requested = numeric_episode_sequences(
+                &screen_sequences,
+                &episode.stable_sequences,
+                usize::MAX,
+            )?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+            requested_sequences.extend(requested.iter().copied());
+            plans.push(NumericEpisodePlan {
+                episode,
+                field_labels,
+                requested,
+                observed: BTreeSet::new(),
+                crops: BTreeSet::new(),
+                field_counts: BTreeMap::new(),
+            });
+        }
+        for_each_session_canonical_frame(store, &session, |sequence, pixels| {
+            if !requested_sequences.contains(&sequence) {
+                return Ok(());
+            }
+            if inspect_canonical_rgb8(&pixels)
+                .map_err(|_| {
+                    CorpusError::InvalidRequest("numeric dataset screen predicate failed".into())
+                })?
+                .screen
+                != ScreenClass::Result
             {
-                let artifact_sha256 = session
-                    .canonical_frames
-                    .iter()
-                    .find(|frame| frame.sequence == sequence)
-                    .map(|frame| frame.artifact_sha256.as_str())
-                    .ok_or_else(|| {
-                        CorpusError::InvalidRequest("numeric dataset frame is unavailable".into())
-                    })?;
-                let encoded = fs::read(store.join("objects").join(artifact_sha256))?;
-                if digest(&encoded) != *artifact_sha256 {
-                    return invalid("numeric dataset frame digest differs");
-                }
-                let (header, pixels) = qoi::decode_to_vec(encoded).map_err(|_| {
-                    CorpusError::InvalidRequest("numeric dataset QOI is invalid".into())
-                })?;
-                if header.width != 1_920
-                    || header.height != 1_080
-                    || pixels.len() != 1_920 * 1_080 * 3
-                    || inspect_canonical_rgb8(&pixels)
-                        .map_err(|_| {
-                            CorpusError::InvalidRequest(
-                                "numeric dataset screen predicate failed".into(),
-                            )
-                        })?
-                        .screen
-                        != ScreenClass::Result
-                {
-                    return invalid("numeric dataset frame is not a canonical result frame");
-                }
-                let ScreenRgb8Crops::Result(crops) =
-                    route_screen_rgb8_crops(&pixels, ScreenClass::Result).map_err(|_| {
-                        CorpusError::InvalidRequest("numeric dataset crop routing failed".into())
-                    })?
-                else {
-                    unreachable!("result routing returns result crops");
-                };
-                for (field, label, crop) in numeric_crops(&crops, &field_labels) {
-                    if !numeric_field_uses_sequence(field, sequence, &episode.stable_sequences) {
+                return invalid("numeric dataset frame is not a canonical result frame");
+            }
+            let ScreenRgb8Crops::Result(crops) =
+                route_screen_rgb8_crops(&pixels, ScreenClass::Result).map_err(|_| {
+                    CorpusError::InvalidRequest("numeric dataset crop routing failed".into())
+                })?
+            else {
+                unreachable!("result routing returns result crops");
+            };
+            for plan in plans
+                .iter_mut()
+                .filter(|plan| plan.requested.contains(&sequence))
+            {
+                plan.observed.insert(sequence);
+                for (field, label, crop) in numeric_crops(&crops, &plan.field_labels) {
+                    if !numeric_field_uses_sequence(field, sequence, &plan.episode.stable_sequences)
+                    {
                         continue;
                     }
                     let bytes = ppm_bytes(crop)?;
                     let crop_sha256 = digest(&bytes);
-                    if !episode_crops.insert((field, crop_sha256.clone())) {
+                    if !plan.crops.insert((field, crop_sha256.clone())) {
                         continue;
                     }
-                    let field_count = episode_field_counts.entry(field).or_default();
+                    let field_count = plan.field_counts.entry(field).or_default();
                     if *field_count >= 32 {
                         continue;
                     }
@@ -2205,7 +2405,7 @@ pub fn author_numeric_dataset(
                     let filename = format!("images/{crop_sha256}.ppm");
                     let sample = NumericDatasetSample {
                         session_sha256: entry.session_sha256.clone(),
-                        episode_id: episode.episode_id.clone(),
+                        episode_id: plan.episode.episode_id.clone(),
                         split: entry.session_sha256.clone(),
                         sequence,
                         field,
@@ -2235,6 +2435,12 @@ pub fn author_numeric_dataset(
                     }
                     candidates.0.push(sample);
                 }
+            }
+            Ok(())
+        })?;
+        for plan in plans {
+            if plan.observed != plan.requested {
+                return invalid("numeric dataset frame is unavailable");
             }
         }
     }
@@ -2418,24 +2624,16 @@ fn numeric_screen_sequences(
     session: &CaptureSession,
 ) -> Result<Vec<(u64, bool)>, CorpusError> {
     let mut sequences = Vec::with_capacity(session.canonical_frames.len());
-    for frame in &session.canonical_frames {
-        let encoded = fs::read(store.join("objects").join(&frame.artifact_sha256))?;
-        if digest(&encoded) != frame.artifact_sha256 {
-            return invalid("numeric dataset frame digest differs");
-        }
-        let (header, pixels) = qoi::decode_to_vec(encoded)
-            .map_err(|_| CorpusError::InvalidRequest("numeric dataset QOI is invalid".into()))?;
-        if header.width != 1_920 || header.height != 1_080 || pixels.len() != 1_920 * 1_080 * 3 {
-            return invalid("numeric dataset frame is not canonical RGB8");
-        }
+    for_each_session_canonical_frame(store, session, |sequence, pixels| {
         let is_result = inspect_canonical_rgb8(&pixels)
             .map_err(|_| {
                 CorpusError::InvalidRequest("numeric dataset screen predicate failed".into())
             })?
             .screen
             == ScreenClass::Result;
-        sequences.push((frame.sequence, is_result));
-    }
+        sequences.push((sequence, is_result));
+        Ok(())
+    })?;
     Ok(sequences)
 }
 
@@ -3411,38 +3609,55 @@ fn for_each_canonical_session_frame(
                     "canonical segment exceeds retained tick index".to_owned(),
                 )
             })?;
-        let mut child = Command::new("ffmpeg")
-            .args(["-hide_banner", "-loglevel", "error", "-i"])
-            .arg(&object)
-            .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| {
-                CorpusError::InvalidReplay(format!("canonical decode failed: {error}"))
-            })?;
-        let mut stdout = child.stdout.take().ok_or_else(|| {
-            CorpusError::InvalidReplay("canonical decoder stdout is unavailable".to_owned())
-        })?;
-        let mut decoded_digest = Sha256::new();
-        for tick in expected {
-            let mut pixels = vec![0u8; 1920 * 1080 * 3].into_boxed_slice();
-            stdout.read_exact(&mut pixels)?;
-            decoded_digest.update(&pixels);
-            observe(tick, pixels)?;
-        }
-        let mut extra = [0u8; 1];
-        if stdout.read(&mut extra)? != 0 || !child.wait()?.success() {
-            return invalid_replay("canonical segment decoded frame count differs");
-        }
-        if hex_digest(decoded_digest.finalize().as_slice()) != segment.raw_rgb24_sha256 {
+        let decoded_digest = decode_canonical_frames(
+            &object,
+            segment.frames,
+            DecodeContext::Replay,
+            |index, pixels| {
+                let tick = expected.get(index).ok_or_else(|| {
+                    CorpusError::InvalidReplay(
+                        "canonical decoded frame exceeds tick index".to_owned(),
+                    )
+                })?;
+                observe(tick, pixels)
+            },
+        )?;
+        if decoded_digest != segment.raw_rgb24_sha256 {
             return invalid_replay("canonical segment decoded pixel digest differs");
         }
         offset = offset.saturating_add(segment.frames);
     }
     if offset != retained.len() {
         return invalid_replay("canonical segment coverage differs");
+    }
+    Ok(())
+}
+
+fn for_each_session_canonical_frame(
+    store: &Path,
+    session: &CaptureSession,
+    mut observe: impl FnMut(u64, Box<[u8]>) -> Result<(), CorpusError>,
+) -> Result<(), CorpusError> {
+    if session
+        .artifacts
+        .iter()
+        .any(|artifact| artifact.source_path == "recognition/canonical-manifest.json")
+    {
+        return for_each_canonical_session_frame(store, session, |tick, pixels| {
+            observe(tick.sequence, pixels)
+        });
+    }
+    for frame in &session.canonical_frames {
+        let encoded = fs::read(store.join("objects").join(&frame.artifact_sha256))?;
+        if digest(&encoded) != frame.artifact_sha256 {
+            return invalid("canonical session frame digest differs");
+        }
+        let (header, pixels) = qoi::decode_to_vec(encoded)
+            .map_err(|_| CorpusError::InvalidRequest("canonical session QOI is invalid".into()))?;
+        if header.width != 1_920 || header.height != 1_080 || pixels.len() != 1_920 * 1_080 * 3 {
+            return invalid("canonical session frame is not canonical RGB8");
+        }
+        observe(frame.sequence, pixels.into_boxed_slice())?;
     }
     Ok(())
 }
@@ -4673,6 +4888,22 @@ mod tests {
     }
 
     #[test]
+    fn canonical_tick_chronology_rejects_cross_segment_sequence_or_time_reset() {
+        let tick = CanonicalTick {
+            sequence: 11,
+            source_sequence: 11,
+            monotonic_ms: 1_000,
+            screen: ScreenClass::Result,
+            semantic_episode_id: Some(1),
+            disposition: "retained".to_owned(),
+        };
+        assert!(canonical_tick_follows(Some((10, 1_000)), &tick));
+        assert!(!canonical_tick_follows(Some((11, 900)), &tick));
+        assert!(!canonical_tick_follows(Some((12, 1_000)), &tick));
+        assert!(!canonical_tick_follows(Some((10, 1_001)), &tick));
+    }
+
+    #[test]
     fn fact_stream_allows_async_completion_order_but_observations_require_order() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("records.ndjson");
@@ -4775,11 +5006,13 @@ mod tests {
             &path,
             concat!(
                 "{\"schema\":\"scorepeek-run-event-v6\",\"event\":\"session_started\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"capture_profile_sha256\":\"profile\",\"normalizer_artifact_sha256\":\"normalizer\",\"channel_sequence\":1}\n",
-                "{\"schema\":\"scorepeek-run-event-v6\",\"event\":\"session_finished\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"outcome\":\"ok\",\"report\":{},\"channel_sequence\":2}\n",
+                "{\"schema\":\"scorepeek-run-event-v6\",\"event\":\"recording_health_changed\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"state\":\"active\",\"memory_limit_bytes\":1073741824,\"memory_used_bytes\":6220800,\"memory_high_water_bytes\":6220800,\"dropped_frames\":0,\"channel_sequence\":2}\n",
+                "{\"schema\":\"scorepeek-run-event-v6\",\"event\":\"recording_finalizing\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"channel_sequence\":3}\n",
+                "{\"schema\":\"scorepeek-run-event-v6\",\"event\":\"session_finished\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"outcome\":\"ok\",\"report\":{},\"channel_sequence\":4}\n",
             ),
         )
         .unwrap();
-        assert_eq!(verify_session_events(&path, &manifest).unwrap(), 2);
+        assert_eq!(verify_session_events(&path, &manifest).unwrap(), 4);
     }
 
     #[test]
@@ -4876,6 +5109,215 @@ mod tests {
         assert!(numeric_field_uses_sequence(NumericField::Level, 20, &[20]));
         assert!(!numeric_field_uses_sequence(NumericField::Notes, 19, &[20]));
         assert!(numeric_field_uses_sequence(NumericField::Good, 19, &[20]));
+    }
+
+    #[test]
+    fn numeric_dataset_authors_from_segment_backed_canonical_frames() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("store");
+        ensure_store(&store).unwrap();
+
+        let expected = expected_result();
+        let labels = numeric_field_labels(&expected).unwrap();
+        let mut pixels = [200_u8, 100, 20].repeat(1_920 * 1_080);
+        for y in [451, 655] {
+            for x in 0..518 {
+                pixels[(y * 1_920 + x) * 3..][..3].copy_from_slice(&[0, 0, 0]);
+            }
+        }
+        let ScreenRgb8Crops::Result(crops) =
+            route_screen_rgb8_crops(&pixels, ScreenClass::Result).unwrap()
+        else {
+            unreachable!();
+        };
+        let rois = numeric_crops(&crops, &labels)
+            .into_iter()
+            .map(|(_, _, crop)| crop.roi)
+            .collect::<Vec<_>>();
+        for (index, roi) in rois.iter().enumerate() {
+            let offset = (roi.y as usize * 1_920 + roi.x as usize) * 3;
+            pixels[offset..offset + 3].copy_from_slice(&[
+                u8::try_from(index + 1).unwrap(),
+                u8::try_from(index + 2).unwrap(),
+                u8::try_from(index + 3).unwrap(),
+            ]);
+        }
+        assert_eq!(
+            inspect_canonical_rgb8(&pixels).unwrap().screen,
+            ScreenClass::Result
+        );
+
+        let segment_path = root.path().join("segment.mkv");
+        let output = File::create(&segment_path).unwrap();
+        let mut child = Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-video_size",
+                "1920x1080",
+                "-framerate",
+                "10",
+                "-i",
+                "pipe:0",
+                "-an",
+                "-c:v",
+                "libx264rgb",
+                "-crf",
+                "0",
+                "-preset",
+                "ultrafast",
+                "-frames:v",
+                "1",
+                "-f",
+                "matroska",
+                "pipe:1",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::from(output))
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&pixels).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let segment_bytes = fs::read(&segment_path).unwrap();
+        let segment_sha256 = digest(&segment_bytes);
+        fs::write(store.join("objects").join(&segment_sha256), &segment_bytes).unwrap();
+        let raw_sha256 = digest(&pixels);
+        let tick_bytes = b"{\"sequence\":1,\"source_sequence\":1,\"monotonic_ms\":100,\"screen\":\"result\",\"semantic_episode_id\":1,\"disposition\":\"retained\"}\n";
+        let tick_sha256 = digest(tick_bytes);
+        fs::write(store.join("objects").join(&tick_sha256), tick_bytes).unwrap();
+        let canonical_bytes = canonical_json(&serde_json::json!({
+            "schema": "scorepeek-canonical-session-recording-v2",
+            "completeness": "complete",
+            "ffmpeg_sha256": "1".repeat(64),
+            "ffmpeg_version": "test",
+            "tick_index_sha256": tick_sha256,
+            "tick_count": 1,
+            "segments": [{
+                "path": "segment-0000.mkv",
+                "first_sequence": 1,
+                "last_sequence": 1,
+                "frames": 1,
+                "raw_rgb24_sha256": raw_sha256,
+                "encoded_sha256": segment_sha256,
+                "bytes": segment_bytes.len(),
+            }],
+            "dropped_frames": 0,
+            "completeness_reasons": [],
+            "memory_limit_bytes": 1_073_741_824_u64,
+            "memory_high_water_bytes": 6_220_800_u64,
+            "integrity_verification": "deferred_to_import",
+        }))
+        .unwrap();
+        let canonical_sha256 = digest(&canonical_bytes);
+        let canonical_bytes_len = u64::try_from(canonical_bytes.len()).unwrap();
+        fs::write(
+            store.join("objects").join(&canonical_sha256),
+            canonical_bytes,
+        )
+        .unwrap();
+
+        let session = CaptureSession {
+            schema: SESSION_SCHEMA.to_owned(),
+            diagnostic_sha256: "2".repeat(64),
+            source_kind: SourceKind::LiveRun,
+            source_session_id: "segment-backed".to_owned(),
+            capture_generation: 1,
+            profile_sha256: "3".repeat(64),
+            catalog_sha256: "4".repeat(64),
+            recognition_interval_ms: 100,
+            processed_ticks: 1,
+            busy_skips: 0,
+            maximum_consecutive_busy_skips: 0,
+            completeness: "complete".to_owned(),
+            canonical_frames: vec![ReviewFrame {
+                sequence: 1,
+                artifact_sha256: segment_sha256.clone(),
+            }],
+            normalization_pairs: Vec::new(),
+            artifacts: vec![
+                CorpusArtifact {
+                    kind: "canonical_manifest".to_owned(),
+                    source_path: "recognition/canonical-manifest.json".to_owned(),
+                    sha256: canonical_sha256,
+                    bytes: canonical_bytes_len,
+                },
+                CorpusArtifact {
+                    kind: "canonical_ticks".to_owned(),
+                    source_path: "recognition/canonical-ticks.ndjson".to_owned(),
+                    sha256: tick_sha256,
+                    bytes: u64::try_from(tick_bytes.len()).unwrap(),
+                },
+                CorpusArtifact {
+                    kind: "canonical_segment".to_owned(),
+                    source_path: "recognition/segment-0000.mkv".to_owned(),
+                    sha256: segment_sha256,
+                    bytes: u64::try_from(segment_bytes.len()).unwrap(),
+                },
+            ],
+        };
+        let session_bytes = canonical_json(&session).unwrap();
+        let session_sha256 = digest(&session_bytes);
+        publish_document(
+            &store
+                .join("sessions")
+                .join(format!("{session_sha256}.json")),
+            &session_bytes,
+        )
+        .unwrap();
+        let label = RegressionLabel {
+            schema: LABEL_SCHEMA.to_owned(),
+            session_sha256: session_sha256.clone(),
+            disposition: LabelDisposition::Include,
+            episodes: vec![RegressionEpisode {
+                episode_id: "result-1".to_owned(),
+                expected_song_id: "00000000-0000-0000-0000-000000000001".to_owned(),
+                expected_clear_type: "CLEAR".to_owned(),
+                expected_result: expected,
+                stable_sequences: vec![1],
+                attempt: None,
+            }],
+            negative_frames: Vec::new(),
+        };
+        let label_bytes = canonical_json(&label).unwrap();
+        let label_sha256 = digest(&label_bytes);
+        publish_document(
+            &store.join("labels").join(format!("{label_sha256}.json")),
+            &label_bytes,
+        )
+        .unwrap();
+        let suite = RegressionSuite {
+            schema: SUITE_SCHEMA.to_owned(),
+            previous_generation_sha256: None,
+            entries: vec![SuiteEntry {
+                session_sha256,
+                label_sha256,
+            }],
+        };
+        let suite_bytes = canonical_json(&suite).unwrap();
+        let suite_sha256 = digest(&suite_bytes);
+        publish_document(
+            &store.join("suites").join(format!("{suite_sha256}.json")),
+            &suite_bytes,
+        )
+        .unwrap();
+        publish_active(&store, &suite_sha256).unwrap();
+
+        let summary = author_numeric_dataset(&store, &root.path().join("dataset")).unwrap();
+        assert_eq!(summary.sessions, 1);
+        assert_eq!(summary.episodes, 1);
+        assert!(summary.samples > 0);
     }
 
     #[test]

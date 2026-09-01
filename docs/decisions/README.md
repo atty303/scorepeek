@@ -306,6 +306,10 @@ authoritative.
 - [ADR 0101: Record canonical sessions and replay the live timeline](0101-record-canonical-sessions-and-replay-the-live-timeline.md)
   makes routine recording opt-in, retains sparse lossless canonical segments around raw-screen
   transitions, clean-cuts attempt regression to label v5, and pipelines ordered OCR frames.
+- [ADR 0102: Account recording memory and defer lossless verification](0102-account-recording-memory-and-defer-lossless-verification.md)
+  replaces the two-frame recorder queue with one shared configurable memory account, keeps
+  intentional gaps inside segments, defers decode verification to import, removes routine QOI
+  duplication, and publishes an explicit recording-ready lifecycle event.
 
 ## Historical
 

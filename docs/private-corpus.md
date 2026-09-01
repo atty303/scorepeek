@@ -10,12 +10,16 @@ objects, or deduplicate frames by pixel content.
 `scorepeek run` performs production recognition without saving artifacts. `scorepeek run --record`
 starts capture diagnostics, recognition observation v17, run-event v6, the canonical session
 recorder, and joined diagnostic session v5 together. `--profile NAME` may appear before or after
-`--record`.
+`--record`. Routine capture diagnostics retain structured facts but no legacy QOI pixels. The
+canonical recording is therefore the session's only retained frame authority.
 
 Recording preflight requires bounded store capacity and a PATH-resolved FFmpeg that exposes
-`libx264rgb`. The artifact records the executable digest and first version line. Recording queue
-loss, encoder failure, publication failure, or shutdown timeout marks the recording partial but
-does not change screen resolution, attempt finalization, or domain event emission.
+`libx264rgb`. The artifact records the executable digest and first version line. The logically
+unbounded recorder uses one shared 1024 MiB memory account by default; use
+`--record-memory-mib MIB` with `--record` to change it. The TUI shows current, limit, high-water,
+and dropped-frame values. A memory-limit admission loss, encoder failure, publication failure, or
+shutdown timeout marks the recording partial but does not change screen resolution, attempt
+finalization, or domain event emission.
 
 The canonical recorder indexes every 10 Hz due tick with original sequence, monotonic time, raw
 screen, active semantic episode ID, and either `retained` or a typed intentional-elision reason.
@@ -23,13 +27,19 @@ It retains every `MusicSelect`, `DecideTransition`, and `Result` frame. It retai
 first and last ten ticks and ten-tick windows around all raw-screen changes, including entry to and
 exit from `Unknown`. Only stable `Play`, `ModeSelect`, and `Unknown` interiors are elided.
 
-Contiguous retained frames are lossless RGB Matroska segments. Gaps, chronology resets, 600 frames,
-or session end close a segment. Complete segments have matching input and decoded RGB24 digests and
-frame counts.
+Retained frames are lossless RGB Matroska segments in tick-index order. Intentional sequence gaps
+remain inside a segment; 600 retained frames, chronology reset, or session end closes it. The
+realtime recorder records input and encoded digests without decoding its own output. After semantic
+`session_finished`, the TUI shows `finalizing`; atomic joined-session publication produces
+`recording_ready`, after which the immutable session can be imported while the watcher remains
+running.
 
 ## Import and review
 
-Verify and import one complete joined session:
+Verify and import one complete joined session. This is where every segment is decoded and its RGB24
+digest and frame count are checked. Each segment decode has a bounded two-minute deadline; timeout,
+truncated output, or replay-observer failure kills and reaps the FFmpeg child before failing the
+import:
 
 ```text
 scorepeek-corpus diagnostic verify /absolute/recorded-session

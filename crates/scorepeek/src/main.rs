@@ -510,24 +510,32 @@ fn try_routine_live_session(args: &[OsString], bundle: &Path) -> Option<Result<(
     if run != "run" {
         return None;
     }
-    let (profile, recording_enabled) = match parse_routine_run_options(options) {
+    let options = match parse_routine_run_options(options) {
         Ok(options) => options,
         Err(error) => return Some(Err(error)),
     };
     Some(run_routine_live_session(
-        profile,
-        if recording_enabled {
+        options.profile,
+        if options.recording {
             "enabled"
         } else {
             "disabled"
         },
+        options.recording_memory_limit,
         bundle,
     ))
 }
 
-fn parse_routine_run_options(options: &[OsString]) -> Result<(Option<&OsStr>, bool), String> {
+struct RoutineRunOptions<'a> {
+    profile: Option<&'a OsStr>,
+    recording: bool,
+    recording_memory_limit: canonical_recording::RecordingMemoryLimit,
+}
+
+fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions<'_>, String> {
     let mut profile = None;
     let mut recording = false;
+    let mut recording_memory_mib = None;
     let mut index = 0;
     while index < options.len() {
         match options[index].to_str() {
@@ -539,18 +547,39 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<(Option<&OsStr>, bo
                 };
                 profile = Some(value.as_os_str());
             }
+            Some("--record-memory-mib") if recording_memory_mib.is_none() => {
+                index += 1;
+                let Some(value) = options.get(index).and_then(|value| value.to_str()) else {
+                    return Err("--record-memory-mib requires an integer MiB value".to_owned());
+                };
+                recording_memory_mib =
+                    Some(value.parse::<usize>().map_err(|_| {
+                        "--record-memory-mib requires an integer MiB value".to_owned()
+                    })?);
+            }
             Some(option) => return Err(format!("unknown or duplicate run option: {option}")),
             None => return Err("run option must be UTF-8".to_owned()),
         }
         index += 1;
     }
-    Ok((profile, recording))
+    if recording_memory_mib.is_some() && !recording {
+        return Err("--record-memory-mib requires --record".to_owned());
+    }
+    let recording_memory_limit = canonical_recording::RecordingMemoryLimit::from_mib(
+        recording_memory_mib.unwrap_or(canonical_recording::DEFAULT_RECORDING_MEMORY_MIB),
+    )?;
+    Ok(RoutineRunOptions {
+        profile,
+        recording,
+        recording_memory_limit,
+    })
 }
 
 #[allow(clippy::too_many_lines)]
 fn run_routine_live_session(
     profile_name: Option<&OsStr>,
     recording: &str,
+    recording_memory_limit: canonical_recording::RecordingMemoryLimit,
     bundle: &Path,
 ) -> Result<(), String> {
     let selected = local_profiles::select_for_run(profile_name)?;
@@ -762,6 +791,7 @@ fn run_routine_live_session(
                     &references,
                     bundle,
                     recognition_root.is_some(),
+                    recording_memory_limit,
                     Some(&session_id),
                     Some(node_id),
                     &stop,
@@ -790,6 +820,7 @@ fn run_routine_live_session(
                         },
                     })?;
                     let event_artifact = output.take_completed_event_artifact();
+                    let mut recording_published = false;
                     if let (
                         Some(recognition_root),
                         Some(capture_manifest_sha256),
@@ -837,7 +868,24 @@ fn run_routine_live_session(
                             event_manifest_sha256,
                             profile_path: &selected.path,
                         }) {
-                            Ok(_) => {
+                            Ok(published) => {
+                                if completeness == "complete" {
+                                    recording_published = true;
+                                    output.publish(&routine_output::RunEvent {
+                                        schema: "scorepeek-run-event-v6".to_owned(),
+                                        kind: routine_output::RunEventKind::RecordingReady {
+                                            session_id: session_id.clone(),
+                                            directory: published.directory.display().to_string(),
+                                            manifest_sha256: published.manifest_sha256,
+                                        },
+                                    })?;
+                                } else {
+                                    output.status_recording_degraded()?;
+                                    output.warning(format!(
+                                        "partial session was published for diagnosis but is not importable: {}",
+                                        published.directory.display()
+                                    ))?;
+                                }
                                 if let Err(error) = fs::remove_dir_all(recognition_root) {
                                     output.warning(format!(
                                         "published recognition staging cleanup failed: {error}"
@@ -849,12 +897,18 @@ fn run_routine_live_session(
                                     ))?;
                                 }
                             }
-                            Err(error) => output.warning(format!(
-                                "diagnostic session publication degraded: {error}"
-                            ))?,
+                            Err(error) => {
+                                output.status_recording_degraded()?;
+                                output.warning(format!(
+                                    "diagnostic session publication degraded: {error}"
+                                ))?;
+                            }
                         }
                     }
                     if state.recording_enabled {
+                        if !recording_published {
+                            output.status_recording_degraded()?;
+                        }
                         if report.diagnostic_manifest_sha256().is_none() {
                             output.warning(
                                 "diagnostic session was not published: capture component has no manifest",
@@ -1117,6 +1171,7 @@ fn run_live_session(
         values,
         bundle_root,
         persist_recognition,
+        canonical_recording::RecordingMemoryLimit::default_limit(),
         None,
         None,
         &stop,
@@ -1136,6 +1191,7 @@ fn execute_live_session(
     values: &[&OsStr],
     bundle_root: &Path,
     persist_recognition: bool,
+    recording_memory_limit: canonical_recording::RecordingMemoryLimit,
     session_id: Option<&str>,
     expected_source_node_id: Option<u32>,
     stop: &std::sync::atomic::AtomicBool,
@@ -1181,7 +1237,11 @@ fn execute_live_session(
         },
     };
     let mut policy = parse_diagnostic_recording_policy(recording)?;
-    policy.retention = diagnostic_recording::DiagnosticRetention::ForegroundFailureWindowV1;
+    policy.retention = if session_id.is_some() {
+        diagnostic_recording::DiagnosticRetention::FactsOnly
+    } else {
+        diagnostic_recording::DiagnosticRetention::ForegroundFailureWindowV1
+    };
     let diagnostic_preflight = prepare_live_diagnostic_root(Path::new(diagnostic_root), &policy);
     if session_id.is_none() {
         emit(LiveSessionEmission {
@@ -1210,6 +1270,7 @@ fn execute_live_session(
             ),
             recognition_artifact_retention:
                 recognition_artifact::RecognitionArtifactRetention::Complete,
+            recording_memory_limit,
         },
         stop,
         &mut |event| {
@@ -1368,6 +1429,40 @@ fn live_session_event_value(
             });
             if let Some(session_id) = session_id {
                 value["session_id"] = session_id.into();
+            }
+            if let Some(capture_generation) = routine_generation {
+                value["capture_generation"] = capture_generation.into();
+            }
+            value
+        }
+        capture_live::GamescopeLiveSessionEvent::RecordingHealth { snapshot } => {
+            let mut value = serde_json::json!({
+                "schema": schema,
+                "event": "recording_health_changed",
+                "state": snapshot.state,
+                "memory_limit_bytes": snapshot.memory_limit_bytes,
+                "memory_used_bytes": snapshot.memory_used_bytes,
+                "memory_high_water_bytes": snapshot.memory_high_water_bytes,
+                "dropped_frames": snapshot.dropped_frames,
+            });
+            if let Some(session_id) = session_id {
+                value["session_id"] = session_id.into();
+            }
+            if let Some(capture_generation) = routine_generation {
+                value["capture_generation"] = capture_generation.into();
+            }
+            value
+        }
+        capture_live::GamescopeLiveSessionEvent::RecordingFinalizing => {
+            let mut value = serde_json::json!({
+                "schema": schema,
+                "event": "recording_finalizing",
+            });
+            if let Some(session_id) = session_id {
+                value["session_id"] = session_id.into();
+            }
+            if let Some(capture_generation) = routine_generation {
+                value["capture_generation"] = capture_generation.into();
             }
             value
         }
@@ -1749,6 +1844,7 @@ fn run_capture_field_observation(
             recognition_artifact_root,
             recognition_artifact_retention:
                 recognition_artifact::RecognitionArtifactRetention::Complete,
+            recording_memory_limit: canonical_recording::RecordingMemoryLimit::default_limit(),
         },
     );
     println!(
@@ -3521,7 +3617,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...\n  scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...\n  scorepeek profile list\n  scorepeek run [--profile NAME] [--record]\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition inspect-diagnostic-qoi --frame FILE --frame-sha256 SHA256\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
+        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...\n  scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...\n  scorepeek profile list\n  scorepeek run [--profile NAME] [--record [--record-memory-mib MIB]]\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition inspect-diagnostic-qoi --frame FILE --frame-sha256 SHA256\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
         env!("CARGO_PKG_VERSION")
     );
     println!(
@@ -3584,23 +3680,43 @@ mod tests {
     #[test]
     fn ordinary_run_options_are_order_independent_and_record_is_opt_in() {
         let empty: [OsString; 0] = [];
-        assert_eq!(parse_routine_run_options(&empty).unwrap(), (None, false));
+        let parsed = parse_routine_run_options(&empty).unwrap();
+        assert_eq!(parsed.profile, None);
+        assert!(!parsed.recording);
         let record = [OsString::from("--record")];
-        assert_eq!(parse_routine_run_options(&record).unwrap(), (None, true));
+        let parsed = parse_routine_run_options(&record).unwrap();
+        assert_eq!(parsed.profile, None);
+        assert!(parsed.recording);
+        assert_eq!(
+            parsed.recording_memory_limit.bytes(),
+            1024_u64 * 1024 * 1024
+        );
         let profile_then_record = [
             OsString::from("--profile"),
             OsString::from("target"),
             OsString::from("--record"),
         ];
-        let (profile, recording) = parse_routine_run_options(&profile_then_record).unwrap();
-        assert_eq!(profile, Some(OsStr::new("target")));
-        assert!(recording);
+        let parsed = parse_routine_run_options(&profile_then_record).unwrap();
+        assert_eq!(parsed.profile, Some(OsStr::new("target")));
+        assert!(parsed.recording);
         let record_then_profile = [
             OsString::from("--record"),
             OsString::from("--profile"),
             OsString::from("target"),
         ];
         assert!(parse_routine_run_options(&record_then_profile).is_ok());
+        let configured = [
+            OsString::from("--record-memory-mib"),
+            OsString::from("2048"),
+            OsString::from("--record"),
+        ];
+        assert_eq!(
+            parse_routine_run_options(&configured)
+                .unwrap()
+                .recording_memory_limit
+                .bytes(),
+            2048_u64 * 1024 * 1024
+        );
     }
 
     #[test]
@@ -3609,6 +3725,10 @@ mod tests {
             vec![OsString::from("--no-recording")],
             vec![OsString::from("--record-attempts")],
             vec![OsString::from("--record"), OsString::from("--record")],
+            vec![
+                OsString::from("--record-memory-mib"),
+                OsString::from("1024"),
+            ],
         ] {
             assert!(parse_routine_run_options(&options).is_err());
         }

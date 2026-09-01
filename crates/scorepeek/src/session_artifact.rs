@@ -66,11 +66,17 @@ pub struct PublishRequest<'a> {
     pub profile_path: &'a Path,
 }
 
+#[derive(Debug)]
+pub struct PublishOutcome {
+    pub directory: PathBuf,
+    pub manifest_sha256: String,
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one create-only transaction validates and binds every joined component"
 )]
-pub fn publish(request: &PublishRequest<'_>) -> Result<PathBuf, String> {
+pub fn publish(request: &PublishRequest<'_>) -> Result<PublishOutcome, String> {
     let destination = request.root.join(request.session_id);
     if destination.symlink_metadata().is_ok() {
         return Err("diagnostic session already exists".to_owned());
@@ -125,7 +131,7 @@ pub fn publish(request: &PublishRequest<'_>) -> Result<PathBuf, String> {
     let canonical_manifest: Value = serde_json::from_slice(&canonical_manifest_bytes)
         .map_err(|_| "canonical recording manifest is invalid".to_owned())?;
     if canonical_manifest.get("schema").and_then(Value::as_str)
-        != Some("scorepeek-canonical-session-recording-v1")
+        != Some("scorepeek-canonical-session-recording-v2")
     {
         return Err("canonical recording manifest schema is unsupported".to_owned());
     }
@@ -167,6 +173,7 @@ pub fn publish(request: &PublishRequest<'_>) -> Result<PathBuf, String> {
     let mut bytes = serde_json::to_vec(&manifest)
         .map_err(|_| "diagnostic session manifest serialization failed".to_owned())?;
     bytes.push(b'\n');
+    let manifest_sha256 = digest_bytes(&bytes);
     write_file(&staging.join("manifest.json"), &bytes)?;
     fs::remove_file(staging.join(".scorepeek-session-staging"))
         .map_err(|error| format!("diagnostic session marker removal failed: {error}"))?;
@@ -178,7 +185,18 @@ pub fn publish(request: &PublishRequest<'_>) -> Result<PathBuf, String> {
     File::open(request.root)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| format!("diagnostic session store sync failed: {error}"))?;
-    Ok(destination)
+    Ok(PublishOutcome {
+        directory: destination,
+        manifest_sha256,
+    })
+}
+
+fn digest_bytes(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(64);
+    for byte in Sha256::digest(bytes) {
+        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    encoded
 }
 
 fn link_event_component(
@@ -528,7 +546,7 @@ mod tests {
     fn write_canonical_component(recognition: &Path) {
         fs::write(
             recognition.join("canonical-manifest.json"),
-            b"{\"schema\":\"scorepeek-canonical-session-recording-v1\",\"completeness\":\"complete\"}\n",
+            b"{\"schema\":\"scorepeek-canonical-session-recording-v2\",\"completeness\":\"complete\"}\n",
         )
         .unwrap();
         fs::write(recognition.join("canonical-ticks.ndjson"), b"").unwrap();
@@ -586,11 +604,12 @@ mod tests {
             profile_path: &profile,
         })
         .unwrap();
-        let records = fs::read_to_string(published.join("recognition/observations.ndjson"))
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str::<Value>(line).unwrap())
-            .collect::<Vec<_>>();
+        let records =
+            fs::read_to_string(published.directory.join("recognition/observations.ndjson"))
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect::<Vec<_>>();
         assert_eq!(records.len(), 4);
         assert_eq!(records[0]["screen"], "unknown");
         assert_eq!(records[0]["source_timestamp_ms"], 100);
@@ -599,7 +618,7 @@ mod tests {
         assert_eq!(records[3]["screen"], "result");
         assert_eq!(records[3]["fields"]["title"], "measured");
         assert_eq!(
-            fs::read(published.join("events.ndjson")).unwrap(),
+            fs::read(published.directory.join("events.ndjson")).unwrap(),
             fs::read(events.join("events.ndjson")).unwrap()
         );
     }
@@ -648,7 +667,7 @@ mod tests {
         })
         .unwrap();
         let observation: Value = serde_json::from_str(
-            fs::read_to_string(published.join("recognition/observations.ndjson"))
+            fs::read_to_string(published.directory.join("recognition/observations.ndjson"))
                 .unwrap()
                 .trim(),
         )

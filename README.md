@@ -142,9 +142,18 @@ recreated with setup. Start the watcher before or after the ordinary Gamescope/g
 scorepeek run --profile bazzite-4k --record
 ```
 
+The default shared recording-memory limit is 1024 MiB. Override it for a recorded invocation with:
+
+```text
+scorepeek run --profile bazzite-4k --record --record-memory-mib 2048
+```
+
 When exactly one profile exists, `scorepeek run` selects it automatically. Multiple profiles require
-`--profile NAME`. Recording is disabled by default; add `--record` to retain bounded watcher,
-diagnostic, recognition, event, and canonical replay artifacts. The watcher waits when no source
+`--profile NAME`. Recording is disabled by default; add `--record` to retain structured watcher,
+diagnostic, recognition, event, and canonical replay artifacts. Routine recording does not retain
+legacy QOI images beside the canonical segments. The TUI reports recording memory usage and marks
+the session `degraded` immediately after a recording loss; `recording_ready` means the atomically
+published session can be imported even while the watcher continues running. The watcher waits when no source
 exists, attaches only when exactly one Gamescope video source exists, and stays running across
 sequential Gamescope lifetimes. A unique startup source that is not ready for admission is retried at
 a bounded interval, so scorepeek can remain running while Gamescope and the game finish starting.

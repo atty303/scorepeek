@@ -282,6 +282,9 @@ impl DiagnosticBridge {
                 .record_external_error(DiagnosticErrorType::InvalidConfiguration, frame.sequence);
             return DiagnosticEnqueueOutcome::Rejected;
         }
+        if self.retention == DiagnosticRetention::FactsOnly {
+            return DiagnosticEnqueueOutcome::Disabled;
+        }
         self.worker.try_record_frame(DiagnosticOwnedFrame {
             sequence: frame.sequence,
             monotonic_start_ms: frame.monotonic_start_ms,
@@ -295,6 +298,9 @@ impl DiagnosticBridge {
         &mut self,
         observation: &RecognitionObservation<'_>,
     ) -> DiagnosticEnqueueOutcome {
+        if self.retention == DiagnosticRetention::FactsOnly {
+            return DiagnosticEnqueueOutcome::Disabled;
+        }
         if self.retention == DiagnosticRetention::CompleteCadence {
             return self.offer(observation.frame());
         }
@@ -1172,6 +1178,41 @@ mod tests {
         assert_eq!(frames.first().unwrap()["sequence"], 9);
         assert_eq!(frames.last().unwrap()["sequence"], 20);
         assert_eq!(manifest["facts"]["record_count"], 20);
+    }
+
+    #[test]
+    fn facts_only_retention_never_materializes_qoi_frames() {
+        let root = tempfile::tempdir().unwrap();
+        let policy = DiagnosticPolicy {
+            retention: DiagnosticRetention::FactsOnly,
+            ..DiagnosticPolicy::default()
+        };
+        let mut bridge =
+            DiagnosticBridge::start_for_test(root.path(), descriptor("facts-only", 1), policy, 8);
+        let canonical = frame(1, 1, 0);
+        let observation = RecognitionObservation::inspect(&canonical).unwrap();
+        assert_eq!(
+            bridge.record_frame_for_observation(&observation),
+            DiagnosticEnqueueOutcome::Disabled
+        );
+        assert_eq!(bridge.offer(&canonical), DiagnosticEnqueueOutcome::Disabled);
+        assert_eq!(
+            bridge.record_screen_observation(&observation),
+            DiagnosticEnqueueOutcome::Enqueued
+        );
+        let outcome = bridge.finish(DiagnosticRunStatus::Success, 100);
+        assert_eq!(outcome.completeness, Some(DiagnosticCompleteness::Complete));
+        let directory = root.path().join("facts-only");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest["frames"].as_array().unwrap().len(), 0);
+        assert_eq!(manifest["facts"]["record_count"], 1);
+        assert!(fs::read_dir(directory).unwrap().flatten().all(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_none_or(|extension| extension != "qoi")
+        }));
     }
 
     #[test]
