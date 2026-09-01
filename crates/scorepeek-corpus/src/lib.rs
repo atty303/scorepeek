@@ -11,17 +11,20 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tempfile::Builder;
 
+#[allow(
+    dead_code,
+    reason = "removed video and v2 conversion authoring has no exported or CLI route"
+)]
 mod frame_corpus;
 mod media;
 mod music_list;
 mod music_select_motion;
 mod temporal_evaluation;
 pub use frame_corpus::{
-    CorpusReplaySummary, DiagnosticConversionSummary, DiagnosticImportSummary,
-    DiagnosticVerificationSummary, NumericDatasetAuthoringSummary, NumericSentinelAuthoringSummary,
-    ReviewApplySummary, VideoReplaySummary, apply_review, author_numeric_dataset,
-    author_numeric_sentinel, convert_v2_diagnostic, import_diagnostic, inspect_review,
-    replay_corpus, replay_video, verify_diagnostic,
+    CorpusReplaySummary, DiagnosticImportSummary, DiagnosticVerificationSummary,
+    NumericDatasetAuthoringSummary, NumericSentinelAuthoringSummary, ReviewApplySummary,
+    apply_review, author_numeric_dataset, author_numeric_sentinel, import_diagnostic,
+    inspect_review, replay_corpus, verify_diagnostic,
 };
 pub use media::{CanonicalFrameExtractionSummary, FrameExtractionSummary, MediaProbeSummary};
 pub use music_list::{

@@ -10,7 +10,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 const MAX_FILES: usize = 20_000;
-const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_NDJSON_RECORDS: usize = 250_000;
 const MAX_NDJSON_RECORD_BYTES: u64 = 1024 * 1024;
 
@@ -32,6 +32,8 @@ struct SessionManifest<'a> {
     capture_manifest_sha256: &'a str,
     recognition_manifest_sha256: &'a str,
     event_manifest_sha256: &'a str,
+    canonical_manifest_sha256: String,
+    canonical_completeness: String,
     artifacts: Vec<Artifact>,
 }
 
@@ -64,6 +66,10 @@ pub struct PublishRequest<'a> {
     pub profile_path: &'a Path,
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one create-only transaction validates and binds every joined component"
+)]
 pub fn publish(request: &PublishRequest<'_>) -> Result<PathBuf, String> {
     let destination = request.root.join(request.session_id);
     if destination.symlink_metadata().is_ok() {
@@ -107,6 +113,29 @@ pub fn publish(request: &PublishRequest<'_>) -> Result<PathBuf, String> {
         "recognition",
         &mut artifacts,
     )?;
+    let canonical_manifest_path = recognition.join("canonical-manifest.json");
+    let canonical_manifest_metadata = canonical_manifest_path
+        .metadata()
+        .map_err(|error| format!("canonical recording manifest metadata failed: {error}"))?;
+    if canonical_manifest_metadata.len() > MAX_NDJSON_RECORD_BYTES {
+        return Err("canonical recording manifest exceeds its byte capacity".to_owned());
+    }
+    let canonical_manifest_bytes = fs::read(&canonical_manifest_path)
+        .map_err(|error| format!("canonical recording manifest read failed: {error}"))?;
+    let canonical_manifest: Value = serde_json::from_slice(&canonical_manifest_bytes)
+        .map_err(|_| "canonical recording manifest is invalid".to_owned())?;
+    if canonical_manifest.get("schema").and_then(Value::as_str)
+        != Some("scorepeek-canonical-session-recording-v1")
+    {
+        return Err("canonical recording manifest schema is unsupported".to_owned());
+    }
+    let canonical_completeness = canonical_manifest
+        .get("completeness")
+        .and_then(Value::as_str)
+        .filter(|value| matches!(*value, "complete" | "partial"))
+        .ok_or_else(|| "canonical recording completeness is invalid".to_owned())?
+        .to_owned();
+    let canonical_manifest_sha256 = digest_file(&canonical_manifest_path)?;
     let recognition_manifest_sha256 =
         rewrite_recognition_stream(request, &recognition, &mut artifacts)?;
     link_event_component(request, &staging, &mut artifacts)?;
@@ -114,7 +143,7 @@ pub fn publish(request: &PublishRequest<'_>) -> Result<PathBuf, String> {
         return Err("diagnostic session file capacity exceeded".to_owned());
     }
     let manifest = SessionManifest {
-        schema: "scorepeek-private-diagnostic-session-v4",
+        schema: "scorepeek-private-diagnostic-session-v5",
         source_kind: "live_run",
         session_id: request.session_id,
         capture_generation: request.capture_generation,
@@ -131,6 +160,8 @@ pub fn publish(request: &PublishRequest<'_>) -> Result<PathBuf, String> {
         capture_manifest_sha256: request.capture_manifest_sha256,
         recognition_manifest_sha256: &recognition_manifest_sha256,
         event_manifest_sha256: request.event_manifest_sha256,
+        canonical_manifest_sha256,
+        canonical_completeness,
         artifacts,
     };
     let mut bytes = serde_json::to_vec(&manifest)
@@ -494,6 +525,15 @@ mod tests {
         (events, manifest_sha256)
     }
 
+    fn write_canonical_component(recognition: &Path) {
+        fs::write(
+            recognition.join("canonical-manifest.json"),
+            b"{\"schema\":\"scorepeek-canonical-session-recording-v1\",\"completeness\":\"complete\"}\n",
+        )
+        .unwrap();
+        fs::write(recognition.join("canonical-ticks.ndjson"), b"").unwrap();
+    }
+
     #[test]
     fn publication_expands_predicates_and_overlays_retained_recognition() {
         let root = tempfile::tempdir().unwrap();
@@ -520,6 +560,7 @@ mod tests {
         )
         .unwrap();
         fs::write(recognition.join("manifest.json"), b"{}\n").unwrap();
+        write_canonical_component(&recognition);
         let profile = root.path().join("profile.json");
         fs::write(&profile, b"{}\n").unwrap();
         let recognition_manifest_sha256 = digest_file(&recognition.join("manifest.json")).unwrap();
@@ -580,6 +621,7 @@ mod tests {
         )
         .unwrap();
         fs::write(recognition.join("manifest.json"), b"{}\n").unwrap();
+        write_canonical_component(&recognition);
         let profile = root.path().join("profile.json");
         fs::write(&profile, b"{}\n").unwrap();
         let recognition_manifest_sha256 = digest_file(&recognition.join("manifest.json")).unwrap();
@@ -632,6 +674,7 @@ mod tests {
         )
         .unwrap();
         fs::write(recognition.join("manifest.json"), b"{}\n").unwrap();
+        write_canonical_component(&recognition);
         let profile = root.path().join("profile.json");
         fs::write(&profile, b"{}\n").unwrap();
         let recognition_manifest_sha256 = digest_file(&recognition.join("manifest.json")).unwrap();

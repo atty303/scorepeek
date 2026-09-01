@@ -22,6 +22,9 @@ const MAX_RECOGNITION_RUN_BYTES: u64 = 273 * 1024 * 1024;
 const MAX_RUN_EVENT_GENERATIONS: usize = 8;
 const MAX_RUN_EVENT_AGGREGATE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_RUN_EVENT_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_JOINED_SESSION_GENERATIONS: usize = 8;
+const MAX_JOINED_SESSION_AGGREGATE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_JOINED_SESSION_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 pub struct SelectedProfile {
     pub path: PathBuf,
@@ -65,22 +68,6 @@ pub fn try_command(args: &[OsString], bundle: &Path) -> Option<Result<(), String
         ] if setup == "setup"
             && gamescope == "gamescope"
             && profile_flag == "--profile"
-            && delimiter == "--" =>
-        {
-            Some(setup_gamescope(name, gamescope_args, bundle))
-        }
-        [
-            setup,
-            gamescope,
-            profile_flag,
-            name,
-            no_recording,
-            delimiter,
-            gamescope_args @ ..,
-        ] if setup == "setup"
-            && gamescope == "gamescope"
-            && profile_flag == "--profile"
-            && no_recording == "--no-recording"
             && delimiter == "--" =>
         {
             Some(setup_gamescope(name, gamescope_args, bundle))
@@ -141,6 +128,8 @@ pub fn state_paths(recording_enabled: bool) -> Result<RoutineStatePaths, String>
         ensure_directory_tree(&recognition)?;
         ensure_directory_tree(&run_events)?;
         ensure_directory_tree(&scorepeek.join("diagnostic-sessions"))?;
+        ensure_directory_tree(&scorepeek.join("canonical-recordings"))?;
+        ensure_joined_session_capacity(&scorepeek.join("diagnostic-sessions"))?;
     }
     Ok(RoutineStatePaths {
         diagnostic_root: scorepeek.join("diagnostics"),
@@ -151,6 +140,72 @@ pub fn state_paths(recording_enabled: bool) -> Result<RoutineStatePaths, String>
         recording_enabled,
         _run_lock: run_lock,
     })
+}
+
+fn ensure_joined_session_capacity(root: &Path) -> Result<(), String> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(root)
+        .map_err(|error| format!("joined diagnostic store could not be read: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("joined diagnostic entry failed: {error}"))?;
+        let metadata = entry
+            .path()
+            .symlink_metadata()
+            .map_err(|error| format!("joined diagnostic entry inspection failed: {error}"))?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err("joined diagnostic store contains an unexpected entry".to_owned());
+        }
+        entries.push((
+            metadata
+                .modified()
+                .map_err(|error| format!("joined diagnostic mtime failed: {error}"))?,
+            entry.path(),
+            directory_bytes(&entry.path())?,
+        ));
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    let mut bytes = entries.iter().try_fold(0u64, |total, entry| {
+        total
+            .checked_add(entry.2)
+            .ok_or_else(|| "joined diagnostic byte count overflowed".to_owned())
+    })?;
+    while entries.len() >= MAX_JOINED_SESSION_GENERATIONS
+        || bytes > MAX_JOINED_SESSION_AGGREGATE_BYTES - MAX_JOINED_SESSION_BYTES
+    {
+        let (_, oldest, removed_bytes) = entries.remove(0);
+        fs::remove_dir_all(&oldest)
+            .map_err(|error| format!("old joined diagnostic removal failed: {error}"))?;
+        bytes = bytes.saturating_sub(removed_bytes);
+    }
+    Ok(())
+}
+
+fn directory_bytes(root: &Path) -> Result<u64, String> {
+    let mut total = 0u64;
+    let mut pending = vec![root.to_owned()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory)
+            .map_err(|error| format!("joined diagnostic directory could not be read: {error}"))?
+        {
+            let entry = entry.map_err(|error| format!("joined diagnostic file failed: {error}"))?;
+            let metadata = entry.path().symlink_metadata().map_err(|error| {
+                format!("joined diagnostic file could not be inspected: {error}")
+            })?;
+            if metadata.file_type().is_symlink() {
+                return Err("joined diagnostic session contains a symlink".to_owned());
+            }
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else if metadata.is_file() {
+                total = total
+                    .checked_add(metadata.len())
+                    .ok_or_else(|| "joined diagnostic byte count overflowed".to_owned())?;
+            } else {
+                return Err("joined diagnostic session contains a special file".to_owned());
+            }
+        }
+    }
+    Ok(total)
 }
 
 impl RoutineStatePaths {

@@ -303,6 +303,9 @@ authoritative.
 - [ADR 0100: Recognize ordered play options from the RESULT panel](0100-recognize-result-play-options.md)
   adds the measured whole-panel ROI, bounded full-display fuzzy parser, optional episode-stable
   typed list, and direct v2 event field while preserving result acceptance gates.
+- [ADR 0101: Record canonical sessions and replay the live timeline](0101-record-canonical-sessions-and-replay-the-live-timeline.md)
+  makes routine recording opt-in, retains sparse lossless canonical segments around raw-screen
+  transitions, clean-cuts attempt regression to label v5, and pipelines ordered OCR frames.
 
 ## Historical
 

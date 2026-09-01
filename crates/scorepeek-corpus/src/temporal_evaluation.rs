@@ -16,12 +16,8 @@ use crate::{CorpusError, ErrorContext, digest_bytes, encode_digest, read_bounded
 
 const ACTIVE_SCHEMA: &str = "scorepeek-private-regression-suite-active-v1";
 const SUITE_SCHEMA: &str = "scorepeek-private-regression-suite-v1";
-const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v1";
-const LEGACY_LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v1";
-const PREVIOUS_LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v2";
+const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v2";
 const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v5";
-const CURRENT_LABEL_SCHEMA_V4: &str = "scorepeek-private-session-regression-label-v4";
-const CURRENT_LABEL_SCHEMA_V3: &str = "scorepeek-private-session-regression-label-v3";
 const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v5";
 const CURRENT_OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v6";
 const LATEST_OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v7";
@@ -34,6 +30,7 @@ const CURRENT_OBSERVATION_SCHEMA_V13: &str = "scorepeek-recognition-observation-
 const CURRENT_OBSERVATION_SCHEMA_V14: &str = "scorepeek-recognition-observation-v14";
 const CURRENT_OBSERVATION_SCHEMA_V15: &str = "scorepeek-recognition-observation-v15";
 const CURRENT_OBSERVATION_SCHEMA_V16: &str = "scorepeek-recognition-observation-v16";
+const CURRENT_OBSERVATION_SCHEMA_V17: &str = "scorepeek-recognition-observation-v17";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-temporal-evaluation-v1";
 const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -337,14 +334,7 @@ pub fn evaluate_temporal_corpus(
 }
 
 fn supported_label_schema(schema: &str) -> bool {
-    matches!(
-        schema,
-        LABEL_SCHEMA
-            | CURRENT_LABEL_SCHEMA_V4
-            | CURRENT_LABEL_SCHEMA_V3
-            | PREVIOUS_LABEL_SCHEMA
-            | LEGACY_LABEL_SCHEMA
-    )
+    schema == LABEL_SCHEMA
 }
 
 fn validate_entry_binding(
@@ -733,6 +723,7 @@ fn parse_record(value: &Value) -> Result<TemporalRecord, CorpusError> {
         && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V14
         && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V15
         && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V16
+        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V17
     {
         return invalid("temporal evaluation observation schema differs");
     }
@@ -851,12 +842,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_and_legacy_regression_labels_are_supported() {
+    fn only_current_regression_labels_are_supported() {
         assert!(supported_label_schema(LABEL_SCHEMA));
-        assert!(supported_label_schema(CURRENT_LABEL_SCHEMA_V4));
-        assert!(supported_label_schema(CURRENT_LABEL_SCHEMA_V3));
-        assert!(supported_label_schema(PREVIOUS_LABEL_SCHEMA));
-        assert!(supported_label_schema(LEGACY_LABEL_SCHEMA));
+        assert!(!supported_label_schema(
+            "scorepeek-private-session-regression-label-v4"
+        ));
         assert!(!supported_label_schema("unsupported-label-schema"));
     }
 

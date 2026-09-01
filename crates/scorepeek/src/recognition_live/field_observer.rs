@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
@@ -108,6 +109,7 @@ pub struct FieldObserverInput {
     monotonic_start_ms: u64,
     monotonic_end_ms: u64,
     crops: ScreenRgb8Crops,
+    admitted: Instant,
 }
 
 impl FieldObserverInput {
@@ -143,11 +145,22 @@ impl FieldObserverInput {
     pub const fn crops(&self) -> &ScreenRgb8Crops {
         &self.crops
     }
+
+    #[must_use]
+    pub fn field_queue_wait_us(&self) -> u64 {
+        super::duration_us(self.admitted.elapsed())
+    }
 }
 
 /// Application-provided model/catalog observer owned exclusively by one worker thread.
 pub trait FieldObserver: Send + 'static {
     type Output: Send + 'static;
+
+    const PIPELINED_PREFETCH: bool = false;
+
+    fn prefetch(&mut self, _input: &FieldObserverInput) -> Option<Self::Output> {
+        None
+    }
 
     fn observe(&mut self, input: &FieldObserverInput) -> Self::Output;
 }
@@ -229,6 +242,7 @@ const DELIVERY_UNAVAILABLE: u8 = 3;
 const DELIVERY_OUTSTANDING_BITS: u32 = 8;
 const DELIVERY_OUTSTANDING_MASK: u64 = (1 << DELIVERY_OUTSTANDING_BITS) - 1;
 const DELIVERY_ABANDONED_INCREMENT: u64 = 1 << DELIVERY_OUTSTANDING_BITS;
+const PIPELINE_FILL_WAIT: Duration = Duration::from_millis(120);
 
 #[derive(Debug)]
 struct PendingDelivery {
@@ -399,6 +413,14 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
         )
     }
 
+    pub(crate) fn start_with_capacity<E>(
+        descriptor: &DiagnosticRunDescriptor,
+        loader: impl FnOnce(&FieldObserverSessionBinding) -> Result<O, E>,
+        capacity: usize,
+    ) -> Result<Self, FieldObserverStartError<E>> {
+        Self::start_inner(descriptor, loader, capacity, Some(production_supervisor()))
+    }
+
     #[cfg(test)]
     pub(crate) fn start_for_test<E>(
         descriptor: &DiagnosticRunDescriptor,
@@ -434,7 +456,8 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
         let worker = thread::Builder::new()
             .name("scorepeek-field-observer".to_owned())
             .spawn(move || {
-                let completion = run_worker(observer, &receiver, &worker_binding);
+                let completion =
+                    run_worker(observer, &receiver, &worker_binding, maximum_outstanding);
                 drop(receiver);
                 drop(worker_binding);
                 drop(supervisor_token);
@@ -492,6 +515,7 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
             monotonic_start_ms: frame.monotonic_start_ms(),
             monotonic_end_ms: frame.monotonic_end_ms(),
             crops: live.crops,
+            admitted: Instant::now(),
         };
         let (response, receiver) = mpsc::channel();
         match self.sender.try_send(FieldObserverMessage::Observe {
@@ -603,32 +627,73 @@ fn run_worker<O: FieldObserver>(
     mut observer: O,
     receiver: &Receiver<FieldObserverMessage<O::Output>>,
     binding: &Arc<FieldObserverSessionBinding>,
+    maximum_outstanding: u8,
 ) -> Option<(SyncSender<u64>, u64)> {
+    struct Queued<T> {
+        input: Box<FieldObserverInput>,
+        response: mpsc::Sender<BoundFieldObservation<T>>,
+        prefetched_output: Option<T>,
+    }
+
     let mut completed = 0_u64;
-    while let Ok(message) = receiver.recv() {
-        match message {
-            FieldObserverMessage::Observe { input, response } => {
-                let sequence = input.sequence;
-                let monotonic_start_ms = input.monotonic_start_ms;
-                let monotonic_end_ms = input.monotonic_end_ms;
-                let screen = input.screen();
-                let output = observer.observe(&input);
-                completed = completed.saturating_add(1);
-                let _ = response.send(BoundFieldObservation {
-                    binding: Arc::clone(binding),
-                    sequence,
-                    monotonic_start_ms,
-                    monotonic_end_ms,
-                    screen,
-                    output,
-                });
-            }
-            FieldObserverMessage::Finish { response } => {
-                return Some((response, completed));
+    let target = if O::PIPELINED_PREFETCH {
+        usize::from(maximum_outstanding)
+    } else {
+        1
+    };
+    let mut queued = VecDeque::<Queued<O::Output>>::new();
+    let mut finish = None;
+    loop {
+        while finish.is_none() && queued.len() < target {
+            let message = if queued.is_empty() {
+                receiver
+                    .recv()
+                    .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+            } else {
+                receiver.recv_timeout(PIPELINE_FILL_WAIT)
+            };
+            match message {
+                Ok(FieldObserverMessage::Observe { input, response }) => {
+                    let prefetched_output = observer.prefetch(&input);
+                    queued.push_back(Queued {
+                        input,
+                        response,
+                        prefetched_output,
+                    });
+                }
+                Ok(FieldObserverMessage::Finish { response }) => finish = Some(response),
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return None,
             }
         }
+        if let Some(queued) = queued.pop_front() {
+            let sequence = queued.input.sequence;
+            let monotonic_start_ms = queued.input.monotonic_start_ms;
+            let monotonic_end_ms = queued.input.monotonic_end_ms;
+            let screen = queued.input.screen();
+            let output = queued
+                .prefetched_output
+                .unwrap_or_else(|| observer.observe(&queued.input));
+            completed = completed.saturating_add(1);
+            let _ = queued.response.send(BoundFieldObservation {
+                binding: Arc::clone(binding),
+                sequence,
+                monotonic_start_ms,
+                monotonic_end_ms,
+                screen,
+                output,
+            });
+        } else if let Some(response) = finish {
+            return Some((response, completed));
+        } else {
+            return None;
+        }
+        if queued.is_empty()
+            && let Some(response) = finish.take()
+        {
+            return Some((response, completed));
+        }
     }
-    None
 }
 
 fn claim_outstanding(counts: &AtomicU64, maximum: u8) -> bool {
@@ -1443,5 +1508,90 @@ mod tests {
             Err(FieldObserverStartError::InvalidBinding)
         ));
         assert_eq!(loads.load(Ordering::Relaxed), 1);
+    }
+
+    struct PrefetchObserver {
+        order: Arc<Mutex<Vec<(char, u64)>>>,
+    }
+
+    impl FieldObserver for PrefetchObserver {
+        type Output = u64;
+
+        const PIPELINED_PREFETCH: bool = true;
+
+        fn prefetch(&mut self, input: &FieldObserverInput) -> Option<Self::Output> {
+            self.order
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(('p', input.sequence()));
+            None
+        }
+
+        fn observe(&mut self, input: &FieldObserverInput) -> Self::Output {
+            self.order
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(('o', input.sequence()));
+            input.sequence()
+        }
+    }
+
+    #[test]
+    fn pipelined_worker_prefetches_the_next_frame_before_ordered_commit() {
+        let descriptor = descriptor("pipelined-prefetch", 1);
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mut worker = FieldObserverWorker::start_for_test(
+            &descriptor,
+            |_| {
+                Ok::<_, ()>(PrefetchObserver {
+                    order: Arc::clone(&order),
+                })
+            },
+            2,
+        )
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut session = RecognitionSession::start(
+            root.path(),
+            descriptor,
+            DiagnosticPolicy {
+                enabled: false,
+                ..DiagnosticPolicy::default()
+            },
+        )
+        .unwrap();
+        let first = solid_frame([200, 100, 20], 1, 1);
+        let second = solid_frame([200, 100, 20], 1, 2);
+        let third = solid_frame([200, 100, 20], 1, 3);
+        let first = worker
+            .try_observe(session.inspect(&first).unwrap().field_inputs.unwrap())
+            .unwrap();
+        let second = worker
+            .try_observe(session.inspect(&second).unwrap().field_inputs.unwrap())
+            .unwrap();
+        assert!(matches!(
+            first.wait(Duration::from_secs(1)),
+            FieldObservationPoll::Ready(observation) if *observation.output() == 1
+        ));
+        let third = worker
+            .try_observe(session.inspect(&third).unwrap().field_inputs.unwrap())
+            .unwrap();
+        assert!(matches!(
+            second.wait(Duration::from_secs(1)),
+            FieldObservationPoll::Ready(observation) if *observation.output() == 2
+        ));
+        let finish = worker.finish(Duration::from_secs(1));
+        assert_eq!(finish.status, FieldObserverFinishStatus::Complete);
+        assert!(matches!(
+            third.wait(Duration::from_secs(1)),
+            FieldObservationPoll::Ready(observation) if *observation.output() == 3
+        ));
+        assert_eq!(
+            *order
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![('p', 1), ('p', 2), ('o', 1), ('p', 3), ('o', 2), ('o', 3)]
+        );
+        let _ = session.finish(DiagnosticRunStatus::Success, 100);
     }
 }

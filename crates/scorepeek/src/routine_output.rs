@@ -1234,6 +1234,196 @@ impl RunEvent {
         serde_json::from_value(value)
             .map_err(|error| format!("run event contract validation failed: {error}"))
     }
+
+    #[allow(
+        dead_code,
+        reason = "the library entry point is consumed by offline corpus replay"
+    )]
+    pub fn from_field_observation(
+        session_id: &str,
+        capture_generation: u64,
+        screen_episode_id: u64,
+        sequence: u64,
+        monotonic_start_ms: u64,
+        monotonic_end_ms: u64,
+        observation: &crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+    ) -> Result<Self, String> {
+        let (screen, fields) = match observation.fields() {
+            scorepeek::recognition::ScreenFieldObservations::Result(fields) => (
+                "result",
+                json!({
+                    "title": fields.title.open_text,
+                    "artist": fields.artist.open_text,
+                    "clear_type": observation.clear_type(),
+                    "clear_type_ocr": fields.clear_type.open_text,
+                    "difficulty": fields.difficulty.open_text,
+                    "level": fields.level.open_text,
+                    "notes": fields.notes.open_text,
+                    "current_score": fields.current_score.open_text,
+                    "previous_clear_type": fields.previous_clear_type.open_text,
+                    "previous_score": fields.previous_score.open_text,
+                    "previous_miss_count": fields.previous_miss_count.open_text,
+                    "miss_count": fields.miss_count.open_text,
+                    "pgreat": fields.pgreat.open_text,
+                    "great": fields.great.open_text,
+                    "good": fields.good.open_text,
+                    "bad": fields.bad.open_text,
+                    "poor": fields.poor.open_text,
+                    "fast": fields.fast.open_text,
+                    "slow": fields.slow.open_text,
+                    "combo_break": fields.combo_break.open_text,
+                    "play_options": fields.play_options,
+                }),
+            ),
+            scorepeek::recognition::ScreenFieldObservations::MusicSelect(fields) => (
+                "music_select",
+                json!({
+                    "central_title": fields.central_title.open_text,
+                    "artist": fields.artist.open_text,
+                    "selected_difficulty": fields.selected_difficulty,
+                    "active_list_title": fields.active_list_title.open_text,
+                    "title_evidence": observation.title_evidence(),
+                }),
+            ),
+        };
+        Ok(Self {
+            schema: RUN_EVENT_SCHEMA.to_owned(),
+            kind: RunEventKind::FieldObservation {
+                session_id: Some(session_id.to_owned()),
+                capture_generation: Some(capture_generation),
+                screen_episode_id,
+                sequence,
+                monotonic_start_ms,
+                monotonic_end_ms,
+                screen: screen.to_owned(),
+                fields,
+                result_song_resolution: serde_json::to_value(observation.result_resolution())
+                    .map_err(|error| error.to_string())?,
+                music_select_song_resolution: serde_json::to_value(
+                    observation.music_select_resolution(),
+                )
+                .map_err(|error| error.to_string())?,
+                parsed_result_fields: observation.parsed_result_fields().cloned(),
+                result_chart_resolution: observation.result_chart_resolution().cloned(),
+                result_performance_resolution: observation.result_performance_resolution().cloned(),
+                current_score_ocr_resolution: observation
+                    .current_score_ocr_resolution()
+                    .map(serde_json::to_value)
+                    .transpose()
+                    .map_err(|error| error.to_string())?,
+                numeric_batch: observation
+                    .numeric_batch()
+                    .map(serde_json::to_value)
+                    .transpose()
+                    .map_err(|error| error.to_string())?,
+                joint_evidence: observation.joint_evidence().clone(),
+                processing_timing: serde_json::to_value(observation.processing_timing())
+                    .map_err(|error| error.to_string())?,
+                song_resolution_presentation: Box::new(
+                    song_resolution_presentation_from_observation(observation)?,
+                ),
+            },
+        })
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "used by the library-only corpus replay constructor"
+)]
+fn song_resolution_presentation_from_observation(
+    observation: &crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+) -> Result<SongResolutionPresentation, String> {
+    use scorepeek::recognition::{MusicSelectSongResolution, ResultSongResolution};
+    match observation.song_resolution() {
+        scorepeek::recognition::ScreenSongResolution::Result(resolution) => match resolution {
+            ResultSongResolution::Accepted {
+                selected,
+                runner_up,
+                ..
+            } => Ok(SongResolutionPresentation::Accepted {
+                reason: None,
+                selected: observed_song_presentation(observation, selected.song_id)?,
+                runner_up: observed_song_presentation(observation, runner_up.song_id)?,
+                evidence_summary: "catalog_constrained_result".to_owned(),
+            }),
+            ResultSongResolution::Unknown {
+                reason,
+                selected,
+                runner_up,
+                ..
+            } => Ok(SongResolutionPresentation::Unknown {
+                reason: serde_json::to_value(reason).map_err(|error| error.to_string())?,
+                selected: selected
+                    .as_ref()
+                    .map(|candidate| observed_song_presentation(observation, candidate.song_id))
+                    .transpose()?,
+                runner_up: runner_up
+                    .as_ref()
+                    .map(|candidate| observed_song_presentation(observation, candidate.song_id))
+                    .transpose()?,
+                evidence_summary: selected
+                    .as_ref()
+                    .map(|_| "catalog_constrained_result".to_owned()),
+            }),
+        },
+        scorepeek::recognition::ScreenSongResolution::MusicSelect(resolution) => match resolution {
+            MusicSelectSongResolution::Accepted {
+                selected,
+                runner_up,
+                ..
+            } => Ok(SongResolutionPresentation::Accepted {
+                reason: None,
+                selected: observed_song_presentation(observation, selected.song_id)?,
+                runner_up: observed_song_presentation(observation, runner_up.song_id)?,
+                evidence_summary: "catalog_constrained_music_select".to_owned(),
+            }),
+            MusicSelectSongResolution::Unknown {
+                reason,
+                selected,
+                runner_up,
+                ..
+            } => Ok(SongResolutionPresentation::Unknown {
+                reason: serde_json::to_value(reason).map_err(|error| error.to_string())?,
+                selected: selected
+                    .as_ref()
+                    .map(|candidate| observed_song_presentation(observation, candidate.song_id))
+                    .transpose()?,
+                runner_up: runner_up
+                    .as_ref()
+                    .map(|candidate| observed_song_presentation(observation, candidate.song_id))
+                    .transpose()?,
+                evidence_summary: selected
+                    .as_ref()
+                    .map(|_| "catalog_constrained_music_select".to_owned()),
+            }),
+        },
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "used by the library-only corpus replay constructor"
+)]
+fn observed_song_presentation(
+    observation: &crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+    song_id: ScorepeekSongId,
+) -> Result<SongPresentation, String> {
+    let evidence = observation
+        .candidates()
+        .catalog_evidence()
+        .songs
+        .iter()
+        .find(|song| song.song_id == song_id)
+        .ok_or_else(|| "resolved song is absent from catalog evidence".to_owned())?;
+    let [artist] = evidence.artist.display.as_slice() else {
+        return Err("resolved song does not have exactly one display artist".to_owned());
+    };
+    Ok(SongPresentation {
+        scorepeek_song_id: song_id,
+        display_titles: evidence.title.display.clone(),
+        artist: artist.clone(),
+    })
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1832,8 +2022,8 @@ impl Drop for TerminalGuard {
 #[allow(clippy::struct_excessive_bools)]
 pub struct RoutineOutput {
     state: Arc<Mutex<RunViewState>>,
-    channel: ObservationChannel,
-    display: Display,
+    channel: Option<ObservationChannel>,
+    display: Option<Display>,
     next_sequence: u64,
     engine: ResolverEngine,
     pending_numeric_result: Option<PendingNumericResult>,
@@ -1858,6 +2048,7 @@ pub struct RoutineOutput {
     completed_event_artifact: Option<RunEventArtifactOutcome>,
     timing_active: bool,
     output_us: u64,
+    headless_events: Vec<RunEvent>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1955,8 +2146,8 @@ impl RoutineOutput {
         };
         let mut output = Self {
             state,
-            channel,
-            display,
+            channel: Some(channel),
+            display: Some(display),
             next_sequence: 1,
             engine: ResolverEngine::default(),
             resolver_transitions: BTreeMap::new(),
@@ -1981,9 +2172,60 @@ impl RoutineOutput {
             completed_event_artifact: None,
             timing_active: false,
             output_us: 0,
+            headless_events: Vec::new(),
         };
         output.refresh()?;
         Ok(output)
+    }
+
+    #[must_use]
+    #[allow(
+        dead_code,
+        reason = "the library entry point is consumed by offline corpus replay"
+    )]
+    pub fn start_headless(invocation_id: String, profile_sha256: String) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(RunViewState::new(
+                invocation_id,
+                profile_sha256,
+                false,
+            ))),
+            channel: None,
+            display: None,
+            next_sequence: 1,
+            engine: ResolverEngine::default(),
+            resolver_transitions: BTreeMap::new(),
+            pending_numeric_result: None,
+            accepted_numeric_result: None,
+            play_options: PlayOptionsEpisodeAccumulator::default(),
+            numeric_evidence: VecDeque::with_capacity(8),
+            last_numeric_sequence: None,
+            last_numeric_monotonic_ms: None,
+            emitted_attempt_ids: BTreeSet::new(),
+            latest_screen_boundary_sequence: None,
+            screen_episode_id: 0,
+            screen_episode_started_ms: None,
+            screen_episode_last_ms: None,
+            result_resolver_active: false,
+            result_episode_finalizing: false,
+            semantic_episode_suspended: false,
+            attempt_started_ms: None,
+            attempt_phase_started_ms: None,
+            event_store: None,
+            event_worker: None,
+            completed_event_artifact: None,
+            timing_active: false,
+            output_us: 0,
+            headless_events: Vec::new(),
+        }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "the library entry point is consumed by offline corpus replay"
+    )]
+    pub fn take_headless_events(&mut self) -> Vec<RunEvent> {
+        std::mem::take(&mut self.headless_events)
     }
 
     pub fn publish(&mut self, event: &RunEvent) -> Result<(), String> {
@@ -3099,7 +3341,10 @@ impl RoutineOutput {
             state.reduce(event, &value);
             state.next_channel_sequence = self.next_sequence;
         }
-        self.channel.publish(&value)?;
+        self.headless_events.push(event.clone());
+        if let Some(channel) = &self.channel {
+            channel.publish(&value)?;
+        }
         if self.timing_active {
             self.output_us = self
                 .output_us
@@ -3155,12 +3400,17 @@ impl RoutineOutput {
             .lock()
             .map_err(|_| "run view state lock was poisoned".to_owned())?
             .clone();
-        let result = match &mut self.display {
-            Display::Tui(terminal) => {
-                terminal.draw(&state, &self.channel.socket_path, &self.channel.health)
-            }
+        let Some(display) = &mut self.display else {
+            return Ok(());
+        };
+        let channel = self
+            .channel
+            .as_ref()
+            .ok_or_else(|| "run output channel is unavailable".to_owned())?;
+        let result = match display {
+            Display::Tui(terminal) => terminal.draw(&state, &channel.socket_path, &channel.health),
             Display::Plain { output, last_line } => {
-                let line = plain_status_line(&state, &self.channel.health);
+                let line = plain_status_line(&state, &channel.health);
                 if last_line.as_deref() != Some(&line) {
                     writeln!(output, "{line}")
                         .and_then(|()| output.flush())
@@ -4140,11 +4390,11 @@ mod tests {
     fn test_output(state: Arc<Mutex<RunViewState>>, channel: ObservationChannel) -> RoutineOutput {
         RoutineOutput {
             state,
-            channel,
-            display: Display::Plain {
+            channel: Some(channel),
+            display: Some(Display::Plain {
                 output: BufWriter::new(io::stdout()),
                 last_line: None,
-            },
+            }),
             next_sequence: 1,
             engine: ResolverEngine::default(),
             pending_numeric_result: None,
@@ -4169,6 +4419,7 @@ mod tests {
             completed_event_artifact: None,
             timing_active: false,
             output_us: 0,
+            headless_events: Vec::new(),
         }
     }
 

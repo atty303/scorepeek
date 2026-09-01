@@ -20,13 +20,14 @@ use std::time::Instant;
 
 use super::field_observer::{FieldObserver, FieldObserverInput};
 use super::text_observer_pool::{
-    RecognitionExecutionMode, RegisteredTextObserverPool, TextObservationBatch,
+    PendingTextObservationBatch, RecognitionExecutionMode, RegisteredTextObserverPool,
+    TextObservationBatch,
 };
 
 const TITLE_EVIDENCE_RUNTIME_MANIFEST: &[u8] =
     include_bytes!("../../../../models/manifests/title-evidence-runtime-v1.json");
 pub const TITLE_EVIDENCE_RUNTIME_MANIFEST_SHA256: &str =
-    "ba54fee428639ea0dee901bcbb0868f1c5fd0a38ae8d0c5feadd2ac7fcbeced0";
+    "4c8f0d811388a30b23f0e7f68005a9347f9a360ddd04c06614d0da20cba54c9b";
 
 /// Production screen-field observer owning the exact resources for one immutable run.
 pub struct RegisteredScreenFieldObserver {
@@ -34,6 +35,7 @@ pub struct RegisteredScreenFieldObserver {
     text_pool: RegisteredTextObserverPool,
     numeric_runtime: RegisteredNumericRuntime,
     candidate_domain: CatalogCandidateDomain,
+    prefetched_text: BTreeMap<u64, PendingTextObservationBatch>,
 }
 
 #[derive(Debug)]
@@ -108,7 +110,62 @@ impl RegisteredScreenFieldObserver {
             text_pool,
             numeric_runtime,
             candidate_domain,
+            prefetched_text: BTreeMap::new(),
         })
+    }
+
+    pub(crate) fn prefetch_text(
+        &mut self,
+        input: &FieldObserverInput,
+    ) -> Result<(), ScreenFieldObservationError<OnnxParityError>> {
+        use scorepeek::recognition::ScreenTextField;
+        let jobs = match input.crops() {
+            scorepeek::recognition::ScreenRgb8Crops::Result(crops) => vec![
+                (ScreenTextField::ResultDifficulty, crops.difficulty.clone()),
+                (ScreenTextField::ResultTitle, crops.title.clone()),
+                (ScreenTextField::ResultArtist, crops.artist.clone()),
+                (ScreenTextField::ResultClearType, crops.clear_type.clone()),
+                (
+                    ScreenTextField::ResultPreviousClearType,
+                    crops.previous_clear_type.clone(),
+                ),
+                (
+                    ScreenTextField::ResultPlayOptions,
+                    crops.play_options.clone(),
+                ),
+            ],
+            scorepeek::recognition::ScreenRgb8Crops::MusicSelect(crops) => {
+                let foreground = scorepeek::recognition::TitleEvidenceExtractor::REGISTERED
+                    .extract(&crops.active_list_title);
+                let mut jobs = vec![
+                    (ScreenTextField::MusicSelectArtist, crops.artist.clone()),
+                    (
+                        ScreenTextField::MusicSelectActiveListTitle,
+                        crops.active_list_title.clone(),
+                    ),
+                ];
+                if let Some((crop, _)) = foreground {
+                    jobs.push((ScreenTextField::MusicSelectActiveListTitle, crop));
+                }
+                jobs
+            }
+        };
+        let error_field = jobs[0].0;
+        let pending = self
+            .text_pool
+            .submit(jobs)
+            .map_err(|source| ScreenFieldObservationError::new(error_field, source))?;
+        if self
+            .prefetched_text
+            .insert(input.sequence(), pending)
+            .is_some()
+        {
+            return Err(ScreenFieldObservationError::new(
+                error_field,
+                OnnxParityError::InvalidArtifact,
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -190,7 +247,9 @@ pub struct RecognitionProcessingTiming {
     pub available_parallelism: usize,
     pub text_workers: usize,
     pub frame_total_us: u64,
-    pub text_recognition_wall_us: u64,
+    pub field_queue_wait_us: u64,
+    pub text_batch_wall_us: u64,
+    pub maximum_text_worker_inference_us: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub numeric_recognition_us: Option<u64>,
     pub join_us: u64,
@@ -343,7 +402,9 @@ impl RegisteredScreenFieldObservation {
                 available_parallelism: 1,
                 text_workers: 1,
                 frame_total_us: 0,
-                text_recognition_wall_us: 0,
+                field_queue_wait_us: 0,
+                text_batch_wall_us: 0,
+                maximum_text_worker_inference_us: 0,
                 numeric_recognition_us: None,
                 join_us: 0,
                 catalog_evidence_us,
@@ -579,7 +640,8 @@ fn similarity_support(edit: usize, matching: usize, compared: usize) -> u16 {
 struct ObservedFrameFields {
     fields: ScreenFieldObservations,
     numeric_batch: Option<NumericBatchInference>,
-    text_recognition_wall_us: u64,
+    text_batch_wall_us: u64,
+    maximum_text_worker_inference_us: u64,
     join_started: Instant,
     title_evidence: Option<TitleEvidenceObservation>,
 }
@@ -587,28 +649,32 @@ struct ObservedFrameFields {
 impl RegisteredScreenFieldObserver {
     fn observe_result(
         &mut self,
+        sequence: u64,
         crops: &scorepeek::recognition::ResultScreenRgb8Crops,
     ) -> Result<ObservedFrameFields, ScreenFieldObservationError<OnnxParityError>> {
         use scorepeek::recognition::ScreenTextField;
-        let pending = self
-            .text_pool
-            .submit(vec![
-                (ScreenTextField::ResultDifficulty, crops.difficulty.clone()),
-                (ScreenTextField::ResultTitle, crops.title.clone()),
-                (ScreenTextField::ResultArtist, crops.artist.clone()),
-                (ScreenTextField::ResultClearType, crops.clear_type.clone()),
-                (
-                    ScreenTextField::ResultPreviousClearType,
-                    crops.previous_clear_type.clone(),
-                ),
-                (
-                    ScreenTextField::ResultPlayOptions,
-                    crops.play_options.clone(),
-                ),
-            ])
-            .map_err(|source| {
-                ScreenFieldObservationError::new(ScreenTextField::ResultDifficulty, source)
-            })?;
+        let pending = if let Some(pending) = self.prefetched_text.remove(&sequence) {
+            pending
+        } else {
+            self.text_pool
+                .submit(vec![
+                    (ScreenTextField::ResultDifficulty, crops.difficulty.clone()),
+                    (ScreenTextField::ResultTitle, crops.title.clone()),
+                    (ScreenTextField::ResultArtist, crops.artist.clone()),
+                    (ScreenTextField::ResultClearType, crops.clear_type.clone()),
+                    (
+                        ScreenTextField::ResultPreviousClearType,
+                        crops.previous_clear_type.clone(),
+                    ),
+                    (
+                        ScreenTextField::ResultPlayOptions,
+                        crops.play_options.clone(),
+                    ),
+                ])
+                .map_err(|source| {
+                    ScreenFieldObservationError::new(ScreenTextField::ResultDifficulty, source)
+                })?
+        };
         let numeric = self.numeric_runtime.observe(crops);
         let mut text = pending.join().map_err(|source| {
             ScreenFieldObservationError::new(ScreenTextField::ResultDifficulty, source)
@@ -645,14 +711,16 @@ impl RegisteredScreenFieldObserver {
         Ok(ObservedFrameFields {
             fields: ScreenFieldObservations::Result(fields),
             numeric_batch: Some(numeric),
-            text_recognition_wall_us: text.wall_us,
+            text_batch_wall_us: text.wall_us,
+            maximum_text_worker_inference_us: text.maximum_worker_inference_us,
             join_started,
             title_evidence: None,
         })
     }
 
     fn observe_music_select(
-        &self,
+        &mut self,
+        sequence: u64,
         crops: &scorepeek::recognition::MusicSelectScreenRgb8Crops,
     ) -> Result<ObservedFrameFields, ScreenFieldObservationError<OnnxParityError>> {
         use scorepeek::recognition::ScreenTextField;
@@ -669,9 +737,13 @@ impl RegisteredScreenFieldObserver {
         if let Some((crop, _)) = &foreground {
             jobs.push((ScreenTextField::MusicSelectActiveListTitle, crop.clone()));
         }
-        let pending = self.text_pool.submit(jobs).map_err(|source| {
-            ScreenFieldObservationError::new(ScreenTextField::MusicSelectArtist, source)
-        })?;
+        let pending = if let Some(pending) = self.prefetched_text.remove(&sequence) {
+            pending
+        } else {
+            self.text_pool.submit(jobs).map_err(|source| {
+                ScreenFieldObservationError::new(ScreenTextField::MusicSelectArtist, source)
+            })?
+        };
         let mut text = pending.join().map_err(|source| {
             ScreenFieldObservationError::new(ScreenTextField::MusicSelectArtist, source)
         })?;
@@ -730,7 +802,8 @@ impl RegisteredScreenFieldObserver {
         Ok(ObservedFrameFields {
             fields,
             numeric_batch: None,
-            text_recognition_wall_us: text.wall_us,
+            text_batch_wall_us: text.wall_us,
+            maximum_text_worker_inference_us: text.maximum_worker_inference_us,
             join_started,
             title_evidence: Some(title_evidence),
         })
@@ -741,13 +814,21 @@ impl FieldObserver for RegisteredScreenFieldObserver {
     type Output =
         Result<RegisteredScreenFieldObservation, ScreenFieldObservationError<OnnxParityError>>;
 
+    const PIPELINED_PREFETCH: bool = true;
+
+    fn prefetch(&mut self, input: &FieldObserverInput) -> Option<Self::Output> {
+        self.prefetch_text(input).err().map(Err)
+    }
+
     fn observe(&mut self, input: &FieldObserverInput) -> Self::Output {
         let frame_started = Instant::now();
         let configuration = self.text_pool.configuration();
         let observed = match input.crops() {
-            scorepeek::recognition::ScreenRgb8Crops::Result(crops) => self.observe_result(crops)?,
+            scorepeek::recognition::ScreenRgb8Crops::Result(crops) => {
+                self.observe_result(input.sequence(), crops)?
+            }
             scorepeek::recognition::ScreenRgb8Crops::MusicSelect(crops) => {
-                self.observe_music_select(crops)?
+                self.observe_music_select(input.sequence(), crops)?
             }
         };
         let mut observation = RegisteredScreenFieldObservation::from_fields_with_catalog_and_title(
@@ -762,7 +843,9 @@ impl FieldObserver for RegisteredScreenFieldObserver {
             available_parallelism: configuration.available_parallelism,
             text_workers: configuration.workers,
             frame_total_us: duration_us(frame_started.elapsed()),
-            text_recognition_wall_us: observed.text_recognition_wall_us,
+            field_queue_wait_us: input.field_queue_wait_us(),
+            text_batch_wall_us: observed.text_batch_wall_us,
+            maximum_text_worker_inference_us: observed.maximum_text_worker_inference_us,
             numeric_recognition_us: observation
                 .numeric_batch
                 .as_ref()

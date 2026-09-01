@@ -48,6 +48,7 @@ pub struct PendingSessionFieldObservation<T> {
     owner: Arc<()>,
     identity: Arc<()>,
     timing: super::FrameProcessingTiming,
+    admitted: std::time::Instant,
     screen_episode_id: u64,
 }
 
@@ -141,6 +142,34 @@ impl<O: FieldObserver> FieldObservationSession<O> {
         })
     }
 
+    fn start_with_capacity<E>(
+        root: &Path,
+        descriptor: DiagnosticRunDescriptor,
+        policy: DiagnosticPolicy,
+        capacity: usize,
+        loader: impl FnOnce(&super::field_observer::FieldObserverSessionBinding) -> Result<O, E>,
+    ) -> Result<Self, FieldObservationStartError<E>> {
+        let field_observer =
+            FieldObserverWorker::start_with_capacity(&descriptor, loader, capacity)
+                .map_err(FieldObservationStartError::FieldObserver)?;
+        let recognition = match RecognitionSession::start(root, descriptor, policy) {
+            Ok(recognition) => recognition,
+            Err(error) => {
+                return Err(FieldObservationStartError::Recognition {
+                    error,
+                    field_observer_finish: field_observer
+                        .finish(super::field_observer::DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT),
+                });
+            }
+        };
+        Ok(Self {
+            recognition,
+            field_observer,
+            owner: Arc::new(()),
+            outstanding: Vec::new(),
+        })
+    }
+
     /// Inspects and non-blockingly submits one current-run complete crop set when applicable.
     ///
     /// Field-worker rejection is returned separately and cannot replace the screen observation.
@@ -199,6 +228,7 @@ impl<O: FieldObserver> FieldObservationSession<O> {
                         owner: Arc::clone(&self.owner),
                         identity,
                         timing,
+                        admitted: std::time::Instant::now(),
                         screen_episode_id: 0,
                     })
                 }
@@ -328,7 +358,16 @@ impl FieldObservationSession<RegisteredScreenFieldObserver> {
         bundle_root: &Path,
         execution_mode: RecognitionExecutionMode,
     ) -> Result<Self, FieldObservationStartError<RegisteredScreenFieldObserverLoadError>> {
-        Self::start(root, descriptor, policy, |binding| {
+        let available_parallelism = std::thread::available_parallelism().map_or(1, usize::from);
+        let workers = super::text_observer_pool::configured_text_worker_count(
+            execution_mode,
+            available_parallelism,
+        );
+        let capacity = match execution_mode {
+            RecognitionExecutionMode::Live => 2,
+            RecognitionExecutionMode::Offline => workers.saturating_mul(2),
+        };
+        Self::start_with_capacity(root, descriptor, policy, capacity, |binding| {
             let resources = binding.load_registered_resources(catalog_root, bundle_root)?;
             let numeric_runtime = scorepeek::numeric_model_store::active_registered(
                 NUMERIC_MODEL_MANIFEST_BYTES,
@@ -430,10 +469,12 @@ impl<O: FieldObserver> FieldObservationSession<O> {
             FieldObservationPoll::Ready(observation) => {
                 self.outstanding.swap_remove(index);
                 let diagnostic_field_fact = self.recognition.record_field_observation(&observation);
+                let mut timing = pending.timing;
+                timing.frame_processing_wall_us = super::duration_us(pending.admitted.elapsed());
                 FieldObservationSessionPoll::Ready {
                     observation,
                     diagnostic_field_fact,
-                    timing: pending.timing,
+                    timing,
                     screen_episode_id: pending.screen_episode_id,
                 }
             }

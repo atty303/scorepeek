@@ -7,7 +7,7 @@ grant release-accuracy authority. The production v3 resolver instead finalizes o
 episode after admitted field drain and does not use these time-gap policies.
 
 ```text
-scorepeek-corpus temporal evaluate --store /absolute/private-corpus-v1 --policy 2:250 --policy 3:250
+scorepeek-corpus temporal evaluate --store /absolute/private-corpus-v2 --policy 2:250 --policy 3:250
 ```
 
 `--policy` is `REQUIRED_OBSERVATIONS:MAXIMUM_GAP_MS`. Omitting it compares the runtime policy
@@ -26,7 +26,7 @@ not claim one interval. An interval with fewer than two retained result observat
 `insufficient_temporal_observations`; a label that cannot be assigned or has multiple possible
 assignments is excluded with a separate typed reason.
 
-Current `scorepeek-recognition-observation-v16` and legacy v5/v6/v7/v8/v9/v10/v11/v12/v13/v14/v15 shapes are decoded into the same typed
+Current `scorepeek-recognition-observation-v17` and legacy v5 through v16 shapes are decoded into the same typed
 input. Only an accepted song resolution supplies a song ID. Unknown resolution remains unknown,
 and clear type uses the production resolver rather than an evaluator-specific mapping. A merged
 stream's predicate-only `fields: null, song_id: null` placeholder contributes a screen boundary but

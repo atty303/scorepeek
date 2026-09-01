@@ -1,7 +1,8 @@
 #![allow(clippy::missing_errors_doc, clippy::too_many_lines)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
+use std::fmt::Write as _;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
@@ -22,18 +23,14 @@ use sha2::{Digest as _, Sha256};
 
 use crate::CorpusError;
 
-const DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v4";
-const LEGACY_DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v3";
-const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v1";
-const DRAFT_SCHEMA: &str = "scorepeek-private-session-review-draft-v1";
+const DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v5";
+const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v2";
+const DRAFT_SCHEMA: &str = "scorepeek-private-session-review-draft-v2";
 const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v5";
-const PREVIOUS_LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v4";
-const PREVIOUS_LABEL_SCHEMA_V3: &str = "scorepeek-private-session-regression-label-v3";
-const LEGACY_LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v2";
 const SUITE_SCHEMA: &str = "scorepeek-private-regression-suite-v1";
 const ACTIVE_SCHEMA: &str = "scorepeek-private-regression-suite-active-v1";
 const MAX_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_ARTIFACT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_ARTIFACTS: usize = 20_000;
 const MAX_NDJSON_RECORDS: usize = 250_000;
 const MAX_NDJSON_RECORD_BYTES: usize = 1024 * 1024;
@@ -63,6 +60,10 @@ struct DiagnosticManifest {
     capture_manifest_sha256: String,
     recognition_manifest_sha256: String,
     event_manifest_sha256: String,
+    #[serde(default)]
+    canonical_manifest_sha256: Option<String>,
+    #[serde(default)]
+    canonical_completeness: Option<String>,
     artifacts: Vec<DiagnosticArtifact>,
 }
 
@@ -80,6 +81,41 @@ struct DiagnosticArtifact {
     path: String,
     sha256: String,
     bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct CanonicalRecordingManifest {
+    schema: String,
+    completeness: String,
+    ffmpeg_sha256: String,
+    ffmpeg_version: String,
+    tick_index_sha256: String,
+    tick_count: usize,
+    segments: Vec<CanonicalSegment>,
+    dropped_frames: u64,
+    completeness_reasons: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CanonicalSegment {
+    path: String,
+    first_sequence: u64,
+    last_sequence: u64,
+    frames: usize,
+    raw_rgb24_sha256: String,
+    encoded_sha256: String,
+    bytes: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct CanonicalTick {
+    sequence: u64,
+    #[allow(dead_code)]
+    source_sequence: u64,
+    monotonic_ms: u64,
+    screen: ScreenClass,
+    semantic_episode_id: Option<u64>,
+    disposition: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -440,6 +476,8 @@ struct AttemptTruth {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     select_span: Option<SequenceSpan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    decide_span: Option<SequenceSpan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     play_span: Option<SequenceSpan>,
     result_span: SequenceSpan,
     outcome: AttemptOutcome,
@@ -558,39 +596,6 @@ struct NumericDatasetSample {
     roi: scorepeek::recognition::Roi,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyRegressionLabel {
-    schema: String,
-    session_sha256: String,
-    disposition: LabelDisposition,
-    episodes: Vec<LegacyRegressionEpisode>,
-    negative_frames: Vec<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyRegressionEpisode {
-    episode_id: String,
-    expected_song_id: String,
-    expected_clear_type: String,
-    expected_result: LegacyExpectedResult,
-    stable_sequences: Vec<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyExpectedResult {
-    savable: bool,
-    play_side: String,
-    play_mode: String,
-    play_type: PlayType,
-    difficulty: Difficulty,
-    level: u8,
-    notes: u32,
-    current_score: u32,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RegressionSuite {
@@ -649,6 +654,10 @@ pub struct CorpusReplaySummary {
     episode_count: usize,
     canonical_frames: usize,
     negative_frames: usize,
+    text_workers: usize,
+    text_batch_wall_us: u64,
+    field_frame_wall_us: u64,
+    corpus_wall_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1128,6 +1137,8 @@ pub fn replay_video(
         capture_manifest_sha256: digest(&capture_bytes),
         recognition_manifest_sha256: digest(&recognition_bytes),
         event_manifest_sha256: digest(&event_manifest_bytes),
+        canonical_manifest_sha256: None,
+        canonical_completeness: None,
         artifacts,
     };
     write_new(&staging.join("manifest.json"), &canonical_json(&top)?)?;
@@ -1465,6 +1476,8 @@ pub fn convert_v2_diagnostic(
         capture_manifest_sha256: digest(&capture_manifest_bytes),
         recognition_manifest_sha256: digest_file(&staging.join("recognition/manifest.json"))?,
         event_manifest_sha256: digest(&event_manifest_bytes),
+        canonical_manifest_sha256: None,
+        canonical_completeness: None,
         artifacts,
     };
     write_new(&staging.join("manifest.json"), &canonical_json(&manifest)?)?;
@@ -1502,6 +1515,9 @@ pub fn verify_diagnostic(path: &Path) -> Result<DiagnosticVerificationSummary, C
             verify_canonical_qoi(&file)?;
             canonical_frames += 1;
         }
+    }
+    if manifest.schema == DIAGNOSTIC_SCHEMA {
+        return verify_canonical_diagnostic(path, manifest, &bytes);
     }
     let capture_manifest = manifest_artifact(&manifest, "capture/manifest.json")?;
     let recognition_manifest = manifest_artifact(&manifest, "recognition/manifest.json")?;
@@ -1637,6 +1653,182 @@ pub fn verify_diagnostic(path: &Path) -> Result<DiagnosticVerificationSummary, C
     })
 }
 
+fn verify_canonical_diagnostic(
+    path: &Path,
+    manifest: DiagnosticManifest,
+    manifest_bytes: &[u8],
+) -> Result<DiagnosticVerificationSummary, CorpusError> {
+    let canonical_artifact = manifest_artifact(&manifest, "recognition/canonical-manifest.json")?;
+    if Some(canonical_artifact.sha256.as_str()) != manifest.canonical_manifest_sha256.as_deref() {
+        return invalid("canonical manifest binding differs");
+    }
+    let (canonical, _) =
+        read_json::<CanonicalRecordingManifest>(&path.join("recognition/canonical-manifest.json"))?;
+    if canonical.schema != "scorepeek-canonical-session-recording-v1"
+        || canonical.completeness
+            != manifest
+                .canonical_completeness
+                .as_deref()
+                .unwrap_or_default()
+        || !valid_sha256(&canonical.ffmpeg_sha256)
+        || canonical.ffmpeg_version.is_empty()
+        || !valid_sha256(&canonical.tick_index_sha256)
+        || canonical.segments.len() > MAX_ARTIFACTS
+        || (canonical.completeness == "complete"
+            && (canonical.dropped_frames != 0 || !canonical.completeness_reasons.is_empty()))
+    {
+        return invalid("canonical recording manifest is invalid");
+    }
+    let tick_path = path.join("recognition/canonical-ticks.ndjson");
+    if digest(&fs::read(&tick_path)?) != canonical.tick_index_sha256 {
+        return invalid("canonical tick index binding differs");
+    }
+    let ticks = read_canonical_ticks(&tick_path)?;
+    if ticks.len() != canonical.tick_count || ticks.is_empty() {
+        return invalid("canonical tick index count differs");
+    }
+    let mut retained = Vec::new();
+    let mut previous = None;
+    for tick in &ticks {
+        if previous.is_some_and(|(sequence, monotonic)| {
+            tick.sequence == sequence && tick.monotonic_ms == monotonic
+        }) {
+            return invalid("canonical tick chronology is invalid");
+        }
+        previous = Some((tick.sequence, tick.monotonic_ms));
+        let must_retain = matches!(
+            tick.screen,
+            ScreenClass::MusicSelect | ScreenClass::DecideTransition | ScreenClass::Result
+        );
+        match tick.disposition.as_str() {
+            "retained" => retained.push(tick.sequence),
+            "play_interior" if tick.screen == ScreenClass::Play => {}
+            "mode_select_interior" if tick.screen == ScreenClass::ModeSelect => {}
+            "unknown_interior" if tick.screen == ScreenClass::Unknown => {}
+            _ => return invalid("canonical tick disposition is invalid"),
+        }
+        if must_retain && tick.disposition != "retained" {
+            return invalid("required semantic evidence was elided");
+        }
+        let _ = tick.semantic_episode_id;
+    }
+    let mut segment_frames = 0usize;
+    let mut retained_offset = 0usize;
+    for segment in &canonical.segments {
+        if segment.frames == 0
+            || segment.frames > 600
+            || segment.last_sequence < segment.first_sequence
+            || segment.frames
+                != usize::try_from(segment.last_sequence - segment.first_sequence + 1)
+                    .unwrap_or(usize::MAX)
+            || !valid_sha256(&segment.raw_rgb24_sha256)
+            || !valid_sha256(&segment.encoded_sha256)
+            || segment.bytes == 0
+            || segment.bytes > MAX_ARTIFACT_BYTES
+        {
+            return invalid("canonical segment reference is invalid");
+        }
+        safe_relative(&segment.path)?;
+        let artifact = manifest_artifact(&manifest, &format!("recognition/{}", segment.path))?;
+        if artifact.sha256 != segment.encoded_sha256 || artifact.bytes != segment.bytes {
+            return invalid("canonical segment artifact binding differs");
+        }
+        let expected = retained
+            .get(retained_offset..retained_offset.saturating_add(segment.frames))
+            .ok_or_else(|| {
+                CorpusError::InvalidRequest(
+                    "canonical segment exceeds retained tick index".to_owned(),
+                )
+            })?;
+        if expected.first() != Some(&segment.first_sequence)
+            || expected.last() != Some(&segment.last_sequence)
+            || !expected
+                .windows(2)
+                .all(|pair| pair[1] == pair[0].saturating_add(1))
+        {
+            return invalid("canonical segment chronology differs from tick index");
+        }
+        let (decoded_sha256, decoded_frames) =
+            decode_canonical_segment(&path.join("recognition").join(&segment.path))?;
+        if decoded_sha256 != segment.raw_rgb24_sha256 || decoded_frames != segment.frames {
+            return invalid("canonical segment lossless decode differs");
+        }
+        retained_offset = retained_offset.saturating_add(segment.frames);
+        segment_frames = segment_frames.saturating_add(segment.frames);
+    }
+    if retained_offset != retained.len() || segment_frames != retained.len() {
+        return invalid("canonical retained tick coverage differs");
+    }
+    Ok(DiagnosticVerificationSummary {
+        schema: "scorepeek-private-diagnostic-verification-v2",
+        diagnostic_sha256: digest(manifest_bytes),
+        session_id: manifest.session_id,
+        artifact_count: manifest.artifacts.len(),
+        canonical_frame_count: retained.len(),
+        observation_count: 0,
+    })
+}
+
+fn decode_canonical_segment(path: &Path) -> Result<(String, usize), CorpusError> {
+    let mut child = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(path)
+        .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| CorpusError::InvalidRequest(format!("ffmpeg decode failed: {error}")))?;
+    let mut stdout = child.stdout.take().ok_or_else(|| {
+        CorpusError::InvalidRequest("ffmpeg decoder stdout is unavailable".to_owned())
+    })?;
+    let mut hasher = Sha256::new();
+    let mut bytes = 0usize;
+    let mut buffer = vec![0u8; 64 * 1024].into_boxed_slice();
+    loop {
+        let read = stdout.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        bytes = bytes.checked_add(read).ok_or_else(|| {
+            CorpusError::InvalidRequest("decoded canonical bytes overflowed".to_owned())
+        })?;
+        hasher.update(&buffer[..read]);
+    }
+    if !child.wait()?.success() {
+        return invalid("ffmpeg canonical decode failed");
+    }
+    let frame_bytes = 1920usize * 1080 * 3;
+    if !bytes.is_multiple_of(frame_bytes) {
+        return invalid("ffmpeg canonical decode ended with a partial frame");
+    }
+    Ok((
+        hex_digest(hasher.finalize().as_slice()),
+        bytes / frame_bytes,
+    ))
+}
+
+fn read_canonical_ticks(path: &Path) -> Result<Vec<CanonicalTick>, CorpusError> {
+    let file = File::open(path)?;
+    let mut ticks = Vec::new();
+    for line in BufReader::new(file).lines() {
+        let line = line?;
+        if line.len() > MAX_NDJSON_RECORD_BYTES || ticks.len() == MAX_NDJSON_RECORDS {
+            return invalid("canonical tick index exceeds its capacity");
+        }
+        ticks.push(serde_json::from_str(&line)?);
+    }
+    Ok(ticks)
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    encoded
+}
+
 pub fn import_diagnostic(
     store: &Path,
     diagnostic: &Path,
@@ -1645,6 +1837,9 @@ pub fn import_diagnostic(
     let verified = verify_diagnostic(diagnostic)?;
     let (manifest, _) = read_json::<DiagnosticManifest>(&diagnostic.join("manifest.json"))?;
     ensure_store(store)?;
+    if manifest.schema == DIAGNOSTIC_SCHEMA {
+        return import_canonical_diagnostic(store, diagnostic, review_draft, verified, manifest);
+    }
     let mut artifacts = Vec::with_capacity(manifest.artifacts.len());
     let capture: Value =
         serde_json::from_slice(&fs::read(diagnostic.join("capture/manifest.json"))?)?;
@@ -1752,6 +1947,109 @@ pub fn import_diagnostic(
     })
 }
 
+fn import_canonical_diagnostic(
+    store: &Path,
+    diagnostic: &Path,
+    review_draft: &Path,
+    verified: DiagnosticVerificationSummary,
+    manifest: DiagnosticManifest,
+) -> Result<DiagnosticImportSummary, CorpusError> {
+    if manifest.completeness != "complete"
+        || manifest.canonical_completeness.as_deref() != Some("complete")
+    {
+        return invalid("only complete canonical diagnostic sessions can be imported");
+    }
+    let (canonical, _) = read_json::<CanonicalRecordingManifest>(
+        &diagnostic.join("recognition/canonical-manifest.json"),
+    )?;
+    let ticks = read_canonical_ticks(&diagnostic.join("recognition/canonical-ticks.ndjson"))?;
+    let mut frames = Vec::new();
+    for tick in ticks.iter().filter(|tick| tick.disposition == "retained") {
+        let segment = canonical
+            .segments
+            .iter()
+            .find(|segment| {
+                (segment.first_sequence..=segment.last_sequence).contains(&tick.sequence)
+            })
+            .ok_or_else(|| {
+                CorpusError::InvalidRequest("retained tick has no canonical segment".to_owned())
+            })?;
+        frames.push(ReviewFrame {
+            sequence: tick.sequence,
+            artifact_sha256: segment.raw_rgb24_sha256.clone(),
+        });
+    }
+    let mut artifacts = Vec::with_capacity(manifest.artifacts.len());
+    for artifact in &manifest.artifacts {
+        let source = diagnostic.join(safe_relative(&artifact.path)?);
+        publish_object(store, &source, &artifact.sha256, artifact.bytes)?;
+        artifacts.push(CorpusArtifact {
+            kind: artifact.kind.clone(),
+            source_path: artifact.path.clone(),
+            sha256: artifact.sha256.clone(),
+            bytes: artifact.bytes,
+        });
+    }
+    let session = CaptureSession {
+        schema: SESSION_SCHEMA.to_owned(),
+        diagnostic_sha256: verified.diagnostic_sha256.clone(),
+        source_kind: manifest.source_kind,
+        source_session_id: manifest.session_id.clone(),
+        capture_generation: manifest.capture_generation,
+        profile_sha256: manifest.profile_sha256,
+        catalog_sha256: manifest.catalog_sha256,
+        recognition_interval_ms: manifest.recognition_interval_ms,
+        processed_ticks: manifest.processed_ticks,
+        busy_skips: manifest.busy_skips,
+        maximum_consecutive_busy_skips: manifest.maximum_consecutive_busy_skips,
+        completeness: manifest.completeness.clone(),
+        canonical_frames: frames.clone(),
+        normalization_pairs: Vec::new(),
+        artifacts,
+    };
+    let session_bytes = canonical_json(&session)?;
+    let session_sha256 = digest(&session_bytes);
+    let identity_key = canonical_json(&serde_json::json!({
+        "source_session_id": session.source_session_id,
+        "capture_generation": session.capture_generation,
+    }))?;
+    let identity_sha256 = digest(&identity_key);
+    publish_document(
+        &store
+            .join("identities")
+            .join(format!("{identity_sha256}.json")),
+        &canonical_json(&SessionIdentity {
+            schema: "scorepeek-private-capture-session-identity-v2",
+            source_session_id: &session.source_session_id,
+            capture_generation: session.capture_generation,
+            session_sha256: &session_sha256,
+        })?,
+    )?;
+    publish_document(
+        &store
+            .join("sessions")
+            .join(format!("{session_sha256}.json")),
+        &session_bytes,
+    )?;
+    let draft = ReviewDraft {
+        schema: DRAFT_SCHEMA.to_owned(),
+        session_sha256: session_sha256.clone(),
+        diagnostic_sha256: verified.diagnostic_sha256.clone(),
+        source_session_id: manifest.session_id,
+        canonical_frames: frames,
+        observation_count: verified.observation_count,
+        completeness: manifest.completeness,
+    };
+    publish_document(review_draft, &canonical_json(&draft)?)?;
+    Ok(DiagnosticImportSummary {
+        schema: "scorepeek-private-diagnostic-import-v2",
+        session_sha256,
+        diagnostic_sha256: verified.diagnostic_sha256,
+        review_draft: review_draft.to_owned(),
+        canonical_frame_count: draft.canonical_frames.len(),
+    })
+}
+
 pub fn inspect_review(path: &Path) -> Result<Value, CorpusError> {
     let (draft, _) = read_json::<ReviewDraft>(path)?;
     if draft.schema != DRAFT_SCHEMA || !valid_sha256(&draft.session_sha256) {
@@ -1769,6 +2067,7 @@ pub fn apply_review(
     let (draft, _) = read_json::<ReviewDraft>(draft_path)?;
     let (label, label_bytes) = read_json::<RegressionLabel>(labels_path)?;
     validate_label(&draft, &label)?;
+    validate_label_timeline(store, &draft, &label)?;
     let label_sha256 = digest(&label_bytes);
     publish_document(
         &store.join("labels").join(format!("{label_sha256}.json")),
@@ -1841,11 +2140,8 @@ pub fn author_numeric_dataset(
                 .join("labels")
                 .join(format!("{}.json", entry.label_sha256)),
         )?;
-        if !matches!(
-            label.schema.as_str(),
-            LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA_V3
-        ) {
-            return invalid("numeric dataset requires v3-v5 labels for every active session");
+        if label.schema != LABEL_SCHEMA {
+            return invalid("numeric dataset requires v5 labels for every active session");
         }
         let screen_sequences = numeric_screen_sequences(store, &session)?;
         for episode in &label.episodes {
@@ -2316,6 +2612,16 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
     let catalog_root = default_catalog_root()?;
     let diagnostic_root = tempfile::tempdir()?;
     let mut replay_failures = Vec::new();
+    if suite.schema == SUITE_SCHEMA {
+        return replay_canonical_suite(
+            store,
+            generation_sha256,
+            &suite,
+            &bundle,
+            &catalog_root,
+            diagnostic_root.path(),
+        );
+    }
     for (session_index, entry) in suite.entries.iter().enumerate() {
         let (session, session_bytes) = read_json::<CaptureSession>(
             &store
@@ -2600,6 +2906,10 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
         episode_count: episodes,
         canonical_frames,
         negative_frames: negatives,
+        text_workers: 0,
+        text_batch_wall_us: 0,
+        field_frame_wall_us: 0,
+        corpus_wall_us: 0,
     })
 }
 
@@ -2608,6 +2918,636 @@ fn optional_supplemental_matches<T: PartialEq>(
     expected: &SupplementalResultValue<T>,
 ) -> bool {
     observed == expected || matches!(observed, SupplementalResultValue::Unknown { .. })
+}
+
+type ReplayFieldOutput = Result<
+    scorepeek::recognition_live::screen_field_observer::RegisteredScreenFieldObservation,
+    scorepeek::recognition::ScreenFieldObservationError<scorepeek::recognition::OnnxParityError>,
+>;
+
+struct ReplayPending {
+    pending: scorepeek::recognition_live::field_session::PendingSessionFieldObservation<
+        ReplayFieldOutput,
+    >,
+}
+
+#[derive(Default)]
+struct ReplayMeasurements {
+    text_batch_wall_us: u64,
+    field_frame_wall_us: u64,
+}
+
+fn replay_canonical_suite(
+    store: &Path,
+    generation_sha256: String,
+    suite: &RegressionSuite,
+    bundle: &Path,
+    catalog_root: &Path,
+    diagnostic_root: &Path,
+) -> Result<CorpusReplaySummary, CorpusError> {
+    let replay_started = std::time::Instant::now();
+    let available_parallelism = std::thread::available_parallelism().map_or(1, usize::from);
+    let text_workers =
+        scorepeek::recognition_live::text_observer_pool::configured_text_worker_count(
+            scorepeek::recognition_live::text_observer_pool::RecognitionExecutionMode::Offline,
+            available_parallelism,
+        );
+    let mut measurements = ReplayMeasurements::default();
+    let mut episode_count = 0usize;
+    let mut canonical_frames = 0usize;
+    let mut negative_frames = 0usize;
+    let mut failures = Vec::new();
+    for (session_index, entry) in suite.entries.iter().enumerate() {
+        let (session, session_bytes) = read_json::<CaptureSession>(
+            &store
+                .join("sessions")
+                .join(format!("{}.json", entry.session_sha256)),
+        )?;
+        let (label, label_bytes) = read_regression_label(
+            &store
+                .join("labels")
+                .join(format!("{}.json", entry.label_sha256)),
+        )?;
+        if session.schema != SESSION_SCHEMA
+            || session.completeness != "complete"
+            || digest(&session_bytes) != entry.session_sha256
+            || digest(&label_bytes) != entry.label_sha256
+            || label.session_sha256 != entry.session_sha256
+        {
+            return invalid("canonical suite entry binding is invalid");
+        }
+        let binding = session_binding(store, &session)?;
+        let descriptor = scorepeek::diagnostic_recording::DiagnosticRunDescriptor {
+            run_id: format!("canonical-corpus-replay-{session_index}"),
+            monotonic_start_ms: 0,
+            resource: scorepeek::diagnostic_recording::DiagnosticResource {
+                program: "scorepeek-corpus",
+                version: env!("CARGO_PKG_VERSION"),
+                build_sha256: "0".repeat(64),
+            },
+            binding: scorepeek::diagnostic_recording::DiagnosticBinding {
+                capture_generation: session.capture_generation,
+                capture_profile_sha256: binding.capture_profile_sha256.clone(),
+                normalizer_sha256: binding.normalizer_sha256.clone(),
+                canonical_layout_sha256: scorepeek::recognition::CanonicalLayout::sha256(),
+                catalog_sha256: session.catalog_sha256.clone(),
+                model_sha256: scorepeek::recognition::LIVE_MODEL_SHA256.to_owned(),
+                runtime_sha256: scorepeek::recognition::LIVE_RUNTIME_SHA256.to_owned(),
+                replay: None,
+            },
+        };
+        let mut recognition =
+            scorepeek::recognition_live::field_session::FieldObservationSession::start_registered(
+                diagnostic_root,
+                descriptor,
+                scorepeek::diagnostic_recording::DiagnosticPolicy {
+                    enabled: false,
+                    ..scorepeek::diagnostic_recording::DiagnosticPolicy::default()
+                },
+                catalog_root,
+                bundle,
+                scorepeek::recognition_live::text_observer_pool::RecognitionExecutionMode::Offline,
+            )
+            .map_err(|error| {
+                CorpusError::InvalidReplay(format!(
+                    "production recognizer could not start: {error:?}"
+                ))
+            })?;
+        let session_id = session.source_session_id.clone();
+        let mut output = scorepeek::routine_output::RoutineOutput::start_headless(
+            format!("corpus-{session_index}"),
+            session.profile_sha256.clone(),
+        );
+        output
+            .publish(&scorepeek::routine_output::RunEvent {
+                schema: "scorepeek-run-event-v6".to_owned(),
+                kind: scorepeek::routine_output::RunEventKind::SessionStarted {
+                    session_id: Some(session_id.clone()),
+                    capture_generation: session.capture_generation,
+                    capture_profile_sha256: binding.capture_profile_sha256.clone(),
+                    normalizer_artifact_sha256: binding.normalizer_sha256.clone(),
+                },
+            })
+            .map_err(CorpusError::InvalidReplay)?;
+        let mut timeline = scorepeek::timeline_driver::TimelineDriver::default();
+        let mut pending = VecDeque::<ReplayPending>::new();
+        let outstanding_limit = text_workers.saturating_mul(2);
+        let mut last_sequence = 0u64;
+        let mut last_monotonic_ms = 0u64;
+        for_each_canonical_session_frame(store, &session, |tick, pixels| {
+            while pending.len() >= outstanding_limit {
+                commit_replay_pending(
+                    &mut recognition,
+                    &mut pending,
+                    &mut output,
+                    true,
+                    &session_id,
+                    session.capture_generation,
+                    &mut measurements,
+                )?;
+            }
+            commit_replay_pending(
+                &mut recognition,
+                &mut pending,
+                &mut output,
+                false,
+                &session_id,
+                session.capture_generation,
+                &mut measurements,
+            )?;
+            let frame = scorepeek::diagnostic_live::BoundCanonicalFrame::for_replay(
+                session.capture_generation,
+                tick.sequence,
+                tick.monotonic_ms,
+                binding.capture_profile_sha256.clone(),
+                binding.normalizer_sha256.clone(),
+                pixels,
+            )
+            .map_err(|_| {
+                CorpusError::InvalidReplay("canonical replay frame is invalid".to_owned())
+            })?;
+            let inspected = recognition.inspect(&frame).map_err(|_| {
+                CorpusError::InvalidReplay("production frame inspection failed".to_owned())
+            })?;
+            let screen = inspected.observation.screen();
+            let timeline_step = timeline.observe(screen.into(), tick.sequence, tick.monotonic_ms);
+            output
+                .publish(&scorepeek::routine_output::RunEvent {
+                    schema: "scorepeek-run-event-v6".to_owned(),
+                    kind: scorepeek::routine_output::RunEventKind::RawScreenObserved {
+                        session_id: Some(session_id.clone()),
+                        capture_generation: Some(session.capture_generation),
+                        semantic_episode_id: timeline_step.active_episode_id,
+                        sequence: tick.sequence,
+                        monotonic_start_ms: tick.monotonic_ms,
+                        monotonic_end_ms: tick.monotonic_ms,
+                        screen: replay_screen_name(screen).to_owned(),
+                        unknown_reason: (screen == ScreenClass::Unknown)
+                            .then(|| "predicate_not_matched".to_owned()),
+                    },
+                })
+                .map_err(CorpusError::InvalidReplay)?;
+            apply_replay_timeline_actions(
+                timeline_step.actions,
+                &mut recognition,
+                &mut pending,
+                &mut output,
+                &session_id,
+                session.capture_generation,
+                tick.sequence,
+                tick.monotonic_ms,
+                &mut measurements,
+            )?;
+            match inspected.field_submission {
+                scorepeek::recognition_live::field_session::FieldObservationSubmission::NotApplicable => {}
+                scorepeek::recognition_live::field_session::FieldObservationSubmission::Submitted(mut field) => {
+                    let episode_id = timeline.active_episode_id().ok_or_else(|| {
+                        CorpusError::InvalidReplay(
+                            "field observation has no semantic episode".to_owned(),
+                        )
+                    })?;
+                    field.bind_screen_episode(episode_id);
+                    pending.push_back(ReplayPending { pending: field });
+                }
+                scorepeek::recognition_live::field_session::FieldObservationSubmission::BusySkipped => {
+                    return invalid_replay("offline replay skipped field OCR as busy");
+                }
+                scorepeek::recognition_live::field_session::FieldObservationSubmission::Rejected(error) => {
+                    return Err(CorpusError::InvalidReplay(format!(
+                        "offline replay rejected field OCR: {error:?}"
+                    )));
+                }
+            }
+            canonical_frames = canonical_frames.saturating_add(1);
+            last_sequence = tick.sequence;
+            last_monotonic_ms = tick.monotonic_ms;
+            Ok(())
+        })?;
+        let finish_actions = timeline.finish();
+        if finish_actions.is_empty() {
+            drain_replay_pending(
+                &mut recognition,
+                &mut pending,
+                &mut output,
+                &session_id,
+                session.capture_generation,
+                &mut measurements,
+            )?;
+        } else {
+            apply_replay_timeline_actions(
+                finish_actions,
+                &mut recognition,
+                &mut pending,
+                &mut output,
+                &session_id,
+                session.capture_generation,
+                last_sequence,
+                last_monotonic_ms,
+                &mut measurements,
+            )?;
+        }
+        output
+            .publish(&scorepeek::routine_output::RunEvent {
+                schema: "scorepeek-run-event-v6".to_owned(),
+                kind: scorepeek::routine_output::RunEventKind::SessionFinished {
+                    session_id: session_id.clone(),
+                    capture_generation: session.capture_generation,
+                    outcome: "replayed".to_owned(),
+                    report: serde_json::json!({}),
+                },
+            })
+            .map_err(CorpusError::InvalidReplay)?;
+        let finish = recognition.finish(
+            scorepeek::diagnostic_recording::DiagnosticRunStatus::Success,
+            last_monotonic_ms,
+            Duration::from_secs(30),
+        );
+        if finish.field_observer.status
+            != scorepeek::recognition_live::field_observer::FieldObserverFinishStatus::Complete
+        {
+            return invalid_replay("production recognizer did not finish cleanly");
+        }
+        let emitted = output
+            .take_headless_events()
+            .into_iter()
+            .filter_map(|event| match event.kind {
+                scorepeek::routine_output::RunEventKind::ResultDetected { result, .. } => {
+                    Some(result)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        validate_semantic_oracle(&label, &emitted, &mut failures);
+        episode_count = episode_count.saturating_add(label.episodes.len());
+        negative_frames = negative_frames.saturating_add(label.negative_frames.len());
+    }
+    if !failures.is_empty() {
+        return Err(CorpusError::InvalidReplay(failures.join("; ")));
+    }
+    Ok(CorpusReplaySummary {
+        schema: "scorepeek-private-corpus-replay-v2",
+        generation_sha256,
+        session_count: suite.entries.len(),
+        episode_count,
+        canonical_frames,
+        negative_frames,
+        text_workers,
+        text_batch_wall_us: measurements.text_batch_wall_us,
+        field_frame_wall_us: measurements.field_frame_wall_us,
+        corpus_wall_us: u64::try_from(replay_started.elapsed().as_micros()).unwrap_or(u64::MAX),
+    })
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the replay adapter executes one shared timeline action against bound session state"
+)]
+fn apply_replay_timeline_actions(
+    actions: Vec<scorepeek::timeline_driver::TimelineAction>,
+    recognition: &mut scorepeek::recognition_live::field_session::FieldObservationSession<
+        scorepeek::recognition_live::screen_field_observer::RegisteredScreenFieldObserver,
+    >,
+    pending: &mut VecDeque<ReplayPending>,
+    output: &mut scorepeek::routine_output::RoutineOutput,
+    session_id: &str,
+    generation: u64,
+    sequence: u64,
+    monotonic_ms: u64,
+    measurements: &mut ReplayMeasurements,
+) -> Result<(), CorpusError> {
+    for action in actions {
+        match action {
+            scorepeek::timeline_driver::TimelineAction::Semantic { episode, phase } => {
+                publish_replay_semantic(
+                    output,
+                    session_id,
+                    generation,
+                    episode,
+                    sequence,
+                    monotonic_ms,
+                    replay_semantic_phase(phase),
+                )?;
+            }
+            scorepeek::timeline_driver::TimelineAction::DrainAdmitted { .. } => {
+                drain_replay_pending(
+                    recognition,
+                    pending,
+                    output,
+                    session_id,
+                    generation,
+                    measurements,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+const fn replay_semantic_phase(
+    phase: scorepeek::timeline_driver::SemanticEpisodePhase,
+) -> scorepeek::routine_output::SemanticEpisodePhase {
+    use scorepeek::timeline_driver::SemanticEpisodePhase;
+    match phase {
+        SemanticEpisodePhase::Started => scorepeek::routine_output::SemanticEpisodePhase::Started,
+        SemanticEpisodePhase::Suspended => {
+            scorepeek::routine_output::SemanticEpisodePhase::Suspended
+        }
+        SemanticEpisodePhase::Resumed => scorepeek::routine_output::SemanticEpisodePhase::Resumed,
+        SemanticEpisodePhase::Closing => scorepeek::routine_output::SemanticEpisodePhase::Closing,
+        SemanticEpisodePhase::Finalized => {
+            scorepeek::routine_output::SemanticEpisodePhase::Finalized
+        }
+    }
+}
+
+fn publish_replay_semantic(
+    output: &mut scorepeek::routine_output::RoutineOutput,
+    session_id: &str,
+    generation: u64,
+    episode: scorepeek::screen_episode::SemanticScreenEpisode,
+    sequence: u64,
+    monotonic_ms: u64,
+    phase: scorepeek::routine_output::SemanticEpisodePhase,
+) -> Result<(), CorpusError> {
+    output
+        .publish(&scorepeek::routine_output::RunEvent {
+            schema: "scorepeek-run-event-v6".to_owned(),
+            kind: scorepeek::routine_output::RunEventKind::SemanticScreenEpisodeChanged {
+                session_id: Some(session_id.to_owned()),
+                capture_generation: Some(generation),
+                screen_episode_id: episode.id,
+                sequence,
+                monotonic_end_ms: monotonic_ms,
+                screen: replay_screen_name(episode.screen).to_owned(),
+                phase,
+            },
+        })
+        .map_err(CorpusError::InvalidReplay)
+}
+
+fn drain_replay_pending(
+    recognition: &mut scorepeek::recognition_live::field_session::FieldObservationSession<
+        scorepeek::recognition_live::screen_field_observer::RegisteredScreenFieldObserver,
+    >,
+    pending: &mut VecDeque<ReplayPending>,
+    output: &mut scorepeek::routine_output::RoutineOutput,
+    session_id: &str,
+    generation: u64,
+    measurements: &mut ReplayMeasurements,
+) -> Result<(), CorpusError> {
+    while !pending.is_empty() {
+        commit_replay_pending(
+            recognition,
+            pending,
+            output,
+            true,
+            session_id,
+            generation,
+            measurements,
+        )?;
+    }
+    Ok(())
+}
+
+fn commit_replay_pending(
+    recognition: &mut scorepeek::recognition_live::field_session::FieldObservationSession<
+        scorepeek::recognition_live::screen_field_observer::RegisteredScreenFieldObserver,
+    >,
+    pending: &mut VecDeque<ReplayPending>,
+    output: &mut scorepeek::routine_output::RoutineOutput,
+    wait: bool,
+    session_id: &str,
+    generation: u64,
+    measurements: &mut ReplayMeasurements,
+) -> Result<(), CorpusError> {
+    use scorepeek::recognition_live::field_session::FieldObservationSessionPoll;
+    let Some(front) = pending.front() else {
+        return Ok(());
+    };
+    let poll = if wait {
+        recognition.wait_field_observation(&front.pending, Duration::from_secs(30))
+    } else {
+        recognition.poll_field_observation(&front.pending)
+    };
+    let FieldObservationSessionPoll::Ready {
+        observation,
+        timing,
+        screen_episode_id,
+        ..
+    } = poll
+    else {
+        return if !wait && matches!(poll, FieldObservationSessionPoll::Pending) {
+            Ok(())
+        } else {
+            invalid_replay("production OCR did not complete in sequence order")
+        };
+    };
+    pending.pop_front();
+    let sequence = observation.sequence();
+    let monotonic_start_ms = observation.monotonic_start_ms();
+    let monotonic_end_ms = observation.monotonic_end_ms();
+    let observation = observation
+        .into_output()
+        .map_err(|_| CorpusError::InvalidReplay("production OCR failed".to_owned()))?;
+    measurements.text_batch_wall_us = measurements
+        .text_batch_wall_us
+        .saturating_add(observation.processing_timing().text_batch_wall_us);
+    measurements.field_frame_wall_us = measurements
+        .field_frame_wall_us
+        .saturating_add(timing.frame_processing_wall_us);
+    output
+        .publish(
+            &scorepeek::routine_output::RunEvent::from_field_observation(
+                session_id,
+                generation,
+                screen_episode_id,
+                sequence,
+                monotonic_start_ms,
+                monotonic_end_ms,
+                &observation,
+            )
+            .map_err(CorpusError::InvalidReplay)?,
+        )
+        .map_err(CorpusError::InvalidReplay)
+}
+
+fn replay_screen_name(screen: ScreenClass) -> &'static str {
+    match screen {
+        ScreenClass::Result => "result",
+        ScreenClass::MusicSelect => "music_select",
+        ScreenClass::ModeSelect => "mode_select",
+        ScreenClass::DecideTransition => "decide_transition",
+        ScreenClass::Play => "play",
+        ScreenClass::Unknown => "unknown",
+    }
+}
+
+fn for_each_canonical_session_frame(
+    store: &Path,
+    session: &CaptureSession,
+    mut observe: impl FnMut(&CanonicalTick, Box<[u8]>) -> Result<(), CorpusError>,
+) -> Result<(), CorpusError> {
+    let canonical_manifest_object =
+        session_object_for_source(store, session, "recognition/canonical-manifest.json")?;
+    let (canonical, _) = read_json::<CanonicalRecordingManifest>(&canonical_manifest_object)?;
+    if canonical.completeness != "complete" || canonical.dropped_frames != 0 {
+        return invalid_replay("canonical session is incomplete");
+    }
+    let tick_object =
+        session_object_for_source(store, session, "recognition/canonical-ticks.ndjson")?;
+    let ticks = read_canonical_ticks(&tick_object)?;
+    let retained = ticks
+        .iter()
+        .filter(|tick| tick.disposition == "retained")
+        .collect::<Vec<_>>();
+    let mut offset = 0usize;
+    for segment in &canonical.segments {
+        let object =
+            session_object_for_source(store, session, &format!("recognition/{}", segment.path))?;
+        let expected = retained
+            .get(offset..offset.saturating_add(segment.frames))
+            .ok_or_else(|| {
+                CorpusError::InvalidReplay(
+                    "canonical segment exceeds retained tick index".to_owned(),
+                )
+            })?;
+        let mut child = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-i"])
+            .arg(&object)
+            .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| {
+                CorpusError::InvalidReplay(format!("canonical decode failed: {error}"))
+            })?;
+        let mut stdout = child.stdout.take().ok_or_else(|| {
+            CorpusError::InvalidReplay("canonical decoder stdout is unavailable".to_owned())
+        })?;
+        let mut decoded_digest = Sha256::new();
+        for tick in expected {
+            let mut pixels = vec![0u8; 1920 * 1080 * 3].into_boxed_slice();
+            stdout.read_exact(&mut pixels)?;
+            decoded_digest.update(&pixels);
+            observe(tick, pixels)?;
+        }
+        let mut extra = [0u8; 1];
+        if stdout.read(&mut extra)? != 0 || !child.wait()?.success() {
+            return invalid_replay("canonical segment decoded frame count differs");
+        }
+        if hex_digest(decoded_digest.finalize().as_slice()) != segment.raw_rgb24_sha256 {
+            return invalid_replay("canonical segment decoded pixel digest differs");
+        }
+        offset = offset.saturating_add(segment.frames);
+    }
+    if offset != retained.len() {
+        return invalid_replay("canonical segment coverage differs");
+    }
+    Ok(())
+}
+
+fn session_object_for_source(
+    store: &Path,
+    session: &CaptureSession,
+    source_path: &str,
+) -> Result<PathBuf, CorpusError> {
+    let artifact = session
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.source_path == source_path)
+        .ok_or_else(|| {
+            CorpusError::InvalidReplay(format!(
+                "canonical session artifact is unavailable: {source_path}"
+            ))
+        })?;
+    let object = store.join("objects").join(&artifact.sha256);
+    verify_file(&object, &artifact.sha256, artifact.bytes)?;
+    Ok(object)
+}
+
+fn validate_semantic_oracle(
+    label: &RegressionLabel,
+    emitted: &[scorepeek::routine_output::ResultDomainEvent],
+    failures: &mut Vec<String>,
+) {
+    let accepted = label
+        .episodes
+        .iter()
+        .filter(|episode| {
+            episode
+                .attempt
+                .as_ref()
+                .is_some_and(|attempt| matches!(attempt.outcome, AttemptOutcome::Accepted))
+        })
+        .collect::<Vec<_>>();
+    if emitted.len() != accepted.len() {
+        failures.push(format!(
+            "session {} event count differs: expected {}, observed {}",
+            label.session_sha256,
+            accepted.len(),
+            emitted.len()
+        ));
+    }
+    let mut actual_by_key = BTreeMap::<String, u64>::new();
+    for (index, episode) in accepted.iter().enumerate() {
+        let attempt = episode.attempt.as_ref().expect("accepted attempt exists");
+        let Some(event) = emitted.get(index) else {
+            failures.push(format!(
+                "attempt {} is missing its ordered result event",
+                attempt.attempt_key
+            ));
+            continue;
+        };
+        if !result_event_matches(event, episode) {
+            failures.push(format!(
+                "attempt {} result payload or play-options order differs",
+                attempt.attempt_key
+            ));
+        }
+        let expected_parent = attempt
+            .parent_attempt_key
+            .as_ref()
+            .and_then(|key| actual_by_key.get(key))
+            .copied();
+        if event.parent_attempt_id != expected_parent {
+            failures.push(format!(
+                "attempt {} parent relation differs",
+                attempt.attempt_key
+            ));
+        }
+        actual_by_key.insert(attempt.attempt_key.clone(), event.attempt_id);
+    }
+}
+
+fn result_event_matches(
+    event: &scorepeek::routine_output::ResultDomainEvent,
+    episode: &RegressionEpisode,
+) -> bool {
+    let expected = &episode.expected_result;
+    let expected_song = serde_json::from_value::<scorepeek::catalog::ScorepeekSongId>(
+        Value::String(episode.expected_song_id.clone()),
+    )
+    .ok();
+    event.contract == "scorepeek-result-detected-v2"
+        && Some(event.scorepeek_song_id) == expected_song
+        && event.clear_type == episode.expected_clear_type
+        && event.play_side == expected.play_side
+        && event.play_mode == expected.play_mode
+        && event.play_type == expected.play_type
+        && event.difficulty == expected.difficulty
+        && event.level == expected.level
+        && event.notes == expected.notes
+        && event.current_score == expected.current_score
+        && expected.judgments.as_ref() == Some(&event.judgments)
+        && expected.miss_count.as_ref() == Some(&event.miss_count)
+        && expected.timing.as_ref() == Some(&event.timing)
+        && expected.combo_break.as_ref() == Some(&event.combo_break)
+        && expected.previous_best.as_ref() == Some(&event.previous_best)
+        && matches!(
+            (&event.play_options, expected.play_options.as_deref()),
+            (PlayOptions::Known { values }, Some(expected)) if values == expected
+        )
 }
 
 fn optional_previous_matches<T: PartialEq>(
@@ -2833,32 +3773,29 @@ fn field_json(fields: &scorepeek::recognition::ScreenFieldObservations) -> Value
 }
 
 fn validate_diagnostic_manifest(manifest: &DiagnosticManifest) -> Result<(), CorpusError> {
-    if !matches!(
-        manifest.schema.as_str(),
-        DIAGNOSTIC_SCHEMA | LEGACY_DIAGNOSTIC_SCHEMA
-    ) || manifest.session_id.is_empty()
+    if manifest.schema != DIAGNOSTIC_SCHEMA
+        || manifest.session_id.is_empty()
         || manifest.capture_generation == 0
         || !valid_sha256(&manifest.profile_sha256)
         || !valid_sha256(&manifest.catalog_sha256)
         || !valid_sha256(&manifest.capture_manifest_sha256)
         || !valid_sha256(&manifest.recognition_manifest_sha256)
         || !valid_sha256(&manifest.event_manifest_sha256)
+        || manifest
+            .canonical_manifest_sha256
+            .as_deref()
+            .is_none_or(|digest| !valid_sha256(digest))
+        || !matches!(
+            manifest.canonical_completeness.as_deref(),
+            Some("complete" | "partial")
+        )
         || manifest.artifacts.is_empty()
         || manifest.artifacts.len() > MAX_ARTIFACTS
         || manifest.recognition_interval_ms != 100
-        || match manifest.schema.as_str() {
-            DIAGNOSTIC_SCHEMA => manifest
-                .field_observation_busy_skips
-                .zip(manifest.maximum_consecutive_field_observation_busy_skips)
-                .is_none_or(|(total, maximum)| maximum > total),
-            LEGACY_DIAGNOSTIC_SCHEMA => {
-                manifest.field_observation_busy_skips.is_some()
-                    || manifest
-                        .maximum_consecutive_field_observation_busy_skips
-                        .is_some()
-            }
-            _ => true,
-        }
+        || manifest
+            .field_observation_busy_skips
+            .zip(manifest.maximum_consecutive_field_observation_busy_skips)
+            .is_none_or(|(total, maximum)| maximum > total)
     {
         return invalid("diagnostic manifest is invalid");
     }
@@ -3029,10 +3966,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<(), CorpusError> {
 
 fn validate_label(draft: &ReviewDraft, label: &RegressionLabel) -> Result<(), CorpusError> {
     if draft.schema != DRAFT_SCHEMA
-        || !matches!(
-            label.schema.as_str(),
-            LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA_V3
-        )
+        || label.schema != LABEL_SCHEMA
         || label.session_sha256 != draft.session_sha256
     {
         return invalid("review label does not bind the draft session");
@@ -3043,6 +3977,7 @@ fn validate_label(draft: &ReviewDraft, label: &RegressionLabel) -> Result<(), Co
         .map(|frame| frame.sequence)
         .collect::<BTreeSet<_>>();
     let mut used = BTreeSet::new();
+    let mut attempt_keys = BTreeSet::new();
     let mut previous_episode_end = None;
     for episode in &label.episodes {
         if episode.episode_id.is_empty()
@@ -3053,8 +3988,7 @@ fn validate_label(draft: &ReviewDraft, label: &RegressionLabel) -> Result<(), Co
             || episode.expected_result.play_type != PlayType::Single
             || !(1..=12).contains(&episode.expected_result.level)
             || !valid_expected_result(&episode.expected_result)
-            || (label.schema == LABEL_SCHEMA
-                && !valid_play_options(episode.expected_result.play_options.as_deref()))
+            || !valid_play_options(episode.expected_result.play_options.as_deref())
             || episode.stable_sequences.is_empty()
             || episode
                 .stable_sequences
@@ -3070,16 +4004,26 @@ fn validate_label(draft: &ReviewDraft, label: &RegressionLabel) -> Result<(), Co
                     .first()
                     .is_some_and(|first| *first <= previous)
             })
-            || episode.attempt.as_ref().is_some_and(|attempt| {
+            || episode.attempt.as_ref().is_none_or(|attempt| {
                 attempt.attempt_key.is_empty()
+                    || !attempt_keys.insert(attempt.attempt_key.clone())
                     || attempt.parent_attempt_key.as_deref() == Some("")
+                    || attempt.parent_attempt_key.as_deref() == Some(&attempt.attempt_key)
+                    || attempt
+                        .parent_attempt_key
+                        .as_ref()
+                        .is_some_and(|parent| !attempt_keys.contains(parent))
                     || !valid_span(attempt.result_span, &available)
                     || attempt
                         .select_span
-                        .is_some_and(|span| !valid_span(span, &available))
+                        .is_none_or(|span| !valid_span(span, &available))
+                    || attempt
+                        .decide_span
+                        .is_none_or(|span| !valid_span(span, &available))
                     || attempt
                         .play_span
-                        .is_some_and(|span| !valid_span(span, &available))
+                        .is_none_or(|span| !valid_span(span, &available))
+                    || !spans_are_ordered(attempt)
             })
         {
             return invalid("review episode is invalid");
@@ -3092,6 +4036,98 @@ fn validate_label(draft: &ReviewDraft, label: &RegressionLabel) -> Result<(), Co
         .any(|sequence| !available.contains(sequence) || !used.insert(*sequence))
     {
         return invalid("review negative frame is invalid");
+    }
+    Ok(())
+}
+
+fn spans_are_ordered(attempt: &AttemptTruth) -> bool {
+    let (Some(select), Some(decide), Some(play)) =
+        (attempt.select_span, attempt.decide_span, attempt.play_span)
+    else {
+        return false;
+    };
+    select.last_sequence < decide.first_sequence
+        && decide.last_sequence < play.first_sequence
+        && play.last_sequence < attempt.result_span.first_sequence
+}
+
+fn validate_label_timeline(
+    store: &Path,
+    draft: &ReviewDraft,
+    label: &RegressionLabel,
+) -> Result<(), CorpusError> {
+    let session_path = store
+        .join("sessions")
+        .join(format!("{}.json", draft.session_sha256));
+    let (session, session_bytes) = read_json::<CaptureSession>(&session_path)?;
+    if session.schema != SESSION_SCHEMA
+        || digest(&session_bytes) != draft.session_sha256
+        || session.completeness != "complete"
+    {
+        return invalid("review session is not a complete canonical session");
+    }
+    let ticks = read_canonical_ticks(&session_object_for_source(
+        store,
+        &session,
+        "recognition/canonical-ticks.ndjson",
+    )?)?;
+    let mut by_sequence = BTreeMap::new();
+    for tick in &ticks {
+        if by_sequence.insert(tick.sequence, tick).is_some() {
+            return invalid("canonical tick index contains duplicate sequences");
+        }
+    }
+    for episode in &label.episodes {
+        let attempt = episode
+            .attempt
+            .as_ref()
+            .ok_or_else(|| CorpusError::InvalidRequest("attempt truth is required".to_owned()))?;
+        validate_screen_span(
+            &by_sequence,
+            attempt.select_span.expect("validated select span"),
+            ScreenClass::MusicSelect,
+            false,
+        )?;
+        validate_screen_span(
+            &by_sequence,
+            attempt.decide_span.expect("validated decide span"),
+            ScreenClass::DecideTransition,
+            true,
+        )?;
+        validate_screen_span(
+            &by_sequence,
+            attempt.play_span.expect("validated play span"),
+            ScreenClass::Play,
+            false,
+        )?;
+        validate_screen_span(&by_sequence, attempt.result_span, ScreenClass::Result, true)?;
+    }
+    Ok(())
+}
+
+fn validate_screen_span(
+    ticks: &BTreeMap<u64, &CanonicalTick>,
+    span: SequenceSpan,
+    expected_screen: ScreenClass,
+    require_complete_interior: bool,
+) -> Result<(), CorpusError> {
+    for endpoint in [span.first_sequence, span.last_sequence] {
+        let tick = ticks
+            .get(&endpoint)
+            .ok_or_else(|| CorpusError::InvalidRequest("span endpoint is absent".to_owned()))?;
+        if tick.disposition != "retained" || tick.screen != expected_screen {
+            return invalid("span endpoint is not retained on the expected raw screen");
+        }
+    }
+    if require_complete_interior {
+        for sequence in span.first_sequence..=span.last_sequence {
+            let tick = ticks.get(&sequence).ok_or_else(|| {
+                CorpusError::InvalidRequest("required span contains a missing tick".to_owned())
+            })?;
+            if tick.disposition != "retained" || tick.screen != expected_screen {
+                return invalid("required span contains elision or another raw screen");
+            }
+        }
     }
     Ok(())
 }
@@ -3510,56 +4546,11 @@ fn read_regression_label(path: &Path) -> Result<(RegressionLabel, Vec<u8>), Corp
         return invalid("document size is invalid");
     }
     let bytes = fs::read(path)?;
-    let value = serde_json::from_slice::<Value>(&bytes)?;
-    match value.get("schema").and_then(Value::as_str) {
-        Some(LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA | PREVIOUS_LABEL_SCHEMA_V3) => {
-            Ok((serde_json::from_value(value)?, bytes))
-        }
-        Some(LEGACY_LABEL_SCHEMA) => {
-            let legacy = serde_json::from_value::<LegacyRegressionLabel>(value)?;
-            if legacy
-                .episodes
-                .iter()
-                .any(|episode| !episode.expected_result.savable)
-            {
-                return invalid("legacy regression label contains an unsavable result");
-            }
-            let label = RegressionLabel {
-                schema: legacy.schema,
-                session_sha256: legacy.session_sha256,
-                disposition: legacy.disposition,
-                episodes: legacy
-                    .episodes
-                    .into_iter()
-                    .map(|episode| RegressionEpisode {
-                        episode_id: episode.episode_id,
-                        expected_song_id: episode.expected_song_id,
-                        expected_clear_type: episode.expected_clear_type,
-                        expected_result: ExpectedResult {
-                            play_side: episode.expected_result.play_side,
-                            play_mode: episode.expected_result.play_mode,
-                            play_type: episode.expected_result.play_type,
-                            difficulty: episode.expected_result.difficulty,
-                            level: episode.expected_result.level,
-                            notes: episode.expected_result.notes,
-                            current_score: episode.expected_result.current_score,
-                            judgments: None,
-                            miss_count: None,
-                            timing: None,
-                            combo_break: None,
-                            previous_best: None,
-                            play_options: None,
-                        },
-                        stable_sequences: episode.stable_sequences,
-                        attempt: None,
-                    })
-                    .collect(),
-                negative_frames: legacy.negative_frames,
-            };
-            Ok((label, bytes))
-        }
-        _ => invalid("regression label schema is unsupported"),
+    let label = serde_json::from_slice::<RegressionLabel>(&bytes)?;
+    if label.schema != LABEL_SCHEMA {
+        return invalid("regression label schema is unsupported");
     }
+    Ok((label, bytes))
 }
 
 fn verify_file(path: &Path, expected_sha256: &str, expected_bytes: u64) -> Result<(), CorpusError> {
@@ -3645,12 +4636,14 @@ mod tests {
             capture_manifest_sha256: "3".repeat(64),
             recognition_manifest_sha256: "4".repeat(64),
             event_manifest_sha256: "5".repeat(64),
+            canonical_manifest_sha256: Some("6".repeat(64)),
+            canonical_completeness: Some("complete".to_owned()),
             artifacts: Vec::new(),
         }
     }
 
     #[test]
-    fn diagnostic_manifest_requires_v4_field_busy_summary_and_preserves_v3() {
+    fn diagnostic_manifest_requires_v5_canonical_and_field_busy_bindings() {
         let mut manifest = diagnostic_manifest();
         manifest.artifacts.push(DiagnosticArtifact {
             kind: "capture_manifest".to_owned(),
@@ -3665,10 +4658,10 @@ mod tests {
         manifest.maximum_consecutive_field_observation_busy_skips = Some(18);
         assert!(validate_diagnostic_manifest(&manifest).is_err());
 
-        manifest.schema = LEGACY_DIAGNOSTIC_SCHEMA.to_owned();
+        manifest.schema = "scorepeek-private-diagnostic-session-v4".to_owned();
         manifest.field_observation_busy_skips = None;
         manifest.maximum_consecutive_field_observation_busy_skips = None;
-        assert!(validate_diagnostic_manifest(&manifest).is_ok());
+        assert!(validate_diagnostic_manifest(&manifest).is_err());
     }
 
     #[test]
@@ -4001,11 +4994,11 @@ mod tests {
     }
 
     #[test]
-    fn v4_labels_remain_readable_without_play_options() {
+    fn v4_labels_are_rejected_by_the_clean_cut_reader() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("label.json");
         let mut value = serde_json::to_value(RegressionLabel {
-            schema: PREVIOUS_LABEL_SCHEMA.to_owned(),
+            schema: "scorepeek-private-session-regression-label-v4".to_owned(),
             session_sha256: "1".repeat(64),
             disposition: LabelDisposition::Include,
             episodes: vec![RegressionEpisode {
@@ -4024,8 +5017,7 @@ mod tests {
             .unwrap()
             .remove("play_options");
         fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-        let (label, _) = read_regression_label(&path).unwrap();
-        assert!(label.episodes[0].expected_result.play_options.is_none());
+        assert!(read_regression_label(&path).is_err());
     }
 
     #[test]

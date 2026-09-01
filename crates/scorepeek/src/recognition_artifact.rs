@@ -19,7 +19,7 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 const CATALOG_SCHEMA: &str = "scorepeek-recognition-catalog-evidence-v1";
-const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v16";
+const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v17";
 const MANIFEST_SCHEMA: &str = "scorepeek-recognition-evidence-manifest-v3";
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -1428,7 +1428,7 @@ mod tests {
         assert_eq!(outcome.status, RecognitionArtifactFinishStatus::Complete);
         assert_eq!(outcome.manifest_sha256.unwrap().len(), 64);
         let stored = fs::read_to_string(root.join("observations.ndjson")).unwrap();
-        assert!(stored.contains("scorepeek-recognition-observation-v16"));
+        assert!(stored.contains("scorepeek-recognition-observation-v17"));
         assert!(stored.contains("\"processing_timing\""));
         assert!(stored.contains("\"field_status\":\"completed\""));
         assert!(stored.contains("\"frame_total_us\":0"));

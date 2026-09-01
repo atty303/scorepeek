@@ -10,7 +10,7 @@ outside the checkpoint; implementation history belongs in Git.
   progress**.
 - `scorepeek-result-detected-v2` remains the accepted public domain contract and now carries typed
   ordered `play_options`. Debug output uses run-event v6, observation socket/snapshot v6, and
-  recognition observation v16.
+  recognition observation v17. Joined recorded sessions use v5.
 - Text authority remains the registered PP-OCRv6-small bundle. Numeric authority remains the
   private fixed-cell HOG/MLP model. No model bytes, real crops, complete labels, or generated
   datasets are committed.
@@ -21,6 +21,15 @@ outside the checkpoint; implementation history belongs in Git.
   state. `ScreenEpisodeResolver` owns monotonic semantic episodes. Raw unknown suspends the active
   known screen; the same screen resumes it; only another known screen, session boundary, or reversed
   chronology closes it.
+- Routine recording is opt-in. `scorepeek run` retains domain behavior without creating capture,
+  recognition, run-event, joined-session, or canonical artifacts; `scorepeek run --record` starts
+  them as one session after FFmpeg/capacity preflight. Removed recording flags fail as unknown
+  options. Recorder failure changes only component/session completeness.
+- Canonical recording retains every MUSIC SELECT, DECIDE TRANSITION, and RESULT tick plus the first,
+  last, and raw-screen transition windows. Stable PLAY, MODE SELECT, and UNKNOWN interiors are typed
+  intentional gaps. Retained RGB24 frames are streamed to external lossless `libx264rgb` Matroska
+  segments, then decoded and checked against input digest and frame count before complete
+  publication.
 - Field jobs are bound to the semantic episode that admitted them. Episode close stops admission,
   drains already-submitted work, applies it to the closing episode, finalizes RESULT, and only then
   starts the next known-screen attempt transition. Late generation/chronology evidence remains
@@ -66,9 +75,17 @@ outside the checkpoint; implementation history belongs in Git.
 - Run-event v6 distinguishes raw screen observations, semantic episode transitions, current
   selection-difficulty changes, selection/result and provisional-joint transitions, attempt
   finalization, and suppression. Recognition observation
-  v16 retains title views/geometry, episode binding, fixed-cell numeric evidence, play-option raw
-  OCR/marker/typed state, factor support, frame timing, late/drain status, and suppression evidence.
-  Readers accept run-event v2 through v6 and recognition v5 through v16.
+  v17 retains title views/geometry, episode binding, fixed-cell numeric evidence, play-option raw
+  OCR/marker/typed state, factor support, raw stage/frame timing, late/drain status, and suppression
+  evidence. Independent PP-OCR jobs use single-threaded ONNX sessions in a pool selected from
+  available parallelism; the outer coordinator pipelines frames and commits admitted evidence in
+  source order. Readers accept run-event v2 through v6 and recognition v5 through v17.
+- The attempt corpus clean-cuts to complete joined-session v5 input and label v5 truth. Import keeps
+  lossless segments and the tick index as immutable objects without QOI expansion or pixel-content
+  deduplication. Replay decodes canonical retained frames only, starts no normalizer, uses production
+  screen-episode and run-event reducers, and rejects missing/elided DECIDE TRANSITION or RESULT
+  truth. Event comparison normalizes runtime IDs while preserving attempt-parent and ordered
+  play-option relations.
 
 ## Verification boundary
 
@@ -88,8 +105,8 @@ outside the checkpoint; implementation history belongs in Git.
   not reconstruct the original 10 Hz attempt timeline. Prospective target execution is therefore
   still required for end-to-end authority.
 - The existing private corpus and active suite were not changed. The operator plans to rebuild
-  them. Future regression labels use v5 and require ordered play-option truth; immutable v2-v4
-  labels remain readable. The current 34 RESULT episodes are a read-only play-option oracle covering
+  them. New regression import accepts only complete joined-session v5 and label v5 with ordered
+  play-option truth; there is no active-suite legacy reader or converter. The current 34 RESULT episodes are a read-only play-option oracle covering
   no option, every supported single option, and `RANDOM,LEGACY`, but do not advance the active
   suite. Title-view/support calibration and wrong-event authority still require a reviewed,
   session-disjoint replacement corpus with zero wrong joint acceptance and zero wrong events.
@@ -116,8 +133,10 @@ outside the checkpoint; implementation history belongs in Git.
 
 ## Next executable task
 
-Rebuild and operator-review private v5 corpus truth, including ordered play options, then publish a
-numeric manifest rebound to the new canonical-layout digest and explicitly install the binary plus
+Record a fresh joined-session v5 run, import and operator-review label v5 truth, then compare the
+same suite with one text worker and the default pool. Require identical domain events plus reduced
+OCR and whole-suite wall time before claiming speedup. After that, publish a numeric manifest rebound
+to the new canonical-layout digest and explicitly install the binary plus
 manifest on the target. In the following prospective session, verify RESULT-close option payloads,
 six-job wall time/busy skips, 10 Hz raw cadence, confirmed-attempt ordering, one event per accepted
 attempt, and event drop zero before changing target or public-socket authority.

@@ -105,6 +105,10 @@ impl BoundCanonicalFrame {
         self.sequence
     }
 
+    pub(crate) fn shared_pixels(&self) -> Arc<Box<[u8]>> {
+        Arc::clone(&self.pixels)
+    }
+
     #[must_use]
     pub(crate) const fn source_sequence(&self) -> u64 {
         self.source_sequence
@@ -487,18 +491,17 @@ impl DiagnosticBridge {
                 screen,
                 screen_classification_us: timing.screen_classification_us,
                 crop_prepare_us: timing.crop_prepare_us,
-                text_ocr_wall_us: field_timing.map(|value| value.text_recognition_wall_us),
+                field_queue_wait_us: field_timing.map(|value| value.field_queue_wait_us),
+                text_batch_wall_us: field_timing.map(|value| value.text_batch_wall_us),
+                maximum_text_worker_inference_us: field_timing
+                    .map(|value| value.maximum_text_worker_inference_us),
                 numeric_ocr_us: field_timing.and_then(|value| value.numeric_recognition_us),
+                field_join_us: field_timing.map(|value| value.join_us),
                 catalog_evidence_us: field_timing.map(|value| value.catalog_evidence_us),
                 screen_resolver_us: timing.screen_resolver_us,
                 attempt_resolver_us: timing.attempt_resolver_us,
                 output_us: timing.output_us,
-                frame_processing_wall_us: timing
-                    .frame_processing_wall_us
-                    .saturating_add(field_timing.map_or(0, |value| value.frame_total_us))
-                    .saturating_add(timing.screen_resolver_us.unwrap_or(0))
-                    .saturating_add(timing.attempt_resolver_us.unwrap_or(0))
-                    .saturating_add(timing.output_us.unwrap_or(0)),
+                frame_processing_wall_us: timing.frame_processing_wall_us,
                 field_status,
             },
         })
@@ -1125,7 +1128,7 @@ mod tests {
             serde_json::Value::Null
         );
         assert_eq!(facts[0]["fact"]["detail"]["output_us"], 1);
-        assert_eq!(facts[0]["fact"]["detail"]["frame_processing_wall_us"], 10);
+        assert_eq!(facts[0]["fact"]["detail"]["frame_processing_wall_us"], 7);
         assert_eq!(facts[1]["fact"]["detail"]["field_status"], "not_applicable");
         assert_eq!(facts[2]["fact"]["detail"]["field_status"], "failed");
     }

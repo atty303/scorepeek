@@ -1,6 +1,10 @@
 extern crate self as scorepeek;
 
+#[allow(dead_code)]
+mod calibration_marker;
 pub mod capture;
+#[allow(dead_code)]
+mod capture_calibration;
 pub mod catalog;
 #[allow(dead_code)]
 pub mod diagnostic_control;
@@ -10,17 +14,34 @@ pub mod diagnostic_live;
 pub mod diagnostic_recording;
 #[allow(dead_code)]
 pub mod diagnostic_worker;
+#[allow(dead_code)]
+mod local_profiles;
 pub mod model_cache;
 pub mod numeric_model_store;
+#[allow(dead_code)]
+pub mod play_attempt;
 pub mod recognition;
 #[allow(dead_code)]
 mod recognition_artifact;
 pub mod recognition_cadence;
 #[allow(dead_code)]
 pub mod recognition_live;
+#[allow(
+    clippy::missing_errors_doc,
+    dead_code,
+    reason = "offline canonical replay shares the binary's internal run-event reducer"
+)]
+pub mod routine_output;
+#[allow(
+    clippy::must_use_candidate,
+    dead_code,
+    reason = "the shared reducer retains its binary-owned event artifact helper"
+)]
+pub mod run_event_artifact;
 pub mod screen_episode;
 pub mod song_context;
 pub mod temporal_recognition;
+pub mod timeline_driver;
 
 use std::fs;
 use std::io::Write as _;

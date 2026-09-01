@@ -1383,14 +1383,10 @@ def main() -> None:
     parser.add_argument("--observations-sha256")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--observation-output", type=Path)
-    recording = parser.add_mutually_exclusive_group()
-    recording.add_argument("--diagnostic-output", type=Path)
-    recording.add_argument("--no-recording", action="store_true")
+    parser.add_argument("--diagnostic-output", type=Path)
     arguments = parser.parse_args()
     diagnostic_output = (
-        None
-        if arguments.no_recording
-        else arguments.diagnostic_output
+        arguments.diagnostic_output
         or arguments.output.parent / ".scorepeek-official-census-diagnostic"
     )
     observation_output = arguments.observation_output or arguments.output.with_name(

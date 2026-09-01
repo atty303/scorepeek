@@ -1,4 +1,5 @@
 mod calibration_marker;
+mod canonical_recording;
 mod canonical_source;
 mod capture_calibration;
 mod capture_live;
@@ -503,27 +504,47 @@ const LIVE_SESSION_FLAGS: &[&str] = &[
 ];
 
 fn try_routine_live_session(args: &[OsString], bundle: &Path) -> Option<Result<(), String>> {
-    let (profile, recording) = match args {
-        [run] if run == "run" => (None, "enabled"),
-        [run, no_recording] if run == "run" && no_recording == "--no-recording" => {
-            (None, "disabled")
-        }
-        [run, profile_flag, profile] if run == "run" && profile_flag == "--profile" => {
-            (Some(profile.as_os_str()), "enabled")
-        }
-        [run, profile_flag, profile, no_recording]
-            if run == "run" && profile_flag == "--profile" && no_recording == "--no-recording" =>
-        {
-            (Some(profile.as_os_str()), "disabled")
-        }
-        [run, no_recording, profile_flag, profile]
-            if run == "run" && no_recording == "--no-recording" && profile_flag == "--profile" =>
-        {
-            (Some(profile.as_os_str()), "disabled")
-        }
-        _ => return None,
+    let [run, options @ ..] = args else {
+        return None;
     };
-    Some(run_routine_live_session(profile, recording, bundle))
+    if run != "run" {
+        return None;
+    }
+    let (profile, recording_enabled) = match parse_routine_run_options(options) {
+        Ok(options) => options,
+        Err(error) => return Some(Err(error)),
+    };
+    Some(run_routine_live_session(
+        profile,
+        if recording_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        bundle,
+    ))
+}
+
+fn parse_routine_run_options(options: &[OsString]) -> Result<(Option<&OsStr>, bool), String> {
+    let mut profile = None;
+    let mut recording = false;
+    let mut index = 0;
+    while index < options.len() {
+        match options[index].to_str() {
+            Some("--record") if !recording => recording = true,
+            Some("--profile") if profile.is_none() => {
+                index += 1;
+                let Some(value) = options.get(index) else {
+                    return Err("--profile requires a profile name".to_owned());
+                };
+                profile = Some(value.as_os_str());
+            }
+            Some(option) => return Err(format!("unknown or duplicate run option: {option}")),
+            None => return Err("run option must be UTF-8".to_owned()),
+        }
+        index += 1;
+    }
+    Ok((profile, recording))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -557,6 +578,9 @@ fn run_routine_live_session(
         std::process::id()
     );
     let recording_enabled = recording == "enabled";
+    if recording_enabled {
+        canonical_recording::CanonicalRecordingWorker::preflight()?;
+    }
     let state = local_profiles::state_paths(recording_enabled)?;
     let build_sha256 = current_executable_sha256()?;
     let monitor = live_control::SignalStopMonitor::start()?;
@@ -787,6 +811,7 @@ fn run_routine_live_session(
                         ) = report.field_busy_sampling();
                         let completeness = if report.diagnostic_completeness_name() == "complete"
                             && event_artifact.complete
+                            && report.canonical_recording_is_complete()
                         {
                             "complete"
                         } else {
@@ -840,6 +865,11 @@ fn run_routine_live_session(
                         {
                             output.warning(
                                 "diagnostic session was not published: recognition component has no manifest",
+                            )?;
+                        }
+                        if report.canonical_recording_manifest_sha256().is_none() {
+                            output.warning(
+                                "diagnostic session was not published: canonical recording component has no manifest",
                             )?;
                         }
                         match event_artifact.as_ref() {
@@ -3491,7 +3521,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...\n  scorepeek setup gamescope --profile NAME [--no-recording] -- GAMESCOPE_ARGS...\n  scorepeek profile list\n  scorepeek run [--profile NAME] [--no-recording]\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition inspect-diagnostic-qoi --frame FILE --frame-sha256 SHA256\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
+        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...\n  scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...\n  scorepeek profile list\n  scorepeek run [--profile NAME] [--record]\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition inspect-diagnostic-qoi --frame FILE --frame-sha256 SHA256\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
         env!("CARGO_PKG_VERSION")
     );
     println!(
@@ -3524,8 +3554,9 @@ mod tests {
         CAPTURE_FIELD_OBSERVATION_FLAGS, CAPTURE_HANDOFF_FLAGS, CAPTURE_RESULT_RECOGNITION_FLAGS,
         LIVE_SESSION_FLAGS, LiveSessionEmission, PrivatePublicationPoint, catalog_paths,
         catalog_sync_error, command_flag_values, live_session_event_value,
-        optional_recognition_root, prepare_live_diagnostic_root, publish_private_file,
-        publish_private_file_with, run_event_from_live_emission, run_with_model_initializer,
+        optional_recognition_root, parse_routine_run_options, prepare_live_diagnostic_root,
+        publish_private_file, publish_private_file_with, run_event_from_live_emission,
+        run_with_model_initializer,
     };
     use crate::capture_live::GamescopeLiveSessionEvent;
     use crate::recognition_live::screen_field_observer::RegisteredScreenFieldObservation;
@@ -3544,10 +3575,43 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     #[test]
-    fn recording_opt_out_disables_the_recognition_artifact_root() {
+    fn unrecorded_run_disables_the_recognition_artifact_root() {
         let root = Path::new("/tmp/recognition");
         assert_eq!(optional_recognition_root(false, root), None);
         assert_eq!(optional_recognition_root(true, root), Some(root));
+    }
+
+    #[test]
+    fn ordinary_run_options_are_order_independent_and_record_is_opt_in() {
+        let empty: [OsString; 0] = [];
+        assert_eq!(parse_routine_run_options(&empty).unwrap(), (None, false));
+        let record = [OsString::from("--record")];
+        assert_eq!(parse_routine_run_options(&record).unwrap(), (None, true));
+        let profile_then_record = [
+            OsString::from("--profile"),
+            OsString::from("target"),
+            OsString::from("--record"),
+        ];
+        let (profile, recording) = parse_routine_run_options(&profile_then_record).unwrap();
+        assert_eq!(profile, Some(OsStr::new("target")));
+        assert!(recording);
+        let record_then_profile = [
+            OsString::from("--record"),
+            OsString::from("--profile"),
+            OsString::from("target"),
+        ];
+        assert!(parse_routine_run_options(&record_then_profile).is_ok());
+    }
+
+    #[test]
+    fn removed_or_duplicate_recording_options_are_rejected() {
+        for options in [
+            vec![OsString::from("--no-recording")],
+            vec![OsString::from("--record-attempts")],
+            vec![OsString::from("--record"), OsString::from("--record")],
+        ] {
+            assert!(parse_routine_run_options(&options).is_err());
+        }
     }
 
     #[test]

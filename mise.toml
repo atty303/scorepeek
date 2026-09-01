@@ -213,7 +213,7 @@ description = "Replay the complete active frame-first private regression suite"
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-root="${SCOREPEEK_CORPUS_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/private-corpus-v1}"
+root="${SCOREPEEK_CORPUS_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/private-corpus-v2}"
 exec cargo run --locked --quiet -p scorepeek-corpus -- corpus replay --store "$root"
 '''
 
@@ -222,16 +222,8 @@ description = "Evaluate registered temporal result policies over the active priv
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-root="${SCOREPEEK_CORPUS_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/private-corpus-v1}"
+root="${SCOREPEEK_CORPUS_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/private-corpus-v2}"
 exec cargo run --locked --quiet -p scorepeek-corpus -- temporal evaluate --store "$root" "$@"
-'''
-
-[tasks."corpus:diagnostic:replay-video"]
-description = "Generate a verified 10 Hz diagnostic from an auxiliary video"
-run = '''
-#!/usr/bin/env bash
-set -euo pipefail
-exec cargo run --locked --quiet -p scorepeek-corpus -- diagnostic replay-video "$@"
 '''
 
 [tasks."recognition:inspect"]
@@ -463,7 +455,7 @@ description = "Evaluate music-select dwell candidates against reviewed motion tr
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-root="${SCOREPEEK_CORPUS_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/private-corpus-v1}"
+root="${SCOREPEEK_CORPUS_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/private-corpus-v2}"
 catalog="${SCOREPEEK_CATALOG_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/catalog}"
 exec cargo run --locked --quiet -p scorepeek-corpus -- music-select dwell evaluate --store "$root" --catalog-store "$catalog" "$@"
 '''
@@ -473,7 +465,7 @@ description = "Evaluate music-select hold-and-replace candidates against correct
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-root="${SCOREPEEK_CORPUS_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/private-corpus-v1}"
+root="${SCOREPEEK_CORPUS_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/private-corpus-v2}"
 catalog="${SCOREPEEK_CATALOG_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/catalog}"
 exec cargo run --locked --quiet -p scorepeek-corpus -- music-select dwell evaluate-correctness --store "$root" --catalog-store "$catalog" "$@"
 '''

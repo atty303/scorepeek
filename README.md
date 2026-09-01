@@ -139,12 +139,12 @@ unverified configuration into a supported profile. Existing local profile schema
 recreated with setup. Start the watcher before or after the ordinary Gamescope/game session:
 
 ```text
-scorepeek run --profile bazzite-4k
+scorepeek run --profile bazzite-4k --record
 ```
 
 When exactly one profile exists, `scorepeek run` selects it automatically. Multiple profiles require
-`--profile NAME`. Recording is bounded and enabled by default; add `--no-recording` to suppress
-watcher status, diagnostic, and recognition artifact persistence. The watcher waits when no source
+`--profile NAME`. Recording is disabled by default; add `--record` to retain bounded watcher,
+diagnostic, recognition, event, and canonical replay artifacts. The watcher waits when no source
 exists, attaches only when exactly one Gamescope video source exists, and stays running across
 sequential Gamescope lifetimes. A unique startup source that is not ready for admission is retried at
 a bounded interval, so scorepeek can remain running while Gamescope and the game finish starting.
@@ -216,10 +216,10 @@ mise run capture:gamescope:binding:author -- --calibration /absolute/private/ses
 mise run capture:gamescope:test:result-recognition -- --binding /absolute/private/binding.json --binding-sha256 SHA256 --capture-generation 1 --duration-ms 30000 --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --canonical-layout-sha256 LAYOUT_SHA256 --catalog-sha256 CATALOG_SHA256 --recording enabled --recognition-artifact /absolute/private/new-recognition-evidence
 mise run run:gamescope -- --binding /absolute/private/binding.json --binding-sha256 SHA256 --capture-generation 1 --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --canonical-layout-sha256 LAYOUT_SHA256 --catalog-sha256 CATALOG_SHA256 --recording enabled --recognition-artifact /absolute/private/new-recognition-evidence
 mise run catalog:sync
-mise run corpus:diagnostic:replay-video -- --video /absolute/input.mkv --profile gamescope-4k --output /absolute/new-diagnostic
-cargo run --locked --quiet -p scorepeek-corpus -- diagnostic verify /absolute/new-diagnostic
-cargo run --locked --quiet -p scorepeek-corpus -- corpus import-diagnostic --store /absolute/private-corpus-v1 --diagnostic /absolute/new-diagnostic --review-draft /absolute/review.json
-cargo run --locked --quiet -p scorepeek-corpus -- review apply --store /absolute/private-corpus-v1 --draft /absolute/review.json --labels /absolute/operator-labels.json
+scorepeek run --profile gamescope-4k --record
+cargo run --locked --quiet -p scorepeek-corpus -- diagnostic verify /absolute/recorded-session
+cargo run --locked --quiet -p scorepeek-corpus -- corpus import-diagnostic --store /absolute/private-corpus-v2 --diagnostic /absolute/recorded-session --review-draft /absolute/review.json
+cargo run --locked --quiet -p scorepeek-corpus -- review apply --store /absolute/private-corpus-v2 --draft /absolute/review.json --labels /absolute/operator-labels-v5.json
 mise run corpus:test
 mise run corpus:temporal:evaluate
 mise run corpus:music-select:dwell:evaluate -- --reviewed /absolute/private/music-select-motion-reviewed.json --output /absolute/private/music-select-dwell-evaluation.json

@@ -6,12 +6,12 @@ use std::process::ExitCode;
 use scorepeek_corpus::{
     MusicSelectDwellPolicy, MusicSelectTemporalCandidatePolicy, TemporalEvaluationPolicy,
     apply_music_list_motion_review, apply_music_select_motion_review, apply_review,
-    author_numeric_dataset, author_numeric_sentinel, convert_v2_diagnostic,
-    evaluate_music_select_correctness, evaluate_music_select_dwell, evaluate_temporal_corpus,
-    import_diagnostic, inspect_music_list_row_observation_draft, inspect_review,
-    measure_music_list_motion, plan_music_list_motion_review, plan_music_select_motion_review,
-    render_synthetic_title_set, replay_corpus, replay_video, verify_diagnostic,
-    verify_music_list_motion, verify_music_list_row_observation_draft,
+    author_numeric_dataset, author_numeric_sentinel, evaluate_music_select_correctness,
+    evaluate_music_select_dwell, evaluate_temporal_corpus, import_diagnostic,
+    inspect_music_list_row_observation_draft, inspect_review, measure_music_list_motion,
+    plan_music_list_motion_review, plan_music_select_motion_review, render_synthetic_title_set,
+    replay_corpus, verify_diagnostic, verify_music_list_motion,
+    verify_music_list_row_observation_draft,
 };
 
 fn main() -> ExitCode {
@@ -313,56 +313,10 @@ fn run_frame_corpus(args: &[OsString]) -> Option<Result<(), String>> {
         return Some(run_temporal_evaluation(&args[2..]));
     }
     let result = match args {
-        [
-            diagnostic,
-            replay,
-            video_flag,
-            video,
-            profile_flag,
-            profile,
-            output_flag,
-            output,
-        ] if diagnostic == "diagnostic"
-            && replay == "replay-video"
-            && video_flag == "--video"
-            && profile_flag == "--profile"
-            && output_flag == "--output" =>
-        {
-            replay_video(
-                &PathBuf::from(video),
-                &profile.to_string_lossy(),
-                &PathBuf::from(output),
-            )
-            .map_err(|error| format!("video diagnostic replay failed: {error}"))
-            .and_then(|summary| print_json(&summary, "video diagnostic replay"))
-        }
         [diagnostic, verify, directory] if diagnostic == "diagnostic" && verify == "verify" => {
             verify_diagnostic(&PathBuf::from(directory))
                 .map_err(|error| format!("diagnostic verification failed: {error}"))
                 .and_then(|summary| print_json(&summary, "diagnostic verification"))
-        }
-        [
-            diagnostic,
-            convert,
-            diagnostic_flag,
-            diagnostic_directory,
-            recognition_flag,
-            recognition_directory,
-            output_flag,
-            output,
-        ] if diagnostic == "diagnostic"
-            && convert == "convert-v2"
-            && diagnostic_flag == "--diagnostic"
-            && recognition_flag == "--recognition"
-            && output_flag == "--output" =>
-        {
-            convert_v2_diagnostic(
-                &PathBuf::from(diagnostic_directory),
-                &PathBuf::from(recognition_directory),
-                &PathBuf::from(output),
-            )
-            .map_err(|error| format!("diagnostic conversion failed: {error}"))
-            .and_then(|summary| print_json(&summary, "diagnostic conversion"))
         }
         [
             corpus,
@@ -549,7 +503,7 @@ fn run_remaining(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "usage: scorepeek-corpus <diagnostic replay-video --video FILE --profile NAME --output DIRECTORY|diagnostic verify DIRECTORY|diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY|corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE|review show --draft FILE|review apply --store ROOT --draft FILE --labels FILE|corpus replay --store ROOT|temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|music-list motion review-plan --output PLAN ARTIFACT|music-list motion review-apply --output REQUEST ARTIFACT PLAN DECISIONS|music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE|music-select motion review-apply --output REVIEWED DRAFT DECISIONS|music-select dwell evaluate --store ROOT --catalog-store ROOT --reviewed REVIEWED --output REPORT [--policy DWELL_MS ...]|music-select dwell evaluate-correctness --store ROOT --catalog-store ROOT --reviewed REVIEWED --labels LABELS --output REPORT [--policy DWELL_MS:UNKNOWN_GRACE_MS ...]>"
+            "usage: scorepeek-corpus <diagnostic verify DIRECTORY|corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE|review show --draft FILE|review apply --store ROOT --draft FILE --labels FILE|corpus replay --store ROOT|temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|music-list motion review-plan --output PLAN ARTIFACT|music-list motion review-apply --output REQUEST ARTIFACT PLAN DECISIONS|music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE|music-select motion review-apply --output REVIEWED DRAFT DECISIONS|music-select dwell evaluate --store ROOT --catalog-store ROOT --reviewed REVIEWED --output REPORT [--policy DWELL_MS ...]|music-select dwell evaluate-correctness --store ROOT --catalog-store ROOT --reviewed REVIEWED --labels LABELS --output REPORT [--policy DWELL_MS:UNKNOWN_GRACE_MS ...]>"
                 .to_owned(),
         ),
     }
@@ -570,7 +524,7 @@ fn print_usage() {
 
 fn usage_text() -> String {
     format!(
-        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus diagnostic replay-video --video FILE --profile NAME --output DIRECTORY\n  scorepeek-corpus diagnostic verify DIRECTORY\n  scorepeek-corpus diagnostic convert-v2 --diagnostic DIRECTORY --recognition DIRECTORY --output DIRECTORY\n  scorepeek-corpus corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE\n  scorepeek-corpus review show --draft FILE\n  scorepeek-corpus review apply --store ROOT --draft FILE --labels FILE\n  scorepeek-corpus corpus replay --store ROOT\n  scorepeek-corpus temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]\n  scorepeek-corpus music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE\n  scorepeek-corpus music-select motion review-apply --output REVIEWED DRAFT DECISIONS\n  scorepeek-corpus music-select dwell evaluate --store ROOT --catalog-store ROOT --reviewed REVIEWED --output REPORT [--policy DWELL_MS ...]\n  scorepeek-corpus music-select dwell evaluate-correctness --store ROOT --catalog-store ROOT --reviewed REVIEWED --labels LABELS --output REPORT [--policy DWELL_MS:UNKNOWN_GRACE_MS ...]",
+        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus diagnostic verify DIRECTORY\n  scorepeek-corpus corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE\n  scorepeek-corpus review show --draft FILE\n  scorepeek-corpus review apply --store ROOT --draft FILE --labels FILE\n  scorepeek-corpus corpus replay --store ROOT\n  scorepeek-corpus temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]\n  scorepeek-corpus music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE\n  scorepeek-corpus music-select motion review-apply --output REVIEWED DRAFT DECISIONS\n  scorepeek-corpus music-select dwell evaluate --store ROOT --catalog-store ROOT --reviewed REVIEWED --output REPORT [--policy DWELL_MS ...]\n  scorepeek-corpus music-select dwell evaluate-correctness --store ROOT --catalog-store ROOT --reviewed REVIEWED --labels LABELS --output REPORT [--policy DWELL_MS:UNKNOWN_GRACE_MS ...]",
         env!("CARGO_PKG_VERSION")
     )
 }
