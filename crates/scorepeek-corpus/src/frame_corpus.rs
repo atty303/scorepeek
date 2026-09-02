@@ -3179,7 +3179,7 @@ fn replay_canonical_suite(
             run_id: format!("canonical-corpus-replay-{session_index}"),
             monotonic_start_ms: 0,
             resource: scorepeek::diagnostic_recording::DiagnosticResource {
-                program: "scorepeek-corpus",
+                program: "scorepeek",
                 version: env!("CARGO_PKG_VERSION"),
                 build_sha256: "0".repeat(64),
             },

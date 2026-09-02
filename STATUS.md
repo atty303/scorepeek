@@ -133,43 +133,50 @@ outside the checkpoint; implementation history belongs in Git.
 - The saved diagnostic is not a complete current semantic replay: retained-frame reevaluation does
   not reconstruct the original 10 Hz attempt timeline. Prospective target execution is therefore
   still required for end-to-end authority.
-- The existing private corpus and active suite were not changed. The operator plans to rebuild
-  them. New regression import accepts only complete joined-session v5 and label v5 with ordered
-  play-option truth; there is no active-suite legacy reader or converter. The current 34 RESULT episodes are a read-only play-option oracle covering
-  no option, every supported single option, and `RANDOM,LEGACY`, but do not advance the active
-  suite. Title-view/support calibration and wrong-event authority still require a reviewed,
-  session-disjoint replacement corpus with zero wrong joint acceptance and zero wrong events.
-- Read-only whole-panel evaluation over those 34 stable QOIs produced exact registered PP-OCR text
+- The legacy private corpus was explicitly retired and its 8,233,757,476-byte
+  `private-corpus-v1` root was deleted after the replacement replay passed. The active
+  `private-corpus-v2` generation is
+  `3d3ce51cc7fdd39b631222e345716fa8b9dfe16b6267a7202496db3ac999d44d`; it contains complete target
+  joined session `run-1788340551-36813279-1526584-session-1` and five operator-reviewed accepted
+  attempts for every SP difficulty of `Mind Mapping / Ryu☆`, including explicit ordered
+  play-option truth. There is no legacy reader, converter, or retained QOI corpus.
+- Historical read-only whole-panel evaluation over the retired corpus's 34 stable QOIs produced exact registered PP-OCR text
   for every displayed option. The set includes a positively blank panel, R-RANDOM, S-RANDOM,
   MIRROR, A-SCR, two LEGACY results, and `RANDOM,LEGACY`; the orange-marker count separated the
   blank panel (0) from every nonblank example (minimum 2,288).
-- The read-only active suite replay passes with 8 sessions, 34 episodes, 2,888 canonical frames,
-  and one negative frame when run against an isolated temporary activation of the rebound numeric
-  manifest. The temporary store was removed afterward; the operator's normal private store and
-  active corpus pointer were not changed.
+- The new active suite replay passes after full segment decode with one session, five attempts,
+  1,061 retained canonical frames, zero negative frames, and equal domain-event results in both the
+  one-worker and default-pool configurations. A one-worker run measured 88,075,495 microseconds of
+  text-batch wall time and 106,918,957 microseconds corpus wall time; the 31-worker default pool
+  reduced text-batch wall time to 27,697,130 microseconds but increased corpus wall time to
+  142,942,802 microseconds. The OCR speedup gate therefore remains failed: worker-pool sizing or
+  startup/contention cost must be corrected before claiming whole-corpus acceleration. A fresh
+  one-worker replay after deleting the legacy root and transfer staging still passed in
+  101,232,925 microseconds, proving the active v2 objects are independently replayable.
 - The shared-memory/deferred-verification recorder revision was built through the cargo-dist path and
   installed hash-first on `infinitas.lan` at `/home/atty/.local/bin/scorepeek`; local, transferred,
   and installed executable SHA-256 are all
-  `9be36525987e9565e30a41fe20f02763037778f25602d12115d2c267bfa09057`. `doctor` reports the
+  `9be36525987e9565e30a41fe20f02763037778f25602d12115d2c267bfa09057`. The retained target session
+  recorded 4,614 ticks and 1,061 canonical frames with zero frame-admission drops, zero field busy
+  skips, complete publication, and a 93,457,008-byte recorder memory high-water mark. `doctor`
+  reports the
   fixed-slot numeric model active with manifest
   `5e5b545d57a6197f4aaa6a863595f237cb19095903baa135960e4c257cda2137`. No scorepeek process was
   running before or after replacement, so no stale process required restart and no
-  `/proc/<pid>/exe` digest was available to compare. Target recording behavior and the
-  recording-ready lifecycle remain unverified.
+  `/proc/<pid>/exe` digest was available to compare. This session verifies target recording,
+  recording-ready publication, and import while the watcher remains active.
 - Public `/v1.sock` authority, target support, prospective target behavior, push, release, and model
   publication remain unverified boundaries.
-- The canonical layout digest changed when the play-option panel was added. A later target install
-  must publish/activate a private numeric manifest bound to the new layout digest while reusing the
-  same model bytes; this checkpoint does not mutate the target model store or installed binary.
+- The target already has the private numeric manifest bound to the current play-option layout. The
+  developer machine's normal numeric store remains on the previous manifest; corpus verification
+  used an isolated temporary activation of the current registered manifest without mutating that
+  normal store.
 
 ## Next executable task
 
-Record a fresh joined-session v5 run on the installed target revision and confirm no frame-admission
-loss, visible memory health, facts-only capture diagnostics, and
-`recording_ready` after session end. Import and operator-review label v5 truth, then compare the
-same suite with one text worker and the default pool. Require identical domain events plus reduced
-OCR and whole-suite wall time before claiming speedup. After that, publish a numeric manifest rebound
-to the new canonical-layout digest and explicitly install the binary plus
-manifest on the target. In the following prospective session, verify RESULT-close option payloads,
-six-job wall time/busy skips, 10 Hz raw cadence, confirmed-attempt ordering, one event per accepted
-attempt, and event drop zero before changing target or public-socket authority.
+Correct the offline worker-pool sizing or startup/contention cost exposed by the 31-worker replay,
+then rerun the same active v2 generation with one worker and the default pool. Require identical
+domain events plus reduced text-batch and whole-corpus wall time before claiming speedup. Continue
+rebuilding the v2 corpus with session-disjoint songs and failure attempts; require zero wrong joint
+acceptance, zero wrong events, and zero missing expected events before changing target or
+public-socket authority. Push and release remain separate explicit boundaries.
