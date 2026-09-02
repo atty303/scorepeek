@@ -190,12 +190,13 @@ the same latest path and song state shown by the TUI; the connection snapshot ca
 late clients.
 It is not the future accepted-event API at `$XDG_RUNTIME_DIR/scorepeek/v1.sock`.
 
-Ordinary recognition artifacts are stored per Gamescope session below
-`$XDG_STATE_HOME/scorepeek/recognition`; the bounded watcher status is stored at
-`$XDG_STATE_HOME/scorepeek/watcher-status.json`.
-Scorepeek keeps this store bounded at eight generations and 1 GiB; it does not delete an old run
-automatically. At capacity, recognition continues and only that session's artifact persistence is
-degraded. Remove an old run deliberately when more retained evidence is needed.
+With `--record`, in-progress components are grouped below
+`$XDG_STATE_HOME/scorepeek/recording-staging/<session-id>/` as `capture/`, `recognition/`,
+`events/`, and `canonical/`. Successful joined-session publication removes that complete staging
+tree. Failed publication retains it for diagnosis. Published sessions remain below
+`$XDG_STATE_HOME/scorepeek/diagnostic-sessions/<session-id>/`. At later session admission, each
+store reclaims oldest entries as needed to retain fewer than eight existing generations and leave
+4 GiB of its 8 GiB aggregate allowance available for the new session.
 
 ## Development
 

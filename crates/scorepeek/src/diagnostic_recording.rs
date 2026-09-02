@@ -471,7 +471,7 @@ pub struct DiagnosticDegradation {
 
 pub struct ActiveDiagnosticRecorder {
     directory: PathBuf,
-    store_lease: DiagnosticStoreLease,
+    store_lease: DiagnosticCapacityLease,
     policy: DiagnosticPolicy,
     frames: Vec<DiagnosticFrameArtifact>,
     facts: Option<BufWriter<File>>,
@@ -495,6 +495,46 @@ pub struct ActiveDiagnosticRecorder {
     maximum_artifact_end_ms: Option<u64>,
     maximum_frame_coverage_end_ms: Option<u64>,
     maximum_observation_gap_ms: Option<u64>,
+}
+
+enum DiagnosticCapacityLease {
+    Store(DiagnosticStoreLease),
+    Isolated {
+        managed_bytes: u64,
+        maximum_bytes: u64,
+    },
+}
+
+impl DiagnosticCapacityLease {
+    fn reserve(&mut self, additional_bytes: u64) -> Result<(), DiagnosticErrorType> {
+        match self {
+            Self::Store(lease) => lease.reserve(additional_bytes),
+            Self::Isolated {
+                managed_bytes,
+                maximum_bytes,
+            } => {
+                let total = managed_bytes
+                    .checked_add(additional_bytes)
+                    .ok_or(DiagnosticErrorType::CapacityExceeded)?;
+                if total > *maximum_bytes {
+                    return Err(DiagnosticErrorType::CapacityExceeded);
+                }
+                *managed_bytes = total;
+                Ok(())
+            }
+        }
+    }
+
+    fn release(&mut self, bytes: u64) {
+        match self {
+            Self::Store(lease) => lease.release(bytes),
+            Self::Isolated { managed_bytes, .. } => {
+                *managed_bytes = managed_bytes
+                    .checked_sub(bytes)
+                    .expect("only a successful reservation can be released");
+            }
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -640,10 +680,36 @@ impl DiagnosticRecorder {
         descriptor: &DiagnosticRunDescriptor,
         policy: DiagnosticPolicy,
     ) -> Self {
+        let directory_name = descriptor.run_id.clone();
+        Self::start_inner(root, &directory_name, descriptor, policy, true)
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn start_named(
+        root: &Path,
+        directory_name: &str,
+        descriptor: &DiagnosticRunDescriptor,
+        policy: DiagnosticPolicy,
+    ) -> Self {
+        Self::start_inner(root, directory_name, descriptor, policy, false)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn start_inner(
+        root: &Path,
+        directory_name: &str,
+        descriptor: &DiagnosticRunDescriptor,
+        policy: DiagnosticPolicy,
+        managed_store: bool,
+    ) -> Self {
         if !policy.enabled {
             return Self::Disabled;
         }
-        if !valid_policy(&policy) || !valid_descriptor(descriptor) {
+        if !valid_policy(&policy)
+            || !valid_descriptor(descriptor)
+            || !valid_run_directory_name(directory_name)
+        {
             return Self::Degraded(DiagnosticDegradation {
                 error_type: DiagnosticErrorType::InvalidConfiguration,
             });
@@ -670,17 +736,24 @@ impl DiagnosticRecorder {
                 error_type: DiagnosticErrorType::InvalidConfiguration,
             });
         };
-        let store_lease = match DiagnosticStoreLease::acquire_for_run(
-            root,
-            &descriptor.run_id,
-            start_bytes.len() as u64,
-        ) {
-            Ok(lease) => lease,
-            Err(error_type) => {
-                return Self::Degraded(DiagnosticDegradation { error_type });
+        let store_lease = if managed_store {
+            match DiagnosticStoreLease::acquire_for_run(
+                root,
+                &descriptor.run_id,
+                start_bytes.len() as u64,
+            ) {
+                Ok(lease) => DiagnosticCapacityLease::Store(lease),
+                Err(error_type) => {
+                    return Self::Degraded(DiagnosticDegradation { error_type });
+                }
+            }
+        } else {
+            DiagnosticCapacityLease::Isolated {
+                managed_bytes: start_bytes.len() as u64,
+                maximum_bytes: policy.maximum_run_bytes,
             }
         };
-        let directory = root.join(&descriptor.run_id);
+        let directory = root.join(directory_name);
         let mut builder = DirBuilder::new();
         builder.mode(0o700);
         if builder.create(&directory).is_err() {
@@ -1337,6 +1410,14 @@ fn valid_descriptor(descriptor: &DiagnosticRunDescriptor) -> bool {
         && valid_binding(&descriptor.binding)
 }
 
+fn valid_run_directory_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
 fn valid_binding(binding: &DiagnosticBinding) -> bool {
     binding.capture_generation > 0
         && [
@@ -1680,6 +1761,26 @@ mod tests {
             None
         );
         assert_eq!(root.path().read_dir().unwrap().count(), 0);
+    }
+
+    #[test]
+    fn named_recording_directory_keeps_the_session_run_id() {
+        let root = tempfile::tempdir().unwrap();
+        let run = descriptor("session-1");
+        let recorder = DiagnosticRecorder::start_named(
+            root.path(),
+            "capture",
+            &run,
+            DiagnosticPolicy::default(),
+        );
+        let outcome = recorder.finish(DiagnosticRunStatus::Success, 1);
+
+        assert_eq!(outcome.completeness, Some(DiagnosticCompleteness::Complete));
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.path().join("capture/run.json")).unwrap())
+                .unwrap();
+        assert_eq!(value["run_id"], "session-1");
+        assert!(!root.path().join("session-1").exists());
     }
 
     #[test]

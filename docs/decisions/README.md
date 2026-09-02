@@ -319,6 +319,9 @@ authoritative.
 - [ADR 0105: Require explicit replay worker overrides](0105-require-explicit-replay-worker-overrides.md)
   removes the hidden single-worker environment override so option-free live and replay execution
   always use their CPU-derived production policies.
+- [ADR 0106: Group recording staging by session](0106-group-recording-staging-by-session.md)
+  groups temporary capture, recognition, event, and canonical components below one session tree,
+  removes that tree after publication, and drops the unread watcher-status file.
 
 ## Historical
 

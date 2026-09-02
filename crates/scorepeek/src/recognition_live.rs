@@ -306,6 +306,25 @@ impl RecognitionSession {
         })
     }
 
+    pub(crate) fn start_named(
+        root: &Path,
+        directory_name: &str,
+        descriptor: DiagnosticRunDescriptor,
+        policy: DiagnosticPolicy,
+    ) -> Result<Self, RecognitionSessionError> {
+        let binding_sha256 = validate_descriptor(&descriptor)?;
+        let run_id = descriptor.run_id.clone();
+        let bridge = DiagnosticBridge::start_named(root, directory_name, descriptor, policy);
+        Ok(Self {
+            run_binding: Arc::new(RecognitionRunBinding {
+                run_id,
+                binding_sha256,
+            }),
+            bridge,
+            last_sequence: None,
+        })
+    }
+
     /// Inspects one frame after the independent diagnostic sampler sees the same owner.
     ///
     /// # Errors

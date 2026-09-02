@@ -272,6 +272,19 @@ impl DiagnosticBridge {
         Self::with_worker(descriptor, worker, retention)
     }
 
+    #[must_use]
+    pub(crate) fn start_named(
+        root: &Path,
+        directory_name: &str,
+        descriptor: DiagnosticRunDescriptor,
+        policy: DiagnosticPolicy,
+    ) -> Self {
+        let retention = policy.retention;
+        let worker =
+            DiagnosticWorkerHandle::start_named(root, directory_name, descriptor.clone(), policy);
+        Self::with_worker(descriptor, worker, retention)
+    }
+
     /// Offers canonical evidence before recognition outcomes are known.
     ///
     /// The offer never waits for queue capacity or diagnostic I/O. A binding mismatch is recorded

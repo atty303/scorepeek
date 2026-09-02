@@ -87,6 +87,11 @@ struct DiagnosticFinishRequest {
     timeout: Duration,
 }
 
+struct DiagnosticRecordingLocation<'a> {
+    root: &'a std::path::Path,
+    directory_name: Option<&'a str>,
+}
+
 pub struct DiagnosticWorkerHandle {
     state: DiagnosticWorkerState,
     sample_interval_ms: u64,
@@ -115,6 +120,24 @@ impl DiagnosticWorkerHandle {
             DEFAULT_DIAGNOSTIC_QUEUE_CAPACITY,
             Some(production_supervisor()),
             DiagnosticWorkerHooks::default(),
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn start_named(
+        root: &std::path::Path,
+        directory_name: &str,
+        descriptor: DiagnosticRunDescriptor,
+        policy: DiagnosticPolicy,
+    ) -> Self {
+        Self::start_inner_with_directory(
+            root.to_owned(),
+            descriptor,
+            policy,
+            DEFAULT_DIAGNOSTIC_QUEUE_CAPACITY,
+            Some(production_supervisor()),
+            DiagnosticWorkerHooks::default(),
+            Some(directory_name.to_owned()),
         )
     }
 
@@ -160,6 +183,20 @@ impl DiagnosticWorkerHandle {
         supervisor: Option<&Mutex<Weak<()>>>,
         hooks: DiagnosticWorkerHooks,
     ) -> Self {
+        Self::start_inner_with_directory(
+            root, descriptor, policy, capacity, supervisor, hooks, None,
+        )
+    }
+
+    fn start_inner_with_directory(
+        root: std::path::PathBuf,
+        descriptor: DiagnosticRunDescriptor,
+        policy: DiagnosticPolicy,
+        capacity: usize,
+        supervisor: Option<&Mutex<Weak<()>>>,
+        hooks: DiagnosticWorkerHooks,
+        directory_name: Option<String>,
+    ) -> Self {
         let run_monotonic_start_ms = descriptor.monotonic_start_ms;
         if !policy.enabled {
             return Self::with_state(
@@ -202,7 +239,10 @@ impl DiagnosticWorkerHandle {
                 run_worker(
                     &frame_receiver,
                     &fact_receiver,
-                    &root,
+                    &DiagnosticRecordingLocation {
+                        root: &root,
+                        directory_name: directory_name.as_deref(),
+                    },
                     &descriptor,
                     policy,
                     &worker_cancellation,
@@ -653,13 +693,16 @@ fn finish_active(
 fn run_worker(
     frame_receiver: &Receiver<DiagnosticWorkerMessage>,
     fact_receiver: &Receiver<DiagnosticWorkerMessage>,
-    root: &std::path::Path,
+    location: &DiagnosticRecordingLocation<'_>,
     descriptor: &DiagnosticRunDescriptor,
     policy: DiagnosticPolicy,
     cancellation: &AtomicBool,
     supervisor_token: &mut Option<Arc<()>>,
 ) {
-    let mut recorder = DiagnosticRecorder::start(root, descriptor, policy);
+    let mut recorder = match location.directory_name {
+        Some(name) => DiagnosticRecorder::start_named(location.root, name, descriptor, policy),
+        None => DiagnosticRecorder::start(location.root, descriptor, policy),
+    };
     loop {
         let message = match fact_receiver.try_recv() {
             Ok(message) => message,

@@ -16,12 +16,6 @@ use crate::{calibration_marker, capture_calibration};
 
 const MAX_PROFILE_BYTES: u64 = 64 * 1024;
 const PROFILE_STAGING_SUFFIX: &str = ".scorepeek-staging";
-const MAX_RECOGNITION_GENERATIONS: usize = 8;
-const MAX_RECOGNITION_AGGREGATE_BYTES: u64 = 1024 * 1024 * 1024;
-const MAX_RECOGNITION_RUN_BYTES: u64 = 273 * 1024 * 1024;
-const MAX_RUN_EVENT_GENERATIONS: usize = 8;
-const MAX_RUN_EVENT_AGGREGATE_BYTES: u64 = 1024 * 1024 * 1024;
-const MAX_RUN_EVENT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_JOINED_SESSION_GENERATIONS: usize = 8;
 const MAX_JOINED_SESSION_AGGREGATE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_JOINED_SESSION_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -94,13 +88,31 @@ pub fn select_for_run(name: Option<&OsStr>) -> Result<SelectedProfile, String> {
 }
 
 pub struct RoutineStatePaths {
-    pub diagnostic_root: PathBuf,
     pub diagnostic_session_store: PathBuf,
-    pub recognition_store: PathBuf,
-    pub run_event_store: PathBuf,
-    pub watcher_status: PathBuf,
+    recording_staging_store: PathBuf,
     pub recording_enabled: bool,
     _run_lock: File,
+}
+
+pub struct RoutineSessionPaths {
+    pub root: PathBuf,
+    pub capture_root: PathBuf,
+    pub capture_directory: PathBuf,
+    pub recognition_directory: PathBuf,
+}
+
+impl RoutineSessionPaths {
+    pub fn cleanup(&self) -> Result<(), String> {
+        let parent = self
+            .root
+            .parent()
+            .ok_or_else(|| "recording staging session has no parent".to_owned())?;
+        fs::remove_dir_all(&self.root)
+            .map_err(|error| format!("recording staging cleanup failed: {error}"))?;
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("recording staging cleanup sync failed: {error}"))
+    }
 }
 
 pub fn state_paths(recording_enabled: bool) -> Result<RoutineStatePaths, String> {
@@ -122,129 +134,23 @@ pub fn state_paths(recording_enabled: bool) -> Result<RoutineStatePaths, String>
     run_lock
         .try_lock()
         .map_err(|error| format!("ordinary run lock could not be acquired: {error}"))?;
-    let recognition = scorepeek.join("recognition");
-    let run_events = scorepeek.join("run-events");
+    let diagnostic_session_store = scorepeek.join("diagnostic-sessions");
+    let recording_staging_store = scorepeek.join("recording-staging");
     if recording_enabled {
-        ensure_directory_tree(&recognition)?;
-        ensure_directory_tree(&run_events)?;
-        ensure_directory_tree(&scorepeek.join("diagnostic-sessions"))?;
-        ensure_directory_tree(&scorepeek.join("canonical-recordings"))?;
-        ensure_joined_session_capacity(&scorepeek.join("diagnostic-sessions"))?;
+        ensure_directory_tree(&diagnostic_session_store)?;
+        ensure_directory_tree(&recording_staging_store)?;
+        ensure_session_store_capacity(&diagnostic_session_store, "joined diagnostic")?;
+        ensure_session_store_capacity(&recording_staging_store, "recording staging")?;
     }
     Ok(RoutineStatePaths {
-        diagnostic_root: scorepeek.join("diagnostics"),
-        diagnostic_session_store: scorepeek.join("diagnostic-sessions"),
-        recognition_store: recognition,
-        run_event_store: run_events,
-        watcher_status: scorepeek.join("watcher-status.json"),
+        diagnostic_session_store,
+        recording_staging_store,
         recording_enabled,
         _run_lock: run_lock,
     })
 }
 
-fn ensure_joined_session_capacity(root: &Path) -> Result<(), String> {
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(root)
-        .map_err(|error| format!("joined diagnostic store could not be read: {error}"))?
-    {
-        let entry = entry.map_err(|error| format!("joined diagnostic entry failed: {error}"))?;
-        let metadata = entry
-            .path()
-            .symlink_metadata()
-            .map_err(|error| format!("joined diagnostic entry inspection failed: {error}"))?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return Err("joined diagnostic store contains an unexpected entry".to_owned());
-        }
-        entries.push((
-            metadata
-                .modified()
-                .map_err(|error| format!("joined diagnostic mtime failed: {error}"))?,
-            entry.path(),
-            directory_bytes(&entry.path())?,
-        ));
-    }
-    entries.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
-    let mut bytes = entries.iter().try_fold(0u64, |total, entry| {
-        total
-            .checked_add(entry.2)
-            .ok_or_else(|| "joined diagnostic byte count overflowed".to_owned())
-    })?;
-    while entries.len() >= MAX_JOINED_SESSION_GENERATIONS
-        || bytes > MAX_JOINED_SESSION_AGGREGATE_BYTES - MAX_JOINED_SESSION_BYTES
-    {
-        let (_, oldest, removed_bytes) = entries.remove(0);
-        fs::remove_dir_all(&oldest)
-            .map_err(|error| format!("old joined diagnostic removal failed: {error}"))?;
-        bytes = bytes.saturating_sub(removed_bytes);
-    }
-    Ok(())
-}
-
-fn directory_bytes(root: &Path) -> Result<u64, String> {
-    let mut total = 0u64;
-    let mut pending = vec![root.to_owned()];
-    while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(&directory)
-            .map_err(|error| format!("joined diagnostic directory could not be read: {error}"))?
-        {
-            let entry = entry.map_err(|error| format!("joined diagnostic file failed: {error}"))?;
-            let metadata = entry.path().symlink_metadata().map_err(|error| {
-                format!("joined diagnostic file could not be inspected: {error}")
-            })?;
-            if metadata.file_type().is_symlink() {
-                return Err("joined diagnostic session contains a symlink".to_owned());
-            }
-            if metadata.is_dir() {
-                pending.push(entry.path());
-            } else if metadata.is_file() {
-                total = total
-                    .checked_add(metadata.len())
-                    .ok_or_else(|| "joined diagnostic byte count overflowed".to_owned())?;
-            } else {
-                return Err("joined diagnostic session contains a special file".to_owned());
-            }
-        }
-    }
-    Ok(total)
-}
-
-impl RoutineStatePaths {
-    pub fn recognition_root(&self, session_id: &str) -> Result<Option<PathBuf>, String> {
-        if !self.recording_enabled {
-            return Ok(None);
-        }
-        ensure_recognition_capacity(&self.recognition_store)?;
-        Ok(Some(self.recognition_store.join(session_id)))
-    }
-}
-
-fn ensure_recognition_capacity(root: &Path) -> Result<(), String> {
-    ensure_component_capacity(
-        root,
-        "recognition artifact",
-        MAX_RECOGNITION_GENERATIONS,
-        MAX_RECOGNITION_AGGREGATE_BYTES,
-        MAX_RECOGNITION_RUN_BYTES,
-    )
-}
-
-pub(crate) fn ensure_run_event_capacity(root: &Path) -> Result<(), String> {
-    ensure_component_capacity(
-        root,
-        "run event artifact",
-        MAX_RUN_EVENT_GENERATIONS,
-        MAX_RUN_EVENT_AGGREGATE_BYTES,
-        MAX_RUN_EVENT_BYTES,
-    )
-}
-
-fn ensure_component_capacity(
-    root: &Path,
-    label: &str,
-    maximum_generations: usize,
-    maximum_aggregate_bytes: u64,
-    maximum_run_bytes: u64,
-) -> Result<(), String> {
+fn ensure_session_store_capacity(root: &Path, label: &str) -> Result<(), String> {
     let mut entries = Vec::new();
     for entry in
         fs::read_dir(root).map_err(|error| format!("{label} store could not be read: {error}"))?
@@ -252,31 +158,18 @@ fn ensure_component_capacity(
         let entry = entry.map_err(|error| format!("{label} entry failed: {error}"))?;
         let metadata = entry
             .path()
-            .metadata()
-            .map_err(|error| format!("{label} entry could not be inspected: {error}"))?;
-        if !metadata.is_dir() {
+            .symlink_metadata()
+            .map_err(|error| format!("{label} entry inspection failed: {error}"))?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
             return Err(format!("{label} store contains an unexpected entry"));
         }
-        let modified = metadata
-            .modified()
-            .map_err(|error| format!("{label} mtime failed: {error}"))?;
-        let mut entry_bytes = 0u64;
-        for file in fs::read_dir(entry.path())
-            .map_err(|error| format!("{label} could not be read: {error}"))?
-        {
-            let file = file.map_err(|error| format!("{label} file failed: {error}"))?;
-            let metadata = file
-                .path()
-                .metadata()
-                .map_err(|error| format!("{label} file could not be inspected: {error}"))?;
-            if !metadata.is_file() {
-                return Err(format!("{label} contains an unexpected entry"));
-            }
-            entry_bytes = entry_bytes
-                .checked_add(metadata.len())
-                .ok_or_else(|| format!("{label} byte count overflowed"))?;
-        }
-        entries.push((modified, entry.path(), entry_bytes));
+        entries.push((
+            metadata
+                .modified()
+                .map_err(|error| format!("{label} mtime failed: {error}"))?,
+            entry.path(),
+            directory_bytes(&entry.path(), label)?,
+        ));
     }
     entries.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
     let mut bytes = entries.iter().try_fold(0u64, |total, entry| {
@@ -284,18 +177,97 @@ fn ensure_component_capacity(
             .checked_add(entry.2)
             .ok_or_else(|| format!("{label} byte count overflowed"))
     })?;
-    while entries.len() >= maximum_generations
-        || bytes > maximum_aggregate_bytes - maximum_run_bytes
+    while entries.len() >= MAX_JOINED_SESSION_GENERATIONS
+        || bytes > MAX_JOINED_SESSION_AGGREGATE_BYTES - MAX_JOINED_SESSION_BYTES
     {
         let (_, oldest, removed_bytes) = entries.remove(0);
         fs::remove_dir_all(&oldest)
             .map_err(|error| format!("old {label} removal failed: {error}"))?;
-        bytes = bytes.saturating_sub(removed_bytes);
         File::open(root)
             .and_then(|directory| directory.sync_all())
             .map_err(|error| format!("{label} store sync failed: {error}"))?;
+        bytes = bytes.saturating_sub(removed_bytes);
     }
     Ok(())
+}
+
+fn directory_bytes(root: &Path, label: &str) -> Result<u64, String> {
+    let mut total = 0u64;
+    let mut pending = vec![root.to_owned()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory)
+            .map_err(|error| format!("{label} directory could not be read: {error}"))?
+        {
+            let entry = entry.map_err(|error| format!("{label} file failed: {error}"))?;
+            let metadata = entry
+                .path()
+                .symlink_metadata()
+                .map_err(|error| format!("{label} file could not be inspected: {error}"))?;
+            if metadata.file_type().is_symlink() {
+                return Err(format!("{label} session contains a symlink"));
+            }
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else if metadata.is_file() {
+                total = total
+                    .checked_add(metadata.len())
+                    .ok_or_else(|| format!("{label} byte count overflowed"))?;
+            } else {
+                return Err(format!("{label} session contains a special file"));
+            }
+        }
+    }
+    Ok(total)
+}
+
+impl RoutineStatePaths {
+    pub fn recording_staging_store(&self) -> Option<PathBuf> {
+        self.recording_enabled
+            .then(|| self.recording_staging_store.clone())
+    }
+
+    pub fn start_recording_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<RoutineSessionPaths>, String> {
+        if !self.recording_enabled {
+            return Ok(None);
+        }
+        ensure_session_store_capacity(&self.recording_staging_store, "recording staging")?;
+        create_recording_session(&self.recording_staging_store, session_id).map(Some)
+    }
+}
+
+fn create_recording_session(root: &Path, session_id: &str) -> Result<RoutineSessionPaths, String> {
+    create_recording_session_with_sync(root, session_id, sync_directory_component)
+}
+
+fn create_recording_session_with_sync(
+    root: &Path,
+    session_id: &str,
+    sync: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<RoutineSessionPaths, String> {
+    let session_root = root.join(session_id);
+    let mut builder = fs::DirBuilder::new();
+    builder.mode(0o700);
+    builder
+        .create(&session_root)
+        .map_err(|error| format!("recording staging session creation failed: {error}"))?;
+    if let Err(error) = sync(&session_root) {
+        let _ = fs::remove_dir(&session_root);
+        let _ = File::open(root).and_then(|directory| directory.sync_all());
+        return Err(error);
+    }
+    Ok(recording_session_paths(session_root))
+}
+
+fn recording_session_paths(root: PathBuf) -> RoutineSessionPaths {
+    RoutineSessionPaths {
+        capture_root: root.clone(),
+        capture_directory: root.join("capture"),
+        recognition_directory: root.join("recognition"),
+        root,
+    }
 }
 
 fn setup_gamescope(name: &OsStr, arguments: &[OsString], bundle: &Path) -> Result<(), String> {
@@ -654,9 +626,10 @@ fn sha256(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_RECOGNITION_GENERATIONS, MAX_RUN_EVENT_GENERATIONS, ensure_directory_tree,
-        ensure_recognition_capacity, ensure_run_event_capacity, gamescope_arguments,
-        load_profiles_from, profile_name, publish_create_only, read_profile,
+        MAX_JOINED_SESSION_GENERATIONS, create_recording_session,
+        create_recording_session_with_sync, ensure_directory_tree, ensure_session_store_capacity,
+        gamescope_arguments, load_profiles_from, profile_name, publish_create_only, read_profile,
+        recording_session_paths,
     };
     use std::ffi::{OsStr, OsString};
     use std::os::unix::fs::symlink;
@@ -799,34 +772,61 @@ mod tests {
     }
 
     #[test]
-    fn recognition_store_reclaims_the_oldest_generation_at_capacity() {
+    fn session_store_reclaims_the_oldest_generation_at_capacity() {
         let temporary = tempfile::tempdir().unwrap();
-        for index in 0..MAX_RECOGNITION_GENERATIONS {
+        for index in 0..MAX_JOINED_SESSION_GENERATIONS {
             let generation = temporary.path().join(format!("run-{index}"));
             std::fs::create_dir(&generation).unwrap();
             std::fs::write(generation.join("manifest.json"), b"complete").unwrap();
         }
-        ensure_recognition_capacity(temporary.path()).unwrap();
+        ensure_session_store_capacity(temporary.path(), "test session").unwrap();
         assert_eq!(
             std::fs::read_dir(temporary.path()).unwrap().count(),
-            MAX_RECOGNITION_GENERATIONS - 1
+            MAX_JOINED_SESSION_GENERATIONS - 1
         );
         assert!(!temporary.path().join("run-0").exists());
     }
 
     #[test]
-    fn run_event_store_reclaims_the_oldest_generation_at_capacity() {
+    fn recording_staging_is_grouped_by_session_then_purpose() {
+        let paths = recording_session_paths(std::path::PathBuf::from(
+            "/state/scorepeek/recording-staging/session-1",
+        ));
+        assert_eq!(paths.capture_root, paths.root);
+        assert_eq!(paths.capture_directory, paths.root.join("capture"));
+        assert_eq!(paths.recognition_directory, paths.root.join("recognition"));
+    }
+
+    #[test]
+    fn recording_staging_cleanup_removes_the_complete_session_tree() {
         let temporary = tempfile::tempdir().unwrap();
-        for index in 0..MAX_RUN_EVENT_GENERATIONS {
-            let generation = temporary.path().join(format!("run-{index}"));
-            std::fs::create_dir(&generation).unwrap();
-            std::fs::write(generation.join("manifest.json"), b"partial").unwrap();
+        let paths = create_recording_session(temporary.path(), "session-1").unwrap();
+        let root = paths.root.clone();
+        for purpose in ["capture", "recognition", "events", "canonical"] {
+            std::fs::create_dir(root.join(purpose)).unwrap();
+            std::fs::write(root.join(purpose).join("artifact"), b"evidence").unwrap();
         }
-        ensure_run_event_capacity(temporary.path()).unwrap();
-        assert_eq!(
-            std::fs::read_dir(temporary.path()).unwrap().count(),
-            MAX_RUN_EVENT_GENERATIONS - 1
-        );
-        assert!(!temporary.path().join("run-0").exists());
+
+        paths.cleanup().unwrap();
+
+        assert!(!root.exists());
+        assert!(temporary.path().is_dir());
+
+        let retried = create_recording_session(temporary.path(), "session-1").unwrap();
+        assert_eq!(retried.root, root);
+    }
+
+    #[test]
+    fn recording_staging_creation_rolls_back_after_sync_failure() {
+        let temporary = tempfile::tempdir().unwrap();
+        let Err(error) = create_recording_session_with_sync(temporary.path(), "session-1", |_| {
+            Err("injected session sync failure".to_owned())
+        }) else {
+            panic!("injected sync failure was accepted");
+        };
+
+        assert_eq!(error, "injected session sync failure");
+        assert!(!temporary.path().join("session-1").exists());
+        assert!(create_recording_session(temporary.path(), "session-1").is_ok());
     }
 }

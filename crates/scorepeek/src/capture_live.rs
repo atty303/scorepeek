@@ -665,6 +665,7 @@ pub struct GamescopeDiagnosticHandoffGateConfig<'a> {
     pub policy: DiagnosticPolicy,
     pub duration_ms: u64,
     pub diagnostic_root: &'a std::path::Path,
+    pub diagnostic_directory_name: Option<&'a str>,
     pub expected_source_node_id: Option<u32>,
 }
 
@@ -948,7 +949,6 @@ pub fn run_gamescope_field_observation_gate(
         canonical_recorder,
         canonical_recording_start_failed: _,
         recording_memory_limit: _,
-        recognition_artifact_root: _,
         mut sink,
     } = match start_field_observation_gate(config) {
         Ok(started) => started,
@@ -1050,7 +1050,6 @@ pub fn run_gamescope_live_session(
         canonical_recorder,
         canonical_recording_start_failed,
         recording_memory_limit,
-        recognition_artifact_root,
         mut sink,
     } = match start_field_observation_gate(config) {
         Ok(started) => started,
@@ -1189,25 +1188,6 @@ pub fn run_gamescope_live_session(
         }
         canonical_recording_completeness = Some(outcome.completeness);
         canonical_recording_manifest_sha256.clone_from(&outcome.manifest_sha256);
-        if let Some(root) = recognition_artifact_root.as_deref() {
-            let mut publication_failed = false;
-            if let Ok(entries) = std::fs::read_dir(&outcome.directory) {
-                for entry in entries.flatten() {
-                    let destination = root.join(entry.file_name());
-                    if std::fs::hard_link(entry.path(), destination).is_err() {
-                        publication_failed = true;
-                        canonical_recording_completeness =
-                            Some(CanonicalRecordingCompleteness::Partial);
-                    }
-                }
-            } else {
-                publication_failed = true;
-                canonical_recording_completeness = Some(CanonicalRecordingCompleteness::Partial);
-            }
-            if !publication_failed {
-                let _ = std::fs::remove_dir_all(&outcome.directory);
-            }
-        }
     }
     let stop_reason = if source_ended {
         LiveSessionStopReason::SourceEnded
@@ -1249,7 +1229,6 @@ struct StartedFieldObservationGate {
     canonical_recorder: Option<CanonicalRecordingWorker>,
     canonical_recording_start_failed: bool,
     recording_memory_limit: crate::canonical_recording::RecordingMemoryLimit,
-    recognition_artifact_root: Option<std::path::PathBuf>,
     sink: BoundedDiagnosticSink,
 }
 
@@ -1338,13 +1317,28 @@ fn start_field_observation_gate(
             sink,
         )));
     }
-    let session = match FieldObservationSession::start_registered(
-        config.handoff.diagnostic_root,
-        config.handoff.descriptor,
-        config.handoff.policy,
-        config.catalog_root,
-        config.bundle_root,
-        crate::recognition_live::text_observer_pool::RecognitionExecutionMode::Live,
+    let session = match config.handoff.diagnostic_directory_name.map_or_else(
+        || {
+            FieldObservationSession::start_registered(
+                config.handoff.diagnostic_root,
+                config.handoff.descriptor.clone(),
+                config.handoff.policy.clone(),
+                config.catalog_root,
+                config.bundle_root,
+                crate::recognition_live::text_observer_pool::RecognitionExecutionMode::Live,
+            )
+        },
+        |directory_name| {
+            FieldObservationSession::start_registered_named(
+                config.handoff.diagnostic_root,
+                directory_name,
+                config.handoff.descriptor.clone(),
+                config.handoff.policy.clone(),
+                config.catalog_root,
+                config.bundle_root,
+                crate::recognition_live::text_observer_pool::RecognitionExecutionMode::Live,
+            )
+        },
     ) {
         Ok(session) => session,
         Err(error) => {
@@ -1380,30 +1374,19 @@ fn start_field_observation_gate(
                     )
                 }
             });
-    let (canonical_recorder, canonical_recording_start_failed) =
-        if let Some(recognition_root) = config.recognition_artifact_root {
-            let recorder = recognition_root
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(|session_id| {
-                    recognition_root
-                        .parent()
-                        .and_then(std::path::Path::parent)
-                        .map(|root| {
-                            CanonicalRecordingWorker::start(
-                                &root.join("canonical-recordings"),
-                                session_id,
-                                config.recording_memory_limit,
-                            )
-                        })
-                });
-            match recorder {
-                Some(Ok(recorder)) => (Some(recorder), false),
-                Some(Err(_)) | None => (None, true),
-            }
-        } else {
-            (None, artifact_requested)
-        };
+    let (canonical_recorder, canonical_recording_start_failed) = if let Some(recognition_root) =
+        config.recognition_artifact_root
+    {
+        let recorder = recognition_root.parent().map(|root| {
+            CanonicalRecordingWorker::start_named(root, "canonical", config.recording_memory_limit)
+        });
+        match recorder {
+            Some(Ok(recorder)) => (Some(recorder), false),
+            Some(Err(_)) | None => (None, true),
+        }
+    } else {
+        (None, artifact_requested)
+    };
     Ok(StartedFieldObservationGate {
         lease,
         session,
@@ -1412,9 +1395,6 @@ fn start_field_observation_gate(
         canonical_recorder,
         canonical_recording_start_failed,
         recording_memory_limit: config.recording_memory_limit,
-        recognition_artifact_root: config
-            .recognition_artifact_root
-            .map(std::path::Path::to_path_buf),
         sink,
     })
 }
@@ -3376,6 +3356,7 @@ mod tests {
                 policy: DiagnosticPolicy::default(),
                 duration_ms: 1_000,
                 diagnostic_root: root.path(),
+                diagnostic_directory_name: None,
                 expected_source_node_id: None,
             });
         let encoded = serde_json::to_string(&report).unwrap();
@@ -3416,6 +3397,7 @@ mod tests {
                 policy: DiagnosticPolicy::default(),
                 duration_ms: 1_000,
                 diagnostic_root: root.path(),
+                diagnostic_directory_name: None,
                 expected_source_node_id: None,
             });
         let encoded = serde_json::to_string(&report).unwrap();

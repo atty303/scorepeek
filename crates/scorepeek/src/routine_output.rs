@@ -2348,10 +2348,14 @@ impl RoutineOutput {
                 self.play_options = PlayOptionsEpisodeAccumulator::default();
                 self.completed_event_artifact = None;
                 self.clear_resolver_field_observation()?;
-                self.event_worker =
-                    self.event_store.as_deref().zip(session_id.as_deref()).map(
-                        |(store, session_id)| RunEventArtifactWorker::start(store, session_id),
-                    );
+                self.event_worker = self.event_store.as_deref().zip(session_id.as_deref()).map(
+                    |(store, session_id)| {
+                        RunEventArtifactWorker::start_at(
+                            store.join(session_id).join("events"),
+                            session_id,
+                        )
+                    },
+                );
                 self.publish_one(event)
             }
             RunEventKind::WatcherStopped { .. } => self.publish_watcher_stopped(event),

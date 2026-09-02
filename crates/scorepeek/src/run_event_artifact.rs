@@ -51,16 +51,7 @@ struct Manifest<'a> {
 }
 
 impl RunEventArtifactWorker {
-    pub fn start(store: &Path, run_id: &str) -> Self {
-        let root = store.join(run_id);
-        if let Err(error) = crate::local_profiles::ensure_run_event_capacity(store) {
-            return Self {
-                sender: None,
-                root,
-                dropped: 0,
-                startup_error: Some(error),
-            };
-        }
+    pub(crate) fn start_at(root: PathBuf, run_id: &str) -> Self {
         let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
         let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
         let worker_root = root.clone();
@@ -280,7 +271,7 @@ mod tests {
     #[test]
     fn retains_ordered_events_and_publishes_a_complete_manifest() {
         let temporary = tempfile::tempdir().unwrap();
-        let mut worker = RunEventArtifactWorker::start(temporary.path(), "run-1");
+        let mut worker = RunEventArtifactWorker::start_at(temporary.path().join("events"), "run-1");
         worker.try_record(&serde_json::json!({"sequence":1}));
         worker.try_record(&serde_json::json!({"sequence":2}));
         let outcome = worker.finish();

@@ -618,20 +618,7 @@ fn run_routine_live_session(
         invocation_id.clone(),
         selected.binding.capture_profile_sha256().to_owned(),
         recording_enabled,
-        recording_enabled.then(|| state.run_event_store.clone()),
-    )?;
-    let mut status = routine_watcher::StatusRecorder::new(
-        recording_enabled.then(|| state.watcher_status.clone()),
-        invocation_id.clone(),
-    );
-    let mut status_failed = false;
-    record_watcher_status(
-        &mut status,
-        routine_watcher::WatcherState::Starting,
-        None,
-        None,
-        &mut status_failed,
-        &mut output,
+        state.recording_staging_store(),
     )?;
     output.publish(&routine_output::RunEvent {
         schema: "scorepeek-run-event-v6".to_owned(),
@@ -653,14 +640,6 @@ fn run_routine_live_session(
                 "PipeWire is unavailable; scorepeek will keep waiting",
                 &mut output,
             )?;
-            record_watcher_status(
-                &mut status,
-                routine_watcher::WatcherState::RemoteUnavailable,
-                None,
-                None,
-                &mut status_failed,
-                &mut output,
-            )?;
             std::thread::sleep(std::time::Duration::from_millis(500));
             continue;
         };
@@ -677,14 +656,6 @@ fn run_routine_live_session(
                     "waiting for a Gamescope PipeWire source",
                     &mut output,
                 )?;
-                record_watcher_status(
-                    &mut status,
-                    routine_watcher::WatcherState::WaitingForSource,
-                    None,
-                    None,
-                    &mut status_failed,
-                    &mut output,
-                )?;
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
             routine_watcher::WatchDecision::WaitAmbiguous => {
@@ -692,14 +663,6 @@ fn run_routine_live_session(
                     &mut announced,
                     routine_watcher::WatcherState::AmbiguousSources,
                     "multiple Gamescope sources are present; waiting for exactly one",
-                    &mut output,
-                )?;
-                record_watcher_status(
-                    &mut status,
-                    routine_watcher::WatcherState::AmbiguousSources,
-                    None,
-                    None,
-                    &mut status_failed,
                     &mut output,
                 )?;
                 std::thread::sleep(std::time::Duration::from_millis(500));
@@ -715,40 +678,43 @@ fn run_routine_live_session(
                         "active catalog is temporarily unavailable; scorepeek will retry",
                         &mut output,
                     )?;
-                    record_watcher_status(
-                        &mut status,
-                        routine_watcher::WatcherState::CatalogUnavailable,
-                        None,
-                        None,
-                        &mut status_failed,
-                        &mut output,
-                    )?;
                     std::thread::sleep(std::time::Duration::from_millis(500));
                     continue;
                 };
                 let session_id = format!("{invocation_id}-session-{generation}");
-                let recognition_root = match state.recognition_root(&session_id) {
-                    Ok(root) => root,
+                let session_paths = match state.start_recording_session(&session_id) {
+                    Ok(paths) => paths,
                     Err(error) => {
                         output.warning(format!(
-                            "recognition artifact recording degraded for this session: {error}"
+                            "recording staging degraded for this session: {error}"
                         ))?;
                         None
                     }
                 };
+                let diagnostic_root = session_paths
+                    .as_ref()
+                    .map_or(Path::new("/"), |paths| paths.capture_root.as_path());
+                let recognition_root = session_paths
+                    .as_ref()
+                    .map(|paths| paths.recognition_directory.as_path());
                 let values = routine_live_values(
                     &selected,
                     generation,
-                    &state.diagnostic_root,
+                    diagnostic_root,
                     &catalog_root,
                     &session_id,
                     &build_sha256,
                     &active.digest,
                     recording,
-                    recognition_root.as_deref(),
+                    recognition_root,
                 );
                 let references = values.iter().map(OsString::as_os_str).collect::<Vec<_>>();
                 if stop.load(std::sync::atomic::Ordering::Acquire) {
+                    if let Some(paths) = session_paths.as_ref()
+                        && let Err(error) = paths.cleanup()
+                    {
+                        output.warning(error)?;
+                    }
                     break;
                 }
                 let mut started = false;
@@ -760,18 +726,6 @@ fn run_routine_live_session(
                         routine_output::RunEventKind::SessionStarted { .. }
                     ) {
                         started = true;
-                        if !status_failed
-                            && let Err(error) = status.transition(
-                                routine_watcher::WatcherState::SessionActive,
-                                Some(&session_id),
-                                None,
-                            )
-                        {
-                            status_failed = true;
-                            output.status_recording_degraded()?;
-                            output
-                                .warning(format!("watcher status recording disabled: {error}"))?;
-                        }
                     }
                     let output_overhead_us =
                         u64::try_from(output_started.elapsed().as_micros()).unwrap_or(u64::MAX);
@@ -822,12 +776,14 @@ fn run_routine_live_session(
                     let event_artifact = output.take_completed_event_artifact();
                     let mut recording_published = false;
                     if let (
+                        Some(session_paths),
                         Some(recognition_root),
                         Some(capture_manifest_sha256),
                         Some(recognition_manifest_sha256),
                         Some(event_artifact),
                     ) = (
-                        recognition_root.as_deref(),
+                        session_paths.as_ref(),
+                        recognition_root,
                         report.diagnostic_manifest_sha256(),
                         report.recognition_artifact_manifest_sha256(),
                         event_artifact.as_ref(),
@@ -860,15 +816,19 @@ fn run_routine_live_session(
                             field_observation_busy_skips,
                             maximum_consecutive_field_observation_busy_skips,
                             completeness,
-                            capture_directory: &state.diagnostic_root.join(&session_id),
+                            capture_directory: &session_paths.capture_directory,
                             capture_manifest_sha256,
                             recognition_directory: recognition_root,
                             recognition_manifest_sha256,
+                            canonical_directory: &session_paths.root.join("canonical"),
                             event_directory: &event_artifact.root,
                             event_manifest_sha256,
                             profile_path: &selected.path,
                         }) {
                             Ok(published) => {
+                                if let Err(error) = session_paths.cleanup() {
+                                    output.warning(error)?;
+                                }
                                 if completeness == "complete" {
                                     recording_published = true;
                                     output.publish(&routine_output::RunEvent {
@@ -884,16 +844,6 @@ fn run_routine_live_session(
                                     output.warning(format!(
                                         "partial session was published for diagnosis but is not importable: {}",
                                         published.directory.display()
-                                    ))?;
-                                }
-                                if let Err(error) = fs::remove_dir_all(recognition_root) {
-                                    output.warning(format!(
-                                        "published recognition staging cleanup failed: {error}"
-                                    ))?;
-                                }
-                                if let Err(error) = fs::remove_dir_all(&event_artifact.root) {
-                                    output.warning(format!(
-                                        "published event staging cleanup failed: {error}"
                                     ))?;
                                 }
                             }
@@ -946,29 +896,18 @@ fn run_routine_live_session(
                             Some(_) => {}
                         }
                     }
-                    record_watcher_status(
-                        &mut status,
-                        routine_watcher::WatcherState::SessionFinished,
-                        None,
-                        Some(outcome),
-                        &mut status_failed,
-                        &mut output,
-                    )?;
                 } else {
+                    if let Some(paths) = session_paths.as_ref()
+                        && let Err(error) = paths.cleanup()
+                    {
+                        output.warning(error)?;
+                    }
                     match report.startup_retry() {
                         Some(capture_live::LiveSessionStartupRetry::Admission) => {
                             announce_watcher_state(
                                 &mut announced,
                                 routine_watcher::WatcherState::AdmissionRejected,
                                 "Gamescope source is not ready; scorepeek will keep waiting",
-                                &mut output,
-                            )?;
-                            record_watcher_status(
-                                &mut status,
-                                routine_watcher::WatcherState::AdmissionRejected,
-                                None,
-                                Some("capture_admission_failed"),
-                                &mut status_failed,
                                 &mut output,
                             )?;
                         }
@@ -979,14 +918,6 @@ fn run_routine_live_session(
                                 "active catalog changed or is temporarily unavailable; scorepeek will retry",
                                 &mut output,
                             )?;
-                            record_watcher_status(
-                                &mut status,
-                                routine_watcher::WatcherState::CatalogUnavailable,
-                                None,
-                                Some("catalog_temporarily_unavailable"),
-                                &mut status_failed,
-                                &mut output,
-                            )?;
                         }
                         None => return Err(report.startup_failure_summary()),
                     }
@@ -995,14 +926,6 @@ fn run_routine_live_session(
             }
         }
     }
-    record_watcher_status(
-        &mut status,
-        routine_watcher::WatcherState::Stopped,
-        None,
-        Some("signal"),
-        &mut status_failed,
-        &mut output,
-    )?;
     output.publish(&routine_output::RunEvent {
         schema: "scorepeek-run-event-v6".to_owned(),
         kind: routine_output::RunEventKind::WatcherStopped {
@@ -1051,25 +974,6 @@ fn announce_watcher_state(
     output.watcher_state(state.as_str(), None, None, message)?;
     if *announced != Some(state) {
         *announced = Some(state);
-    }
-    Ok(())
-}
-
-fn record_watcher_status(
-    recorder: &mut routine_watcher::StatusRecorder,
-    state: routine_watcher::WatcherState,
-    session_id: Option<&str>,
-    outcome: Option<&'static str>,
-    failed: &mut bool,
-    output: &mut routine_output::RoutineOutput,
-) -> Result<(), String> {
-    if *failed {
-        return Ok(());
-    }
-    if let Err(error) = recorder.transition(state, session_id, outcome) {
-        *failed = true;
-        output.status_recording_degraded()?;
-        output.warning(format!("watcher status recording disabled: {error}"))?;
     }
     Ok(())
 }
@@ -1260,6 +1164,7 @@ fn execute_live_session(
                 policy,
                 duration_ms: 0,
                 diagnostic_root: Path::new(diagnostic_root),
+                diagnostic_directory_name: session_id.map(|_| "capture"),
                 expected_source_node_id,
             },
             catalog_root: Path::new(catalog_root),
@@ -1762,6 +1667,7 @@ fn run_capture_handoff(values: &[&OsStr], inspect_screen: bool) -> Result<(), St
         policy,
         duration_ms,
         diagnostic_root: Path::new(diagnostic_root),
+        diagnostic_directory_name: None,
         expected_source_node_id: None,
     };
     if inspect_screen {
@@ -1834,6 +1740,7 @@ fn run_capture_field_observation(
         policy,
         duration_ms,
         diagnostic_root: Path::new(diagnostic_root),
+        diagnostic_directory_name: None,
         expected_source_node_id: None,
     };
     let report = capture_live::run_gamescope_field_observation_gate(

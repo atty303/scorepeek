@@ -61,6 +61,7 @@ pub struct PublishRequest<'a> {
     pub capture_manifest_sha256: &'a str,
     pub recognition_directory: &'a Path,
     pub recognition_manifest_sha256: &'a str,
+    pub canonical_directory: &'a Path,
     pub event_directory: &'a Path,
     pub event_manifest_sha256: &'a str,
     pub profile_path: &'a Path,
@@ -115,6 +116,12 @@ pub fn publish(request: &PublishRequest<'_>) -> Result<PublishOutcome, String> {
     });
     link_directory(
         request.recognition_directory,
+        &recognition,
+        "recognition",
+        &mut artifacts,
+    )?;
+    link_directory(
+        request.canonical_directory,
         &recognition,
         "recognition",
         &mut artifacts,
@@ -543,13 +550,16 @@ mod tests {
         (events, manifest_sha256)
     }
 
-    fn write_canonical_component(recognition: &Path) {
+    fn write_canonical_component(root: &Path) -> PathBuf {
+        let canonical = root.join("canonical-input");
+        fs::create_dir(&canonical).unwrap();
         fs::write(
-            recognition.join("canonical-manifest.json"),
+            canonical.join("canonical-manifest.json"),
             b"{\"schema\":\"scorepeek-canonical-session-recording-v2\",\"completeness\":\"complete\"}\n",
         )
         .unwrap();
-        fs::write(recognition.join("canonical-ticks.ndjson"), b"").unwrap();
+        fs::write(canonical.join("canonical-ticks.ndjson"), b"").unwrap();
+        canonical
     }
 
     #[test]
@@ -578,7 +588,7 @@ mod tests {
         )
         .unwrap();
         fs::write(recognition.join("manifest.json"), b"{}\n").unwrap();
-        write_canonical_component(&recognition);
+        let canonical = write_canonical_component(root.path());
         let profile = root.path().join("profile.json");
         fs::write(&profile, b"{}\n").unwrap();
         let recognition_manifest_sha256 = digest_file(&recognition.join("manifest.json")).unwrap();
@@ -599,6 +609,7 @@ mod tests {
             capture_manifest_sha256: &digest_file(&capture.join("manifest.json")).unwrap(),
             recognition_directory: &recognition,
             recognition_manifest_sha256: &recognition_manifest_sha256,
+            canonical_directory: &canonical,
             event_directory: &events,
             event_manifest_sha256: &event_manifest_sha256,
             profile_path: &profile,
@@ -621,6 +632,13 @@ mod tests {
             fs::read(published.directory.join("events.ndjson")).unwrap(),
             fs::read(events.join("events.ndjson")).unwrap()
         );
+        assert!(canonical.join("canonical-manifest.json").is_file());
+        assert!(
+            published
+                .directory
+                .join("recognition/canonical-manifest.json")
+                .is_file()
+        );
     }
 
     #[test]
@@ -640,7 +658,7 @@ mod tests {
         )
         .unwrap();
         fs::write(recognition.join("manifest.json"), b"{}\n").unwrap();
-        write_canonical_component(&recognition);
+        let canonical = write_canonical_component(root.path());
         let profile = root.path().join("profile.json");
         fs::write(&profile, b"{}\n").unwrap();
         let recognition_manifest_sha256 = digest_file(&recognition.join("manifest.json")).unwrap();
@@ -661,6 +679,7 @@ mod tests {
             capture_manifest_sha256: &digest_file(&capture.join("manifest.json")).unwrap(),
             recognition_directory: &recognition,
             recognition_manifest_sha256: &recognition_manifest_sha256,
+            canonical_directory: &canonical,
             event_directory: &events,
             event_manifest_sha256: &event_manifest_sha256,
             profile_path: &profile,
@@ -693,7 +712,7 @@ mod tests {
         )
         .unwrap();
         fs::write(recognition.join("manifest.json"), b"{}\n").unwrap();
-        write_canonical_component(&recognition);
+        let canonical = write_canonical_component(root.path());
         let profile = root.path().join("profile.json");
         fs::write(&profile, b"{}\n").unwrap();
         let recognition_manifest_sha256 = digest_file(&recognition.join("manifest.json")).unwrap();
@@ -714,11 +733,14 @@ mod tests {
             capture_manifest_sha256: &digest_file(&capture.join("manifest.json")).unwrap(),
             recognition_directory: &recognition,
             recognition_manifest_sha256: &recognition_manifest_sha256,
+            canonical_directory: &canonical,
             event_directory: &events,
             event_manifest_sha256: &event_manifest_sha256,
             profile_path: &profile,
         })
         .unwrap_err();
         assert_eq!(error, "recognition observation has no predicate fact");
+        assert!(canonical.join("canonical-manifest.json").is_file());
+        assert!(canonical.join("canonical-ticks.ndjson").is_file());
     }
 }

@@ -170,6 +170,36 @@ impl<O: FieldObserver> FieldObservationSession<O> {
         })
     }
 
+    fn start_named_with_capacity<E>(
+        root: &Path,
+        directory_name: &str,
+        descriptor: DiagnosticRunDescriptor,
+        policy: DiagnosticPolicy,
+        capacity: usize,
+        loader: impl FnOnce(&super::field_observer::FieldObserverSessionBinding) -> Result<O, E>,
+    ) -> Result<Self, FieldObservationStartError<E>> {
+        let field_observer =
+            FieldObserverWorker::start_with_capacity(&descriptor, loader, capacity)
+                .map_err(FieldObservationStartError::FieldObserver)?;
+        let recognition =
+            match RecognitionSession::start_named(root, directory_name, descriptor, policy) {
+                Ok(recognition) => recognition,
+                Err(error) => {
+                    return Err(FieldObservationStartError::Recognition {
+                        error,
+                        field_observer_finish: field_observer
+                            .finish(super::field_observer::DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT),
+                    });
+                }
+            };
+        Ok(Self {
+            recognition,
+            field_observer,
+            owner: Arc::new(()),
+            outstanding: Vec::new(),
+        })
+    }
+
     fn start_unmanaged_with_capacity<E>(
         root: &Path,
         descriptor: DiagnosticRunDescriptor,
@@ -471,6 +501,41 @@ impl FieldObservationSession<RegisteredScreenFieldObserver> {
             )?;
             RegisteredScreenFieldObserver::new(resources, numeric_runtime, execution_mode)
         })
+    }
+
+    pub(crate) fn start_registered_named(
+        root: &Path,
+        directory_name: &str,
+        descriptor: DiagnosticRunDescriptor,
+        policy: DiagnosticPolicy,
+        catalog_root: &Path,
+        bundle_root: &Path,
+        execution_mode: RecognitionExecutionMode,
+    ) -> Result<Self, FieldObservationStartError<RegisteredScreenFieldObserverLoadError>> {
+        let available_parallelism = std::thread::available_parallelism().map_or(1, usize::from);
+        let workers = super::text_observer_pool::select_text_worker_count(
+            execution_mode,
+            available_parallelism,
+        );
+        let capacity = match execution_mode {
+            RecognitionExecutionMode::Live => 2,
+            RecognitionExecutionMode::Offline => workers.saturating_mul(2),
+        };
+        Self::start_named_with_capacity(
+            root,
+            directory_name,
+            descriptor,
+            policy,
+            capacity,
+            |binding| {
+                let resources = binding.load_registered_resources(catalog_root, bundle_root)?;
+                let numeric_runtime = scorepeek::numeric_model_store::active_registered(
+                    NUMERIC_MODEL_MANIFEST_BYTES,
+                    NUMERIC_MODEL_MANIFEST_SHA256,
+                )?;
+                RegisteredScreenFieldObserver::new(resources, numeric_runtime, execution_mode)
+            },
+        )
     }
 
     /// Starts one offline session using the corpus-wide registered text pool.

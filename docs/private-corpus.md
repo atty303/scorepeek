@@ -21,6 +21,19 @@ and dropped-frame values. A memory-limit admission loss, encoder failure, public
 shutdown timeout marks the recording partial but does not change screen resolution, attempt
 finalization, or domain event emission.
 
+While a session is active, every temporary component is grouped under
+`$XDG_STATE_HOME/scorepeek/recording-staging/<session-id>/`:
+
+- `capture/` contains structured capture diagnostics;
+- `recognition/` contains recognition observations;
+- `events/` contains the run-event stream;
+- `canonical/` contains lossless segments and their tick index.
+
+Successful joined-session publication removes the whole staging session. Publication failure keeps
+that one session tree intact for diagnosis. The immutable joined result remains at
+`$XDG_STATE_HOME/scorepeek/diagnostic-sessions/<session-id>/`. No separate watcher-status file is
+written; the TUI, observation socket, and run-event stream are the watcher observation surfaces.
+
 The canonical recorder indexes every 10 Hz due tick with original sequence, monotonic time, raw
 screen, active semantic episode ID, and either `retained` or a typed intentional-elision reason.
 It retains every `MusicSelect`, `DecideTransition`, and `Result` frame. It retains the session's

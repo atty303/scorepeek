@@ -149,7 +149,6 @@ pub enum CanonicalRecordingCompleteness {
 
 #[derive(Debug)]
 pub struct CanonicalRecordingOutcome {
-    pub directory: PathBuf,
     pub manifest_sha256: Option<String>,
     pub completeness: CanonicalRecordingCompleteness,
     pub final_health: RecordingHealthSnapshot,
@@ -182,7 +181,6 @@ enum Message {
 pub struct CanonicalRecordingWorker {
     sender: Sender<Message>,
     worker: JoinHandle<CanonicalRecordingOutcome>,
-    directory: PathBuf,
     dropped: Arc<AtomicU64>,
     memory: Arc<RecordingMemoryAccount>,
 }
@@ -192,13 +190,13 @@ impl CanonicalRecordingWorker {
         inspect_ffmpeg().map(|_| ())
     }
 
-    pub fn start(
+    pub(crate) fn start_named(
         root: &Path,
-        session_id: &str,
+        directory_name: &str,
         memory_limit: RecordingMemoryLimit,
     ) -> Result<Self, String> {
         let ffmpeg = inspect_ffmpeg()?;
-        let directory = root.join(session_id);
+        let directory = root.join(directory_name);
         if directory.symlink_metadata().is_ok() {
             return Err("canonical recording session already exists".to_owned());
         }
@@ -238,7 +236,6 @@ impl CanonicalRecordingWorker {
         Ok(Self {
             sender,
             worker,
-            directory,
             dropped,
             memory,
         })
@@ -285,7 +282,6 @@ impl CanonicalRecordingWorker {
         let Self {
             sender,
             worker,
-            directory,
             dropped,
             memory,
         } = self;
@@ -296,7 +292,6 @@ impl CanonicalRecordingWorker {
         } else {
             memory.mark_degraded();
             CanonicalRecordingOutcome {
-                directory,
                 manifest_sha256: None,
                 completeness: CanonicalRecordingCompleteness::Partial,
                 final_health: health_snapshot(&memory, &dropped),
@@ -509,7 +504,6 @@ impl Recorder {
         };
         let manifest_sha256 = self.publish(completeness).ok();
         CanonicalRecordingOutcome {
-            directory: self.directory,
             manifest_sha256,
             completeness,
             final_health: health_snapshot(&self.memory, &self.external_dropped),

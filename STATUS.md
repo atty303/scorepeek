@@ -24,7 +24,10 @@ outside the checkpoint; implementation history belongs in Git.
 - Routine recording is opt-in. `scorepeek run` retains domain behavior without creating capture,
   recognition, run-event, joined-session, or canonical artifacts; `scorepeek run --record` starts
   them as one session after FFmpeg/capacity preflight. Removed recording flags fail as unknown
-  options. Recorder failure changes only component/session completeness.
+  options. In-progress components are grouped by session under `recording-staging/` and successful
+  joined publication removes that complete tree; failed publication retains it for diagnosis.
+  Published sessions remain under `diagnostic-sessions/`. No separate watcher-status file is
+  written. Recorder failure changes only component/session completeness.
 - Canonical recording retains every MUSIC SELECT, DECIDE TRANSITION, and RESULT tick plus the first,
   last, and raw-screen transition windows. Stable PLAY, MODE SELECT, and UNKNOWN interiors are typed
   intentional gaps. Retained RGB24 frames are streamed to external lossless `libx264rgb` Matroska
