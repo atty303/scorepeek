@@ -25,7 +25,7 @@ though their containing directories use purpose names.
 
 After either complete or partial joined-session publication succeeds, scorepeek removes and fsyncs
 the complete staging session tree. If component finalization or joined publication fails, the tree
-is retained as bounded diagnostic evidence. Immutable published sessions remain under
+is retained as reclaimable diagnostic evidence. Immutable published sessions remain under
 `diagnostic-sessions/<session-id>/`.
 
 Scorepeek no longer creates or updates `watcher-status.json`. Watcher state remains observable in
