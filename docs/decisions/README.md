@@ -316,6 +316,9 @@ authoritative.
 - [ADR 0104: Pipeline replay preparation and field projection](0104-pipeline-replay-preparation-and-field-projection.md)
   moves pure classification/crop work off decoder callbacks, permits bounded frame-local field
   projection concurrency, and preserves session-ordered semantic authority.
+- [ADR 0105: Require explicit replay worker overrides](0105-require-explicit-replay-worker-overrides.md)
+  removes the hidden single-worker environment override so option-free live and replay execution
+  always use their CPU-derived production policies.
 
 ## Historical
 

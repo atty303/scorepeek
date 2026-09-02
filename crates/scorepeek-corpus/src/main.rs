@@ -603,6 +603,11 @@ mod tests {
         assert_eq!(options.text_workers, Some(7));
         assert_eq!(options.memory_mib, 2_048);
 
+        let defaults = ["--store", "/tmp/corpus"].map(OsString::from);
+        let (_, options) = parse_corpus_replay_options(&defaults).unwrap();
+        assert_eq!(options.text_workers, None);
+        assert_eq!(options.memory_mib, 2_048);
+
         let duplicate = ["--store", "/tmp/a", "--store", "/tmp/b"].map(OsString::from);
         assert!(parse_corpus_replay_options(&duplicate).is_err());
         let missing_value = ["--store"].map(OsString::from);

@@ -455,7 +455,7 @@ impl FieldObservationSession<RegisteredScreenFieldObserver> {
         execution_mode: RecognitionExecutionMode,
     ) -> Result<Self, FieldObservationStartError<RegisteredScreenFieldObserverLoadError>> {
         let available_parallelism = std::thread::available_parallelism().map_or(1, usize::from);
-        let workers = super::text_observer_pool::configured_text_worker_count(
+        let workers = super::text_observer_pool::select_text_worker_count(
             execution_mode,
             available_parallelism,
         );

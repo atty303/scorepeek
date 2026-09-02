@@ -188,6 +188,10 @@ outside the checkpoint; implementation history belongs in Git.
   58,670,445-microsecond single-session verification. A separate synthetic FFmpeg integration
   verifies live PID overlap and per-child RSS/lifecycle
   reporting.
+- Option-free live and corpus execution now always selects its CPU-derived production worker policy.
+  The hidden `SCOREPEEK_INTERNAL_SINGLE_TEXT_WORKER` comparison override is removed; benchmark and
+  diagnostic runs must request `--text-workers 1` explicitly, while replay summary v3 continues to
+  report the actual selected worker count.
 - The shared-memory/deferred-verification recorder revision was built through the cargo-dist path and
   installed hash-first on `infinitas.lan` at `/home/atty/.local/bin/scorepeek`; local, transferred,
   and installed executable SHA-256 are all

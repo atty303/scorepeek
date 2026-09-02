@@ -46,22 +46,6 @@ pub fn select_text_worker_count(
     requested.clamp(1, 12)
 }
 
-/// Applies the production policy, with one explicit offline-only benchmark override.
-#[must_use]
-pub fn configured_text_worker_count(
-    execution_mode: RecognitionExecutionMode,
-    available_parallelism: usize,
-) -> usize {
-    if execution_mode == RecognitionExecutionMode::Offline
-        && std::env::var_os("SCOREPEEK_INTERNAL_SINGLE_TEXT_WORKER").as_deref()
-            == Some(std::ffi::OsStr::new("1"))
-    {
-        1
-    } else {
-        select_text_worker_count(execution_mode, available_parallelism)
-    }
-}
-
 struct TextJob {
     field: ScreenTextField,
     crop: Rgb8Crop,
@@ -112,7 +96,7 @@ impl RegisteredTextObserverPool {
         execution_mode: RecognitionExecutionMode,
     ) -> Result<Self, OnnxParityError> {
         let available_parallelism = thread::available_parallelism().map_or(1, usize::from);
-        let worker_count = configured_text_worker_count(execution_mode, available_parallelism);
+        let worker_count = select_text_worker_count(execution_mode, available_parallelism);
         Self::start_with_worker_count(first_runtime, execution_mode, worker_count)
     }
 

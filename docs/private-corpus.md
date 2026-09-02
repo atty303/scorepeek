@@ -75,6 +75,7 @@ converter, or archive path.
 
 ```text
 scorepeek-corpus corpus replay --store /absolute/private-corpus-v2
+# Explicit single-worker comparison only; this is not the default.
 scorepeek-corpus corpus replay --store /absolute/private-corpus-v2 --text-workers 1 --memory-mib 2048
 ```
 
@@ -97,9 +98,9 @@ field frames by backpressure; replay never drops them. `--memory-mib` accepts 25
 preparation, and decoder concurrency; tracked memory high-water; decoder-consumer, preparation,
 field-queue, and ordered-commit waits; raw classification, crop, text, numeric, join, and catalog
 durations; stable per-session wall time; and corpus wall time. FFmpeg child wall time includes pipe
-backpressure and callback consumption and is not a pure decode benchmark. The internal comparison run sets
-`SCOREPEEK_INTERNAL_SINGLE_TEXT_WORKER=1`; ordinary offline replay follows the
-available-parallelism-minus-four policy capped at twelve workers.
+backpressure and callback consumption and is not a pure decode benchmark. Ordinary offline replay
+always follows the available-parallelism-minus-four policy capped at twelve workers unless the
+operator explicitly supplies `--text-workers`; a one-worker comparison uses `--text-workers 1`.
 
 For every accepted label, replay requires exactly one ordered
 `scorepeek-result-detected-v2` event with equal semantic payload, ordered play options, and normalized

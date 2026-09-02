@@ -3828,7 +3828,7 @@ fn replay_canonical_suite(
     let replay_started = std::time::Instant::now();
     let available_parallelism = std::thread::available_parallelism().map_or(1, usize::from);
     let text_workers = options.text_workers.unwrap_or_else(|| {
-        scorepeek::recognition_live::text_observer_pool::configured_text_worker_count(
+        scorepeek::recognition_live::text_observer_pool::select_text_worker_count(
             scorepeek::recognition_live::text_observer_pool::RecognitionExecutionMode::Offline,
             available_parallelism,
         )
