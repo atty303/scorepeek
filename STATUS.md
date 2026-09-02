@@ -9,8 +9,8 @@ outside the checkpoint; implementation history belongs in Git.
 - M4 canonical recognition, evidence-first attempt resolution, and versioned event API: **in
   progress**.
 - `scorepeek-result-detected-v2` remains the accepted public domain contract and now carries typed
-  ordered `play_options`. Debug output uses run-event v6, observation socket/snapshot v6, and
-  recognition observation v18. Joined recorded sessions use v5.
+  ordered `play_options`. Debug output uses run-event v7, observation socket/snapshot v7, and
+  recognition observation v19. Joined recorded sessions use v5.
 - Text authority remains the registered PP-OCRv6-small bundle. Numeric authority remains the
   private fixed-cell HOG/MLP model. No model bytes, real crops, complete labels, or generated
   datasets are committed.
@@ -71,6 +71,12 @@ outside the checkpoint; implementation history belongs in Git.
   unique whole-display edit distance of at most one. Two matching typed observations in the same
   semantic RESULT episode produce a known ordered list. Conflict, OCR failure, and incomplete
   evidence remain typed optional unknown and never suppress an otherwise accepted result event.
+- RESULT play type uses integrated context layout v4 ROI `(925,1025,75,50)`, measured across all
+  five SP difficulty layouts with left width reserved for a DP glyph. Exact `SP`/`DP` OCR is typed;
+  one type needs two observations and no opposite-type observation in the semantic RESULT episode
+  before chart identity can be accepted and it contributes an independent chart family. Once
+  known, opposite-type candidates are excluded. Field-local chart resolution no longer supplies
+  SP. DP image recognition remains unverified because the active corpus contains SP only.
 - The TUI retains one three-pane layout and semantic state palette. Watcher shows raw and semantic screen plus suspension;
   Latest domain holds only the last accepted v2 event; Resolver shows incumbent/successor/result
   evidence, foreground title geometry, hierarchical runners, family contributions, attempt path,
@@ -78,16 +84,17 @@ outside the checkpoint; implementation history belongs in Git.
   the latest observation, while a new semantic episode or session clears it. Raw marker and
   resolver-current difficulty are displayed separately with the consecutive-known count. The worst-case 80x25
   tree keeps all gates visible. TUI formatting owns no resolver logic.
-- Run-event v6 distinguishes raw screen observations, semantic episode transitions, current
+- Run-event v7 distinguishes raw screen observations, semantic episode transitions, current
   selection-difficulty changes, selection/result and provisional-joint transitions, attempt
   finalization, and suppression. Recognition observation
-  v18 retains title views/geometry, episode binding, fixed-cell numeric evidence, play-option raw
+  v19 retains title views/geometry, episode binding, fixed-cell numeric evidence, play-option and
+  play-type raw
   OCR/marker/typed state, factor support, raw stage/frame timing, late/drain status, and suppression
   evidence. Independent PP-OCR jobs use single-threaded ONNX sessions in a pool selected from
   available parallelism; the outer coordinator pipelines frames and commits admitted evidence in
   source order. Live uses half the available parallelism capped at twelve; offline replay uses one
   global pool of available parallelism minus four capped at twelve. Readers accept run-event v2
-  through v6 and recognition v5 through v18.
+  through v7 and recognition v5 through v19.
 - The attempt corpus clean-cuts to complete joined-session v5 input and label v5 truth. Import keeps
   lossless segments and the tick index as immutable objects without QOI expansion or pixel-content
   deduplication. Replay decodes canonical retained frames only, starts no normalizer, uses production
@@ -152,10 +159,22 @@ outside the checkpoint; implementation history belongs in Git.
 - The legacy private corpus was explicitly retired and its 8,233,757,476-byte
   `private-corpus-v1` root was deleted after the replacement replay passed. The active
   `private-corpus-v2` generation is
-  `3d3ce51cc7fdd39b631222e345716fa8b9dfe16b6267a7202496db3ac999d44d`; it contains complete target
-  joined session `run-1788340551-36813279-1526584-session-1` and five operator-reviewed accepted
-  attempts for every SP difficulty of `Mind Mapping / Ryu☆`, including explicit ordered
-  play-option truth. There is no legacy reader, converter, or retained QOI corpus.
+  `112bb422399a3702920e31df150b7a6b678aae3f9b203ccdec2ec5e3be4f11b4`; it contains two complete
+  target sessions and fourteen operator-reviewed accepted attempts. The first session covers every
+  SP difficulty of `Mind Mapping / Ryu☆`; the second includes the `Wizards!` SP HYPER sibling-chart
+  failure oracle and nine accepted attempts. There is no legacy reader, converter, or retained QOI
+  corpus.
+- The v4 play-type path passes the complete active generation with 2 sessions, 14 accepted
+  attempts, 12,460 canonical frames, and zero negative frames. Default offline policy used twelve
+  text workers, eight preprocess workers, two concurrent decoders, and a 2 GiB tracked-memory
+  account. Corpus wall time was 373,844,534 microseconds; tracked memory peaked at 1,728,053,248
+  bytes. Process RSS peaked at 5,227,995,136 bytes, so this local replay is correctness evidence,
+  not a target resource or performance pass.
+- After independent review, the result resolver provenance is versioned as v6, play-type authority
+  activation is part of resolver transition identity, the exact uppercase parser rejects case and
+  Unicode-whitespace drift, and the unchanged result-crop artifact v2 remains a 20-crop contract.
+  `mise run check`, pedantic workspace clippy, all 465 scorepeek library tests, all 286 serial
+  scorepeek binary tests, and all 101 scorepeek-corpus library tests pass for this revision.
 - Historical read-only whole-panel evaluation over the retired corpus's 34 stable QOIs produced exact registered PP-OCR text
   for every displayed option. The set includes a positively blank panel, R-RANDOM, S-RANDOM,
   MIRROR, A-SCR, two LEGACY results, and `RANDOM,LEGACY`; the orange-marker count separated the
@@ -216,10 +235,12 @@ outside the checkpoint; implementation history belongs in Git.
 
 ## Next executable task
 
-Install this revision only after explicit approval, then run the same active v2 generation with one
-worker and the default pool on the 24-logical-CPU target. Require identical domain events, less than
-20 seconds whole-corpus wall time, and the four-session scaling gates before claiming target
-speedup. Continue
-rebuilding the v2 corpus with session-disjoint songs and failure attempts; require zero wrong joint
-acceptance, zero wrong events, and zero missing expected events before changing target or
-public-socket authority. Push and release remain separate explicit boundaries.
+First widen the private label schema and validator beyond the current SP-only slice. After explicit
+approval to install, record and label at least one DP RESULT on the target and replay it through
+layout v4 to verify the reserved-width ROI and exact DP OCR. Then run the same active v2
+generation with one worker and the default pool on the 24-logical-CPU target. Require identical
+domain events, less than 20 seconds whole-corpus wall time, and the four-session scaling gates before
+claiming target speedup. Continue rebuilding the v2 corpus with session-disjoint songs and failure
+attempts; require zero wrong joint acceptance, zero wrong events, and zero missing expected events
+before changing target or public-socket authority. Push and release remain separate explicit
+boundaries.

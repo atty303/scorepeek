@@ -43,8 +43,8 @@ be established, the field is `unknown`.
 | result state | Precondition for every result event | Unique result-screen anchors; transition, cut-in, overlay, and unknown classes reject |
 | accepted play attempt | Precondition for result-event emission | The same attempt observed gameplay and result, and its result song confirms the selected or retry-inherited song; observing the decision transition is not required |
 | playside | Always | Current admitted corpus slice provisionally fixes 1P; widening requires unique 1P or 2P layout anchors |
-| play mode | Always | Current admitted corpus slice provisionally fixes SP; widening requires unique SP or DP evidence |
-| play type | Always | SP follows known SP mode; DP battle/non-battle needs explicit evidence and never defaults |
+| play mode | Always | Exact `SP` or `DP` from the measured RESULT slot in at least two observations, with no opposite-mode observation in the episode; the ROI includes DP glyph width but DP image validation remains pending |
+| play type | Always | The catalog play type selected by the known SP/DP mode; battle/non-battle needs separate explicit evidence and never defaults |
 | song | Always | Accepted title and artist consistent with independently recognized play mode, difficulty, level, and notes; a linked selection may corroborate identity but cannot establish result presence or result-only fields |
 | difficulty and level | Always | Unique closed difficulty plus a catalog-unique chart; unreadable level may come from that chart, while a readable conflict rejects the chart |
 | notes | Always | Complete positive integer consistent with the recognized result layout |

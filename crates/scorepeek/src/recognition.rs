@@ -60,7 +60,7 @@ pub use result_fields::{
     RESULT_PERFORMANCE_RESOLVER_ID, ResultChartResolution, ResultChartUnknownReason,
     ResultFieldUnknownReason, ResultFieldValue, ResultJudgments, ResultPerformanceResolution,
     ResultPerformanceUnknownReason, ResultTiming, SupplementalResultValue,
-    matching_single_play_songs, observed_result_difficulty, resolve_clear_type,
+    matching_observed_chart_songs, observed_result_difficulty, resolve_clear_type,
     resolve_result_chart, resolve_result_performance,
 };
 pub use result_resolver::{
@@ -120,7 +120,7 @@ const PPM_HEADER: &[u8] = b"P6\n1920 1080\n255\n";
 const CANONICAL_FILE_BYTES: u64 = CANONICAL_BYTES as u64 + PPM_HEADER.len() as u64;
 const LAYOUT_BYTES: &[u8] = include_bytes!("canonical-layout-v1.json");
 const SCREEN_PATH_LAYOUT_BYTES: &[u8] = include_bytes!("screen-path-layout-v1.json");
-const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v3.json");
+const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v4.json");
 const INTEGRATED_CONTEXT_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
 
 fn calibrated_capture_profile(profile: &str) -> bool {
@@ -778,6 +778,7 @@ struct IntegratedContextLayout {
 #[serde(deny_unknown_fields)]
 struct ResultContextLayout {
     artist: Roi,
+    play_type: Roi,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -837,7 +838,7 @@ impl IntegratedContextLayout {
             .rois()
             .nth(10)
             .ok_or(RecognitionError::InvalidCanonicalLayout)?;
-        if layout.schema != "scorepeek-integrated-context-layout-v3"
+        if layout.schema != "scorepeek-integrated-context-layout-v4"
             || layout.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID
             || layout.canonical_layout_sha256 != CanonicalLayout::sha256()
             || layout.result.artist != canonical.result.artist
@@ -853,6 +854,7 @@ impl IntegratedContextLayout {
         }
         for roi in [
             layout.result.artist,
+            layout.result.play_type,
             layout.music_select.artist,
             layout.music_select.legacy_selected_chart,
             layout.music_select.active_list_title,
@@ -1090,6 +1092,7 @@ pub struct ResultScreenRgb8Crops {
     pub artist: Rgb8Crop,
     pub clear_type: Rgb8Crop,
     pub difficulty: Rgb8Crop,
+    pub play_type: Rgb8Crop,
     pub level: Rgb8Crop,
     pub notes: Rgb8Crop,
     pub current_score: Rgb8Crop,
@@ -1237,6 +1240,7 @@ pub enum ScreenTextField {
     ResultArtist,
     ResultClearType,
     ResultDifficulty,
+    ResultPlayType,
     ResultLevel,
     ResultNotes,
     ResultCurrentScore,
@@ -1267,6 +1271,7 @@ impl ScreenTextField {
             Self::ResultArtist => "result_artist",
             Self::ResultClearType => "result_clear_type",
             Self::ResultDifficulty => "result_difficulty",
+            Self::ResultPlayType => "result_play_type",
             Self::ResultLevel => "result_level",
             Self::ResultNotes => "result_notes",
             Self::ResultCurrentScore => "result_current_score",
@@ -1311,6 +1316,7 @@ impl ScreenTextField {
             | Self::ResultArtist
             | Self::ResultClearType
             | Self::ResultDifficulty
+            | Self::ResultPlayType
             | Self::ResultPreviousClearType
             | Self::ResultPlayOptions
             | Self::MusicSelectCentralTitle
@@ -1327,6 +1333,7 @@ pub struct ResultScreenFieldObservations {
     pub artist: DynamicTextObservation,
     pub clear_type: DynamicTextObservation,
     pub difficulty: DynamicTextObservation,
+    pub play_type: DynamicTextObservation,
     pub level: DynamicTextObservation,
     pub notes: DynamicTextObservation,
     pub current_score: DynamicTextObservation,
@@ -1384,7 +1391,7 @@ impl ScreenFieldObservations {
     #[must_use]
     pub const fn diagnostic_field_counts(&self) -> (u8, u8) {
         match self {
-            Self::Result(_) => (19, 0),
+            Self::Result(_) => (20, 0),
             Self::MusicSelect(_) => (3, 1),
         }
     }
@@ -1444,6 +1451,7 @@ pub fn observe_screen_fields<E>(
                 artist: observe(ScreenTextField::ResultArtist, &crops.artist)?,
                 clear_type: observe(ScreenTextField::ResultClearType, &crops.clear_type)?,
                 difficulty: observe(ScreenTextField::ResultDifficulty, &crops.difficulty)?,
+                play_type: observe(ScreenTextField::ResultPlayType, &crops.play_type)?,
                 level: observe(ScreenTextField::ResultLevel, &crops.level)?,
                 notes: observe(ScreenTextField::ResultNotes, &crops.notes)?,
                 current_score: observe(ScreenTextField::ResultCurrentScore, &crops.current_score)?,
@@ -1508,6 +1516,7 @@ pub fn observe_result_fields_with_numeric<E>(
         artist: observe(ScreenTextField::ResultArtist, &crops.artist)?,
         clear_type: observe(ScreenTextField::ResultClearType, &crops.clear_type)?,
         difficulty: observe(ScreenTextField::ResultDifficulty, &crops.difficulty)?,
+        play_type: observe(ScreenTextField::ResultPlayType, &crops.play_type)?,
         level: numeric.text_observation(NumericField::Level),
         notes: numeric.text_observation(NumericField::Notes),
         current_score: numeric.text_observation(NumericField::CurrentScore),
@@ -2485,6 +2494,7 @@ pub fn route_screen_rgb8_crops(
             artist: crop(pixels, context.result.artist)?,
             clear_type: crop(pixels, canonical.result.clear_type)?,
             difficulty: crop(pixels, canonical.result.difficulty)?,
+            play_type: crop(pixels, context.result.play_type)?,
             level: crop(pixels, canonical.result.level)?,
             notes: crop(pixels, canonical.result.notes)?,
             current_score: crop(pixels, canonical.result.current_score)?,
@@ -3291,26 +3301,27 @@ mod tests {
         let ScreenFieldObservations::Result(result) = result else {
             panic!("result crops produced another screen output");
         };
-        assert_eq!(result_calls, 20);
+        assert_eq!(result_calls, 21);
         assert_eq!(result.title.open_text, "result-1");
         assert_eq!(result.artist.open_text, "result-2");
         assert_eq!(result.clear_type.open_text, "result-3");
         assert_eq!(result.difficulty.open_text, "result-4");
-        assert_eq!(result.level.open_text, "result-5");
-        assert_eq!(result.notes.open_text, "result-6");
-        assert_eq!(result.current_score.open_text, "result-7");
-        assert_eq!(result.previous_clear_type.open_text, "result-8");
-        assert_eq!(result.previous_score.open_text, "result-9");
-        assert_eq!(result.previous_miss_count.open_text, "result-10");
-        assert_eq!(result.miss_count.open_text, "result-11");
-        assert_eq!(result.pgreat.open_text, "result-12");
-        assert_eq!(result.great.open_text, "result-13");
-        assert_eq!(result.good.open_text, "result-14");
-        assert_eq!(result.bad.open_text, "result-15");
-        assert_eq!(result.poor.open_text, "result-16");
-        assert_eq!(result.fast.open_text, "result-17");
-        assert_eq!(result.slow.open_text, "result-18");
-        assert_eq!(result.combo_break.open_text, "result-19");
+        assert_eq!(result.play_type.open_text, "result-5");
+        assert_eq!(result.level.open_text, "result-6");
+        assert_eq!(result.notes.open_text, "result-7");
+        assert_eq!(result.current_score.open_text, "result-8");
+        assert_eq!(result.previous_clear_type.open_text, "result-9");
+        assert_eq!(result.previous_score.open_text, "result-10");
+        assert_eq!(result.previous_miss_count.open_text, "result-11");
+        assert_eq!(result.miss_count.open_text, "result-12");
+        assert_eq!(result.pgreat.open_text, "result-13");
+        assert_eq!(result.great.open_text, "result-14");
+        assert_eq!(result.good.open_text, "result-15");
+        assert_eq!(result.bad.open_text, "result-16");
+        assert_eq!(result.poor.open_text, "result-17");
+        assert_eq!(result.fast.open_text, "result-18");
+        assert_eq!(result.slow.open_text, "result-19");
+        assert_eq!(result.combo_break.open_text, "result-20");
 
         let music_crops =
             route_screen_rgb8_crops(&vec![0; CANONICAL_BYTES], ScreenClass::MusicSelect).unwrap();

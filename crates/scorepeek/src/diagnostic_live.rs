@@ -863,6 +863,9 @@ fn diagnostic_text_field(
         (ScreenClass::Result, ScreenTextField::ResultDifficulty) => {
             DiagnosticTextField::ResultDifficulty
         }
+        (ScreenClass::Result, ScreenTextField::ResultPlayType) => {
+            DiagnosticTextField::ResultPlayType
+        }
         (ScreenClass::Result, ScreenTextField::ResultLevel) => DiagnosticTextField::ResultLevel,
         (ScreenClass::Result, ScreenTextField::ResultNotes) => DiagnosticTextField::ResultNotes,
         (ScreenClass::Result, ScreenTextField::ResultCurrentScore) => {
@@ -1411,7 +1414,7 @@ mod tests {
         let fact: serde_json::Value = serde_json::from_slice(&fact_bytes).unwrap();
         assert_eq!(fact["fact"]["operation"], "observe_fields");
         assert_eq!(fact["fact"]["detail"]["kind"], "field_observation");
-        assert_eq!(fact["fact"]["detail"]["observed_fields"], 19);
+        assert_eq!(fact["fact"]["detail"]["observed_fields"], 20);
         assert_eq!(fact["fact"]["detail"]["unimplemented_fields"], 0);
         assert!(
             !String::from_utf8(fact_bytes)

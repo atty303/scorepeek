@@ -5,7 +5,7 @@ use scorepeek::recognition::{
     RegisteredRecognitionResources, RegisteredResourceLoadError, ResultChartResolution,
     ResultPerformanceResolution, ResultSongResolution, ScreenCatalogCandidateObservations,
     ScreenFieldObservationError, ScreenFieldObservations, ScreenSongResolution,
-    assist_unknown_result_song_with_chart, matching_single_play_songs,
+    assist_unknown_result_song_with_chart, matching_observed_chart_songs,
     observe_music_select_difficulty, observe_result_fields_with_numeric,
     observed_result_difficulty, resolve_clear_type, resolve_music_select_song,
     resolve_result_chart, resolve_result_performance, resolve_result_song,
@@ -328,6 +328,7 @@ fn submit_text_fields(
     let jobs = match input.crops() {
         scorepeek::recognition::ScreenRgb8Crops::Result(crops) => vec![
             (ScreenTextField::ResultDifficulty, crops.difficulty.clone()),
+            (ScreenTextField::ResultPlayType, crops.play_type.clone()),
             (ScreenTextField::ResultTitle, crops.title.clone()),
             (ScreenTextField::ResultArtist, crops.artist.clone()),
             (ScreenTextField::ResultClearType, crops.clear_type.clone()),
@@ -483,6 +484,7 @@ pub enum EvidenceFamily {
     ResultTitle,
     ResultArtist,
     ResultChart,
+    ResultPlayType,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -650,7 +652,7 @@ impl RegisteredScreenFieldObservation {
                 let matching_song_ids = parsed_result_fields
                     .as_ref()
                     .map_or_else(Vec::new, |parsed| {
-                        matching_single_play_songs(catalog, parsed)
+                        matching_observed_chart_songs(catalog, parsed)
                     });
                 ScreenSongResolution::Result(assist_unknown_result_song_with_chart(
                     primary,
@@ -977,6 +979,7 @@ impl RegisteredScreenFieldObserver {
             self.text_pool
                 .submit(vec![
                     (ScreenTextField::ResultDifficulty, crops.difficulty.clone()),
+                    (ScreenTextField::ResultPlayType, crops.play_type.clone()),
                     (ScreenTextField::ResultTitle, crops.title.clone()),
                     (ScreenTextField::ResultArtist, crops.artist.clone()),
                     (ScreenTextField::ResultClearType, crops.clear_type.clone()),

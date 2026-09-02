@@ -281,6 +281,7 @@ pub enum DiagnosticTextField {
     ResultArtist,
     ResultClearType,
     ResultDifficulty,
+    ResultPlayType,
     ResultLevel,
     ResultNotes,
     ResultCurrentScore,
@@ -1511,7 +1512,7 @@ fn valid_fact(fact: &DiagnosticFact) -> bool {
                     && fact.error_type.is_none()
                     && matches!(
                         (screen, observed_fields, unimplemented_fields),
-                        (DiagnosticScreen::Result, 19, 0)
+                        (DiagnosticScreen::Result, 20, 0)
                             | (DiagnosticScreen::MusicSelection, 3, 1)
                     )
             }
@@ -1528,6 +1529,7 @@ fn valid_fact(fact: &DiagnosticFact) -> bool {
                                 | DiagnosticTextField::ResultArtist
                                 | DiagnosticTextField::ResultClearType
                                 | DiagnosticTextField::ResultDifficulty
+                                | DiagnosticTextField::ResultPlayType
                                 | DiagnosticTextField::ResultLevel
                                 | DiagnosticTextField::ResultNotes
                                 | DiagnosticTextField::ResultCurrentScore

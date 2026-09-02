@@ -3190,10 +3190,9 @@ pub fn replay_corpus_with_options(
                 ) else {
                     return invalid_replay("production OCR did not complete");
                 };
-                let output = observation
-                    .output()
-                    .as_ref()
-                    .map_err(|_| CorpusError::InvalidReplay("production OCR failed".to_owned()))?;
+                let output = observation.output().as_ref().map_err(|error| {
+                    CorpusError::InvalidReplay(format!("production OCR failed: {error}"))
+                })?;
                 let scorepeek::recognition::ScreenFieldObservations::Result(fields) =
                     output.fields()
                 else {
@@ -4352,7 +4351,7 @@ fn start_replay_session(
     );
     output
         .publish(&scorepeek::routine_output::RunEvent {
-            schema: "scorepeek-run-event-v6".to_owned(),
+            schema: "scorepeek-run-event-v7".to_owned(),
             kind: scorepeek::routine_output::RunEventKind::SessionStarted {
                 session_id: Some(session_id.clone()),
                 capture_generation: session.capture_generation,
@@ -4659,7 +4658,7 @@ fn process_replay_frame(
     runtime
         .output
         .publish(&scorepeek::routine_output::RunEvent {
-            schema: "scorepeek-run-event-v6".to_owned(),
+            schema: "scorepeek-run-event-v7".to_owned(),
             kind: scorepeek::routine_output::RunEventKind::RawScreenObserved {
                 session_id: Some(runtime.session_id.clone()),
                 capture_generation: Some(runtime.session.capture_generation),
@@ -4742,7 +4741,7 @@ fn finalize_replay_session(
     runtime
         .output
         .publish(&scorepeek::routine_output::RunEvent {
-            schema: "scorepeek-run-event-v6".to_owned(),
+            schema: "scorepeek-run-event-v7".to_owned(),
             kind: scorepeek::routine_output::RunEventKind::SessionFinished {
                 session_id: runtime.session_id.clone(),
                 capture_generation: runtime.session.capture_generation,
@@ -4858,7 +4857,7 @@ fn publish_replay_semantic(
 ) -> Result<(), CorpusError> {
     output
         .publish(&scorepeek::routine_output::RunEvent {
-            schema: "scorepeek-run-event-v6".to_owned(),
+            schema: "scorepeek-run-event-v7".to_owned(),
             kind: scorepeek::routine_output::RunEventKind::SemanticScreenEpisodeChanged {
                 session_id: Some(session_id.to_owned()),
                 capture_generation: Some(generation),
@@ -4941,7 +4940,7 @@ fn commit_replay_pending(
     let monotonic_end_ms = observation.monotonic_end_ms();
     let observation = observation
         .into_output()
-        .map_err(|_| CorpusError::InvalidReplay("production OCR failed".to_owned()))?;
+        .map_err(|error| CorpusError::InvalidReplay(format!("production OCR failed: {error}")))?;
     let processing = observation.processing_timing();
     measurements.field_queue_wait_us = measurements
         .field_queue_wait_us
@@ -6094,6 +6093,7 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
                 | "scorepeek-run-event-v4"
                 | "scorepeek-run-event-v5"
                 | "scorepeek-run-event-v6"
+                | "scorepeek-run-event-v7"
         ) || event_schema
             .as_deref()
             .is_some_and(|expected| expected != schema)
@@ -6108,6 +6108,7 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
                 | "scorepeek-run-event-v4"
                 | "scorepeek-run-event-v5"
                 | "scorepeek-run-event-v6"
+                | "scorepeek-run-event-v7"
         ) {
             serde_json::from_value::<StoredRunEventPayload>(record.clone()).map_err(|_| {
                 CorpusError::InvalidRequest("diagnostic run event payload is invalid".to_owned())

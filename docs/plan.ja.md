@@ -108,7 +108,8 @@
   registered resourceとcandidate domainをcapture開始前にloadし、Gamescope capture loopからfield submit、inference、全song scoring、
   capture/worker/diagnosticの順序付き終了までを一つのbounded gateへ統合済み。private INFINITAS frameによる実submit、実行cost、
   queue behaviorとtarget上のfield性能は未検証。ADR 0078のprovisional result eventはADR 0083によりsupersedeされ、
-  public `/v1.sock` event authorityとSP/DP・1P/2P detectorは引き続き未実装である。
+  public `/v1.sock` event authorityと1P/2P detectorは引き続き未実装である。RESULTのSP/DPは
+  measured slotのexact OCRとepisode内2観測で実装済みだが、DP実画像による検証は未完了である。
   さらにcorpus録画由来の全canonical frameをsource adapterから同じapplication sessionへ供給するrecording simulationを実装した。
   profileはrecording/recording manifest/source manifest/probe/coverage label/extraction/normalizer/layout/catalog/model/runtime、全frame span、source pacing、diagnostic
   sampling、coverage labelの全resultを一対一で覆うepisode windowとexact `CLEAR TYPE`をbindする。ADR 0083ではplay/result観測とselectedまたはretry-inherited songの一致をaccepted attemptとし、

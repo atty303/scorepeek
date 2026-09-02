@@ -621,7 +621,7 @@ fn run_routine_live_session(
         state.recording_staging_store(),
     )?;
     output.publish(&routine_output::RunEvent {
-        schema: "scorepeek-run-event-v6".to_owned(),
+        schema: "scorepeek-run-event-v7".to_owned(),
         kind: routine_output::RunEventKind::WatcherStarted {
             invocation_id: invocation_id.clone(),
             profile_sha256: selected.binding.capture_profile_sha256().to_owned(),
@@ -763,7 +763,7 @@ fn run_routine_live_session(
                         _ => "error",
                     };
                     output.publish(&routine_output::RunEvent {
-                        schema: "scorepeek-run-event-v6".to_owned(),
+                        schema: "scorepeek-run-event-v7".to_owned(),
                         kind: routine_output::RunEventKind::SessionFinished {
                             session_id: session_id.clone(),
                             capture_generation: generation,
@@ -832,7 +832,7 @@ fn run_routine_live_session(
                                 if completeness == "complete" {
                                     recording_published = true;
                                     output.publish(&routine_output::RunEvent {
-                                        schema: "scorepeek-run-event-v6".to_owned(),
+                                        schema: "scorepeek-run-event-v7".to_owned(),
                                         kind: routine_output::RunEventKind::RecordingReady {
                                             session_id: session_id.clone(),
                                             directory: published.directory.display().to_string(),
@@ -927,7 +927,7 @@ fn run_routine_live_session(
         }
     }
     output.publish(&routine_output::RunEvent {
-        schema: "scorepeek-run-event-v6".to_owned(),
+        schema: "scorepeek-run-event-v7".to_owned(),
         kind: routine_output::RunEventKind::WatcherStopped {
             invocation_id,
             reason: "signal".to_owned(),
@@ -1315,7 +1315,7 @@ fn live_session_event_value(
     event: capture_live::GamescopeLiveSessionEvent<'_>,
 ) -> Result<serde_json::Value, String> {
     let schema = if session_id.is_some() {
-        "scorepeek-run-event-v6"
+        "scorepeek-run-event-v7"
     } else {
         "scorepeek-live-session-event-v1"
     };
@@ -1433,6 +1433,7 @@ fn live_session_event_value(
                         "clear_type": observation.clear_type(),
                         "clear_type_ocr": fields.clear_type.open_text,
                         "difficulty": fields.difficulty.open_text,
+                        "play_type": fields.play_type.open_text,
                         "level": fields.level.open_text,
                         "notes": fields.notes.open_text,
                         "current_score": fields.current_score.open_text,
@@ -3898,7 +3899,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v6");
+        assert_eq!(value["schema"], "scorepeek-run-event-v7");
         assert_eq!(value["event"], "raw_screen_observed");
         assert_eq!(value["semantic_episode_id"], 1);
         assert_eq!(value["session_id"], "invocation-session-2");
@@ -3932,6 +3933,7 @@ mod tests {
                 artist: text("ARTIST EXACT"),
                 clear_type: text("FAILED"),
                 difficulty: text("HYPER"),
+                play_type: text("SP"),
                 level: text("8"),
                 notes: text("800"),
                 current_score: text("1200"),
@@ -3955,6 +3957,7 @@ mod tests {
         assert_eq!(value["fields"]["title"], "TITLE EXACT");
         assert_eq!(value["fields"]["artist"], "ARTIST EXACT");
         assert_eq!(value["fields"]["clear_type"], "FAILED");
+        assert_eq!(value["fields"]["play_type"], "SP");
         assert_eq!(
             value["result_song_resolution"]["reason"],
             "no_catalog_candidates"
@@ -3989,7 +3992,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v6");
+        assert_eq!(value["schema"], "scorepeek-run-event-v7");
         assert_eq!(value["session_id"], "invocation-session-2");
         assert_eq!(value["capture_generation"], 2);
         assert_eq!(value["sequence"], 1);

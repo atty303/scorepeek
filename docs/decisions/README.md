@@ -322,6 +322,9 @@ authoritative.
 - [ADR 0106: Group recording staging by session](0106-group-recording-staging-by-session.md)
   groups temporary capture, recognition, event, and canonical components below one session tree,
   removes that tree after publication, and drops the unread watcher-status file.
+- [ADR 0107: Recognize RESULT play type before chart resolution](0107-recognize-result-play-type.md)
+  adds a measured RESULT SP/DP ROI, exact fail-closed parsing, and conflict-free two-observation
+  chart evidence without changing the accepted v2 event.
 
 ## Historical
 

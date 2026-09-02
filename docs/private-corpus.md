@@ -8,7 +8,7 @@ objects, or deduplicate frames by pixel content.
 ## Recording boundary
 
 `scorepeek run` performs production recognition without saving artifacts. `scorepeek run --record`
-starts capture diagnostics, recognition observation v18, run-event v6, the canonical session
+starts capture diagnostics, recognition observation v19, run-event v7, the canonical session
 recorder, and joined diagnostic session v5 together. `--profile NAME` may appear before or after
 `--record`. Routine capture diagnostics retain structured facts but no legacy QOI pixels. The
 canonical recording is therefore the session's only retained frame authority.

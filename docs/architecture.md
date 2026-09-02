@@ -144,8 +144,8 @@ padding, and tensor normalization belong to a versioned OCR preprocessor bound
 to the model. Training and Rust inference use the same preprocessing contract.
 
 Fields are represented as `known`, `unknown(reason)`, or `not_applicable`.
-PP-OCRv6 small native-dynamic observes only result title, artist, clear type, difficulty, previous
-clear type, and the music-select text fields. Fourteen fixed result numeric ROIs are instead
+PP-OCRv6 small native-dynamic observes result title, artist, clear type, difficulty, play type,
+previous clear type, play options, and the music-select text fields. Fourteen fixed result numeric ROIs are instead
 split only by canonical numeric-character layout v3. Each declared cell receives a field-family
 hard/soft mask and a fixed 2,244-value HOG/soft-pixel feature. All cells are submitted together to
 one registered `N x 2244 -> N x 11` MLP ONNX batch with classes `_0123456789`. Fixed-slot grammar
@@ -164,7 +164,9 @@ raw observation, semantic duration, and attempt path continue at screen cadence.
 title geometry, candidates, and provisional decisions remain debug evidence.
 Level remains advisory. A calibrated known level may add support only to candidates already
 established by non-level song evidence and never rejects an otherwise supported chart. SP and DP
-charts remain in the joint catalog distribution; difficulty and known notes distinguish siblings.
+charts remain in the joint catalog distribution. Exact play type observed at least twice without
+an opposite observation is required before chart acceptance and excludes opposite-type candidates;
+difficulty and known notes alone cannot distinguish every sibling.
 The catalog supplies the level of the accepted joint chart, while observed mismatch remains debug
 evidence.
 Each admitted field request carries its semantic episode ID and source sequence. Closing an episode
@@ -173,7 +175,7 @@ and finalizes it before the next known screen changes attempt state. A different
 reversed chronology, or post-close submission is typed late evidence and cannot affect resolution.
 
 The screen adapter converts full-catalog text metrics into song factors and retains typed chart
-observations as independent difficulty, notes, and advisory-level factors. A common accumulator
+observations as independent play-type and correlated difficulty/notes/advisory-level factors. A common accumulator
 keeps raw `u64` family sums across different source sequences. Summary projects those factors onto
 the complete catalog hierarchy, then normalizes by the largest raw value in each family and, only
 above 300, scales every candidate in that family by the same ratio. This caps repeated evidence
@@ -197,14 +199,16 @@ family, using the maximum of lexical and structural support for the crop. Raw `X
 to `〆`.
 
 MUSIC SELECT submits only central title, artist, and active-list title to PP-OCR. Difficulty comes
-from five fixed canonical `PLAYER 01` marker slots in integrated-context layout v3. The shared RGB
+from five fixed canonical `PLAYER 01` marker slots in integrated-context layout v4. The shared RGB
 panel/fill/glyph predicate requires exactly one winner above both a minimum and margin; all other
 states remain typed unknown. Difficulty support narrows charts only under an already text-supported
 song and cannot generate song identity.
 
 The attempt resolver owns select and result evidence snapshots rather than an armed song and a
 separate result song. It combines them once on the same `(song, play type, difficulty)` catalog
-hierarchy. SP and DP remain sibling candidates until difficulty and notes distinguish them. A
+hierarchy. SP and DP remain sibling candidates until conflict-free two-observation play-type
+evidence distinguishes them; chart acceptance waits for that evidence and then rejects the
+opposite type. Difficulty and notes may be identical across those siblings. A
 select screen preserves linkage without accepted identity, allowing sufficient RESULT evidence to
 finish an observed select/play/result path. Returning through MUSIC SELECT starts a fresh context;
 only direct RESULT-to-PLAY inherits its parent selection once without re-adding frame support.
@@ -479,8 +483,8 @@ final identity check is outside the operator-trusted private-artifact boundary.
 ### Event API
 
 The ordinary foreground runtime exposes provisional recognition observations at
-`$XDG_RUNTIME_DIR/scorepeek/observations-v6.sock`. A connection begins with a bounded v6
-current-state snapshot and then receives sequenced `scorepeek-run-event-v6` NDJSON. This local
+`$XDG_RUNTIME_DIR/scorepeek/observations-v7.sock`. A connection begins with a bounded v7
+current-state snapshot and then receives sequenced `scorepeek-run-event-v7` NDJSON. This local
 observation surface may include raw OCR, foreground title geometry, joint candidates, and resolver
 metrics. `raw_screen_observed` is separate from semantic episode started, suspended, resumed,
 closing, and finalized transitions; `play_attempt_changed` contains the evidence-linked path and

@@ -8,7 +8,7 @@ use scorepeek::recognition::{
     ScreenTextField,
 };
 
-const MAX_TEXT_FIELDS_PER_FRAME: usize = 6;
+const MAX_TEXT_FIELDS_PER_FRAME: usize = 7;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecognitionExecutionMode {

@@ -45,6 +45,7 @@ const CURRENT_OBSERVATION_SCHEMA_V15: &str = "scorepeek-recognition-observation-
 const CURRENT_OBSERVATION_SCHEMA_V16: &str = "scorepeek-recognition-observation-v16";
 const CURRENT_OBSERVATION_SCHEMA_V17: &str = "scorepeek-recognition-observation-v17";
 const CURRENT_OBSERVATION_SCHEMA_V18: &str = "scorepeek-recognition-observation-v18";
+const CURRENT_OBSERVATION_SCHEMA_V19: &str = "scorepeek-recognition-observation-v19";
 const DRAFT_SCHEMA: &str = "scorepeek-private-music-select-motion-review-draft-v1";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-music-select-motion-review-summary-v1";
 const DECISIONS_SCHEMA: &str = "scorepeek-private-music-select-motion-review-decisions-v2";
@@ -2358,7 +2359,8 @@ fn supported_observation_schema(value: &Value) -> bool {
                 | CURRENT_OBSERVATION_SCHEMA_V15
                 | CURRENT_OBSERVATION_SCHEMA_V16
                 | CURRENT_OBSERVATION_SCHEMA_V17
-                | CURRENT_OBSERVATION_SCHEMA_V18,
+                | CURRENT_OBSERVATION_SCHEMA_V18
+                | CURRENT_OBSERVATION_SCHEMA_V19,
         )
     )
 }
@@ -3232,9 +3234,9 @@ mod tests {
         CURRENT_OBSERVATION_SCHEMA_V12, CURRENT_OBSERVATION_SCHEMA_V13,
         CURRENT_OBSERVATION_SCHEMA_V14, CURRENT_OBSERVATION_SCHEMA_V15,
         CURRENT_OBSERVATION_SCHEMA_V16, CURRENT_OBSERVATION_SCHEMA_V17,
-        CURRENT_OBSERVATION_SCHEMA_V18, CorrectSongExpectation, CorrectSongLabel,
-        CorrectSongLabels, LATEST_OBSERVATION_SCHEMA, MAX_PROCESS_STDERR_BYTES, MotionEvidence,
-        MotionReviewDecision, MotionReviewDecisions, MusicSelectDwellPolicy,
+        CURRENT_OBSERVATION_SCHEMA_V18, CURRENT_OBSERVATION_SCHEMA_V19, CorrectSongExpectation,
+        CorrectSongLabel, CorrectSongLabels, LATEST_OBSERVATION_SCHEMA, MAX_PROCESS_STDERR_BYTES,
+        MotionEvidence, MotionReviewDecision, MotionReviewDecisions, MusicSelectDwellPolicy,
         MusicSelectTemporalCandidatePolicy, OBSERVATION_SCHEMA, ObservationRecord,
         OperatorReviewState, RegionMotion, ReviewCompleteness, ReviewState, ReviewedMotionPair,
         ReviewedMotionSet, ReviewedMotionSpan, VideoIdentity, apply_music_select_motion_review,
@@ -3263,13 +3265,14 @@ mod tests {
             CURRENT_OBSERVATION_SCHEMA_V16,
             CURRENT_OBSERVATION_SCHEMA_V17,
             CURRENT_OBSERVATION_SCHEMA_V18,
+            CURRENT_OBSERVATION_SCHEMA_V19,
         ] {
             assert!(supported_observation_schema(&serde_json::Value::String(
                 schema.to_owned()
             )));
         }
         assert!(!supported_observation_schema(&serde_json::Value::String(
-            "scorepeek-recognition-observation-v19".to_owned()
+            "scorepeek-recognition-observation-v20".to_owned()
         )));
     }
 

@@ -46,8 +46,8 @@ fn duration_us(duration: Duration) -> u64 {
 const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const RESULT_HISTORY_CAPACITY: usize = 32;
-const SOCKET_NAME: &str = "observations-v6.sock";
-const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v6";
+const SOCKET_NAME: &str = "observations-v7.sock";
+const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v7";
 const NUMERIC_REQUIRED_OBSERVATIONS: u8 = 2;
 const PLAY_OPTIONS_REQUIRED_OBSERVATIONS: u8 = 2;
 
@@ -528,6 +528,7 @@ impl ResolverHypothesisKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ResolverTransitionIdentity {
     state: ResolverResolutionState,
+    result_play_type: Option<PlayType>,
     top: Option<ResolverHypothesisKey>,
     runner_up: Option<ResolverHypothesisKey>,
     runner_song: Option<ResolverHypothesisKey>,
@@ -594,6 +595,7 @@ impl CurrentSelectionDifficulty {
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct ResultChartFactor {
+    play_type: Option<PlayType>,
     difficulty: Option<Difficulty>,
     notes: Option<u32>,
     level: Option<u8>,
@@ -602,6 +604,7 @@ struct ResultChartFactor {
 #[derive(Clone, Debug)]
 struct HypothesisSummary {
     state: ResolverResolutionState,
+    result_play_type: Option<PlayType>,
     selected: Option<JointEvidenceCandidate>,
     runner_up: Option<JointEvidenceCandidate>,
     runner_song: Option<JointEvidenceCandidate>,
@@ -715,6 +718,11 @@ impl HypothesisAccumulator {
     )]
     fn summary(&self) -> HypothesisSummary {
         let mut expanded = self.candidates.clone();
+        let result_play_type = self.resolved_result_play_type();
+        if let Some(play_type) = result_play_type {
+            expanded
+                .retain(|_, accumulated| accumulated.candidate.chart.key.play_type == play_type);
+        }
         for accumulated in expanded.values_mut() {
             let select_chart = self.select_difficulty.map_or(0, |current| {
                 u64::from(current.difficulty == accumulated.candidate.chart.key.difficulty)
@@ -743,6 +751,11 @@ impl HypothesisAccumulator {
                 accumulated
                     .family_support
                     .insert(EvidenceFamily::ResultChart, result_chart);
+            }
+            if result_play_type == Some(accumulated.candidate.chart.key.play_type) {
+                accumulated
+                    .family_support
+                    .insert(EvidenceFamily::ResultPlayType, 100);
             }
         }
         let mut family_maxima = BTreeMap::<EvidenceFamily, u64>::new();
@@ -801,6 +814,7 @@ impl HypothesisAccumulator {
         let Some(selected) = ranked.first() else {
             return HypothesisSummary {
                 state: ResolverResolutionState::Unresolved,
+                result_play_type,
                 selected: None,
                 runner_up: None,
                 runner_song: None,
@@ -829,7 +843,8 @@ impl HypothesisAccumulator {
         let song_margin = support.saturating_sub(runner_song.map_or(0, |value| value.support));
         let chart_margin = support.saturating_sub(runner_chart.map_or(0, |value| value.support));
         let song_is_resolved = runner_song.is_none() || song_margin >= JOINT_ACCEPT_MARGIN;
-        let chart_is_resolved = runner_chart.is_none() || chart_margin >= JOINT_ACCEPT_MARGIN;
+        let chart_is_resolved = result_play_type.is_some()
+            && (runner_chart.is_none() || chart_margin >= JOINT_ACCEPT_MARGIN);
         let state = if support >= JOINT_ACCEPT_SUPPORT && song_is_resolved && chart_is_resolved {
             ResolverResolutionState::AcceptedJoint
         } else if support >= JOINT_ACCEPT_SUPPORT && song_is_resolved {
@@ -841,6 +856,7 @@ impl HypothesisAccumulator {
         };
         HypothesisSummary {
             state,
+            result_play_type,
             selected: Some(selected.accumulated.candidate.clone()),
             runner_up: runner_up.map(|value| value.accumulated.candidate.clone()),
             runner_song: runner_song.map(|value| value.accumulated.candidate.clone()),
@@ -858,6 +874,23 @@ impl HypothesisAccumulator {
             runner_up_family_support: runner_up
                 .map_or_else(BTreeMap::new, |value| value.family_support.clone()),
         }
+    }
+
+    fn resolved_result_play_type(&self) -> Option<PlayType> {
+        let mut observed = BTreeMap::<PlayType, u64>::new();
+        for (factor, observations) in &self.result_chart_factors {
+            if let Some(play_type) = factor.play_type {
+                let count = observed.entry(play_type).or_default();
+                *count = count.saturating_add(*observations);
+            }
+        }
+        if observed.len() != 1 {
+            return None;
+        }
+        observed
+            .into_iter()
+            .next()
+            .and_then(|(play_type, observations)| (observations >= 2).then_some(play_type))
     }
 
     fn observe_select_difficulty(
@@ -1279,6 +1312,7 @@ impl RunEvent {
                     "clear_type": observation.clear_type(),
                     "clear_type_ocr": fields.clear_type.open_text,
                     "difficulty": fields.difficulty.open_text,
+                    "play_type": fields.play_type.open_text,
                     "level": fields.level.open_text,
                     "notes": fields.notes.open_text,
                     "current_score": fields.current_score.open_text,
@@ -2002,7 +2036,7 @@ fn accept_clients(
 fn snapshot_bytes(state: &Arc<Mutex<RunViewState>>, health: &ChannelHealth) -> Option<Vec<u8>> {
     let state = state.lock().ok()?.clone();
     let mut bytes = serde_json::to_vec(&json!({
-            "schema": "scorepeek-run-observation-snapshot-v6",
+            "schema": "scorepeek-run-observation-snapshot-v7",
         "state": state,
         "channel": health.value(),
     }))
@@ -2138,6 +2172,7 @@ impl RoutineOutput {
     ) -> Result<(), String> {
         let identity = ResolverTransitionIdentity {
             state: summary.state,
+            result_play_type: summary.result_play_type,
             top: summary
                 .selected
                 .as_ref()
@@ -3577,6 +3612,7 @@ fn selected_difficulty(fields: &Value) -> Option<Difficulty> {
 
 fn result_chart_factor(fields: &ParsedResultFields) -> ResultChartFactor {
     ResultChartFactor {
+        play_type: fields.play_type.known().copied(),
         difficulty: fields.difficulty.known().copied(),
         notes: fields.notes.known().copied(),
         level: fields.level.known().copied(),
@@ -3716,6 +3752,7 @@ fn important_raw_fields(fields: &Value) -> Vec<(String, String)> {
         "central_title",
         "active_list_title",
         "artist",
+        "play_type",
         "difficulty",
         "current_score",
         "pgreat",
@@ -4571,6 +4608,9 @@ mod tests {
                 music_select_song_resolution: Value::Null,
                 parsed_result_fields: Some(ParsedResultFields {
                     resolver_id: "test".to_owned(),
+                    play_type: ResultFieldValue::Known {
+                        value: PlayType::Single,
+                    },
                     difficulty: ResultFieldValue::Known {
                         value: Difficulty::Hyper,
                     },
@@ -4593,7 +4633,7 @@ mod tests {
                     combo_break: SupplementalResultValue::Known { value: 2 },
                 }),
                 result_chart_resolution: Some(ResultChartResolution::Accepted {
-                    resolver_id: "scorepeek-result-fields-catalog-constrained-v5".to_owned(),
+                    resolver_id: "scorepeek-result-fields-catalog-constrained-v6".to_owned(),
                     chart: scorepeek::catalog::Chart {
                         key: scorepeek::catalog::ChartKey {
                             play_type: PlayType::Single,
@@ -4872,7 +4912,7 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         let snapshot: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v6");
+        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v7");
         assert_eq!(snapshot["state"]["invocation_id"], "invocation-1");
         assert_eq!(snapshot["state"]["next_channel_sequence"], 1);
         assert_eq!(snapshot["channel"]["connected_clients"], 1);
@@ -4959,9 +4999,15 @@ mod tests {
         prepare_accepted_attempt(&mut output);
 
         output.publish(&accepted_result_event(1)).unwrap();
+        let mut second = accepted_result_event(2);
+        let RunEventKind::FieldObservation { fields, .. } = &mut second.kind else {
+            unreachable!("accepted result fixture is a field observation");
+        };
+        fields["clear_type"] = Value::Null;
+        output.publish(&second).unwrap();
         output
             .publish(&semantic_episode_event(
-                2,
+                3,
                 "result",
                 SemanticEpisodePhase::Finalized,
             ))
@@ -5240,7 +5286,7 @@ mod tests {
         for reader in &mut readers {
             let mut snapshot = String::new();
             reader.read_line(&mut snapshot).unwrap();
-            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v6"));
+            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v7"));
         }
         channel
             .publish(&json!({
@@ -5904,6 +5950,7 @@ mod tests {
         };
         let mut accumulator = HypothesisAccumulator::default();
         let chart_factor = ResultChartFactor {
+            play_type: Some(PlayType::Single),
             difficulty: Some(Difficulty::Hyper),
             notes: Some(764),
             level: Some(8),
@@ -6008,6 +6055,7 @@ mod tests {
             },
             Some(Difficulty::Hyper),
             Some(ResultChartFactor {
+                play_type: None,
                 difficulty: Some(Difficulty::Hyper),
                 notes: Some(1_136),
                 level: Some(10),
@@ -6427,6 +6475,21 @@ mod tests {
             },
             None,
             Some(ResultChartFactor {
+                play_type: Some(PlayType::Single),
+                difficulty: Some(Difficulty::Hyper),
+                notes: Some(1_136),
+                level: None,
+            }),
+        );
+        result.observe(
+            201,
+            &JointEvidenceObservation {
+                catalog_song_count: 2,
+                candidates: Vec::new(),
+            },
+            None,
+            Some(ResultChartFactor {
+                play_type: Some(PlayType::Single),
                 difficulty: Some(Difficulty::Hyper),
                 notes: Some(1_136),
                 level: None,
@@ -6438,8 +6501,133 @@ mod tests {
         assert_eq!(accepted.song_id, expected);
         assert_eq!(accepted.chart.key.play_type, PlayType::Single);
         assert_eq!(accepted.chart.notes, 1_136);
-        assert_eq!(summary.song_margin, 50);
-        assert_eq!(summary.chart_margin, 50);
+        assert_eq!(summary.song_margin, 100);
+        assert_eq!(summary.chart_margin, 650);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the regression covers unresolved, accepted, conflicting, and mismatched SP/DP evidence"
+    )]
+    fn result_play_type_breaks_an_otherwise_identical_sibling_tie() {
+        let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000043\"").unwrap();
+        let chart = |play_type| JointEvidenceCandidate {
+            song_id,
+            chart: scorepeek::catalog::Chart {
+                key: scorepeek::catalog::ChartKey {
+                    play_type,
+                    difficulty: Difficulty::Hyper,
+                },
+                level: 8,
+                notes: 829,
+            },
+            display_titles: vec!["Wizards!".to_owned()],
+            artist: "ARTIST".to_owned(),
+            family_support: BTreeMap::from([(EvidenceFamily::ResultTitle, 300)]),
+            support: 300,
+        };
+        let observation = JointEvidenceObservation {
+            catalog_song_count: 1,
+            candidates: vec![chart(PlayType::Single), chart(PlayType::Double)],
+        };
+        let mut without_play_type = HypothesisAccumulator::default();
+        without_play_type.observe(
+            100,
+            &observation,
+            None,
+            Some(ResultChartFactor {
+                play_type: None,
+                difficulty: Some(Difficulty::Hyper),
+                notes: Some(829),
+                level: Some(8),
+            }),
+        );
+        assert_eq!(
+            without_play_type.summary().state,
+            ResolverResolutionState::SongProjected
+        );
+
+        let mut with_play_type = HypothesisAccumulator::default();
+        with_play_type.observe(
+            100,
+            &observation,
+            None,
+            Some(ResultChartFactor {
+                play_type: Some(PlayType::Single),
+                difficulty: Some(Difficulty::Hyper),
+                notes: Some(829),
+                level: Some(8),
+            }),
+        );
+        assert_eq!(
+            with_play_type.summary().state,
+            ResolverResolutionState::SongProjected
+        );
+        with_play_type.observe(
+            101,
+            &observation,
+            None,
+            Some(ResultChartFactor {
+                play_type: Some(PlayType::Single),
+                difficulty: Some(Difficulty::Hyper),
+                notes: Some(829),
+                level: Some(8),
+            }),
+        );
+        let summary = with_play_type.summary();
+        assert_eq!(summary.state, ResolverResolutionState::AcceptedJoint);
+        assert_eq!(
+            summary
+                .selected
+                .as_ref()
+                .map(|candidate| candidate.chart.key.play_type),
+            Some(PlayType::Single)
+        );
+        assert_eq!(summary.chart_margin, 600);
+        assert_eq!(
+            summary.selected_family_support[&EvidenceFamily::ResultPlayType].normalized,
+            100
+        );
+
+        with_play_type.observe(
+            102,
+            &observation,
+            None,
+            Some(ResultChartFactor {
+                play_type: Some(PlayType::Double),
+                difficulty: Some(Difficulty::Hyper),
+                notes: Some(829),
+                level: Some(8),
+            }),
+        );
+        assert_eq!(
+            with_play_type.summary().state,
+            ResolverResolutionState::SongProjected
+        );
+
+        let mut mismatched_only = HypothesisAccumulator::default();
+        let double_only = JointEvidenceObservation {
+            catalog_song_count: 1,
+            candidates: vec![chart(PlayType::Double)],
+        };
+        for monotonic_ms in [200, 201] {
+            mismatched_only.observe(
+                monotonic_ms,
+                &double_only,
+                None,
+                Some(ResultChartFactor {
+                    play_type: Some(PlayType::Single),
+                    difficulty: Some(Difficulty::Hyper),
+                    notes: Some(829),
+                    level: Some(8),
+                }),
+            );
+        }
+        assert_eq!(
+            mismatched_only.summary().state,
+            ResolverResolutionState::Unresolved
+        );
     }
 
     #[test]
@@ -6811,6 +6999,22 @@ mod tests {
             None,
             None,
         );
+        for monotonic_ms in [101, 102] {
+            accumulator.observe(
+                monotonic_ms,
+                &JointEvidenceObservation {
+                    catalog_song_count: 0,
+                    candidates: Vec::new(),
+                },
+                None,
+                Some(ResultChartFactor {
+                    play_type: Some(PlayType::Single),
+                    difficulty: None,
+                    notes: None,
+                    level: None,
+                }),
+            );
+        }
         assert_eq!(
             accumulator.summary().state,
             ResolverResolutionState::AcceptedJoint
@@ -6849,7 +7053,7 @@ mod tests {
         let transition = read_raw_event(&mut reader);
         assert_eq!(transition["event"], "resolver_state_changed");
         assert_eq!(transition["scope"], "result");
-        assert_eq!(transition["state"], "accepted_joint");
+        assert_eq!(transition["state"], "song_projected");
         assert_eq!(
             transition["selected_family_support"]["result_title"]["raw"],
             120
@@ -6859,5 +7063,21 @@ mod tests {
             120
         );
         assert_eq!(transition["observation_count"], 1);
+
+        output.publish(&accepted_result_event(2)).unwrap();
+        let transition = (0..4)
+            .map(|_| read_raw_event(&mut reader))
+            .find(|event| {
+                event["event"] == "resolver_state_changed"
+                    && event["scope"] == "result"
+                    && event["selected_family_support"]["result_play_type"]["normalized"] == 100
+            })
+            .expect("result play-type authority transition");
+        assert_eq!(transition["event"], "resolver_state_changed");
+        assert_eq!(
+            transition["selected_family_support"]["result_play_type"]["normalized"],
+            100
+        );
+        assert_eq!(transition["observation_count"], 2);
     }
 }

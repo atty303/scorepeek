@@ -4,7 +4,7 @@ use crate::catalog::{Catalog, Chart, Difficulty, PlayType, ScorepeekSongId};
 
 use super::{DynamicTextObservation, ResultScreenFieldObservations};
 
-pub const RESULT_FIELD_RESOLVER_ID: &str = "scorepeek-result-fields-catalog-constrained-v5";
+pub const RESULT_FIELD_RESOLVER_ID: &str = "scorepeek-result-fields-catalog-constrained-v6";
 pub const RESULT_PERFORMANCE_RESOLVER_ID: &str = "scorepeek-result-performance-v1";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -99,6 +99,7 @@ impl<T> ResultFieldValue<T> {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ParsedResultFields {
     pub resolver_id: String,
+    pub play_type: ResultFieldValue<PlayType>,
     pub difficulty: ResultFieldValue<Difficulty>,
     pub level: ResultFieldValue<u8>,
     pub notes: ResultFieldValue<u32>,
@@ -148,6 +149,7 @@ impl ParsedResultFields {
         };
         Self {
             resolver_id: RESULT_FIELD_RESOLVER_ID.to_owned(),
+            play_type: parse_play_type(&fields.play_type),
             difficulty: parse_difficulty(&fields.difficulty),
             level: parse_decimal(&fields.level, 1, 12),
             notes: parse_decimal(&fields.notes, 1, u32::MAX),
@@ -308,7 +310,10 @@ pub fn resolve_result_chart(
     song_id: ScorepeekSongId,
     fields: &ParsedResultFields,
 ) -> ResultChartResolution {
-    let Some(difficulty) = fields.difficulty.known().copied() else {
+    let (Some(play_type), Some(difficulty)) = (
+        fields.play_type.known().copied(),
+        fields.difficulty.known().copied(),
+    ) else {
         return unknown(ResultChartUnknownReason::IncompleteObservation, Vec::new());
     };
     let notes = fields.notes.known().copied();
@@ -319,7 +324,7 @@ pub fn resolve_result_chart(
         .charts()
         .values()
         .filter(|chart| {
-            chart.key.play_type == PlayType::Single
+            chart.key.play_type == play_type
                 && chart.key.difficulty == difficulty
                 && notes.is_none_or(|notes| chart.notes == notes)
         })
@@ -357,11 +362,14 @@ pub fn resolve_result_chart(
 }
 
 #[must_use]
-pub fn matching_single_play_songs(
+pub fn matching_observed_chart_songs(
     catalog: &Catalog,
     fields: &ParsedResultFields,
 ) -> Vec<ScorepeekSongId> {
-    let Some(difficulty) = fields.difficulty.known().copied() else {
+    let (Some(play_type), Some(difficulty)) = (
+        fields.play_type.known().copied(),
+        fields.difficulty.known().copied(),
+    ) else {
         return Vec::new();
     };
     let Some(notes) = fields.notes.known().copied() else {
@@ -373,7 +381,7 @@ pub fn matching_single_play_songs(
         .iter()
         .filter(|(_, song)| {
             song.charts().values().any(|chart| {
-                chart.key.play_type == PlayType::Single
+                chart.key.play_type == play_type
                     && chart.key.difficulty == difficulty
                     && level.is_none_or(|level| chart.level == level)
                     && chart.notes == notes
@@ -381,6 +389,26 @@ pub fn matching_single_play_songs(
         })
         .map(|(song_id, _)| *song_id)
         .collect()
+}
+
+fn parse_play_type(observation: &DynamicTextObservation) -> ResultFieldValue<PlayType> {
+    match observation
+        .open_text
+        .trim_matches(|value: char| value.is_ascii_whitespace())
+    {
+        "SP" => ResultFieldValue::Known {
+            value: PlayType::Single,
+        },
+        "DP" => ResultFieldValue::Known {
+            value: PlayType::Double,
+        },
+        "" => ResultFieldValue::Unknown {
+            reason: ResultFieldUnknownReason::Empty,
+        },
+        _ => ResultFieldValue::Unknown {
+            reason: ResultFieldUnknownReason::InvalidFormat,
+        },
+    }
 }
 
 fn parse_difficulty(observation: &DynamicTextObservation) -> ResultFieldValue<Difficulty> {
@@ -599,6 +627,7 @@ mod tests {
     fn result_fields() -> ResultScreenFieldObservations {
         ResultScreenFieldObservations {
             clear_type: text("CLEAR"),
+            play_type: text("SP"),
             difficulty: text("HYPER"),
             level: text("8"),
             notes: text("764"),
@@ -700,6 +729,32 @@ mod tests {
 
     #[test]
     fn parses_exact_closed_difficulty_and_decimal_fields() {
+        assert_eq!(
+            parse_play_type(&text(" SP ")),
+            ResultFieldValue::Known {
+                value: PlayType::Single
+            }
+        );
+        assert_eq!(
+            parse_play_type(&text("DP")),
+            ResultFieldValue::Known {
+                value: PlayType::Double
+            }
+        );
+        assert_eq!(
+            parse_play_type(&text("5P")),
+            ResultFieldValue::Unknown {
+                reason: ResultFieldUnknownReason::InvalidFormat
+            }
+        );
+        for value in ["sp", "dp", "\u{a0}SP\u{a0}"] {
+            assert_eq!(
+                parse_play_type(&text(value)),
+                ResultFieldValue::Unknown {
+                    reason: ResultFieldUnknownReason::InvalidFormat
+                }
+            );
+        }
         assert_eq!(
             parse_difficulty(&text(" HYPER ")),
             ResultFieldValue::Known {

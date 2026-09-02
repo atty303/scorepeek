@@ -26,7 +26,7 @@ not claim one interval. An interval with fewer than two retained result observat
 `insufficient_temporal_observations`; a label that cannot be assigned or has multiple possible
 assignments is excluded with a separate typed reason.
 
-Current `scorepeek-recognition-observation-v18` and legacy v5 through v17 shapes are decoded into the same typed
+Current `scorepeek-recognition-observation-v19` and legacy v5 through v18 shapes are decoded into the same typed
 input. Only an accepted song resolution supplies a song ID. Unknown resolution remains unknown,
 and clear type uses the production resolver rather than an evaluator-specific mapping. A merged
 stream's predicate-only `fields: null, song_id: null` placeholder contributes a screen boundary but
