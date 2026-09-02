@@ -16,26 +16,40 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::fmt::Write as _;
+use std::path::Path;
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::Instant;
 
-use super::field_observer::{FieldObserver, FieldObserverInput};
+use super::field_observer::{FieldObserver, FieldObserverAdmission, FieldObserverInput};
 use super::text_observer_pool::{
     PendingTextObservationBatch, RecognitionExecutionMode, RegisteredTextObserverPool,
     TextObservationBatch,
 };
 
 const TITLE_EVIDENCE_RUNTIME_MANIFEST: &[u8] =
-    include_bytes!("../../../../models/manifests/title-evidence-runtime-v1.json");
+    include_bytes!("../../../../models/manifests/title-evidence-runtime-v2.json");
 pub const TITLE_EVIDENCE_RUNTIME_MANIFEST_SHA256: &str =
-    "4c8f0d811388a30b23f0e7f68005a9347f9a360ddd04c06614d0da20cba54c9b";
+    "1be327a2b18c3fa1274c167b2f267e9bb6a5c6b076a843818e49f3980db9642b";
 
 /// Production screen-field observer owning the exact resources for one immutable run.
 pub struct RegisteredScreenFieldObserver {
     catalog: Catalog,
-    text_pool: RegisteredTextObserverPool,
-    numeric_runtime: RegisteredNumericRuntime,
+    text_pool: Arc<RegisteredTextObserverPool>,
+    numeric_worker: Arc<RegisteredNumericObserverWorker>,
     candidate_domain: CatalogCandidateDomain,
-    prefetched_text: BTreeMap<u64, PendingTextObservationBatch>,
+    prefetched_text: Arc<Mutex<BTreeMap<u64, PendingTextObservationBatch>>>,
+    prefetched_numeric: Arc<Mutex<BTreeMap<u64, PendingNumericObservationBatch>>>,
+}
+
+/// Run-independent registered OCR resources shared by offline replay sessions.
+pub struct SharedRegisteredScreenFieldResources {
+    catalog_sha256: String,
+    model_sha256: String,
+    runtime_sha256: String,
+    catalog: Catalog,
+    text_pool: Arc<RegisteredTextObserverPool>,
 }
 
 #[derive(Debug)]
@@ -104,68 +118,278 @@ impl RegisteredScreenFieldObserver {
         }
         let (catalog, title_runtime) = resources.into_catalog_and_title_runtime();
         let candidate_domain = CatalogCandidateDomain::from_catalog(&catalog)?;
-        let text_pool = RegisteredTextObserverPool::start(title_runtime, execution_mode)?;
+        let text_pool = Arc::new(RegisteredTextObserverPool::start(
+            title_runtime,
+            execution_mode,
+        )?);
         Ok(Self {
             catalog,
             text_pool,
-            numeric_runtime,
+            numeric_worker: Arc::new(RegisteredNumericObserverWorker::start(numeric_runtime)?),
             candidate_domain,
-            prefetched_text: BTreeMap::new(),
+            prefetched_text: Arc::new(Mutex::new(BTreeMap::new())),
+            prefetched_numeric: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
-    pub(crate) fn prefetch_text(
-        &mut self,
+    fn from_shared(
+        shared: &SharedRegisteredScreenFieldResources,
+        numeric_runtime: RegisteredNumericRuntime,
+    ) -> Result<Self, RegisteredScreenFieldObserverLoadError> {
+        verify_title_evidence_manifest()?;
+        let catalog = shared.catalog.clone();
+        let candidate_domain = CatalogCandidateDomain::from_catalog(&catalog)?;
+        Ok(Self {
+            catalog,
+            text_pool: Arc::clone(&shared.text_pool),
+            numeric_worker: Arc::new(RegisteredNumericObserverWorker::start(numeric_runtime)?),
+            candidate_domain,
+            prefetched_text: Arc::new(Mutex::new(BTreeMap::new())),
+            prefetched_numeric: Arc::new(Mutex::new(BTreeMap::new())),
+        })
+    }
+
+    pub(crate) fn prefetch_fields(
+        &self,
         input: &FieldObserverInput,
     ) -> Result<(), ScreenFieldObservationError<OnnxParityError>> {
-        use scorepeek::recognition::ScreenTextField;
-        let jobs = match input.crops() {
-            scorepeek::recognition::ScreenRgb8Crops::Result(crops) => vec![
-                (ScreenTextField::ResultDifficulty, crops.difficulty.clone()),
-                (ScreenTextField::ResultTitle, crops.title.clone()),
-                (ScreenTextField::ResultArtist, crops.artist.clone()),
-                (ScreenTextField::ResultClearType, crops.clear_type.clone()),
-                (
-                    ScreenTextField::ResultPreviousClearType,
-                    crops.previous_clear_type.clone(),
-                ),
-                (
-                    ScreenTextField::ResultPlayOptions,
-                    crops.play_options.clone(),
-                ),
-            ],
-            scorepeek::recognition::ScreenRgb8Crops::MusicSelect(crops) => {
-                let foreground = scorepeek::recognition::TitleEvidenceExtractor::REGISTERED
-                    .extract(&crops.active_list_title);
-                let mut jobs = vec![
-                    (ScreenTextField::MusicSelectArtist, crops.artist.clone()),
-                    (
-                        ScreenTextField::MusicSelectActiveListTitle,
-                        crops.active_list_title.clone(),
-                    ),
-                ];
-                if let Some((crop, _)) = foreground {
-                    jobs.push((ScreenTextField::MusicSelectActiveListTitle, crop));
+        submit_fields(
+            &self.text_pool,
+            &self.numeric_worker,
+            &self.prefetched_text,
+            &self.prefetched_numeric,
+            input,
+        )
+    }
+}
+
+struct NumericObservationJob {
+    crops: scorepeek::recognition::ResultScreenRgb8Crops,
+    response: mpsc::Sender<Result<NumericBatchInference, OnnxParityError>>,
+}
+
+enum NumericObserverMessage {
+    Observe(Box<NumericObservationJob>),
+    Finish,
+}
+
+struct RegisteredNumericObserverWorker {
+    sender: mpsc::Sender<NumericObserverMessage>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl RegisteredNumericObserverWorker {
+    fn start(mut runtime: RegisteredNumericRuntime) -> Result<Self, OnnxParityError> {
+        let (sender, receiver) = mpsc::channel();
+        let worker = std::thread::Builder::new()
+            .name("scorepeek-numeric-observer".to_owned())
+            .spawn(move || {
+                while let Ok(message) = receiver.recv() {
+                    match message {
+                        NumericObserverMessage::Observe(job) => {
+                            let _ = job.response.send(runtime.observe(&job.crops));
+                        }
+                        NumericObserverMessage::Finish => return,
+                    }
                 }
-                jobs
-            }
-        };
-        let error_field = jobs[0].0;
-        let pending = self
-            .text_pool
-            .submit(jobs)
-            .map_err(|source| ScreenFieldObservationError::new(error_field, source))?;
-        if self
-            .prefetched_text
+            })?;
+        Ok(Self {
+            sender,
+            worker: Mutex::new(Some(worker)),
+        })
+    }
+
+    fn submit(
+        &self,
+        crops: &scorepeek::recognition::ResultScreenRgb8Crops,
+    ) -> Result<PendingNumericObservationBatch, OnnxParityError> {
+        let (response, receiver) = mpsc::channel();
+        self.sender
+            .send(NumericObserverMessage::Observe(Box::new(
+                NumericObservationJob {
+                    crops: crops.clone(),
+                    response,
+                },
+            )))
+            .map_err(|_| OnnxParityError::InvalidArtifact)?;
+        Ok(PendingNumericObservationBatch { receiver })
+    }
+}
+
+impl Drop for RegisteredNumericObserverWorker {
+    fn drop(&mut self) {
+        let _ = self.sender.send(NumericObserverMessage::Finish);
+        if let Some(worker) = self
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = worker.join();
+        }
+    }
+}
+
+struct PendingNumericObservationBatch {
+    receiver: mpsc::Receiver<Result<NumericBatchInference, OnnxParityError>>,
+}
+
+impl PendingNumericObservationBatch {
+    fn join(self) -> Result<NumericBatchInference, OnnxParityError> {
+        self.receiver
+            .recv()
+            .map_err(|_| OnnxParityError::InvalidArtifact)?
+    }
+}
+
+fn submit_fields(
+    text_pool: &RegisteredTextObserverPool,
+    numeric_worker: &RegisteredNumericObserverWorker,
+    prefetched_text: &Mutex<BTreeMap<u64, PendingTextObservationBatch>>,
+    prefetched_numeric: &Mutex<BTreeMap<u64, PendingNumericObservationBatch>>,
+    input: &FieldObserverInput,
+) -> Result<(), ScreenFieldObservationError<OnnxParityError>> {
+    submit_text_fields(text_pool, prefetched_text, input)?;
+    if let scorepeek::recognition::ScreenRgb8Crops::Result(crops) = input.crops() {
+        let pending = numeric_worker.submit(crops).map_err(|source| {
+            ScreenFieldObservationError::new(
+                scorepeek::recognition::ScreenTextField::ResultNumericBatch,
+                source,
+            )
+        })?;
+        if prefetched_numeric
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(input.sequence(), pending)
             .is_some()
         {
             return Err(ScreenFieldObservationError::new(
-                error_field,
+                scorepeek::recognition::ScreenTextField::ResultNumericBatch,
                 OnnxParityError::InvalidArtifact,
             ));
         }
+    }
+    Ok(())
+}
+
+fn submit_text_fields(
+    text_pool: &RegisteredTextObserverPool,
+    prefetched_text: &Mutex<BTreeMap<u64, PendingTextObservationBatch>>,
+    input: &FieldObserverInput,
+) -> Result<(), ScreenFieldObservationError<OnnxParityError>> {
+    use scorepeek::recognition::ScreenTextField;
+    let jobs = match input.crops() {
+        scorepeek::recognition::ScreenRgb8Crops::Result(crops) => vec![
+            (ScreenTextField::ResultDifficulty, crops.difficulty.clone()),
+            (ScreenTextField::ResultTitle, crops.title.clone()),
+            (ScreenTextField::ResultArtist, crops.artist.clone()),
+            (ScreenTextField::ResultClearType, crops.clear_type.clone()),
+            (
+                ScreenTextField::ResultPreviousClearType,
+                crops.previous_clear_type.clone(),
+            ),
+            (
+                ScreenTextField::ResultPlayOptions,
+                crops.play_options.clone(),
+            ),
+        ],
+        scorepeek::recognition::ScreenRgb8Crops::MusicSelect(crops) => {
+            let foreground = scorepeek::recognition::TitleEvidenceExtractor::REGISTERED
+                .extract(&crops.active_list_title);
+            let mut jobs = vec![
+                (ScreenTextField::MusicSelectArtist, crops.artist.clone()),
+                (
+                    ScreenTextField::MusicSelectActiveListTitle,
+                    crops.active_list_title.clone(),
+                ),
+            ];
+            if let Some((crop, _)) = foreground {
+                jobs.push((ScreenTextField::MusicSelectActiveListTitle, crop));
+            }
+            jobs
+        }
+    };
+    let error_field = jobs[0].0;
+    let pending = text_pool
+        .submit(jobs)
+        .map_err(|source| ScreenFieldObservationError::new(error_field, source))?;
+    if prefetched_text
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(input.sequence(), pending)
+        .is_some()
+    {
+        return Err(ScreenFieldObservationError::new(
+            error_field,
+            OnnxParityError::InvalidArtifact,
+        ));
+    }
+    Ok(())
+}
+
+impl SharedRegisteredScreenFieldResources {
+    /// Loads the immutable catalog/model binding once and creates one global offline text pool.
+    ///
+    /// # Errors
+    /// Returns the registered resource or text runtime failure before session replay starts.
+    pub fn load(
+        descriptor: &crate::diagnostic_recording::DiagnosticRunDescriptor,
+        catalog_root: &Path,
+        bundle_root: &Path,
+        text_workers: usize,
+    ) -> Result<Self, RegisteredScreenFieldObserverLoadError> {
+        verify_title_evidence_manifest()?;
+        let resources = RegisteredRecognitionResources::load(
+            catalog_root,
+            bundle_root,
+            &descriptor.binding.catalog_sha256,
+            &descriptor.binding.model_sha256,
+            &descriptor.binding.runtime_sha256,
+        )?;
+        let (catalog, title_runtime) = resources.into_catalog_and_title_runtime();
+        let text_pool = RegisteredTextObserverPool::start_with_worker_count(
+            title_runtime,
+            RecognitionExecutionMode::Offline,
+            text_workers,
+        )?;
+        Ok(Self {
+            catalog_sha256: descriptor.binding.catalog_sha256.clone(),
+            model_sha256: descriptor.binding.model_sha256.clone(),
+            runtime_sha256: descriptor.binding.runtime_sha256.clone(),
+            catalog,
+            text_pool: Arc::new(text_pool),
+        })
+    }
+
+    #[must_use]
+    pub fn text_workers(&self) -> usize {
+        self.text_pool.configuration().workers
+    }
+
+    pub(crate) fn observer(
+        &self,
+        binding: &super::field_observer::FieldObserverSessionBinding,
+        numeric_runtime: RegisteredNumericRuntime,
+    ) -> Result<RegisteredScreenFieldObserver, RegisteredScreenFieldObserverLoadError> {
+        if binding.catalog_sha256() != self.catalog_sha256
+            || binding.model_sha256() != self.model_sha256
+            || binding.runtime_sha256() != self.runtime_sha256
+        {
+            return Err(RegisteredResourceLoadError::CatalogBindingMismatch.into());
+        }
+        RegisteredScreenFieldObserver::from_shared(self, numeric_runtime)
+    }
+}
+
+fn verify_title_evidence_manifest() -> Result<(), OnnxParityError> {
+    let mut manifest_sha256 = String::with_capacity(64);
+    for byte in Sha256::digest(TITLE_EVIDENCE_RUNTIME_MANIFEST) {
+        let _ = write!(manifest_sha256, "{byte:02x}");
+    }
+    if manifest_sha256 == TITLE_EVIDENCE_RUNTIME_MANIFEST_SHA256 {
         Ok(())
+    } else {
+        Err(OnnxParityError::InvalidArtifact)
     }
 }
 
@@ -249,11 +473,52 @@ pub struct RecognitionProcessingTiming {
     pub frame_total_us: u64,
     pub field_queue_wait_us: u64,
     pub text_batch_wall_us: u64,
+    pub maximum_text_worker_queue_wait_us: u64,
     pub maximum_text_worker_inference_us: u64,
+    pub text_worker_busy_us: u64,
+    pub text_worker_ids: Vec<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub numeric_recognition_us: Option<u64>,
     pub join_us: u64,
     pub catalog_evidence_us: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen_classification_us: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crop_prepare_us: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub screen_resolver_us: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt_finalization_us: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_us: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_end_to_end_wall_us: Option<u64>,
+}
+
+impl RecognitionProcessingTiming {
+    fn initial(catalog_evidence_us: u64) -> Self {
+        Self {
+            execution_policy: "test",
+            available_parallelism: 1,
+            text_workers: 1,
+            frame_total_us: 0,
+            field_queue_wait_us: 0,
+            text_batch_wall_us: 0,
+            maximum_text_worker_queue_wait_us: 0,
+            maximum_text_worker_inference_us: 0,
+            text_worker_busy_us: 0,
+            text_worker_ids: Vec::new(),
+            numeric_recognition_us: None,
+            join_us: 0,
+            catalog_evidence_us,
+            screen_classification_us: None,
+            crop_prepare_us: None,
+            screen_resolver_us: None,
+            attempt_finalization_us: None,
+            output_us: None,
+            frame_end_to_end_wall_us: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -397,18 +662,7 @@ impl RegisteredScreenFieldObservation {
             result_performance_resolution,
             current_score_ocr_resolution: None,
             numeric_batch: None,
-            processing_timing: RecognitionProcessingTiming {
-                execution_policy: "test",
-                available_parallelism: 1,
-                text_workers: 1,
-                frame_total_us: 0,
-                field_queue_wait_us: 0,
-                text_batch_wall_us: 0,
-                maximum_text_worker_inference_us: 0,
-                numeric_recognition_us: None,
-                join_us: 0,
-                catalog_evidence_us,
-            },
+            processing_timing: RecognitionProcessingTiming::initial(catalog_evidence_us),
             joint_evidence,
             title_evidence,
         }
@@ -478,6 +732,15 @@ impl RegisteredScreenFieldObservation {
     #[must_use]
     pub const fn processing_timing(&self) -> &RecognitionProcessingTiming {
         &self.processing_timing
+    }
+
+    pub(crate) fn apply_frame_timing(&mut self, timing: super::FrameProcessingTiming) {
+        self.processing_timing.screen_classification_us = Some(timing.screen_classification_us);
+        self.processing_timing.crop_prepare_us = timing.crop_prepare_us;
+        self.processing_timing.screen_resolver_us = timing.screen_resolver_us;
+        self.processing_timing.attempt_finalization_us = timing.attempt_resolver_us;
+        self.processing_timing.output_us = timing.output_us;
+        self.processing_timing.frame_end_to_end_wall_us = Some(timing.frame_processing_wall_us);
     }
 
     #[must_use]
@@ -641,7 +904,10 @@ struct ObservedFrameFields {
     fields: ScreenFieldObservations,
     numeric_batch: Option<NumericBatchInference>,
     text_batch_wall_us: u64,
+    maximum_text_worker_queue_wait_us: u64,
     maximum_text_worker_inference_us: u64,
+    text_worker_busy_us: u64,
+    text_worker_ids: Vec<usize>,
     join_started: Instant,
     title_evidence: Option<TitleEvidenceObservation>,
 }
@@ -653,7 +919,12 @@ impl RegisteredScreenFieldObserver {
         crops: &scorepeek::recognition::ResultScreenRgb8Crops,
     ) -> Result<ObservedFrameFields, ScreenFieldObservationError<OnnxParityError>> {
         use scorepeek::recognition::ScreenTextField;
-        let pending = if let Some(pending) = self.prefetched_text.remove(&sequence) {
+        let pending = if let Some(pending) = self
+            .prefetched_text
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&sequence)
+        {
             pending
         } else {
             self.text_pool
@@ -675,7 +946,18 @@ impl RegisteredScreenFieldObserver {
                     ScreenFieldObservationError::new(ScreenTextField::ResultDifficulty, source)
                 })?
         };
-        let numeric = self.numeric_runtime.observe(crops);
+        let numeric = if let Some(pending) = self
+            .prefetched_numeric
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&sequence)
+        {
+            pending.join()
+        } else {
+            self.numeric_worker
+                .submit(crops)
+                .and_then(PendingNumericObservationBatch::join)
+        };
         let mut text = pending.join().map_err(|source| {
             ScreenFieldObservationError::new(ScreenTextField::ResultDifficulty, source)
         })?;
@@ -712,7 +994,10 @@ impl RegisteredScreenFieldObserver {
             fields: ScreenFieldObservations::Result(fields),
             numeric_batch: Some(numeric),
             text_batch_wall_us: text.wall_us,
+            maximum_text_worker_queue_wait_us: text.maximum_queue_wait_us,
             maximum_text_worker_inference_us: text.maximum_worker_inference_us,
+            text_worker_busy_us: text.worker_busy_us,
+            text_worker_ids: text.worker_ids,
             join_started,
             title_evidence: None,
         })
@@ -737,7 +1022,12 @@ impl RegisteredScreenFieldObserver {
         if let Some((crop, _)) = &foreground {
             jobs.push((ScreenTextField::MusicSelectActiveListTitle, crop.clone()));
         }
-        let pending = if let Some(pending) = self.prefetched_text.remove(&sequence) {
+        let pending = if let Some(pending) = self
+            .prefetched_text
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&sequence)
+        {
             pending
         } else {
             self.text_pool.submit(jobs).map_err(|source| {
@@ -803,7 +1093,10 @@ impl RegisteredScreenFieldObserver {
             fields,
             numeric_batch: None,
             text_batch_wall_us: text.wall_us,
+            maximum_text_worker_queue_wait_us: text.maximum_queue_wait_us,
             maximum_text_worker_inference_us: text.maximum_worker_inference_us,
+            text_worker_busy_us: text.worker_busy_us,
+            text_worker_ids: text.worker_ids,
             join_started,
             title_evidence: Some(title_evidence),
         })
@@ -816,8 +1109,26 @@ impl FieldObserver for RegisteredScreenFieldObserver {
 
     const PIPELINED_PREFETCH: bool = true;
 
+    fn admission(&self) -> Option<FieldObserverAdmission<Self::Output>> {
+        let text_pool = Arc::clone(&self.text_pool);
+        let numeric_worker = Arc::clone(&self.numeric_worker);
+        let prefetched_text = Arc::clone(&self.prefetched_text);
+        let prefetched_numeric = Arc::clone(&self.prefetched_numeric);
+        Some(Arc::new(move |input| {
+            submit_fields(
+                &text_pool,
+                &numeric_worker,
+                &prefetched_text,
+                &prefetched_numeric,
+                input,
+            )
+            .err()
+            .map(Err)
+        }))
+    }
+
     fn prefetch(&mut self, input: &FieldObserverInput) -> Option<Self::Output> {
-        self.prefetch_text(input).err().map(Err)
+        self.prefetch_fields(input).err().map(Err)
     }
 
     fn observe(&mut self, input: &FieldObserverInput) -> Self::Output {
@@ -845,13 +1156,22 @@ impl FieldObserver for RegisteredScreenFieldObserver {
             frame_total_us: duration_us(frame_started.elapsed()),
             field_queue_wait_us: input.field_queue_wait_us(),
             text_batch_wall_us: observed.text_batch_wall_us,
+            maximum_text_worker_queue_wait_us: observed.maximum_text_worker_queue_wait_us,
             maximum_text_worker_inference_us: observed.maximum_text_worker_inference_us,
+            text_worker_busy_us: observed.text_worker_busy_us,
+            text_worker_ids: observed.text_worker_ids,
             numeric_recognition_us: observation
                 .numeric_batch
                 .as_ref()
                 .map(|batch| batch.elapsed_us),
             join_us: duration_us(observed.join_started.elapsed()),
             catalog_evidence_us: observation.processing_timing.catalog_evidence_us,
+            screen_classification_us: None,
+            crop_prepare_us: None,
+            screen_resolver_us: None,
+            attempt_finalization_us: None,
+            output_us: None,
+            frame_end_to_end_wall_us: None,
         };
         Ok(observation)
     }

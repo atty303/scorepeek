@@ -310,6 +310,9 @@ authoritative.
   replaces the two-frame recorder queue with one shared configurable memory account, keeps
   intentional gaps inside segments, defers decode verification to import, removes routine QOI
   duplication, and publishes an explicit recording-ready lifecycle event.
+- [ADR 0103: Share OCR workers and parallelize session replay](0103-share-ocr-workers-and-parallelize-session-replay.md)
+  shares one bounded OCR pool across sessions, runs one single-threaded FFmpeg child per active
+  session, and applies CPU- and memory-derived concurrency without a fixed session limit.
 
 ## Historical
 

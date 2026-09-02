@@ -67,9 +67,9 @@ const V5_SERVER_BUNDLE_MANIFEST_BYTES: &[u8] =
 const V5_SERVER_BUNDLE_MANIFEST_SHA256: &str =
     "4fe22f41508ed31b86e86caa88d433a20702d0a6e95cea07bcaca577441594fe";
 const LIVE_RUNTIME_MANIFEST_BYTES: &[u8] =
-    include_bytes!("../../../../models/manifests/pp-ocrv6-small-live-runtime-v4.json");
+    include_bytes!("../../../../models/manifests/pp-ocrv6-small-live-runtime-v5.json");
 pub const LIVE_RUNTIME_SHA256: &str =
-    "6751a4d52f6e4d6e766abc817f5eaec7d92ad62d6c21ae5a708d6aadc2de26a5";
+    "ec784163f0cf8aa9caa00194ba258077a7a1225daf24011dd808de27ab44c7cb";
 pub const LIVE_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
 pub const LIVE_MODEL_SHA256: &str =
     "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634";
@@ -297,6 +297,7 @@ struct LiveRuntimeManifest {
     model_bundle_manifest_sha256: String,
     live_available_parallelism_divisor: usize,
     offline_reserved_parallelism: usize,
+    default_maximum_text_workers: usize,
 }
 
 impl LiveRuntimeManifest {
@@ -305,7 +306,7 @@ impl LiveRuntimeManifest {
             return Err(OnnxParityError::InvalidArtifact);
         }
         let manifest: Self = serde_json::from_slice(LIVE_RUNTIME_MANIFEST_BYTES)?;
-        if manifest.schema != "scorepeek-field-text-runtime-v4"
+        if manifest.schema != "scorepeek-field-text-runtime-v5"
             || manifest.implementation_id != "scorepeek-pp-ocrv6-small-native-dynamic-cpu-v1"
             || manifest.ort_crate_version != "2.0.0-rc.13"
             || manifest.ort_api != 27
@@ -319,7 +320,8 @@ impl LiveRuntimeManifest {
             || manifest.decoder_id != "scorepeek-ctc-open-greedy-numeric-exact-v1"
             || manifest.model_bundle_manifest_sha256 != LIVE_MODEL_BUNDLE_MANIFEST_SHA256
             || manifest.live_available_parallelism_divisor != 2
-            || manifest.offline_reserved_parallelism != 1
+            || manifest.offline_reserved_parallelism != 4
+            || manifest.default_maximum_text_workers != 12
         {
             return Err(OnnxParityError::InvalidArtifact);
         }

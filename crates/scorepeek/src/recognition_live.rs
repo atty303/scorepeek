@@ -102,6 +102,8 @@ pub struct RecognitionFrameResult<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct FrameProcessingTiming {
+    #[serde(skip)]
+    pub(crate) frame_started: Instant,
     pub source_sequence: u64,
     pub monotonic_start_ms: u64,
     pub monotonic_end_ms: u64,
@@ -123,6 +125,10 @@ impl FrameProcessingTiming {
         add_optional_duration(&mut self.screen_resolver_us, timing.screen_resolver_us);
         add_optional_duration(&mut self.attempt_resolver_us, timing.attempt_resolver_us);
         add_optional_duration(&mut self.output_us, timing.output_us);
+    }
+
+    pub(crate) fn finish_wall(&mut self) {
+        self.frame_processing_wall_us = duration_us(self.frame_started.elapsed());
     }
 }
 
@@ -291,6 +297,7 @@ impl RecognitionSession {
             .map(|_| duration_us(crop_started.elapsed()));
         let diagnostic_fact = self.bridge.record_screen_observation(&observation);
         let timing = FrameProcessingTiming {
+            frame_started,
             source_sequence: frame.sequence(),
             monotonic_start_ms: frame.monotonic_start_ms(),
             monotonic_end_ms: frame.monotonic_end_ms(),
@@ -623,6 +630,26 @@ mod tests {
                 .completeness,
             None
         );
+    }
+
+    #[test]
+    fn frame_wall_timer_keeps_the_inspection_origin_until_output_finishes() {
+        let root = tempfile::tempdir().unwrap();
+        let frame = BoundCanonicalFrame::for_test(1, 1, 0);
+        let mut session = RecognitionSession::start(
+            root.path(),
+            descriptor("frame-wall-origin", 1),
+            DiagnosticPolicy {
+                enabled: false,
+                ..DiagnosticPolicy::default()
+            },
+        )
+        .unwrap();
+        let mut timing = session.inspect(&frame).unwrap().timing;
+        let inspection_wall_us = timing.frame_processing_wall_us;
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        timing.finish_wall();
+        assert!(timing.frame_processing_wall_us > inspection_wall_us);
     }
 
     #[test]

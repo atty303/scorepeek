@@ -20,8 +20,8 @@ impl RecognitionExecutionMode {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Live => "live_half_available_parallelism_v1",
-            Self::Offline => "offline_available_parallelism_minus_one_v1",
+            Self::Live => "live_half_available_parallelism_capped_12_v2",
+            Self::Offline => "offline_available_parallelism_minus_four_capped_12_v2",
         }
     }
 }
@@ -41,9 +41,9 @@ pub fn select_text_worker_count(
     let available_parallelism = available_parallelism.max(1);
     let requested = match execution_mode {
         RecognitionExecutionMode::Live => available_parallelism / 2,
-        RecognitionExecutionMode::Offline => available_parallelism.saturating_sub(1),
+        RecognitionExecutionMode::Offline => available_parallelism.saturating_sub(4),
     };
-    requested.max(1)
+    requested.clamp(1, 12)
 }
 
 /// Applies the production policy, with one explicit offline-only benchmark override.
@@ -70,6 +70,7 @@ struct TextJob {
 }
 
 struct TextJobResult {
+    worker_id: usize,
     field: ScreenTextField,
     observation: Result<DynamicTextObservation, OnnxParityError>,
     completed_after_dispatch_us: u64,
@@ -90,6 +91,8 @@ pub struct TextObservationBatch {
     pub wall_us: u64,
     pub maximum_queue_wait_us: u64,
     pub maximum_worker_inference_us: u64,
+    pub worker_busy_us: u64,
+    pub worker_ids: Vec<usize>,
 }
 
 pub struct RegisteredTextObserverPool {
@@ -110,6 +113,22 @@ impl RegisteredTextObserverPool {
     ) -> Result<Self, OnnxParityError> {
         let available_parallelism = thread::available_parallelism().map_or(1, usize::from);
         let worker_count = configured_text_worker_count(execution_mode, available_parallelism);
+        Self::start_with_worker_count(first_runtime, execution_mode, worker_count)
+    }
+
+    /// Constructs an explicitly sized pool for offline replay and benchmarking.
+    ///
+    /// # Errors
+    /// Returns an error for a zero/unsupported worker count or runtime/thread startup failure.
+    pub fn start_with_worker_count(
+        first_runtime: RegisteredDynamicTitleRuntime,
+        execution_mode: RecognitionExecutionMode,
+        worker_count: usize,
+    ) -> Result<Self, OnnxParityError> {
+        let available_parallelism = thread::available_parallelism().map_or(1, usize::from);
+        if worker_count == 0 || worker_count > available_parallelism {
+            return Err(OnnxParityError::InvalidArtifact);
+        }
         let mut runtimes = Vec::with_capacity(worker_count);
         for _ in 1..worker_count {
             runtimes.push(first_runtime.spawn_peer()?);
@@ -122,7 +141,7 @@ impl RegisteredTextObserverPool {
             let (sender, receiver) = mpsc::channel();
             let worker = match thread::Builder::new()
                 .name(format!("scorepeek-text-observer-{index}"))
-                .spawn(move || run_text_worker(&mut runtime, &receiver))
+                .spawn(move || run_text_worker(index, &mut runtime, &receiver))
             {
                 Ok(worker) => worker,
                 Err(error) => {
@@ -210,6 +229,8 @@ impl PendingTextObservationBatch {
         let mut wall_us = 0;
         let mut maximum_queue_wait_us = 0;
         let mut maximum_worker_inference_us = 0;
+        let mut worker_busy_us = 0_u64;
+        let mut worker_ids = Vec::with_capacity(self.pending.len());
         for (expected_field, receiver) in self.pending {
             let result = receiver
                 .recv()
@@ -220,6 +241,10 @@ impl PendingTextObservationBatch {
             wall_us = wall_us.max(result.completed_after_dispatch_us);
             maximum_queue_wait_us = maximum_queue_wait_us.max(result.queue_wait_us);
             maximum_worker_inference_us = maximum_worker_inference_us.max(result.inference_us);
+            worker_busy_us = worker_busy_us.saturating_add(result.inference_us);
+            if !worker_ids.contains(&result.worker_id) {
+                worker_ids.push(result.worker_id);
+            }
             observations.push((expected_field, result.observation));
         }
         Ok(TextObservationBatch {
@@ -227,11 +252,14 @@ impl PendingTextObservationBatch {
             wall_us,
             maximum_queue_wait_us,
             maximum_worker_inference_us,
+            worker_busy_us,
+            worker_ids,
         })
     }
 }
 
 fn run_text_worker(
+    worker_id: usize,
     runtime: &mut RegisteredDynamicTitleRuntime,
     receiver: &Receiver<TextWorkerMessage>,
 ) {
@@ -244,6 +272,7 @@ fn run_text_worker(
                 let inference_us = duration_us(inference_started.elapsed());
                 let completed_after_dispatch_us = duration_us(job.dispatched.elapsed());
                 let _ = job.response.send(TextJobResult {
+                    worker_id,
                     field: job.field,
                     observation,
                     completed_after_dispatch_us,
@@ -276,7 +305,7 @@ mod tests {
         );
         assert_eq!(
             select_text_worker_count(RecognitionExecutionMode::Live, 32),
-            16
+            12
         );
         assert_eq!(
             select_text_worker_count(RecognitionExecutionMode::Offline, 1),
@@ -284,11 +313,11 @@ mod tests {
         );
         assert_eq!(
             select_text_worker_count(RecognitionExecutionMode::Offline, 4),
-            3
+            1
         );
         assert_eq!(
             select_text_worker_count(RecognitionExecutionMode::Offline, 32),
-            31
+            12
         );
     }
 }

@@ -356,7 +356,11 @@ pub enum DiagnosticDetail {
         crop_prepare_us: Option<u64>,
         field_queue_wait_us: Option<u64>,
         text_batch_wall_us: Option<u64>,
+        maximum_text_worker_queue_wait_us: Option<u64>,
         maximum_text_worker_inference_us: Option<u64>,
+        text_worker_busy_us: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        text_worker_ids: Option<Vec<usize>>,
         numeric_ocr_us: Option<u64>,
         field_join_us: Option<u64>,
         catalog_evidence_us: Option<u64>,

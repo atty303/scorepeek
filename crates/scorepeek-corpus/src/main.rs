@@ -4,14 +4,14 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use scorepeek_corpus::{
-    MusicSelectDwellPolicy, MusicSelectTemporalCandidatePolicy, TemporalEvaluationPolicy,
-    apply_music_list_motion_review, apply_music_select_motion_review, apply_review,
-    author_numeric_dataset, author_numeric_sentinel, evaluate_music_select_correctness,
-    evaluate_music_select_dwell, evaluate_temporal_corpus, import_diagnostic,
-    inspect_music_list_row_observation_draft, inspect_review, measure_music_list_motion,
-    plan_music_list_motion_review, plan_music_select_motion_review, render_synthetic_title_set,
-    replay_corpus, verify_diagnostic, verify_music_list_motion,
-    verify_music_list_row_observation_draft,
+    CorpusReplayOptions, MusicSelectDwellPolicy, MusicSelectTemporalCandidatePolicy,
+    TemporalEvaluationPolicy, apply_music_list_motion_review, apply_music_select_motion_review,
+    apply_review, author_numeric_dataset, author_numeric_sentinel,
+    evaluate_music_select_correctness, evaluate_music_select_dwell, evaluate_temporal_corpus,
+    import_diagnostic, inspect_music_list_row_observation_draft, inspect_review,
+    measure_music_list_motion, plan_music_list_motion_review, plan_music_select_motion_review,
+    render_synthetic_title_set, replay_corpus_with_options, verify_diagnostic,
+    verify_music_list_motion, verify_music_list_row_observation_draft,
 };
 
 fn main() -> ExitCode {
@@ -312,6 +312,9 @@ fn run_frame_corpus(args: &[OsString]) -> Option<Result<(), String>> {
     if args.starts_with(&[OsString::from("temporal"), OsString::from("evaluate")]) {
         return Some(run_temporal_evaluation(&args[2..]));
     }
+    if args.starts_with(&[OsString::from("corpus"), OsString::from("replay")]) {
+        return Some(run_corpus_replay(&args[2..]));
+    }
     let result = match args {
         [diagnostic, verify, directory] if diagnostic == "diagnostic" && verify == "verify" => {
             verify_diagnostic(&PathBuf::from(directory))
@@ -371,13 +374,6 @@ fn run_frame_corpus(args: &[OsString]) -> Option<Result<(), String>> {
             .map_err(|error| format!("review application failed: {error}"))
             .and_then(|summary| print_json(&summary, "review application"))
         }
-        [corpus, replay, store_flag, store]
-            if corpus == "corpus" && replay == "replay" && store_flag == "--store" =>
-        {
-            replay_corpus(&PathBuf::from(store))
-                .map_err(|error| format!("corpus replay failed: {error}"))
-                .and_then(|summary| print_json(&summary, "corpus replay"))
-        }
         [
             numeric,
             dataset,
@@ -432,6 +428,61 @@ fn run_frame_corpus(args: &[OsString]) -> Option<Result<(), String>> {
         _ => return None,
     };
     Some(result)
+}
+
+fn run_corpus_replay(args: &[OsString]) -> Result<(), String> {
+    let (store, options) = parse_corpus_replay_options(args)?;
+    replay_corpus_with_options(&store, options)
+        .map_err(|error| format!("corpus replay failed: {error}"))
+        .and_then(|summary| print_json(&summary, "corpus replay"))
+}
+
+fn parse_corpus_replay_options(
+    args: &[OsString],
+) -> Result<(PathBuf, CorpusReplayOptions), String> {
+    let mut store = None;
+    let mut text_workers = None;
+    let mut memory_mib = None;
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args.get(index).and_then(|value| value.to_str());
+        let value = args.get(index + 1).ok_or_else(corpus_replay_usage)?;
+        match flag {
+            Some("--store") if store.is_none() => store = Some(PathBuf::from(value)),
+            Some("--text-workers") if text_workers.is_none() => {
+                text_workers = Some(
+                    value
+                        .to_str()
+                        .ok_or_else(corpus_replay_usage)?
+                        .parse::<usize>()
+                        .map_err(|_| corpus_replay_usage())?,
+                );
+            }
+            Some("--memory-mib") if memory_mib.is_none() => {
+                memory_mib = Some(
+                    value
+                        .to_str()
+                        .ok_or_else(corpus_replay_usage)?
+                        .parse::<usize>()
+                        .map_err(|_| corpus_replay_usage())?,
+                );
+            }
+            _ => return Err(corpus_replay_usage()),
+        }
+        index += 2;
+    }
+    Ok((
+        store.ok_or_else(corpus_replay_usage)?,
+        CorpusReplayOptions {
+            text_workers,
+            memory_mib: memory_mib.unwrap_or(2_048),
+        },
+    ))
+}
+
+fn corpus_replay_usage() -> String {
+    "usage: scorepeek-corpus corpus replay --store ROOT [--text-workers N] [--memory-mib N]"
+        .to_owned()
 }
 
 fn run_temporal_evaluation(args: &[OsString]) -> Result<(), String> {
@@ -503,7 +554,7 @@ fn run_remaining(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "usage: scorepeek-corpus <diagnostic verify DIRECTORY|corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE|review show --draft FILE|review apply --store ROOT --draft FILE --labels FILE|corpus replay --store ROOT|temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|music-list motion review-plan --output PLAN ARTIFACT|music-list motion review-apply --output REQUEST ARTIFACT PLAN DECISIONS|music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE|music-select motion review-apply --output REVIEWED DRAFT DECISIONS|music-select dwell evaluate --store ROOT --catalog-store ROOT --reviewed REVIEWED --output REPORT [--policy DWELL_MS ...]|music-select dwell evaluate-correctness --store ROOT --catalog-store ROOT --reviewed REVIEWED --labels LABELS --output REPORT [--policy DWELL_MS:UNKNOWN_GRACE_MS ...]>"
+            "usage: scorepeek-corpus <diagnostic verify DIRECTORY|corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE|review show --draft FILE|review apply --store ROOT --draft FILE --labels FILE|corpus replay --store ROOT [--text-workers N] [--memory-mib N]|temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|music-list motion review-plan --output PLAN ARTIFACT|music-list motion review-apply --output REQUEST ARTIFACT PLAN DECISIONS|music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE|music-select motion review-apply --output REVIEWED DRAFT DECISIONS|music-select dwell evaluate --store ROOT --catalog-store ROOT --reviewed REVIEWED --output REPORT [--policy DWELL_MS ...]|music-select dwell evaluate-correctness --store ROOT --catalog-store ROOT --reviewed REVIEWED --labels LABELS --output REPORT [--policy DWELL_MS:UNKNOWN_GRACE_MS ...]>"
                 .to_owned(),
         ),
     }
@@ -524,7 +575,7 @@ fn print_usage() {
 
 fn usage_text() -> String {
     format!(
-        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus diagnostic verify DIRECTORY\n  scorepeek-corpus corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE\n  scorepeek-corpus review show --draft FILE\n  scorepeek-corpus review apply --store ROOT --draft FILE --labels FILE\n  scorepeek-corpus corpus replay --store ROOT\n  scorepeek-corpus temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]\n  scorepeek-corpus music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE\n  scorepeek-corpus music-select motion review-apply --output REVIEWED DRAFT DECISIONS\n  scorepeek-corpus music-select dwell evaluate --store ROOT --catalog-store ROOT --reviewed REVIEWED --output REPORT [--policy DWELL_MS ...]\n  scorepeek-corpus music-select dwell evaluate-correctness --store ROOT --catalog-store ROOT --reviewed REVIEWED --labels LABELS --output REPORT [--policy DWELL_MS:UNKNOWN_GRACE_MS ...]",
+        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus diagnostic verify DIRECTORY\n  scorepeek-corpus corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE\n  scorepeek-corpus review show --draft FILE\n  scorepeek-corpus review apply --store ROOT --draft FILE --labels FILE\n  scorepeek-corpus corpus replay --store ROOT [--text-workers N] [--memory-mib N]\n  scorepeek-corpus temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]\n  scorepeek-corpus music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE\n  scorepeek-corpus music-select motion review-apply --output REVIEWED DRAFT DECISIONS\n  scorepeek-corpus music-select dwell evaluate --store ROOT --catalog-store ROOT --reviewed REVIEWED --output REPORT [--policy DWELL_MS ...]\n  scorepeek-corpus music-select dwell evaluate-correctness --store ROOT --catalog-store ROOT --reviewed REVIEWED --labels LABELS --output REPORT [--policy DWELL_MS:UNKNOWN_GRACE_MS ...]",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -532,8 +583,31 @@ fn usage_text() -> String {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::path::PathBuf;
 
-    use super::{parse_temporal_policy, run, usage_text};
+    use super::{parse_corpus_replay_options, parse_temporal_policy, run, usage_text};
+
+    #[test]
+    fn corpus_replay_options_are_order_independent_and_unique() {
+        let args = [
+            "--memory-mib",
+            "2048",
+            "--store",
+            "/tmp/corpus",
+            "--text-workers",
+            "7",
+        ]
+        .map(OsString::from);
+        let (store, options) = parse_corpus_replay_options(&args).unwrap();
+        assert_eq!(store, PathBuf::from("/tmp/corpus"));
+        assert_eq!(options.text_workers, Some(7));
+        assert_eq!(options.memory_mib, 2_048);
+
+        let duplicate = ["--store", "/tmp/a", "--store", "/tmp/b"].map(OsString::from);
+        assert!(parse_corpus_replay_options(&duplicate).is_err());
+        let missing_value = ["--store"].map(OsString::from);
+        assert!(parse_corpus_replay_options(&missing_value).is_err());
+    }
 
     #[test]
     fn help_lists_music_select_motion_review_apply() {

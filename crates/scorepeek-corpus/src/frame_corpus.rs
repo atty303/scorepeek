@@ -2,13 +2,17 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
+use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+use std::ops::{Deref, DerefMut};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -41,6 +45,12 @@ const MAX_EVIDENCE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_QOI_BYTES: u64 = 16 * 1024 * 1024;
 const CANONICAL_DECODE_TIMEOUT: Duration = Duration::from_mins(2);
 const CANONICAL_DECODE_STDERR_BYTES: usize = 64 * 1024;
+const DEFAULT_REPLAY_MEMORY_MIB: usize = 2_048;
+const MINIMUM_REPLAY_MEMORY_MIB: usize = 256;
+const MAXIMUM_REPLAY_MEMORY_MIB: usize = 8_192;
+const DECODER_RESERVATION_BYTES: usize = 16 * 1024 * 1024;
+const SESSION_STATE_RESERVATION_BYTES: usize = 64 * 1024 * 1024;
+const PENDING_FIELD_FRAME_RESERVATION_BYTES: usize = 16 * 1024 * 1024;
 const NUMERIC_DATASET_SCHEMA: &str = "scorepeek-private-numeric-ctc-dataset-v1";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -87,7 +97,7 @@ struct DiagnosticArtifact {
     bytes: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct CanonicalRecordingManifest {
     schema: String,
     completeness: String,
@@ -103,7 +113,7 @@ struct CanonicalRecordingManifest {
     integrity_verification: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct CanonicalSegment {
     path: String,
     first_sequence: u64,
@@ -114,7 +124,7 @@ struct CanonicalSegment {
     bytes: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct CanonicalTick {
     sequence: u64,
     #[allow(dead_code)]
@@ -684,9 +694,54 @@ pub struct CorpusReplaySummary {
     canonical_frames: usize,
     negative_frames: usize,
     text_workers: usize,
+    decode_workers: usize,
+    maximum_active_sessions: usize,
+    maximum_concurrent_decoders: usize,
+    decoder_children: usize,
+    maximum_blocked_sessions: usize,
+    completed_sessions: usize,
+    memory_limit_bytes: u64,
+    tracked_memory_peak_bytes: u64,
+    process_rss_peak_bytes: u64,
+    ffmpeg_rss_peak_total_bytes: u64,
+    decoder_details: Vec<CorpusReplayDecoderSummary>,
     text_batch_wall_us: u64,
+    text_worker_busy_us: u64,
     field_frame_wall_us: u64,
+    ordered_commit_wait_us: u64,
+    decoder_slot_wait_us: u64,
+    memory_wait_us: u64,
+    sessions: Vec<CorpusReplaySessionSummary>,
     corpus_wall_us: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct CorpusReplaySessionSummary {
+    session_key: String,
+    wall_us: u64,
+    canonical_frames: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct CorpusReplayDecoderSummary {
+    decoder_id: usize,
+    wall_us: u64,
+    rss_peak_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CorpusReplayOptions {
+    pub text_workers: Option<usize>,
+    pub memory_mib: usize,
+}
+
+impl Default for CorpusReplayOptions {
+    fn default() -> Self {
+        Self {
+            text_workers: None,
+            memory_mib: DEFAULT_REPLAY_MEMORY_MIB,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1824,10 +1879,39 @@ fn decode_canonical_frames(
     path: &Path,
     expected_frames: usize,
     context: DecodeContext,
-    mut observe: impl FnMut(usize, Box<[u8]>) -> Result<(), CorpusError>,
+    observe: impl FnMut(usize, Box<[u8]>) -> Result<(), CorpusError> + Send,
 ) -> Result<String, CorpusError> {
-    let mut child = Command::new("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "error", "-i"])
+    decode_canonical_frames_with_activity(path, expected_frames, context, None, observe)
+}
+
+fn decode_canonical_frames_with_activity(
+    path: &Path,
+    expected_frames: usize,
+    context: DecodeContext,
+    activity: Option<&ReplayDecodeActivity>,
+    observe: impl FnMut(usize, Box<[u8]>) -> Result<(), CorpusError> + Send,
+) -> Result<String, CorpusError> {
+    decode_canonical_frames_with_program(
+        path,
+        expected_frames,
+        context,
+        activity,
+        OsStr::new("ffmpeg"),
+        observe,
+    )
+}
+
+fn decode_canonical_frames_with_program(
+    path: &Path,
+    expected_frames: usize,
+    context: DecodeContext,
+    activity: Option<&ReplayDecodeActivity>,
+    program: &OsStr,
+    mut observe: impl FnMut(usize, Box<[u8]>) -> Result<(), CorpusError> + Send,
+) -> Result<String, CorpusError> {
+    let decoder_memory = activity.map(ReplayDecodeActivity::reserve_decoder);
+    let child = Command::new(program)
+        .args(["-hide_banner", "-loglevel", "error", "-threads", "1", "-i"])
         .arg(path)
         .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
         .stdin(Stdio::null())
@@ -1835,6 +1919,10 @@ fn decode_canonical_frames(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| decode_error(context, format!("ffmpeg decode failed: {error}")))?;
+    let mut child = ReapedChild(child);
+    let activity_guard = activity
+        .zip(decoder_memory)
+        .map(|(activity, memory)| activity.enter(child.id(), memory));
     let Some(mut stdout) = child.stdout.take() else {
         kill_and_reap(&mut child);
         return Err(decode_error(
@@ -1850,6 +1938,9 @@ fn decode_canonical_frames(
         ));
     };
     let stderr = bounded_decode_stderr(stderr);
+    if let Some(activity) = &activity_guard {
+        activity.sample_rss(child.id());
+    }
     let (sender, receiver) = mpsc::sync_channel(1);
     let reader = thread::spawn(move || -> Result<String, String> {
         let mut digest = Sha256::new();
@@ -1876,6 +1967,9 @@ fn decode_canonical_frames(
     let started = Instant::now();
     for index in 0..expected_frames {
         let pixels = loop {
+            if let Some(activity) = &activity_guard {
+                activity.sample_rss(child.id());
+            }
             match receiver.recv_timeout(Duration::from_millis(100)) {
                 Ok(pixels) => break pixels,
                 Err(RecvTimeoutError::Timeout) if started.elapsed() < CANONICAL_DECODE_TIMEOUT => {}
@@ -1893,13 +1987,64 @@ fn decode_canonical_frames(
                 }
             }
         };
-        if let Err(error) = observe(index, pixels) {
+        let mut callback_timed_out = false;
+        let callback = thread::scope(|scope| {
+            let (callback_sender, callback_receiver) = mpsc::sync_channel(1);
+            let observer = &mut observe;
+            let callback = scope.spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    observer(index, pixels)
+                }));
+                let _ = callback_sender.send(result);
+            });
+            let result = loop {
+                if let Some(activity) = &activity_guard {
+                    activity.sample_rss(child.id());
+                }
+                match callback_receiver.recv_timeout(Duration::from_millis(10)) {
+                    Ok(result) => break Some(result),
+                    Err(RecvTimeoutError::Timeout)
+                        if started.elapsed() < CANONICAL_DECODE_TIMEOUT => {}
+                    Err(RecvTimeoutError::Timeout) => {
+                        kill_and_reap(&mut child);
+                        callback_timed_out = true;
+                        break None;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break None,
+                }
+            };
+            let _ = callback.join();
+            result
+        });
+        if callback_timed_out {
             drop(receiver);
             abort_decoder(&mut child, reader, stderr);
-            return Err(error);
+            return Err(decode_error(
+                context,
+                "canonical decode timed out while consuming a frame".to_owned(),
+            ));
+        }
+        match callback {
+            Some(Ok(Ok(()))) => {}
+            Some(Ok(Err(error))) => {
+                drop(receiver);
+                abort_decoder(&mut child, reader, stderr);
+                return Err(error);
+            }
+            Some(Err(_)) | None => {
+                drop(receiver);
+                abort_decoder(&mut child, reader, stderr);
+                return Err(decode_error(
+                    context,
+                    "canonical decoder consumer panicked".to_owned(),
+                ));
+            }
         }
     }
     let status = loop {
+        if let Some(activity) = &activity_guard {
+            activity.sample_rss(child.id());
+        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {}
@@ -1921,6 +2066,9 @@ fn decode_canonical_frames(
         }
         thread::sleep(Duration::from_millis(10));
     };
+    if let Some(activity) = &activity_guard {
+        activity.finish();
+    }
     drop(receiver);
     let stderr_bytes = stderr.join().unwrap_or_default();
     let digest = reader
@@ -1949,6 +2097,28 @@ fn decode_error(context: DecodeContext, detail: String) -> CorpusError {
 fn kill_and_reap(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
+}
+
+struct ReapedChild(Child);
+
+impl Deref for ReapedChild {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for ReapedChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for ReapedChild {
+    fn drop(&mut self) {
+        kill_and_reap(&mut self.0);
+    }
 }
 
 fn abort_decoder(
@@ -2799,6 +2969,21 @@ fn ppm_bytes(crop: &Rgb8Crop) -> Result<Vec<u8>, CorpusError> {
 }
 
 pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
+    replay_corpus_with_options(store, CorpusReplayOptions::default())
+}
+
+pub fn replay_corpus_with_options(
+    store: &Path,
+    options: CorpusReplayOptions,
+) -> Result<CorpusReplaySummary, CorpusError> {
+    let available_parallelism = thread::available_parallelism().map_or(1, usize::from);
+    if !(MINIMUM_REPLAY_MEMORY_MIB..=MAXIMUM_REPLAY_MEMORY_MIB).contains(&options.memory_mib)
+        || options
+            .text_workers
+            .is_some_and(|workers| workers == 0 || workers > available_parallelism)
+    {
+        return invalid("corpus replay worker or memory configuration is invalid");
+    }
     let Some((generation_sha256, suite)) = load_active_suite(store)? else {
         return invalid("active regression suite is unavailable");
     };
@@ -2818,6 +3003,7 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
             &bundle,
             &catalog_root,
             diagnostic_root.path(),
+            options,
         );
     }
     for (session_index, entry) in suite.entries.iter().enumerate() {
@@ -3105,8 +3291,24 @@ pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
         canonical_frames,
         negative_frames: negatives,
         text_workers: 0,
+        decode_workers: 0,
+        maximum_active_sessions: 0,
+        maximum_concurrent_decoders: 0,
+        decoder_children: 0,
+        maximum_blocked_sessions: 0,
+        completed_sessions: suite.entries.len(),
+        memory_limit_bytes: 0,
+        tracked_memory_peak_bytes: 0,
+        process_rss_peak_bytes: 0,
+        ffmpeg_rss_peak_total_bytes: 0,
+        decoder_details: Vec::new(),
         text_batch_wall_us: 0,
+        text_worker_busy_us: 0,
         field_frame_wall_us: 0,
+        ordered_commit_wait_us: 0,
+        decoder_slot_wait_us: 0,
+        memory_wait_us: 0,
+        sessions: Vec::new(),
         corpus_wall_us: 0,
     })
 }
@@ -3127,12 +3329,306 @@ struct ReplayPending {
     pending: scorepeek::recognition_live::field_session::PendingSessionFieldObservation<
         ReplayFieldOutput,
     >,
+    _memory: ReplayPendingMemory,
 }
 
 #[derive(Default)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "every replay duration field includes its serialized microsecond unit"
+)]
 struct ReplayMeasurements {
     text_batch_wall_us: u64,
+    text_worker_busy_us: u64,
     field_frame_wall_us: u64,
+    ordered_commit_wait_us: u64,
+}
+
+struct PreparedReplaySession {
+    index: usize,
+    session: CaptureSession,
+    label: RegressionLabel,
+    binding: SessionBinding,
+}
+
+#[derive(Clone)]
+struct QueuedReplaySession {
+    index: usize,
+    session_sha256: String,
+    label_sha256: String,
+    memory_wait_started: Instant,
+    memory_wait_us: u64,
+}
+
+type ReplayRecognitionSession = scorepeek::recognition_live::field_session::FieldObservationSession<
+    scorepeek::recognition_live::screen_field_observer::RegisteredScreenFieldObserver,
+>;
+
+struct ReplaySessionRuntime {
+    index: usize,
+    session: CaptureSession,
+    label: RegressionLabel,
+    binding: SessionBinding,
+    recognition: Option<ReplayRecognitionSession>,
+    output: scorepeek::routine_output::RoutineOutput,
+    timeline: scorepeek::timeline_driver::TimelineDriver,
+    pending: VecDeque<ReplayPending>,
+    measurements: ReplayMeasurements,
+    failures: Vec<String>,
+    canonical: CanonicalRecordingManifest,
+    retained: Vec<CanonicalTick>,
+    segment_index: usize,
+    retained_offset: usize,
+    canonical_frames: usize,
+    last_sequence: u64,
+    last_monotonic_ms: u64,
+    session_id: String,
+    session_started: Instant,
+    decoder_slot_wait_us: u64,
+    memory_wait_us: u64,
+    _memory: ReplaySessionMemory,
+}
+
+impl Drop for ReplaySessionRuntime {
+    fn drop(&mut self) {
+        if let Some(recognition) = self.recognition.take() {
+            let _ = recognition.finish_offline(
+                scorepeek::diagnostic_recording::DiagnosticRunStatus::Error,
+                self.last_monotonic_ms,
+            );
+        }
+    }
+}
+
+enum ReplayWork {
+    Queued(QueuedReplaySession),
+    Prepared(Box<PreparedReplaySession>, u64),
+    Active(Box<ReplaySessionRuntime>),
+}
+
+struct ScheduledReplayWork {
+    index: usize,
+    queued_at: Instant,
+    work: ReplayWork,
+}
+
+enum ReplayStep {
+    Continue(Box<ReplaySessionRuntime>),
+    Finalize(Box<ReplaySessionRuntime>),
+}
+
+enum ReplayWorkerResult {
+    Step {
+        index: usize,
+        session_key: String,
+        result: Result<ReplayStep, CorpusError>,
+    },
+    Finalized {
+        index: usize,
+        session_key: String,
+        result: Result<ReplaySessionOutcome, CorpusError>,
+    },
+}
+
+struct ReplaySessionOutcome {
+    session_key: String,
+    episode_count: usize,
+    canonical_frames: usize,
+    negative_frames: usize,
+    measurements: ReplayMeasurements,
+    failures: Vec<String>,
+    wall_us: u64,
+    decoder_slot_wait_us: u64,
+    memory_wait_us: u64,
+}
+
+#[derive(Default)]
+struct ReplayDecodeActivity {
+    active: AtomicUsize,
+    maximum_active: AtomicUsize,
+    children: AtomicUsize,
+    tracked_bytes: AtomicU64,
+    tracked_peak_bytes: AtomicU64,
+    next_decoder_id: AtomicUsize,
+    process_rss_peak_bytes: AtomicU64,
+    ffmpeg_rss_peak_total_bytes: AtomicU64,
+    ffmpeg_current_rss: Mutex<BTreeMap<usize, u64>>,
+    live_pids: Mutex<BTreeMap<usize, u32>>,
+    decoder_details: Mutex<Vec<CorpusReplayDecoderSummary>>,
+}
+
+impl ReplayDecodeActivity {
+    fn reserve_decoder(&self) -> ReplayDecoderMemory<'_> {
+        let bytes = self
+            .tracked_bytes
+            .fetch_add(DECODER_RESERVATION_BYTES as u64, Ordering::AcqRel)
+            + DECODER_RESERVATION_BYTES as u64;
+        self.tracked_peak_bytes.fetch_max(bytes, Ordering::AcqRel);
+        ReplayDecoderMemory { activity: self }
+    }
+
+    fn enter<'a>(
+        &'a self,
+        process_id: u32,
+        memory: ReplayDecoderMemory<'a>,
+    ) -> ReplayDecodeGuard<'a> {
+        let decoder_id = self.next_decoder_id.fetch_add(1, Ordering::AcqRel);
+        let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
+        self.maximum_active.fetch_max(active, Ordering::AcqRel);
+        self.children.fetch_add(1, Ordering::AcqRel);
+        self.live_pids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(decoder_id, process_id);
+        ReplayDecodeGuard {
+            activity: self,
+            decoder_id,
+            started: Instant::now(),
+            rss_peak_bytes: AtomicU64::new(0),
+            finished: std::sync::atomic::AtomicBool::new(false),
+            _memory: memory,
+        }
+    }
+
+    fn reserve_pending(self: &Arc<Self>) -> ReplayPendingMemory {
+        let bytes = self.tracked_bytes.fetch_add(
+            PENDING_FIELD_FRAME_RESERVATION_BYTES as u64,
+            Ordering::AcqRel,
+        ) + PENDING_FIELD_FRAME_RESERVATION_BYTES as u64;
+        self.tracked_peak_bytes.fetch_max(bytes, Ordering::AcqRel);
+        ReplayPendingMemory {
+            activity: Arc::clone(self),
+        }
+    }
+
+    fn reserve_session(self: &Arc<Self>) -> ReplaySessionMemory {
+        let bytes = self
+            .tracked_bytes
+            .fetch_add(SESSION_STATE_RESERVATION_BYTES as u64, Ordering::AcqRel)
+            + SESSION_STATE_RESERVATION_BYTES as u64;
+        self.tracked_peak_bytes.fetch_max(bytes, Ordering::AcqRel);
+        ReplaySessionMemory {
+            activity: Arc::clone(self),
+        }
+    }
+}
+
+struct ReplayDecoderMemory<'a> {
+    activity: &'a ReplayDecodeActivity,
+}
+
+impl Drop for ReplayDecoderMemory<'_> {
+    fn drop(&mut self) {
+        self.activity
+            .tracked_bytes
+            .fetch_sub(DECODER_RESERVATION_BYTES as u64, Ordering::AcqRel);
+    }
+}
+
+struct ReplayDecodeGuard<'a> {
+    activity: &'a ReplayDecodeActivity,
+    decoder_id: usize,
+    started: Instant,
+    rss_peak_bytes: AtomicU64,
+    finished: std::sync::atomic::AtomicBool,
+    _memory: ReplayDecoderMemory<'a>,
+}
+
+impl ReplayDecodeGuard<'_> {
+    fn sample_rss(&self, child_id: u32) {
+        if let Some(bytes) = process_rss_bytes(child_id) {
+            self.rss_peak_bytes.fetch_max(bytes, Ordering::AcqRel);
+            let mut current = self
+                .activity
+                .ffmpeg_current_rss
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            current.insert(self.decoder_id, bytes);
+            self.activity
+                .ffmpeg_rss_peak_total_bytes
+                .fetch_max(current.values().copied().sum(), Ordering::AcqRel);
+        } else {
+            self.activity
+                .ffmpeg_current_rss
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&self.decoder_id);
+        }
+        if let Some(bytes) = process_rss_bytes(std::process::id()) {
+            self.activity
+                .process_rss_peak_bytes
+                .fetch_max(bytes, Ordering::AcqRel);
+        }
+    }
+
+    fn finish(&self) {
+        if self.finished.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.activity
+            .live_pids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.decoder_id);
+        self.activity
+            .ffmpeg_current_rss
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.decoder_id);
+        self.activity
+            .decoder_details
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(CorpusReplayDecoderSummary {
+                decoder_id: self.decoder_id,
+                wall_us: u64::try_from(self.started.elapsed().as_micros()).unwrap_or(u64::MAX),
+                rss_peak_bytes: self.rss_peak_bytes.load(Ordering::Acquire),
+            });
+        self.activity.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl Drop for ReplayDecodeGuard<'_> {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+fn process_rss_bytes(process_id: u32) -> Option<u64> {
+    let status = fs::read_to_string(format!("/proc/{process_id}/status")).ok()?;
+    let kib = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))?
+        .split_ascii_whitespace()
+        .next()?
+        .parse::<u64>()
+        .ok()?;
+    kib.checked_mul(1024)
+}
+
+struct ReplayPendingMemory {
+    activity: Arc<ReplayDecodeActivity>,
+}
+
+struct ReplaySessionMemory {
+    activity: Arc<ReplayDecodeActivity>,
+}
+
+impl Drop for ReplaySessionMemory {
+    fn drop(&mut self) {
+        self.activity
+            .tracked_bytes
+            .fetch_sub(SESSION_STATE_RESERVATION_BYTES as u64, Ordering::AcqRel);
+    }
+}
+
+impl Drop for ReplayPendingMemory {
+    fn drop(&mut self) {
+        self.activity.tracked_bytes.fetch_sub(
+            PENDING_FIELD_FRAME_RESERVATION_BYTES as u64,
+            Ordering::AcqRel,
+        );
+    }
 }
 
 fn replay_canonical_suite(
@@ -3142,257 +3638,830 @@ fn replay_canonical_suite(
     bundle: &Path,
     catalog_root: &Path,
     diagnostic_root: &Path,
+    options: CorpusReplayOptions,
 ) -> Result<CorpusReplaySummary, CorpusError> {
     let replay_started = std::time::Instant::now();
     let available_parallelism = std::thread::available_parallelism().map_or(1, usize::from);
-    let text_workers =
+    let text_workers = options.text_workers.unwrap_or_else(|| {
         scorepeek::recognition_live::text_observer_pool::configured_text_worker_count(
             scorepeek::recognition_live::text_observer_pool::RecognitionExecutionMode::Offline,
             available_parallelism,
+        )
+    });
+    let memory_limit_bytes = options.memory_mib.saturating_mul(1024 * 1024);
+    let memory_decode_slots = (memory_limit_bytes
+        / (DECODER_RESERVATION_BYTES
+            + 2 * (SESSION_STATE_RESERVATION_BYTES + PENDING_FIELD_FRAME_RESERVATION_BYTES)))
+        .max(1);
+    let decode_workers = suite
+        .entries
+        .len()
+        .min((available_parallelism / 4).max(1))
+        .min(memory_decode_slots);
+    if decode_workers == 0 {
+        return invalid_replay("canonical replay suite is empty");
+    }
+    let queue_epoch = Instant::now();
+    let mut queued = suite
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| QueuedReplaySession {
+            index,
+            session_sha256: entry.session_sha256.clone(),
+            label_sha256: entry.label_sha256.clone(),
+            memory_wait_started: queue_epoch,
+            memory_wait_us: 0,
+        })
+        .collect::<VecDeque<_>>();
+    let mut bootstrap_failures: Vec<(usize, String, CorpusError)> = Vec::new();
+    let (first_source, first, shared) = loop {
+        let Some(source) = queued.pop_front() else {
+            bootstrap_failures.sort_by_key(|(index, _, _)| *index);
+            return Err(CorpusError::InvalidReplay(
+                bootstrap_failures
+                    .into_iter()
+                    .map(|(index, key, error)| format!("session[{index}] {key}: {error}"))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ));
+        };
+        let prepared = match load_prepared_replay_session(store, &source) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                bootstrap_failures.push((source.index, source.session_sha256.clone(), error));
+                continue;
+            }
+        };
+        let descriptor = replay_descriptor(prepared.index, &prepared.session, &prepared.binding);
+        match scorepeek::recognition_live::screen_field_observer::SharedRegisteredScreenFieldResources::load(
+            &descriptor,
+            catalog_root,
+            bundle,
+            text_workers,
+        ) {
+            Ok(shared) => break (source, prepared, Arc::new(shared)),
+            Err(error) => bootstrap_failures.push((
+                source.index,
+                source.session_sha256.clone(),
+                CorpusError::InvalidReplay(format!(
+                    "shared production recognizer could not start: {error}"
+                )),
+            )),
+        }
+    };
+    let maximum_active_sessions = suite
+        .entries
+        .len()
+        .min(decode_workers.saturating_mul(2).max(1));
+    let pending_slots = memory_limit_bytes
+        .saturating_sub(decode_workers.saturating_mul(DECODER_RESERVATION_BYTES))
+        .saturating_sub(maximum_active_sessions.saturating_mul(SESSION_STATE_RESERVATION_BYTES))
+        / PENDING_FIELD_FRAME_RESERVATION_BYTES;
+    let per_session_pending_limit = pending_slots
+        .checked_div(maximum_active_sessions)
+        .unwrap_or(1)
+        .max(1)
+        .min(text_workers.saturating_mul(2));
+    let decode_activity = Arc::new(ReplayDecodeActivity::default());
+    let memory_wait_epoch = Instant::now();
+    for source in &mut queued {
+        source.memory_wait_started = memory_wait_epoch;
+    }
+    let mut ready = VecDeque::new();
+    ready.push_back(ScheduledReplayWork {
+        index: first.index,
+        queued_at: Instant::now(),
+        work: ReplayWork::Prepared(Box::new(first), first_source.memory_wait_us),
+    });
+    while ready.len() < maximum_active_sessions {
+        let Some(source) = queued.pop_front() else {
+            break;
+        };
+        ready.push_back(ScheduledReplayWork {
+            index: source.index,
+            queued_at: Instant::now(),
+            work: ReplayWork::Queued(source),
+        });
+    }
+    let (work_sender, work_receiver) = mpsc::channel::<Option<ScheduledReplayWork>>();
+    let work_receiver = Arc::new(Mutex::new(work_receiver));
+    let (result_sender, result_receiver) = mpsc::channel::<ReplayWorkerResult>();
+    let (finalize_sender, finalize_receiver) =
+        mpsc::channel::<Option<(usize, String, ReplaySessionRuntime)>>();
+    let finalize_receiver = Arc::new(Mutex::new(finalize_receiver));
+    let mut handles = Vec::with_capacity(decode_workers);
+    for _ in 0..decode_workers {
+        let receiver = Arc::clone(&work_receiver);
+        let result_sender = result_sender.clone();
+        let shared = Arc::clone(&shared);
+        let activity = Arc::clone(&decode_activity);
+        let store = store.to_owned();
+        let diagnostic_root = diagnostic_root.to_owned();
+        handles.push(thread::spawn(move || {
+            loop {
+                let message = receiver
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .recv();
+                let Ok(Some(work)) = message else { break };
+                let index = work.index;
+                let session_key = match &work.work {
+                    ReplayWork::Queued(source) => source.session_sha256.clone(),
+                    ReplayWork::Prepared(prepared, _) => prepared.session.source_session_id.clone(),
+                    ReplayWork::Active(runtime) => runtime.session_id.clone(),
+                };
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    execute_replay_step(
+                        &store,
+                        &diagnostic_root,
+                        work,
+                        Arc::clone(&shared),
+                        &activity,
+                        per_session_pending_limit,
+                    )
+                }))
+                .unwrap_or_else(|_| {
+                    Err(CorpusError::InvalidReplay(
+                        "canonical replay worker panicked".to_owned(),
+                    ))
+                });
+                if result_sender
+                    .send(ReplayWorkerResult::Step {
+                        index,
+                        session_key,
+                        result,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+    let mut finalizer_handles = Vec::with_capacity(decode_workers);
+    for _ in 0..decode_workers {
+        let receiver = Arc::clone(&finalize_receiver);
+        let result_sender = result_sender.clone();
+        finalizer_handles.push(thread::spawn(move || {
+            loop {
+                let message = receiver
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .recv();
+                let Ok(Some((index, session_key, runtime))) = message else {
+                    break;
+                };
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    finalize_replay_session(runtime)
+                }))
+                .unwrap_or_else(|_| {
+                    Err(CorpusError::InvalidReplay(
+                        "canonical replay finalizer panicked".to_owned(),
+                    ))
+                });
+                if result_sender
+                    .send(ReplayWorkerResult::Finalized {
+                        index,
+                        session_key,
+                        result,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+    drop(result_sender);
+    let mut inflight = 0usize;
+    let mut active_sessions = ready.len();
+    let mut maximum_blocked_sessions = 0usize;
+    let mut completed = bootstrap_failures.len();
+    let mut results = Vec::with_capacity(suite.entries.len());
+    results.extend(
+        bootstrap_failures
+            .drain(..)
+            .map(|(index, key, error)| (index, key, Err(error))),
+    );
+    while completed < suite.entries.len() {
+        while inflight < decode_workers {
+            let Some(work) = ready.pop_front() else { break };
+            work_sender.send(Some(work)).map_err(|_| {
+                CorpusError::InvalidReplay("canonical replay scheduler stopped".to_owned())
+            })?;
+            inflight = inflight.saturating_add(1);
+        }
+        maximum_blocked_sessions = maximum_blocked_sessions.max(
+            queued
+                .len()
+                .saturating_add(ready.len())
+                .saturating_add(inflight.saturating_sub(decode_workers)),
         );
+        let worker_result = result_receiver.recv().map_err(|_| {
+            CorpusError::InvalidReplay("canonical replay worker stopped".to_owned())
+        })?;
+        match worker_result {
+            ReplayWorkerResult::Step {
+                index,
+                session_key,
+                result,
+            } => {
+                inflight = inflight.saturating_sub(1);
+                match result {
+                    Ok(ReplayStep::Continue(runtime)) => ready.push_back(ScheduledReplayWork {
+                        index,
+                        queued_at: Instant::now(),
+                        work: ReplayWork::Active(runtime),
+                    }),
+                    Ok(ReplayStep::Finalize(runtime)) => finalize_sender
+                        .send(Some((index, session_key, *runtime)))
+                        .map_err(|_| {
+                            CorpusError::InvalidReplay(
+                                "canonical replay finalizer stopped".to_owned(),
+                            )
+                        })?,
+                    Err(error) => {
+                        results.push((index, session_key, Err(error)));
+                        active_sessions = active_sessions.saturating_sub(1);
+                        completed = completed.saturating_add(1);
+                    }
+                }
+            }
+            ReplayWorkerResult::Finalized {
+                index,
+                session_key,
+                result,
+            } => {
+                results.push((index, session_key, result));
+                active_sessions = active_sessions.saturating_sub(1);
+                completed = completed.saturating_add(1);
+            }
+        }
+        while active_sessions < maximum_active_sessions {
+            let Some(mut source) = queued.pop_front() else {
+                break;
+            };
+            source.memory_wait_us = source.memory_wait_us.saturating_add(
+                u64::try_from(source.memory_wait_started.elapsed().as_micros()).unwrap_or(u64::MAX),
+            );
+            ready.push_back(ScheduledReplayWork {
+                index: source.index,
+                queued_at: Instant::now(),
+                work: ReplayWork::Queued(source),
+            });
+            active_sessions = active_sessions.saturating_add(1);
+        }
+    }
+    for _ in 0..decode_workers {
+        let _ = work_sender.send(None);
+        let _ = finalize_sender.send(None);
+    }
+    drop(work_sender);
+    for handle in handles {
+        if handle.join().is_err() {
+            results.push((
+                usize::MAX,
+                "worker".to_owned(),
+                Err(CorpusError::InvalidReplay(
+                    "canonical replay worker panicked".to_owned(),
+                )),
+            ));
+        }
+    }
+    drop(finalize_sender);
+    for handle in finalizer_handles {
+        if handle.join().is_err() {
+            results.push((
+                usize::MAX,
+                "finalizer".to_owned(),
+                Err(CorpusError::InvalidReplay(
+                    "canonical replay finalizer panicked".to_owned(),
+                )),
+            ));
+        }
+    }
+    results.sort_by_key(|(index, _, _)| *index);
     let mut measurements = ReplayMeasurements::default();
     let mut episode_count = 0usize;
     let mut canonical_frames = 0usize;
     let mut negative_frames = 0usize;
     let mut failures = Vec::new();
-    for (session_index, entry) in suite.entries.iter().enumerate() {
-        let (session, session_bytes) = read_json::<CaptureSession>(
-            &store
-                .join("sessions")
-                .join(format!("{}.json", entry.session_sha256)),
-        )?;
-        let (label, label_bytes) = read_regression_label(
-            &store
-                .join("labels")
-                .join(format!("{}.json", entry.label_sha256)),
-        )?;
-        if session.schema != SESSION_SCHEMA
-            || session.completeness != "complete"
-            || digest(&session_bytes) != entry.session_sha256
-            || digest(&label_bytes) != entry.label_sha256
-            || label.session_sha256 != entry.session_sha256
-        {
-            return invalid("canonical suite entry binding is invalid");
-        }
-        let binding = session_binding(store, &session)?;
-        let descriptor = scorepeek::diagnostic_recording::DiagnosticRunDescriptor {
-            run_id: format!("canonical-corpus-replay-{session_index}"),
-            monotonic_start_ms: 0,
-            resource: scorepeek::diagnostic_recording::DiagnosticResource {
-                program: "scorepeek",
-                version: env!("CARGO_PKG_VERSION"),
-                build_sha256: "0".repeat(64),
-            },
-            binding: scorepeek::diagnostic_recording::DiagnosticBinding {
-                capture_generation: session.capture_generation,
-                capture_profile_sha256: binding.capture_profile_sha256.clone(),
-                normalizer_sha256: binding.normalizer_sha256.clone(),
-                canonical_layout_sha256: scorepeek::recognition::CanonicalLayout::sha256(),
-                catalog_sha256: session.catalog_sha256.clone(),
-                model_sha256: scorepeek::recognition::LIVE_MODEL_SHA256.to_owned(),
-                runtime_sha256: scorepeek::recognition::LIVE_RUNTIME_SHA256.to_owned(),
-                replay: None,
-            },
+    let mut sessions = Vec::with_capacity(suite.entries.len());
+    let mut decoder_slot_wait_us = 0_u64;
+    let mut memory_wait_us = 0_u64;
+    for (index, session_key, result) in results {
+        let outcome = match result {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                failures.push(format!("session[{index}] {session_key}: {error}"));
+                continue;
+            }
         };
-        let mut recognition =
-            scorepeek::recognition_live::field_session::FieldObservationSession::start_registered(
-                diagnostic_root,
-                descriptor,
-                scorepeek::diagnostic_recording::DiagnosticPolicy {
-                    enabled: false,
-                    ..scorepeek::diagnostic_recording::DiagnosticPolicy::default()
-                },
-                catalog_root,
-                bundle,
-                scorepeek::recognition_live::text_observer_pool::RecognitionExecutionMode::Offline,
-            )
-            .map_err(|error| {
-                CorpusError::InvalidReplay(format!(
-                    "production recognizer could not start: {error:?}"
-                ))
-            })?;
-        let session_id = session.source_session_id.clone();
-        let mut output = scorepeek::routine_output::RoutineOutput::start_headless(
-            format!("corpus-{session_index}"),
-            session.profile_sha256.clone(),
+        episode_count = episode_count.saturating_add(outcome.episode_count);
+        canonical_frames = canonical_frames.saturating_add(outcome.canonical_frames);
+        negative_frames = negative_frames.saturating_add(outcome.negative_frames);
+        measurements.text_batch_wall_us = measurements
+            .text_batch_wall_us
+            .saturating_add(outcome.measurements.text_batch_wall_us);
+        measurements.text_worker_busy_us = measurements
+            .text_worker_busy_us
+            .saturating_add(outcome.measurements.text_worker_busy_us);
+        measurements.field_frame_wall_us = measurements
+            .field_frame_wall_us
+            .saturating_add(outcome.measurements.field_frame_wall_us);
+        measurements.ordered_commit_wait_us = measurements
+            .ordered_commit_wait_us
+            .saturating_add(outcome.measurements.ordered_commit_wait_us);
+        failures.extend(
+            outcome
+                .failures
+                .iter()
+                .map(|failure| format!("{}: {failure}", outcome.session_key)),
         );
-        output
-            .publish(&scorepeek::routine_output::RunEvent {
-                schema: "scorepeek-run-event-v6".to_owned(),
-                kind: scorepeek::routine_output::RunEventKind::SessionStarted {
-                    session_id: Some(session_id.clone()),
-                    capture_generation: session.capture_generation,
-                    capture_profile_sha256: binding.capture_profile_sha256.clone(),
-                    normalizer_artifact_sha256: binding.normalizer_sha256.clone(),
-                },
-            })
-            .map_err(CorpusError::InvalidReplay)?;
-        let mut timeline = scorepeek::timeline_driver::TimelineDriver::default();
-        let mut pending = VecDeque::<ReplayPending>::new();
-        let outstanding_limit = text_workers.saturating_mul(2);
-        let mut last_sequence = 0u64;
-        let mut last_monotonic_ms = 0u64;
-        for_each_canonical_session_frame(store, &session, |tick, pixels| {
-            while pending.len() >= outstanding_limit {
-                commit_replay_pending(
-                    &mut recognition,
-                    &mut pending,
-                    &mut output,
-                    true,
-                    &session_id,
-                    session.capture_generation,
-                    &mut measurements,
-                )?;
-            }
-            commit_replay_pending(
-                &mut recognition,
-                &mut pending,
-                &mut output,
-                false,
-                &session_id,
-                session.capture_generation,
-                &mut measurements,
-            )?;
-            let frame = scorepeek::diagnostic_live::BoundCanonicalFrame::for_replay(
-                session.capture_generation,
-                tick.sequence,
-                tick.monotonic_ms,
-                binding.capture_profile_sha256.clone(),
-                binding.normalizer_sha256.clone(),
-                pixels,
-            )
-            .map_err(|_| {
-                CorpusError::InvalidReplay("canonical replay frame is invalid".to_owned())
-            })?;
-            let inspected = recognition.inspect(&frame).map_err(|_| {
-                CorpusError::InvalidReplay("production frame inspection failed".to_owned())
-            })?;
-            let screen = inspected.observation.screen();
-            let timeline_step = timeline.observe(screen.into(), tick.sequence, tick.monotonic_ms);
-            output
-                .publish(&scorepeek::routine_output::RunEvent {
-                    schema: "scorepeek-run-event-v6".to_owned(),
-                    kind: scorepeek::routine_output::RunEventKind::RawScreenObserved {
-                        session_id: Some(session_id.clone()),
-                        capture_generation: Some(session.capture_generation),
-                        semantic_episode_id: timeline_step.active_episode_id,
-                        sequence: tick.sequence,
-                        monotonic_start_ms: tick.monotonic_ms,
-                        monotonic_end_ms: tick.monotonic_ms,
-                        screen: replay_screen_name(screen).to_owned(),
-                        unknown_reason: (screen == ScreenClass::Unknown)
-                            .then(|| "predicate_not_matched".to_owned()),
-                    },
-                })
-                .map_err(CorpusError::InvalidReplay)?;
-            apply_replay_timeline_actions(
-                timeline_step.actions,
-                &mut recognition,
-                &mut pending,
-                &mut output,
-                &session_id,
-                session.capture_generation,
-                tick.sequence,
-                tick.monotonic_ms,
-                &mut measurements,
-            )?;
-            match inspected.field_submission {
-                scorepeek::recognition_live::field_session::FieldObservationSubmission::NotApplicable => {}
-                scorepeek::recognition_live::field_session::FieldObservationSubmission::Submitted(mut field) => {
-                    let episode_id = timeline.active_episode_id().ok_or_else(|| {
-                        CorpusError::InvalidReplay(
-                            "field observation has no semantic episode".to_owned(),
-                        )
-                    })?;
-                    field.bind_screen_episode(episode_id);
-                    pending.push_back(ReplayPending { pending: field });
-                }
-                scorepeek::recognition_live::field_session::FieldObservationSubmission::BusySkipped => {
-                    return invalid_replay("offline replay skipped field OCR as busy");
-                }
-                scorepeek::recognition_live::field_session::FieldObservationSubmission::Rejected(error) => {
-                    return Err(CorpusError::InvalidReplay(format!(
-                        "offline replay rejected field OCR: {error:?}"
-                    )));
-                }
-            }
-            canonical_frames = canonical_frames.saturating_add(1);
-            last_sequence = tick.sequence;
-            last_monotonic_ms = tick.monotonic_ms;
-            Ok(())
-        })?;
-        let finish_actions = timeline.finish();
-        if finish_actions.is_empty() {
-            drain_replay_pending(
-                &mut recognition,
-                &mut pending,
-                &mut output,
-                &session_id,
-                session.capture_generation,
-                &mut measurements,
-            )?;
-        } else {
-            apply_replay_timeline_actions(
-                finish_actions,
-                &mut recognition,
-                &mut pending,
-                &mut output,
-                &session_id,
-                session.capture_generation,
-                last_sequence,
-                last_monotonic_ms,
-                &mut measurements,
-            )?;
-        }
-        output
-            .publish(&scorepeek::routine_output::RunEvent {
-                schema: "scorepeek-run-event-v6".to_owned(),
-                kind: scorepeek::routine_output::RunEventKind::SessionFinished {
-                    session_id: session_id.clone(),
-                    capture_generation: session.capture_generation,
-                    outcome: "replayed".to_owned(),
-                    report: serde_json::json!({}),
-                },
-            })
-            .map_err(CorpusError::InvalidReplay)?;
-        let finish = recognition.finish(
-            scorepeek::diagnostic_recording::DiagnosticRunStatus::Success,
-            last_monotonic_ms,
-            Duration::from_secs(30),
-        );
-        if finish.field_observer.status
-            != scorepeek::recognition_live::field_observer::FieldObserverFinishStatus::Complete
-        {
-            return invalid_replay("production recognizer did not finish cleanly");
-        }
-        let emitted = output
-            .take_headless_events()
-            .into_iter()
-            .filter_map(|event| match event.kind {
-                scorepeek::routine_output::RunEventKind::ResultDetected { result, .. } => {
-                    Some(result)
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        validate_semantic_oracle(&label, &emitted, &mut failures);
-        episode_count = episode_count.saturating_add(label.episodes.len());
-        negative_frames = negative_frames.saturating_add(label.negative_frames.len());
+        decoder_slot_wait_us = decoder_slot_wait_us.saturating_add(outcome.decoder_slot_wait_us);
+        memory_wait_us = memory_wait_us.saturating_add(outcome.memory_wait_us);
+        sessions.push(CorpusReplaySessionSummary {
+            session_key: outcome.session_key,
+            wall_us: outcome.wall_us,
+            canonical_frames: outcome.canonical_frames,
+        });
     }
     if !failures.is_empty() {
         return Err(CorpusError::InvalidReplay(failures.join("; ")));
     }
+    let mut decoder_details = decode_activity
+        .decoder_details
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    decoder_details.sort_by_key(|decoder| decoder.decoder_id);
     Ok(CorpusReplaySummary {
-        schema: "scorepeek-private-corpus-replay-v2",
+        schema: "scorepeek-private-corpus-replay-v3",
         generation_sha256,
         session_count: suite.entries.len(),
         episode_count,
         canonical_frames,
         negative_frames,
         text_workers,
+        decode_workers,
+        maximum_active_sessions,
+        maximum_concurrent_decoders: decode_activity.maximum_active.load(Ordering::Acquire),
+        decoder_children: decode_activity.children.load(Ordering::Acquire),
+        maximum_blocked_sessions,
+        completed_sessions: suite.entries.len(),
+        memory_limit_bytes: u64::try_from(memory_limit_bytes).unwrap_or(u64::MAX),
+        tracked_memory_peak_bytes: decode_activity.tracked_peak_bytes.load(Ordering::Acquire),
+        process_rss_peak_bytes: decode_activity
+            .process_rss_peak_bytes
+            .load(Ordering::Acquire),
+        ffmpeg_rss_peak_total_bytes: decode_activity
+            .ffmpeg_rss_peak_total_bytes
+            .load(Ordering::Acquire),
+        decoder_details,
         text_batch_wall_us: measurements.text_batch_wall_us,
+        text_worker_busy_us: measurements.text_worker_busy_us,
         field_frame_wall_us: measurements.field_frame_wall_us,
+        ordered_commit_wait_us: measurements.ordered_commit_wait_us,
+        decoder_slot_wait_us,
+        memory_wait_us,
+        sessions,
         corpus_wall_us: u64::try_from(replay_started.elapsed().as_micros()).unwrap_or(u64::MAX),
+    })
+}
+
+fn replay_descriptor(
+    session_index: usize,
+    session: &CaptureSession,
+    binding: &SessionBinding,
+) -> scorepeek::diagnostic_recording::DiagnosticRunDescriptor {
+    scorepeek::diagnostic_recording::DiagnosticRunDescriptor {
+        run_id: format!("canonical-corpus-replay-{session_index}"),
+        monotonic_start_ms: 0,
+        resource: scorepeek::diagnostic_recording::DiagnosticResource {
+            program: "scorepeek",
+            version: env!("CARGO_PKG_VERSION"),
+            build_sha256: "0".repeat(64),
+        },
+        binding: scorepeek::diagnostic_recording::DiagnosticBinding {
+            capture_generation: session.capture_generation,
+            capture_profile_sha256: binding.capture_profile_sha256.clone(),
+            normalizer_sha256: binding.normalizer_sha256.clone(),
+            canonical_layout_sha256: scorepeek::recognition::CanonicalLayout::sha256(),
+            catalog_sha256: session.catalog_sha256.clone(),
+            model_sha256: scorepeek::recognition::LIVE_MODEL_SHA256.to_owned(),
+            runtime_sha256: scorepeek::recognition::LIVE_RUNTIME_SHA256.to_owned(),
+            replay: None,
+        },
+    }
+}
+
+fn load_prepared_replay_session(
+    store: &Path,
+    source: &QueuedReplaySession,
+) -> Result<PreparedReplaySession, CorpusError> {
+    let (session, session_bytes) = read_json::<CaptureSession>(
+        &store
+            .join("sessions")
+            .join(format!("{}.json", source.session_sha256)),
+    )?;
+    let (label, label_bytes) = read_regression_label(
+        &store
+            .join("labels")
+            .join(format!("{}.json", source.label_sha256)),
+    )?;
+    if session.schema != SESSION_SCHEMA
+        || session.completeness != "complete"
+        || digest(&session_bytes) != source.session_sha256
+        || digest(&label_bytes) != source.label_sha256
+        || label.session_sha256 != source.session_sha256
+    {
+        return invalid("canonical suite entry binding is invalid");
+    }
+    let binding = session_binding(store, &session)?;
+    Ok(PreparedReplaySession {
+        index: source.index,
+        session,
+        label,
+        binding,
+    })
+}
+
+fn start_replay_session(
+    store: &Path,
+    diagnostic_root: &Path,
+    prepared: PreparedReplaySession,
+    shared: Arc<
+        scorepeek::recognition_live::screen_field_observer::SharedRegisteredScreenFieldResources,
+    >,
+    decode_activity: &Arc<ReplayDecodeActivity>,
+    memory_wait_us: u64,
+) -> Result<ReplaySessionRuntime, CorpusError> {
+    let PreparedReplaySession {
+        index: session_index,
+        session,
+        label,
+        binding,
+    } = prepared;
+    let session_id = session.source_session_id.clone();
+    let canonical_manifest_object =
+        session_object_for_source(store, &session, "recognition/canonical-manifest.json")?;
+    let (canonical, _) = read_json::<CanonicalRecordingManifest>(&canonical_manifest_object)?;
+    if canonical.completeness != "complete" || canonical.dropped_frames != 0 {
+        return invalid_replay("canonical session is incomplete");
+    }
+    let tick_object =
+        session_object_for_source(store, &session, "recognition/canonical-ticks.ndjson")?;
+    let retained = read_canonical_ticks(&tick_object)?
+        .into_iter()
+        .filter(|tick| tick.disposition == "retained")
+        .collect::<Vec<_>>();
+    let mut output = scorepeek::routine_output::RoutineOutput::start_headless(
+        format!("corpus-{session_index}"),
+        session.profile_sha256.clone(),
+    );
+    output
+        .publish(&scorepeek::routine_output::RunEvent {
+            schema: "scorepeek-run-event-v6".to_owned(),
+            kind: scorepeek::routine_output::RunEventKind::SessionStarted {
+                session_id: Some(session_id.clone()),
+                capture_generation: session.capture_generation,
+                capture_profile_sha256: binding.capture_profile_sha256.clone(),
+                normalizer_artifact_sha256: binding.normalizer_sha256.clone(),
+            },
+        })
+        .map_err(CorpusError::InvalidReplay)?;
+    let descriptor = replay_descriptor(session_index, &session, &binding);
+    let recognition =
+        scorepeek::recognition_live::field_session::FieldObservationSession::start_registered_shared(
+            diagnostic_root,
+            descriptor,
+            scorepeek::diagnostic_recording::DiagnosticPolicy {
+                enabled: false,
+                ..scorepeek::diagnostic_recording::DiagnosticPolicy::default()
+            },
+            shared,
+        )
+        .map_err(|error| {
+            CorpusError::InvalidReplay(format!(
+                "production recognizer could not start: {error:?}"
+            ))
+        })?;
+    Ok(ReplaySessionRuntime {
+        index: session_index,
+        session,
+        label,
+        binding,
+        recognition: Some(recognition),
+        output,
+        timeline: scorepeek::timeline_driver::TimelineDriver::default(),
+        pending: VecDeque::new(),
+        measurements: ReplayMeasurements::default(),
+        failures: Vec::new(),
+        canonical,
+        retained,
+        segment_index: 0,
+        retained_offset: 0,
+        canonical_frames: 0,
+        last_sequence: 0,
+        last_monotonic_ms: 0,
+        session_id,
+        session_started: Instant::now(),
+        decoder_slot_wait_us: 0,
+        memory_wait_us,
+        _memory: decode_activity.reserve_session(),
+    })
+}
+
+fn execute_replay_step(
+    store: &Path,
+    diagnostic_root: &Path,
+    scheduled: ScheduledReplayWork,
+    shared: Arc<
+        scorepeek::recognition_live::screen_field_observer::SharedRegisteredScreenFieldResources,
+    >,
+    decode_activity: &Arc<ReplayDecodeActivity>,
+    outstanding_limit: usize,
+) -> Result<ReplayStep, CorpusError> {
+    let slot_wait_us = u64::try_from(scheduled.queued_at.elapsed().as_micros()).unwrap_or(u64::MAX);
+    match scheduled.work {
+        ReplayWork::Queued(source) => {
+            let prepared = load_prepared_replay_session(store, &source)?;
+            let mut runtime = start_replay_session(
+                store,
+                diagnostic_root,
+                prepared,
+                shared,
+                decode_activity,
+                source.memory_wait_us,
+            )?;
+            runtime.decoder_slot_wait_us =
+                runtime.decoder_slot_wait_us.saturating_add(slot_wait_us);
+            process_replay_segment(store, &mut runtime, decode_activity, outstanding_limit)?;
+            Ok(
+                if runtime.segment_index == runtime.canonical.segments.len() {
+                    ReplayStep::Finalize(Box::new(runtime))
+                } else {
+                    ReplayStep::Continue(Box::new(runtime))
+                },
+            )
+        }
+        ReplayWork::Prepared(prepared, memory_wait_us) => {
+            let mut runtime = start_replay_session(
+                store,
+                diagnostic_root,
+                *prepared,
+                shared,
+                decode_activity,
+                memory_wait_us,
+            )?;
+            runtime.decoder_slot_wait_us =
+                runtime.decoder_slot_wait_us.saturating_add(slot_wait_us);
+            process_replay_segment(store, &mut runtime, decode_activity, outstanding_limit)?;
+            Ok(
+                if runtime.segment_index == runtime.canonical.segments.len() {
+                    ReplayStep::Finalize(Box::new(runtime))
+                } else {
+                    ReplayStep::Continue(Box::new(runtime))
+                },
+            )
+        }
+        ReplayWork::Active(mut runtime) => {
+            runtime.decoder_slot_wait_us =
+                runtime.decoder_slot_wait_us.saturating_add(slot_wait_us);
+            process_replay_segment(store, &mut runtime, decode_activity, outstanding_limit)?;
+            Ok(
+                if runtime.segment_index == runtime.canonical.segments.len() {
+                    ReplayStep::Finalize(runtime)
+                } else {
+                    ReplayStep::Continue(runtime)
+                },
+            )
+        }
+    }
+}
+
+fn process_replay_segment(
+    store: &Path,
+    runtime: &mut ReplaySessionRuntime,
+    decode_activity: &Arc<ReplayDecodeActivity>,
+    outstanding_limit: usize,
+) -> Result<(), CorpusError> {
+    let segment = runtime
+        .canonical
+        .segments
+        .get(runtime.segment_index)
+        .cloned()
+        .ok_or_else(|| CorpusError::InvalidReplay("canonical segment is unavailable".to_owned()))?;
+    let expected = runtime
+        .retained
+        .get(runtime.retained_offset..runtime.retained_offset.saturating_add(segment.frames))
+        .ok_or_else(|| {
+            CorpusError::InvalidReplay("canonical segment exceeds retained tick index".to_owned())
+        })?
+        .to_vec();
+    let object = session_object_for_source(
+        store,
+        &runtime.session,
+        &format!("recognition/{}", segment.path),
+    )?;
+    let decoded_digest = decode_canonical_frames_with_activity(
+        &object,
+        segment.frames,
+        DecodeContext::Replay,
+        Some(decode_activity),
+        |index, pixels| {
+            let tick = expected.get(index).ok_or_else(|| {
+                CorpusError::InvalidReplay("canonical decoded frame exceeds tick index".to_owned())
+            })?;
+            process_replay_frame(runtime, tick, pixels, decode_activity, outstanding_limit)
+        },
+    )?;
+    if decoded_digest != segment.raw_rgb24_sha256 {
+        return invalid_replay("canonical segment decoded pixel digest differs");
+    }
+    runtime.retained_offset = runtime.retained_offset.saturating_add(segment.frames);
+    runtime.segment_index = runtime.segment_index.saturating_add(1);
+    if runtime.segment_index == runtime.canonical.segments.len()
+        && runtime.retained_offset != runtime.retained.len()
+    {
+        return invalid_replay("canonical segment coverage differs");
+    }
+    Ok(())
+}
+
+fn process_replay_frame(
+    runtime: &mut ReplaySessionRuntime,
+    tick: &CanonicalTick,
+    pixels: Box<[u8]>,
+    decode_activity: &Arc<ReplayDecodeActivity>,
+    outstanding_limit: usize,
+) -> Result<(), CorpusError> {
+    while runtime.pending.len() >= outstanding_limit {
+        commit_replay_pending(
+            runtime.recognition.as_mut().expect("recognizer is active"),
+            &mut runtime.pending,
+            &mut runtime.output,
+            true,
+            &runtime.session_id,
+            runtime.session.capture_generation,
+            &mut runtime.measurements,
+        )?;
+    }
+    commit_replay_pending(
+        runtime.recognition.as_mut().expect("recognizer is active"),
+        &mut runtime.pending,
+        &mut runtime.output,
+        false,
+        &runtime.session_id,
+        runtime.session.capture_generation,
+        &mut runtime.measurements,
+    )?;
+    let frame = scorepeek::diagnostic_live::BoundCanonicalFrame::for_replay(
+        runtime.session.capture_generation,
+        tick.sequence,
+        tick.monotonic_ms,
+        runtime.binding.capture_profile_sha256.clone(),
+        runtime.binding.normalizer_sha256.clone(),
+        pixels,
+    )
+    .map_err(|_| CorpusError::InvalidReplay("canonical replay frame is invalid".to_owned()))?;
+    let inspected = runtime
+        .recognition
+        .as_mut()
+        .expect("recognizer is active")
+        .inspect(&frame)
+        .map_err(|_| CorpusError::InvalidReplay("production frame inspection failed".to_owned()))?;
+    let screen = inspected.observation.screen();
+    let timeline_step = runtime
+        .timeline
+        .observe(screen.into(), tick.sequence, tick.monotonic_ms);
+    runtime
+        .output
+        .publish(&scorepeek::routine_output::RunEvent {
+            schema: "scorepeek-run-event-v6".to_owned(),
+            kind: scorepeek::routine_output::RunEventKind::RawScreenObserved {
+                session_id: Some(runtime.session_id.clone()),
+                capture_generation: Some(runtime.session.capture_generation),
+                semantic_episode_id: timeline_step.active_episode_id,
+                sequence: tick.sequence,
+                monotonic_start_ms: tick.monotonic_ms,
+                monotonic_end_ms: tick.monotonic_ms,
+                screen: replay_screen_name(screen).to_owned(),
+                unknown_reason: (screen == ScreenClass::Unknown)
+                    .then(|| "predicate_not_matched".to_owned()),
+            },
+        })
+        .map_err(CorpusError::InvalidReplay)?;
+    apply_replay_timeline_actions(
+        timeline_step.actions,
+        runtime.recognition.as_mut().expect("recognizer is active"),
+        &mut runtime.pending,
+        &mut runtime.output,
+        &runtime.session_id,
+        runtime.session.capture_generation,
+        tick.sequence,
+        tick.monotonic_ms,
+        &mut runtime.measurements,
+    )?;
+    match inspected.field_submission {
+        scorepeek::recognition_live::field_session::FieldObservationSubmission::NotApplicable => {}
+        scorepeek::recognition_live::field_session::FieldObservationSubmission::Submitted(
+            mut field,
+        ) => {
+            let episode_id = runtime.timeline.active_episode_id().ok_or_else(|| {
+                CorpusError::InvalidReplay("field observation has no semantic episode".to_owned())
+            })?;
+            field.bind_screen_episode(episode_id);
+            runtime.pending.push_back(ReplayPending {
+                pending: field,
+                _memory: decode_activity.reserve_pending(),
+            });
+        }
+        scorepeek::recognition_live::field_session::FieldObservationSubmission::BusySkipped => {
+            return invalid_replay("offline replay skipped field OCR as busy");
+        }
+        scorepeek::recognition_live::field_session::FieldObservationSubmission::Rejected(error) => {
+            return Err(CorpusError::InvalidReplay(format!(
+                "offline replay rejected field OCR: {error:?}"
+            )));
+        }
+    }
+    runtime.canonical_frames = runtime.canonical_frames.saturating_add(1);
+    runtime.last_sequence = tick.sequence;
+    runtime.last_monotonic_ms = tick.monotonic_ms;
+    Ok(())
+}
+
+fn finalize_replay_session(
+    mut runtime: ReplaySessionRuntime,
+) -> Result<ReplaySessionOutcome, CorpusError> {
+    let finish_actions = runtime.timeline.finish();
+    if finish_actions.is_empty() {
+        drain_replay_pending(
+            runtime.recognition.as_mut().expect("recognizer is active"),
+            &mut runtime.pending,
+            &mut runtime.output,
+            &runtime.session_id,
+            runtime.session.capture_generation,
+            &mut runtime.measurements,
+        )?;
+    } else {
+        apply_replay_timeline_actions(
+            finish_actions,
+            runtime.recognition.as_mut().expect("recognizer is active"),
+            &mut runtime.pending,
+            &mut runtime.output,
+            &runtime.session_id,
+            runtime.session.capture_generation,
+            runtime.last_sequence,
+            runtime.last_monotonic_ms,
+            &mut runtime.measurements,
+        )?;
+    }
+    runtime
+        .output
+        .publish(&scorepeek::routine_output::RunEvent {
+            schema: "scorepeek-run-event-v6".to_owned(),
+            kind: scorepeek::routine_output::RunEventKind::SessionFinished {
+                session_id: runtime.session_id.clone(),
+                capture_generation: runtime.session.capture_generation,
+                outcome: "replayed".to_owned(),
+                report: serde_json::json!({}),
+            },
+        })
+        .map_err(CorpusError::InvalidReplay)?;
+    let recognition = runtime.recognition.take().expect("recognizer is active");
+    let finish = recognition.finish(
+        scorepeek::diagnostic_recording::DiagnosticRunStatus::Success,
+        runtime.last_monotonic_ms,
+        Duration::from_secs(30),
+    );
+    if finish.field_observer.status
+        != scorepeek::recognition_live::field_observer::FieldObserverFinishStatus::Complete
+    {
+        return invalid_replay("production recognizer did not finish cleanly");
+    }
+    let emitted = runtime
+        .output
+        .take_headless_events()
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            scorepeek::routine_output::RunEventKind::ResultDetected { result, .. } => Some(result),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    validate_semantic_oracle(&runtime.label, &emitted, &mut runtime.failures);
+    Ok(ReplaySessionOutcome {
+        session_key: runtime.session_id.clone(),
+        episode_count: runtime.label.episodes.len(),
+        canonical_frames: runtime.canonical_frames,
+        negative_frames: runtime.label.negative_frames.len(),
+        measurements: std::mem::take(&mut runtime.measurements),
+        failures: std::mem::take(&mut runtime.failures),
+        wall_us: u64::try_from(runtime.session_started.elapsed().as_micros()).unwrap_or(u64::MAX),
+        decoder_slot_wait_us: runtime.decoder_slot_wait_us,
+        memory_wait_us: runtime.memory_wait_us,
     })
 }
 
@@ -3522,11 +4591,17 @@ fn commit_replay_pending(
     let Some(front) = pending.front() else {
         return Ok(());
     };
+    let wait_started = Instant::now();
     let poll = if wait {
         recognition.wait_field_observation(&front.pending, Duration::from_secs(30))
     } else {
         recognition.poll_field_observation(&front.pending)
     };
+    if wait {
+        measurements.ordered_commit_wait_us = measurements
+            .ordered_commit_wait_us
+            .saturating_add(u64::try_from(wait_started.elapsed().as_micros()).unwrap_or(u64::MAX));
+    }
     let FieldObservationSessionPoll::Ready {
         observation,
         timing,
@@ -3550,6 +4625,9 @@ fn commit_replay_pending(
     measurements.text_batch_wall_us = measurements
         .text_batch_wall_us
         .saturating_add(observation.processing_timing().text_batch_wall_us);
+    measurements.text_worker_busy_us = measurements
+        .text_worker_busy_us
+        .saturating_add(observation.processing_timing().text_worker_busy_us);
     measurements.field_frame_wall_us = measurements
         .field_frame_wall_us
         .saturating_add(timing.frame_processing_wall_us);
@@ -3583,7 +4661,16 @@ fn replay_screen_name(screen: ScreenClass) -> &'static str {
 fn for_each_canonical_session_frame(
     store: &Path,
     session: &CaptureSession,
-    mut observe: impl FnMut(&CanonicalTick, Box<[u8]>) -> Result<(), CorpusError>,
+    observe: impl FnMut(&CanonicalTick, Box<[u8]>) -> Result<(), CorpusError> + Send,
+) -> Result<(), CorpusError> {
+    for_each_canonical_session_frame_with_activity(store, session, None, observe)
+}
+
+fn for_each_canonical_session_frame_with_activity(
+    store: &Path,
+    session: &CaptureSession,
+    activity: Option<&ReplayDecodeActivity>,
+    mut observe: impl FnMut(&CanonicalTick, Box<[u8]>) -> Result<(), CorpusError> + Send,
 ) -> Result<(), CorpusError> {
     let canonical_manifest_object =
         session_object_for_source(store, session, "recognition/canonical-manifest.json")?;
@@ -3609,10 +4696,11 @@ fn for_each_canonical_session_frame(
                     "canonical segment exceeds retained tick index".to_owned(),
                 )
             })?;
-        let decoded_digest = decode_canonical_frames(
+        let decoded_digest = decode_canonical_frames_with_activity(
             &object,
             segment.frames,
             DecodeContext::Replay,
+            activity,
             |index, pixels| {
                 let tick = expected.get(index).ok_or_else(|| {
                     CorpusError::InvalidReplay(
@@ -3636,7 +4724,7 @@ fn for_each_canonical_session_frame(
 fn for_each_session_canonical_frame(
     store: &Path,
     session: &CaptureSession,
-    mut observe: impl FnMut(u64, Box<[u8]>) -> Result<(), CorpusError>,
+    mut observe: impl FnMut(u64, Box<[u8]>) -> Result<(), CorpusError> + Send,
 ) -> Result<(), CorpusError> {
     if session
         .artifacts
@@ -4901,6 +5989,188 @@ mod tests {
         assert!(!canonical_tick_follows(Some((11, 900)), &tick));
         assert!(!canonical_tick_follows(Some((12, 1_000)), &tick));
         assert!(!canonical_tick_follows(Some((10, 1_001)), &tick));
+    }
+
+    #[test]
+    fn replay_decoder_activity_tracks_four_independent_sessions() {
+        let activity = Arc::new(ReplayDecodeActivity::default());
+        let entered = Arc::new(std::sync::Barrier::new(5));
+        let release = Arc::new(std::sync::Barrier::new(5));
+        thread::scope(|scope| {
+            for _ in 0..4 {
+                let activity = Arc::clone(&activity);
+                let entered = Arc::clone(&entered);
+                let release = Arc::clone(&release);
+                scope.spawn(move || {
+                    let memory = activity.reserve_decoder();
+                    let _decoder = activity.enter(std::process::id(), memory);
+                    entered.wait();
+                    release.wait();
+                });
+            }
+            entered.wait();
+            assert_eq!(activity.active.load(Ordering::Acquire), 4);
+            assert_eq!(activity.maximum_active.load(Ordering::Acquire), 4);
+            assert_eq!(activity.children.load(Ordering::Acquire), 4);
+            assert_eq!(
+                activity.tracked_peak_bytes.load(Ordering::Acquire),
+                u64::try_from(4 * DECODER_RESERVATION_BYTES).unwrap()
+            );
+            release.wait();
+        });
+        assert_eq!(activity.active.load(Ordering::Acquire), 0);
+        assert_eq!(activity.tracked_bytes.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn four_ffmpeg_children_decode_the_same_immutable_segment_concurrently() {
+        let root = tempfile::tempdir().unwrap();
+        let segment = root.path().join("fixture.mkv");
+        let status = Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=1920x1080:r=10:d=1",
+                "-frames:v",
+                "10",
+                "-c:v",
+                "ffv1",
+            ])
+            .arg(&segment)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let activity = Arc::new(ReplayDecodeActivity::default());
+        let decoded = Arc::new(std::sync::Barrier::new(5));
+        let release = Arc::new(std::sync::Barrier::new(5));
+        thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for _ in 0..4 {
+                let activity = Arc::clone(&activity);
+                let decoded = Arc::clone(&decoded);
+                let release = Arc::clone(&release);
+                let segment = segment.clone();
+                handles.push(scope.spawn(move || {
+                    decode_canonical_frames_with_activity(
+                        &segment,
+                        10,
+                        DecodeContext::Replay,
+                        Some(&activity),
+                        |index, _| {
+                            if index == 0 {
+                                decoded.wait();
+                                release.wait();
+                            }
+                            Ok(())
+                        },
+                    )
+                }));
+            }
+            decoded.wait();
+            let pids = activity
+                .live_pids
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .values()
+                .copied()
+                .collect::<Vec<_>>();
+            assert_eq!(pids.len(), 4);
+            assert!(pids.into_iter().all(|pid| process_rss_bytes(pid).is_some()));
+            release.wait();
+            for handle in handles {
+                handle.join().unwrap().unwrap();
+            }
+        });
+        assert_eq!(activity.children.load(Ordering::Acquire), 4);
+        assert_eq!(activity.maximum_active.load(Ordering::Acquire), 4);
+        let details = activity
+            .decoder_details
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(details.len(), 4);
+        assert!(details.iter().all(|detail| detail.rss_peak_bytes > 0));
+        assert!(activity.ffmpeg_rss_peak_total_bytes.load(Ordering::Acquire) > 0);
+        assert!(activity.process_rss_peak_bytes.load(Ordering::Acquire) > 0);
+    }
+
+    #[test]
+    fn failed_decoder_spawn_releases_memory_without_counting_a_child() {
+        let activity = ReplayDecodeActivity::default();
+        let result = decode_canonical_frames_with_program(
+            Path::new("/does/not/matter.mkv"),
+            1,
+            DecodeContext::Replay,
+            Some(&activity),
+            OsStr::new("/scorepeek/missing-ffmpeg"),
+            |_, _| Ok(()),
+        );
+        assert!(result.is_err());
+        assert_eq!(activity.children.load(Ordering::Acquire), 0);
+        assert_eq!(activity.active.load(Ordering::Acquire), 0);
+        assert_eq!(activity.tracked_bytes.load(Ordering::Acquire), 0);
+        assert!(
+            activity
+                .decoder_details
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn panicking_decoder_consumer_kills_reaps_and_releases_the_child() {
+        let root = tempfile::tempdir().unwrap();
+        let segment = root.path().join("fixture.mkv");
+        let status = Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=1920x1080:r=10:d=1",
+                "-frames:v",
+                "10",
+                "-c:v",
+                "ffv1",
+            ])
+            .arg(&segment)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let activity = ReplayDecodeActivity::default();
+        let result = decode_canonical_frames_with_activity(
+            &segment,
+            10,
+            DecodeContext::Replay,
+            Some(&activity),
+            |_, _| panic!("consumer failure"),
+        );
+        assert!(matches!(result, Err(CorpusError::InvalidReplay(_))));
+        assert_eq!(activity.active.load(Ordering::Acquire), 0);
+        assert_eq!(activity.tracked_bytes.load(Ordering::Acquire), 0);
+        assert!(
+            activity
+                .live_pids
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+        assert_eq!(
+            activity
+                .decoder_details
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            1
+        );
     }
 
     #[test]

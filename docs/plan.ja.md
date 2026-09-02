@@ -67,8 +67,10 @@
   queue取得後も含むaccepted-but-unconsumed resultのglobal capacity、provenance-bound result、race-free abandoned count、
   observer teardownまで保持するouter single-worker supervisor、5秒bounded finishを持つ。さらにactive catalog digest、登録済み
   PP-OCRv6-small model digest、固定CPU runtime manifest digestを照合し、catalog/dictionaryとpersistent ONNX session poolを
-  worker開始前に保持するproduction resource loaderとread-only gateを実装した。live poolは利用可能な論理CPUの半分、offline replayは
-  1論理CPUを残し、どちらも1--5 sessionに制限する。各sessionはintra/inter-op 1を維持する。gateはresourceをproduction field workerへ
+  worker開始前に保持するproduction resource loaderとread-only gateを実装した。live poolは
+  `min(12, max(1, available_parallelism / 2))`、offline replayの全session共有poolは
+  `min(12, max(1, available_parallelism - 4))`を既定とする。session数には固定上限を置かず、同時decoder数を
+  CPU数とglobal memory budgetから決める。各ONNX sessionと各FFmpeg decoderは1 threadを維持する。gateはresourceをproduction field workerへ
   移し、cropをsubmitせずbounded teardownまで確認する。さらにcomplete crop setをworker thread上で登録済みruntimeへ通すproduction
   screen-field observerを実装した。ADR 0078によりresultのtitle/artist/clear type/difficulty/level/notes/current scoreと、
   music-selectのcentral title/artist/active-list title/selected chartを登録済みruntimeで観測するcompleteなscreen別型だけを

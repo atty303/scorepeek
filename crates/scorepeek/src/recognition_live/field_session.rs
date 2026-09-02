@@ -13,6 +13,7 @@ use super::field_observer::{
 };
 use super::screen_field_observer::{
     RegisteredScreenFieldObserver, RegisteredScreenFieldObserverLoadError,
+    SharedRegisteredScreenFieldResources,
 };
 use super::text_observer_pool::RecognitionExecutionMode;
 use super::{
@@ -48,7 +49,6 @@ pub struct PendingSessionFieldObservation<T> {
     owner: Arc<()>,
     identity: Arc<()>,
     timing: super::FrameProcessingTiming,
-    admitted: std::time::Instant,
     screen_episode_id: u64,
 }
 
@@ -170,6 +170,34 @@ impl<O: FieldObserver> FieldObservationSession<O> {
         })
     }
 
+    fn start_unmanaged_with_capacity<E>(
+        root: &Path,
+        descriptor: DiagnosticRunDescriptor,
+        policy: DiagnosticPolicy,
+        capacity: usize,
+        loader: impl FnOnce(&super::field_observer::FieldObserverSessionBinding) -> Result<O, E>,
+    ) -> Result<Self, FieldObservationStartError<E>> {
+        let field_observer =
+            FieldObserverWorker::start_unmanaged_with_capacity(&descriptor, loader, capacity)
+                .map_err(FieldObservationStartError::FieldObserver)?;
+        let recognition = match RecognitionSession::start(root, descriptor, policy) {
+            Ok(recognition) => recognition,
+            Err(error) => {
+                return Err(FieldObservationStartError::Recognition {
+                    error,
+                    field_observer_finish: field_observer
+                        .finish(super::field_observer::DEFAULT_FIELD_OBSERVER_FINISH_TIMEOUT),
+                });
+            }
+        };
+        Ok(Self {
+            recognition,
+            field_observer,
+            owner: Arc::new(()),
+            outstanding: Vec::new(),
+        })
+    }
+
     /// Inspects and non-blockingly submits one current-run complete crop set when applicable.
     ///
     /// Field-worker rejection is returned separately and cannot replace the screen observation.
@@ -228,7 +256,6 @@ impl<O: FieldObserver> FieldObservationSession<O> {
                         owner: Arc::clone(&self.owner),
                         identity,
                         timing,
-                        admitted: std::time::Instant::now(),
                         screen_episode_id: 0,
                     })
                 }
@@ -256,6 +283,27 @@ impl<O: FieldObserver> FieldObservationSession<O> {
         field_observer_timeout: Duration,
     ) -> FieldObservationFinishOutcome {
         let field_observer = self.field_observer.finish(field_observer_timeout);
+        for (_, sequence) in self.outstanding {
+            self.recognition
+                .record_abandoned_field_observation(sequence);
+        }
+        self.recognition
+            .record_field_observer_finish(field_observer);
+        let diagnostic = self.recognition.finish(status, monotonic_end_ms);
+        FieldObservationFinishOutcome {
+            field_observer,
+            diagnostic,
+        }
+    }
+
+    /// Offline failure teardown retains the session until its admitted field worker has exited.
+    #[must_use]
+    pub fn finish_offline(
+        mut self,
+        status: DiagnosticRunStatus,
+        monotonic_end_ms: u64,
+    ) -> FieldObservationFinishOutcome {
+        let field_observer = self.field_observer.finish_joining();
         for (_, sequence) in self.outstanding {
             self.recognition
                 .record_abandoned_field_observation(sequence);
@@ -376,6 +424,26 @@ impl FieldObservationSession<RegisteredScreenFieldObserver> {
             RegisteredScreenFieldObserver::new(resources, numeric_runtime, execution_mode)
         })
     }
+
+    /// Starts one offline session using the corpus-wide registered text pool.
+    ///
+    /// # Errors
+    /// Returns a typed descriptor, numeric runtime, shared binding, worker, or recognition error.
+    pub fn start_registered_shared(
+        root: &Path,
+        descriptor: DiagnosticRunDescriptor,
+        policy: DiagnosticPolicy,
+        shared: Arc<SharedRegisteredScreenFieldResources>,
+    ) -> Result<Self, FieldObservationStartError<RegisteredScreenFieldObserverLoadError>> {
+        let capacity = shared.text_workers().saturating_mul(2);
+        Self::start_unmanaged_with_capacity(root, descriptor, policy, capacity, move |binding| {
+            let numeric_runtime = scorepeek::numeric_model_store::active_registered(
+                NUMERIC_MODEL_MANIFEST_BYTES,
+                NUMERIC_MODEL_MANIFEST_SHA256,
+            )?;
+            shared.observer(binding, numeric_runtime)
+        })
+    }
 }
 
 impl<O: FieldObserver> FieldObservationSession<O> {
@@ -422,10 +490,11 @@ impl<O: FieldObserver> FieldObservationSession<O> {
 
     pub fn record_frame_processing_timing(
         &mut self,
-        timing: super::FrameProcessingTiming,
+        mut timing: super::FrameProcessingTiming,
         field_status: crate::diagnostic_recording::FrameFieldStatus,
         field_timing: Option<&super::screen_field_observer::RecognitionProcessingTiming>,
     ) -> DiagnosticEnqueueOutcome {
+        timing.finish_wall();
         self.recognition
             .record_frame_processing_timing(timing, field_status, field_timing)
     }
@@ -470,7 +539,7 @@ impl<O: FieldObserver> FieldObservationSession<O> {
                 self.outstanding.swap_remove(index);
                 let diagnostic_field_fact = self.recognition.record_field_observation(&observation);
                 let mut timing = pending.timing;
-                timing.frame_processing_wall_us = super::duration_us(pending.admitted.elapsed());
+                timing.finish_wall();
                 FieldObservationSessionPoll::Ready {
                     observation,
                     diagnostic_field_fact,

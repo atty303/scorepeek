@@ -10,7 +10,7 @@ outside the checkpoint; implementation history belongs in Git.
   progress**.
 - `scorepeek-result-detected-v2` remains the accepted public domain contract and now carries typed
   ordered `play_options`. Debug output uses run-event v6, observation socket/snapshot v6, and
-  recognition observation v17. Joined recorded sessions use v5.
+  recognition observation v18. Joined recorded sessions use v5.
 - Text authority remains the registered PP-OCRv6-small bundle. Numeric authority remains the
   private fixed-cell HOG/MLP model. No model bytes, real crops, complete labels, or generated
   datasets are committed.
@@ -78,11 +78,13 @@ outside the checkpoint; implementation history belongs in Git.
 - Run-event v6 distinguishes raw screen observations, semantic episode transitions, current
   selection-difficulty changes, selection/result and provisional-joint transitions, attempt
   finalization, and suppression. Recognition observation
-  v17 retains title views/geometry, episode binding, fixed-cell numeric evidence, play-option raw
+  v18 retains title views/geometry, episode binding, fixed-cell numeric evidence, play-option raw
   OCR/marker/typed state, factor support, raw stage/frame timing, late/drain status, and suppression
   evidence. Independent PP-OCR jobs use single-threaded ONNX sessions in a pool selected from
   available parallelism; the outer coordinator pipelines frames and commits admitted evidence in
-  source order. Readers accept run-event v2 through v6 and recognition v5 through v17.
+  source order. Live uses half the available parallelism capped at twelve; offline replay uses one
+  global pool of available parallelism minus four capped at twelve. Readers accept run-event v2
+  through v6 and recognition v5 through v18.
 - The attempt corpus clean-cuts to complete joined-session v5 input and label v5 truth. Import keeps
   lossless segments and the tick index as immutable objects without QOI expansion or pixel-content
   deduplication. Replay decodes canonical retained frames only, starts no normalizer, uses production
@@ -93,6 +95,17 @@ outside the checkpoint; implementation history belongs in Git.
   pixels beside the canonical segment. `session_finished` moves recording to finalizing; an explicit
   `recording_ready` is emitted only after atomic joined-session publication, so that immutable
   session is importable while the watcher continues.
+- Canonical corpus replay initially queues only suite index and object digests and has no fixed
+  session limit. It admits bounded active session state, runs one single-threaded FFmpeg child per
+  scheduled segment, and returns the session to a FIFO after reap so another ready session can use
+  the slot. Close-time drain runs on a separate finalizer pool, so it cannot consume a decoder slot;
+  failed sessions stop admitted recognition work before their memory reservation is released.
+  Decoder count derives from one quarter of available parallelism and the 2048 MiB default
+  memory account. Sessions share one registered OCR pool; timeline, ordered commit, attempt state,
+  and final event comparison remain session-local. `--text-workers` and `--memory-mib` provide
+  bounded explicit replay controls. Summary v3 reports active/blocked/completed sessions, actual
+  decoder overlap, child and per-session wall time, memory/decoder/ordered-commit waits, tracked
+  memory, process RSS, and aggregate FFmpeg RSS.
 
 ## Verification boundary
 
@@ -153,6 +166,21 @@ outside the checkpoint; implementation history belongs in Git.
   startup/contention cost must be corrected before claiming whole-corpus acceleration. A fresh
   one-worker replay after deleting the legacy root and transfer staging still passed in
   101,232,925 microseconds, proving the active v2 objects are independently replayable.
+- On the development host, three final producer-admission/capped-twelve-worker replays of the same
+  1,061 frames preserve the semantic oracle in 57,920,114, 57,898,860, and 58,126,897 microseconds.
+  The 57,920,114-microsecond median is 41.6% below the final three-run one-worker median of
+  99,252,320 microseconds and 59.5% below the previous 142,942,802-microsecond default-pool result.
+  Median queue-inclusive text-batch wall falls from 94,080,092 to 26,818,062 microseconds.
+  Default-pool tracked memory peaks at 384 MiB and process RSS at about 1.18 GiB. The result does not
+  meet the 20-second target gate. The host exposed roughly two CPUs of effective execution despite
+  higher logical parallelism, so the 24-logical-CPU target and four-session throughput gates remain
+  prospective. A production-outer-scheduler fixture referencing the immutable session under four
+  distinct session keys replays 4,244 frames in 71,330,876 microseconds: four decoders overlap,
+  eight two-segment children are reaped, reports remain in corpus order, tracked memory peaks at
+  1,560,281,088 bytes under the 2 GiB account, and throughput is 3.29 times the final
+  58,670,445-microsecond single-session verification. A separate synthetic FFmpeg integration
+  verifies live PID overlap and per-child RSS/lifecycle
+  reporting.
 - The shared-memory/deferred-verification recorder revision was built through the cargo-dist path and
   installed hash-first on `infinitas.lan` at `/home/atty/.local/bin/scorepeek`; local, transferred,
   and installed executable SHA-256 are all
@@ -174,9 +202,10 @@ outside the checkpoint; implementation history belongs in Git.
 
 ## Next executable task
 
-Correct the offline worker-pool sizing or startup/contention cost exposed by the 31-worker replay,
-then rerun the same active v2 generation with one worker and the default pool. Require identical
-domain events plus reduced text-batch and whole-corpus wall time before claiming speedup. Continue
+Install this revision only after explicit approval, then run the same active v2 generation with one
+worker and the default pool on the 24-logical-CPU target. Require identical domain events, less than
+20 seconds whole-corpus wall time, and the four-session scaling gates before claiming target
+speedup. Continue
 rebuilding the v2 corpus with session-disjoint songs and failure attempts; require zero wrong joint
 acceptance, zero wrong events, and zero missing expected events before changing target or
 public-socket authority. Push and release remain separate explicit boundaries.

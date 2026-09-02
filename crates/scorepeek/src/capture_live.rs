@@ -2038,7 +2038,7 @@ fn poll_field_observations(
                 let sequence = observation.sequence();
                 let monotonic_start_ms = observation.monotonic_start_ms();
                 let monotonic_end_ms = observation.monotonic_end_ms();
-                if let Ok(output) = observation.into_output() {
+                if let Ok(mut output) = observation.into_output() {
                     let late = minimum_event_sequence.is_some_and(|minimum| sequence < minimum);
                     counters.field_ready_success = counters.field_ready_success.saturating_add(1);
                     counters.candidate_sets = counters.candidate_sets.saturating_add(1);
@@ -2075,6 +2075,8 @@ fn poll_field_observations(
                     if let Some(output_timing) = output_timing {
                         timing.add_live_processing(output_timing);
                     }
+                    timing.finish_wall();
+                    output.apply_frame_timing(timing);
                     let _ = session.record_frame_processing_timing(
                         timing,
                         if late {

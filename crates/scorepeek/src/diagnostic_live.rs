@@ -499,8 +499,12 @@ impl DiagnosticBridge {
                 crop_prepare_us: timing.crop_prepare_us,
                 field_queue_wait_us: field_timing.map(|value| value.field_queue_wait_us),
                 text_batch_wall_us: field_timing.map(|value| value.text_batch_wall_us),
+                maximum_text_worker_queue_wait_us: field_timing
+                    .map(|value| value.maximum_text_worker_queue_wait_us),
                 maximum_text_worker_inference_us: field_timing
                     .map(|value| value.maximum_text_worker_inference_us),
+                text_worker_busy_us: field_timing.map(|value| value.text_worker_busy_us),
+                text_worker_ids: field_timing.map(|value| value.text_worker_ids.clone()),
                 numeric_ocr_us: field_timing.and_then(|value| value.numeric_recognition_us),
                 field_join_us: field_timing.map(|value| value.join_us),
                 catalog_evidence_us: field_timing.map(|value| value.catalog_evidence_us),
@@ -1096,6 +1100,7 @@ mod tests {
             assert_eq!(
                 bridge.record_frame_processing_timing(
                     crate::recognition_live::FrameProcessingTiming {
+                        frame_started: std::time::Instant::now(),
                         source_sequence: sequence,
                         monotonic_start_ms: sequence * 100,
                         monotonic_end_ms: sequence * 100 + 16,

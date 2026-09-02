@@ -214,7 +214,7 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 root="${SCOREPEEK_CORPUS_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/scorepeek/private-corpus-v2}"
-exec cargo run --locked --quiet -p scorepeek-corpus -- corpus replay --store "$root"
+exec cargo run --locked --quiet -p scorepeek-corpus -- corpus replay --store "$root" "$@"
 '''
 
 [tasks."corpus:temporal:evaluate"]

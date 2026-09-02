@@ -8,7 +8,7 @@ objects, or deduplicate frames by pixel content.
 ## Recording boundary
 
 `scorepeek run` performs production recognition without saving artifacts. `scorepeek run --record`
-starts capture diagnostics, recognition observation v17, run-event v6, the canonical session
+starts capture diagnostics, recognition observation v18, run-event v6, the canonical session
 recorder, and joined diagnostic session v5 together. `--profile NAME` may appear before or after
 `--record`. Routine capture diagnostics retain structured facts but no legacy QOI pixels. The
 canonical recording is therefore the session's only retained frame authority.
@@ -75,6 +75,7 @@ converter, or archive path.
 
 ```text
 scorepeek-corpus corpus replay --store /absolute/private-corpus-v2
+scorepeek-corpus corpus replay --store /absolute/private-corpus-v2 --text-workers 1 --memory-mib 2048
 ```
 
 Replay losslessly decodes retained segment frames and supplies their original sequence and
@@ -84,12 +85,19 @@ synthetic pixels: PLAY and MODE SELECT gaps continue their semantic screen, whil
 UNKNOWN suspends until the next retained known frame or session end. A DecideTransition gap is an
 invalid suite.
 
-OCR may complete out of order but field evidence is committed by admission sequence. Offline
-capacity is twice the selected text-worker count and the producer waits rather than dropping a
-frame. Replay stdout reports `text_workers`, summed `text_batch_wall_us`, summed ordered
-`field_frame_wall_us`, and `corpus_wall_us`. The internal comparison run sets
+OCR may complete out of order but field evidence is committed by admission sequence. All sessions
+share one text pool. Each scheduler step runs one `-threads 1` FFmpeg child for one segment, then
+returns that session's ordered state to a FIFO so another ready session can use the slot before the
+next segment. The automatic decoder count is the smaller of the session count and one quarter of
+available parallelism, further constrained by memory; active session state is bounded at twice the
+decoder count and all later sessions remain digest-only metadata. There is no fixed session limit.
+The 2048 MiB default memory account bounds decoder reservations, active session state, and pending
+field frames by backpressure; replay never drops them. `--memory-mib` accepts 256 through 8192, and
+`--text-workers` accepts one through available parallelism. Replay stdout v3 reports selected and
+actual decoder concurrency, tracked memory high-water, ordered-commit wait, stable per-session wall
+time, summed text/frame wall time, text-worker inference busy time, and corpus wall time. The internal comparison run sets
 `SCOREPEEK_INTERNAL_SINGLE_TEXT_WORKER=1`; ordinary offline replay follows the
-available-parallelism policy.
+available-parallelism-minus-four policy capped at twelve workers.
 
 For every accepted label, replay requires exactly one ordered
 `scorepeek-result-detected-v2` event with equal semantic payload, ordered play options, and normalized
