@@ -46,6 +46,73 @@ pub struct RecognitionObservation<'a> {
     predicate: ScreenPredicateObservation,
 }
 
+/// Owned, pure classification and crop preparation for one canonical RGB8 frame.
+///
+/// Replay may prepare this value on a shared worker before the session-local ordered timeline
+/// consumes it. Construction performs no diagnostic, episode, attempt, or event mutation.
+#[derive(Debug)]
+pub struct PreparedRecognitionFrame {
+    started: Instant,
+    pixel_address: usize,
+    pixel_length: usize,
+    predicate: ScreenPredicateObservation,
+    field_inputs: Option<ScreenRgb8Crops>,
+    screen_classification_us: u64,
+    crop_prepare_us: Option<u64>,
+}
+
+impl PreparedRecognitionFrame {
+    /// Classifies and prepares all applicable field crops from one canonical RGB8 frame.
+    ///
+    /// # Errors
+    /// Returns an error when the canonical pixels or embedded layouts are invalid.
+    pub fn prepare(pixels: &[u8]) -> Result<Self, RecognitionError> {
+        Self::prepare_since(pixels, Instant::now())
+    }
+
+    /// Classifies and prepares one frame while retaining an earlier scheduler-admission origin.
+    ///
+    /// # Errors
+    /// Returns an error when the canonical pixels or embedded layouts are invalid.
+    pub fn prepare_since(pixels: &[u8], started: Instant) -> Result<Self, RecognitionError> {
+        let classification_started = Instant::now();
+        let predicate = inspect_canonical_rgb8(pixels)?;
+        let screen_classification_us = duration_us(classification_started.elapsed());
+        let crop_started = Instant::now();
+        let field_inputs = match predicate.screen {
+            ScreenClass::Result | ScreenClass::MusicSelect => {
+                Some(route_screen_rgb8_crops(pixels, predicate.screen)?)
+            }
+            ScreenClass::ModeSelect
+            | ScreenClass::DecideTransition
+            | ScreenClass::Play
+            | ScreenClass::Unknown => None,
+        };
+        let crop_prepare_us = field_inputs
+            .as_ref()
+            .map(|_| duration_us(crop_started.elapsed()));
+        Ok(Self {
+            started,
+            pixel_address: pixels.as_ptr() as usize,
+            pixel_length: pixels.len(),
+            predicate,
+            field_inputs,
+            screen_classification_us,
+            crop_prepare_us,
+        })
+    }
+
+    #[must_use]
+    pub const fn screen_classification_us(&self) -> u64 {
+        self.screen_classification_us
+    }
+
+    #[must_use]
+    pub const fn crop_prepare_us(&self) -> Option<u64> {
+        self.crop_prepare_us
+    }
+}
+
 impl<'a> RecognitionObservation<'a> {
     /// Applies the embedded screen predicate to one admitted live canonical owner.
     ///
@@ -308,6 +375,64 @@ impl RecognitionSession {
             attempt_resolver_us: None,
             output_us: None,
             frame_processing_wall_us: duration_us(frame_started.elapsed()),
+        };
+        Ok(RecognitionFrameResult {
+            observation,
+            field_inputs,
+            diagnostic_frame,
+            diagnostic_fact,
+            timing,
+        })
+    }
+
+    /// Admits one already prepared replay frame into this session's ordered recognition path.
+    ///
+    /// Preparation is pure and may complete out of order. Callers must invoke this method in
+    /// source-sequence order; all diagnostic and semantic authority remains here.
+    ///
+    /// # Errors
+    /// Returns an error when the prepared frame does not match this session's immutable binding.
+    pub fn inspect_prepared<'a>(
+        &mut self,
+        frame: &'a BoundCanonicalFrame,
+        prepared: PreparedRecognitionFrame,
+    ) -> Result<RecognitionFrameResult<'a>, RecognitionSessionError> {
+        if !self.bridge.matches_frame(frame) {
+            let _ = self.bridge.offer(frame);
+            return Err(RecognitionSessionError::FrameBindingMismatch);
+        }
+        if prepared.pixel_address != frame.pixels().as_ptr() as usize
+            || prepared.pixel_length != frame.pixels().len()
+        {
+            let _ = self.bridge.offer(frame);
+            let _ = self.bridge.record_recognition_failure(frame);
+            return Err(RecognitionSessionError::RecognitionFailed);
+        }
+        self.last_sequence = Some(frame.sequence());
+        let observation = RecognitionObservation {
+            frame,
+            canonical_layout_sha256: CanonicalLayout::sha256(),
+            predicate: prepared.predicate,
+        };
+        let diagnostic_frame = self.bridge.record_frame_for_observation(&observation);
+        let field_inputs = prepared.field_inputs.map(|crops| BoundScreenRgb8Crops {
+            frame,
+            run_binding: Arc::clone(&self.run_binding),
+            crops,
+        });
+        let diagnostic_fact = self.bridge.record_screen_observation(&observation);
+        let timing = FrameProcessingTiming {
+            frame_started: prepared.started,
+            source_sequence: frame.sequence(),
+            monotonic_start_ms: frame.monotonic_start_ms(),
+            monotonic_end_ms: frame.monotonic_end_ms(),
+            screen: observation.screen(),
+            screen_classification_us: prepared.screen_classification_us,
+            crop_prepare_us: prepared.crop_prepare_us,
+            screen_resolver_us: None,
+            attempt_resolver_us: None,
+            output_us: None,
+            frame_processing_wall_us: duration_us(prepared.started.elapsed()),
         };
         Ok(RecognitionFrameResult {
             observation,
@@ -707,6 +832,60 @@ mod tests {
                 .all(|(_, crop)| !crop.pixels().is_empty())
         );
         assert!(!crops.active_list_title.pixels().is_empty());
+    }
+
+    #[test]
+    fn prepared_replay_inspection_matches_the_direct_recognition_path() {
+        let root = tempfile::tempdir().unwrap();
+        let frame = solid_frame([200, 100, 20], 7);
+        let policy = DiagnosticPolicy {
+            enabled: false,
+            ..DiagnosticPolicy::default()
+        };
+        let mut direct_session = RecognitionSession::start(
+            root.path(),
+            descriptor("direct-preparation", 1),
+            policy.clone(),
+        )
+        .unwrap();
+        let direct = direct_session.inspect(&frame).unwrap();
+        let direct_screen = direct.observation.screen();
+        let direct_crops = direct.field_inputs.unwrap();
+
+        let prepared = PreparedRecognitionFrame::prepare(frame.pixels()).unwrap();
+        let mut prepared_session =
+            RecognitionSession::start(root.path(), descriptor("parallel-preparation", 1), policy)
+                .unwrap();
+        let replayed = prepared_session.inspect_prepared(&frame, prepared).unwrap();
+        assert_eq!(replayed.observation.screen(), direct_screen);
+        let replayed_crops = replayed.field_inputs.unwrap();
+        match (direct_crops.crops(), replayed_crops.crops()) {
+            (BoundScreenRgb8CropsRef::Result(left), BoundScreenRgb8CropsRef::Result(right)) => {
+                assert_eq!(left, right);
+            }
+            _ => panic!("prepared recognition changed the routed screen"),
+        }
+    }
+
+    #[test]
+    fn prepared_replay_inspection_rejects_another_pixel_owner() {
+        let root = tempfile::tempdir().unwrap();
+        let prepared_frame = solid_frame([200, 100, 20], 7);
+        let another_frame = solid_frame([200, 100, 20], 8);
+        let prepared = PreparedRecognitionFrame::prepare(prepared_frame.pixels()).unwrap();
+        let mut session = RecognitionSession::start(
+            root.path(),
+            descriptor("mismatched-preparation", 1),
+            DiagnosticPolicy {
+                enabled: false,
+                ..DiagnosticPolicy::default()
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            session.inspect_prepared(&another_frame, prepared),
+            Err(RecognitionSessionError::RecognitionFailed)
+        ));
     }
 
     #[test]

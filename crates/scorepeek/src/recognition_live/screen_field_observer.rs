@@ -12,7 +12,7 @@ use scorepeek::recognition::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::fmt::Write as _;
@@ -41,6 +41,15 @@ pub struct RegisteredScreenFieldObserver {
     candidate_domain: CatalogCandidateDomain,
     prefetched_text: Arc<Mutex<BTreeMap<u64, PendingTextObservationBatch>>>,
     prefetched_numeric: Arc<Mutex<BTreeMap<u64, PendingNumericObservationBatch>>>,
+    projection_cache: VecDeque<ProjectionCacheEntry>,
+}
+
+const PROJECTION_CACHE_ENTRIES: usize = 4;
+
+struct ProjectionCacheEntry {
+    fields: ScreenFieldObservations,
+    title_evidence: Option<TitleEvidenceObservation>,
+    observation: RegisteredScreenFieldObservation,
 }
 
 /// Run-independent registered OCR resources shared by offline replay sessions.
@@ -129,6 +138,7 @@ impl RegisteredScreenFieldObserver {
             candidate_domain,
             prefetched_text: Arc::new(Mutex::new(BTreeMap::new())),
             prefetched_numeric: Arc::new(Mutex::new(BTreeMap::new())),
+            projection_cache: VecDeque::new(),
         })
     }
 
@@ -146,6 +156,7 @@ impl RegisteredScreenFieldObserver {
             candidate_domain,
             prefetched_text: Arc::new(Mutex::new(BTreeMap::new())),
             prefetched_numeric: Arc::new(Mutex::new(BTreeMap::new())),
+            projection_cache: VecDeque::new(),
         })
     }
 
@@ -160,6 +171,42 @@ impl RegisteredScreenFieldObserver {
             &self.prefetched_numeric,
             input,
         )
+    }
+
+    fn project_fields(
+        &mut self,
+        fields: ScreenFieldObservations,
+        title_evidence: Option<TitleEvidenceObservation>,
+    ) -> RegisteredScreenFieldObservation {
+        let lookup_started = Instant::now();
+        if let Some(index) = self
+            .projection_cache
+            .iter()
+            .position(|entry| entry.fields == fields && entry.title_evidence == title_evidence)
+        {
+            let entry = self
+                .projection_cache
+                .remove(index)
+                .expect("projection cache index exists");
+            let mut observation = entry.observation.clone();
+            observation.processing_timing =
+                RecognitionProcessingTiming::initial(duration_us(lookup_started.elapsed()));
+            self.projection_cache.push_front(entry);
+            return observation;
+        }
+        let observation = RegisteredScreenFieldObservation::from_fields_with_catalog_and_title(
+            &self.candidate_domain,
+            &self.catalog,
+            fields.clone(),
+            title_evidence.clone(),
+        );
+        self.projection_cache.push_front(ProjectionCacheEntry {
+            fields,
+            title_evidence,
+            observation: observation.clone(),
+        });
+        self.projection_cache.truncate(PROJECTION_CACHE_ENTRIES);
+        observation
     }
 }
 
@@ -1109,6 +1156,26 @@ impl FieldObserver for RegisteredScreenFieldObserver {
 
     const PIPELINED_PREFETCH: bool = true;
 
+    fn outer_worker_count(&self, maximum_outstanding: usize) -> usize {
+        let maximum = match self.text_pool.configuration().execution_mode {
+            RecognitionExecutionMode::Live => 2,
+            RecognitionExecutionMode::Offline => 4,
+        };
+        maximum_outstanding.min(maximum)
+    }
+
+    fn fork_outer_worker(&self) -> Option<Self> {
+        Some(Self {
+            catalog: self.catalog.clone(),
+            text_pool: Arc::clone(&self.text_pool),
+            numeric_worker: Arc::clone(&self.numeric_worker),
+            candidate_domain: self.candidate_domain.clone(),
+            prefetched_text: Arc::clone(&self.prefetched_text),
+            prefetched_numeric: Arc::clone(&self.prefetched_numeric),
+            projection_cache: VecDeque::new(),
+        })
+    }
+
     fn admission(&self) -> Option<FieldObserverAdmission<Self::Output>> {
         let text_pool = Arc::clone(&self.text_pool);
         let numeric_worker = Arc::clone(&self.numeric_worker);
@@ -1142,12 +1209,7 @@ impl FieldObserver for RegisteredScreenFieldObserver {
                 self.observe_music_select(input.sequence(), crops)?
             }
         };
-        let mut observation = RegisteredScreenFieldObservation::from_fields_with_catalog_and_title(
-            &self.candidate_domain,
-            &self.catalog,
-            observed.fields,
-            observed.title_evidence,
-        );
+        let mut observation = self.project_fields(observed.fields, observed.title_evidence);
         observation.numeric_batch = observed.numeric_batch;
         observation.processing_timing = RecognitionProcessingTiming {
             execution_policy: configuration.execution_mode.as_str(),

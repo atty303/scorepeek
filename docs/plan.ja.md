@@ -65,7 +65,7 @@
   field inputsを生成できない。さらにcomplete descriptorから導出したrun IDと全bindingを保持し、loaderをcapture開始前に
   1回だけ呼ぶapplication-owned field-observer worker境界を実装した。capacity 2のnon-blocking queue、worker-only execution、
   queue取得後も含むaccepted-but-unconsumed resultのglobal capacity、provenance-bound result、race-free abandoned count、
-  observer teardownまで保持するouter single-worker supervisor、5秒bounded finishを持つ。さらにactive catalog digest、登録済み
+  observer teardownまで保持するouter supervisor、live最大2／offline session最大4のframe-local worker、5秒bounded finishを持つ。さらにactive catalog digest、登録済み
   PP-OCRv6-small model digest、固定CPU runtime manifest digestを照合し、catalog/dictionaryとpersistent ONNX session poolを
   worker開始前に保持するproduction resource loaderとread-only gateを実装した。live poolは
   `min(12, max(1, available_parallelism / 2))`、offline replayの全session共有poolは

@@ -53,6 +53,10 @@ const SESSION_STATE_RESERVATION_BYTES: usize = 64 * 1024 * 1024;
 const PENDING_FIELD_FRAME_RESERVATION_BYTES: usize = 16 * 1024 * 1024;
 const NUMERIC_DATASET_SCHEMA: &str = "scorepeek-private-numeric-ctc-dataset-v1";
 
+fn duration_us(duration: Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct DiagnosticManifest {
@@ -694,6 +698,7 @@ pub struct CorpusReplaySummary {
     canonical_frames: usize,
     negative_frames: usize,
     text_workers: usize,
+    preprocess_workers: usize,
     decode_workers: usize,
     maximum_active_sessions: usize,
     maximum_concurrent_decoders: usize,
@@ -705,8 +710,18 @@ pub struct CorpusReplaySummary {
     process_rss_peak_bytes: u64,
     ffmpeg_rss_peak_total_bytes: u64,
     decoder_details: Vec<CorpusReplayDecoderSummary>,
+    decode_consumer_wait_us: u64,
+    preprocess_queue_wait_us: u64,
+    preprocess_wall_us: u64,
+    screen_classification_us: u64,
+    crop_prepare_us: u64,
+    field_queue_wait_us: u64,
     text_batch_wall_us: u64,
+    maximum_text_worker_inference_us: u64,
     text_worker_busy_us: u64,
+    numeric_inference_us: u64,
+    field_join_us: u64,
+    catalog_projection_us: u64,
     field_frame_wall_us: u64,
     ordered_commit_wait_us: u64,
     decoder_slot_wait_us: u64,
@@ -1889,9 +1904,26 @@ fn decode_canonical_frames_with_activity(
     expected_frames: usize,
     context: DecodeContext,
     activity: Option<&ReplayDecodeActivity>,
-    observe: impl FnMut(usize, Box<[u8]>) -> Result<(), CorpusError> + Send,
+    mut observe: impl FnMut(usize, Box<[u8]>) -> Result<(), CorpusError> + Send,
 ) -> Result<String, CorpusError> {
-    decode_canonical_frames_with_program(
+    decode_canonical_frames_with_program_and_timing(
+        path,
+        expected_frames,
+        context,
+        activity,
+        OsStr::new("ffmpeg"),
+        move |index, pixels, _| observe(index, pixels),
+    )
+}
+
+fn decode_canonical_frames_with_activity_and_timing(
+    path: &Path,
+    expected_frames: usize,
+    context: DecodeContext,
+    activity: Option<&ReplayDecodeActivity>,
+    observe: impl FnMut(usize, Box<[u8]>, u64) -> Result<(), CorpusError> + Send,
+) -> Result<String, CorpusError> {
+    decode_canonical_frames_with_program_and_timing(
         path,
         expected_frames,
         context,
@@ -1908,6 +1940,24 @@ fn decode_canonical_frames_with_program(
     activity: Option<&ReplayDecodeActivity>,
     program: &OsStr,
     mut observe: impl FnMut(usize, Box<[u8]>) -> Result<(), CorpusError> + Send,
+) -> Result<String, CorpusError> {
+    decode_canonical_frames_with_program_and_timing(
+        path,
+        expected_frames,
+        context,
+        activity,
+        program,
+        move |index, pixels, _| observe(index, pixels),
+    )
+}
+
+fn decode_canonical_frames_with_program_and_timing(
+    path: &Path,
+    expected_frames: usize,
+    context: DecodeContext,
+    activity: Option<&ReplayDecodeActivity>,
+    program: &OsStr,
+    mut observe: impl FnMut(usize, Box<[u8]>, u64) -> Result<(), CorpusError> + Send,
 ) -> Result<String, CorpusError> {
     let decoder_memory = activity.map(ReplayDecodeActivity::reserve_decoder);
     let child = Command::new(program)
@@ -1951,7 +2001,7 @@ fn decode_canonical_frames_with_program(
                 .map_err(|error| format!("canonical RGB frame read failed: {error}"))?;
             digest.update(&pixels);
             sender
-                .send(pixels)
+                .send((Instant::now(), pixels))
                 .map_err(|_| "canonical decoder consumer stopped".to_owned())?;
         }
         let mut extra = [0_u8; 1];
@@ -1971,7 +2021,7 @@ fn decode_canonical_frames_with_program(
                 activity.sample_rss(child.id());
             }
             match receiver.recv_timeout(Duration::from_millis(100)) {
-                Ok(pixels) => break pixels,
+                Ok(decoded) => break decoded,
                 Err(RecvTimeoutError::Timeout) if started.elapsed() < CANONICAL_DECODE_TIMEOUT => {}
                 Err(RecvTimeoutError::Timeout) => {
                     drop(receiver);
@@ -1987,13 +2037,15 @@ fn decode_canonical_frames_with_program(
                 }
             }
         };
+        let (decoded_at, pixels) = pixels;
+        let decode_consumer_wait_us = duration_us(decoded_at.elapsed());
         let mut callback_timed_out = false;
         let callback = thread::scope(|scope| {
             let (callback_sender, callback_receiver) = mpsc::sync_channel(1);
             let observer = &mut observe;
             let callback = scope.spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    observer(index, pixels)
+                    observer(index, pixels, decode_consumer_wait_us)
                 }));
                 let _ = callback_sender.send(result);
             });
@@ -3291,6 +3343,7 @@ pub fn replay_corpus_with_options(
         canonical_frames,
         negative_frames: negatives,
         text_workers: 0,
+        preprocess_workers: 0,
         decode_workers: 0,
         maximum_active_sessions: 0,
         maximum_concurrent_decoders: 0,
@@ -3302,8 +3355,18 @@ pub fn replay_corpus_with_options(
         process_rss_peak_bytes: 0,
         ffmpeg_rss_peak_total_bytes: 0,
         decoder_details: Vec::new(),
+        decode_consumer_wait_us: 0,
+        preprocess_queue_wait_us: 0,
+        preprocess_wall_us: 0,
+        screen_classification_us: 0,
+        crop_prepare_us: 0,
+        field_queue_wait_us: 0,
         text_batch_wall_us: 0,
+        maximum_text_worker_inference_us: 0,
         text_worker_busy_us: 0,
+        numeric_inference_us: 0,
+        field_join_us: 0,
+        catalog_projection_us: 0,
         field_frame_wall_us: 0,
         ordered_commit_wait_us: 0,
         decoder_slot_wait_us: 0,
@@ -3332,14 +3395,136 @@ struct ReplayPending {
     _memory: ReplayPendingMemory,
 }
 
+struct PreparedReplayFrame {
+    pixels: Box<[u8]>,
+    recognition: scorepeek::recognition_live::PreparedRecognitionFrame,
+    memory: ReplayPendingMemory,
+    queue_wait_us: u64,
+    wall_us: u64,
+}
+
+struct PendingReplayPreprocess {
+    tick: CanonicalTick,
+    receiver: mpsc::Receiver<Result<PreparedReplayFrame, String>>,
+}
+
+struct ReplayPreprocessJob {
+    pixels: Box<[u8]>,
+    memory: ReplayPendingMemory,
+    queued_at: Instant,
+    output: mpsc::SyncSender<Result<PreparedReplayFrame, String>>,
+}
+
+struct ReplayPreprocessPoolInner {
+    senders: Vec<mpsc::Sender<Option<ReplayPreprocessJob>>>,
+    cursor: AtomicUsize,
+    handles: Mutex<Vec<JoinHandle<()>>>,
+}
+
+#[derive(Clone)]
+struct ReplayPreprocessPool {
+    inner: Arc<ReplayPreprocessPoolInner>,
+}
+
+impl ReplayPreprocessPool {
+    fn start(workers: usize) -> Self {
+        let mut senders = Vec::with_capacity(workers);
+        let mut handles = Vec::with_capacity(workers);
+        for _worker_id in 0..workers {
+            let (sender, receiver) = mpsc::channel::<Option<ReplayPreprocessJob>>();
+            senders.push(sender);
+            handles.push(thread::spawn(move || {
+                while let Ok(Some(job)) = receiver.recv() {
+                    let queue_wait_us = duration_us(job.queued_at.elapsed());
+                    let started = Instant::now();
+                    let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        scorepeek::recognition_live::PreparedRecognitionFrame::prepare_since(
+                            &job.pixels,
+                            job.queued_at,
+                        )
+                    }));
+                    let result = match prepared {
+                        Ok(Ok(recognition)) => Ok(PreparedReplayFrame {
+                            pixels: job.pixels,
+                            recognition,
+                            memory: job.memory,
+                            queue_wait_us,
+                            wall_us: duration_us(started.elapsed()),
+                        }),
+                        Ok(Err(error)) => {
+                            Err(format!("canonical replay preprocessing failed: {error:?}"))
+                        }
+                        Err(_) => Err("canonical replay preprocessing panicked".to_owned()),
+                    };
+                    let _ = job.output.send(result);
+                }
+            }));
+        }
+        Self {
+            inner: Arc::new(ReplayPreprocessPoolInner {
+                senders,
+                cursor: AtomicUsize::new(0),
+                handles: Mutex::new(handles),
+            }),
+        }
+    }
+
+    fn submit(
+        &self,
+        tick: CanonicalTick,
+        pixels: Box<[u8]>,
+        memory: ReplayPendingMemory,
+    ) -> Result<PendingReplayPreprocess, CorpusError> {
+        let (output, receiver) = mpsc::sync_channel(1);
+        let index = self.inner.cursor.fetch_add(1, Ordering::Relaxed) % self.inner.senders.len();
+        self.inner.senders[index]
+            .send(Some(ReplayPreprocessJob {
+                pixels,
+                memory,
+                queued_at: Instant::now(),
+                output,
+            }))
+            .map_err(|_| {
+                CorpusError::InvalidReplay("canonical replay preprocessing stopped".to_owned())
+            })?;
+        Ok(PendingReplayPreprocess { tick, receiver })
+    }
+}
+
+impl Drop for ReplayPreprocessPoolInner {
+    fn drop(&mut self) {
+        for sender in &self.senders {
+            let _ = sender.send(None);
+        }
+        for handle in self
+            .handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+        {
+            let _ = handle.join();
+        }
+    }
+}
+
 #[derive(Default)]
 #[allow(
     clippy::struct_field_names,
     reason = "every replay duration field includes its serialized microsecond unit"
 )]
 struct ReplayMeasurements {
+    decode_consumer_wait_us: u64,
+    preprocess_queue_wait_us: u64,
+    preprocess_wall_us: u64,
+    screen_classification_us: u64,
+    crop_prepare_us: u64,
+    field_queue_wait_us: u64,
     text_batch_wall_us: u64,
+    maximum_text_worker_inference_us: u64,
     text_worker_busy_us: u64,
+    numeric_inference_us: u64,
+    field_join_us: u64,
+    catalog_projection_us: u64,
     field_frame_wall_us: u64,
     ordered_commit_wait_us: u64,
 }
@@ -3648,6 +3833,7 @@ fn replay_canonical_suite(
             available_parallelism,
         )
     });
+    let preprocess_workers = (available_parallelism / 4).clamp(1, 8);
     let memory_limit_bytes = options.memory_mib.saturating_mul(1024 * 1024);
     let memory_decode_slots = (memory_limit_bytes
         / (DECODER_RESERVATION_BYTES
@@ -3724,6 +3910,7 @@ fn replay_canonical_suite(
         .max(1)
         .min(text_workers.saturating_mul(2));
     let decode_activity = Arc::new(ReplayDecodeActivity::default());
+    let preprocess_pool = ReplayPreprocessPool::start(preprocess_workers);
     let memory_wait_epoch = Instant::now();
     for source in &mut queued {
         source.memory_wait_started = memory_wait_epoch;
@@ -3756,6 +3943,7 @@ fn replay_canonical_suite(
         let result_sender = result_sender.clone();
         let shared = Arc::clone(&shared);
         let activity = Arc::clone(&decode_activity);
+        let preprocess_pool = preprocess_pool.clone();
         let store = store.to_owned();
         let diagnostic_root = diagnostic_root.to_owned();
         handles.push(thread::spawn(move || {
@@ -3778,6 +3966,7 @@ fn replay_canonical_suite(
                         work,
                         Arc::clone(&shared),
                         &activity,
+                        &preprocess_pool,
                         per_session_pending_limit,
                     )
                 }))
@@ -3964,6 +4153,36 @@ fn replay_canonical_suite(
         measurements.text_batch_wall_us = measurements
             .text_batch_wall_us
             .saturating_add(outcome.measurements.text_batch_wall_us);
+        measurements.field_queue_wait_us = measurements
+            .field_queue_wait_us
+            .saturating_add(outcome.measurements.field_queue_wait_us);
+        measurements.maximum_text_worker_inference_us = measurements
+            .maximum_text_worker_inference_us
+            .max(outcome.measurements.maximum_text_worker_inference_us);
+        measurements.numeric_inference_us = measurements
+            .numeric_inference_us
+            .saturating_add(outcome.measurements.numeric_inference_us);
+        measurements.field_join_us = measurements
+            .field_join_us
+            .saturating_add(outcome.measurements.field_join_us);
+        measurements.catalog_projection_us = measurements
+            .catalog_projection_us
+            .saturating_add(outcome.measurements.catalog_projection_us);
+        measurements.decode_consumer_wait_us = measurements
+            .decode_consumer_wait_us
+            .saturating_add(outcome.measurements.decode_consumer_wait_us);
+        measurements.preprocess_queue_wait_us = measurements
+            .preprocess_queue_wait_us
+            .saturating_add(outcome.measurements.preprocess_queue_wait_us);
+        measurements.preprocess_wall_us = measurements
+            .preprocess_wall_us
+            .saturating_add(outcome.measurements.preprocess_wall_us);
+        measurements.screen_classification_us = measurements
+            .screen_classification_us
+            .saturating_add(outcome.measurements.screen_classification_us);
+        measurements.crop_prepare_us = measurements
+            .crop_prepare_us
+            .saturating_add(outcome.measurements.crop_prepare_us);
         measurements.text_worker_busy_us = measurements
             .text_worker_busy_us
             .saturating_add(outcome.measurements.text_worker_busy_us);
@@ -4004,6 +4223,7 @@ fn replay_canonical_suite(
         canonical_frames,
         negative_frames,
         text_workers,
+        preprocess_workers,
         decode_workers,
         maximum_active_sessions,
         maximum_concurrent_decoders: decode_activity.maximum_active.load(Ordering::Acquire),
@@ -4019,8 +4239,18 @@ fn replay_canonical_suite(
             .ffmpeg_rss_peak_total_bytes
             .load(Ordering::Acquire),
         decoder_details,
+        decode_consumer_wait_us: measurements.decode_consumer_wait_us,
+        preprocess_queue_wait_us: measurements.preprocess_queue_wait_us,
+        preprocess_wall_us: measurements.preprocess_wall_us,
+        screen_classification_us: measurements.screen_classification_us,
+        crop_prepare_us: measurements.crop_prepare_us,
+        field_queue_wait_us: measurements.field_queue_wait_us,
         text_batch_wall_us: measurements.text_batch_wall_us,
+        maximum_text_worker_inference_us: measurements.maximum_text_worker_inference_us,
         text_worker_busy_us: measurements.text_worker_busy_us,
+        numeric_inference_us: measurements.numeric_inference_us,
+        field_join_us: measurements.field_join_us,
+        catalog_projection_us: measurements.catalog_projection_us,
         field_frame_wall_us: measurements.field_frame_wall_us,
         ordered_commit_wait_us: measurements.ordered_commit_wait_us,
         decoder_slot_wait_us,
@@ -4181,6 +4411,7 @@ fn execute_replay_step(
         scorepeek::recognition_live::screen_field_observer::SharedRegisteredScreenFieldResources,
     >,
     decode_activity: &Arc<ReplayDecodeActivity>,
+    preprocess_pool: &ReplayPreprocessPool,
     outstanding_limit: usize,
 ) -> Result<ReplayStep, CorpusError> {
     let slot_wait_us = u64::try_from(scheduled.queued_at.elapsed().as_micros()).unwrap_or(u64::MAX);
@@ -4197,7 +4428,13 @@ fn execute_replay_step(
             )?;
             runtime.decoder_slot_wait_us =
                 runtime.decoder_slot_wait_us.saturating_add(slot_wait_us);
-            process_replay_segment(store, &mut runtime, decode_activity, outstanding_limit)?;
+            process_replay_segment(
+                store,
+                &mut runtime,
+                decode_activity,
+                preprocess_pool,
+                outstanding_limit,
+            )?;
             Ok(
                 if runtime.segment_index == runtime.canonical.segments.len() {
                     ReplayStep::Finalize(Box::new(runtime))
@@ -4217,7 +4454,13 @@ fn execute_replay_step(
             )?;
             runtime.decoder_slot_wait_us =
                 runtime.decoder_slot_wait_us.saturating_add(slot_wait_us);
-            process_replay_segment(store, &mut runtime, decode_activity, outstanding_limit)?;
+            process_replay_segment(
+                store,
+                &mut runtime,
+                decode_activity,
+                preprocess_pool,
+                outstanding_limit,
+            )?;
             Ok(
                 if runtime.segment_index == runtime.canonical.segments.len() {
                     ReplayStep::Finalize(Box::new(runtime))
@@ -4229,7 +4472,13 @@ fn execute_replay_step(
         ReplayWork::Active(mut runtime) => {
             runtime.decoder_slot_wait_us =
                 runtime.decoder_slot_wait_us.saturating_add(slot_wait_us);
-            process_replay_segment(store, &mut runtime, decode_activity, outstanding_limit)?;
+            process_replay_segment(
+                store,
+                &mut runtime,
+                decode_activity,
+                preprocess_pool,
+                outstanding_limit,
+            )?;
             Ok(
                 if runtime.segment_index == runtime.canonical.segments.len() {
                     ReplayStep::Finalize(runtime)
@@ -4245,6 +4494,7 @@ fn process_replay_segment(
     store: &Path,
     runtime: &mut ReplaySessionRuntime,
     decode_activity: &Arc<ReplayDecodeActivity>,
+    preprocess_pool: &ReplayPreprocessPool,
     outstanding_limit: usize,
 ) -> Result<(), CorpusError> {
     let segment = runtime
@@ -4265,18 +4515,34 @@ fn process_replay_segment(
         &runtime.session,
         &format!("recognition/{}", segment.path),
     )?;
-    let decoded_digest = decode_canonical_frames_with_activity(
+    let mut preprocessing = VecDeque::new();
+    let decoded_digest = decode_canonical_frames_with_activity_and_timing(
         &object,
         segment.frames,
         DecodeContext::Replay,
         Some(decode_activity),
-        |index, pixels| {
+        |index, pixels, decode_consumer_wait_us| {
+            runtime.measurements.decode_consumer_wait_us = runtime
+                .measurements
+                .decode_consumer_wait_us
+                .saturating_add(decode_consumer_wait_us);
             let tick = expected.get(index).ok_or_else(|| {
                 CorpusError::InvalidReplay("canonical decoded frame exceeds tick index".to_owned())
             })?;
-            process_replay_frame(runtime, tick, pixels, decode_activity, outstanding_limit)
+            preprocessing.push_back(preprocess_pool.submit(
+                tick.clone(),
+                pixels,
+                decode_activity.reserve_pending(),
+            )?);
+            while preprocessing.len() >= outstanding_limit {
+                commit_replay_preprocessed(runtime, &mut preprocessing, true, outstanding_limit)?;
+            }
+            commit_replay_preprocessed(runtime, &mut preprocessing, false, outstanding_limit)
         },
     )?;
+    while !preprocessing.is_empty() {
+        commit_replay_preprocessed(runtime, &mut preprocessing, true, outstanding_limit)?;
+    }
     if decoded_digest != segment.raw_rgb24_sha256 {
         return invalid_replay("canonical segment decoded pixel digest differs");
     }
@@ -4290,11 +4556,42 @@ fn process_replay_segment(
     Ok(())
 }
 
+fn commit_replay_preprocessed(
+    runtime: &mut ReplaySessionRuntime,
+    preprocessing: &mut VecDeque<PendingReplayPreprocess>,
+    wait: bool,
+    outstanding_limit: usize,
+) -> Result<(), CorpusError> {
+    let Some(front) = preprocessing.front() else {
+        return Ok(());
+    };
+    let prepared = if wait {
+        front
+            .receiver
+            .recv_timeout(Duration::from_secs(30))
+            .map_err(|_| {
+                CorpusError::InvalidReplay("canonical replay preprocessing timed out".to_owned())
+            })?
+    } else {
+        match front.receiver.try_recv() {
+            Ok(prepared) => prepared,
+            Err(mpsc::TryRecvError::Empty) => return Ok(()),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return invalid_replay("canonical replay preprocessing stopped");
+            }
+        }
+    };
+    let pending = preprocessing
+        .pop_front()
+        .expect("prepared replay queue has a front");
+    let prepared = prepared.map_err(CorpusError::InvalidReplay)?;
+    process_replay_frame(runtime, &pending.tick, prepared, outstanding_limit)
+}
+
 fn process_replay_frame(
     runtime: &mut ReplaySessionRuntime,
     tick: &CanonicalTick,
-    pixels: Box<[u8]>,
-    decode_activity: &Arc<ReplayDecodeActivity>,
+    prepared: PreparedReplayFrame,
     outstanding_limit: usize,
 ) -> Result<(), CorpusError> {
     while runtime.pending.len() >= outstanding_limit {
@@ -4317,6 +4614,29 @@ fn process_replay_frame(
         runtime.session.capture_generation,
         &mut runtime.measurements,
     )?;
+    let PreparedReplayFrame {
+        pixels,
+        recognition: prepared_recognition,
+        memory,
+        queue_wait_us,
+        wall_us,
+    } = prepared;
+    runtime.measurements.preprocess_queue_wait_us = runtime
+        .measurements
+        .preprocess_queue_wait_us
+        .saturating_add(queue_wait_us);
+    runtime.measurements.preprocess_wall_us = runtime
+        .measurements
+        .preprocess_wall_us
+        .saturating_add(wall_us);
+    runtime.measurements.screen_classification_us = runtime
+        .measurements
+        .screen_classification_us
+        .saturating_add(prepared_recognition.screen_classification_us());
+    runtime.measurements.crop_prepare_us = runtime
+        .measurements
+        .crop_prepare_us
+        .saturating_add(prepared_recognition.crop_prepare_us().unwrap_or(0));
     let frame = scorepeek::diagnostic_live::BoundCanonicalFrame::for_replay(
         runtime.session.capture_generation,
         tick.sequence,
@@ -4330,7 +4650,7 @@ fn process_replay_frame(
         .recognition
         .as_mut()
         .expect("recognizer is active")
-        .inspect(&frame)
+        .inspect_prepared(&frame, prepared_recognition)
         .map_err(|_| CorpusError::InvalidReplay("production frame inspection failed".to_owned()))?;
     let screen = inspected.observation.screen();
     let timeline_step = runtime
@@ -4375,7 +4695,7 @@ fn process_replay_frame(
             field.bind_screen_episode(episode_id);
             runtime.pending.push_back(ReplayPending {
                 pending: field,
-                _memory: decode_activity.reserve_pending(),
+                _memory: memory,
             });
         }
         scorepeek::recognition_live::field_session::FieldObservationSubmission::BusySkipped => {
@@ -4622,12 +4942,28 @@ fn commit_replay_pending(
     let observation = observation
         .into_output()
         .map_err(|_| CorpusError::InvalidReplay("production OCR failed".to_owned()))?;
+    let processing = observation.processing_timing();
+    measurements.field_queue_wait_us = measurements
+        .field_queue_wait_us
+        .saturating_add(processing.field_queue_wait_us);
     measurements.text_batch_wall_us = measurements
         .text_batch_wall_us
-        .saturating_add(observation.processing_timing().text_batch_wall_us);
+        .saturating_add(processing.text_batch_wall_us);
+    measurements.maximum_text_worker_inference_us = measurements
+        .maximum_text_worker_inference_us
+        .max(processing.maximum_text_worker_inference_us);
     measurements.text_worker_busy_us = measurements
         .text_worker_busy_us
-        .saturating_add(observation.processing_timing().text_worker_busy_us);
+        .saturating_add(processing.text_worker_busy_us);
+    measurements.numeric_inference_us = measurements
+        .numeric_inference_us
+        .saturating_add(processing.numeric_recognition_us.unwrap_or(0));
+    measurements.field_join_us = measurements
+        .field_join_us
+        .saturating_add(processing.join_us);
+    measurements.catalog_projection_us = measurements
+        .catalog_projection_us
+        .saturating_add(processing.catalog_evidence_us);
     measurements.field_frame_wall_us = measurements
         .field_frame_wall_us
         .saturating_add(timing.frame_processing_wall_us);

@@ -166,18 +166,25 @@ outside the checkpoint; implementation history belongs in Git.
   startup/contention cost must be corrected before claiming whole-corpus acceleration. A fresh
   one-worker replay after deleting the legacy root and transfer staging still passed in
   101,232,925 microseconds, proving the active v2 objects are independently replayable.
-- On the development host, three final producer-admission/capped-twelve-worker replays of the same
-  1,061 frames preserve the semantic oracle in 57,920,114, 57,898,860, and 58,126,897 microseconds.
-  The 57,920,114-microsecond median is 41.6% below the final three-run one-worker median of
-  99,252,320 microseconds and 59.5% below the previous 142,942,802-microsecond default-pool result.
-  Median queue-inclusive text-batch wall falls from 94,080,092 to 26,818,062 microseconds.
-  Default-pool tracked memory peaks at 384 MiB and process RSS at about 1.18 GiB. The result does not
-  meet the 20-second target gate. The host exposed roughly two CPUs of effective execution despite
-  higher logical parallelism, so the 24-logical-CPU target and four-session throughput gates remain
-  prospective. A production-outer-scheduler fixture referencing the immutable session under four
-  distinct session keys replays 4,244 frames in 71,330,876 microseconds: four decoders overlap,
-  eight two-segment children are reaped, reports remain in corpus order, tracked memory peaks at
-  1,560,281,088 bytes under the 2 GiB account, and throughput is 3.29 times the final
+- The development host is a Ryzen 9 9950X3D exposing 32 online logical CPUs, affinity and cpuset
+  `0-31`, `cpu.max=max`, and no observed cgroup CPU pressure. The earlier statement that it exposed
+  roughly two effective CPUs was incorrect: one-worker replay consumed about 200 CPU-seconds and
+  multiple workers raised process utilization above 300%, while the single-session producer path
+  saturated before the machine. Pure decode of the two segments measured about 14.7 seconds.
+  Replay now sends pure classification/crop preparation to an eight-worker global pool, runs up to
+  four frame-local outer field workers per offline session (two live), removes ordinary-title
+  edit-distance heap allocation, and retains source-ordered commit and finalization. Three
+  current-path runs preserve all five accepted events in both configurations: the one-worker
+  median is 86,649,067 microseconds and the twelve-worker median is 31,214,081 microseconds. The
+  pooled median is 64.0% below one worker and 46.1% below the prior 57,920,114-microsecond default
+  median, but still misses the 20-second gate. Across the three pooled runs, measured tracked memory
+  peaks at 687,865,856 bytes and process RSS at 1,793,572,864 bytes. Replay summary v3 now
+  separates decoder-consumer, preparation, field queue, text/numeric, join, catalog, and ordered
+  commit durations from FFmpeg child lifetime. Before this revision, a production-outer-scheduler
+  fixture referencing the immutable session under four distinct session keys replayed 4,244 frames
+  in 71,330,876 microseconds: four decoders overlapped,
+  eight two-segment children were reaped, reports remained in corpus order, tracked memory peaked
+  at 1,560,281,088 bytes under the 2 GiB account, and throughput was 3.29 times the final
   58,670,445-microsecond single-session verification. A separate synthetic FFmpeg integration
   verifies live PID overlap and per-child RSS/lifecycle
   reporting.

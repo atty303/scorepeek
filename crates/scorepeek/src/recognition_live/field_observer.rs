@@ -162,6 +162,17 @@ pub trait FieldObserver: Send + 'static {
         None
     }
 
+    fn outer_worker_count(&self, _maximum_outstanding: usize) -> usize {
+        1
+    }
+
+    fn fork_outer_worker(&self) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        None
+    }
+
     fn prefetch(&mut self, _input: &FieldObserverInput) -> Option<Self::Output> {
         None
     }
@@ -396,7 +407,7 @@ enum FieldObserverMessage<T> {
 pub struct FieldObserverWorker<O: FieldObserver> {
     binding: Arc<FieldObserverSessionBinding>,
     sender: SyncSender<FieldObserverMessage<O::Output>>,
-    worker: JoinHandle<()>,
+    workers: Vec<JoinHandle<()>>,
     submitted: u64,
     maximum_outstanding: u8,
     delivery_counts: Arc<AtomicU64>,
@@ -467,26 +478,62 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
         };
         let observer = loader(&binding).map_err(FieldObserverStartError::Load)?;
         let admission = observer.admission();
+        let requested_workers = observer
+            .outer_worker_count(usize::from(maximum_outstanding))
+            .clamp(1, usize::from(maximum_outstanding));
+        let mut observers = vec![observer];
+        while observers.len() < requested_workers {
+            let Some(observer) = observers[0].fork_outer_worker() else {
+                break;
+            };
+            observers.push(observer);
+        }
         let (sender, receiver) = mpsc::sync_channel(capacity);
-        let worker_binding = Arc::clone(&binding);
         let delivery_counts = Arc::new(AtomicU64::new(0));
-        let worker = thread::Builder::new()
-            .name("scorepeek-field-observer".to_owned())
-            .spawn(move || {
-                let completion =
-                    run_worker(observer, &receiver, &worker_binding, maximum_outstanding);
-                drop(receiver);
-                drop(worker_binding);
-                drop(supervisor_token);
-                if let Some((response, completed)) = completion {
-                    let _ = response.send(completed);
-                }
-            })
-            .map_err(|_| FieldObserverStartError::WorkerUnavailable)?;
+        let mut workers = Vec::with_capacity(observers.len());
+        if observers.len() == 1 {
+            let observer = observers.pop().expect("one observer is available");
+            let worker_binding = Arc::clone(&binding);
+            let supervisor_token = Arc::clone(&supervisor_token);
+            workers.push(
+                thread::Builder::new()
+                    .name("scorepeek-field-observer".to_owned())
+                    .spawn(move || {
+                        let completion =
+                            run_worker(observer, &receiver, &worker_binding, maximum_outstanding);
+                        drop(supervisor_token);
+                        if let Some((response, completed)) = completion {
+                            let _ = response.send(completed);
+                        }
+                    })
+                    .map_err(|_| FieldObserverStartError::WorkerUnavailable)?,
+            );
+        } else {
+            let receiver = Arc::new(Mutex::new(receiver));
+            for (worker_id, observer) in observers.into_iter().enumerate() {
+                let receiver = Arc::clone(&receiver);
+                let worker_binding = Arc::clone(&binding);
+                let supervisor_token = Arc::clone(&supervisor_token);
+                workers.push(
+                    thread::Builder::new()
+                        .name(format!("scorepeek-field-observer-{worker_id}"))
+                        .spawn(move || {
+                            let completion =
+                                run_parallel_worker(observer, &receiver, &worker_binding);
+                            drop(supervisor_token);
+                            if let Some((response, completed)) = completion {
+                                let _ = response.send(completed);
+                            }
+                        })
+                        .map_err(|_| FieldObserverStartError::WorkerUnavailable)?,
+                );
+            }
+        }
+        drop(supervisor_token);
         Ok(Self {
             binding,
             sender,
-            worker,
+            workers,
             submitted: 0,
             maximum_outstanding,
             delivery_counts,
@@ -577,38 +624,57 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
         let Self {
             binding: _,
             sender,
-            worker,
+            workers,
             submitted,
             maximum_outstanding: _,
             delivery_counts,
             admission: _,
         } = self;
         let deadline = Instant::now() + timeout;
-        let (response, receiver) = mpsc::sync_channel(1);
-        let mut message = FieldObserverMessage::Finish { response };
-        loop {
-            match sender.try_send(message) {
-                Ok(()) => break,
-                Err(TrySendError::Full(returned)) if Instant::now() < deadline => {
-                    message = returned;
-                    thread::yield_now();
+        let (response, receiver) = mpsc::sync_channel(workers.len());
+        for _ in 0..workers.len() {
+            let mut message = FieldObserverMessage::Finish {
+                response: response.clone(),
+            };
+            loop {
+                match sender.try_send(message) {
+                    Ok(()) => break,
+                    Err(TrySendError::Full(returned)) if Instant::now() < deadline => {
+                        message = returned;
+                        thread::yield_now();
+                    }
+                    Err(TrySendError::Full(_)) => {
+                        return FieldObserverFinishOutcome {
+                            status: FieldObserverFinishStatus::Timeout,
+                            submitted,
+                            completed: None,
+                            abandoned: Some(abandoned_at_finish(
+                                delivery_counts.load(Ordering::Acquire),
+                            )),
+                        };
+                    }
+                    Err(TrySendError::Disconnected(_)) => {
+                        return FieldObserverFinishOutcome {
+                            status: FieldObserverFinishStatus::WorkerUnavailable,
+                            submitted,
+                            completed: None,
+                            abandoned: Some(abandoned_at_finish(
+                                delivery_counts.load(Ordering::Acquire),
+                            )),
+                        };
+                    }
                 }
-                Err(TrySendError::Full(_)) => {
-                    let abandoned = abandoned_at_finish(delivery_counts.load(Ordering::Acquire));
-                    drop(sender);
-                    drop(worker);
+            }
+        }
+        drop(response);
+        drop(sender);
+        let mut completed = 0_u64;
+        for _ in 0..workers.len() {
+            match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(count) => completed = completed.saturating_add(count),
+                Err(_) => {
                     return FieldObserverFinishOutcome {
                         status: FieldObserverFinishStatus::Timeout,
-                        submitted,
-                        completed: None,
-                        abandoned: Some(abandoned),
-                    };
-                }
-                Err(TrySendError::Disconnected(_)) => {
-                    drop(sender);
-                    let _ = worker.join();
-                    return FieldObserverFinishOutcome {
-                        status: FieldObserverFinishStatus::WorkerUnavailable,
                         submitted,
                         completed: None,
                         abandoned: Some(abandoned_at_finish(
@@ -618,36 +684,16 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
                 }
             }
         }
-        drop(sender);
-        match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok(completed) => {
-                drop(worker);
-                FieldObserverFinishOutcome {
-                    status: FieldObserverFinishStatus::Complete,
-                    submitted,
-                    completed: Some(completed),
-                    abandoned: Some(abandoned_at_finish(delivery_counts.load(Ordering::Acquire))),
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let abandoned = abandoned_at_finish(delivery_counts.load(Ordering::Acquire));
-                drop(worker);
-                FieldObserverFinishOutcome {
-                    status: FieldObserverFinishStatus::Timeout,
-                    submitted,
-                    completed: None,
-                    abandoned: Some(abandoned),
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let _ = worker.join();
-                FieldObserverFinishOutcome {
-                    status: FieldObserverFinishStatus::WorkerUnavailable,
-                    submitted,
-                    completed: None,
-                    abandoned: Some(abandoned_at_finish(delivery_counts.load(Ordering::Acquire))),
-                }
-            }
+        let joined = workers.into_iter().all(|worker| worker.join().is_ok());
+        FieldObserverFinishOutcome {
+            status: if joined {
+                FieldObserverFinishStatus::Complete
+            } else {
+                FieldObserverFinishStatus::WorkerUnavailable
+            },
+            submitted,
+            completed: joined.then_some(completed),
+            abandoned: Some(abandoned_at_finish(delivery_counts.load(Ordering::Acquire))),
         }
     }
 
@@ -657,29 +703,40 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
         let Self {
             binding: _,
             sender,
-            worker,
+            workers,
             submitted,
             maximum_outstanding: _,
             delivery_counts,
             admission: _,
         } = self;
-        let (response, receiver) = mpsc::sync_channel(1);
-        if sender
-            .send(FieldObserverMessage::Finish { response })
-            .is_err()
-        {
-            drop(sender);
-            let _ = worker.join();
-            return FieldObserverFinishOutcome {
-                status: FieldObserverFinishStatus::WorkerUnavailable,
-                submitted,
-                completed: None,
-                abandoned: Some(abandoned_at_finish(delivery_counts.load(Ordering::Acquire))),
-            };
+        let (response, receiver) = mpsc::sync_channel(workers.len());
+        for _ in 0..workers.len() {
+            if sender
+                .send(FieldObserverMessage::Finish {
+                    response: response.clone(),
+                })
+                .is_err()
+            {
+                drop(sender);
+                for worker in workers {
+                    let _ = worker.join();
+                }
+                return FieldObserverFinishOutcome {
+                    status: FieldObserverFinishStatus::WorkerUnavailable,
+                    submitted,
+                    completed: None,
+                    abandoned: Some(abandoned_at_finish(delivery_counts.load(Ordering::Acquire))),
+                };
+            }
         }
+        drop(response);
         drop(sender);
-        let completed = receiver.recv().ok();
-        let joined = worker.join().is_ok();
+        let completed = (0..workers.len())
+            .try_fold(0_u64, |total, _| {
+                receiver.recv().map(|count| total.saturating_add(count))
+            })
+            .ok();
+        let joined = workers.into_iter().all(|worker| worker.join().is_ok());
         FieldObserverFinishOutcome {
             status: if completed.is_some() && joined {
                 FieldObserverFinishStatus::Complete
@@ -689,6 +746,41 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
             submitted,
             completed,
             abandoned: Some(abandoned_at_finish(delivery_counts.load(Ordering::Acquire))),
+        }
+    }
+}
+
+fn run_parallel_worker<O: FieldObserver>(
+    mut observer: O,
+    receiver: &Mutex<Receiver<FieldObserverMessage<O::Output>>>,
+    binding: &Arc<FieldObserverSessionBinding>,
+) -> Option<(SyncSender<u64>, u64)> {
+    let mut completed = 0_u64;
+    loop {
+        let message = receiver
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .recv()
+            .ok()?;
+        match message {
+            FieldObserverMessage::Observe {
+                input,
+                response,
+                admission,
+            } => {
+                let prefetched = admission.and_then(|pending| pending.recv().ok().flatten());
+                let output = prefetched.unwrap_or_else(|| observer.observe(&input));
+                completed = completed.saturating_add(1);
+                let _ = response.send(BoundFieldObservation {
+                    binding: Arc::clone(binding),
+                    sequence: input.sequence,
+                    monotonic_start_ms: input.monotonic_start_ms,
+                    monotonic_end_ms: input.monotonic_end_ms,
+                    screen: input.screen(),
+                    output,
+                });
+            }
+            FieldObserverMessage::Finish { response } => return Some((response, completed)),
         }
     }
 }
@@ -1690,5 +1782,85 @@ mod tests {
                 < order.iter().position(|item| *item == ("ordered_commit", 3))
         );
         let _ = session.finish(DiagnosticRunStatus::Success, 100);
+    }
+
+    struct ParallelObserver {
+        started: Arc<std::sync::Barrier>,
+    }
+
+    impl FieldObserver for ParallelObserver {
+        type Output = u64;
+
+        fn outer_worker_count(&self, maximum_outstanding: usize) -> usize {
+            maximum_outstanding.min(2)
+        }
+
+        fn fork_outer_worker(&self) -> Option<Self> {
+            Some(Self {
+                started: Arc::clone(&self.started),
+            })
+        }
+
+        fn observe(&mut self, input: &FieldObserverInput) -> Self::Output {
+            self.started.wait();
+            if input.sequence() == 1 {
+                thread::sleep(Duration::from_millis(100));
+            }
+            input.sequence()
+        }
+    }
+
+    #[test]
+    fn parallel_outer_workers_may_finish_out_of_order_without_rebinding_results() {
+        let descriptor = descriptor("parallel-outer-observer", 1);
+        let mut worker = FieldObserverWorker::start_for_test(
+            &descriptor,
+            |_| {
+                Ok::<_, ()>(ParallelObserver {
+                    started: Arc::new(std::sync::Barrier::new(2)),
+                })
+            },
+            2,
+        )
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let mut session = RecognitionSession::start(
+            root.path(),
+            descriptor,
+            DiagnosticPolicy {
+                enabled: false,
+                ..DiagnosticPolicy::default()
+            },
+        )
+        .unwrap();
+        let first_frame = solid_frame([200, 100, 20], 1, 1);
+        let second_frame = solid_frame([200, 100, 20], 1, 2);
+        let first = worker
+            .try_observe(session.inspect(&first_frame).unwrap().field_inputs.unwrap())
+            .unwrap();
+        let second = worker
+            .try_observe(
+                session
+                    .inspect(&second_frame)
+                    .unwrap()
+                    .field_inputs
+                    .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            second.wait(Duration::from_secs(1)),
+            FieldObservationPoll::Ready(observation)
+                if observation.sequence() == 2 && *observation.output() == 2
+        ));
+        assert!(matches!(first.poll(), FieldObservationPoll::Pending));
+        assert!(matches!(
+            first.wait(Duration::from_secs(1)),
+            FieldObservationPoll::Ready(observation)
+                if observation.sequence() == 1 && *observation.output() == 1
+        ));
+        assert_eq!(
+            worker.finish(Duration::from_secs(1)).status,
+            FieldObserverFinishStatus::Complete
+        );
     }
 }

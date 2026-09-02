@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::catalog::{Catalog, DisplayVariantKind, ScorepeekSongId};
 use serde::Serialize;
@@ -216,15 +218,11 @@ impl CatalogCandidateDomain {
     ) -> ScreenCatalogCandidateObservations {
         let title = observation_forms(&observations.title.open_text);
         let artist = observation_forms(&observations.artist.open_text);
-        let candidates = self
-            .songs
-            .iter()
-            .map(|song| ResultSongCandidateObservation {
-                song_id: song.song_id,
-                title: score_text(&title, &song.title),
-                artist: score_text(&artist, &song.artist),
-            })
-            .collect();
+        let candidates = map_catalog_songs(&self.songs, |song| ResultSongCandidateObservation {
+            song_id: song.song_id,
+            title: score_text(&title, &song.title),
+            artist: score_text(&artist, &song.artist),
+        });
         ScreenCatalogCandidateObservations::Result {
             comparison_key_id: DIAGNOSTIC_TITLE_COMPARISON_KEY_ID,
             catalog: Arc::clone(&self.evidence),
@@ -239,22 +237,81 @@ impl CatalogCandidateDomain {
         let central_title = observation_forms(&observations.central_title.open_text);
         let artist = observation_forms(&observations.artist.open_text);
         let active_list_title = observation_forms(&observations.active_list_title.open_text);
-        let candidates = self
-            .songs
-            .iter()
-            .map(|song| MusicSelectSongCandidateObservation {
+        let candidates =
+            map_catalog_songs(&self.songs, |song| MusicSelectSongCandidateObservation {
                 song_id: song.song_id,
                 central_title: score_text(&central_title, &song.title),
                 artist: score_text(&artist, &song.artist),
                 active_list_title: score_text(&active_list_title, &song.title),
                 active_list_title_prefix: score_prefix(&active_list_title, &song.title),
-            })
-            .collect();
+            });
         ScreenCatalogCandidateObservations::MusicSelect {
             comparison_key_id: DIAGNOSTIC_TITLE_COMPARISON_KEY_ID,
             catalog: Arc::clone(&self.evidence),
             candidates,
         }
+    }
+}
+
+fn map_catalog_songs<T: Send, F: Fn(&SongCandidateDomain) -> T + Sync>(
+    songs: &[SongCandidateDomain],
+    map: F,
+) -> Vec<T> {
+    let desired_workers = 4.min(songs.len().max(1));
+    let permits = CatalogParallelPermits::acquire(desired_workers.saturating_sub(1));
+    let workers = 1 + permits.count;
+    if workers == 1 || songs.len() < workers * 2 {
+        return songs.iter().map(map).collect();
+    }
+    let chunk_size = songs.len().div_ceil(workers);
+    std::thread::scope(|scope| {
+        let mut handles = songs[chunk_size..]
+            .chunks(chunk_size)
+            .map(|chunk| {
+                let map = &map;
+                scope.spawn(move || chunk.iter().map(map).collect::<Vec<_>>())
+            })
+            .collect::<Vec<_>>();
+        let mut output = songs[..chunk_size].iter().map(&map).collect::<Vec<_>>();
+        for handle in handles.drain(..) {
+            output.extend(handle.join().expect("catalog scoring worker panicked"));
+        }
+        output
+    })
+}
+
+struct CatalogParallelPermits {
+    count: usize,
+}
+
+static CATALOG_PARALLEL_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+const LEVENSHTEIN_STACK_ROW_UNITS: usize = 256;
+
+impl CatalogParallelPermits {
+    fn acquire(requested: usize) -> Self {
+        static MAXIMUM: OnceLock<usize> = OnceLock::new();
+        let maximum = *MAXIMUM.get_or_init(|| {
+            (std::thread::available_parallelism().map_or(1, usize::from) / 4).max(1)
+        });
+        let mut count = 0;
+        while count < requested {
+            let acquired = CATALOG_PARALLEL_ACTIVE
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                    (active < maximum).then_some(active + 1)
+                })
+                .is_ok();
+            if !acquired {
+                break;
+            }
+            count += 1;
+        }
+        Self { count }
+    }
+}
+
+impl Drop for CatalogParallelPermits {
+    fn drop(&mut self) {
+        CATALOG_PARALLEL_ACTIVE.fetch_sub(self.count, Ordering::AcqRel);
     }
 }
 
@@ -474,18 +531,30 @@ fn levenshtein_distance(left: &[char], right: &[char]) -> usize {
     if left.len() > right.len() {
         return levenshtein_distance(right, left);
     }
-    let mut previous: Vec<_> = (0..=left.len()).collect();
-    let mut current = vec![0; left.len() + 1];
-    for (right_index, right_character) in right.iter().enumerate() {
-        current[0] = right_index + 1;
-        for (left_index, left_character) in left.iter().enumerate() {
-            current[left_index + 1] = (previous[left_index + 1] + 1)
-                .min(current[left_index] + 1)
-                .min(previous[left_index] + usize::from(left_character != right_character));
+    if left.len() <= LEVENSHTEIN_STACK_ROW_UNITS {
+        let mut row = [0_usize; LEVENSHTEIN_STACK_ROW_UNITS + 1];
+        for (index, value) in row.iter_mut().take(left.len() + 1).enumerate() {
+            *value = index;
         }
-        std::mem::swap(&mut previous, &mut current);
+        return levenshtein_distance_row(left, right, &mut row[..=left.len()]);
     }
-    previous[left.len()]
+    let mut row: Vec<_> = (0..=left.len()).collect();
+    levenshtein_distance_row(left, right, &mut row)
+}
+
+fn levenshtein_distance_row(left: &[char], right: &[char], row: &mut [usize]) -> usize {
+    for (right_index, right_character) in right.iter().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = right_index + 1;
+        for (left_index, left_character) in left.iter().enumerate() {
+            let above = row[left_index + 1];
+            row[left_index + 1] = (above + 1)
+                .min(row[left_index] + 1)
+                .min(diagonal + usize::from(left_character != right_character));
+            diagonal = above;
+        }
+    }
+    row[left.len()]
 }
 
 #[cfg(test)]

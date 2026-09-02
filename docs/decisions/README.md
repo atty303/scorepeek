@@ -313,6 +313,9 @@ authoritative.
 - [ADR 0103: Share OCR workers and parallelize session replay](0103-share-ocr-workers-and-parallelize-session-replay.md)
   shares one bounded OCR pool across sessions, runs one single-threaded FFmpeg child per active
   session, and applies CPU- and memory-derived concurrency without a fixed session limit.
+- [ADR 0104: Pipeline replay preparation and field projection](0104-pipeline-replay-preparation-and-field-projection.md)
+  moves pure classification/crop work off decoder callbacks, permits bounded frame-local field
+  projection concurrency, and preserves session-ordered semantic authority.
 
 ## Historical
 

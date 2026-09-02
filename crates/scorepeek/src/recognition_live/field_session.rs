@@ -17,8 +17,8 @@ use super::screen_field_observer::{
 };
 use super::text_observer_pool::RecognitionExecutionMode;
 use super::{
-    FieldInputPolicy, RecognitionFrameResult, RecognitionObservation, RecognitionSession,
-    RecognitionSessionError,
+    FieldInputPolicy, PreparedRecognitionFrame, RecognitionFrameResult, RecognitionObservation,
+    RecognitionSession, RecognitionSessionError,
 };
 use crate::diagnostic_live::BoundCanonicalFrame;
 use crate::diagnostic_recording::{
@@ -209,6 +209,54 @@ impl<O: FieldObserver> FieldObservationSession<O> {
         frame: &'a BoundCanonicalFrame,
     ) -> Result<FieldObservationFrameResult<'a, O::Output>, RecognitionSessionError> {
         self.inspect_with_field_policy(frame, FieldInputPolicy::Route)
+    }
+
+    /// Submits one source-ordered frame whose pure classification and crops were prepared by a
+    /// shared replay worker.
+    ///
+    /// # Errors
+    /// Returns the recognition-session error before field submission.
+    pub fn inspect_prepared<'a>(
+        &mut self,
+        frame: &'a BoundCanonicalFrame,
+        prepared: PreparedRecognitionFrame,
+    ) -> Result<FieldObservationFrameResult<'a, O::Output>, RecognitionSessionError> {
+        let RecognitionFrameResult {
+            observation,
+            field_inputs,
+            diagnostic_frame,
+            diagnostic_fact,
+            timing,
+        } = self.recognition.inspect_prepared(frame, prepared)?;
+        let field_submission = match field_inputs {
+            None => FieldObservationSubmission::NotApplicable,
+            Some(inputs) => match self.field_observer.try_observe(inputs) {
+                Ok(pending) => {
+                    let identity = Arc::new(());
+                    self.outstanding
+                        .push((Arc::clone(&identity), frame.sequence()));
+                    FieldObservationSubmission::Submitted(PendingSessionFieldObservation {
+                        pending,
+                        owner: Arc::clone(&self.owner),
+                        identity,
+                        timing,
+                        screen_episode_id: 0,
+                    })
+                }
+                Err(error) => {
+                    self.recognition
+                        .record_field_observer_offer_failure(frame.sequence(), error);
+                    FieldObservationSubmission::Rejected(error)
+                }
+            },
+        };
+        Ok(FieldObservationFrameResult {
+            observation,
+            field_submission,
+            diagnostic_frame,
+            diagnostic_screen_fact: diagnostic_fact,
+            timing,
+        })
     }
 
     pub(crate) fn inspect_while_field_busy<'a>(

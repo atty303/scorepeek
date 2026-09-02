@@ -93,9 +93,11 @@ available parallelism, further constrained by memory; active session state is bo
 decoder count and all later sessions remain digest-only metadata. There is no fixed session limit.
 The 2048 MiB default memory account bounds decoder reservations, active session state, and pending
 field frames by backpressure; replay never drops them. `--memory-mib` accepts 256 through 8192, and
-`--text-workers` accepts one through available parallelism. Replay stdout v3 reports selected and
-actual decoder concurrency, tracked memory high-water, ordered-commit wait, stable per-session wall
-time, summed text/frame wall time, text-worker inference busy time, and corpus wall time. The internal comparison run sets
+`--text-workers` accepts one through available parallelism. Replay stdout v3 reports selected text,
+preparation, and decoder concurrency; tracked memory high-water; decoder-consumer, preparation,
+field-queue, and ordered-commit waits; raw classification, crop, text, numeric, join, and catalog
+durations; stable per-session wall time; and corpus wall time. FFmpeg child wall time includes pipe
+backpressure and callback consumption and is not a pure decode benchmark. The internal comparison run sets
 `SCOREPEEK_INTERNAL_SINGLE_TEXT_WORKER=1`; ordinary offline replay follows the
 available-parallelism-minus-four policy capped at twelve workers.
 
