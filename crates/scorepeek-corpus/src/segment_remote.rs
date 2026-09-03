@@ -1,14 +1,14 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{Seek as _, SeekFrom, Write};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Instant;
 
 use futures_util::StreamExt as _;
-use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey, S3CopyIfNotExists};
+use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey};
 use object_store::path::Path as ObjectPath;
 use object_store::{MultipartUpload, ObjectStore, ObjectStoreExt};
 use serde::Serialize;
@@ -23,10 +23,9 @@ const REGION_ENV: &str = "SCOREPEEK_CORPUS_S3_REGION";
 const ENDPOINT_ENV: &str = "SCOREPEEK_CORPUS_S3_ENDPOINT";
 const PATH_STYLE_ENV: &str = "SCOREPEEK_CORPUS_S3_PATH_STYLE";
 const TRANSFER_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+const MAX_CONCURRENT_DOWNLOADS: usize = 4;
 const MAX_DIAGNOSTIC_EVENTS: usize = 4096;
 const MAX_DIAGNOSTIC_RUNS: usize = 32;
-const STAGING_RECOVERY_AGE_NANOS: u128 = 7 * 24 * 60 * 60 * 1_000_000_000;
-static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 pub(crate) struct SegmentRemote {
@@ -36,7 +35,8 @@ pub(crate) struct SegmentRemote {
     downloaded_segments: Arc<AtomicU64>,
     downloaded_bytes: Arc<AtomicU64>,
     diagnostics: Arc<RemoteDiagnostics>,
-    recovery: Arc<OnceLock<Result<(), RemoteRecoveryFailure>>>,
+    uploads: Arc<UploadCoordinator>,
+    downloads: Arc<DownloadCoordinator>,
 }
 
 pub(crate) struct RemoteSegment {
@@ -83,16 +83,25 @@ struct RemoteDiagnostics {
     dropped: AtomicU64,
 }
 
-#[derive(Clone, Debug)]
-struct RemoteRecoveryFailure {
-    error_type: &'static str,
-    detail: &'static str,
+#[derive(Default)]
+struct UploadCoordinator {
+    active: Mutex<BTreeSet<String>>,
+    ready: Condvar,
 }
 
-impl RemoteRecoveryFailure {
-    fn into_corpus_error(self) -> CorpusError {
-        remote_error(self.error_type, self.detail)
-    }
+struct UploadPermit<'a> {
+    coordinator: &'a UploadCoordinator,
+    sha256: String,
+}
+
+#[derive(Default)]
+struct DownloadCoordinator {
+    active: Mutex<usize>,
+    ready: Condvar,
+}
+
+struct DownloadPermit<'a> {
+    coordinator: &'a DownloadCoordinator,
 }
 
 #[derive(Serialize)]
@@ -115,14 +124,19 @@ impl SegmentRemote {
             return Ok(None);
         };
         let (bucket, prefix) = parse_s3_url(&environment.url)?;
+        let endpoint = environment
+            .endpoint
+            .as_deref()
+            .map(|origin| client_endpoint(origin, &bucket, environment.path_style))
+            .transpose()?;
         let credentials = RemoteCredentials::parse(&values)?;
         let mut builder = credentials
             .apply(AmazonS3Builder::new(), &values)
             .with_bucket_name(bucket)
             .with_region(environment.region)
             .with_virtual_hosted_style_request(!environment.path_style)
-            .with_copy_if_not_exists(S3CopyIfNotExists::Multipart);
-        if let Some(endpoint) = environment.endpoint {
+            .with_unsigned_payload(false);
+        if let Some(endpoint) = endpoint {
             builder = builder.with_endpoint(endpoint);
         }
         let store = builder.build().map_err(|_| {
@@ -154,7 +168,8 @@ impl SegmentRemote {
             downloaded_segments: Arc::new(AtomicU64::new(0)),
             downloaded_bytes: Arc::new(AtomicU64::new(0)),
             diagnostics: Arc::new(diagnostics),
-            recovery: Arc::new(OnceLock::new()),
+            uploads: Arc::new(UploadCoordinator::default()),
+            downloads: Arc::new(DownloadCoordinator::default()),
         })
     }
 
@@ -167,7 +182,7 @@ impl SegmentRemote {
         let started = Instant::now();
         let result = self.upload_verified_inner(source, sha256, bytes);
         self.diagnostics
-            .record("segment_publish", sha256, bytes, started, &result);
+            .record("segment_upload", sha256, bytes, started, &result);
         result
     }
 
@@ -177,58 +192,25 @@ impl SegmentRemote {
         sha256: &str,
         bytes: u64,
     ) -> Result<UploadDisposition, CorpusError> {
-        self.ensure_recovered()?;
+        validate_sha256(sha256)?;
+        let _permit = self.uploads.acquire(sha256);
         let runtime = remote_runtime()?;
         let final_path = self.target.object_path(sha256)?;
-        if runtime.block_on(remote_matches(
+        if runtime.block_on(remote_exists_with_size(
             Arc::clone(&self.target.store),
             &final_path,
-            sha256,
             bytes,
         ))? {
             self.reused.fetch_add(1, Ordering::AcqRel);
             return Ok(UploadDisposition::Reused);
         }
-        let staging_path = self.target.staging_path(sha256)?;
-        let operation = runtime.block_on(async {
-            upload_file(Arc::clone(&self.target.store), &staging_path, source).await?;
-            if !remote_matches(Arc::clone(&self.target.store), &staging_path, sha256, bytes).await?
-            {
-                return Err(remote_error(
-                    "digest_mismatch",
-                    "staged remote object differs",
-                ));
-            }
-            match self
-                .target
-                .store
-                .copy_if_not_exists(&staging_path, &final_path)
-                .await
-            {
-                Ok(()) | Err(object_store::Error::AlreadyExists { .. }) => {}
-                Err(_) => {
-                    return Err(remote_error(
-                        "publish_failed",
-                        "remote object publication failed",
-                    ));
-                }
-            }
-            if !remote_matches(Arc::clone(&self.target.store), &final_path, sha256, bytes).await? {
-                return Err(remote_error(
-                    "digest_mismatch",
-                    "published remote object differs",
-                ));
-            }
-            Ok(())
-        });
-        let cleanup = runtime.block_on(self.target.store.delete(&staging_path));
-        if !matches!(cleanup, Ok(()) | Err(object_store::Error::NotFound { .. })) {
-            return Err(remote_error(
-                "staging_cleanup_failed",
-                "remote staging cleanup failed",
-            ));
-        }
-        operation?;
+        runtime.block_on(upload_file_verified(
+            Arc::clone(&self.target.store),
+            &final_path,
+            source,
+            sha256,
+            bytes,
+        ))?;
         self.transferred.fetch_add(1, Ordering::AcqRel);
         Ok(UploadDisposition::Transferred)
     }
@@ -246,7 +228,7 @@ impl SegmentRemote {
     }
 
     fn materialize_inner(&self, sha256: &str, bytes: u64) -> Result<RemoteSegment, CorpusError> {
-        self.ensure_recovered()?;
+        let _permit = self.downloads.acquire();
         let mut file = tempfile::tempfile().map_err(CorpusError::Io)?;
         remote_runtime()?.block_on(download_verified(
             Arc::clone(&self.target.store),
@@ -269,40 +251,65 @@ impl SegmentRemote {
             downloaded_bytes: self.downloaded_bytes.load(Ordering::Acquire),
         }
     }
+}
 
-    #[cfg(test)]
-    pub(crate) fn recovery_started(&self) -> bool {
-        self.recovery.get().is_some()
+impl UploadCoordinator {
+    fn acquire(&self, sha256: &str) -> UploadPermit<'_> {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !active.insert(sha256.to_owned()) {
+            active = self
+                .ready
+                .wait(active)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        UploadPermit {
+            coordinator: self,
+            sha256: sha256.to_owned(),
+        }
     }
+}
 
-    fn recover_staging(&self) -> Result<(), RemoteRecoveryFailure> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let runtime = remote_runtime().map_err(|_| RemoteRecoveryFailure {
-            error_type: "invalid_configuration",
-            detail: "remote runtime initialization failed",
-        })?;
-        let prefix = self
-            .target
-            .staging_prefix()
-            .map_err(|_| RemoteRecoveryFailure {
-                error_type: "invalid_configuration",
-                detail: "remote staging namespace is invalid",
-            })?;
-        runtime.block_on(recover_staging(
-            Arc::clone(&self.target.store),
-            &prefix,
-            now,
-        ))
+impl DownloadCoordinator {
+    fn acquire(&self) -> DownloadPermit<'_> {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *active == MAX_CONCURRENT_DOWNLOADS {
+            active = self
+                .ready
+                .wait(active)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        *active = active.saturating_add(1);
+        DownloadPermit { coordinator: self }
     }
+}
 
-    fn ensure_recovered(&self) -> Result<(), CorpusError> {
-        self.recovery
-            .get_or_init(|| self.recover_staging())
-            .clone()
-            .map_err(RemoteRecoveryFailure::into_corpus_error)
+impl Drop for UploadPermit<'_> {
+    fn drop(&mut self) {
+        let mut active = self
+            .coordinator
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        active.remove(&self.sha256);
+        self.coordinator.ready.notify_all();
+    }
+}
+
+impl Drop for DownloadPermit<'_> {
+    fn drop(&mut self) {
+        let mut active = self
+            .coordinator
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *active = active.saturating_sub(1);
+        self.coordinator.ready.notify_one();
     }
 }
 
@@ -535,23 +542,6 @@ impl RemoteTarget {
         ))
     }
 
-    fn staging_path(&self, sha256: &str) -> Result<ObjectPath, CorpusError> {
-        validate_sha256(sha256)?;
-        let sequence = STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        self.path(&format!(
-            "frame-corpus/v1/staging/scorepeek-{}-{nanos}-{sequence}-{sha256}",
-            std::process::id()
-        ))
-    }
-
-    fn staging_prefix(&self) -> Result<ObjectPath, CorpusError> {
-        self.path("frame-corpus/v1/staging")
-    }
-
     fn path(&self, suffix: &str) -> Result<ObjectPath, CorpusError> {
         let value = if self.prefix.is_empty() {
             suffix.to_owned()
@@ -593,6 +583,38 @@ fn is_https_origin(value: &str) -> bool {
         && url.path() == "/"
         && url.query().is_none()
         && url.fragment().is_none()
+}
+
+fn client_endpoint(origin: &str, bucket: &str, path_style: bool) -> Result<String, CorpusError> {
+    if path_style {
+        return Ok(origin.to_owned());
+    }
+    let mut endpoint = Url::parse(origin).map_err(|_| {
+        remote_error(
+            "invalid_configuration",
+            "remote endpoint must be an HTTPS origin",
+        )
+    })?;
+    let host = endpoint.host_str().ok_or_else(|| {
+        remote_error(
+            "invalid_configuration",
+            "virtual-hosted remote endpoint requires a DNS hostname",
+        )
+    })?;
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return Err(remote_error(
+            "invalid_configuration",
+            "virtual-hosted remote endpoint requires a DNS hostname",
+        ));
+    }
+    let bucket_host = format!("{bucket}.{host}");
+    endpoint.set_host(Some(&bucket_host)).map_err(|_| {
+        remote_error(
+            "invalid_configuration",
+            "virtual-hosted remote endpoint is invalid",
+        )
+    })?;
+    Ok(endpoint.as_str().trim_end_matches('/').to_owned())
 }
 
 impl RemoteCredentials {
@@ -693,38 +715,73 @@ fn missing_credentials() -> CorpusError {
     )
 }
 
-async fn upload_file(
+async fn upload_file_verified(
     store: Arc<dyn ObjectStore>,
     path: &ObjectPath,
     source: File,
+    expected_sha256: &str,
+    expected_bytes: u64,
 ) -> Result<(), CorpusError> {
     let upload = store
         .put_multipart(path)
         .await
         .map_err(|_| remote_error("upload_failed", "remote object upload failed"))?;
-    upload_parts(source, upload).await
+    upload_parts_verified(source, upload, expected_sha256, expected_bytes).await
 }
 
-async fn upload_parts(
+async fn upload_parts_verified(
     source: File,
     mut upload: Box<dyn MultipartUpload>,
+    expected_sha256: &str,
+    expected_bytes: u64,
 ) -> Result<(), CorpusError> {
     let mut source = tokio::fs::File::from_std(source);
     let result = async {
+        let mut received = 0_u64;
+        let mut digest = Sha256::new();
         loop {
             let mut bytes = vec![0_u8; TRANSFER_BUFFER_BYTES];
-            let read = source
-                .read(&mut bytes)
-                .await
-                .map_err(|_| remote_error("upload_failed", "local segment read failed"))?;
-            if read == 0 {
+            let mut filled = 0;
+            while filled < bytes.len() {
+                let read = source
+                    .read(&mut bytes[filled..])
+                    .await
+                    .map_err(|_| remote_error("upload_failed", "local segment read failed"))?;
+                if read == 0 {
+                    break;
+                }
+                filled += read;
+            }
+            if filled == 0 {
                 break;
             }
-            bytes.truncate(read);
+            bytes.truncate(filled);
+            received = received.checked_add(filled as u64).ok_or_else(|| {
+                remote_error("size_mismatch", "local segment exceeded its declared size")
+            })?;
+            if received > expected_bytes {
+                return Err(remote_error(
+                    "size_mismatch",
+                    "local segment exceeded its declared size",
+                ));
+            }
+            digest.update(&bytes);
             upload
                 .put_part(bytes.into())
                 .await
                 .map_err(|_| remote_error("upload_failed", "remote object upload failed"))?;
+        }
+        if received != expected_bytes {
+            return Err(remote_error(
+                "size_mismatch",
+                "local segment size differs from its declaration",
+            ));
+        }
+        if crate::encode_digest(digest.finalize()) != expected_sha256 {
+            return Err(remote_error(
+                "digest_mismatch",
+                "local segment digest differs from its declaration",
+            ));
         }
         upload
             .complete()
@@ -735,82 +792,16 @@ async fn upload_parts(
     .await;
     if result.is_err() && upload.abort().await.is_err() {
         return Err(remote_error(
-            "staging_cleanup_failed",
-            "remote multipart cleanup failed",
+            "upload_abort_failed",
+            "remote multipart abort failed",
         ));
     }
     result
 }
 
-async fn recover_staging(
-    store: Arc<dyn ObjectStore>,
-    prefix: &ObjectPath,
-    now_nanos: u128,
-) -> Result<(), RemoteRecoveryFailure> {
-    let mut objects = store.list(Some(prefix));
-    while let Some(object) = objects.next().await {
-        let object = object.map_err(|_| RemoteRecoveryFailure {
-            error_type: "staging_cleanup_failed",
-            detail: "remote staging inventory failed",
-        })?;
-        let direct_prefix = format!("{}/", prefix.as_ref());
-        let Some(name) = object
-            .location
-            .as_ref()
-            .strip_prefix(&direct_prefix)
-            .filter(|name| !name.contains('/'))
-        else {
-            continue;
-        };
-        if !owned_staging_name(name)
-            || !object_is_expired(object.last_modified.timestamp_nanos_opt(), now_nanos)
-        {
-            continue;
-        }
-        match store.delete(&object.location).await {
-            Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
-            Err(_) => {
-                return Err(RemoteRecoveryFailure {
-                    error_type: "staging_cleanup_failed",
-                    detail: "remote staging cleanup failed",
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-fn owned_staging_name(name: &str) -> bool {
-    let Some(parts) = name.strip_prefix("scorepeek-") else {
-        return false;
-    };
-    let fields = parts.split('-').collect::<Vec<_>>();
-    let [pid, created, sequence, sha256] = fields.as_slice() else {
-        return false;
-    };
-    if pid.parse::<u32>().is_err()
-        || sequence.parse::<u64>().is_err()
-        || validate_sha256(sha256).is_err()
-    {
-        return false;
-    }
-    created.parse::<u128>().is_ok()
-}
-
-fn object_is_expired(last_modified_nanos: Option<i64>, now_nanos: u128) -> bool {
-    let Some(last_modified_nanos) = last_modified_nanos else {
-        return false;
-    };
-    let Ok(last_modified_nanos) = u128::try_from(last_modified_nanos) else {
-        return false;
-    };
-    now_nanos.saturating_sub(last_modified_nanos) >= STAGING_RECOVERY_AGE_NANOS
-}
-
-async fn remote_matches(
+async fn remote_exists_with_size(
     store: Arc<dyn ObjectStore>,
     path: &ObjectPath,
-    expected_sha256: &str,
     expected_bytes: u64,
 ) -> Result<bool, CorpusError> {
     match store.head(path).await {
@@ -818,8 +809,6 @@ async fn remote_matches(
             if metadata.size != expected_bytes {
                 return Err(remote_error("size_mismatch", "remote object size differs"));
             }
-            let mut sink = std::io::sink();
-            digest_remote_into(store, path, expected_sha256, expected_bytes, &mut sink).await?;
             Ok(true)
         }
         Err(object_store::Error::NotFound { .. }) => Ok(false),
@@ -933,7 +922,7 @@ fn remote_error(error_type: &str, detail: &str) -> CorpusError {
 mod tests {
     use super::*;
     use object_store::memory::InMemory;
-    use object_store::{PutPayload, PutResult, UploadPart};
+    use object_store::{Extensions, PutPayload, PutResult, UploadPart};
     use std::collections::BTreeSet;
     use std::io::Read as _;
     use std::pin::Pin;
@@ -982,6 +971,19 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(parsed.path_style);
+    }
+
+    #[test]
+    fn custom_endpoint_is_adapted_for_the_object_store_addressing_mode() {
+        assert_eq!(
+            client_endpoint("https://s3.example.test", "bucket", false).unwrap(),
+            "https://bucket.s3.example.test"
+        );
+        assert_eq!(
+            client_endpoint("https://s3.example.test", "bucket", true).unwrap(),
+            "https://s3.example.test"
+        );
+        assert!(client_endpoint("https://127.0.0.1", "bucket", false).is_err());
     }
 
     #[test]
@@ -1062,6 +1064,52 @@ mod tests {
         aborted: Arc<AtomicBool>,
     }
 
+    #[derive(Debug)]
+    struct RecordingMultipartUpload {
+        part_bytes: Arc<Mutex<Vec<usize>>>,
+        completed: Arc<AtomicBool>,
+        aborted: Arc<AtomicBool>,
+    }
+
+    impl MultipartUpload for RecordingMultipartUpload {
+        fn put_part(&mut self, data: PutPayload) -> UploadPart {
+            self.part_bytes.lock().unwrap().push(data.content_length());
+            Box::pin(async { Ok(()) })
+        }
+
+        fn complete<'life0, 'async_trait>(
+            &'life0 mut self,
+        ) -> Pin<Box<dyn Future<Output = object_store::Result<PutResult>> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            let completed = Arc::clone(&self.completed);
+            Box::pin(async move {
+                completed.store(true, Ordering::Release);
+                Ok(PutResult {
+                    e_tag: None,
+                    version: None,
+                    extensions: Extensions::default(),
+                })
+            })
+        }
+
+        fn abort<'life0, 'async_trait>(
+            &'life0 mut self,
+        ) -> Pin<Box<dyn Future<Output = object_store::Result<()>> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            let aborted = Arc::clone(&self.aborted);
+            Box::pin(async move {
+                aborted.store(true, Ordering::Release);
+                Ok(())
+            })
+        }
+    }
+
     impl MultipartUpload for FailingMultipartUpload {
         fn put_part(&mut self, _data: PutPayload) -> UploadPart {
             Box::pin(async {
@@ -1102,100 +1150,177 @@ mod tests {
         let mut source = tempfile::tempfile().unwrap();
         source.write_all(b"segment").unwrap();
         source.rewind().unwrap();
-        let result = remote_runtime().unwrap().block_on(upload_parts(
+        let sha256 = crate::encode_digest(Sha256::digest(b"segment"));
+        let result = remote_runtime().unwrap().block_on(upload_parts_verified(
             source,
             Box::new(FailingMultipartUpload {
                 aborted: Arc::clone(&aborted),
             }),
+            &sha256,
+            7,
         ));
         assert!(result.is_err());
         assert!(aborted.load(Ordering::Acquire));
     }
 
     #[test]
-    fn recovery_removes_only_expired_owned_staging_objects() {
-        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-        let remote = SegmentRemote::new(Arc::clone(&store), "test".to_owned()).unwrap();
-        let sha256 = "a".repeat(64);
-        let expired = remote
-            .target
-            .path(&format!("frame-corpus/v1/staging/scorepeek-1-0-0-{sha256}"))
-            .unwrap();
-        let current_nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
+    fn multipart_upload_fills_every_nonfinal_part() {
+        let part_bytes = Arc::new(Mutex::new(Vec::new()));
+        let completed = Arc::new(AtomicBool::new(false));
+        let aborted = Arc::new(AtomicBool::new(false));
+        let bytes = vec![0x5a; TRANSFER_BUFFER_BYTES + 1];
+        let sha256 = crate::encode_digest(Sha256::digest(&bytes));
+        let mut source = tempfile::tempfile().unwrap();
+        source.write_all(&bytes).unwrap();
+        source.rewind().unwrap();
+        remote_runtime()
             .unwrap()
-            .as_nanos();
-        let current = remote
-            .target
-            .path(&format!(
-                "frame-corpus/v1/staging/scorepeek-1-{current_nanos}-1-{sha256}"
+            .block_on(upload_parts_verified(
+                source,
+                Box::new(RecordingMultipartUpload {
+                    part_bytes: Arc::clone(&part_bytes),
+                    completed: Arc::clone(&completed),
+                    aborted: Arc::clone(&aborted),
+                }),
+                &sha256,
+                bytes.len() as u64,
             ))
             .unwrap();
-        let foreign = remote
-            .target
-            .path("frame-corpus/v1/staging/provider-owned")
-            .unwrap();
-        let nested_foreign = remote
-            .target
-            .path(&format!(
-                "frame-corpus/v1/staging/foreign/scorepeek-1-0-0-{sha256}"
-            ))
-            .unwrap();
-        let runtime = remote_runtime().unwrap();
-        for path in [&expired, &current, &foreign, &nested_foreign] {
-            runtime
-                .block_on(store.put(path, PutPayload::from_static(b"x")))
-                .unwrap();
-        }
-        runtime
-            .block_on(recover_staging(
-                Arc::clone(&store),
-                &remote.target.staging_prefix().unwrap(),
-                current_nanos,
-            ))
-            .unwrap();
-        assert!(runtime.block_on(store.head(&expired)).is_ok());
-        assert!(runtime.block_on(store.head(&current)).is_ok());
-        runtime
-            .block_on(recover_staging(
-                Arc::clone(&store),
-                &remote.target.staging_prefix().unwrap(),
-                current_nanos + STAGING_RECOVERY_AGE_NANOS + 1_000_000_000,
-            ))
-            .unwrap();
-        assert!(matches!(
-            runtime.block_on(store.head(&expired)),
-            Err(object_store::Error::NotFound { .. })
-        ));
-        assert!(matches!(
-            runtime.block_on(store.head(&current)),
-            Err(object_store::Error::NotFound { .. })
-        ));
-        assert!(runtime.block_on(store.head(&foreign)).is_ok());
-        assert!(runtime.block_on(store.head(&nested_foreign)).is_ok());
+        assert_eq!(*part_bytes.lock().unwrap(), [TRANSFER_BUFFER_BYTES, 1]);
+        assert!(completed.load(Ordering::Acquire));
+        assert!(!aborted.load(Ordering::Acquire));
     }
 
     #[test]
-    fn cached_recovery_failure_retains_its_stable_error_type() {
-        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-        let remote = SegmentRemote::new(store, "test".to_owned()).unwrap();
-        remote
-            .recovery
-            .set(Err(RemoteRecoveryFailure {
-                error_type: "staging_cleanup_failed",
-                detail: "remote staging inventory failed",
-            }))
-            .unwrap();
+    fn local_mismatch_aborts_before_multipart_complete() {
+        for (expected_sha256, expected_bytes, expected_error) in [
+            ("0".repeat(64), 7, "digest_mismatch"),
+            (
+                crate::encode_digest(Sha256::digest(b"segment")),
+                8,
+                "size_mismatch",
+            ),
+        ] {
+            let part_bytes = Arc::new(Mutex::new(Vec::new()));
+            let completed = Arc::new(AtomicBool::new(false));
+            let aborted = Arc::new(AtomicBool::new(false));
+            let mut source = tempfile::tempfile().unwrap();
+            source.write_all(b"segment").unwrap();
+            source.rewind().unwrap();
+            let error = remote_runtime()
+                .unwrap()
+                .block_on(upload_parts_verified(
+                    source,
+                    Box::new(RecordingMultipartUpload {
+                        part_bytes,
+                        completed: Arc::clone(&completed),
+                        aborted: Arc::clone(&aborted),
+                    }),
+                    &expected_sha256,
+                    expected_bytes,
+                ))
+                .unwrap_err();
+            assert_eq!(remote_error_type(&error), Some(expected_error));
+            assert!(!completed.load(Ordering::Acquire));
+            assert!(aborted.load(Ordering::Acquire));
+        }
+    }
 
-        let first = remote.ensure_recovered().unwrap_err();
-        let second = remote.ensure_recovered().unwrap_err();
-        assert_eq!(remote_error_type(&first), Some("staging_cleanup_failed"));
-        assert_eq!(remote_error_type(&second), Some("staging_cleanup_failed"));
+    #[test]
+    fn existing_final_object_is_reused_by_size_without_readback() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let remote = SegmentRemote::new(Arc::clone(&store), String::new()).unwrap();
+        let declared = b"declared";
+        let sha256 = crate::encode_digest(Sha256::digest(declared));
+        let path = remote.target.object_path(&sha256).unwrap();
+        remote_runtime()
+            .unwrap()
+            .block_on(store.put(&path, PutPayload::from_static(b"differen")))
+            .unwrap();
+        let mut source = tempfile::tempfile().unwrap();
+        source.write_all(declared).unwrap();
+        source.rewind().unwrap();
         assert_eq!(
-            first.to_string(),
-            "invalid ingest request: remote staging_cleanup_failed: remote staging inventory failed"
+            remote
+                .upload_verified(source, &sha256, declared.len() as u64)
+                .unwrap(),
+            UploadDisposition::Reused
         );
-        assert_eq!(first.to_string(), second.to_string());
+    }
+
+    #[test]
+    fn existing_final_object_with_wrong_size_fails_closed() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let remote = SegmentRemote::new(Arc::clone(&store), String::new()).unwrap();
+        let bytes = b"segment";
+        let sha256 = crate::encode_digest(Sha256::digest(bytes));
+        let path = remote.target.object_path(&sha256).unwrap();
+        remote_runtime()
+            .unwrap()
+            .block_on(store.put(&path, PutPayload::from_static(b"wrong")))
+            .unwrap();
+        let mut source = tempfile::tempfile().unwrap();
+        source.write_all(bytes).unwrap();
+        source.rewind().unwrap();
+        let error = remote
+            .upload_verified(source, &sha256, bytes.len() as u64)
+            .unwrap_err();
+        assert_eq!(remote_error_type(&error), Some("size_mismatch"));
+    }
+
+    #[test]
+    fn upload_coordinator_serializes_only_the_same_digest() {
+        let coordinator = Arc::new(UploadCoordinator::default());
+        let first = coordinator.acquire(&"a".repeat(64));
+        let different = coordinator.acquire(&"b".repeat(64));
+        drop(different);
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let waiter = Arc::clone(&coordinator);
+        let handle = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let _permit = waiter.acquire(&"a".repeat(64));
+            acquired_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(
+            acquired_rx
+                .recv_timeout(std::time::Duration::from_millis(20))
+                .is_err()
+        );
+        drop(first);
+        acquired_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn download_coordinator_limits_concurrency() {
+        let coordinator = Arc::new(DownloadCoordinator::default());
+        let permits = (0..MAX_CONCURRENT_DOWNLOADS)
+            .map(|_| coordinator.acquire())
+            .collect::<Vec<_>>();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let waiter = Arc::clone(&coordinator);
+        let handle = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let _permit = waiter.acquire();
+            acquired_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(
+            acquired_rx
+                .recv_timeout(std::time::Duration::from_millis(20))
+                .is_err()
+        );
+        drop(permits);
+        acquired_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        handle.join().unwrap();
     }
 
     #[test]

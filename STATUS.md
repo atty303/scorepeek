@@ -107,9 +107,14 @@ outside the checkpoint; implementation history belongs in Git.
 - The attempt corpus clean-cuts to complete joined-session v5 input and label v5 truth. Import keeps
   the tick index and metadata as local immutable objects without QOI expansion or pixel-content
   deduplication. With the environment-only S3 configuration, import publishes lossless canonical
-  segments remotely and does not copy them into the local corpus; without it, import remains local.
-  Consumers prefer local segments and otherwise fully download and verify an anonymous temporary
-  file before FFmpeg stdin decode. Corpus stores have no aggregate object-count or byte quota.
+  segments directly to their final SHA-256 keys with multipart upload and does not copy them into
+  the local corpus; without it, import remains local. Import computes the complete local byte count
+  and SHA-256 while filling signed-payload parts, aborts before multipart completion on mismatch,
+  and reuses an existing final object only when HEAD reports the declared size. It performs no
+  remote staging, server-side copy, or upload readback GET. Consumers prefer local segments and
+  otherwise prefetch up to four manifest-ordered segments through a four-download remote limit;
+  each complete GET is size- and SHA-256-verified into an anonymous temporary file before FFmpeg
+  stdin decode. Corpus stores have no aggregate object-count or byte quota.
   Replay decodes canonical retained frames only, starts no normalizer, uses production
   screen-episode and run-event reducers, and rejects missing/elided DECIDE TRANSITION or RESULT
   truth. Event comparison normalizes runtime IDs while preserving attempt-parent and ordered
@@ -134,11 +139,21 @@ outside the checkpoint; implementation history belongs in Git.
 ## Verification boundary
 
 - S3-backed corpus code has isolated in-memory object-store coverage for environment parsing,
-  create-only verified upload/reuse, digest rejection, remote resolution without local publication,
-  expired owned-staging recovery, and anonymous-file materialization. A real FFmpeg integration
-  decodes the verified file through stdin. `mise run check`, pedantic workspace Clippy, the corpus
-  crate suite, and the complete `mise run test` suite pass. Real S3 provider execution,
-  active-corpus migration, and local segment eviction remain separately authorized and unverified.
+  direct multipart completion and abort, HEAD size reuse, process-local upload serialization,
+  digest rejection, four-download coordination, remote resolution without local publication, and
+  anonymous-file materialization. A real FFmpeg integration decodes the verified file through
+  stdin. The configured B2 S3-compatible provider passes the current direct path with a disposable
+  256 MiB object that was deleted after verification: direct multipart PUT measured 9.38 MiB/s,
+  while one, two, and four concurrent GETs measured 19.79, 39.86, and 76.66 aggregate MiB/s.
+  The active generation's 21 unique canonical segments total 19,094,527,166 bytes and are present
+  remotely; the original local objects remain unchanged. A metadata-only clone passes both the
+  one-worker and default-pool replay with 2 sessions, 14 accepted attempts, 12,460 canonical
+  frames, zero negative frames, 21 unique successful GETs, and identical stable summary fields.
+  Four-segment prefetch reduced default remote replay to 461,062,237 microseconds versus the saved
+  373,844,534-microsecond local result; final one-worker remote replay took 1,677,228,089
+  microseconds. `mise run check`, pedantic workspace Clippy, the complete `mise run test` suite,
+  and the first execution of the diagnostic worker-availability regressions pass. Local segment
+  eviction remains a separately authorized and unverified boundary.
 
 - The target session `run-1788272474-298014477-1183660-session-1` is the recorder failure oracle:
   5,626 recognition ticks produced 5,536 canonical tick records and 90 queue drops. The first large
@@ -270,7 +285,9 @@ outside the checkpoint; implementation history belongs in Git.
 
 ## Next executable task
 
-First widen the private label schema and validator beyond the current SP-only slice. After explicit
+After separate explicit approval, evict the 21 remotely verified canonical segment objects from the
+original local corpus without changing its session, label, suite, or digest metadata. Otherwise,
+first widen the private label schema and validator beyond the current SP-only slice. After explicit
 approval to install, record and label at least one DP RESULT on the target and replay it through
 layout v4 to verify the reserved-width ROI and exact DP OCR. Then run the same active v2
 generation with one worker and the default pool on the 24-logical-CPU target. Require identical

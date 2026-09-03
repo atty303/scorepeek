@@ -69,9 +69,11 @@ Set `SCOREPEEK_CORPUS_S3_URL=s3://bucket/optional/prefix` and
 process environment with a complete static, web-identity, task-relative container, or full
 container-URI plus token-file credential set. Remote mode stores only segment objects in S3; all
 metadata stays local, and no setting or locator file is written into the corpus. Corpus storage has
-no aggregate byte or object-count quota. The first remote operation also reclaims only direct-child
-scorepeek staging objects older than seven days; local-only use performs no S3 request, and current,
-nested, and unrecognized staging keys are preserved.
+no aggregate byte or object-count quota. Import uploads each segment directly to its final SHA-256
+key. It computes the complete local byte count and digest while filling signed-payload multipart
+parts and aborts before completion on mismatch. An existing final object is reused only when HEAD
+reports the declared size. Import performs no remote staging, readback GET, or server-side copy;
+local-only use performs no S3 request.
 The target bucket must also have an `AbortIncompleteMultipartUpload` lifecycle rule because no
 process can clean up an upload ID after its own abrupt termination. Scorepeek aborts multipart
 uploads for failures it observes while still running.
@@ -116,8 +118,11 @@ invalid suite.
 Replay and other segment consumers first use a verified local object. A missing segment is fetched
 from the environment-configured S3 namespace into an anonymous temporary file, checked against its
 declared byte length and encoded SHA-256, rewound, and passed to FFmpeg through stdin. The temporary
-file is discarded after that decode and is not cached. Missing remote configuration, missing
-objects, permission failures, truncated downloads, and digest differences fail closed.
+file is discarded after that decode and is not cached. Each active session prefetches up to four
+manifest-ordered segments while current-segment decode and recognition proceed; at most four remote
+GETs run concurrently process-wide. A prefetched file is still never decoded before complete
+verification. Missing remote configuration, missing objects, permission failures, truncated
+downloads, and digest differences fail closed.
 
 OCR may complete out of order but field evidence is committed by admission sequence. All sessions
 share one text pool. Each scheduler step runs one `-threads 1` FFmpeg child for one segment, then

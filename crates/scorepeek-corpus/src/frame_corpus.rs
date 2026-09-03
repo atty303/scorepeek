@@ -52,6 +52,7 @@ const MAXIMUM_REPLAY_MEMORY_MIB: usize = 8_192;
 const DECODER_RESERVATION_BYTES: usize = 16 * 1024 * 1024;
 const SESSION_STATE_RESERVATION_BYTES: usize = 64 * 1024 * 1024;
 const PENDING_FIELD_FRAME_RESERVATION_BYTES: usize = 16 * 1024 * 1024;
+const REPLAY_SEGMENT_PREFETCH: usize = 4;
 const NUMERIC_DATASET_SCHEMA: &str = "scorepeek-private-numeric-ctc-dataset-v1";
 
 fn duration_us(duration: Duration) -> u64 {
@@ -771,6 +772,50 @@ struct SegmentResolver {
 enum ResolvedSegment {
     Local(PathBuf),
     Remote(RemoteSegment),
+}
+
+struct PrefetchedReplaySegment {
+    segment_index: usize,
+    handle: Option<JoinHandle<Result<ResolvedSegment, CorpusError>>>,
+}
+
+impl PrefetchedReplaySegment {
+    fn start(
+        segment_index: usize,
+        store: PathBuf,
+        session: CaptureSession,
+        source_path: String,
+        resolver: SegmentResolver,
+    ) -> Self {
+        Self {
+            segment_index,
+            handle: Some(thread::spawn(move || {
+                resolver.resolve(&store, &session, &source_path)
+            })),
+        }
+    }
+
+    fn finish(mut self) -> Result<ResolvedSegment, CorpusError> {
+        self.join()
+    }
+
+    fn join(&mut self) -> Result<ResolvedSegment, CorpusError> {
+        self.handle
+            .take()
+            .expect("prefetched segment handle is present")
+            .join()
+            .map_err(|_| {
+                CorpusError::InvalidReplay("canonical segment prefetch panicked".to_owned())
+            })?
+    }
+}
+
+impl Drop for PrefetchedReplaySegment {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 struct CanonicalReplayEnvironment<'a> {
@@ -2113,7 +2158,7 @@ fn decode_canonical_source_with_program_and_timing(
         }
         Ok(hex_digest(digest.finalize().as_slice()))
     });
-    let started = Instant::now();
+    let mut last_progress = Instant::now();
     for index in 0..expected_frames {
         let pixels = loop {
             if let Some(activity) = &activity_guard {
@@ -2121,7 +2166,8 @@ fn decode_canonical_source_with_program_and_timing(
             }
             match receiver.recv_timeout(Duration::from_millis(100)) {
                 Ok(decoded) => break decoded,
-                Err(RecvTimeoutError::Timeout) if started.elapsed() < CANONICAL_DECODE_TIMEOUT => {}
+                Err(RecvTimeoutError::Timeout)
+                    if last_progress.elapsed() < CANONICAL_DECODE_TIMEOUT => {}
                 Err(RecvTimeoutError::Timeout) => {
                     drop(receiver);
                     abort_decoder(&mut child, reader, stderr);
@@ -2139,6 +2185,7 @@ fn decode_canonical_source_with_program_and_timing(
         let (decoded_at, pixels) = pixels;
         let decode_consumer_wait_us = duration_us(decoded_at.elapsed());
         let mut callback_timed_out = false;
+        let callback_started = Instant::now();
         let callback = thread::scope(|scope| {
             let (callback_sender, callback_receiver) = mpsc::sync_channel(1);
             let observer = &mut observe;
@@ -2155,7 +2202,7 @@ fn decode_canonical_source_with_program_and_timing(
                 match callback_receiver.recv_timeout(Duration::from_millis(10)) {
                     Ok(result) => break Some(result),
                     Err(RecvTimeoutError::Timeout)
-                        if started.elapsed() < CANONICAL_DECODE_TIMEOUT => {}
+                        if callback_started.elapsed() < CANONICAL_DECODE_TIMEOUT => {}
                     Err(RecvTimeoutError::Timeout) => {
                         kill_and_reap(&mut child);
                         callback_timed_out = true;
@@ -2176,7 +2223,7 @@ fn decode_canonical_source_with_program_and_timing(
             ));
         }
         match callback {
-            Some(Ok(Ok(()))) => {}
+            Some(Ok(Ok(()))) => last_progress = Instant::now(),
             Some(Ok(Err(error))) => {
                 drop(receiver);
                 abort_decoder(&mut child, reader, stderr);
@@ -2207,7 +2254,7 @@ fn decode_canonical_source_with_program_and_timing(
                 ));
             }
         }
-        if started.elapsed() >= CANONICAL_DECODE_TIMEOUT {
+        if last_progress.elapsed() >= CANONICAL_DECODE_TIMEOUT {
             drop(receiver);
             abort_decoder(&mut child, reader, stderr);
             return Err(decode_error(
@@ -3709,6 +3756,7 @@ struct ReplaySessionRuntime {
     canonical: CanonicalRecordingManifest,
     retained: Vec<CanonicalTick>,
     segment_index: usize,
+    prefetched_segments: VecDeque<PrefetchedReplaySegment>,
     retained_offset: usize,
     canonical_frames: usize,
     last_sequence: u64,
@@ -4551,6 +4599,7 @@ fn start_replay_session(
         canonical,
         retained,
         segment_index: 0,
+        prefetched_segments: VecDeque::new(),
         retained_offset: 0,
         canonical_frames: 0,
         last_sequence: 0,
@@ -4667,11 +4716,18 @@ fn process_replay_segment(
             CorpusError::InvalidReplay("canonical segment exceeds retained tick index".to_owned())
         })?
         .to_vec();
-    let object = segment_resolver.resolve(
-        store,
-        &runtime.session,
-        &format!("recognition/{}", segment.path),
-    )?;
+    let object = match runtime.prefetched_segments.pop_front() {
+        Some(prefetched) if prefetched.segment_index == runtime.segment_index => {
+            prefetched.finish()?
+        }
+        Some(_) => return invalid_replay("canonical segment prefetch order differs"),
+        None => segment_resolver.resolve(
+            store,
+            &runtime.session,
+            &format!("recognition/{}", segment.path),
+        )?,
+    };
+    fill_replay_segment_prefetch(store, runtime, segment_resolver);
     let mut preprocessing = VecDeque::new();
     let decoded_digest = decode_resolved_canonical_frames(
         &object,
@@ -4711,6 +4767,32 @@ fn process_replay_segment(
         return invalid_replay("canonical segment coverage differs");
     }
     Ok(())
+}
+
+fn fill_replay_segment_prefetch(
+    store: &Path,
+    runtime: &mut ReplaySessionRuntime,
+    segment_resolver: &SegmentResolver,
+) {
+    let mut next_segment_index = runtime.prefetched_segments.back().map_or_else(
+        || runtime.segment_index.saturating_add(1),
+        |item| item.segment_index.saturating_add(1),
+    );
+    while runtime.prefetched_segments.len() < REPLAY_SEGMENT_PREFETCH {
+        let Some(next_segment) = runtime.canonical.segments.get(next_segment_index) else {
+            break;
+        };
+        runtime
+            .prefetched_segments
+            .push_back(PrefetchedReplaySegment::start(
+                next_segment_index,
+                store.to_owned(),
+                runtime.session.clone(),
+                format!("recognition/{}", next_segment.path),
+                segment_resolver.clone(),
+            ));
+        next_segment_index = next_segment_index.saturating_add(1);
+    }
 }
 
 fn commit_replay_preprocessed(
@@ -6737,6 +6819,63 @@ mod tests {
     }
 
     #[test]
+    fn replay_segment_prefetch_resolves_exactly_once() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("store");
+        ensure_store(&store).unwrap();
+        let bytes = b"prefetched remote segment";
+        let sha256 = digest(bytes);
+        let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let remote = SegmentRemote::new(object_store, "test".to_owned()).unwrap();
+        let mut source = tempfile::tempfile().unwrap();
+        source.write_all(bytes).unwrap();
+        source.rewind().unwrap();
+        remote
+            .upload_verified(source, &sha256, bytes.len() as u64)
+            .unwrap();
+        let resolver = SegmentResolver {
+            remote: Some(remote.clone()),
+            local_segment_decodes: Arc::new(AtomicU64::new(0)),
+        };
+        let session = CaptureSession {
+            schema: SESSION_SCHEMA.to_owned(),
+            diagnostic_sha256: "1".repeat(64),
+            source_kind: SourceKind::LiveRun,
+            source_session_id: "session".to_owned(),
+            capture_generation: 1,
+            profile_sha256: "2".repeat(64),
+            catalog_sha256: "3".repeat(64),
+            recognition_interval_ms: 100,
+            processed_ticks: 1,
+            busy_skips: 0,
+            maximum_consecutive_busy_skips: 0,
+            completeness: "complete".to_owned(),
+            canonical_frames: Vec::new(),
+            normalization_pairs: Vec::new(),
+            artifacts: vec![CorpusArtifact {
+                kind: "canonical_segment".to_owned(),
+                source_path: "recognition/segment-0001.mkv".to_owned(),
+                sha256,
+                bytes: bytes.len() as u64,
+            }],
+        };
+        let prefetched = PrefetchedReplaySegment::start(
+            1,
+            store,
+            session,
+            "recognition/segment-0001.mkv".to_owned(),
+            resolver,
+        );
+        assert_eq!(prefetched.segment_index, 1);
+        assert!(matches!(
+            prefetched.finish().unwrap(),
+            ResolvedSegment::Remote(_)
+        ));
+        assert_eq!(remote.metrics().downloaded_segments, 1);
+        assert_eq!(remote.metrics().downloaded_bytes, bytes.len() as u64);
+    }
+
+    #[test]
     fn local_segment_resolution_does_not_touch_the_configured_remote() {
         let root = tempfile::tempdir().unwrap();
         let store = root.path().join("store");
@@ -6777,7 +6916,10 @@ mod tests {
                 .unwrap(),
             ResolvedSegment::Local(_)
         ));
-        assert!(!remote.recovery_started());
+        assert_eq!(
+            remote.metrics(),
+            crate::segment_remote::RemoteMetrics::default()
+        );
     }
 
     #[test]

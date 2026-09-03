@@ -331,6 +331,9 @@ authoritative.
 - [ADR 0109: Store canonical corpus segments in S3](0109-store-canonical-segments-in-s3.md)
   keeps corpus metadata local, publishes canonical Matroska segments to environment-configured S3,
   materializes verified anonymous files on demand, and removes aggregate corpus storage quotas.
+- [ADR 0110: Publish canonical segments directly](0110-publish-canonical-segments-directly.md)
+  replaces staged copy/readback publication with locally verified direct multipart upload and
+  overlaps replay with four manifest-ordered verified remote downloads.
 
 ## Historical
 
