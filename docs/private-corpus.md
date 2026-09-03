@@ -118,11 +118,13 @@ invalid suite.
 Replay and other segment consumers first use a verified local object. A missing segment is fetched
 from the environment-configured S3 namespace into an anonymous temporary file, checked against its
 declared byte length and encoded SHA-256, rewound, and passed to FFmpeg through stdin. The temporary
-file is discarded after that decode and is not cached. Each active session prefetches up to four
-manifest-ordered segments while current-segment decode and recognition proceed; at most four remote
-GETs run concurrently process-wide. A prefetched file is still never decoded before complete
-verification. Missing remote configuration, missing objects, permission failures, truncated
-downloads, and digest differences fail closed.
+file is discarded after that decode and is not cached. Each active session prefetches up to two
+manifest-ordered segments while current-segment decode and recognition proceed, and up to two
+segments are materialized process-wide. Each uses four conditional Range GETs into non-overlapping
+file offsets. A terminal `download_failed` is retried once after 250 milliseconds; missing objects,
+permission failures, object replacement, size differences, and digest differences are not retried.
+After all ranges finish, replay reads and hashes the complete assembled file; a prefetched file is
+still never decoded before complete verification.
 
 OCR may complete out of order but field evidence is committed by admission sequence. All sessions
 share one text pool. Each scheduler step runs one `-threads 1` FFmpeg child for one segment, then

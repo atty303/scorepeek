@@ -24,6 +24,7 @@ __pycache__/
 *.password
 .env*
 !.env.example
+mise.local.toml
 
 # Platform noise
 .DS_Store

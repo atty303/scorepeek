@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{Seek as _, SeekFrom, Write};
-use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+use std::io::{Read as _, Seek as _, SeekFrom, Write};
+use std::ops::Range;
+use std::os::unix::fs::{DirBuilderExt as _, FileExt as _, OpenOptionsExt as _};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt as _;
 use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey};
@@ -23,7 +24,9 @@ const REGION_ENV: &str = "SCOREPEEK_CORPUS_S3_REGION";
 const ENDPOINT_ENV: &str = "SCOREPEEK_CORPUS_S3_ENDPOINT";
 const PATH_STYLE_ENV: &str = "SCOREPEEK_CORPUS_S3_PATH_STYLE";
 const TRANSFER_BUFFER_BYTES: usize = 8 * 1024 * 1024;
-const MAX_CONCURRENT_DOWNLOADS: usize = 4;
+const MAX_CONCURRENT_SEGMENT_DOWNLOADS: usize = 2;
+const RANGES_PER_SEGMENT: u64 = 4;
+const SEGMENT_DOWNLOAD_RETRY_DELAY: Duration = Duration::from_millis(250);
 const MAX_DIAGNOSTIC_EVENTS: usize = 4096;
 const MAX_DIAGNOSTIC_RUNS: usize = 32;
 
@@ -113,6 +116,8 @@ struct RemoteDiagnosticEvent {
     object_sha256: String,
     object_bytes: u64,
     elapsed_us: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retry_delay_us: Option<u64>,
 }
 
 impl SegmentRemote {
@@ -230,13 +235,29 @@ impl SegmentRemote {
     fn materialize_inner(&self, sha256: &str, bytes: u64) -> Result<RemoteSegment, CorpusError> {
         let _permit = self.downloads.acquire();
         let mut file = tempfile::tempfile().map_err(CorpusError::Io)?;
-        remote_runtime()?.block_on(download_verified(
-            Arc::clone(&self.target.store),
-            &self.target.object_path(sha256)?,
-            sha256,
-            bytes,
-            &mut file,
-        ))?;
+        let runtime = remote_runtime()?;
+        let path = self.target.object_path(sha256)?;
+        retry_segment_download(
+            || {
+                runtime.block_on(download_verified(
+                    Arc::clone(&self.target.store),
+                    &path,
+                    sha256,
+                    bytes,
+                    &mut file,
+                ))
+            },
+            |error| {
+                self.diagnostics.record_retry(
+                    "segment_get",
+                    sha256,
+                    bytes,
+                    SEGMENT_DOWNLOAD_RETRY_DELAY,
+                    error,
+                );
+                std::thread::sleep(SEGMENT_DOWNLOAD_RETRY_DELAY);
+            },
+        )?;
         file.seek(SeekFrom::Start(0)).map_err(CorpusError::Io)?;
         self.downloaded_segments.fetch_add(1, Ordering::AcqRel);
         self.downloaded_bytes.fetch_add(bytes, Ordering::AcqRel);
@@ -278,7 +299,7 @@ impl DownloadCoordinator {
             .active
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while *active == MAX_CONCURRENT_DOWNLOADS {
+        while *active == MAX_CONCURRENT_SEGMENT_DOWNLOADS {
             active = self
                 .ready
                 .wait(active)
@@ -378,6 +399,35 @@ impl RemoteDiagnostics {
             object_sha256: sha256.to_owned(),
             object_bytes: bytes,
             elapsed_us: u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+            retry_delay_us: None,
+        });
+    }
+
+    fn record_retry(
+        &self,
+        operation: &str,
+        sha256: &str,
+        bytes: u64,
+        delay: Duration,
+        error: &CorpusError,
+    ) {
+        let mut events = self
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if events.len() == MAX_DIAGNOSTIC_EVENTS {
+            self.dropped.fetch_add(1, Ordering::AcqRel);
+            return;
+        }
+        events.push(RemoteDiagnosticEvent {
+            schema: "scorepeek-corpus-remote-operation-v1",
+            operation: operation.to_owned(),
+            status: "retry",
+            error_type: remote_error_type(error).map(str::to_owned),
+            object_sha256: sha256.to_owned(),
+            object_bytes: bytes,
+            elapsed_us: 0,
+            retry_delay_us: Some(u64::try_from(delay.as_micros()).unwrap_or(u64::MAX)),
         });
     }
 }
@@ -830,42 +880,43 @@ async fn download_verified(
     expected_bytes: u64,
     destination: &mut File,
 ) -> Result<(), CorpusError> {
-    digest_remote_into(store, path, expected_sha256, expected_bytes, destination).await?;
-    destination.sync_all().map_err(CorpusError::Io)
-}
-
-async fn digest_remote_into(
-    store: Arc<dyn ObjectStore>,
-    path: &ObjectPath,
-    expected_sha256: &str,
-    expected_bytes: u64,
-    destination: &mut impl Write,
-) -> Result<(), CorpusError> {
-    let result = match store.get(path).await {
-        Ok(result) => result,
-        Err(object_store::Error::NotFound { .. }) => {
-            return Err(remote_error("not_found", "remote object is unavailable"));
-        }
-        Err(
-            object_store::Error::PermissionDenied { .. }
-            | object_store::Error::Unauthenticated { .. },
-        ) => {
-            return Err(remote_error(
-                "permission_denied",
-                "remote object GET was denied",
-            ));
-        }
-        Err(_) => return Err(remote_error("download_failed", "remote object GET failed")),
-    };
-    if result.meta.size != expected_bytes || result.range != (0..expected_bytes) {
+    let metadata = store
+        .head(path)
+        .await
+        .map_err(|error| map_download_error(&error))?;
+    if metadata.size != expected_bytes {
         return Err(remote_error("size_mismatch", "remote object size differs"));
     }
-    let mut stream = result.into_stream();
-    let mut received = 0_u64;
+    destination
+        .set_len(expected_bytes)
+        .map_err(CorpusError::Io)?;
+    let requests = split_download_ranges(expected_bytes)
+        .into_iter()
+        .map(|range| {
+            let store = Arc::clone(&store);
+            let path = path.clone();
+            let file = destination.try_clone().map_err(CorpusError::Io)?;
+            let e_tag = metadata.e_tag.clone();
+            let version = metadata.version.clone();
+            Ok(async move {
+                download_range(store, path, range, expected_bytes, e_tag, version, file).await
+            })
+        })
+        .collect::<Result<Vec<_>, CorpusError>>()?;
+    futures_util::future::try_join_all(requests).await?;
+
+    destination
+        .seek(SeekFrom::Start(0))
+        .map_err(CorpusError::Io)?;
     let mut digest = Sha256::new();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| remote_error("download_failed", "remote stream failed"))?;
-        received = received.checked_add(chunk.len() as u64).ok_or_else(|| {
+    let mut received = 0_u64;
+    let mut buffer = vec![0_u8; TRANSFER_BUFFER_BYTES];
+    loop {
+        let read = destination.read(&mut buffer).map_err(CorpusError::Io)?;
+        if read == 0 {
+            break;
+        }
+        received = received.checked_add(read as u64).ok_or_else(|| {
             remote_error("size_mismatch", "remote object exceeded its declared size")
         })?;
         if received > expected_bytes {
@@ -874,8 +925,7 @@ async fn digest_remote_into(
                 "remote object exceeded its declared size",
             ));
         }
-        digest.update(&chunk);
-        destination.write_all(&chunk).map_err(CorpusError::Io)?;
+        digest.update(&buffer[..read]);
     }
     if received != expected_bytes {
         return Err(remote_error(
@@ -890,6 +940,109 @@ async fn digest_remote_into(
         ));
     }
     Ok(())
+}
+
+async fn download_range(
+    store: Arc<dyn ObjectStore>,
+    path: ObjectPath,
+    range: Range<u64>,
+    expected_bytes: u64,
+    e_tag: Option<String>,
+    version: Option<String>,
+    destination: File,
+) -> Result<(), CorpusError> {
+    let options = object_store::GetOptions::new()
+        .with_range(Some(range.clone()))
+        .with_if_match(e_tag)
+        .with_version(version);
+    let result = store
+        .get_opts(&path, options)
+        .await
+        .map_err(|error| map_download_error(&error))?;
+    if result.meta.size != expected_bytes || result.range != range {
+        return Err(remote_error("size_mismatch", "remote object range differs"));
+    }
+    let expected_range_bytes = range.end.saturating_sub(range.start);
+    let mut stream = result.into_stream();
+    let mut received = 0_u64;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| map_download_error(&error))?;
+        let offset = range
+            .start
+            .checked_add(received)
+            .ok_or_else(|| remote_error("size_mismatch", "remote range offset overflowed"))?;
+        received = received.checked_add(chunk.len() as u64).ok_or_else(|| {
+            remote_error("size_mismatch", "remote range exceeded its declared size")
+        })?;
+        if received > expected_range_bytes {
+            return Err(remote_error(
+                "size_mismatch",
+                "remote range exceeded its declared size",
+            ));
+        }
+        destination
+            .write_all_at(&chunk, offset)
+            .map_err(CorpusError::Io)?;
+    }
+    if received != expected_range_bytes {
+        return Err(remote_error(
+            "size_mismatch",
+            "remote range ended before its declared size",
+        ));
+    }
+    Ok(())
+}
+
+fn split_download_ranges(bytes: u64) -> Vec<Range<u64>> {
+    let count = RANGES_PER_SEGMENT.min(bytes);
+    (0..count)
+        .map(|index| {
+            let boundary = |part| {
+                u64::try_from((u128::from(bytes) * u128::from(part)) / u128::from(count))
+                    .expect("a divided u64 product remains within u64")
+            };
+            boundary(index)..boundary(index + 1)
+        })
+        .collect()
+}
+
+fn map_download_error(error: &object_store::Error) -> CorpusError {
+    match download_error_type(error) {
+        Some("not_found") => remote_error("not_found", "remote object is unavailable"),
+        Some("permission_denied") => {
+            remote_error("permission_denied", "remote object GET was denied")
+        }
+        Some("object_changed") => {
+            remote_error("object_changed", "remote object changed during GET")
+        }
+        _ => remote_error("download_failed", "remote object GET failed"),
+    }
+}
+
+fn download_error_type(error: &(dyn std::error::Error + 'static)) -> Option<&'static str> {
+    if let Some(error) = error.downcast_ref::<object_store::Error>() {
+        match error {
+            object_store::Error::NotFound { .. } => return Some("not_found"),
+            object_store::Error::PermissionDenied { .. }
+            | object_store::Error::Unauthenticated { .. } => return Some("permission_denied"),
+            object_store::Error::Precondition { .. } => return Some("object_changed"),
+            _ => {}
+        }
+    }
+    error.source().and_then(download_error_type)
+}
+
+fn retry_segment_download<T>(
+    mut download: impl FnMut() -> Result<T, CorpusError>,
+    mut before_retry: impl FnMut(&CorpusError),
+) -> Result<T, CorpusError> {
+    match download() {
+        Err(error) if remote_error_type(&error) == Some("download_failed") => {
+            before_retry(&error);
+            download()
+        }
+        result => result,
+    }
 }
 
 fn validate_sha256(value: &str) -> Result<(), CorpusError> {
@@ -924,7 +1077,6 @@ mod tests {
     use object_store::memory::InMemory;
     use object_store::{Extensions, PutPayload, PutResult, UploadPart};
     use std::collections::BTreeSet;
-    use std::io::Read as _;
     use std::pin::Pin;
     use std::sync::atomic::AtomicBool;
 
@@ -1049,14 +1201,155 @@ mod tests {
     fn materialization_rejects_wrong_digest() {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let remote = SegmentRemote::new(Arc::clone(&store), String::new()).unwrap();
-        let bytes = b"five!";
+        let bytes = b"wrong";
+        let sha256 = crate::encode_digest(Sha256::digest(b"right"));
+        let path = remote.target.object_path(&sha256).unwrap();
+        remote_runtime()
+            .unwrap()
+            .block_on(store.put(&path, PutPayload::from_static(bytes)))
+            .unwrap();
+        let Err(error) = remote.materialize(&sha256, bytes.len() as u64) else {
+            panic!("wrong remote bytes must fail digest verification");
+        };
+        assert_eq!(remote_error_type(&error), Some("digest_mismatch"));
+    }
+
+    #[test]
+    fn materialization_rejects_wrong_declared_size_before_ranges() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let remote = SegmentRemote::new(Arc::clone(&store), String::new()).unwrap();
+        let bytes = b"segment";
         let sha256 = crate::encode_digest(Sha256::digest(bytes));
         let path = remote.target.object_path(&sha256).unwrap();
         remote_runtime()
             .unwrap()
             .block_on(store.put(&path, PutPayload::from_static(bytes)))
             .unwrap();
-        assert!(remote.materialize(&"0".repeat(64), 5).is_err());
+        let Err(error) = remote.materialize(&sha256, bytes.len() as u64 - 1) else {
+            panic!("wrong declared size must fail before ranged download");
+        };
+        assert_eq!(remote_error_type(&error), Some("size_mismatch"));
+    }
+
+    #[test]
+    fn download_ranges_are_contiguous_bounded_and_complete() {
+        assert!(split_download_ranges(0).is_empty());
+        for bytes in 1..1_000 {
+            let ranges = split_download_ranges(bytes);
+            assert_eq!(
+                ranges.len(),
+                usize::try_from(RANGES_PER_SEGMENT.min(bytes)).unwrap()
+            );
+            assert_eq!(ranges.first().unwrap().start, 0);
+            assert_eq!(ranges.last().unwrap().end, bytes);
+            assert!(ranges.iter().all(|range| range.start < range.end));
+            assert!(ranges.windows(2).all(|pair| pair[0].end == pair[1].start));
+        }
+    }
+
+    #[test]
+    fn only_terminal_download_failure_is_retried_once() {
+        let mut attempts = 0;
+        let mut retries = Vec::new();
+        let result = retry_segment_download(
+            || {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(remote_error("download_failed", "first attempt failed"))
+                } else {
+                    Ok("downloaded")
+                }
+            },
+            |error| retries.push(remote_error_type(error).unwrap().to_owned()),
+        );
+        assert_eq!(result.unwrap(), "downloaded");
+        assert_eq!(attempts, 2);
+        assert_eq!(retries, ["download_failed"]);
+
+        for error_type in [
+            "not_found",
+            "permission_denied",
+            "object_changed",
+            "size_mismatch",
+            "digest_mismatch",
+        ] {
+            let mut attempts = 0;
+            let error = retry_segment_download(
+                || {
+                    attempts += 1;
+                    Err::<(), _>(remote_error(error_type, "not retryable"))
+                },
+                |_| panic!("integrity and permanent errors must not be retried"),
+            )
+            .unwrap_err();
+            assert_eq!(remote_error_type(&error), Some(error_type));
+            assert_eq!(attempts, 1);
+        }
+
+        let mut attempts = 0;
+        let error = retry_segment_download(
+            || {
+                attempts += 1;
+                Err::<(), _>(remote_error("download_failed", "still failing"))
+            },
+            |_| {},
+        )
+        .unwrap_err();
+        assert_eq!(remote_error_type(&error), Some("download_failed"));
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn nested_stream_errors_keep_terminal_download_classification() {
+        let source = || Box::new(std::io::Error::other("provider detail")) as _;
+        for (error, expected) in [
+            (
+                object_store::Error::NotFound {
+                    path: "object".to_owned(),
+                    source: source(),
+                },
+                "not_found",
+            ),
+            (
+                object_store::Error::PermissionDenied {
+                    path: "object".to_owned(),
+                    source: source(),
+                },
+                "permission_denied",
+            ),
+            (
+                object_store::Error::Unauthenticated {
+                    path: "object".to_owned(),
+                    source: source(),
+                },
+                "permission_denied",
+            ),
+            (
+                object_store::Error::Precondition {
+                    path: "object".to_owned(),
+                    source: source(),
+                },
+                "object_changed",
+            ),
+        ] {
+            let nested = object_store::Error::Generic {
+                store: "test",
+                source: Box::new(error),
+            };
+            assert_eq!(
+                remote_error_type(&map_download_error(&nested)),
+                Some(expected)
+            );
+        }
+
+        let transient = object_store::Error::Generic {
+            store: "test",
+            source: source(),
+        };
+        assert_eq!(
+            remote_error_type(&map_download_error(&transient)),
+            Some("download_failed")
+        );
     }
 
     #[derive(Debug)]
@@ -1299,7 +1592,7 @@ mod tests {
     #[test]
     fn download_coordinator_limits_concurrency() {
         let coordinator = Arc::new(DownloadCoordinator::default());
-        let permits = (0..MAX_CONCURRENT_DOWNLOADS)
+        let permits = (0..MAX_CONCURRENT_SEGMENT_DOWNLOADS)
             .map(|_| coordinator.acquire())
             .collect::<Vec<_>>();
         let (started_tx, started_rx) = std::sync::mpsc::channel();
@@ -1340,9 +1633,19 @@ mod tests {
                 "provider detail must not be retained",
             ));
             diagnostics.record("segment_get", &"a".repeat(64), 42, Instant::now(), &result);
+            diagnostics.record_retry(
+                "segment_get",
+                &"a".repeat(64),
+                42,
+                SEGMENT_DOWNLOAD_RETRY_DELAY,
+                &remote_error("download_failed", "provider detail must not be retained"),
+            );
         }
         let bytes = fs::read_to_string(path).unwrap();
         assert!(bytes.contains("\"error_type\":\"permission_denied\""));
+        assert!(bytes.contains("\"status\":\"retry\""));
+        assert!(bytes.contains("\"error_type\":\"download_failed\""));
+        assert!(bytes.contains("\"retry_delay_us\":250000"));
         assert!(bytes.contains(&"a".repeat(64)));
         assert!(!bytes.contains("provider detail"));
         assert!(!bytes.contains("AWS_"));

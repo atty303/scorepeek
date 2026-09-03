@@ -112,9 +112,11 @@ outside the checkpoint; implementation history belongs in Git.
   and SHA-256 while filling signed-payload parts, aborts before multipart completion on mismatch,
   and reuses an existing final object only when HEAD reports the declared size. It performs no
   remote staging, server-side copy, or upload readback GET. Consumers prefer local segments and
-  otherwise prefetch up to four manifest-ordered segments through a four-download remote limit;
-  each complete GET is size- and SHA-256-verified into an anonymous temporary file before FFmpeg
-  stdin decode. Corpus stores have no aggregate object-count or byte quota.
+  otherwise prefetch up to two manifest-ordered segments ahead of decode. Up to two segments are
+  each split across four conditional Range GETs into fixed offsets of an anonymous temporary file;
+  a terminal `download_failed` is retried once after 250 milliseconds, while identity and integrity
+  failures are not retried. Each complete file is size- and SHA-256-verified before FFmpeg stdin
+  decode. Corpus stores have no aggregate object-count or byte quota.
   Replay decodes canonical retained frames only, starts no normalizer, uses production
   screen-episode and run-event reducers, and rejects missing/elided DECIDE TRANSITION or RESULT
   truth. Event comparison normalizes runtime IDs while preserving attempt-parent and ordered
@@ -140,8 +142,8 @@ outside the checkpoint; implementation history belongs in Git.
 
 - S3-backed corpus code has isolated in-memory object-store coverage for environment parsing,
   direct multipart completion and abort, HEAD size reuse, process-local upload serialization,
-  digest rejection, four-download coordination, remote resolution without local publication, and
-  anonymous-file materialization. A real FFmpeg integration decodes the verified file through
+  digest rejection, ranged-download coordination, remote resolution without local publication,
+  and anonymous-file materialization. A real FFmpeg integration decodes the verified file through
   stdin. The configured B2 S3-compatible provider passes the current direct path with a disposable
   256 MiB object that was deleted after verification: direct multipart PUT measured 9.38 MiB/s,
   while one, two, and four concurrent GETs measured 19.79, 39.86, and 76.66 aggregate MiB/s.
@@ -149,11 +151,18 @@ outside the checkpoint; implementation history belongs in Git.
   remotely; the original local objects remain unchanged. A metadata-only clone passes both the
   one-worker and default-pool replay with 2 sessions, 14 accepted attempts, 12,460 canonical
   frames, zero negative frames, 21 unique successful GETs, and identical stable summary fields.
-  Four-segment prefetch reduced default remote replay to 461,062,237 microseconds versus the saved
-  373,844,534-microsecond local result; final one-worker remote replay took 1,677,228,089
-  microseconds. `mise run check`, pedantic workspace Clippy, the complete `mise run test` suite,
-  and the first execution of the diagnostic worker-availability regressions pass. Local segment
-  eviction remains a separately authorized and unverified boundary.
+  Four-segment full-GET prefetch reduced default remote replay to 461,062,237 microseconds versus
+  the saved 373,844,534-microsecond local result; final one-worker remote replay took 1,677,228,089
+  microseconds. A 512 MiB same-object benchmark measured 20.31, 36.82, 69.23, and 112.50 aggregate
+  MiB/s with one, two, four, and eight Range GETs. Sustained eight-request corpus replay failed one
+  provider request after eighteen completed segments. The current policy keeps two simultaneous
+  four-range downloads and retries only a terminal `download_failed` once. Its full live replay
+  completed all 21 unique objects without a retry or error in 391,549,392 microseconds, 17,704,858
+  microseconds or 4.74% above the saved local result. The prior one-segment-at-a-time ranged replay
+  took 403,368,598 microseconds.
+  `mise run check`, pedantic workspace Clippy, the complete `mise run test` suite, and the first
+  execution of the diagnostic worker-availability regressions pass. Local segment eviction remains
+  a separately authorized and unverified boundary.
 
 - The target session `run-1788272474-298014477-1183660-session-1` is the recorder failure oracle:
   5,626 recognition ticks produced 5,536 canonical tick records and 90 queue drops. The first large

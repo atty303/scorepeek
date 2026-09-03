@@ -52,7 +52,7 @@ const MAXIMUM_REPLAY_MEMORY_MIB: usize = 8_192;
 const DECODER_RESERVATION_BYTES: usize = 16 * 1024 * 1024;
 const SESSION_STATE_RESERVATION_BYTES: usize = 64 * 1024 * 1024;
 const PENDING_FIELD_FRAME_RESERVATION_BYTES: usize = 16 * 1024 * 1024;
-const REPLAY_SEGMENT_PREFETCH: usize = 4;
+const REPLAY_SEGMENT_PREFETCH: usize = 2;
 const NUMERIC_DATASET_SCHEMA: &str = "scorepeek-private-numeric-ctc-dataset-v1";
 
 fn duration_us(duration: Duration) -> u64 {

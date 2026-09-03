@@ -333,7 +333,10 @@ authoritative.
   materializes verified anonymous files on demand, and removes aggregate corpus storage quotas.
 - [ADR 0110: Publish canonical segments directly](0110-publish-canonical-segments-directly.md)
   replaces staged copy/readback publication with locally verified direct multipart upload and
-  overlaps replay with four manifest-ordered verified remote downloads.
+  overlaps replay with verified remote downloads.
+- [ADR 0111: Prefetch ranged canonical segments](0111-prefetch-ranged-canonical-segments.md)
+  runs two prefetched segment materializations with four conditional ranges each and retries a
+  terminal transient download failure once.
 
 ## Historical
 
