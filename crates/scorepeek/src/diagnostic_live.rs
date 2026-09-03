@@ -390,6 +390,10 @@ impl DiagnosticBridge {
     /// Records one screen-predicate result against the same immutable run and live-frame binding.
     ///
     /// Queueing is non-blocking and diagnostic failure does not change the recognition observation.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one screen-predicate diagnostic preserves every bounded raw measurement and threshold"
+    )]
     pub fn record_screen_observation(
         &mut self,
         observation: &RecognitionObservation<'_>,
@@ -475,10 +479,31 @@ impl DiagnosticBridge {
                 decide_transition_saturated_pixels_min: predicate
                     .decide_transition_presence
                     .saturated_pixels_min,
-                play_amber_max_score_pixels: predicate.play_presence.amber_max_score_pixels,
-                play_amber_max_score_pixels_min: predicate.play_presence.amber_max_score_pixels_min,
-                play_amber_header_pixels: predicate.play_presence.amber_header_pixels,
-                play_amber_header_pixels_min: predicate.play_presence.amber_header_pixels_min,
+                play_bpm_outline_cyan_component_pixels: predicate
+                    .play_presence
+                    .cyan_component_pixels,
+                play_bpm_outline_cyan_component_pixels_min: predicate
+                    .play_presence
+                    .cyan_component_pixels_min,
+                play_bpm_outline_cyan_component_pixels_max: predicate
+                    .play_presence
+                    .cyan_component_pixels_max,
+                play_bpm_outline_width: predicate.play_presence.outline_width,
+                play_bpm_outline_width_min: predicate.play_presence.outline_width_min,
+                play_bpm_outline_width_max: predicate.play_presence.outline_width_max,
+                play_bpm_outline_height: predicate.play_presence.outline_height,
+                play_bpm_outline_height_min: predicate.play_presence.outline_height_min,
+                play_bpm_outline_height_max: predicate.play_presence.outline_height_max,
+                play_bpm_outline_top_edge_pixels: predicate.play_presence.top_edge_pixels,
+                play_bpm_outline_top_edge_pixels_min: predicate.play_presence.top_edge_pixels_min,
+                play_bpm_outline_middle_row_pixels: predicate.play_presence.middle_row_pixels,
+                play_bpm_outline_middle_row_pixels_max: predicate
+                    .play_presence
+                    .middle_row_pixels_max,
+                play_bpm_outline_bottom_edge_pixels: predicate.play_presence.bottom_edge_pixels,
+                play_bpm_outline_bottom_edge_pixels_min: predicate
+                    .play_presence
+                    .bottom_edge_pixels_min,
             },
         })
     }

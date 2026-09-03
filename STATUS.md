@@ -88,10 +88,12 @@ outside the checkpoint; implementation history belongs in Git.
 - `MusicSelectResolver` independently consumes the same immutable SELECT evidence and owns UI
   `Selected`/`Unresolved` state. `music_selection_changed` emits first selection, song/chart change,
   unresolved retreat, and episode end with deduplication and episode-local revisions. No UI state
-  feeds the joint resolver. Screen-path layout v2 recognizes the common SP/DP `GRAPH INFORMATION`
-  band and `MAX SCORE` label, with no lane or animated-content dependency and exactly-one screen
-  classification. Integrated-context v5 corrects the LEGGENDARIA marker position without changing
-  its thresholds.
+  feeds the joint resolver. Screen-path layout v3 searches the fixed lower-center area for the
+  connected, wide, hollow SP/DP BPM-panel outline. It ignores BPM values, `MIN`/`MAX`, loading-time
+  blanks, lane geometry, and the setting-dependent graph position. Color area, component geometry,
+  and top/middle/bottom row shape must all agree, while exactly-one screen classification remains
+  required. Integrated-context v5 corrects the LEGGENDARIA marker position without changing its
+  thresholds.
 - The TUI retains one three-pane layout and semantic state palette. Watcher shows raw and semantic screen plus suspension;
   Latest result prefers an active `PROVISIONAL` payload and falls back to the last `CONFIRMED` v2
   event after withdrawal; only confirmed events enter count/history. Resolver shows incumbent/successor/result
@@ -153,12 +155,13 @@ outside the checkpoint; implementation history belongs in Git.
   stability, episode-wide conflict across song changes, UI/joint independence, lifecycle
   deduplication/withdrawal/end, abnormal session termination without field-drain finalization,
   RESULT-unknown supplementation, mode disagreement in both directions, tied charts, and
-  insufficient chart margin. Shared PLAY anchor thresholds and overlapping-screen rejection have
-  synthetic coverage. The 80x25 TUI keeps chart information visible with long Japanese titles.
-  `mise run check`, pedantic workspace Clippy, and the complete `mise run test` pass: 483 runtime
+  insufficient chart margin. Shared PLAY outline thresholds, color-area-only rejection, former
+  graph-panel rejection, and overlapping-screen rejection have synthetic coverage. The 80x25 TUI
+  keeps chart information visible with long Japanese titles.
+  `mise run check`, pedantic workspace Clippy, and the complete `mise run test` pass: 484 runtime
   library, 302 runtime binary, 125 corpus library, 5 corpus binary, and 99 offline OCR tests.
-  Fresh independent full review and the final correction delta review have no outstanding
-  findings. Canonical/numeric layouts and model bindings are unchanged.
+  Fresh independent review has no outstanding findings. Canonical/numeric layouts and model
+  bindings are unchanged.
 
 - The complete target DP session was remote-imported with 1,223 retained canonical frames.
   Its reviewed label includes HURRY HURRY and Wizards! DP HYPER as accepted attempts. PLAY truth
@@ -167,12 +170,12 @@ outside the checkpoint; implementation history belongs in Git.
   `399b78c0eb477621173cf906ba256b6fab6b60f225883aa552736e769acd1ccb` was create-only published
   into active generation `d2bd843f63729327663587a7b2227ec65f064554b1192bdf4dd754cfa08ff296`,
   preserving both SP sessions and the previous generation. The active generation matches the
-  isolated suite verified using the same final release build with one text worker and the
+  isolated suite verified using the same final release build and BPM-outline layout with one text worker and the
   default twelve-worker pool: 3 sessions, 16 accepted attempts, 13,683 canonical frames, matching
   selected song/chart at every labeled SELECT span, and no wrong or missing result events.
-  Both runs decoded 24 remote segments totaling 21,014,758,184 bytes with zero local segment
-  decodes. One-worker wall time was 710,807,831 microseconds; default-pool wall time was
-  280,398,731 microseconds. These are developer-host replay results, not target performance or
+  Both final-source runs decoded 24 remote segments totaling 21,014,758,184 bytes with zero local
+  segment decodes. One-worker wall time was 715,716,061 microseconds; default-pool wall time was
+  264,306,711 microseconds. These are developer-host replay results, not target performance or
   live-display verification. Full images, complete labels, and generated corpus remain private;
   only the two explicitly approved SELECT badge crops are repository assets.
 
@@ -315,9 +318,9 @@ outside the checkpoint; implementation history belongs in Git.
 ## Next executable task
 
 The SELECT SP/DP, independent music-selection state, and shared SP/DP PLAY recognition slice is
-implemented and replay-verified. Obtain separate authorization before installing this build on the
-target. After installation, check `scorepeek run` through SP and DP SELECT-to-PLAY transitions:
-the TUI must retain readable selected song/chart information, clear it when SELECT ends, and report
-PLAY from the shared fixed anchors. Capture a new complete DP session to verify PLAY interiors that
-the older binary intentionally elided. Target performance gates, public socket authority, push,
-and release remain separate boundaries.
+implemented and replay-verified for the captured layouts. Obtain separate authorization before
+installing this build on the target. After installation, check `scorepeek run` through SP and DP
+SELECT-to-PLAY transitions and capture SP with the graph-position setting changed: the TUI must
+retain readable selected song/chart information, clear it when SELECT ends, and report PLAY from
+the BPM outline regardless of graph position. Target performance gates, public socket authority,
+push, and release remain separate boundaries.

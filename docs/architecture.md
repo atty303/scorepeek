@@ -91,7 +91,9 @@ normalizers to the same layout rather than creating route-local coordinates.
 
 Screen-path-only evidence for `decide_transition` and `play` is stored in a separate,
 digest-bound canonical-coordinate layout artifact. Adding those predicates does not change the
-canonical field-layout digest bound by existing machine profiles.
+canonical field-layout digest bound by existing machine profiles. PLAY searches the stable
+lower-center area for the connected, wide, hollow BPM-panel outline; it does not depend on the
+setting-dependent graph position, BPM values, or the panel's interior text.
 
 ### Catalog federation
 

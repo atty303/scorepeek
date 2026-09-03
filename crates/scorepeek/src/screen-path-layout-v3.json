@@ -1,0 +1,38 @@
+{
+  "schema": "scorepeek-screen-path-layout-v3",
+  "canonical_frame_contract_id": "scorepeek-canonical-rgb8-1920x1080-v1",
+  "width": 1920,
+  "height": 1080,
+  "music_select_reference": {
+    "algorithm_id": "imageproc-cross-correlation-normalized-gray8-v1",
+    "search_roi": { "x": 46, "y": 46, "width": 418, "height": 68 },
+    "template_width": 410,
+    "template_height": 60,
+    "music_asset_sha256": "ef3a27957b0c4999de6f5a8c7f240efac915a3f79bd4de1aefc2c518d148f1bb",
+    "mode_asset_sha256": "142f956367402a71738e557502c3b78c5f624731f1313c0a17508ff31e6f7ca7",
+    "score_min_ppm": 900000,
+    "winner_margin_min_ppm": 20000
+  },
+  "decide_transition": {
+    "presence": {
+      "cyan_pixels_min": 115000,
+      "bright_pixels_min": 50000,
+      "saturated_pixels_min": 150000
+    },
+    "splash": { "x": 700, "y": 300, "width": 520, "height": 460 }
+  },
+  "play": {
+    "presence": {
+      "cyan_component_pixels_min": 4000,
+      "cyan_component_pixels_max": 7000,
+      "outline_width_min": 330,
+      "outline_width_max": 380,
+      "outline_height_min": 68,
+      "outline_height_max": 72,
+      "top_edge_pixels_min": 280,
+      "middle_row_pixels_max": 64,
+      "bottom_edge_pixels_min": 300
+    },
+    "bpm_outline_search": { "x": 760, "y": 940, "width": 480, "height": 140 }
+  }
+}

@@ -340,7 +340,10 @@ authoritative.
 - [ADR 0112: Resolve MUSIC SELECT play type independently](0112-resolve-select-play-type-independently.md)
   adds template-based SELECT SP/DP evidence and DP gameplay layout, keeps SELECT and RESULT mode
   families independent, and publishes a UI-only current-selection lifecycle without changing result
-  acceptance.
+  acceptance. Its PLAY-presence decision is superseded by ADR 0113.
+- [ADR 0113: Anchor PLAY detection to the BPM outline](0113-anchor-play-detection-to-the-bpm-outline.md)
+  replaces the setting-dependent graph-panel predicate with the connected lower-center BPM outline
+  while ignoring loading and fixed/variable BPM interior text.
 
 ## Historical
 
