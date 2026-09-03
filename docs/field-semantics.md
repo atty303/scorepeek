@@ -56,10 +56,13 @@ be established, the field is `unknown`.
 | DJ level, score delta, NEW RECORD, percentage | Derived or excluded | Do not save from OCR; derive from score, notes, and previous score when needed |
 | options, graph, play speed, dead/loveletter, rival/radar | Deferred capability only after its named layout and presence/absence predicates pass a dedicated release gate | Complete field-specific evidence; no placeholder or fixed RANDOM value is emitted |
 
-A result event requires all mandatory rows to be `known`, an accepted play attempt, catalog
-consistency, and temporal stability. Missing gameplay, an unlinked result, song conflict, or an
-abandoned attempt suppresses it. Supplemental and previous-best unknowns do not get guessed values
-and do not block the minimal result event.
+A provisional result lifecycle value requires all mandatory result fields to be `known`, two
+matching numeric observations, joint catalog consistency, and an active RESULT attempt ID. It does
+not require selection linkage, observed gameplay, or final attempt confirmation. A confirmed
+`result_detected` additionally requires the accepted play attempt at semantic RESULT close.
+Missing gameplay, an unlinked result, song conflict, or an abandoned attempt suppresses confirmed
+emission. Supplemental and previous-best unknowns do not get guessed values and do not block the
+shared result payload.
 
 ## Music select
 
@@ -81,7 +84,8 @@ the separately calibrated stricter title/context policy. The event preserves
 - Stability uses distinct, fresh observations from one capture generation and
   the versioned minimum dwell. A disconnected or stalled source cannot turn one
   old frame into temporal evidence.
-- Result emits once per result episode. Music select deduplicates a stable
+- Provisional result emits on resolved payload change or withdrawal with an episode-local monotonic
+  revision. Confirmed result emits once per result episode. Music select deduplicates a stable
   `(song, play mode, selected difficulty)` identity until it changes or the
   screen episode ends.
 - A screen-local episode ends on screen exit. Separately, the last stable

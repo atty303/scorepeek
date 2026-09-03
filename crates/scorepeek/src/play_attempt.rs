@@ -182,6 +182,17 @@ impl PlayAttemptReducer {
             })
     }
 
+    #[must_use]
+    pub fn active_result(&self) -> Option<AcceptedPlayAttempt> {
+        let PlayAttemptState::Attempt { attempt } = &self.state else {
+            return None;
+        };
+        (attempt.phase == PlayAttemptPhase::Result).then_some(AcceptedPlayAttempt {
+            attempt_id: attempt.attempt_id,
+            parent_attempt_id: attempt.parent_attempt_id,
+        })
+    }
+
     pub fn finish_session(&mut self) -> Option<PlayAttemptState> {
         let previous = self.state.clone();
         if let PlayAttemptState::Attempt { attempt } = &mut self.state
@@ -319,6 +330,18 @@ mod tests {
         assert!(resolver.accepted_result().is_none());
         resolver.resolve_result_with_reason(None);
         assert_eq!(resolver.accepted_result().unwrap().attempt_id, 1);
+    }
+
+    #[test]
+    fn active_result_exposes_identity_without_accepting_linkage() {
+        let mut resolver = PlayAttemptReducer::default();
+        resolver.observe_screen(PlayAttemptScreen::DecideTransition, 1);
+        resolver.observe_screen(PlayAttemptScreen::Result, 2);
+        assert_eq!(resolver.active_result().unwrap().attempt_id, 1);
+        assert!(resolver.accepted_result().is_none());
+        resolver.resolve_result_with_reason(None);
+        assert!(resolver.active_result().is_none());
+        assert!(resolver.accepted_result().is_none());
     }
 
     #[test]

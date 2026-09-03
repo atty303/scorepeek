@@ -238,7 +238,9 @@ filesystem permission、ownership、ACLはoperatorが管理し、scorepeekのeve
 Unix modeを受理条件またはconfidentiality保証にしない。
 
 - request: `hello`、`get_status`、`subscribe`
-- accepted event: `result_detected`、`music_select_detected`
+- provisional lifecycle: `result_provisional_changed`。resolved/update/withdrawをtypedに通知し、
+  result contentにはconfirmedと同じ`scorepeek-result-detected-v2` payloadを使う。保存authorityは持たない
+- accepted event: `result_detected`、`music_select_detected`。score/history保存authorityは外側のevent kindで判断する
 - lifecycle/status: capture generation、catalog/model readiness、quarantine summary
 - envelope: schema version、event ID、monotonic time、capture generation、capture/layout/
   catalog/model/runtime digest
@@ -617,6 +619,11 @@ flush timeoutは`partial | dropped` evidenceとして残すが、play、capture 
     application-level暫定観測に限り、独立predicateで`decide_transition`と`play`を識別し、stableまたは
     held selectionをobserved resultへ接続する。result-to-playはparent link付きの新attemptとして表示するが、
     recognition core、accepted event、永続履歴、mode/course進行またはretry回数のauthorityにはしない。
+    ADR 0108ではjoint identity、2回一致したnumeric tuple、active attempt IDが揃った時点で
+    `result_provisional_changed`を発行し、semantic RESULT close後の`result_detected`と同じv2 payloadを
+    共用する。revision付きresolved/update/withdrawはdiagnostic artifactと現在TUIへ流すが、confirmed
+    count/historyと将来のscore保存は外側の`result_detected`だけをauthorityとする。debug observation
+    socketはv8へ進めるが、future UIは実装予定のpublic `/v1.sock`へ依存させる。
 11. **M8**: catalog update replay、full private holdout、Bazzite live flowをrelease gateへ統合する。
 
 M3/M4からM7へ進む間は、ADR 0049で通常のRust CLI配布へ置き換えたcross-machine delivery checkpointを縦に通す。event authorityや

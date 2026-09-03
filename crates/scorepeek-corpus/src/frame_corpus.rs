@@ -296,7 +296,16 @@ enum StoredRunEventPayload {
         session_id: String,
         capture_generation: u64,
         source_sequence: u64,
+        song: Option<Value>,
         result: Value,
+    },
+    ResultProvisionalChanged {
+        session_id: String,
+        capture_generation: u64,
+        screen_episode_id: u64,
+        source_sequence: u64,
+        revision: u64,
+        state: Value,
     },
     TemporalResultChanged {
         session_id: Option<String>,
@@ -4351,7 +4360,7 @@ fn start_replay_session(
     );
     output
         .publish(&scorepeek::routine_output::RunEvent {
-            schema: "scorepeek-run-event-v7".to_owned(),
+            schema: "scorepeek-run-event-v8".to_owned(),
             kind: scorepeek::routine_output::RunEventKind::SessionStarted {
                 session_id: Some(session_id.clone()),
                 capture_generation: session.capture_generation,
@@ -4658,7 +4667,7 @@ fn process_replay_frame(
     runtime
         .output
         .publish(&scorepeek::routine_output::RunEvent {
-            schema: "scorepeek-run-event-v7".to_owned(),
+            schema: "scorepeek-run-event-v8".to_owned(),
             kind: scorepeek::routine_output::RunEventKind::RawScreenObserved {
                 session_id: Some(runtime.session_id.clone()),
                 capture_generation: Some(runtime.session.capture_generation),
@@ -4741,7 +4750,7 @@ fn finalize_replay_session(
     runtime
         .output
         .publish(&scorepeek::routine_output::RunEvent {
-            schema: "scorepeek-run-event-v7".to_owned(),
+            schema: "scorepeek-run-event-v8".to_owned(),
             kind: scorepeek::routine_output::RunEventKind::SessionFinished {
                 session_id: runtime.session_id.clone(),
                 capture_generation: runtime.session.capture_generation,
@@ -4857,7 +4866,7 @@ fn publish_replay_semantic(
 ) -> Result<(), CorpusError> {
     output
         .publish(&scorepeek::routine_output::RunEvent {
-            schema: "scorepeek-run-event-v7".to_owned(),
+            schema: "scorepeek-run-event-v8".to_owned(),
             kind: scorepeek::routine_output::RunEventKind::SemanticScreenEpisodeChanged {
                 session_id: Some(session_id.to_owned()),
                 capture_generation: Some(generation),
@@ -6094,6 +6103,7 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
                 | "scorepeek-run-event-v5"
                 | "scorepeek-run-event-v6"
                 | "scorepeek-run-event-v7"
+                | "scorepeek-run-event-v8"
         ) || event_schema
             .as_deref()
             .is_some_and(|expected| expected != schema)
@@ -6109,6 +6119,7 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
                 | "scorepeek-run-event-v5"
                 | "scorepeek-run-event-v6"
                 | "scorepeek-run-event-v7"
+                | "scorepeek-run-event-v8"
         ) {
             serde_json::from_value::<StoredRunEventPayload>(record.clone()).map_err(|_| {
                 CorpusError::InvalidRequest("diagnostic run event payload is invalid".to_owned())
@@ -6620,6 +6631,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(verify_session_events(&path, &manifest).unwrap(), 4);
+    }
+
+    #[test]
+    fn v8_run_event_stream_accepts_provisional_lifecycle_and_rejects_v9() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events.ndjson");
+        let manifest = diagnostic_manifest();
+        fs::write(
+            &path,
+            concat!(
+                "{\"schema\":\"scorepeek-run-event-v8\",\"event\":\"session_started\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"capture_profile_sha256\":\"profile\",\"normalizer_artifact_sha256\":\"normalizer\",\"channel_sequence\":1}\n",
+                "{\"schema\":\"scorepeek-run-event-v8\",\"event\":\"result_provisional_changed\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"screen_episode_id\":22,\"source_sequence\":3255,\"revision\":1,\"state\":{\"status\":\"withdrawn\",\"reason\":\"evidence_unresolved\"},\"channel_sequence\":2}\n",
+                "{\"schema\":\"scorepeek-run-event-v8\",\"event\":\"session_finished\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"outcome\":\"ok\",\"report\":{},\"channel_sequence\":3}\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(verify_session_events(&path, &manifest).unwrap(), 3);
+
+        fs::write(
+            &path,
+            concat!(
+                "{\"schema\":\"scorepeek-run-event-v9\",\"event\":\"session_started\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"capture_profile_sha256\":\"profile\",\"normalizer_artifact_sha256\":\"normalizer\",\"channel_sequence\":1}\n",
+                "{\"schema\":\"scorepeek-run-event-v9\",\"event\":\"session_finished\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"outcome\":\"ok\",\"report\":{},\"channel_sequence\":2}\n",
+            ),
+        )
+        .unwrap();
+        assert!(verify_session_events(&path, &manifest).is_err());
     }
 
     #[test]

@@ -14,7 +14,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::play_attempt::{
-    PlayAttemptReason, PlayAttemptReducer, PlayAttemptScreen, PlayAttemptState,
+    AcceptedPlayAttempt, PlayAttemptReason, PlayAttemptReducer, PlayAttemptScreen, PlayAttemptState,
 };
 use crate::recognition_live::screen_field_observer::{
     EvidenceFamily, JointEvidenceCandidate, JointEvidenceObservation,
@@ -46,8 +46,8 @@ fn duration_us(duration: Duration) -> u64 {
 const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const RESULT_HISTORY_CAPACITY: usize = 32;
-const SOCKET_NAME: &str = "observations-v7.sock";
-const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v7";
+const SOCKET_NAME: &str = "observations-v8.sock";
+const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v8";
 const NUMERIC_REQUIRED_OBSERVATIONS: u8 = 2;
 const PLAY_OPTIONS_REQUIRED_OBSERVATIONS: u8 = 2;
 
@@ -177,6 +177,14 @@ pub enum RunEventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         song: Option<SongPresentation>,
         result: ResultDomainEvent,
+    },
+    ResultProvisionalChanged {
+        session_id: String,
+        capture_generation: u64,
+        screen_episode_id: u64,
+        source_sequence: u64,
+        revision: u64,
+        state: ResultProvisionalState,
     },
     TemporalResultChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -338,6 +346,33 @@ pub struct ResultDomainEvent {
     pub combo_break: SupplementalResultValue<u32>,
     pub previous_best: PreviousBest,
     pub play_options: PlayOptions,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultProvisionalWithdrawalReason {
+    EvidenceUnresolved,
+    AttemptRejected,
+    SessionEnded,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ResultProvisionalState {
+    Resolved {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        song: Option<SongPresentation>,
+        result: Box<ResultDomainEvent>,
+    },
+    Withdrawn {
+        reason: ResultProvisionalWithdrawalReason,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ActiveProvisionalResult {
+    song: Option<SongPresentation>,
+    result: ResultDomainEvent,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1504,6 +1539,7 @@ pub struct RunViewState {
     #[serde(skip)]
     latest_numeric_result: Option<Value>,
     latest_result_detected: Option<Value>,
+    latest_provisional_result: Option<ResultHistoryEntry>,
     result_history: VecDeque<ResultHistoryEntry>,
     result_count: u64,
     #[serde(skip)]
@@ -1628,6 +1664,7 @@ impl RunViewState {
             latest_play_attempt: None,
             latest_numeric_result: None,
             latest_result_detected: None,
+            latest_provisional_result: None,
             result_history: VecDeque::with_capacity(RESULT_HISTORY_CAPACITY),
             result_count: 0,
             stable_result_song: None,
@@ -1667,6 +1704,7 @@ impl RunViewState {
                 self.latest_temporal_music_select = None;
                 self.latest_play_attempt = None;
                 self.latest_numeric_result = None;
+                self.latest_provisional_result = None;
                 self.stable_result_song = None;
                 self.latest_report = None;
                 if self.recording == "enabled" && self.status_recording != "degraded" {
@@ -1744,6 +1782,7 @@ impl RunViewState {
                 song,
                 result,
             } => {
+                self.latest_provisional_result = None;
                 self.latest_result_detected = Some(serialized.clone());
                 self.result_count = self.result_count.saturating_add(1);
                 let song = song
@@ -1762,6 +1801,30 @@ impl RunViewState {
                     result: result.clone(),
                 });
             }
+            RunEventKind::ResultProvisionalChanged {
+                session_id,
+                capture_generation,
+                source_sequence,
+                state,
+                ..
+            } => match state {
+                ResultProvisionalState::Resolved { song, result } => {
+                    self.latest_provisional_result = Some(ResultHistoryEntry {
+                        ordinal: self.result_count.saturating_add(1),
+                        session_id: session_id.clone(),
+                        capture_generation: *capture_generation,
+                        source_sequence: *source_sequence,
+                        song: song
+                            .as_ref()
+                            .filter(|song| song.scorepeek_song_id == result.scorepeek_song_id)
+                            .cloned(),
+                        result: result.as_ref().clone(),
+                    });
+                }
+                ResultProvisionalState::Withdrawn { .. } => {
+                    self.latest_provisional_result = None;
+                }
+            },
             RunEventKind::SessionFinished {
                 outcome, report, ..
             } => {
@@ -1787,6 +1850,7 @@ impl RunViewState {
                 self.latest_temporal_music_select = None;
                 self.latest_play_attempt = None;
                 self.latest_numeric_result = None;
+                self.latest_provisional_result = None;
                 self.stable_result_song = None;
                 "scorepeek stopped by signal".clone_into(&mut self.message);
             }
@@ -2036,7 +2100,7 @@ fn accept_clients(
 fn snapshot_bytes(state: &Arc<Mutex<RunViewState>>, health: &ChannelHealth) -> Option<Vec<u8>> {
     let state = state.lock().ok()?.clone();
     let mut bytes = serde_json::to_vec(&json!({
-            "schema": "scorepeek-run-observation-snapshot-v7",
+            "schema": "scorepeek-run-observation-snapshot-v8",
         "state": state,
         "channel": health.value(),
     }))
@@ -2126,6 +2190,8 @@ pub struct RoutineOutput {
     engine: ResolverEngine,
     pending_numeric_result: Option<PendingNumericResult>,
     accepted_numeric_result: Option<NumericResultView>,
+    active_provisional_result: Option<ActiveProvisionalResult>,
+    provisional_revision: u64,
     play_options: PlayOptionsEpisodeAccumulator,
     numeric_evidence: VecDeque<RawNumericEvidence>,
     last_numeric_sequence: Option<u64>,
@@ -2252,6 +2318,8 @@ impl RoutineOutput {
             resolver_transitions: BTreeMap::new(),
             pending_numeric_result: None,
             accepted_numeric_result: None,
+            active_provisional_result: None,
+            provisional_revision: 0,
             play_options: PlayOptionsEpisodeAccumulator::default(),
             numeric_evidence: VecDeque::with_capacity(8),
             last_numeric_sequence: None,
@@ -2296,6 +2364,8 @@ impl RoutineOutput {
             resolver_transitions: BTreeMap::new(),
             pending_numeric_result: None,
             accepted_numeric_result: None,
+            active_provisional_result: None,
+            provisional_revision: 0,
             play_options: PlayOptionsEpisodeAccumulator::default(),
             numeric_evidence: VecDeque::with_capacity(8),
             last_numeric_sequence: None,
@@ -2364,6 +2434,8 @@ impl RoutineOutput {
             RunEventKind::SessionStarted { session_id, .. } => {
                 self.engine.play_attempt.reset_session();
                 self.reset_numeric_result();
+                self.active_provisional_result = None;
+                self.provisional_revision = 0;
                 self.emitted_attempt_ids.clear();
                 self.latest_screen_boundary_sequence = None;
                 self.screen_episode_id = 0;
@@ -2423,6 +2495,7 @@ impl RoutineOutput {
             | RunEventKind::PlayAttemptChanged { .. }
             | RunEventKind::ResolverStateChanged { .. }
             | RunEventKind::SelectionDifficultyChanged { .. }
+            | RunEventKind::ResultProvisionalChanged { .. }
             | RunEventKind::ResultDetected { .. } => self.publish_one(event),
         }
     }
@@ -2522,7 +2595,18 @@ impl RoutineOutput {
                 state,
             )?;
         }
-        self.try_emit_result(session_id, capture_generation, sequence)
+        self.try_emit_result(session_id.clone(), capture_generation, sequence)?;
+        if self.engine.play_attempt.accepted_result().is_none()
+            && let (Some(session_id), Some(capture_generation)) = (session_id, capture_generation)
+        {
+            self.withdraw_result_provisional(
+                session_id,
+                capture_generation,
+                sequence,
+                ResultProvisionalWithdrawalReason::AttemptRejected,
+            )?;
+        }
+        Ok(())
     }
 
     fn publish_screen_tick(&mut self, sequence: u64, monotonic_end_ms: u64) -> Result<(), String> {
@@ -2548,6 +2632,18 @@ impl RoutineOutput {
                 .map_err(|_| "run view state lock was poisoned".to_owned())?;
             (state.active_session_id.clone(), state.capture_generation)
         };
+        if let (Some(session_id), Some(capture_generation)) =
+            (session_id.as_ref(), capture_generation)
+        {
+            self.withdraw_result_provisional(
+                session_id.clone(),
+                capture_generation,
+                self.last_numeric_sequence
+                    .or(self.latest_screen_boundary_sequence)
+                    .unwrap_or_default(),
+                ResultProvisionalWithdrawalReason::SessionEnded,
+            )?;
+        }
         if let Some(state) = self.engine.play_attempt.finish_session() {
             self.publish_play_attempt_update(session_id.clone(), capture_generation, None, state)?;
         }
@@ -2711,6 +2807,7 @@ impl RoutineOutput {
                 }
             }
         }
+        self.sync_result_provisional(session_id.cloned(), capture_generation, sequence)?;
         self.try_emit_result(session_id.cloned(), capture_generation, sequence)?;
         self.sync_resolver_snapshot(monotonic_end_ms, Some(sequence), Some(fields))?;
         self.refresh()?;
@@ -2883,59 +2980,111 @@ impl RoutineOutput {
         {
             return Ok(());
         }
-        let ResultPerformanceResolution::Accepted {
-            judgments,
-            miss_count,
-            timing,
-            combo_break,
-            previous_best,
-            ..
-        } = &numeric.performance
-        else {
-            unreachable!("accepted numeric view stores accepted performance");
-        };
-        let result = ResultDomainEvent {
-            contract: "scorepeek-result-detected-v2".to_owned(),
-            attempt_id: accepted_attempt.attempt_id,
-            parent_attempt_id: accepted_attempt.parent_attempt_id,
-            scorepeek_song_id: numeric.song_id,
-            play_side: "one_player".to_owned(),
-            play_mode: match numeric.chart.key.play_type {
-                PlayType::Single => "single_play",
-                PlayType::Double => "double_play",
-            }
-            .to_owned(),
-            play_type: numeric.chart.key.play_type,
-            difficulty: numeric.chart.key.difficulty,
-            level: numeric.chart.level,
-            notes: numeric.chart.notes,
-            current_score: numeric.current_score,
-            clear_type: numeric.clear_type.clone(),
-            judgments: judgments.clone(),
-            miss_count: miss_count.clone(),
-            timing: timing.clone(),
-            combo_break: combo_break.clone(),
-            previous_best: previous_best.clone(),
-            play_options: self.play_options.resolved(),
-        };
+        let result =
+            build_result_domain_event(accepted_attempt, numeric, self.play_options.resolved());
         let source_sequence = numeric.source_sequence.max(fallback_sequence);
         let emitted_attempt_id = accepted_attempt.attempt_id;
+        let song = self
+            .engine
+            .provisional_joint
+            .as_ref()
+            .map(candidate_song_presentation);
         self.publish_one(&RunEvent {
             schema: RUN_EVENT_SCHEMA.to_owned(),
             kind: RunEventKind::ResultDetected {
                 session_id,
                 capture_generation,
                 source_sequence,
-                song: self
-                    .engine
-                    .provisional_joint
-                    .as_ref()
-                    .map(candidate_song_presentation),
+                song,
                 result,
             },
         })?;
+        self.active_provisional_result = None;
         self.emitted_attempt_ids.insert(emitted_attempt_id);
         Ok(())
+    }
+
+    fn sync_result_provisional(
+        &mut self,
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        fallback_sequence: u64,
+    ) -> Result<(), String> {
+        let candidate = self
+            .engine
+            .provisional_joint
+            .as_ref()
+            .zip(self.accepted_numeric_result.as_ref())
+            .filter(|(joint, numeric)| joint_matches_numeric(joint, numeric))
+            .zip(self.engine.play_attempt.active_result())
+            .map(|((joint, numeric), attempt)| {
+                let song = Some(candidate_song_presentation(joint));
+                let result =
+                    build_result_domain_event(attempt, numeric, self.play_options.resolved());
+                (
+                    ActiveProvisionalResult { song, result },
+                    numeric.source_sequence.max(fallback_sequence),
+                )
+            });
+        let (Some(session_id), Some(capture_generation)) = (session_id, capture_generation) else {
+            return Ok(());
+        };
+        match candidate {
+            Some((candidate, source_sequence))
+                if self.active_provisional_result.as_ref() != Some(&candidate) =>
+            {
+                self.provisional_revision = self.provisional_revision.saturating_add(1);
+                self.publish_one(&RunEvent {
+                    schema: RUN_EVENT_SCHEMA.to_owned(),
+                    kind: RunEventKind::ResultProvisionalChanged {
+                        session_id,
+                        capture_generation,
+                        screen_episode_id: self.screen_episode_id,
+                        source_sequence,
+                        revision: self.provisional_revision,
+                        state: ResultProvisionalState::Resolved {
+                            song: candidate.song.clone(),
+                            result: Box::new(candidate.result.clone()),
+                        },
+                    },
+                })?;
+                self.active_provisional_result = Some(candidate);
+            }
+            None if self.active_provisional_result.is_some() => {
+                self.withdraw_result_provisional(
+                    session_id,
+                    capture_generation,
+                    fallback_sequence,
+                    ResultProvisionalWithdrawalReason::EvidenceUnresolved,
+                )?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn withdraw_result_provisional(
+        &mut self,
+        session_id: String,
+        capture_generation: u64,
+        source_sequence: u64,
+        reason: ResultProvisionalWithdrawalReason,
+    ) -> Result<(), String> {
+        if self.active_provisional_result.take().is_none() {
+            return Ok(());
+        }
+        self.provisional_revision = self.provisional_revision.saturating_add(1);
+        self.publish_one(&RunEvent {
+            schema: RUN_EVENT_SCHEMA.to_owned(),
+            kind: RunEventKind::ResultProvisionalChanged {
+                session_id,
+                capture_generation,
+                screen_episode_id: self.screen_episode_id,
+                source_sequence,
+                revision: self.provisional_revision,
+                state: ResultProvisionalState::Withdrawn { reason },
+            },
+        })
     }
 
     fn reset_numeric_result(&mut self) {
@@ -3057,6 +3206,8 @@ impl RoutineOutput {
         }
         if screen == "result" {
             self.result_resolver_active = true;
+            self.active_provisional_result = None;
+            self.provisional_revision = 0;
             self.engine.result_hypotheses = HypothesisAccumulator::default();
             self.engine.provisional_joint = None;
             self.resolver_transitions.remove(&ResolverScope::Result);
@@ -3187,6 +3338,14 @@ impl RoutineOutput {
         else {
             unreachable!("session-finished dispatcher preserves event kind");
         };
+        self.withdraw_result_provisional(
+            session_id.clone(),
+            *capture_generation,
+            self.last_numeric_sequence
+                .or(self.latest_screen_boundary_sequence)
+                .unwrap_or_default(),
+            ResultProvisionalWithdrawalReason::SessionEnded,
+        )?;
         self.publish_one(event)?;
         if let Some(state) = self.engine.play_attempt.finish_session() {
             self.publish_play_attempt_update(
@@ -3532,6 +3691,48 @@ impl RoutineOutput {
                 .saturating_add(duration_us(output_started.elapsed()));
         }
         result
+    }
+}
+
+fn build_result_domain_event(
+    attempt: AcceptedPlayAttempt,
+    numeric: &NumericResultView,
+    play_options: PlayOptions,
+) -> ResultDomainEvent {
+    let ResultPerformanceResolution::Accepted {
+        judgments,
+        miss_count,
+        timing,
+        combo_break,
+        previous_best,
+        ..
+    } = &numeric.performance
+    else {
+        unreachable!("accepted numeric view stores accepted performance");
+    };
+    ResultDomainEvent {
+        contract: "scorepeek-result-detected-v2".to_owned(),
+        attempt_id: attempt.attempt_id,
+        parent_attempt_id: attempt.parent_attempt_id,
+        scorepeek_song_id: numeric.song_id,
+        play_side: "one_player".to_owned(),
+        play_mode: match numeric.chart.key.play_type {
+            PlayType::Single => "single_play",
+            PlayType::Double => "double_play",
+        }
+        .to_owned(),
+        play_type: numeric.chart.key.play_type,
+        difficulty: numeric.chart.key.difficulty,
+        level: numeric.chart.level,
+        notes: numeric.chart.notes,
+        current_score: numeric.current_score,
+        clear_type: numeric.clear_type.clone(),
+        judgments: judgments.clone(),
+        miss_count: miss_count.clone(),
+        timing: timing.clone(),
+        combo_break: combo_break.clone(),
+        previous_best: previous_best.clone(),
+        play_options,
     }
 }
 
@@ -3892,13 +4093,15 @@ fn render(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(
-                    Style::default().fg(if state.latest_result_detected.is_some() {
+                    Style::default().fg(if state.latest_provisional_result.is_some() {
+                        Color::Yellow
+                    } else if state.latest_result_detected.is_some() {
                         Color::Green
                     } else {
                         Color::DarkGray
                     }),
                 )
-                .title("Latest domain"),
+                .title("Latest result"),
         ),
         rows[1],
     );
@@ -4030,13 +4233,22 @@ const fn gate_suffix(state: GateState) -> &'static str {
 }
 
 fn fixed_domain_lines(state: &RunViewState, available_width: usize) -> Vec<Line<'static>> {
+    if let Some(entry) = state.latest_provisional_result.as_ref() {
+        let mut lines = expanded_result_history_entry_lines(entry, available_width, "PROVISIONAL");
+        lines.truncate(7);
+        return lines;
+    }
     let Some(entry) = state.result_history.back() else {
         return vec![Line::from(Span::styled(
-            "No accepted scorepeek-result-detected-v2 event yet",
+            "No result payload yet",
             Style::default().fg(Color::DarkGray),
         ))];
     };
-    let mut lines = expanded_result_history_entry_lines(entry, available_width);
+    let mut lines = expanded_result_history_entry_lines(
+        entry,
+        available_width,
+        &format!("CONFIRMED #{}", entry.ordinal),
+    );
     lines.truncate(7);
     lines
 }
@@ -4281,6 +4493,7 @@ fn resolver_lines(snapshot: &ResolverDebugSnapshot, available_width: usize) -> V
 fn expanded_result_history_entry_lines(
     entry: &ResultHistoryEntry,
     available_width: usize,
+    authority: &str,
 ) -> Vec<Line<'static>> {
     let result = &entry.result;
     let maximum_score = u64::from(result.notes) * 2;
@@ -4299,7 +4512,7 @@ fn expanded_result_history_entry_lines(
     vec![
         Line::from(vec![
             Span::styled(
-                format!("#{} {}", entry.ordinal, result.clear_type),
+                format!("{authority} {}", result.clear_type),
                 Style::default()
                     .fg(clear_type_color(&result.clear_type))
                     .add_modifier(Modifier::BOLD),
@@ -4538,6 +4751,8 @@ mod tests {
             engine: ResolverEngine::default(),
             pending_numeric_result: None,
             accepted_numeric_result: None,
+            active_provisional_result: None,
+            provisional_revision: 0,
             numeric_evidence: VecDeque::with_capacity(8),
             play_options: PlayOptionsEpisodeAccumulator::default(),
             last_numeric_sequence: None,
@@ -4912,7 +5127,7 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         let snapshot: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v7");
+        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v8");
         assert_eq!(snapshot["state"]["invocation_id"], "invocation-1");
         assert_eq!(snapshot["state"]["next_channel_sequence"], 1);
         assert_eq!(snapshot["channel"]["connected_clients"], 1);
@@ -4976,11 +5191,24 @@ mod tests {
                     && event["state"]["attempt"]["result_relation"] == "confirmed"
             })
             .unwrap();
+        let provisional = completed
+            .iter()
+            .position(|event| {
+                event["event"] == "result_provisional_changed"
+                    && event["state"]["status"] == "resolved"
+            })
+            .unwrap();
         let result = completed
             .iter()
             .position(|event| event["event"] == "result_detected")
             .unwrap();
+        assert!(provisional < confirmation);
         assert!(confirmation < result);
+        assert_eq!(completed[provisional]["schema"], RUN_EVENT_SCHEMA);
+        assert_eq!(
+            completed[provisional]["state"]["result"],
+            completed[result]["result"]
+        );
         assert!(completed.iter().any(|event| {
             event["event"] == "numeric_result_changed" && event["state"]["status"] == "accepted"
         }));
@@ -4988,6 +5216,381 @@ mod tests {
 
         output.publish(&accepted_result_event(4)).unwrap();
         assert_eq!(read_events(&mut reader, 1)[0]["event"], "field_observation");
+    }
+
+    #[test]
+    fn provisional_result_requires_two_numeric_observations_and_an_attempt_id() {
+        let mut unlinked = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        unlinked.publish(&accepted_result_event(1)).unwrap();
+        unlinked.publish(&accepted_result_event(2)).unwrap();
+        assert!(
+            !unlinked.take_headless_events().iter().any(|event| {
+                matches!(event.kind, RunEventKind::ResultProvisionalChanged { .. })
+            })
+        );
+
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        prepare_accepted_attempt(&mut output);
+        let mut identity_only = accepted_result_event(1);
+        let RunEventKind::FieldObservation { fields, .. } = &mut identity_only.kind else {
+            unreachable!();
+        };
+        fields["clear_type"] = Value::Null;
+        output.publish(&identity_only).unwrap();
+        assert!(
+            !output.headless_events.iter().any(|event| {
+                matches!(event.kind, RunEventKind::ResultProvisionalChanged { .. })
+            })
+        );
+        output.publish(&accepted_result_event(2)).unwrap();
+        assert!(
+            !output.headless_events.iter().any(|event| {
+                matches!(event.kind, RunEventKind::ResultProvisionalChanged { .. })
+            })
+        );
+        output.publish(&accepted_result_event(3)).unwrap();
+        let provisional = output
+            .headless_events
+            .iter()
+            .find_map(|event| match &event.kind {
+                RunEventKind::ResultProvisionalChanged {
+                    revision,
+                    state: ResultProvisionalState::Resolved { result, .. },
+                    ..
+                } => Some((*revision, result)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(provisional.0, 1);
+        assert_eq!(provisional.1.contract, "scorepeek-result-detected-v2");
+        let encoded = output
+            .headless_events
+            .iter()
+            .find(|event| matches!(event.kind, RunEventKind::ResultProvisionalChanged { .. }))
+            .unwrap()
+            .to_value()
+            .unwrap();
+        assert_eq!(encoded["schema"], RUN_EVENT_SCHEMA);
+        assert!(matches!(
+            RunEvent::from_value(encoded).unwrap().kind,
+            RunEventKind::ResultProvisionalChanged {
+                revision: 1,
+                state: ResultProvisionalState::Resolved { .. },
+                ..
+            }
+        ));
+        assert_eq!(output.state.lock().unwrap().result_count, 0);
+    }
+
+    #[test]
+    fn provisional_result_withdraws_and_re_resolves_with_monotonic_revisions() {
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        prepare_accepted_attempt(&mut output);
+        output.publish(&accepted_result_event(1)).unwrap();
+        output.publish(&accepted_result_event(2)).unwrap();
+        let changed_clear = |sequence| {
+            let mut event = accepted_result_event(sequence);
+            let RunEventKind::FieldObservation { fields, .. } = &mut event.kind else {
+                unreachable!();
+            };
+            fields["clear_type"] = Value::String("HARD CLEAR".to_owned());
+            event
+        };
+        output.publish(&changed_clear(3)).unwrap();
+        output.publish(&changed_clear(4)).unwrap();
+
+        let lifecycle = output
+            .headless_events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                RunEventKind::ResultProvisionalChanged {
+                    revision, state, ..
+                } => Some((*revision, state)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(lifecycle.len(), 3);
+        assert_eq!(
+            lifecycle
+                .iter()
+                .map(|(revision, _)| *revision)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert!(matches!(
+            lifecycle[0].1,
+            ResultProvisionalState::Resolved { .. }
+        ));
+        assert!(matches!(
+            lifecycle[1].1,
+            ResultProvisionalState::Withdrawn {
+                reason: ResultProvisionalWithdrawalReason::EvidenceUnresolved
+            }
+        ));
+        assert!(matches!(
+            lifecycle[2].1,
+            ResultProvisionalState::Resolved { result, .. } if result.clear_type == "HARD CLEAR"
+        ));
+    }
+
+    #[test]
+    fn identity_conflict_withdraws_provisional_and_cannot_confirm() {
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        prepare_accepted_attempt(&mut output);
+        output.publish(&accepted_result_event(1)).unwrap();
+        output.publish(&accepted_result_event(2)).unwrap();
+        let mut conflict = accepted_result_event(3);
+        let RunEventKind::FieldObservation { joint_evidence, .. } = &mut conflict.kind else {
+            unreachable!();
+        };
+        joint_evidence.candidates[0].song_id =
+            serde_json::from_str("\"00000000-0000-0000-0000-000000000002\"").unwrap();
+        joint_evidence.candidates[0].display_titles = vec!["CONFLICT".to_owned()];
+        output.publish(&conflict).unwrap();
+        let mut repeated_conflict = conflict.clone();
+        let RunEventKind::FieldObservation { sequence, .. } = &mut repeated_conflict.kind else {
+            unreachable!();
+        };
+        *sequence = 4;
+        output.publish(&repeated_conflict).unwrap();
+        output
+            .publish(&semantic_episode_event(
+                5,
+                "result",
+                SemanticEpisodePhase::Finalized,
+            ))
+            .unwrap();
+
+        assert!(output.headless_events.iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::ResultProvisionalChanged {
+                state: ResultProvisionalState::Withdrawn {
+                    reason: ResultProvisionalWithdrawalReason::EvidenceUnresolved
+                },
+                ..
+            }
+        )));
+        assert!(
+            !output
+                .headless_events
+                .iter()
+                .any(|event| matches!(event.kind, RunEventKind::ResultDetected { .. }))
+        );
+    }
+
+    #[test]
+    fn final_result_reuses_the_last_provisional_payload_without_withdrawal() {
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        prepare_accepted_attempt(&mut output);
+        output.publish(&accepted_result_event(1)).unwrap();
+        output.publish(&accepted_result_event(2)).unwrap();
+        output
+            .publish(&semantic_episode_event(
+                3,
+                "result",
+                SemanticEpisodePhase::Finalized,
+            ))
+            .unwrap();
+
+        let events = &output.headless_events;
+        let provisional = events
+            .iter()
+            .find_map(|event| match &event.kind {
+                RunEventKind::ResultProvisionalChanged {
+                    state: ResultProvisionalState::Resolved { result, .. },
+                    ..
+                } => Some(result),
+                _ => None,
+            })
+            .unwrap();
+        let confirmation = events.iter().position(|event| matches!(
+            &event.kind,
+            RunEventKind::PlayAttemptChanged {
+                state: PlayAttemptState::Attempt { attempt }, ..
+            } if attempt.result_relation == crate::play_attempt::PlayAttemptResultRelation::Confirmed
+        )).unwrap();
+        let detected = events
+            .iter()
+            .position(|event| matches!(event.kind, RunEventKind::ResultDetected { .. }))
+            .unwrap();
+        let RunEventKind::ResultDetected {
+            result: confirmed, ..
+        } = &events[detected].kind
+        else {
+            unreachable!();
+        };
+        assert!(confirmation < detected);
+        assert_eq!(provisional.as_ref(), confirmed);
+        assert!(!events.iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::ResultProvisionalChanged {
+                state: ResultProvisionalState::Withdrawn { .. },
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn tui_prefers_provisional_and_withdrawal_restores_latest_confirmed() {
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        prepare_accepted_attempt(&mut output);
+        output.publish(&accepted_result_event(1)).unwrap();
+        output.publish(&accepted_result_event(2)).unwrap();
+        let provisional = output.active_provisional_result.clone().unwrap();
+        output
+            .publish(&semantic_episode_event(
+                3,
+                "result",
+                SemanticEpisodePhase::Finalized,
+            ))
+            .unwrap();
+        assert!(
+            fixed_domain_lines(&output.state.lock().unwrap(), 160)[0]
+                .to_string()
+                .contains("CONFIRMED")
+        );
+
+        let resolved = RunEvent {
+            schema: RUN_EVENT_SCHEMA.to_owned(),
+            kind: RunEventKind::ResultProvisionalChanged {
+                session_id: "invocation-1-session-1".to_owned(),
+                capture_generation: 1,
+                screen_episode_id: 2,
+                source_sequence: 4,
+                revision: 1,
+                state: ResultProvisionalState::Resolved {
+                    song: provisional.song,
+                    result: Box::new(provisional.result),
+                },
+            },
+        };
+        output.publish(&resolved).unwrap();
+        assert!(
+            fixed_domain_lines(&output.state.lock().unwrap(), 160)[0]
+                .to_string()
+                .contains("PROVISIONAL")
+        );
+
+        let withdrawn = RunEvent {
+            schema: RUN_EVENT_SCHEMA.to_owned(),
+            kind: RunEventKind::ResultProvisionalChanged {
+                session_id: "invocation-1-session-1".to_owned(),
+                capture_generation: 1,
+                screen_episode_id: 2,
+                source_sequence: 5,
+                revision: 2,
+                state: ResultProvisionalState::Withdrawn {
+                    reason: ResultProvisionalWithdrawalReason::EvidenceUnresolved,
+                },
+            },
+        };
+        output.publish(&withdrawn).unwrap();
+        assert!(
+            fixed_domain_lines(&output.state.lock().unwrap(), 160)[0]
+                .to_string()
+                .contains("CONFIRMED")
+        );
+        assert_eq!(output.state.lock().unwrap().result_count, 1);
+    }
+
+    #[test]
+    fn diagnostic_artifact_retains_provisional_and_confirmed_lifecycle() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("events");
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        output.event_worker = Some(RunEventArtifactWorker::start_at(
+            root.clone(),
+            "invocation-1-session-1",
+        ));
+        prepare_accepted_attempt(&mut output);
+        output.publish(&accepted_result_event(1)).unwrap();
+        output.publish(&accepted_result_event(2)).unwrap();
+        output
+            .publish(&semantic_episode_event(
+                3,
+                "result",
+                SemanticEpisodePhase::Finalized,
+            ))
+            .unwrap();
+        output.publish(&failed_session_finished_event()).unwrap();
+
+        let outcome = output.take_completed_event_artifact().unwrap();
+        assert!(outcome.complete);
+        let records = fs::read_to_string(root.join("events.ndjson")).unwrap();
+        assert!(records.contains("\"event\":\"result_provisional_changed\""));
+        assert!(records.contains("\"event\":\"result_detected\""));
+    }
+
+    #[test]
+    fn diagnostic_recording_failure_does_not_change_result_resolution() {
+        let temporary = tempfile::tempdir().unwrap();
+        let blocking_file = temporary.path().join("not-a-directory");
+        fs::write(&blocking_file, b"fixture").unwrap();
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        output.event_worker = Some(RunEventArtifactWorker::start_at(
+            blocking_file.join("events"),
+            "invocation-1-session-1",
+        ));
+        prepare_accepted_attempt(&mut output);
+        output.publish(&accepted_result_event(1)).unwrap();
+        output.publish(&accepted_result_event(2)).unwrap();
+        output
+            .publish(&semantic_episode_event(
+                3,
+                "result",
+                SemanticEpisodePhase::Finalized,
+            ))
+            .unwrap();
+        output.publish(&failed_session_finished_event()).unwrap();
+
+        assert_eq!(output.state.lock().unwrap().result_count, 1);
+        assert!(!output.take_completed_event_artifact().unwrap().complete);
+    }
+
+    #[test]
+    fn linkage_deficient_attempt_is_provisional_then_withdrawn_on_rejection() {
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        output.engine.play_attempt.observe_selection_screen();
+        output
+            .engine
+            .play_attempt
+            .observe_screen(PlayAttemptScreen::DecideTransition, 0);
+        output
+            .engine
+            .play_attempt
+            .observe_screen(PlayAttemptScreen::Result, 0);
+        output.publish(&accepted_result_event(1)).unwrap();
+        output.publish(&accepted_result_event(2)).unwrap();
+        output
+            .publish(&semantic_episode_event(
+                3,
+                "result",
+                SemanticEpisodePhase::Finalized,
+            ))
+            .unwrap();
+        let lifecycle = output
+            .headless_events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                RunEventKind::ResultProvisionalChanged { state, .. } => Some(state),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            lifecycle.as_slice(),
+            [
+                ResultProvisionalState::Resolved { .. },
+                ResultProvisionalState::Withdrawn {
+                    reason: ResultProvisionalWithdrawalReason::AttemptRejected
+                }
+            ]
+        ));
+        assert!(
+            !output
+                .headless_events
+                .iter()
+                .any(|event| matches!(event.kind, RunEventKind::ResultDetected { .. }))
+        );
     }
 
     #[test]
@@ -5286,7 +5889,7 @@ mod tests {
         for reader in &mut readers {
             let mut snapshot = String::new();
             reader.read_line(&mut snapshot).unwrap();
-            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v7"));
+            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v8"));
         }
         channel
             .publish(&json!({
@@ -5853,7 +6456,7 @@ mod tests {
                     .map(ratatui::buffer::Cell::symbol)
                     .collect::<String>();
                 assert!(rendered.contains("Watcher"));
-                assert!(rendered.contains("Latest domain"));
+                assert!(rendered.contains("Latest result"));
                 assert!(rendered.contains("Resolver"));
                 assert!(rendered.contains("episode=#18"));
                 assert!(rendered.contains("OPT raw=\"USE OPTION RANDOM\""));

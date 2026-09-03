@@ -9,7 +9,9 @@ outside the checkpoint; implementation history belongs in Git.
 - M4 canonical recognition, evidence-first attempt resolution, and versioned event API: **in
   progress**.
 - `scorepeek-result-detected-v2` remains the accepted public domain contract and now carries typed
-  ordered `play_options`. Debug output uses run-event v7, observation socket/snapshot v7, and
+  ordered `play_options`. The same result-content payload is used by the non-authoritative
+  `result_provisional_changed` lifecycle. Debug output uses run-event v8, observation
+  socket/snapshot v8, and
   recognition observation v19. Joined recorded sessions use v5.
 - Text authority remains the registered PP-OCRv6-small bundle. Numeric authority remains the
   private fixed-cell HOG/MLP model. No model bytes, real crops, complete labels, or generated
@@ -60,8 +62,12 @@ outside the checkpoint; implementation history belongs in Git.
   foreground width share the same title family, contributing the maximum correlated score rather
   than a second vote. Raw `X`
   remains `X`; no alias or song-specific correction exists.
-- RESULT is provisional while displayed. Only semantic RESULT close after field drain can confirm
-  an attempt and emit. Confirmation is recorded before the attempt's sole v2 domain event.
+- RESULT is provisional while displayed. Accepted joint identity plus two matching numeric
+  observations emit a revisioned provisional v2 payload when an active attempt ID exists. Payload
+  change replaces it; identity/numeric loss, close-time rejection, or session end withdraws it.
+  Only semantic RESULT close after field drain can confirm an attempt and emit `result_detected`.
+  Confirmation is recorded before the attempt's sole confirmed v2 domain event, using the same
+  payload builder and no intervening withdrawal.
   Unresolved/conflicting identity, missing linkage/play, abandoned attempts, or incomplete required
   numeric tuples complete with typed rejection and emit no result. Direct RESULT-to-PLAY retry
   inherits the parent selection context once without re-adding frame support.
@@ -78,13 +84,16 @@ outside the checkpoint; implementation history belongs in Git.
   known, opposite-type candidates are excluded. Field-local chart resolution no longer supplies
   SP. DP image recognition remains unverified because the active corpus contains SP only.
 - The TUI retains one three-pane layout and semantic state palette. Watcher shows raw and semantic screen plus suspension;
-  Latest domain holds only the last accepted v2 event; Resolver shows incumbent/successor/result
+  Latest result prefers an active `PROVISIONAL` payload and falls back to the last `CONFIRMED` v2
+  event after withdrawal; only confirmed events enter count/history. Resolver shows incumbent/successor/result
   evidence, foreground title geometry, hierarchical runners, family contributions, attempt path,
   and every promotion gate. MUSIC SELECT field observations update this typed snapshot; ticks keep
   the latest observation, while a new semantic episode or session clears it. Raw marker and
   resolver-current difficulty are displayed separately with the consecutive-known count. The worst-case 80x25
   tree keeps all gates visible. TUI formatting owns no resolver logic.
-- Run-event v7 distinguishes raw screen observations, semantic episode transitions, current
+- Run-event v8 additionally retains resolved/update/withdraw provisional RESULT lifecycle in the
+  bounded diagnostic artifact, observation socket/snapshot, and headless replay. It otherwise
+  distinguishes raw screen observations, semantic episode transitions, current
   selection-difficulty changes, selection/result and provisional-joint transitions, attempt
   finalization, and suppression. Recognition observation
   v19 retains title views/geometry, episode binding, fixed-cell numeric evidence, play-option and
@@ -94,7 +103,7 @@ outside the checkpoint; implementation history belongs in Git.
   available parallelism; the outer coordinator pipelines frames and commits admitted evidence in
   source order. Live uses half the available parallelism capped at twelve; offline replay uses one
   global pool of available parallelism minus four capped at twelve. Readers accept run-event v2
-  through v7 and recognition v5 through v19.
+  through v8, reject unknown v9, and accept recognition v5 through v19.
 - The attempt corpus clean-cuts to complete joined-session v5 input and label v5 truth. Import keeps
   lossless segments and the tick index as immutable objects without QOI expansion or pixel-content
   deduplication. Replay decodes canonical retained frames only, starts no normalizer, uses production
@@ -170,11 +179,21 @@ outside the checkpoint; implementation history belongs in Git.
   account. Corpus wall time was 373,844,534 microseconds; tracked memory peaked at 1,728,053,248
   bytes. Process RSS peaked at 5,227,995,136 bytes, so this local replay is correctness evidence,
   not a target resource or performance pass.
+- The provisional RESULT lifecycle has targeted coverage for identity-only, one numeric
+  observation, missing attempt ID, payload deduplication/replacement, identity and numeric
+  conflict withdrawal, re-resolution revision order, linkage-deficient final rejection, successful
+  confirmation ordering and exact payload equality, TUI fallback, socket/snapshot delivery,
+  diagnostic artifact retention, and recording-failure noninterference. `mise run check`, pedantic
+  workspace clippy, the complete serial `mise run test` suite (474 scorepeek library, 295 scorepeek
+  binary, and 102 scorepeek-corpus library tests), and the active private generation replay pass.
+  Replay retained 2 sessions, 14 accepted episodes, 12,460 canonical frames, zero negative frames,
+  and unchanged confirmed-event comparison. It used an isolated current numeric-manifest
+  activation; the developer's normal active pointer was unchanged afterward.
 - After independent review, the result resolver provenance is versioned as v6, play-type authority
   activation is part of resolver transition identity, the exact uppercase parser rejects case and
   Unicode-whitespace drift, and the unchanged result-crop artifact v2 remains a 20-crop contract.
-  `mise run check`, pedantic workspace clippy, all 465 scorepeek library tests, all 286 serial
-  scorepeek binary tests, and all 101 scorepeek-corpus library tests pass for this revision.
+  The prior play-type revision passed 465 scorepeek library tests, 286 serial scorepeek binary
+  tests, and 101 scorepeek-corpus library tests.
 - Historical read-only whole-panel evaluation over the retired corpus's 34 stable QOIs produced exact registered PP-OCR text
   for every displayed option. The set includes a positively blank panel, R-RANDOM, S-RANDOM,
   MIRROR, A-SCR, two LEGACY results, and `RANDOM,LEGACY`; the orange-marker count separated the

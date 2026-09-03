@@ -290,9 +290,11 @@ The session output is deterministic for recorded inputs. UUIDv7 IDs and wall
 clock delivery timestamps belong to a daemon-owned transport envelope, not the
 recognition result compared by replay tests.
 
-Screen-local evidence remains provisional and is never a domain event. Semantic episode close and
-attempt finalization are the only promotion boundary; completed attempts, retry parentage, and
-event deduplication therefore belong to the resolver rather than OCR or output presentation.
+Screen-local evidence remains provisional and cannot grant confirmed or persistence authority.
+Once joint identity and the two-observation numeric tuple resolve for an active RESULT attempt, the
+resolver may publish a typed provisional lifecycle value. Semantic episode close and attempt
+finalization remain the only confirmed promotion boundary; completed attempts, retry parentage,
+and event deduplication therefore belong to the resolver rather than OCR or output presentation.
 
 Development uses a small number of scenario recordings, including a retained
 ordinary full-session recording. The complete game flow remains validation
@@ -483,8 +485,8 @@ final identity check is outside the operator-trusted private-artifact boundary.
 ### Event API
 
 The ordinary foreground runtime exposes provisional recognition observations at
-`$XDG_RUNTIME_DIR/scorepeek/observations-v7.sock`. A connection begins with a bounded v7
-current-state snapshot and then receives sequenced `scorepeek-run-event-v7` NDJSON. This local
+`$XDG_RUNTIME_DIR/scorepeek/observations-v8.sock`. A connection begins with a bounded v8
+current-state snapshot and then receives sequenced `scorepeek-run-event-v8` NDJSON. This local
 observation surface may include raw OCR, foreground title geometry, joint candidates, and resolver
 metrics. `raw_screen_observed` is separate from semantic episode started, suspended, resumed,
 closing, and finalized transitions; `play_attempt_changed` contains the evidence-linked path and
@@ -493,6 +495,12 @@ typed final relation without altering raw recognition;
 discard an already-represented live record and detect later gaps. It is intentionally separate from
 accepted domain events. TTY stdout renders the same typed run state as a TUI, while non-TTY stdout
 reports only human-readable state changes.
+
+`result_provisional_changed` carries the same `scorepeek-result-detected-v2` payload as the
+confirmed `result_detected` event. Its episode-local revision orders resolved, replacement, and
+withdrawn states. The outer event kind, never the nested payload contract, distinguishes UI-only
+provisional state from confirmed score/history authority. Both are retained in diagnostic
+run-event artifacts; only `result_detected` is a confirmed result.
 
 Screen-local and attempt resolvers accumulate title and artist song factors independently from
 difficulty, notes, and advisory-level chart factors. Chart factors are retained across observations
@@ -516,8 +524,9 @@ last known state. Difficulty-only frames update the active successor or incumben
 song evidence; before any credible song they replace a single pending state. Snapshot and retry
 composition select the newer source sequence instead of adding difficulty history.
 
-The TUI has one vertical layout: four rows for Watcher, nine for Latest domain, and the remaining
-rows for Resolver. Latest domain retains and renders only the newest accepted v2 result. Resolver
+The TUI has one vertical layout: four rows for Watcher, nine for Latest result, and the remaining
+rows for Resolver. Latest result prefers an active `PROVISIONAL` v2 payload, restores the newest
+`CONFIRMED` result after withdrawal, and adds only confirmed events to count/history. Resolver
 formats a typed tree containing raw and semantic screens, field age, incumbent/successor or result
 evidence, foreground title geometry, hierarchical runners, family contribution, attempt hierarchy,
 and every promotion gate. Raw marker and resolver-current difficulty are separate values, including

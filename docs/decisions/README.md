@@ -325,6 +325,9 @@ authoritative.
 - [ADR 0107: Recognize RESULT play type before chart resolution](0107-recognize-result-play-type.md)
   adds a measured RESULT SP/DP ROI, exact fail-closed parsing, and conflict-free two-observation
   chart evidence without changing the accepted v2 event.
+- [ADR 0108: Publish a provisional RESULT lifecycle with the accepted payload](0108-publish-provisional-result-lifecycle.md)
+  reuses the v2 result payload for early resolved/update/withdraw transitions while keeping the
+  outer confirmed event as the sole score and history authority.
 
 ## Historical
 
