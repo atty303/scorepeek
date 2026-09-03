@@ -8,7 +8,7 @@ objects, or deduplicate frames by pixel content.
 ## Recording boundary
 
 `scorepeek run` performs production recognition without saving artifacts. `scorepeek run --record`
-starts capture diagnostics, recognition observation v19, run-event v8, the canonical session
+starts capture diagnostics, recognition observation v20, run-event v9, the canonical session
 recorder, and joined diagnostic session v5 together. `--profile NAME` may appear before or after
 `--record`. Routine capture diagnostics retain structured facts but no legacy QOI pixels. The
 canonical recording is therefore the session's only retained frame authority.
@@ -86,10 +86,18 @@ Regression truth uses only `scorepeek-private-session-regression-label-v5`. Each
 - song/chart identity, clear type, numeric performance, and an explicit ordered distinct
   `play_options` list, including `[]` when no option was shown.
 
-Every span endpoint must be retained on its expected raw screen. Select, decide, play, and result
-spans must be ordered. Every tick inside `DecideTransition` and `Result` spans must be present,
-retained, and classified as that screen. Attempt keys are unique and a parent must name an earlier
-attempt in the same label.
+The existing `expected_result.play_type` is also SELECT play-type truth. `play_mode` must agree as
+`single_play` with `single` or `double_play` with `double`; no separate SELECT label or legacy
+conversion exists. Real full frames, complete labels, and generated corpus objects remain outside
+the repository. ADR 0112's two explicitly approved 100x80 SP/DP template crops are the sole narrow
+repository-inclusion exception.
+
+Every span endpoint must be retained on its expected raw screen, except that a PLAY endpoint may be
+a retained raw `Unknown` when the operator label is calibrating a previously unrecognized gameplay
+layout. Replay must classify that endpoint as PLAY before the truth can pass. Select, decide, play,
+and result spans must be ordered. Every tick inside `DecideTransition` and `Result` spans must be
+present, retained, and classified as that screen. Attempt keys are unique and a parent must name an
+earlier attempt in the same label.
 
 Apply the reviewed truth create-only:
 

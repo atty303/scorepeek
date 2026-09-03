@@ -171,7 +171,7 @@ pub fn resolve_result_song(
     }
 }
 
-/// Uses one catalog-unique SP chart only to complete an otherwise unknown primary decision.
+/// Uses one catalog-unique observed chart only to complete an otherwise unknown primary decision.
 /// An already accepted primary decision is returned unchanged, even when chart evidence conflicts.
 #[must_use]
 pub fn assist_unknown_result_song_with_chart(

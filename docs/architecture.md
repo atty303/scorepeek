@@ -164,9 +164,10 @@ raw observation, semantic duration, and attempt path continue at screen cadence.
 title geometry, candidates, and provisional decisions remain debug evidence.
 Level remains advisory. A calibrated known level may add support only to candidates already
 established by non-level song evidence and never rejects an otherwise supported chart. SP and DP
-charts remain in the joint catalog distribution. Exact play type observed at least twice without
-an opposite observation is required before chart acceptance and excludes opposite-type candidates;
-difficulty and known notes alone cannot distinguish every sibling.
+charts remain in the joint catalog distribution. SELECT and RESULT play type are independent,
+equally capped families; each becomes stable after two observations of one type and none of the
+other. They add support without excluding the opposite-type candidate. A disagreement is resolved
+only by total support and the existing song/chart margins; ties remain unknown.
 The catalog supplies the level of the accepted joint chart, while observed mismatch remains debug
 evidence.
 Each admitted field request carries its semantic episode ID and source sequence. Closing an episode
@@ -199,16 +200,18 @@ family, using the maximum of lexical and structural support for the crop. Raw `X
 to `〆`.
 
 MUSIC SELECT submits only central title, artist, and active-list title to PP-OCR. Difficulty comes
-from five fixed canonical `PLAYER 01` marker slots in integrated-context layout v4. The shared RGB
+from five fixed canonical `PLAYER 01` marker slots in integrated-context layout v5. The shared RGB
 panel/fill/glyph predicate requires exactly one winner above both a minimum and margin; all other
 states remain typed unknown. Difficulty support narrows charts only under an already text-supported
-song and cannot generate song identity.
+song and cannot generate song identity. SP/DP comes from the fixed badge ROI and two digest-bound
+normalized-gray templates; score or winner-margin failure remains typed unknown.
 
 The attempt resolver owns select and result evidence snapshots rather than an armed song and a
 separate result song. It combines them once on the same `(song, play type, difficulty)` catalog
-hierarchy. SP and DP remain sibling candidates until conflict-free two-observation play-type
-evidence distinguishes them; chart acceptance waits for that evidence and then rejects the
-opposite type. Difficulty and notes may be identical across those siblings. A
+hierarchy. SP and DP remain sibling candidates; stable SELECT and RESULT play-type observations add
+independent equal-weight support and never remove either sibling. Joint acceptance requires RESULT
+evidence, so SELECT alone remains a non-domain projection. Difficulty and notes may be identical
+across those siblings. A
 select screen preserves linkage without accepted identity, allowing sufficient RESULT evidence to
 finish an observed select/play/result path. Returning through MUSIC SELECT starts a fresh context;
 only direct RESULT-to-PLAY inherits its parent selection once without re-adding frame support.
@@ -485,8 +488,8 @@ final identity check is outside the operator-trusted private-artifact boundary.
 ### Event API
 
 The ordinary foreground runtime exposes provisional recognition observations at
-`$XDG_RUNTIME_DIR/scorepeek/observations-v8.sock`. A connection begins with a bounded v8
-current-state snapshot and then receives sequenced `scorepeek-run-event-v8` NDJSON. This local
+`$XDG_RUNTIME_DIR/scorepeek/observations-v9.sock`. A connection begins with a bounded v9
+current-state snapshot and then receives sequenced `scorepeek-run-event-v9` NDJSON. This local
 observation surface may include raw OCR, foreground title geometry, joint candidates, and resolver
 metrics. `raw_screen_observed` is separate from semantic episode started, suspended, resumed,
 closing, and finalized transitions; `play_attempt_changed` contains the evidence-linked path and
@@ -495,6 +498,12 @@ typed final relation without altering raw recognition;
 discard an already-represented live record and detect later gaps. It is intentionally separate from
 accepted domain events. TTY stdout renders the same typed run state as a TUI, while non-TTY stdout
 reports only human-readable state changes.
+
+`music_selection_changed` is a UI-only state projection with an episode-local revision. It emits
+the first selected chart, later song/chart replacements, a retreat to unresolved, and episode end.
+It shares immutable SELECT evidence with the joint resolver but neither resolver consumes the
+other's state. The TUI and snapshot expose the current selection; it is not persistence or domain
+acceptance authority.
 
 `result_provisional_changed` carries the same `scorepeek-result-detected-v2` payload as the
 confirmed `result_detected` event. Its episode-local revision orders resolved, replacement, and

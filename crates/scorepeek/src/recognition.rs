@@ -11,6 +11,7 @@ use crate::catalog::Difficulty;
 
 mod catalog_candidates;
 mod ctc_sequence;
+mod music_select_play_type;
 mod music_select_resolver;
 mod numeric_character_layout;
 mod numeric_fixed_slot;
@@ -30,6 +31,10 @@ pub use catalog_candidates::{
     CatalogCandidateSongEvidence, CatalogCandidateTextEvidence, CatalogNormalizedSimilarity,
     CatalogPrefixCandidateScore, CatalogTextCandidateScore, MusicSelectSongCandidateObservation,
     ResultSongCandidateObservation, ScreenCatalogCandidateObservations,
+};
+pub use music_select_play_type::{
+    MusicSelectPlayTypeObservation, MusicSelectPlayTypeState, MusicSelectPlayTypeUnknownReason,
+    observe_music_select_play_type,
 };
 pub use music_select_resolver::{
     MUSIC_SELECT_SONG_RESOLVER_ID, MusicSelectCorroboration, MusicSelectSongResolution,
@@ -102,7 +107,7 @@ const CANONICAL_HEIGHT: u32 = 1_080;
 const CANONICAL_BYTES: usize = CANONICAL_WIDTH as usize * CANONICAL_HEIGHT as usize * 3;
 const CANONICAL_FRAME_CONTRACT_ID: &str = "scorepeek-canonical-rgb8-1920x1080-v1";
 const LAYOUT_SCHEMA: &str = "scorepeek-canonical-layout-v1";
-const SCREEN_PATH_LAYOUT_SCHEMA: &str = "scorepeek-screen-path-layout-v1";
+const SCREEN_PATH_LAYOUT_SCHEMA: &str = "scorepeek-screen-path-layout-v2";
 const NORMALIZER_SCHEMA: &str = "scorepeek-domain-normalizer-artifact-v1";
 const EXTRACTION_SCHEMA: &str = "scorepeek-private-canonical-frame-extraction-v1";
 const NORMALIZER_IMPLEMENTATION: &str = "ffmpeg-swscale-bt709-limited-to-rgb24-v1";
@@ -119,8 +124,8 @@ const MAX_NORMALIZER_BYTES: u64 = 64 * 1024;
 const PPM_HEADER: &[u8] = b"P6\n1920 1080\n255\n";
 const CANONICAL_FILE_BYTES: u64 = CANONICAL_BYTES as u64 + PPM_HEADER.len() as u64;
 const LAYOUT_BYTES: &[u8] = include_bytes!("canonical-layout-v1.json");
-const SCREEN_PATH_LAYOUT_BYTES: &[u8] = include_bytes!("screen-path-layout-v1.json");
-const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v4.json");
+const SCREEN_PATH_LAYOUT_BYTES: &[u8] = include_bytes!("screen-path-layout-v2.json");
+const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v5.json");
 const INTEGRATED_CONTEXT_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
 
 fn calibrated_capture_profile(profile: &str) -> bool {
@@ -574,7 +579,7 @@ pub struct DecideTransitionLayout {
 #[serde(deny_unknown_fields)]
 pub struct PlayLayout {
     presence: PlayPresencePredicate,
-    pub lane_edge: Roi,
+    pub max_score_label: Roi,
     pub header: Roi,
 }
 
@@ -605,8 +610,8 @@ struct DecideTransitionPresencePredicate {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PlayPresencePredicate {
-    cyan_lane_edge_pixels_min: u32,
-    warm_header_pixels_min: u32,
+    amber_max_score_pixels_min: u32,
+    amber_header_pixels_min: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
@@ -786,8 +791,22 @@ struct ResultContextLayout {
 struct MusicSelectContextLayout {
     artist: Roi,
     legacy_selected_chart: Roi,
+    play_type: MusicSelectPlayTypeLayout,
     selected_difficulty: MusicSelectDifficultyLayout,
     active_list_title: Roi,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct MusicSelectPlayTypeLayout {
+    algorithm_id: String,
+    roi: Roi,
+    template_width: u32,
+    template_height: u32,
+    single_asset_sha256: String,
+    double_asset_sha256: String,
+    score_min_ppm: u32,
+    winner_margin_min_ppm: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -838,7 +857,7 @@ impl IntegratedContextLayout {
             .rois()
             .nth(10)
             .ok_or(RecognitionError::InvalidCanonicalLayout)?;
-        if layout.schema != "scorepeek-integrated-context-layout-v4"
+        if layout.schema != "scorepeek-integrated-context-layout-v5"
             || layout.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID
             || layout.canonical_layout_sha256 != CanonicalLayout::sha256()
             || layout.result.artist != canonical.result.artist
@@ -857,9 +876,23 @@ impl IntegratedContextLayout {
             layout.result.play_type,
             layout.music_select.artist,
             layout.music_select.legacy_selected_chart,
+            layout.music_select.play_type.roi,
             layout.music_select.active_list_title,
         ] {
             roi.validate(CANONICAL_WIDTH, CANONICAL_HEIGHT)?;
+        }
+        let play_type = &layout.music_select.play_type;
+        if play_type.algorithm_id != "imageproc-cross-correlation-normalized-gray8-v1"
+            || play_type.roi.width != play_type.template_width
+            || play_type.roi.height != play_type.template_height
+            || !valid_sha256(&play_type.single_asset_sha256)
+            || !valid_sha256(&play_type.double_asset_sha256)
+            || play_type.score_min_ppm == 0
+            || play_type.score_min_ppm > 1_000_000
+            || play_type.winner_margin_min_ppm == 0
+            || play_type.winner_margin_min_ppm > 1_000_000
+        {
+            return Err(RecognitionError::InvalidCanonicalLayout);
         }
         if layout.music_select.selected_difficulty.predicate_id != "scorepeek-player-marker-rgb-v1"
         {
@@ -885,6 +918,7 @@ pub enum IntegratedContextField {
     ResultArtist,
     MusicSelectArtist,
     MusicSelectSelectedChart,
+    MusicSelectPlayType,
     MusicSelectActiveListTitle,
 }
 
@@ -1118,6 +1152,7 @@ pub struct MusicSelectScreenRgb8Crops {
     pub integrated_context_layout_sha256: String,
     pub central_title: Rgb8Crop,
     pub artist: Rgb8Crop,
+    pub play_type: Rgb8Crop,
     pub difficulty_markers: MusicSelectDifficultyMarkerCrops,
     pub active_list_title: Rgb8Crop,
 }
@@ -1357,6 +1392,7 @@ pub struct ResultScreenFieldObservations {
 pub struct MusicSelectScreenFieldObservations {
     pub central_title: DynamicTextObservation,
     pub artist: DynamicTextObservation,
+    pub play_type: MusicSelectPlayTypeObservation,
     pub selected_difficulty: MusicSelectDifficultyObservation,
     pub active_list_title: DynamicTextObservation,
 }
@@ -1392,7 +1428,7 @@ impl ScreenFieldObservations {
     pub const fn diagnostic_field_counts(&self) -> (u8, u8) {
         match self {
             Self::Result(_) => (20, 0),
-            Self::MusicSelect(_) => (3, 1),
+            Self::MusicSelect(_) => (4, 1),
         }
     }
 }
@@ -1437,6 +1473,10 @@ impl<E: std::error::Error + 'static> std::error::Error for ScreenFieldObservatio
 ///
 /// # Errors
 /// Returns the exact failed field and observer error without constructing a partial screen output.
+///
+/// # Panics
+/// Panics only if the embedded MUSIC SELECT play-type layout or templates fail their static
+/// contract after the crop was constructed from that same layout.
 pub fn observe_screen_fields<E>(
     crops: &ScreenRgb8Crops,
     mut observe_text: impl FnMut(ScreenTextField, &Rgb8Crop) -> Result<DynamicTextObservation, E>,
@@ -1489,6 +1529,8 @@ pub fn observe_screen_fields<E>(
                     &crops.central_title,
                 )?,
                 artist: observe(ScreenTextField::MusicSelectArtist, &crops.artist)?,
+                play_type: observe_music_select_play_type(&crops.play_type)
+                    .expect("the embedded music-select play-type contract is statically valid"),
                 selected_difficulty: observe_music_select_difficulty(&crops.difficulty_markers),
                 active_list_title: observe(
                     ScreenTextField::MusicSelectActiveListTitle,
@@ -1658,10 +1700,10 @@ pub struct DecideTransitionPresenceEvidence {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct PlayPresenceEvidence {
-    pub cyan_lane_edge_pixels: u32,
-    pub cyan_lane_edge_pixels_min: u32,
-    pub warm_header_pixels: u32,
-    pub warm_header_pixels_min: u32,
+    pub amber_max_score_pixels: u32,
+    pub amber_max_score_pixels_min: u32,
+    pub amber_header_pixels: u32,
+    pub amber_header_pixels_min: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
@@ -1845,7 +1887,7 @@ impl ScreenPathLayout {
         for roi in [
             layout.music_select_reference.search_roi,
             layout.decide_transition.splash,
-            layout.play.lane_edge,
+            layout.play.max_score_label,
             layout.play.header,
         ] {
             roi.validate(layout.width, layout.height)?;
@@ -1871,11 +1913,11 @@ impl ScreenPathLayout {
         {
             return Err(RecognitionError::InvalidCanonicalLayout);
         }
-        let lane_edge_pixels = layout
+        let max_score_pixels = layout
             .play
-            .lane_edge
+            .max_score_label
             .width
-            .checked_mul(layout.play.lane_edge.height)
+            .checked_mul(layout.play.max_score_label.height)
             .ok_or(RecognitionError::InvalidCanonicalLayout)?;
         let play_header_pixels = layout
             .play
@@ -1889,10 +1931,10 @@ impl ScreenPathLayout {
             || layout.decide_transition.presence.cyan_pixels_min > decide_pixels
             || layout.decide_transition.presence.bright_pixels_min > decide_pixels
             || layout.decide_transition.presence.saturated_pixels_min > decide_pixels
-            || layout.play.presence.cyan_lane_edge_pixels_min == 0
-            || layout.play.presence.warm_header_pixels_min == 0
-            || layout.play.presence.cyan_lane_edge_pixels_min > lane_edge_pixels
-            || layout.play.presence.warm_header_pixels_min > play_header_pixels
+            || layout.play.presence.amber_max_score_pixels_min == 0
+            || layout.play.presence.amber_header_pixels_min == 0
+            || layout.play.presence.amber_max_score_pixels_min > max_score_pixels
+            || layout.play.presence.amber_header_pixels_min > play_header_pixels
         {
             return Err(RecognitionError::InvalidCanonicalLayout);
         }
@@ -2001,22 +2043,21 @@ pub fn inspect_canonical_rgb8(
             decide_saturated_pixels += 1;
         }
     }
-    let play_lane_edge = crop_canonical_pixels(pixels, screen_path_layout.play.lane_edge)?;
-    let cyan_lane_edge_pixels = play_lane_edge
-        .chunks_exact(3)
-        .filter(|pixel| {
-            let [r, g, b] = [pixel[0], pixel[1], pixel[2]];
-            g > 120 && b > 150 && u16::from(b) * 2 > u16::from(r) * 3
-        })
-        .fold(0_u32, |count, _| count + 1);
-    let play_header = crop_canonical_pixels(pixels, screen_path_layout.play.header)?;
-    let warm_header_pixels = play_header
-        .chunks_exact(3)
-        .filter(|pixel| {
-            let [r, g, b] = [pixel[0], pixel[1], pixel[2]];
-            r > 120 && g > 70 && b < 100 && r > g && g > b
-        })
-        .fold(0_u32, |count, _| count + 1);
+    let count_amber = |roi| -> Result<u32, RecognitionError> {
+        Ok(crop_canonical_pixels(pixels, roi)?
+            .chunks_exact(3)
+            .filter(|pixel| {
+                let [r, g, b] = [pixel[0], pixel[1], pixel[2]];
+                r >= 70
+                    && g >= 45
+                    && r > g
+                    && u16::from(r) * 2 > u16::from(b) * 3
+                    && u16::from(g) * 2 > u16::from(b) * 3
+            })
+            .fold(0_u32, |count, _| count + 1))
+    };
+    let amber_max_score_pixels = count_amber(screen_path_layout.play.max_score_label)?;
+    let amber_header_pixels = count_amber(screen_path_layout.play.header)?;
     let result_present = warm >= layout.result.presence.warm_pixels_min
         && upper_panel_edge_pixels >= layout.result.presence.horizontal_edge_pixels_min;
     let aggregate_music_select_present = cyan_header_pixels
@@ -2068,9 +2109,9 @@ pub fn inspect_canonical_rgb8(
                 .decide_transition
                 .presence
                 .saturated_pixels_min;
-    let play_present = cyan_lane_edge_pixels
-        >= screen_path_layout.play.presence.cyan_lane_edge_pixels_min
-        && warm_header_pixels >= screen_path_layout.play.presence.warm_header_pixels_min;
+    let play_present = amber_max_score_pixels
+        >= screen_path_layout.play.presence.amber_max_score_pixels_min
+        && amber_header_pixels >= screen_path_layout.play.presence.amber_header_pixels_min;
     let screen = match [
         (result_present, ScreenClass::Result),
         (music_select_present, ScreenClass::MusicSelect),
@@ -2130,10 +2171,10 @@ pub fn inspect_canonical_rgb8(
                 .saturated_pixels_min,
         },
         play_presence: PlayPresenceEvidence {
-            cyan_lane_edge_pixels,
-            cyan_lane_edge_pixels_min: screen_path_layout.play.presence.cyan_lane_edge_pixels_min,
-            warm_header_pixels,
-            warm_header_pixels_min: screen_path_layout.play.presence.warm_header_pixels_min,
+            amber_max_score_pixels,
+            amber_max_score_pixels_min: screen_path_layout.play.presence.amber_max_score_pixels_min,
+            amber_header_pixels,
+            amber_header_pixels_min: screen_path_layout.play.presence.amber_header_pixels_min,
         },
     })
 }
@@ -2403,6 +2444,7 @@ pub fn export_integrated_context_crops(
             crops.integrated_context_layout_sha256,
             vec![
                 (IntegratedContextField::MusicSelectArtist, crops.artist),
+                (IntegratedContextField::MusicSelectPlayType, crops.play_type),
                 (
                     IntegratedContextField::MusicSelectSelectedChart,
                     Rgb8Crop {
@@ -2517,6 +2559,7 @@ pub fn route_screen_rgb8_crops(
             integrated_context_layout_sha256: IntegratedContextLayout::sha256(),
             central_title: crop(pixels, canonical.music_select.selected_title)?,
             artist: crop(pixels, context.music_select.artist)?,
+            play_type: crop(pixels, context.music_select.play_type.roi)?,
             difficulty_markers: MusicSelectDifficultyMarkerCrops {
                 beginner: crop(pixels, context.music_select.selected_difficulty.beginner)?,
                 normal: crop(pixels, context.music_select.selected_difficulty.normal)?,
@@ -2635,6 +2678,7 @@ const fn integrated_context_filename(field: IntegratedContextField) -> &'static 
         IntegratedContextField::ResultArtist => "result-artist.ppm",
         IntegratedContextField::MusicSelectArtist => "music-select-artist.ppm",
         IntegratedContextField::MusicSelectSelectedChart => "music-select-selected-chart.ppm",
+        IntegratedContextField::MusicSelectPlayType => "music-select-play-type.ppm",
         IntegratedContextField::MusicSelectActiveListTitle => "music-select-active-list-title.ppm",
     }
 }
@@ -2648,6 +2692,10 @@ const fn integrated_context_filename(field: IntegratedContextField) -> &'static 
 /// # Errors
 /// Returns an error for an unregistered model choice, invalid crop evidence, incomplete model
 /// bundle, unexpected ONNX output, or output I/O failure.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the strict integrated-context artifact reader keeps all field bindings together"
+)]
 pub fn observe_integrated_context(
     crop_directory: impl AsRef<Path>,
     expected_manifest_sha256: &str,
@@ -2663,7 +2711,13 @@ pub fn observe_integrated_context(
     let text_crops: Vec<_> = artifact
         .crops
         .iter()
-        .filter(|crop| crop.field != IntegratedContextField::MusicSelectSelectedChart)
+        .filter(|crop| {
+            !matches!(
+                crop.field,
+                IntegratedContextField::MusicSelectSelectedChart
+                    | IntegratedContextField::MusicSelectPlayType
+            )
+        })
         .collect();
     // Own the joined paths before serializing references into the decoder request.
     let crop_paths: Vec<_> = text_crops
@@ -2803,6 +2857,11 @@ fn read_integrated_context_crop_artifact(
                 IntegratedContextField::MusicSelectSelectedChart,
                 "music-select-selected-chart.ppm",
                 layout.music_select.legacy_selected_chart,
+            ),
+            (
+                IntegratedContextField::MusicSelectPlayType,
+                "music-select-play-type.ppm",
+                layout.music_select.play_type.roi,
             ),
             (
                 IntegratedContextField::MusicSelectActiveListTitle,
@@ -3103,12 +3162,13 @@ mod tests {
     }
 
     fn paint_play_presence(pixels: &mut [u8], layout: &ScreenPathLayout) {
-        for index in 0..layout.play.presence.cyan_lane_edge_pixels_min as usize {
-            let x = layout.play.lane_edge.x as usize + index % layout.play.lane_edge.width as usize;
-            let y = layout.play.lane_edge.y as usize + index / layout.play.lane_edge.width as usize;
-            pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&[20, 160, 220]);
+        let lane_edge = layout.play.max_score_label;
+        for index in 0..layout.play.presence.amber_max_score_pixels_min as usize {
+            let x = lane_edge.x as usize + index % lane_edge.width as usize;
+            let y = lane_edge.y as usize + index / lane_edge.width as usize;
+            pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&[200, 120, 40]);
         }
-        for index in 0..layout.play.presence.warm_header_pixels_min as usize {
+        for index in 0..layout.play.presence.amber_header_pixels_min as usize {
             let x = layout.play.header.x as usize + index % layout.play.header.width as usize;
             let y = layout.play.header.y as usize + index / layout.play.header.width as usize;
             pixels[(y * CANONICAL_WIDTH as usize + x) * 3..][..3].copy_from_slice(&[200, 120, 40]);
@@ -3584,13 +3644,24 @@ mod tests {
         let play = inspect(&test_frame(play)).unwrap();
         assert_eq!(play.screen, ScreenClass::Play);
         assert_eq!(
-            play.play_presence.cyan_lane_edge_pixels,
-            layout.play.presence.cyan_lane_edge_pixels_min
+            play.play_presence.amber_max_score_pixels,
+            layout.play.presence.amber_max_score_pixels_min
         );
         assert_eq!(
-            play.play_presence.warm_header_pixels,
-            layout.play.presence.warm_header_pixels_min
+            play.play_presence.amber_header_pixels,
+            layout.play.presence.amber_header_pixels_min
         );
+
+        for missing in [layout.play.header, layout.play.max_score_label] {
+            let mut incomplete = vec![0_u8; CANONICAL_BYTES];
+            paint_play_presence(&mut incomplete, &layout);
+            let index = (missing.y as usize * CANONICAL_WIDTH as usize + missing.x as usize) * 3;
+            incomplete[index..index + 3].fill(0);
+            assert_eq!(
+                inspect(&test_frame(incomplete)).unwrap().screen,
+                ScreenClass::Unknown
+            );
+        }
 
         let mut overlap = vec![0_u8; CANONICAL_BYTES];
         paint_decide_transition_presence(&mut overlap, &layout);
@@ -3746,17 +3817,21 @@ mod tests {
             encode_sha256(&music_manifest)
         );
         assert_eq!(music_artifact.screen, ScreenClass::MusicSelect);
-        assert_eq!(music_artifact.crops.len(), 3);
+        assert_eq!(music_artifact.crops.len(), 4);
         assert_eq!(
             music_artifact.crops[0].field,
             IntegratedContextField::MusicSelectArtist
         );
         assert_eq!(
             music_artifact.crops[1].field,
-            IntegratedContextField::MusicSelectSelectedChart
+            IntegratedContextField::MusicSelectPlayType
         );
         assert_eq!(
             music_artifact.crops[2].field,
+            IntegratedContextField::MusicSelectSelectedChart
+        );
+        assert_eq!(
+            music_artifact.crops[3].field,
             IntegratedContextField::MusicSelectActiveListTitle
         );
 

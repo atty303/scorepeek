@@ -337,6 +337,10 @@ authoritative.
 - [ADR 0111: Prefetch ranged canonical segments](0111-prefetch-ranged-canonical-segments.md)
   runs two prefetched segment materializations with four conditional ranges each and retries a
   terminal transient download failure once.
+- [ADR 0112: Resolve MUSIC SELECT play type independently](0112-resolve-select-play-type-independently.md)
+  adds template-based SELECT SP/DP evidence and DP gameplay layout, keeps SELECT and RESULT mode
+  families independent, and publishes a UI-only current-selection lifecycle without changing result
+  acceptance.
 
 ## Historical
 

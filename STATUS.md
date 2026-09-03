@@ -10,12 +10,11 @@ outside the checkpoint; implementation history belongs in Git.
   progress**.
 - `scorepeek-result-detected-v2` remains the accepted public domain contract and now carries typed
   ordered `play_options`. The same result-content payload is used by the non-authoritative
-  `result_provisional_changed` lifecycle. Debug output uses run-event v8, observation
-  socket/snapshot v8, and
-  recognition observation v19. Joined recorded sessions use v5.
+  `result_provisional_changed` lifecycle. Debug output uses run-event v9, observation
+  socket/snapshot v9, and recognition observation v20. Joined recorded sessions use v5.
 - Text authority remains the registered PP-OCRv6-small bundle. Numeric authority remains the
-  private fixed-cell HOG/MLP model. No model bytes, real crops, complete labels, or generated
-  datasets are committed.
+  private fixed-cell HOG/MLP model. Two explicitly approved SELECT SP/DP badge crops are committed;
+  model bytes, full frames, complete labels, and generated datasets remain outside the repository.
 
 ## Implemented authority
 
@@ -77,12 +76,22 @@ outside the checkpoint; implementation history belongs in Git.
   unique whole-display edit distance of at most one. Two matching typed observations in the same
   semantic RESULT episode produce a known ordered list. Conflict, OCR failure, and incomplete
   evidence remain typed optional unknown and never suppress an otherwise accepted result event.
-- RESULT play type uses integrated context layout v4 ROI `(925,1025,75,50)`, measured across all
+- RESULT play type uses integrated context layout v5 ROI `(925,1025,75,50)`, measured across all
   five SP difficulty layouts with left width reserved for a DP glyph. Exact `SP`/`DP` OCR is typed;
   one type needs two observations and no opposite-type observation in the semantic RESULT episode
-  before chart identity can be accepted and it contributes an independent chart family. Once
-  known, opposite-type candidates are excluded. Field-local chart resolution no longer supplies
-  SP. DP image recognition remains unverified because the active corpus contains SP only.
+  before its independent chart family contributes. SELECT uses two digest-bound template crops
+  at `(45,130,100,80)` with a 980,000 ppm score floor and 20,000 ppm margin. Its mode stabilizes
+  after two matching observations and no opposite observation over the complete SELECT episode.
+  Both mode families contribute the same fixed 100 support and retain opposing charts; total
+  evidence and existing song/chart margins decide disagreements. Unknown RESULT mode may be
+  supplemented by SELECT, but SELECT alone cannot reach `AcceptedJoint`.
+- `MusicSelectResolver` independently consumes the same immutable SELECT evidence and owns UI
+  `Selected`/`Unresolved` state. `music_selection_changed` emits first selection, song/chart change,
+  unresolved retreat, and episode end with deduplication and episode-local revisions. No UI state
+  feeds the joint resolver. Screen-path layout v2 recognizes the common SP/DP `GRAPH INFORMATION`
+  band and `MAX SCORE` label, with no lane or animated-content dependency and exactly-one screen
+  classification. Integrated-context v5 corrects the LEGGENDARIA marker position without changing
+  its thresholds.
 - The TUI retains one three-pane layout and semantic state palette. Watcher shows raw and semantic screen plus suspension;
   Latest result prefers an active `PROVISIONAL` payload and falls back to the last `CONFIRMED` v2
   event after withdrawal; only confirmed events enter count/history. Resolver shows incumbent/successor/result
@@ -91,19 +100,19 @@ outside the checkpoint; implementation history belongs in Git.
   the latest observation, while a new semantic episode or session clears it. Raw marker and
   resolver-current difficulty are displayed separately with the consecutive-known count. The worst-case 80x25
   tree keeps all gates visible. TUI formatting owns no resolver logic.
-- Run-event v8 additionally retains resolved/update/withdraw provisional RESULT lifecycle in the
+- Run-event v9 additionally retains music-selection and resolved/update/withdraw provisional RESULT lifecycle in the
   bounded diagnostic artifact, observation socket/snapshot, and headless replay. It otherwise
   distinguishes raw screen observations, semantic episode transitions, current
   selection-difficulty changes, selection/result and provisional-joint transitions, attempt
   finalization, and suppression. Recognition observation
-  v19 retains title views/geometry, episode binding, fixed-cell numeric evidence, play-option and
+  v20 retains title views/geometry, episode binding, fixed-cell numeric evidence, play-option and
   play-type raw
   OCR/marker/typed state, factor support, raw stage/frame timing, late/drain status, and suppression
   evidence. Independent PP-OCR jobs use single-threaded ONNX sessions in a pool selected from
   available parallelism; the outer coordinator pipelines frames and commits admitted evidence in
   source order. Live uses half the available parallelism capped at twelve; offline replay uses one
   global pool of available parallelism minus four capped at twelve. Readers accept run-event v2
-  through v8, reject unknown v9, and accept recognition v5 through v19.
+  through v9, reject unknown v10, and accept recognition v5 through v20.
 - The attempt corpus clean-cuts to complete joined-session v5 input and label v5 truth. Import keeps
   the tick index and metadata as local immutable objects without QOI expansion or pixel-content
   deduplication. With the environment-only S3 configuration, import publishes lossless canonical
@@ -140,29 +149,40 @@ outside the checkpoint; implementation history belongs in Git.
 
 ## Verification boundary
 
+- SELECT mode and independent UI state have unit coverage for both templates, blank pixels,
+  stability, episode-wide conflict across song changes, UI/joint independence, lifecycle
+  deduplication/withdrawal/end, abnormal session termination without field-drain finalization,
+  RESULT-unknown supplementation, mode disagreement in both directions, tied charts, and
+  insufficient chart margin. Shared PLAY anchor thresholds and overlapping-screen rejection have
+  synthetic coverage. The 80x25 TUI keeps chart information visible with long Japanese titles.
+  `mise run check`, pedantic workspace Clippy, and the complete `mise run test` pass: 483 runtime
+  library, 302 runtime binary, 125 corpus library, 5 corpus binary, and 99 offline OCR tests.
+  Fresh independent full review and the final correction delta review have no outstanding
+  findings. Canonical/numeric layouts and model bindings are unchanged.
+
+- The complete target DP session was remote-imported with 1,223 retained canonical frames.
+  Its reviewed label includes HURRY HURRY and Wizards! DP HYPER as accepted attempts. PLAY truth
+  binds independently inspected retained UI frames, not DECIDE/loading/RESULT transitions; the
+  recording-time binary's elided UNKNOWN interiors remain unavailable. Label
+  `399b78c0eb477621173cf906ba256b6fab6b60f225883aa552736e769acd1ccb` was create-only published
+  into active generation `d2bd843f63729327663587a7b2227ec65f064554b1192bdf4dd754cfa08ff296`,
+  preserving both SP sessions and the previous generation. The active generation matches the
+  isolated suite verified using the same final release build with one text worker and the
+  default twelve-worker pool: 3 sessions, 16 accepted attempts, 13,683 canonical frames, matching
+  selected song/chart at every labeled SELECT span, and no wrong or missing result events.
+  Both runs decoded 24 remote segments totaling 21,014,758,184 bytes with zero local segment
+  decodes. One-worker wall time was 710,807,831 microseconds; default-pool wall time was
+  280,398,731 microseconds. These are developer-host replay results, not target performance or
+  live-display verification. Full images, complete labels, and generated corpus remain private;
+  only the two explicitly approved SELECT badge crops are repository assets.
+
 - S3-backed corpus code has isolated in-memory object-store coverage for environment parsing,
   direct multipart completion and abort, HEAD size reuse, process-local upload serialization,
   digest rejection, ranged-download coordination, remote resolution without local publication,
   and anonymous-file materialization. A real FFmpeg integration decodes the verified file through
-  stdin. The configured B2 S3-compatible provider passes the current direct path with a disposable
-  256 MiB object that was deleted after verification: direct multipart PUT measured 9.38 MiB/s,
-  while one, two, and four concurrent GETs measured 19.79, 39.86, and 76.66 aggregate MiB/s.
-  The active generation's 21 unique canonical segments total 19,094,527,166 bytes and are present
-  remotely; the original local objects remain unchanged. A metadata-only clone passes both the
-  one-worker and default-pool replay with 2 sessions, 14 accepted attempts, 12,460 canonical
-  frames, zero negative frames, 21 unique successful GETs, and identical stable summary fields.
-  Four-segment full-GET prefetch reduced default remote replay to 461,062,237 microseconds versus
-  the saved 373,844,534-microsecond local result; final one-worker remote replay took 1,677,228,089
-  microseconds. A 512 MiB same-object benchmark measured 20.31, 36.82, 69.23, and 112.50 aggregate
-  MiB/s with one, two, four, and eight Range GETs. Sustained eight-request corpus replay failed one
-  provider request after eighteen completed segments. The current policy keeps two simultaneous
-  four-range downloads and retries only a terminal `download_failed` once. Its full live replay
-  completed all 21 unique objects without a retry or error in 391,549,392 microseconds, 17,704,858
-  microseconds or 4.74% above the saved local result. The prior one-segment-at-a-time ranged replay
-  took 403,368,598 microseconds.
-  `mise run check`, pedantic workspace Clippy, the complete `mise run test` suite, and the first
-  execution of the diagnostic worker-availability regressions pass. Local segment eviction remains
-  a separately authorized and unverified boundary.
+  stdin. The configured B2 S3-compatible provider passes direct multipart upload and the
+  two-segment/four-range download policy. Real remote replay of the current active generation is
+  verified above. This task did not evict local corpus objects or modify the remote storage policy.
 
 - The target session `run-1788272474-298014477-1183660-session-1` is the recorder failure oracle:
   5,626 recognition ticks produced 5,536 canonical tick records and 90 queue drops. The first large
@@ -294,14 +314,10 @@ outside the checkpoint; implementation history belongs in Git.
 
 ## Next executable task
 
-After separate explicit approval, evict the 21 remotely verified canonical segment objects from the
-original local corpus without changing its session, label, suite, or digest metadata. Otherwise,
-first widen the private label schema and validator beyond the current SP-only slice. After explicit
-approval to install, record and label at least one DP RESULT on the target and replay it through
-layout v4 to verify the reserved-width ROI and exact DP OCR. Then run the same active v2
-generation with one worker and the default pool on the 24-logical-CPU target. Require identical
-domain events, less than 20 seconds whole-corpus wall time, and the four-session scaling gates before
-claiming target speedup. Continue rebuilding the v2 corpus with session-disjoint songs and failure
-attempts; require zero wrong joint acceptance, zero wrong events, and zero missing expected events
-before changing target or public-socket authority. Push and release remain separate explicit
-boundaries.
+The SELECT SP/DP, independent music-selection state, and shared SP/DP PLAY recognition slice is
+implemented and replay-verified. Obtain separate authorization before installing this build on the
+target. After installation, check `scorepeek run` through SP and DP SELECT-to-PLAY transitions:
+the TUI must retain readable selected song/chart information, clear it when SELECT ends, and report
+PLAY from the shared fixed anchors. Capture a new complete DP session to verify PLAY interiors that
+the older binary intentionally elided. Target performance gates, public socket authority, push,
+and release remain separate boundaries.

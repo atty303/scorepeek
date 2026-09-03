@@ -309,6 +309,14 @@ enum StoredRunEventPayload {
         revision: u64,
         state: Value,
     },
+    MusicSelectionChanged {
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        screen_episode_id: u64,
+        source_sequence: u64,
+        revision: u64,
+        state: Value,
+    },
     TemporalResultChanged {
         session_id: Option<String>,
         capture_generation: Option<u64>,
@@ -3429,7 +3437,10 @@ pub fn replay_corpus_with_options(
                         ..
                     }) => {
                         if expected.play_side != "one_player"
-                            || expected.play_mode != "single_play"
+                            || !play_mode_matches_type(
+                                &expected.play_mode,
+                                expected.play_type,
+                            )
                             || chart.key.play_type != expected.play_type
                             || chart.key.difficulty != expected.difficulty
                             || chart.level != expected.level
@@ -4560,7 +4571,7 @@ fn start_replay_session(
     );
     output
         .publish(&scorepeek::routine_output::RunEvent {
-            schema: "scorepeek-run-event-v8".to_owned(),
+            schema: "scorepeek-run-event-v9".to_owned(),
             kind: scorepeek::routine_output::RunEventKind::SessionStarted {
                 session_id: Some(session_id.clone()),
                 capture_generation: session.capture_generation,
@@ -4892,13 +4903,29 @@ fn process_replay_frame(
         .inspect_prepared(&frame, prepared_recognition)
         .map_err(|_| CorpusError::InvalidReplay("production frame inspection failed".to_owned()))?;
     let screen = inspected.observation.screen();
+    for episode in &runtime.label.episodes {
+        if episode
+            .attempt
+            .as_ref()
+            .and_then(|attempt| attempt.play_span)
+            .is_some_and(|span| {
+                tick.sequence == span.first_sequence || tick.sequence == span.last_sequence
+            })
+            && screen != ScreenClass::Play
+        {
+            runtime.failures.push(format!(
+                "episode {} PLAY endpoint {} classified as {screen:?}",
+                episode.episode_id, tick.sequence,
+            ));
+        }
+    }
     let timeline_step = runtime
         .timeline
         .observe(screen.into(), tick.sequence, tick.monotonic_ms);
     runtime
         .output
         .publish(&scorepeek::routine_output::RunEvent {
-            schema: "scorepeek-run-event-v8".to_owned(),
+            schema: "scorepeek-run-event-v9".to_owned(),
             kind: scorepeek::routine_output::RunEventKind::RawScreenObserved {
                 session_id: Some(runtime.session_id.clone()),
                 capture_generation: Some(runtime.session.capture_generation),
@@ -4981,7 +5008,7 @@ fn finalize_replay_session(
     runtime
         .output
         .publish(&scorepeek::routine_output::RunEvent {
-            schema: "scorepeek-run-event-v8".to_owned(),
+            schema: "scorepeek-run-event-v9".to_owned(),
             kind: scorepeek::routine_output::RunEventKind::SessionFinished {
                 session_id: runtime.session_id.clone(),
                 capture_generation: runtime.session.capture_generation,
@@ -5001,9 +5028,9 @@ fn finalize_replay_session(
     {
         return invalid_replay("production recognizer did not finish cleanly");
     }
-    let emitted = runtime
-        .output
-        .take_headless_events()
+    let events = runtime.output.take_headless_events();
+    validate_music_selection_oracle(&runtime.label, &events, &mut runtime.failures);
+    let emitted = events
         .into_iter()
         .filter_map(|event| match event.kind {
             scorepeek::routine_output::RunEventKind::ResultDetected { result, .. } => Some(result),
@@ -5097,7 +5124,7 @@ fn publish_replay_semantic(
 ) -> Result<(), CorpusError> {
     output
         .publish(&scorepeek::routine_output::RunEvent {
-            schema: "scorepeek-run-event-v8".to_owned(),
+            schema: "scorepeek-run-event-v9".to_owned(),
             kind: scorepeek::routine_output::RunEventKind::SemanticScreenEpisodeChanged {
                 session_id: Some(session_id.to_owned()),
                 capture_generation: Some(generation),
@@ -5438,6 +5465,59 @@ fn validate_semantic_oracle(
             ));
         }
         actual_by_key.insert(attempt.attempt_key.clone(), event.attempt_id);
+    }
+}
+
+fn validate_music_selection_oracle(
+    label: &RegressionLabel,
+    events: &[scorepeek::routine_output::RunEvent],
+    failures: &mut Vec<String>,
+) {
+    use scorepeek::routine_output::{MusicSelectionState, RunEventKind};
+    for episode in &label.episodes {
+        let Some(span) = episode
+            .attempt
+            .as_ref()
+            .and_then(|attempt| attempt.select_span)
+        else {
+            continue;
+        };
+        let latest = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                RunEventKind::MusicSelectionChanged {
+                    source_sequence,
+                    state,
+                    ..
+                } if *source_sequence <= span.last_sequence => Some(state),
+                _ => None,
+            })
+            .next_back();
+        let expected = &episode.expected_result;
+        let matches = match latest {
+            Some(MusicSelectionState::Selected {
+                scorepeek_song_id,
+                play_type,
+                difficulty,
+                level,
+                notes,
+                ..
+            }) => {
+                serde_json::to_value(scorepeek_song_id).ok()
+                    == Some(Value::String(episode.expected_song_id.clone()))
+                    && *play_type == expected.play_type
+                    && *difficulty == expected.difficulty
+                    && *level == expected.level
+                    && *notes == expected.notes
+            }
+            _ => false,
+        };
+        if !matches {
+            failures.push(format!(
+                "episode {} SELECT state differs at sequence {}: {latest:?}",
+                episode.episode_id, span.last_sequence,
+            ));
+        }
     }
 }
 
@@ -5905,8 +5985,10 @@ fn validate_label(draft: &ReviewDraft, label: &RegressionLabel) -> Result<(), Co
             || episode.expected_song_id.is_empty()
             || episode.expected_clear_type.is_empty()
             || episode.expected_result.play_side != "one_player"
-            || episode.expected_result.play_mode != "single_play"
-            || episode.expected_result.play_type != PlayType::Single
+            || !play_mode_matches_type(
+                &episode.expected_result.play_mode,
+                episode.expected_result.play_type,
+            )
             || !(1..=12).contains(&episode.expected_result.level)
             || !valid_expected_result(&episode.expected_result)
             || !valid_play_options(episode.expected_result.play_options.as_deref())
@@ -5959,6 +6041,13 @@ fn validate_label(draft: &ReviewDraft, label: &RegressionLabel) -> Result<(), Co
         return invalid("review negative frame is invalid");
     }
     Ok(())
+}
+
+fn play_mode_matches_type(play_mode: &str, play_type: PlayType) -> bool {
+    matches!(
+        (play_mode, play_type),
+        ("single_play", PlayType::Single) | ("double_play", PlayType::Double)
+    )
 }
 
 fn spans_are_ordered(attempt: &AttemptTruth) -> bool {
@@ -6036,7 +6125,11 @@ fn validate_screen_span(
         let tick = ticks
             .get(&endpoint)
             .ok_or_else(|| CorpusError::InvalidRequest("span endpoint is absent".to_owned()))?;
-        if tick.disposition != "retained" || tick.screen != expected_screen {
+        let calibrating_unknown_play =
+            expected_screen == ScreenClass::Play && tick.screen == ScreenClass::Unknown;
+        if tick.disposition != "retained"
+            || (tick.screen != expected_screen && !calibrating_unknown_play)
+        {
             return invalid("span endpoint is not retained on the expected raw screen");
         }
     }
@@ -6378,6 +6471,7 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
                 | "scorepeek-run-event-v6"
                 | "scorepeek-run-event-v7"
                 | "scorepeek-run-event-v8"
+                | "scorepeek-run-event-v9"
         ) || event_schema
             .as_deref()
             .is_some_and(|expected| expected != schema)
@@ -6394,6 +6488,7 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
                 | "scorepeek-run-event-v6"
                 | "scorepeek-run-event-v7"
                 | "scorepeek-run-event-v8"
+                | "scorepeek-run-event-v9"
         ) {
             serde_json::from_value::<StoredRunEventPayload>(record.clone()).map_err(|_| {
                 CorpusError::InvalidRequest("diagnostic run event payload is invalid".to_owned())
@@ -7110,7 +7205,7 @@ mod tests {
     }
 
     #[test]
-    fn v8_run_event_stream_accepts_provisional_lifecycle_and_rejects_v9() {
+    fn v9_run_event_stream_accepts_both_lifecycles_and_rejects_v10() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("events.ndjson");
         let manifest = diagnostic_manifest();
@@ -7129,10 +7224,16 @@ mod tests {
             &path,
             concat!(
                 "{\"schema\":\"scorepeek-run-event-v9\",\"event\":\"session_started\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"capture_profile_sha256\":\"profile\",\"normalizer_artifact_sha256\":\"normalizer\",\"channel_sequence\":1}\n",
-                "{\"schema\":\"scorepeek-run-event-v9\",\"event\":\"session_finished\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"outcome\":\"ok\",\"report\":{},\"channel_sequence\":2}\n",
+                "{\"schema\":\"scorepeek-run-event-v9\",\"event\":\"music_selection_changed\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"screen_episode_id\":22,\"source_sequence\":3255,\"revision\":1,\"state\":{\"status\":\"unresolved\",\"reason\":\"episode_ended\"},\"channel_sequence\":2}\n",
+                "{\"schema\":\"scorepeek-run-event-v9\",\"event\":\"session_finished\",\"session_id\":\"run-1-session-1\",\"capture_generation\":1,\"outcome\":\"ok\",\"report\":{},\"channel_sequence\":3}\n",
             ),
         )
         .unwrap();
+        assert_eq!(verify_session_events(&path, &manifest).unwrap(), 3);
+        let future = fs::read_to_string(&path)
+            .unwrap()
+            .replace("scorepeek-run-event-v9", "scorepeek-run-event-v10");
+        fs::write(&path, future).unwrap();
         assert!(verify_session_events(&path, &manifest).is_err());
     }
 
@@ -7241,6 +7342,9 @@ mod tests {
         let expected = expected_result();
         let labels = numeric_field_labels(&expected).unwrap();
         let mut pixels = [200_u8, 100, 20].repeat(1_920 * 1_080);
+        for row in pixels.chunks_exact_mut(1_920 * 3) {
+            row[1_320 * 3..].fill(0);
+        }
         for y in [451, 655] {
             for x in 0..518 {
                 pixels[(y * 1_920 + x) * 3..][..3].copy_from_slice(&[0, 0, 0]);
@@ -7653,5 +7757,52 @@ mod tests {
             ..label
         };
         assert!(validate_label(&draft, &missing).is_err());
+    }
+
+    #[test]
+    fn play_mode_truth_requires_matching_sp_or_dp() {
+        assert!(play_mode_matches_type("single_play", PlayType::Single));
+        assert!(play_mode_matches_type("double_play", PlayType::Double));
+        assert!(!play_mode_matches_type("single_play", PlayType::Double));
+        assert!(!play_mode_matches_type("double_play", PlayType::Single));
+        assert!(!play_mode_matches_type("unknown", PlayType::Single));
+    }
+
+    #[test]
+    fn only_retained_unknown_play_endpoints_allow_layout_calibration() {
+        let tick = CanonicalTick {
+            sequence: 1,
+            source_sequence: 1,
+            monotonic_ms: 100,
+            screen: ScreenClass::Unknown,
+            semantic_episode_id: None,
+            disposition: "retained".to_owned(),
+        };
+        let ticks = BTreeMap::from([(1, &tick)]);
+        let span = SequenceSpan {
+            first_sequence: 1,
+            last_sequence: 1,
+        };
+        assert!(validate_screen_span(&ticks, span, ScreenClass::Play, false).is_ok());
+        for screen in [
+            ScreenClass::MusicSelect,
+            ScreenClass::DecideTransition,
+            ScreenClass::Result,
+        ] {
+            assert!(validate_screen_span(&ticks, span, screen, false).is_err());
+        }
+        let elided = CanonicalTick {
+            disposition: "elided".to_owned(),
+            ..tick
+        };
+        assert!(
+            validate_screen_span(
+                &BTreeMap::from([(1, &elided)]),
+                span,
+                ScreenClass::Play,
+                false
+            )
+            .is_err()
+        );
     }
 }

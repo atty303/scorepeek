@@ -43,8 +43,8 @@ be established, the field is `unknown`.
 | result state | Precondition for every result event | Unique result-screen anchors; transition, cut-in, overlay, and unknown classes reject |
 | accepted play attempt | Precondition for result-event emission | The same attempt observed gameplay and result, and its result song confirms the selected or retry-inherited song; observing the decision transition is not required |
 | playside | Always | Current admitted corpus slice provisionally fixes 1P; widening requires unique 1P or 2P layout anchors |
-| play mode | Always | Exact `SP` or `DP` from the measured RESULT slot in at least two observations, with no opposite-mode observation in the episode; the ROI includes DP glyph width but DP image validation remains pending |
-| play type | Always | The catalog play type selected by the known SP/DP mode; battle/non-battle needs separate explicit evidence and never defaults |
+| play mode | Always | Derived from the final catalog play type as `single_play` or `double_play`; raw RESULT mode is independent evidence requiring exact `SP`/`DP` twice and no opposite observation in the episode |
+| play type | Always | The highest-consistency catalog play type after independent equal-weight SELECT and RESULT mode families; a conflict never removes either type, and insufficient chart margin remains unknown |
 | song | Always | Accepted title and artist consistent with independently recognized play mode, difficulty, level, and notes; a linked selection may corroborate identity but cannot establish result presence or result-only fields |
 | difficulty and level | Always | Unique closed difficulty plus a catalog-unique chart; unreadable level may come from that chart, while a readable conflict rejects the chart |
 | notes | Always | Complete positive integer consistent with the recognized result layout |
@@ -69,11 +69,17 @@ shared result payload.
 | Field | Applicability predicate | Evidence required for `known` |
 | --- | --- | --- |
 | music-select state | Precondition for every music-select event | Unique layout/state anchors; rapid scroll, transition, overlay, and unknown classes reject |
-| play mode | Always | Unique SP or DP evidence |
+| play mode | Always | The fixed SELECT badge matches exactly one registered SP/DP template above minimum score and winner margin; the same type must occur twice with no opposite observation in the episode |
 | song | Always | Accepted central title and artist consistent with play mode, selected difficulty, selected level, and the active right-list title when readable |
 | selected difficulty and level | Always | Unique selected state and complete level consistent with the accepted catalog chart |
 | INFINITAS status | Catalog metadata, not an image field | `confirmed_present`, `unknown`, or `conflicted` from the active catalog snapshot; never inferred from source absence |
 | has score data, clear, DJ level, score, miss, per-difficulty levels | Optional v1 capability after each presence/absence predicate is calibrated | Unique complete values; validated no-score state makes score fields `not_applicable` |
+
+`music_selection_changed` is a UI-only lifecycle. `Selected` requires a unique catalog song/chart
+under title, artist, selected difficulty, and stable SELECT play type. The resolver emits no initial
+unknown, deduplicates equal states, emits unresolved after losing a previously selected chart, and
+emits episode-ended unresolved at SELECT finalization. This state cannot satisfy RESULT presence,
+attempt linkage, numeric stability, or `result_detected` acceptance.
 
 A general-IIDX title whose INFINITAS status is `unknown` may be accepted only by
 the separately calibrated stricter title/context policy. The event preserves

@@ -475,10 +475,10 @@ impl DiagnosticBridge {
                 decide_transition_saturated_pixels_min: predicate
                     .decide_transition_presence
                     .saturated_pixels_min,
-                play_cyan_lane_edge_pixels: predicate.play_presence.cyan_lane_edge_pixels,
-                play_cyan_lane_edge_pixels_min: predicate.play_presence.cyan_lane_edge_pixels_min,
-                play_warm_header_pixels: predicate.play_presence.warm_header_pixels,
-                play_warm_header_pixels_min: predicate.play_presence.warm_header_pixels_min,
+                play_amber_max_score_pixels: predicate.play_presence.amber_max_score_pixels,
+                play_amber_max_score_pixels_min: predicate.play_presence.amber_max_score_pixels_min,
+                play_amber_header_pixels: predicate.play_presence.amber_header_pixels,
+                play_amber_header_pixels_min: predicate.play_presence.amber_header_pixels_min,
             },
         })
     }

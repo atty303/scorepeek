@@ -693,6 +693,7 @@ mod tests {
                 ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
                     central_title: text(value),
                     artist: text(value),
+                    play_type: crate::recognition::MusicSelectPlayTypeObservation::default(),
                     selected_difficulty: crate::recognition::test_music_select_difficulty(None),
                     active_list_title: text(value),
                 });
@@ -723,6 +724,7 @@ mod tests {
             ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
                 central_title: text("CAT"),
                 artist: text("ALPHA"),
+                play_type: crate::recognition::MusicSelectPlayTypeObservation::default(),
                 selected_difficulty: crate::recognition::test_music_select_difficulty(Some(
                     crate::catalog::Difficulty::Hyper,
                 )),

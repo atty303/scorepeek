@@ -46,8 +46,8 @@ fn duration_us(duration: Duration) -> u64 {
 const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const RESULT_HISTORY_CAPACITY: usize = 32;
-const SOCKET_NAME: &str = "observations-v8.sock";
-const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v8";
+const SOCKET_NAME: &str = "observations-v9.sock";
+const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v9";
 const NUMERIC_REQUIRED_OBSERVATIONS: u8 = 2;
 const PLAY_OPTIONS_REQUIRED_OBSERVATIONS: u8 = 2;
 
@@ -186,6 +186,16 @@ pub enum RunEventKind {
         revision: u64,
         state: ResultProvisionalState,
     },
+    MusicSelectionChanged {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        capture_generation: Option<u64>,
+        screen_episode_id: u64,
+        source_sequence: u64,
+        revision: u64,
+        state: MusicSelectionState,
+    },
     TemporalResultChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
@@ -240,6 +250,12 @@ pub enum RunEventKind {
         source_sequence: u64,
         scope: ResolverScope,
         state: ResolverResolutionState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        select_play_type: Option<PlayType>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result_play_type: Option<PlayType>,
+        #[serde(default)]
+        play_type_mismatch: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         top: Option<ResolverHypothesisKey>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -486,6 +502,29 @@ pub struct SongPresentation {
     pub artist: String,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MusicSelectionUnresolvedReason {
+    EvidenceUnresolved,
+    EpisodeEnded,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum MusicSelectionState {
+    Unresolved {
+        reason: MusicSelectionUnresolvedReason,
+    },
+    Selected {
+        scorepeek_song_id: ScorepeekSongId,
+        play_type: PlayType,
+        difficulty: Difficulty,
+        level: u8,
+        notes: u32,
+        presentation: SongPresentation,
+    },
+}
+
 const EVIDENCE_FAMILY_CAP: u16 = 300;
 const JOINT_ACCEPT_SUPPORT: u16 = 260;
 const JOINT_ACCEPT_MARGIN: u16 = 50;
@@ -563,6 +602,7 @@ impl ResolverHypothesisKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ResolverTransitionIdentity {
     state: ResolverResolutionState,
+    select_play_type: Option<PlayType>,
     result_play_type: Option<PlayType>,
     top: Option<ResolverHypothesisKey>,
     runner_up: Option<ResolverHypothesisKey>,
@@ -581,7 +621,9 @@ struct RankedHypothesis<'a> {
 struct HypothesisAccumulator {
     candidates: BTreeMap<JointKey, AccumulatedHypothesis>,
     select_difficulty: Option<CurrentSelectionDifficulty>,
+    select_play_types: BTreeMap<PlayType, u64>,
     result_chart_factors: BTreeMap<ResultChartFactor, u64>,
+    has_result_evidence: bool,
     first_observation_ms: Option<u64>,
     last_observation_ms: Option<u64>,
     observation_count: u32,
@@ -639,6 +681,7 @@ struct ResultChartFactor {
 #[derive(Clone, Debug)]
 struct HypothesisSummary {
     state: ResolverResolutionState,
+    select_play_type: Option<PlayType>,
     result_play_type: Option<PlayType>,
     selected: Option<JointEvidenceCandidate>,
     runner_up: Option<JointEvidenceCandidate>,
@@ -668,6 +711,7 @@ impl HypothesisAccumulator {
         monotonic_ms: u64,
         observation: &JointEvidenceObservation,
         select_difficulty: Option<Difficulty>,
+        select_play_type: Option<PlayType>,
         result_chart_factor: Option<ResultChartFactor>,
     ) {
         self.first_observation_ms.get_or_insert(monotonic_ms);
@@ -699,10 +743,30 @@ impl HypothesisAccumulator {
         if let Some(difficulty) = select_difficulty {
             self.observe_select_difficulty(difficulty, sequence, monotonic_ms);
         }
+        if let Some(play_type) = select_play_type {
+            let count = self.select_play_types.entry(play_type).or_default();
+            *count = count.saturating_add(1);
+        }
         if let Some(factor) = result_chart_factor {
             let value = self.result_chart_factors.entry(factor).or_default();
             *value = value.saturating_add(1);
+            self.has_result_evidence |= factor.play_type.is_some()
+                || factor.difficulty.is_some()
+                || factor.notes.is_some()
+                || factor.level.is_some();
         }
+        self.has_result_evidence |= observation.candidates.iter().any(|candidate| {
+            candidate.family_support.iter().any(|(family, support)| {
+                *support > 0
+                    && matches!(
+                        family,
+                        EvidenceFamily::ResultTitle
+                            | EvidenceFamily::ResultArtist
+                            | EvidenceFamily::ResultChart
+                            | EvidenceFamily::ResultPlayType
+                    )
+            })
+        });
     }
 
     #[cfg(test)]
@@ -718,6 +782,7 @@ impl HypothesisAccumulator {
             monotonic_ms,
             observation,
             select_difficulty,
+            None,
             result_chart_factor,
         );
     }
@@ -741,10 +806,15 @@ impl HypothesisAccumulator {
             }
         }
         self.adopt_newer_select_difficulty(other.select_difficulty);
+        for (play_type, observations) in &other.select_play_types {
+            let value = self.select_play_types.entry(*play_type).or_default();
+            *value = value.saturating_add(*observations);
+        }
         for (factor, observations) in &other.result_chart_factors {
             let value = self.result_chart_factors.entry(*factor).or_default();
             *value = value.saturating_add(*observations);
         }
+        self.has_result_evidence |= other.has_result_evidence;
     }
 
     #[allow(
@@ -753,11 +823,8 @@ impl HypothesisAccumulator {
     )]
     fn summary(&self) -> HypothesisSummary {
         let mut expanded = self.candidates.clone();
+        let select_play_type = self.resolved_select_play_type();
         let result_play_type = self.resolved_result_play_type();
-        if let Some(play_type) = result_play_type {
-            expanded
-                .retain(|_, accumulated| accumulated.candidate.chart.key.play_type == play_type);
-        }
         for accumulated in expanded.values_mut() {
             let select_chart = self.select_difficulty.map_or(0, |current| {
                 u64::from(current.difficulty == accumulated.candidate.chart.key.difficulty)
@@ -791,6 +858,11 @@ impl HypothesisAccumulator {
                 accumulated
                     .family_support
                     .insert(EvidenceFamily::ResultPlayType, 100);
+            }
+            if select_play_type == Some(accumulated.candidate.chart.key.play_type) {
+                accumulated
+                    .family_support
+                    .insert(EvidenceFamily::SelectPlayType, 100);
             }
         }
         let mut family_maxima = BTreeMap::<EvidenceFamily, u64>::new();
@@ -849,6 +921,7 @@ impl HypothesisAccumulator {
         let Some(selected) = ranked.first() else {
             return HypothesisSummary {
                 state: ResolverResolutionState::Unresolved,
+                select_play_type,
                 result_play_type,
                 selected: None,
                 runner_up: None,
@@ -878,9 +951,14 @@ impl HypothesisAccumulator {
         let song_margin = support.saturating_sub(runner_song.map_or(0, |value| value.support));
         let chart_margin = support.saturating_sub(runner_chart.map_or(0, |value| value.support));
         let song_is_resolved = runner_song.is_none() || song_margin >= JOINT_ACCEPT_MARGIN;
-        let chart_is_resolved = result_play_type.is_some()
-            && (runner_chart.is_none() || chart_margin >= JOINT_ACCEPT_MARGIN);
-        let state = if support >= JOINT_ACCEPT_SUPPORT && song_is_resolved && chart_is_resolved {
+        let chart_is_resolved = select_play_type.is_some() || result_play_type.is_some();
+        let chart_is_resolved =
+            chart_is_resolved && (runner_chart.is_none() || chart_margin >= JOINT_ACCEPT_MARGIN);
+        let state = if self.has_result_evidence
+            && support >= JOINT_ACCEPT_SUPPORT
+            && song_is_resolved
+            && chart_is_resolved
+        {
             ResolverResolutionState::AcceptedJoint
         } else if support >= JOINT_ACCEPT_SUPPORT && song_is_resolved {
             ResolverResolutionState::SongProjected
@@ -891,6 +969,7 @@ impl HypothesisAccumulator {
         };
         HypothesisSummary {
             state,
+            select_play_type,
             result_play_type,
             selected: Some(selected.accumulated.candidate.clone()),
             runner_up: runner_up.map(|value| value.accumulated.candidate.clone()),
@@ -926,6 +1005,16 @@ impl HypothesisAccumulator {
             .into_iter()
             .next()
             .and_then(|(play_type, observations)| (observations >= 2).then_some(play_type))
+    }
+
+    fn resolved_select_play_type(&self) -> Option<PlayType> {
+        if self.select_play_types.len() != 1 {
+            return None;
+        }
+        self.select_play_types
+            .iter()
+            .next()
+            .and_then(|(play_type, observations)| (*observations >= 2).then_some(*play_type))
     }
 
     fn observe_select_difficulty(
@@ -1006,6 +1095,7 @@ struct SelectionEpochTracker {
     incumbent_songs: BTreeSet<ScorepeekSongId>,
     successor_songs: BTreeSet<ScorepeekSongId>,
     pending_difficulty: Option<CurrentSelectionDifficulty>,
+    play_types: BTreeMap<PlayType, u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1038,7 +1128,29 @@ impl SelectionEpochTracker {
         }
     }
 
-    fn observe_at(
+    fn observe_at_with_play_type(
+        &mut self,
+        sequence: u64,
+        monotonic_ms: u64,
+        evidence: &JointEvidenceObservation,
+        difficulty: Option<Difficulty>,
+        play_type: Option<PlayType>,
+    ) -> Vec<SelectionDifficultyTransition> {
+        if let Some(play_type) = play_type {
+            let count = self.play_types.entry(play_type).or_default();
+            *count = count.saturating_add(1);
+        }
+        let transitions = self.observe_selection_at(sequence, monotonic_ms, evidence, difficulty);
+        self.incumbent
+            .select_play_types
+            .clone_from(&self.play_types);
+        self.successor
+            .select_play_types
+            .clone_from(&self.play_types);
+        transitions
+    }
+
+    fn observe_selection_at(
         &mut self,
         sequence: u64,
         monotonic_ms: u64,
@@ -1070,7 +1182,7 @@ impl SelectionEpochTracker {
             }
             let previous = self.incumbent.select_difficulty;
             self.incumbent
-                .observe_at(sequence, monotonic_ms, evidence, difficulty, None);
+                .observe_at(sequence, monotonic_ms, evidence, difficulty, None, None);
             push_difficulty_change(
                 &mut transitions,
                 SelectionDifficultyTarget::Incumbent,
@@ -1088,7 +1200,7 @@ impl SelectionEpochTracker {
         if !self.incumbent_songs.is_disjoint(&credible) {
             let previous = self.incumbent.select_difficulty;
             self.incumbent
-                .observe_at(sequence, monotonic_ms, evidence, difficulty, None);
+                .observe_at(sequence, monotonic_ms, evidence, difficulty, None, None);
             push_difficulty_change(
                 &mut transitions,
                 SelectionDifficultyTarget::Incumbent,
@@ -1125,7 +1237,7 @@ impl SelectionEpochTracker {
         }
         let previous = self.successor.select_difficulty;
         self.successor
-            .observe_at(sequence, monotonic_ms, evidence, difficulty, None);
+            .observe_at(sequence, monotonic_ms, evidence, difficulty, None, None);
         push_difficulty_change(
             &mut transitions,
             SelectionDifficultyTarget::Successor,
@@ -1143,6 +1255,17 @@ impl SelectionEpochTracker {
             self.active_difficulty_state(),
         );
         transitions
+    }
+
+    #[cfg(test)]
+    fn observe_at(
+        &mut self,
+        sequence: u64,
+        monotonic_ms: u64,
+        evidence: &JointEvidenceObservation,
+        difficulty: Option<Difficulty>,
+    ) -> Vec<SelectionDifficultyTransition> {
+        self.observe_at_with_play_type(sequence, monotonic_ms, evidence, difficulty, None)
     }
 
     fn observe_difficulty_only(
@@ -1209,6 +1332,58 @@ impl SelectionEpochTracker {
         } else {
             self.incumbent.clone()
         }
+    }
+}
+
+#[derive(Default)]
+struct MusicSelectResolver {
+    selection_epochs: SelectionEpochTracker,
+}
+
+impl MusicSelectResolver {
+    fn observe(
+        &mut self,
+        sequence: u64,
+        monotonic_ms: u64,
+        evidence: &JointEvidenceObservation,
+        difficulty: Option<Difficulty>,
+        play_type: Option<PlayType>,
+    ) {
+        self.selection_epochs.observe_at_with_play_type(
+            sequence,
+            monotonic_ms,
+            evidence,
+            difficulty,
+            play_type,
+        );
+    }
+
+    fn selected(&self) -> Option<MusicSelectionState> {
+        let accumulator = if self.selection_epochs.successor.observation_count > 0 {
+            &self.selection_epochs.successor
+        } else {
+            &self.selection_epochs.incumbent
+        };
+        let summary = accumulator.summary();
+        let selected = summary.selected.as_ref()?;
+        let play_type = summary.select_play_type?;
+        let difficulty = accumulator.select_difficulty?.difficulty;
+        if summary.support < JOINT_ACCEPT_SUPPORT
+            || summary.song_margin < JOINT_ACCEPT_MARGIN
+            || summary.chart_margin < JOINT_ACCEPT_MARGIN
+            || selected.chart.key.play_type != play_type
+            || selected.chart.key.difficulty != difficulty
+        {
+            return None;
+        }
+        Some(MusicSelectionState::Selected {
+            scorepeek_song_id: selected.song_id,
+            play_type,
+            difficulty,
+            level: selected.chart.level,
+            notes: selected.chart.notes,
+            presentation: candidate_song_presentation(selected),
+        })
     }
 }
 
@@ -1371,6 +1546,7 @@ impl RunEvent {
                 json!({
                     "central_title": fields.central_title.open_text,
                     "artist": fields.artist.open_text,
+                    "play_type": fields.play_type,
                     "selected_difficulty": fields.selected_difficulty,
                     "active_list_title": fields.active_list_title.open_text,
                     "title_evidence": observation.title_evidence(),
@@ -1540,6 +1716,7 @@ pub struct RunViewState {
     latest_numeric_result: Option<Value>,
     latest_result_detected: Option<Value>,
     latest_provisional_result: Option<ResultHistoryEntry>,
+    latest_music_selection: Option<MusicSelectionState>,
     result_history: VecDeque<ResultHistoryEntry>,
     result_count: u64,
     #[serde(skip)]
@@ -1616,6 +1793,9 @@ struct ResolverNodeSnapshot {
     margin: u16,
     song_margin: u16,
     chart_margin: u16,
+    select_play_type: Option<PlayType>,
+    result_play_type: Option<PlayType>,
+    play_type_mismatch: bool,
     family_contributions: Vec<String>,
     current_difficulty: Option<CurrentSelectionDifficulty>,
     state: ResolverResolutionState,
@@ -1665,6 +1845,7 @@ impl RunViewState {
             latest_numeric_result: None,
             latest_result_detected: None,
             latest_provisional_result: None,
+            latest_music_selection: None,
             result_history: VecDeque::with_capacity(RESULT_HISTORY_CAPACITY),
             result_count: 0,
             stable_result_song: None,
@@ -1705,6 +1886,7 @@ impl RunViewState {
                 self.latest_play_attempt = None;
                 self.latest_numeric_result = None;
                 self.latest_provisional_result = None;
+                self.latest_music_selection = None;
                 self.stable_result_song = None;
                 self.latest_report = None;
                 if self.recording == "enabled" && self.status_recording != "degraded" {
@@ -1759,6 +1941,9 @@ impl RunViewState {
             RunEventKind::ScreenTick { .. }
             | RunEventKind::ResolverStateChanged { .. }
             | RunEventKind::SelectionDifficultyChanged { .. } => {}
+            RunEventKind::MusicSelectionChanged { state, .. } => {
+                self.latest_music_selection = Some(state.clone());
+            }
             RunEventKind::FieldObservation { .. } => {
                 self.latest_observation = Some(serialized.clone());
             }
@@ -2100,7 +2285,7 @@ fn accept_clients(
 fn snapshot_bytes(state: &Arc<Mutex<RunViewState>>, health: &ChannelHealth) -> Option<Vec<u8>> {
     let state = state.lock().ok()?.clone();
     let mut bytes = serde_json::to_vec(&json!({
-            "schema": "scorepeek-run-observation-snapshot-v8",
+            "schema": "scorepeek-run-observation-snapshot-v9",
         "state": state,
         "channel": health.value(),
     }))
@@ -2192,6 +2377,10 @@ pub struct RoutineOutput {
     accepted_numeric_result: Option<NumericResultView>,
     active_provisional_result: Option<ActiveProvisionalResult>,
     provisional_revision: u64,
+    music_selection_revision: u64,
+    music_select_resolver: MusicSelectResolver,
+    active_music_selection: Option<MusicSelectionState>,
+    music_selection_episode_active: bool,
     play_options: PlayOptionsEpisodeAccumulator,
     numeric_evidence: VecDeque<RawNumericEvidence>,
     last_numeric_sequence: Option<u64>,
@@ -2238,6 +2427,7 @@ impl RoutineOutput {
     ) -> Result<(), String> {
         let identity = ResolverTransitionIdentity {
             state: summary.state,
+            select_play_type: summary.select_play_type,
             result_play_type: summary.result_play_type,
             top: summary
                 .selected
@@ -2269,6 +2459,11 @@ impl RoutineOutput {
                 source_sequence,
                 scope,
                 state: identity.state,
+                select_play_type: identity.select_play_type,
+                result_play_type: identity.result_play_type,
+                play_type_mismatch: identity.select_play_type.is_some()
+                    && identity.result_play_type.is_some()
+                    && identity.select_play_type != identity.result_play_type,
                 top: identity.top,
                 runner_up: identity.runner_up,
                 runner_song: identity.runner_song,
@@ -2320,6 +2515,10 @@ impl RoutineOutput {
             accepted_numeric_result: None,
             active_provisional_result: None,
             provisional_revision: 0,
+            music_selection_revision: 0,
+            music_select_resolver: MusicSelectResolver::default(),
+            active_music_selection: None,
+            music_selection_episode_active: false,
             play_options: PlayOptionsEpisodeAccumulator::default(),
             numeric_evidence: VecDeque::with_capacity(8),
             last_numeric_sequence: None,
@@ -2366,6 +2565,10 @@ impl RoutineOutput {
             accepted_numeric_result: None,
             active_provisional_result: None,
             provisional_revision: 0,
+            music_selection_revision: 0,
+            music_select_resolver: MusicSelectResolver::default(),
+            active_music_selection: None,
+            music_selection_episode_active: false,
             play_options: PlayOptionsEpisodeAccumulator::default(),
             numeric_evidence: VecDeque::with_capacity(8),
             last_numeric_sequence: None,
@@ -2436,6 +2639,10 @@ impl RoutineOutput {
                 self.reset_numeric_result();
                 self.active_provisional_result = None;
                 self.provisional_revision = 0;
+                self.music_selection_revision = 0;
+                self.music_select_resolver = MusicSelectResolver::default();
+                self.active_music_selection = None;
+                self.music_selection_episode_active = false;
                 self.emitted_attempt_ids.clear();
                 self.latest_screen_boundary_sequence = None;
                 self.screen_episode_id = 0;
@@ -2495,6 +2702,7 @@ impl RoutineOutput {
             | RunEventKind::PlayAttemptChanged { .. }
             | RunEventKind::ResolverStateChanged { .. }
             | RunEventKind::SelectionDifficultyChanged { .. }
+            | RunEventKind::MusicSelectionChanged { .. }
             | RunEventKind::ResultProvisionalChanged { .. }
             | RunEventKind::ResultDetected { .. } => self.publish_one(event),
         }
@@ -2550,6 +2758,15 @@ impl RoutineOutput {
             SemanticEpisodePhase::Finalized => {
                 if screen == "music_select" {
                     self.engine.retained_select = self.engine.selection_epochs.handoff();
+                    self.publish_music_selection(
+                        session_id.as_ref(),
+                        *capture_generation,
+                        *sequence,
+                        MusicSelectionState::Unresolved {
+                            reason: MusicSelectionUnresolvedReason::EpisodeEnded,
+                        },
+                    )?;
+                    self.music_selection_episode_active = false;
                 } else if screen == "result" {
                     self.finalize_result_attempt(
                         session_id.clone(),
@@ -2722,6 +2939,7 @@ impl RoutineOutput {
             sequence,
             monotonic_end_ms,
             joint_evidence,
+            None,
             None,
             parsed_result_fields.map(result_chart_factor),
         );
@@ -3094,6 +3312,60 @@ impl RoutineOutput {
         self.last_numeric_monotonic_ms = None;
     }
 
+    fn sync_music_selection(
+        &mut self,
+        session_id: Option<&String>,
+        capture_generation: Option<u64>,
+        source_sequence: u64,
+    ) -> Result<(), String> {
+        match self.music_select_resolver.selected() {
+            Some(state) if self.active_music_selection.as_ref() != Some(&state) => {
+                self.publish_music_selection(session_id, capture_generation, source_sequence, state)
+            }
+            None if matches!(
+                self.active_music_selection,
+                Some(MusicSelectionState::Selected { .. })
+            ) =>
+            {
+                self.publish_music_selection(
+                    session_id,
+                    capture_generation,
+                    source_sequence,
+                    MusicSelectionState::Unresolved {
+                        reason: MusicSelectionUnresolvedReason::EvidenceUnresolved,
+                    },
+                )
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn publish_music_selection(
+        &mut self,
+        session_id: Option<&String>,
+        capture_generation: Option<u64>,
+        source_sequence: u64,
+        state: MusicSelectionState,
+    ) -> Result<(), String> {
+        if self.active_music_selection.as_ref() == Some(&state) {
+            return Ok(());
+        }
+        self.music_selection_revision = self.music_selection_revision.saturating_add(1);
+        self.publish_one(&RunEvent {
+            schema: RUN_EVENT_SCHEMA.to_owned(),
+            kind: RunEventKind::MusicSelectionChanged {
+                session_id: session_id.cloned(),
+                capture_generation,
+                screen_episode_id: self.screen_episode_id,
+                source_sequence,
+                revision: self.music_selection_revision,
+                state: state.clone(),
+            },
+        })?;
+        self.active_music_selection = Some(state);
+        Ok(())
+    }
+
     #[allow(
         clippy::too_many_arguments,
         clippy::too_many_lines,
@@ -3109,11 +3381,19 @@ impl RoutineOutput {
         joint_evidence: &JointEvidenceObservation,
         _presentation: &SongResolutionPresentation,
     ) -> Result<(), String> {
-        let difficulty_transitions = self.engine.selection_epochs.observe_at(
+        self.music_select_resolver.observe(
             sequence,
             monotonic_end_ms,
             joint_evidence,
             selected_difficulty(fields),
+            selected_play_type(fields),
+        );
+        let difficulty_transitions = self.engine.selection_epochs.observe_at_with_play_type(
+            sequence,
+            monotonic_end_ms,
+            joint_evidence,
+            selected_difficulty(fields),
+            selected_play_type(fields),
         );
         for transition in difficulty_transitions {
             self.publish_one(&RunEvent {
@@ -3149,6 +3429,7 @@ impl RoutineOutput {
                 self.engine.selection_epochs.successor.observation_count,
             )?;
         }
+        self.sync_music_selection(session_id, capture_generation, sequence)?;
         self.sync_resolver_snapshot(monotonic_end_ms, Some(sequence), Some(fields))?;
         self.refresh()?;
         Ok(())
@@ -3176,6 +3457,17 @@ impl RoutineOutput {
             unreachable!("screen change dispatcher preserves event kind");
         };
         self.latest_screen_boundary_sequence = Some(*sequence);
+        if screen != "music_select" && self.music_selection_episode_active {
+            self.publish_music_selection(
+                session_id.as_ref(),
+                *capture_generation,
+                *sequence,
+                MusicSelectionState::Unresolved {
+                    reason: MusicSelectionUnresolvedReason::EpisodeEnded,
+                },
+            )?;
+            self.music_selection_episode_active = false;
+        }
         self.screen_episode_id = *screen_episode_id;
         self.screen_episode_started_ms = Some(*monotonic_end_ms);
         self.screen_episode_last_ms = Some(*monotonic_end_ms);
@@ -3196,6 +3488,10 @@ impl RoutineOutput {
         }
         let mut selection_screen_attempt_update = None;
         if screen == "music_select" {
+            self.music_selection_revision = 0;
+            self.music_select_resolver = MusicSelectResolver::default();
+            self.active_music_selection = None;
+            self.music_selection_episode_active = true;
             self.engine.selection_epochs = SelectionEpochTracker::default();
             self.engine.retained_select = HypothesisAccumulator::default();
             self.resolver_transitions
@@ -3338,6 +3634,25 @@ impl RoutineOutput {
         else {
             unreachable!("session-finished dispatcher preserves event kind");
         };
+        if self.music_selection_episode_active {
+            let source_sequence = self
+                .state
+                .lock()
+                .map_err(|_| "run view state lock was poisoned".to_owned())?
+                .resolver
+                .source_sequence
+                .or(self.latest_screen_boundary_sequence)
+                .unwrap_or_default();
+            self.publish_music_selection(
+                Some(session_id),
+                Some(*capture_generation),
+                source_sequence,
+                MusicSelectionState::Unresolved {
+                    reason: MusicSelectionUnresolvedReason::EpisodeEnded,
+                },
+            )?;
+            self.music_selection_episode_active = false;
+        }
         self.withdraw_result_provisional(
             session_id.clone(),
             *capture_generation,
@@ -3811,6 +4126,15 @@ fn selected_difficulty(fields: &Value) -> Option<Difficulty> {
     }
 }
 
+fn selected_play_type(fields: &Value) -> Option<PlayType> {
+    let value = fields.pointer("/play_type/state")?.get("value")?.as_str()?;
+    match value {
+        "single" => Some(PlayType::Single),
+        "double" => Some(PlayType::Double),
+        _ => None,
+    }
+}
+
 fn result_chart_factor(fields: &ParsedResultFields) -> ResultChartFactor {
     ResultChartFactor {
         play_type: fields.play_type.known().copied(),
@@ -3839,6 +4163,11 @@ fn resolver_node(
         margin: summary.margin,
         song_margin: summary.song_margin,
         chart_margin: summary.chart_margin,
+        select_play_type: summary.select_play_type,
+        result_play_type: summary.result_play_type,
+        play_type_mismatch: summary.select_play_type.is_some()
+            && summary.result_play_type.is_some()
+            && summary.select_play_type != summary.result_play_type,
         family_contributions: family_contribution_labels(&summary.selected_family_support),
         current_difficulty: accumulator.select_difficulty,
         state: summary.state,
@@ -3948,6 +4277,23 @@ fn important_raw_fields(fields: &Value) -> Vec<(String, String)> {
             format!("{status}:{value} score={winner} margin={margin}"),
         ))
     });
+    let select_play_type = fields.get("play_type").and_then(|observation| {
+        let state = observation.get("state")?;
+        let status = state.get("status")?.as_str()?;
+        let value = state.get("value").and_then(Value::as_str).unwrap_or("-");
+        let single = observation
+            .get("single_score_ppm")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let double = observation
+            .get("double_score_ppm")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        Some((
+            "select_play_type".to_owned(),
+            format!("{status}:{value} sp={single} dp={double}"),
+        ))
+    });
     let keys = [
         "title",
         "central_title",
@@ -4000,6 +4346,7 @@ fn important_raw_fields(fields: &Value) -> Vec<(String, String)> {
     });
     marker
         .into_iter()
+        .chain(select_play_type)
         .chain(title_foreground)
         .chain(keys.into_iter().filter_map(|key| {
             fields
@@ -4233,23 +4580,52 @@ const fn gate_suffix(state: GateState) -> &'static str {
 }
 
 fn fixed_domain_lines(state: &RunViewState, available_width: usize) -> Vec<Line<'static>> {
+    let selection = match state.latest_music_selection.as_ref() {
+        Some(MusicSelectionState::Selected {
+            play_type,
+            difficulty,
+            level,
+            notes,
+            presentation,
+            ..
+        }) => fitted_value(
+            &format!(
+                "SELECTED {} {} Lv{} notes={notes} / ",
+                play_type_label(*play_type),
+                difficulty_label(*difficulty),
+                level,
+            ),
+            presentation
+                .display_titles
+                .first()
+                .map_or("?", String::as_str),
+            available_width,
+        ),
+        Some(MusicSelectionState::Unresolved { .. }) | None => "SELECTED -".to_owned(),
+    };
+    let selection_line = Line::from(Span::styled(selection, Style::default().fg(Color::Cyan)));
     if let Some(entry) = state.latest_provisional_result.as_ref() {
         let mut lines = expanded_result_history_entry_lines(entry, available_width, "PROVISIONAL");
-        lines.truncate(7);
+        lines.truncate(6);
+        lines.insert(0, selection_line);
         return lines;
     }
     let Some(entry) = state.result_history.back() else {
-        return vec![Line::from(Span::styled(
-            "No result payload yet",
-            Style::default().fg(Color::DarkGray),
-        ))];
+        return vec![
+            selection_line,
+            Line::from(Span::styled(
+                "No result payload yet",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
     };
     let mut lines = expanded_result_history_entry_lines(
         entry,
         available_width,
         &format!("CONFIRMED #{}", entry.ordinal),
     );
-    lines.truncate(7);
+    lines.truncate(6);
+    lines.insert(0, selection_line);
     lines
 }
 
@@ -4753,6 +5129,10 @@ mod tests {
             accepted_numeric_result: None,
             active_provisional_result: None,
             provisional_revision: 0,
+            music_selection_revision: 0,
+            music_select_resolver: MusicSelectResolver::default(),
+            active_music_selection: None,
+            music_selection_episode_active: false,
             numeric_evidence: VecDeque::with_capacity(8),
             play_options: PlayOptionsEpisodeAccumulator::default(),
             last_numeric_sequence: None,
@@ -5127,7 +5507,7 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         let snapshot: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v8");
+        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v9");
         assert_eq!(snapshot["state"]["invocation_id"], "invocation-1");
         assert_eq!(snapshot["state"]["next_channel_sequence"], 1);
         assert_eq!(snapshot["channel"]["connected_clients"], 1);
@@ -5445,7 +5825,7 @@ mod tests {
             ))
             .unwrap();
         assert!(
-            fixed_domain_lines(&output.state.lock().unwrap(), 160)[0]
+            fixed_domain_lines(&output.state.lock().unwrap(), 160)[1]
                 .to_string()
                 .contains("CONFIRMED")
         );
@@ -5466,7 +5846,7 @@ mod tests {
         };
         output.publish(&resolved).unwrap();
         assert!(
-            fixed_domain_lines(&output.state.lock().unwrap(), 160)[0]
+            fixed_domain_lines(&output.state.lock().unwrap(), 160)[1]
                 .to_string()
                 .contains("PROVISIONAL")
         );
@@ -5486,7 +5866,7 @@ mod tests {
         };
         output.publish(&withdrawn).unwrap();
         assert!(
-            fixed_domain_lines(&output.state.lock().unwrap(), 160)[0]
+            fixed_domain_lines(&output.state.lock().unwrap(), 160)[1]
                 .to_string()
                 .contains("CONFIRMED")
         );
@@ -5889,7 +6269,7 @@ mod tests {
         for reader in &mut readers {
             let mut snapshot = String::new();
             reader.read_line(&mut snapshot).unwrap();
-            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v8"));
+            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v9"));
         }
         channel
             .publish(&json!({
@@ -6360,6 +6740,9 @@ mod tests {
                 margin: 80,
                 song_margin: 80,
                 chart_margin: 320,
+                select_play_type: None,
+                result_play_type: Some(PlayType::Single),
+                play_type_mismatch: false,
                 family_contributions: vec!["result_title=300".to_owned()],
                 current_difficulty: None,
                 state: ResolverResolutionState::AcceptedJoint,
@@ -6378,6 +6761,9 @@ mod tests {
                 margin: 140,
                 song_margin: 140,
                 chart_margin: 140,
+                select_play_type: Some(PlayType::Single),
+                result_play_type: None,
+                play_type_mismatch: false,
                 family_contributions: vec!["select_title=140".to_owned()],
                 current_difficulty: Some(CurrentSelectionDifficulty::observed(
                     Difficulty::Hyper,
@@ -6486,6 +6872,50 @@ mod tests {
                         .any(|cell| cell.fg == Color::Yellow)
                 );
             }
+        }
+    }
+
+    #[test]
+    fn selected_chart_remains_visible_at_minimum_width_with_a_long_title() {
+        let mut state = RunViewState::new("invocation-1".to_owned(), "a".repeat(64), true);
+        let scorepeek_song_id =
+            serde_json::from_str("\"00000000-0000-0000-0000-000000000046\"").unwrap();
+        for difficulty in [Difficulty::Hyper, Difficulty::Leggendaria] {
+            state.latest_music_selection = Some(MusicSelectionState::Selected {
+                scorepeek_song_id,
+                play_type: PlayType::Double,
+                difficulty,
+                level: 12,
+                notes: 2000,
+                presentation: SongPresentation {
+                    scorepeek_song_id,
+                    display_titles: vec!["長い曲名".repeat(30)],
+                    artist: "ARTIST".to_owned(),
+                },
+            });
+            let mut terminal = Terminal::new(TestBackend::new(80, 25)).unwrap();
+            terminal
+                .draw(|frame| {
+                    render(
+                        frame,
+                        &state,
+                        Path::new("/run/scorepeek.sock"),
+                        &ChannelHealth::default(),
+                    );
+                })
+                .unwrap();
+            let rendered = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>();
+            assert!(rendered.contains(&format!(
+                "SELECTED DP {} Lv12 notes=2000 / ",
+                difficulty_label(difficulty)
+            )));
+            assert!(rendered.contains('…'));
         }
     }
 
@@ -7105,7 +7535,7 @@ mod tests {
         assert_eq!(accepted.chart.key.play_type, PlayType::Single);
         assert_eq!(accepted.chart.notes, 1_136);
         assert_eq!(summary.song_margin, 100);
-        assert_eq!(summary.chart_margin, 650);
+        assert_eq!(summary.chart_margin, 200);
     }
 
     #[test]
@@ -7131,7 +7561,7 @@ mod tests {
             support: 300,
         };
         let observation = JointEvidenceObservation {
-            catalog_song_count: 1,
+            catalog_song_count: 2,
             candidates: vec![chart(PlayType::Single), chart(PlayType::Double)],
         };
         let mut without_play_type = HypothesisAccumulator::default();
@@ -7187,7 +7617,7 @@ mod tests {
                 .map(|candidate| candidate.chart.key.play_type),
             Some(PlayType::Single)
         );
-        assert_eq!(summary.chart_margin, 600);
+        assert_eq!(summary.chart_margin, 100);
         assert_eq!(
             summary.selected_family_support[&EvidenceFamily::ResultPlayType].normalized,
             100
@@ -7229,7 +7659,189 @@ mod tests {
         }
         assert_eq!(
             mismatched_only.summary().state,
-            ResolverResolutionState::Unresolved
+            ResolverResolutionState::AcceptedJoint
+        );
+        assert_eq!(
+            mismatched_only
+                .summary()
+                .selected
+                .as_ref()
+                .map(|candidate| candidate.chart.key.play_type),
+            Some(PlayType::Double)
+        );
+    }
+
+    #[test]
+    fn select_play_type_resolves_ui_chart_without_joint_acceptance() {
+        let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000044\"").unwrap();
+        let candidate = |play_type| JointEvidenceCandidate {
+            song_id,
+            chart: scorepeek::catalog::Chart {
+                key: scorepeek::catalog::ChartKey {
+                    play_type,
+                    difficulty: Difficulty::Hyper,
+                },
+                level: 8,
+                notes: 829,
+            },
+            display_titles: vec!["Wizards!".to_owned()],
+            artist: "ARTIST".to_owned(),
+            family_support: BTreeMap::from([(EvidenceFamily::SelectTitle, 300)]),
+            support: 300,
+        };
+        let evidence = JointEvidenceObservation {
+            catalog_song_count: 1,
+            candidates: vec![candidate(PlayType::Single), candidate(PlayType::Double)],
+        };
+        let mut select = HypothesisAccumulator::default();
+        for sequence in [1, 2] {
+            select.observe_at(
+                sequence,
+                sequence * 100,
+                &evidence,
+                Some(Difficulty::Hyper),
+                Some(PlayType::Double),
+                None,
+            );
+        }
+        let summary = select.summary();
+        assert_ne!(summary.state, ResolverResolutionState::AcceptedJoint);
+        assert_eq!(summary.select_play_type, Some(PlayType::Double));
+        select.observe_at(
+            3,
+            300,
+            &JointEvidenceObservation {
+                catalog_song_count: 1,
+                candidates: Vec::new(),
+            },
+            None,
+            None,
+            Some(ResultChartFactor {
+                play_type: None,
+                difficulty: None,
+                notes: None,
+                level: None,
+            }),
+        );
+        assert_eq!(
+            select.summary().state,
+            ResolverResolutionState::SongProjected
+        );
+        assert_eq!(
+            summary
+                .selected
+                .as_ref()
+                .map(|candidate| candidate.chart.key.play_type),
+            Some(PlayType::Double)
+        );
+    }
+
+    fn mode_conflict_fixture(
+        select_mode: PlayType,
+        result_mode: Option<PlayType>,
+        notes: Option<u32>,
+    ) -> HypothesisAccumulator {
+        let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000045\"").unwrap();
+        let evidence = |family| JointEvidenceObservation {
+            catalog_song_count: 1,
+            candidates: [(PlayType::Single, 829), (PlayType::Double, 900)]
+                .map(|(play_type, notes)| JointEvidenceCandidate {
+                    song_id,
+                    chart: scorepeek::catalog::Chart {
+                        key: scorepeek::catalog::ChartKey {
+                            play_type,
+                            difficulty: Difficulty::Hyper,
+                        },
+                        level: 8,
+                        notes,
+                    },
+                    display_titles: vec!["Wizards!".to_owned()],
+                    artist: "ARTIST".to_owned(),
+                    family_support: BTreeMap::from([(family, 300)]),
+                    support: 300,
+                })
+                .to_vec(),
+        };
+        let mut joint = HypothesisAccumulator::default();
+        for sequence in [1, 2] {
+            joint.observe_at(
+                sequence,
+                sequence * 100,
+                &evidence(EvidenceFamily::SelectTitle),
+                Some(Difficulty::Hyper),
+                Some(select_mode),
+                None,
+            );
+        }
+        for sequence in [3, 4] {
+            joint.observe_at(
+                sequence,
+                sequence * 100,
+                &evidence(EvidenceFamily::ResultTitle),
+                None,
+                None,
+                Some(ResultChartFactor {
+                    play_type: result_mode,
+                    difficulty: Some(Difficulty::Hyper),
+                    notes,
+                    level: Some(8),
+                }),
+            );
+        }
+        joint
+    }
+
+    #[test]
+    fn select_result_mode_conflicts_follow_chart_evidence_in_both_directions() {
+        for (select_mode, result_mode) in [
+            (PlayType::Single, PlayType::Double),
+            (PlayType::Double, PlayType::Single),
+        ] {
+            for (notes, expected) in [(829, PlayType::Single), (900, PlayType::Double)] {
+                let summary =
+                    mode_conflict_fixture(select_mode, Some(result_mode), Some(notes)).summary();
+                assert_eq!(summary.state, ResolverResolutionState::AcceptedJoint);
+                assert_eq!(summary.select_play_type, Some(select_mode));
+                assert_eq!(summary.result_play_type, Some(result_mode));
+                assert_eq!(summary.selected.unwrap().chart.key.play_type, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn mode_conflicts_require_the_existing_chart_margin() {
+        let mut joint = mode_conflict_fixture(PlayType::Single, Some(PlayType::Double), None);
+        assert_eq!(
+            joint.summary().state,
+            ResolverResolutionState::SongProjected
+        );
+        assert_eq!(joint.summary().chart_margin, 0);
+        for candidate in joint.candidates.values_mut() {
+            if candidate.candidate.chart.key.play_type == PlayType::Double {
+                candidate
+                    .family_support
+                    .insert(EvidenceFamily::ResultArtist, 20);
+            }
+        }
+        assert_eq!(joint.summary().chart_margin, 20);
+        assert_eq!(
+            joint.summary().state,
+            ResolverResolutionState::SongProjected
+        );
+    }
+
+    #[test]
+    fn select_mode_supplements_unknown_result_mode() {
+        let summary = mode_conflict_fixture(PlayType::Double, None, None).summary();
+        assert_eq!(summary.state, ResolverResolutionState::AcceptedJoint);
+        assert_eq!(summary.result_play_type, None);
+        assert_eq!(
+            summary.selected.unwrap().chart.key.play_type,
+            PlayType::Double
+        );
+        assert_eq!(
+            summary.selected_family_support[&EvidenceFamily::SelectPlayType].normalized,
+            100
         );
     }
 
@@ -7326,6 +7938,236 @@ mod tests {
         assert!(snapshot.raw_fields.is_empty());
         assert_eq!(snapshot.latest_field_sequence, None);
         assert_eq!(snapshot.latest_field_ms, None);
+    }
+
+    fn music_selection_test_observation()
+    -> (Value, JointEvidenceObservation, SongResolutionPresentation) {
+        let song_id = serde_json::from_str("\"00000000-0000-0000-0000-000000000046\"").unwrap();
+        let fields = json!({
+            "play_type": {
+                "state": { "status": "known", "value": "double" },
+                "single_score_ppm": 974_000,
+                "double_score_ppm": 999_000
+            },
+            "selected_difficulty": {
+                "state": { "status": "known", "value": "hyper" }
+            }
+        });
+        let evidence = JointEvidenceObservation {
+            catalog_song_count: 2,
+            candidates: vec![JointEvidenceCandidate {
+                song_id,
+                chart: scorepeek::catalog::Chart {
+                    key: scorepeek::catalog::ChartKey {
+                        play_type: PlayType::Double,
+                        difficulty: Difficulty::Hyper,
+                    },
+                    level: 8,
+                    notes: 829,
+                },
+                display_titles: vec!["Wizards!".to_owned()],
+                artist: "ARTIST".to_owned(),
+                family_support: BTreeMap::from([(EvidenceFamily::SelectTitle, 300)]),
+                support: 300,
+            }],
+        };
+        let presentation = SongResolutionPresentation::Unknown {
+            reason: json!("test"),
+            selected: None,
+            runner_up: None,
+            evidence_summary: None,
+        };
+        (fields, evidence, presentation)
+    }
+
+    #[test]
+    fn music_selection_lifecycle_is_deduplicated_and_does_not_accept_joint() {
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        output.screen_episode_id = 9;
+        output.music_selection_episode_active = true;
+        let session_id = "invocation-1-session-1".to_owned();
+        let (fields, evidence, presentation) = music_selection_test_observation();
+        for sequence in [1, 2, 3] {
+            output
+                .reduce_music_select_observation(
+                    Some(&session_id),
+                    Some(1),
+                    sequence,
+                    sequence * 100,
+                    &fields,
+                    &evidence,
+                    &presentation,
+                )
+                .unwrap();
+        }
+        assert!(output.music_select_resolver.selected().is_some());
+        output.engine.selection_epochs = SelectionEpochTracker::default();
+        assert!(output.music_select_resolver.selected().is_some());
+        let mut changed_song = evidence.clone();
+        changed_song.candidates[0].song_id =
+            serde_json::from_str("\"00000000-0000-0000-0000-000000000047\"").unwrap();
+        let mut conflicting_fields = fields.clone();
+        conflicting_fields["play_type"]["state"]["value"] = json!("single");
+        output
+            .reduce_music_select_observation(
+                Some(&session_id),
+                Some(1),
+                4,
+                400,
+                &conflicting_fields,
+                &changed_song,
+                &presentation,
+            )
+            .unwrap();
+        assert!(output.music_select_resolver.selected().is_none());
+        output
+            .publish_screen_change(
+                &RunEvent {
+                    schema: RUN_EVENT_SCHEMA.to_owned(),
+                    kind: RunEventKind::ScreenChanged {
+                        session_id: Some(session_id),
+                        capture_generation: Some(1),
+                        screen_episode_id: 10,
+                        sequence: 5,
+                        monotonic_start_ms: 500,
+                        monotonic_end_ms: 500,
+                        screen: "play".to_owned(),
+                    },
+                },
+                true,
+            )
+            .unwrap();
+        let events = output.take_headless_events();
+        let lifecycle = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                RunEventKind::MusicSelectionChanged {
+                    revision, state, ..
+                } => Some((*revision, state)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(lifecycle.len(), 3);
+        assert!(matches!(
+            lifecycle[0],
+            (1, MusicSelectionState::Selected { .. })
+        ));
+        assert_eq!(
+            lifecycle[1],
+            (
+                2,
+                &MusicSelectionState::Unresolved {
+                    reason: MusicSelectionUnresolvedReason::EvidenceUnresolved,
+                }
+            )
+        );
+        assert_eq!(
+            lifecycle[2],
+            (
+                3,
+                &MusicSelectionState::Unresolved {
+                    reason: MusicSelectionUnresolvedReason::EpisodeEnded,
+                }
+            )
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::ResolverStateChanged {
+                state: ResolverResolutionState::AcceptedJoint,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn session_finish_ends_selection_once_even_when_field_drain_did_not_finalize() {
+        for finalize in [false, true] {
+            let mut output =
+                RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+            let session_id = "invocation-1-session-1".to_owned();
+            let episode = |phase, sequence| RunEvent {
+                schema: RUN_EVENT_SCHEMA.to_owned(),
+                kind: RunEventKind::SemanticScreenEpisodeChanged {
+                    session_id: Some(session_id.clone()),
+                    capture_generation: Some(1),
+                    screen_episode_id: 9,
+                    sequence,
+                    monotonic_end_ms: sequence * 100,
+                    screen: "music_select".to_owned(),
+                    phase,
+                },
+            };
+            output
+                .publish(&episode(SemanticEpisodePhase::Started, 1))
+                .unwrap();
+            let (fields, evidence, presentation) = music_selection_test_observation();
+            for sequence in [2, 3] {
+                output
+                    .reduce_music_select_observation(
+                        Some(&session_id),
+                        Some(1),
+                        sequence,
+                        sequence * 100,
+                        &fields,
+                        &evidence,
+                        &presentation,
+                    )
+                    .unwrap();
+            }
+            assert!(matches!(
+                output.active_music_selection,
+                Some(MusicSelectionState::Selected { .. })
+            ));
+            output
+                .publish(&episode(SemanticEpisodePhase::Closing, 4))
+                .unwrap();
+            if finalize {
+                output
+                    .publish(&episode(SemanticEpisodePhase::Finalized, 4))
+                    .unwrap();
+            }
+            output
+                .publish(&RunEvent {
+                    schema: RUN_EVENT_SCHEMA.to_owned(),
+                    kind: RunEventKind::SessionFinished {
+                        session_id: session_id.clone(),
+                        capture_generation: 1,
+                        outcome: if finalize { "complete" } else { "failed" }.to_owned(),
+                        report: json!({}),
+                    },
+                })
+                .unwrap();
+            assert!(!output.music_selection_episode_active);
+            let ended = MusicSelectionState::Unresolved {
+                reason: MusicSelectionUnresolvedReason::EpisodeEnded,
+            };
+            assert_eq!(output.active_music_selection, Some(ended.clone()));
+            assert_eq!(
+                output.state.lock().unwrap().latest_music_selection,
+                Some(ended.clone())
+            );
+            let events = output.take_headless_events();
+            let endings = events
+                .iter()
+                .enumerate()
+                .filter_map(|(index, event)| match &event.kind {
+                    RunEventKind::MusicSelectionChanged {
+                        screen_episode_id: 9,
+                        source_sequence: 4,
+                        revision: 2,
+                        state,
+                        ..
+                    } if *state == ended => Some(index),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(endings.len(), 1);
+            let finished = events
+                .iter()
+                .position(|event| matches!(event.kind, RunEventKind::SessionFinished { .. }))
+                .unwrap();
+            assert!(endings[0] < finished);
+        }
     }
 
     #[test]

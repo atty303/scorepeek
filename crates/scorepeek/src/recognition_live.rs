@@ -720,8 +720,13 @@ mod tests {
 
     fn solid_frame(color: [u8; 3], sequence: u64) -> BoundCanonicalFrame {
         let mut pixels = Vec::with_capacity(crate::diagnostic_recording::CANONICAL_BYTES);
-        for _ in 0..crate::diagnostic_recording::CANONICAL_BYTES / 3 {
-            pixels.extend_from_slice(&color);
+        for index in 0..crate::diagnostic_recording::CANONICAL_BYTES / 3 {
+            let pixel = if color == [200, 100, 20] && index % 1920 >= 1320 {
+                [0, 0, 0]
+            } else {
+                color
+            };
+            pixels.extend_from_slice(&pixel);
         }
         if color == [200, 100, 20] {
             for y in [451, 655] {
