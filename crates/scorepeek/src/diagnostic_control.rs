@@ -134,8 +134,6 @@ pub(crate) struct DiagnosticRunSummary {
 pub(crate) struct DiagnosticStoreLease {
     root: std::path::PathBuf,
     root_inode: (u64, u64),
-    #[cfg_attr(not(test), allow(dead_code))]
-    anchor_path: std::path::PathBuf,
     _anchor_lock: File,
     _root_lock: File,
     managed_bytes: u64,
@@ -865,7 +863,7 @@ impl DiagnosticStoreLease {
             }
         }
         let canonical_root = canonical_locked_root(root, &root_lock)?;
-        let (anchor_path, anchor_lock) = open_store_anchor(&canonical_root, true)?
+        let (_, anchor_lock) = open_store_anchor(&canonical_root, true)?
             .ok_or(DiagnosticErrorType::StoreUnavailable)?;
         match anchor_lock.try_lock() {
             Ok(()) => {}
@@ -894,7 +892,6 @@ impl DiagnosticStoreLease {
         Ok(Self {
             root: canonical_root,
             root_inode,
-            anchor_path,
             _anchor_lock: anchor_lock,
             _root_lock: root_lock,
             managed_bytes,
@@ -928,7 +925,7 @@ impl DiagnosticStoreLease {
             }
         }
         let canonical_root = canonical_locked_root(root, &root_lock)?;
-        let (anchor_path, anchor_lock) = open_store_anchor(&canonical_root, true)?
+        let (_, anchor_lock) = open_store_anchor(&canonical_root, true)?
             .ok_or(DiagnosticErrorType::StoreUnavailable)?;
         match anchor_lock.try_lock() {
             Ok(()) => {}
@@ -985,7 +982,6 @@ impl DiagnosticStoreLease {
         let mut lease = Self {
             root: canonical_root,
             root_inode,
-            anchor_path,
             _anchor_lock: anchor_lock,
             _root_lock: root_lock,
             managed_bytes,
@@ -1170,9 +1166,11 @@ fn open_store_anchor(
 }
 
 #[cfg(test)]
+#[allow(clippy::used_underscore_binding)]
 impl Drop for DiagnosticStoreLease {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.anchor_path);
+        let _ = self._anchor_lock.unlock();
+        let _ = self._root_lock.unlock();
     }
 }
 
@@ -2162,6 +2160,27 @@ mod tests {
         DiagnosticRunDescriptor, DiagnosticRunStatus,
     };
 
+    struct TestDirectory {
+        _temporary: tempfile::TempDir,
+        path: PathBuf,
+    }
+
+    impl TestDirectory {
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    fn test_directory() -> TestDirectory {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("store");
+        fs::create_dir(&path).unwrap();
+        TestDirectory {
+            _temporary: temporary,
+            path,
+        }
+    }
+
     fn descriptor(run_id: &str) -> DiagnosticRunDescriptor {
         DiagnosticRunDescriptor {
             run_id: run_id.to_owned(),
@@ -2189,7 +2208,7 @@ mod tests {
 
     #[test]
     fn lists_complete_and_recoverable_partial_runs_without_values_or_paths() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let complete = DiagnosticRecorder::start(
             root.path(),
             &descriptor("complete-run"),
@@ -2233,18 +2252,18 @@ mod tests {
 
     #[test]
     fn rejects_unmanaged_entries_and_run_symlinks() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         fs::write(root.path().join("unexpected"), b"not a run\n").unwrap();
         assert!(diagnostic_store_status(root.path()).is_err());
 
-        let second = tempfile::tempdir().unwrap();
+        let second = test_directory();
         std::os::unix::fs::symlink(root.path(), second.path().join("linked-run")).unwrap();
         assert!(diagnostic_run_list(second.path()).is_err());
     }
 
     #[test]
     fn completed_run_rejects_extra_bytes_and_partial_run_requires_valid_start() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let complete = DiagnosticRecorder::start(
             root.path(),
             &descriptor("complete-run"),
@@ -2254,7 +2273,7 @@ mod tests {
         fs::write(root.path().join("complete-run/extra"), b"").unwrap();
         assert!(diagnostic_run_list(root.path()).is_err());
 
-        let other = tempfile::tempdir().unwrap();
+        let other = test_directory();
         fs::create_dir(other.path().join("partial-run")).unwrap();
         fs::write(other.path().join("partial-run/run.json"), b"{}\n").unwrap();
         assert!(diagnostic_store_status(other.path()).is_err());
@@ -2262,7 +2281,7 @@ mod tests {
 
     #[test]
     fn completed_manifest_is_typed_and_exactly_covers_directory_entries() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let complete = DiagnosticRecorder::start(
             root.path(),
             &descriptor("complete-run"),
@@ -2279,7 +2298,7 @@ mod tests {
 
     #[test]
     fn rejects_per_run_and_aggregate_capacity_overflow() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let partial = DiagnosticRecorder::start(
             root.path(),
             &descriptor("oversized-run"),
@@ -2295,7 +2314,7 @@ mod tests {
         .unwrap();
         assert!(diagnostic_store_status(root.path()).is_err());
 
-        let aggregate = tempfile::tempdir().unwrap();
+        let aggregate = test_directory();
         for run_id in ["first-run", "second-run"] {
             let partial = DiagnosticRecorder::start(
                 aggregate.path(),
@@ -2318,7 +2337,7 @@ mod tests {
 
     #[test]
     fn accepts_an_older_producer_version_under_the_same_schema() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let partial = DiagnosticRecorder::start(
             root.path(),
             &descriptor("older-run"),
@@ -2337,7 +2356,7 @@ mod tests {
 
     #[test]
     fn legacy_v1_without_retention_remains_readable_and_does_not_block_a_new_run() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let legacy = DiagnosticRecorder::start(
             root.path(),
             &descriptor("legacy-run"),
@@ -2440,7 +2459,7 @@ mod tests {
 
     #[test]
     fn rejects_a_run_changed_after_its_individual_inspection() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         for run_id in ["first-run", "second-run"] {
             let partial = DiagnosticRecorder::start(
                 root.path(),
@@ -2461,7 +2480,7 @@ mod tests {
 
     #[test]
     fn store_lease_excludes_a_second_writer_and_status_observes_activity() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let lease = DiagnosticStoreLease::acquire(root.path(), 0).unwrap();
         assert_eq!(
             DiagnosticStoreLease::acquire(root.path(), 0).err(),
@@ -2470,13 +2489,16 @@ mod tests {
         let active = diagnostic_store_status(root.path()).unwrap();
         assert!(active.writer_active);
         drop(lease);
+        let (anchor_path, anchor_lock) = open_store_anchor(root.path(), false).unwrap().unwrap();
+        assert!(anchor_path.is_file());
+        drop(anchor_lock);
         let idle = diagnostic_store_status(root.path()).unwrap();
         assert!(!idle.writer_active);
     }
 
     #[test]
     fn root_lease_survives_lock_marker_rebinding_and_covers_first_writer() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let root_lock = open_lock_directory(root.path()).unwrap();
         root_lock.try_lock().unwrap();
         assert!(diagnostic_store_status(root.path()).unwrap().writer_active);
@@ -2495,7 +2517,7 @@ mod tests {
 
     #[test]
     fn parent_anchor_blocks_a_second_writer_after_root_rebinding() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let moved = root.path().with_extension("moved-for-lock-test");
         let lease = DiagnosticStoreLease::acquire(root.path(), 0).unwrap();
         fs::rename(root.path(), &moved).unwrap();
@@ -2511,7 +2533,7 @@ mod tests {
 
     #[test]
     fn canonical_parent_anchor_blocks_dotdot_alias_after_root_rebinding() {
-        let base = tempfile::tempdir().unwrap();
+        let base = test_directory();
         let root = base.path().join("store");
         let alias_parent = base.path().join("alias-parent");
         fs::create_dir(&root).unwrap();
@@ -2531,7 +2553,7 @@ mod tests {
 
     #[test]
     fn canonical_parent_anchor_blocks_intermediate_symlink_alias_after_root_rebinding() {
-        let base = tempfile::tempdir().unwrap();
+        let base = test_directory();
         let root = base.path().join("store");
         fs::create_dir(&root).unwrap();
         let parent_link = base.path().join("parent-link");
@@ -2551,7 +2573,7 @@ mod tests {
 
     #[test]
     fn retention_expires_runs_and_capacity_removes_the_oldest_inactive_run() {
-        let expired = tempfile::tempdir().unwrap();
+        let expired = test_directory();
         let recorder = DiagnosticRecorder::start(
             expired.path(),
             &descriptor("expired-normal"),
@@ -2564,7 +2586,7 @@ mod tests {
         let _lease = DiagnosticStoreLease::acquire_at(expired.path(), 0, future).unwrap();
         assert!(!expired.path().join("expired-normal").exists());
 
-        let capacity = tempfile::tempdir().unwrap();
+        let capacity = test_directory();
         let normal = DiagnosticRecorder::start(
             capacity.path(),
             &descriptor("normal-run"),
@@ -2601,7 +2623,7 @@ mod tests {
 
     #[test]
     fn retention_recovers_only_valid_owned_delete_staging() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let recorder = DiagnosticRecorder::start(
             root.path(),
             &descriptor("staged-run"),
@@ -2655,7 +2677,7 @@ mod tests {
     #[test]
     fn retention_recovers_marker_publication_before_and_after_link() {
         for publication_point in 0..3 {
-            let root = tempfile::tempdir().unwrap();
+            let root = test_directory();
             let run_id = match publication_point {
                 0 => "partial-marker",
                 1 => "staged-marker",
@@ -2696,7 +2718,7 @@ mod tests {
 
     #[test]
     fn marker_bound_staging_rejects_unknown_entries_before_deleting() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let recorder = DiagnosticRecorder::start(
             root.path(),
             &descriptor("marked-run"),
@@ -2720,7 +2742,7 @@ mod tests {
 
     #[test]
     fn delete_recovery_preserves_a_valid_document_staging_symlink() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let recorder = DiagnosticRecorder::start(
             root.path(),
             &descriptor("delete-symlink-run"),
@@ -2762,7 +2784,7 @@ mod tests {
 
     #[test]
     fn exact_start_capacity_does_not_evict_a_normal_run_for_manifest_reserve() {
-        let probe = tempfile::tempdir().unwrap();
+        let probe = test_directory();
         let probe_run = DiagnosticRecorder::start(
             probe.path(),
             &descriptor("new-run"),
@@ -2773,7 +2795,7 @@ mod tests {
             .unwrap()
             .len();
 
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let normal = DiagnosticRecorder::start(
             root.path(),
             &descriptor("normal-run"),
@@ -2814,7 +2836,7 @@ mod tests {
 
     #[test]
     fn run_id_collision_does_not_evict_normal_evidence() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let normal = DiagnosticRecorder::start(
             root.path(),
             &descriptor("normal-run"),
@@ -2858,7 +2880,7 @@ mod tests {
 
     #[test]
     fn failed_publication_reservation_can_be_released_exactly() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let mut lease = DiagnosticStoreLease::acquire(root.path(), 0).unwrap();
         let initial = lease.managed_bytes;
         lease.reserve(7).unwrap();
@@ -2869,7 +2891,7 @@ mod tests {
 
     #[test]
     fn retention_preserves_a_valid_run_replaced_after_inventory() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let recorder = DiagnosticRecorder::start(
             root.path(),
             &descriptor("changed-run"),
@@ -2892,7 +2914,7 @@ mod tests {
 
     #[test]
     fn priority_capacity_evicts_the_oldest_inactive_run_for_a_new_run() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let partial = DiagnosticRecorder::start(
             root.path(),
             &descriptor("priority-run"),
@@ -2926,7 +2948,7 @@ mod tests {
 
     #[test]
     fn freeze_is_digest_confirmed_idempotent_and_priority() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let recorder = DiagnosticRecorder::start(
             root.path(),
             &descriptor("freeze-run"),
@@ -2977,7 +2999,7 @@ mod tests {
 
     #[test]
     fn delete_requires_exact_current_digests() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let recorder = DiagnosticRecorder::start(
             root.path(),
             &descriptor("delete-run"),
@@ -3001,7 +3023,7 @@ mod tests {
 
     #[test]
     fn partial_run_uses_explicit_no_manifest_confirmation() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let recorder = DiagnosticRecorder::start(
             root.path(),
             &descriptor("partial-control"),
@@ -3019,8 +3041,8 @@ mod tests {
 
     #[test]
     fn export_is_complete_verified_and_create_only() {
-        let root = tempfile::tempdir().unwrap();
-        let export_parent = tempfile::tempdir().unwrap();
+        let root = test_directory();
+        let export_parent = test_directory();
         let mut recorder = DiagnosticRecorder::start(
             root.path(),
             &descriptor("export-run"),
@@ -3084,8 +3106,8 @@ mod tests {
 
     #[test]
     fn export_rejects_a_manifest_bearing_partial_run_before_claiming_destination() {
-        let root = tempfile::tempdir().unwrap();
-        let export_parent = tempfile::tempdir().unwrap();
+        let root = test_directory();
+        let export_parent = test_directory();
         let mut recorder = DiagnosticRecorder::start(
             root.path(),
             &descriptor("partial-export-run"),
@@ -3126,7 +3148,7 @@ mod tests {
 
     #[test]
     fn export_rejects_destinations_resolving_inside_store() {
-        let base = tempfile::tempdir().unwrap();
+        let base = test_directory();
         let root = base.path().join("store");
         fs::create_dir(&root).unwrap();
         let recorder = DiagnosticRecorder::start(
@@ -3174,7 +3196,7 @@ mod tests {
 
     #[test]
     fn next_writer_recovers_interrupted_freeze_publication() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let recorder = DiagnosticRecorder::start(
             root.path(),
             &descriptor("recover-freeze"),
@@ -3204,7 +3226,7 @@ mod tests {
 
     #[test]
     fn freeze_recovery_preserves_a_valid_document_staging_symlink() {
-        let root = tempfile::tempdir().unwrap();
+        let root = test_directory();
         let recorder = DiagnosticRecorder::start(
             root.path(),
             &descriptor("freeze-symlink-run"),

@@ -251,6 +251,7 @@ impl DiagnosticWorkerHandle {
                 if let Some(gate) = hooks.exit_gate {
                     gate.wait();
                 }
+                drop(supervisor_token.take());
                 if let Some(finished) = hooks.finished {
                     finished.store(true, Ordering::Release);
                 }

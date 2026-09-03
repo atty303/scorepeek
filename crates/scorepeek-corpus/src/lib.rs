@@ -19,6 +19,7 @@ mod frame_corpus;
 mod media;
 mod music_list;
 mod music_select_motion;
+mod segment_remote;
 mod temporal_evaluation;
 pub use frame_corpus::{
     CorpusReplayOptions, CorpusReplaySummary, DiagnosticImportSummary,
@@ -65,18 +66,11 @@ const CANONICAL_FRAME_CONTRACT_ID: &str = "scorepeek-canonical-rgb8-1920x1080-v1
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 const MAX_SOURCE_OBJECTS: usize = 1_024;
-const MAX_SOURCE_STORAGE_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
-const MAX_MANIFEST_STORAGE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_GENERATION_BYTES: usize = 256 * 1024;
-const MAX_GENERATIONS: usize = 128;
-const MAX_GENERATION_STORAGE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_REPLAY_INDEX_BYTES: usize = 32 * 1024 * 1024;
 const MAX_REPLAY_INDEXES: usize = 1_024;
 const MAX_REPLAY_FRAMES: usize = 250_000;
-const MAX_REPLAY_INDEX_STORAGE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_LABEL_BYTES: usize = 64 * 1024;
-const MAX_LABEL_OBJECTS: usize = 250_000;
-const MAX_LABEL_STORAGE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const SOURCE_FILE: &str = "source.media";
 const EXTERNAL_SOURCE_FILE: &str = "source.external.json";
 const EXTERNAL_SOURCE_SCHEMA: &str = "scorepeek-private-external-source-v1";
@@ -471,7 +465,6 @@ impl CorpusStore {
             Err(error) => return Err(error.into()),
         }
 
-        ensure_capacity(&content_dir, source.bytes)?;
         let staging = Builder::new()
             .prefix(SOURCE_STAGING_PREFIX)
             .permissions(fs::Permissions::from_mode(0o700))
@@ -507,7 +500,7 @@ impl CorpusStore {
         Ok(file)
     }
 
-    /// Copies immutable source media into the bounded private content store and binds an opaque
+    /// Copies immutable source media into the private content store and binds an opaque
     /// fixture ID to a deterministic manifest.
     ///
     /// Identical content and metadata are idempotent. Reusing a fixture ID for different metadata
@@ -516,7 +509,7 @@ impl CorpusStore {
     /// # Errors
     ///
     /// Returns an error for malformed metadata, non-regular or oversized source media, conflicting
-    /// fixture IDs, capacity exhaustion, or failed durable storage operations.
+    /// fixture IDs, or failed durable storage operations.
     pub fn ingest(
         &self,
         source_path: impl AsRef<Path>,
@@ -618,13 +611,6 @@ impl CorpusStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => false,
             Err(error) => return Err(error.into()),
         };
-        if !destination_exists {
-            ensure_capacity(&content_dir, manifest.source.bytes)?;
-        }
-        if !manifest_exists {
-            ensure_manifest_capacity(&manifest_dir, manifest_bytes.len())?;
-        }
-
         if destination_exists {
             validate_stored_source(&destination, &manifest.source)?;
             sync_stored_source_and_parent(&destination, &content_dir)?;
@@ -699,7 +685,6 @@ impl CorpusStore {
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                ensure_generation_capacity(&generation_dir, bytes.len())?;
                 write_atomic_file(
                     &generation_dir,
                     &destination,
@@ -728,7 +713,7 @@ impl CorpusStore {
     /// # Errors
     ///
     /// Returns an error if the label is malformed, the private store is unavailable or damaged,
-    /// the label capacity is exhausted, or durable publication fails.
+    /// or durable publication fails.
     pub fn author_complete_label(
         &self,
         label_path: impl AsRef<Path>,
@@ -768,7 +753,6 @@ impl CorpusStore {
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                ensure_label_capacity(&label_dir, bytes.len())?;
                 write_atomic_file(&label_dir, &destination, &bytes, LABEL_STAGING_PREFIX)?;
             }
             Err(error) => return Err(error.into()),
@@ -837,7 +821,6 @@ impl CorpusStore {
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                ensure_index_capacity(&index_dir, bytes.len())?;
                 write_atomic_file(&index_dir, &destination, &bytes, INDEX_STAGING_PREFIX)?;
             }
             Err(error) => return Err(error.into()),
@@ -2165,245 +2148,6 @@ fn copy_source(
     Ok(ContentRef { sha256, bytes })
 }
 
-fn ensure_capacity(content_dir: &Path, added_bytes: u64) -> Result<(), CorpusError> {
-    ensure_content_capacity(content_dir, 1, added_bytes)
-}
-
-fn ensure_content_capacity(
-    content_dir: &Path,
-    added_count: usize,
-    added_bytes: u64,
-) -> Result<(), CorpusError> {
-    let mut count = 0_usize;
-    let mut bytes = 0_u64;
-    for entry in fs::read_dir(content_dir)? {
-        let entry = entry?;
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            return Err(CorpusError::InvalidRequest(
-                "content store contains a non-UTF-8 entry".to_owned(),
-            ));
-        };
-        if name.starts_with(SOURCE_STAGING_PREFIX) {
-            continue;
-        }
-        if !is_sha256(&name) || !entry.path().metadata()?.is_dir() {
-            return Err(CorpusError::InvalidRequest(
-                "content store contains an unrecognized entry".to_owned(),
-            ));
-        }
-        let source_bytes = stored_source_logical_bytes(&entry.path(), &name)?;
-        count = count.checked_add(1).ok_or(CorpusError::CapacityExceeded)?;
-        bytes = bytes
-            .checked_add(source_bytes)
-            .ok_or(CorpusError::CapacityExceeded)?;
-    }
-    let new_count = count
-        .checked_add(added_count)
-        .ok_or(CorpusError::CapacityExceeded)?;
-    let new_bytes = bytes
-        .checked_add(added_bytes)
-        .ok_or(CorpusError::CapacityExceeded)?;
-    if new_count > MAX_SOURCE_OBJECTS || new_bytes > MAX_SOURCE_STORAGE_BYTES {
-        return Err(CorpusError::CapacityExceeded);
-    }
-    Ok(())
-}
-
-fn stored_source_logical_bytes(
-    directory: &Path,
-    expected_sha256: &str,
-) -> Result<u64, CorpusError> {
-    validate_directory(directory, ErrorContext::Request)?;
-    let source = directory.join(SOURCE_FILE);
-    match source.metadata() {
-        Ok(metadata)
-            if metadata.is_file() && metadata.len() > 0 && metadata.len() <= MAX_SOURCE_BYTES =>
-        {
-            return Ok(metadata.len());
-        }
-        Ok(_) => {
-            return Err(CorpusError::InvalidRequest(
-                "content store contains an invalid source object".to_owned(),
-            ));
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-    let locator_path = directory.join(EXTERNAL_SOURCE_FILE);
-    validate_regular_file(&locator_path, ErrorContext::Request)?;
-    let bytes = read_bounded_regular(&locator_path, MAX_REQUEST_BYTES, ErrorContext::Request)?;
-    let locator: ExternalSourceLocator = serde_json::from_slice(&bytes)?;
-    locator.validate()?;
-    if locator.source.sha256 != expected_sha256 || canonical_json(&locator)? != bytes {
-        return Err(CorpusError::InvalidRequest(
-            "content store contains an invalid external source locator".to_owned(),
-        ));
-    }
-    Ok(locator.source.bytes)
-}
-
-fn ensure_manifest_capacity(manifest_dir: &Path, added_bytes: usize) -> Result<(), CorpusError> {
-    ensure_manifest_capacity_additions(manifest_dir, 1, added_bytes as u64)
-}
-
-fn ensure_manifest_capacity_additions(
-    manifest_dir: &Path,
-    added_count: usize,
-    added_bytes: u64,
-) -> Result<(), CorpusError> {
-    let mut count = 0_usize;
-    let mut bytes = 0_u64;
-    for entry in fs::read_dir(manifest_dir)? {
-        let entry = entry?;
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            return Err(CorpusError::InvalidRequest(
-                "manifest store contains a non-UTF-8 entry".to_owned(),
-            ));
-        };
-        if name.starts_with(MANIFEST_STAGING_PREFIX) {
-            continue;
-        }
-        let Some(fixture_id) = name.strip_suffix(".json") else {
-            return Err(CorpusError::InvalidRequest(
-                "manifest store contains an unrecognized entry".to_owned(),
-            ));
-        };
-        validate_opaque_id(fixture_id, "stored fixture ID", ErrorContext::Request)?;
-        let metadata = entry.path().metadata()?;
-        if !metadata.is_file() || metadata.len() > MAX_REQUEST_BYTES as u64 {
-            return Err(CorpusError::InvalidRequest(
-                "manifest store contains an invalid file".to_owned(),
-            ));
-        }
-        count = count.checked_add(1).ok_or(CorpusError::CapacityExceeded)?;
-        bytes = bytes
-            .checked_add(metadata.len())
-            .ok_or(CorpusError::CapacityExceeded)?;
-    }
-    let new_count = count
-        .checked_add(added_count)
-        .ok_or(CorpusError::CapacityExceeded)?;
-    let new_bytes = bytes
-        .checked_add(added_bytes)
-        .ok_or(CorpusError::CapacityExceeded)?;
-    if new_count > MAX_SOURCE_OBJECTS || new_bytes > MAX_MANIFEST_STORAGE_BYTES {
-        return Err(CorpusError::CapacityExceeded);
-    }
-    Ok(())
-}
-
-fn ensure_generation_capacity(
-    generation_dir: &Path,
-    added_bytes: usize,
-) -> Result<(), CorpusError> {
-    let mut count = 0_usize;
-    let mut bytes = 0_u64;
-    for entry in fs::read_dir(generation_dir)? {
-        let entry = entry?;
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            return Err(CorpusError::InvalidRequest(
-                "generation store contains a non-UTF-8 entry".to_owned(),
-            ));
-        };
-        if name.starts_with(GENERATION_STAGING_PREFIX) {
-            continue;
-        }
-        let Some(digest) = name.strip_suffix(".json") else {
-            return Err(CorpusError::InvalidRequest(
-                "generation store contains an unrecognized entry".to_owned(),
-            ));
-        };
-        if !is_sha256(digest) {
-            return Err(CorpusError::InvalidRequest(
-                "generation store contains an invalid digest name".to_owned(),
-            ));
-        }
-        let metadata = entry.path().metadata()?;
-        if !metadata.is_file() || metadata.len() > MAX_GENERATION_BYTES as u64 {
-            return Err(CorpusError::InvalidRequest(
-                "generation store contains an invalid file".to_owned(),
-            ));
-        }
-        count = count.checked_add(1).ok_or(CorpusError::CapacityExceeded)?;
-        bytes = bytes
-            .checked_add(metadata.len())
-            .ok_or(CorpusError::CapacityExceeded)?;
-    }
-    let new_count = count.checked_add(1).ok_or(CorpusError::CapacityExceeded)?;
-    let added_bytes = u64::try_from(added_bytes).map_err(|_| CorpusError::CapacityExceeded)?;
-    let new_bytes = bytes
-        .checked_add(added_bytes)
-        .ok_or(CorpusError::CapacityExceeded)?;
-    if new_count > MAX_GENERATIONS || new_bytes > MAX_GENERATION_STORAGE_BYTES {
-        return Err(CorpusError::CapacityExceeded);
-    }
-    Ok(())
-}
-
-fn ensure_label_capacity(label_dir: &Path, added_bytes: usize) -> Result<(), CorpusError> {
-    let mut count = 0_usize;
-    let mut total = 0_u64;
-    for entry in fs::read_dir(label_dir)? {
-        let entry = entry?;
-        count = count.checked_add(1).ok_or(CorpusError::CapacityExceeded)?;
-        total = total
-            .checked_add(entry.path().metadata()?.len())
-            .ok_or(CorpusError::CapacityExceeded)?;
-    }
-    if count >= MAX_LABEL_OBJECTS
-        || total
-            .checked_add(added_bytes as u64)
-            .is_none_or(|value| value > MAX_LABEL_STORAGE_BYTES)
-    {
-        return Err(CorpusError::CapacityExceeded);
-    }
-    Ok(())
-}
-
-fn ensure_index_capacity(index_dir: &Path, added_bytes: usize) -> Result<(), CorpusError> {
-    let mut count = 0_usize;
-    let mut total = 0_u64;
-    for entry in fs::read_dir(index_dir)? {
-        let entry = entry?;
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            return Err(CorpusError::InvalidReplay(
-                "replay-index store contains a non-UTF-8 entry".to_owned(),
-            ));
-        };
-        if name.starts_with(INDEX_STAGING_PREFIX) {
-            continue;
-        }
-        let Some(digest) = name.strip_suffix(".json") else {
-            return Err(CorpusError::InvalidReplay(
-                "replay-index store contains an unrecognized entry".to_owned(),
-            ));
-        };
-        validate_sha256(digest, "replay-index filename", ErrorContext::Replay)?;
-        let metadata = entry.path().metadata()?;
-        if !metadata.is_file()
-            || metadata.len() == 0
-            || metadata.len() > MAX_REPLAY_INDEX_BYTES as u64
-        {
-            return Err(CorpusError::InvalidReplay(
-                "replay-index store contains an invalid object".to_owned(),
-            ));
-        }
-        count = count.checked_add(1).ok_or(CorpusError::CapacityExceeded)?;
-        total = total
-            .checked_add(metadata.len())
-            .ok_or(CorpusError::CapacityExceeded)?;
-    }
-    let added_bytes = u64::try_from(added_bytes).map_err(|_| CorpusError::CapacityExceeded)?;
-    if count >= MAX_REPLAY_INDEXES
-        || total
-            .checked_add(added_bytes)
-            .is_none_or(|value| value > MAX_REPLAY_INDEX_STORAGE_BYTES)
-    {
-        return Err(CorpusError::CapacityExceeded);
-    }
-    Ok(())
-}
-
 fn validate_stored_source(directory: &Path, expected: &ContentRef) -> Result<(), CorpusError> {
     resolve_stored_source_path(directory, expected).map(|_| ())
 }
@@ -3032,8 +2776,6 @@ fn validate_complete_label(store: &CorpusStore, frame: &ReplayFrame) -> Result<(
 }
 
 fn validate_label_store(label_dir: &Path) -> Result<(), CorpusError> {
-    let mut count = 0_usize;
-    let mut total = 0_u64;
     for entry in fs::read_dir(label_dir)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -3053,13 +2795,6 @@ fn validate_label_store(label_dir: &Path) -> Result<(), CorpusError> {
             return Err(CorpusError::InvalidReplay(
                 "complete-label store contains an invalid object".to_owned(),
             ));
-        }
-        count = count.checked_add(1).ok_or(CorpusError::CapacityExceeded)?;
-        total = total
-            .checked_add(metadata.len())
-            .ok_or(CorpusError::CapacityExceeded)?;
-        if count > MAX_LABEL_OBJECTS || total > MAX_LABEL_STORAGE_BYTES {
-            return Err(CorpusError::CapacityExceeded);
         }
         read_complete_label_object(&entry.path(), digest)?;
     }
@@ -3986,64 +3721,6 @@ mod tests {
             digest_bytes(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
-    }
-
-    #[test]
-    fn metadata_store_limits_reject_new_bindings_and_generations() {
-        let temporary = tempdir().unwrap();
-        let manifests = temporary.path().join("manifests");
-        let generations = temporary.path().join("generations");
-        fs::create_dir(&manifests).unwrap();
-        fs::create_dir(&generations).unwrap();
-        for index in 0..super::MAX_SOURCE_OBJECTS {
-            fs::write(manifests.join(format!("fixture-{index:04}.json")), b"{}\n").unwrap();
-        }
-        assert!(matches!(
-            super::ensure_manifest_capacity(&manifests, 3),
-            Err(CorpusError::CapacityExceeded)
-        ));
-
-        for index in 0..super::MAX_GENERATIONS {
-            fs::write(generations.join(format!("{index:064x}.json")), b"{}\n").unwrap();
-        }
-        assert!(matches!(
-            super::ensure_generation_capacity(&generations, 3),
-            Err(CorpusError::CapacityExceeded)
-        ));
-    }
-
-    #[test]
-    fn manifest_capacity_failure_does_not_publish_an_orphan_source() {
-        let temporary = tempdir().unwrap();
-        let root = temporary.path().join("private-corpus");
-        let store = CorpusStore::new(&root);
-        ingest_fixture(
-            temporary.path(),
-            &store,
-            "fixture-0000",
-            "session-0000",
-            "capture-profile-a",
-            b"first source",
-        );
-        let manifests = root.join("manifests");
-        for index in 1..super::MAX_SOURCE_OBJECTS {
-            fs::write(manifests.join(format!("fixture-{index:04}.json")), b"{}\n").unwrap();
-        }
-        let source = temporary.path().join("overflow.media");
-        let request = temporary.path().join("overflow.json");
-        fs::write(&source, b"unbound source").unwrap();
-        write_request_for(
-            &request,
-            "fixture-overflow",
-            "session-overflow",
-            "capture-profile-a",
-        );
-        let before = fs::read_dir(root.join("content")).unwrap().count();
-        assert!(matches!(
-            store.ingest(source, request),
-            Err(CorpusError::CapacityExceeded)
-        ));
-        assert_eq!(fs::read_dir(root.join("content")).unwrap().count(), before);
     }
 
     #[test]

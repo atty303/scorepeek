@@ -28,6 +28,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use crate::CorpusError;
+use crate::segment_remote::{RemoteSegment, SegmentRemote};
 
 const DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v5";
 const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v2";
@@ -687,6 +688,11 @@ pub struct DiagnosticImportSummary {
     diagnostic_sha256: String,
     review_draft: PathBuf,
     canonical_frame_count: usize,
+    local_segment_objects: u64,
+    remote_segment_objects: u64,
+    remote_transferred_objects: u64,
+    remote_reused_objects: u64,
+    remote_segment_bytes: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -737,6 +743,9 @@ pub struct CorpusReplaySummary {
     memory_wait_us: u64,
     sessions: Vec<CorpusReplaySessionSummary>,
     corpus_wall_us: u64,
+    local_segment_decodes: u64,
+    remote_segment_downloads: u64,
+    remote_downloaded_bytes: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -751,6 +760,36 @@ struct CorpusReplayDecoderSummary {
     decoder_id: usize,
     wall_us: u64,
     rss_peak_bytes: u64,
+}
+
+#[derive(Clone)]
+struct SegmentResolver {
+    remote: Option<SegmentRemote>,
+    local_segment_decodes: Arc<AtomicU64>,
+}
+
+enum ResolvedSegment {
+    Local(PathBuf),
+    Remote(RemoteSegment),
+}
+
+struct CanonicalReplayEnvironment<'a> {
+    bundle: &'a Path,
+    catalog_root: &'a Path,
+    diagnostic_root: &'a Path,
+    segment_resolver: &'a SegmentResolver,
+}
+
+struct ReplayStepContext<'a> {
+    store: &'a Path,
+    diagnostic_root: &'a Path,
+    shared: &'a Arc<
+        scorepeek::recognition_live::screen_field_observer::SharedRegisteredScreenFieldResources,
+    >,
+    decode_activity: &'a Arc<ReplayDecodeActivity>,
+    preprocess_pool: &'a ReplayPreprocessPool,
+    outstanding_limit: usize,
+    segment_resolver: &'a SegmentResolver,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1899,6 +1938,11 @@ enum DecodeContext {
     Replay,
 }
 
+enum DecodeSource<'a> {
+    Path(&'a Path),
+    File(File),
+}
+
 fn decode_canonical_frames(
     path: &Path,
     expected_frames: usize,
@@ -1966,14 +2010,60 @@ fn decode_canonical_frames_with_program_and_timing(
     context: DecodeContext,
     activity: Option<&ReplayDecodeActivity>,
     program: &OsStr,
+    observe: impl FnMut(usize, Box<[u8]>, u64) -> Result<(), CorpusError> + Send,
+) -> Result<String, CorpusError> {
+    decode_canonical_source_with_program_and_timing(
+        DecodeSource::Path(path),
+        expected_frames,
+        context,
+        activity,
+        program,
+        observe,
+    )
+}
+
+fn decode_resolved_canonical_frames(
+    source: &ResolvedSegment,
+    expected_frames: usize,
+    context: DecodeContext,
+    activity: Option<&ReplayDecodeActivity>,
+    observe: impl FnMut(usize, Box<[u8]>, u64) -> Result<(), CorpusError> + Send,
+) -> Result<String, CorpusError> {
+    let source = match source {
+        ResolvedSegment::Local(path) => DecodeSource::Path(path),
+        ResolvedSegment::Remote(segment) => DecodeSource::File(segment.input()?),
+    };
+    decode_canonical_source_with_program_and_timing(
+        source,
+        expected_frames,
+        context,
+        activity,
+        OsStr::new("ffmpeg"),
+        observe,
+    )
+}
+
+fn decode_canonical_source_with_program_and_timing(
+    source: DecodeSource<'_>,
+    expected_frames: usize,
+    context: DecodeContext,
+    activity: Option<&ReplayDecodeActivity>,
+    program: &OsStr,
     mut observe: impl FnMut(usize, Box<[u8]>, u64) -> Result<(), CorpusError> + Send,
 ) -> Result<String, CorpusError> {
     let decoder_memory = activity.map(ReplayDecodeActivity::reserve_decoder);
-    let child = Command::new(program)
-        .args(["-hide_banner", "-loglevel", "error", "-threads", "1", "-i"])
-        .arg(path)
+    let mut command = Command::new(program);
+    command.args(["-hide_banner", "-loglevel", "error", "-threads", "1", "-i"]);
+    match source {
+        DecodeSource::Path(path) => {
+            command.arg(path).stdin(Stdio::null());
+        }
+        DecodeSource::File(file) => {
+            command.arg("pipe:0").stdin(Stdio::from(file));
+        }
+    }
+    let child = command
         .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
-        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -2252,11 +2342,19 @@ pub fn import_diagnostic(
     diagnostic: &Path,
     review_draft: &Path,
 ) -> Result<DiagnosticImportSummary, CorpusError> {
+    let remote = SegmentRemote::from_environment()?;
     let verified = verify_diagnostic(diagnostic)?;
     let (manifest, _) = read_json::<DiagnosticManifest>(&diagnostic.join("manifest.json"))?;
     ensure_store(store)?;
     if manifest.schema == DIAGNOSTIC_SCHEMA {
-        return import_canonical_diagnostic(store, diagnostic, review_draft, verified, manifest);
+        return import_canonical_diagnostic(
+            store,
+            diagnostic,
+            review_draft,
+            verified,
+            manifest,
+            remote.as_ref(),
+        );
     }
     let mut artifacts = Vec::with_capacity(manifest.artifacts.len());
     let capture: Value =
@@ -2357,11 +2455,16 @@ pub fn import_diagnostic(
     };
     publish_document(review_draft, &canonical_json(&draft)?)?;
     Ok(DiagnosticImportSummary {
-        schema: "scorepeek-private-diagnostic-import-v1",
+        schema: "scorepeek-private-diagnostic-import-v3",
         session_sha256,
         diagnostic_sha256: verified.diagnostic_sha256,
         review_draft: review_draft.to_owned(),
         canonical_frame_count: draft.canonical_frames.len(),
+        local_segment_objects: 0,
+        remote_segment_objects: 0,
+        remote_transferred_objects: 0,
+        remote_reused_objects: 0,
+        remote_segment_bytes: 0,
     })
 }
 
@@ -2371,6 +2474,7 @@ fn import_canonical_diagnostic(
     review_draft: &Path,
     verified: DiagnosticVerificationSummary,
     manifest: DiagnosticManifest,
+    remote: Option<&SegmentRemote>,
 ) -> Result<DiagnosticImportSummary, CorpusError> {
     if manifest.completeness != "complete"
         || manifest.canonical_completeness.as_deref() != Some("complete")
@@ -2406,10 +2510,29 @@ fn import_canonical_diagnostic(
     if offset != retained.len() {
         return invalid("canonical retained tick coverage differs");
     }
+    let segment_paths = canonical
+        .segments
+        .iter()
+        .map(|segment| format!("recognition/{}", segment.path))
+        .collect::<BTreeSet<_>>();
+    let mut local_segment_objects = 0_u64;
+    let mut remote_segment_objects = 0_u64;
+    let mut remote_segment_bytes = 0_u64;
     let mut artifacts = Vec::with_capacity(manifest.artifacts.len());
     for artifact in &manifest.artifacts {
         let source = diagnostic.join(safe_relative(&artifact.path)?);
-        publish_object(store, &source, &artifact.sha256, artifact.bytes)?;
+        if segment_paths.contains(&artifact.path) {
+            if let Some(remote) = remote {
+                remote.upload_verified(File::open(&source)?, &artifact.sha256, artifact.bytes)?;
+                remote_segment_objects = remote_segment_objects.saturating_add(1);
+                remote_segment_bytes = remote_segment_bytes.saturating_add(artifact.bytes);
+            } else {
+                publish_object(store, &source, &artifact.sha256, artifact.bytes)?;
+                local_segment_objects = local_segment_objects.saturating_add(1);
+            }
+        } else {
+            publish_object(store, &source, &artifact.sha256, artifact.bytes)?;
+        }
         artifacts.push(CorpusArtifact {
             kind: artifact.kind.clone(),
             source_path: artifact.path.clone(),
@@ -2469,11 +2592,16 @@ fn import_canonical_diagnostic(
     };
     publish_document(review_draft, &canonical_json(&draft)?)?;
     Ok(DiagnosticImportSummary {
-        schema: "scorepeek-private-diagnostic-import-v2",
+        schema: "scorepeek-private-diagnostic-import-v3",
         session_sha256,
         diagnostic_sha256: verified.diagnostic_sha256,
         review_draft: review_draft.to_owned(),
         canonical_frame_count: draft.canonical_frames.len(),
+        local_segment_objects,
+        remote_segment_objects,
+        remote_transferred_objects: remote.map_or(0, |remote| remote.metrics().transferred_objects),
+        remote_reused_objects: remote.map_or(0, |remote| remote.metrics().reused_objects),
+        remote_segment_bytes,
     })
 }
 
@@ -3037,6 +3165,10 @@ pub fn replay_corpus_with_options(
     store: &Path,
     options: CorpusReplayOptions,
 ) -> Result<CorpusReplaySummary, CorpusError> {
+    let segment_resolver = SegmentResolver {
+        remote: SegmentRemote::from_environment()?,
+        local_segment_decodes: Arc::new(AtomicU64::new(0)),
+    };
     let available_parallelism = thread::available_parallelism().map_or(1, usize::from);
     if !(MINIMUM_REPLAY_MEMORY_MIB..=MAXIMUM_REPLAY_MEMORY_MIB).contains(&options.memory_mib)
         || options
@@ -3061,10 +3193,13 @@ pub fn replay_corpus_with_options(
             store,
             generation_sha256,
             &suite,
-            &bundle,
-            &catalog_root,
-            diagnostic_root.path(),
             options,
+            &CanonicalReplayEnvironment {
+                bundle: &bundle,
+                catalog_root: &catalog_root,
+                diagnostic_root: diagnostic_root.path(),
+                segment_resolver: &segment_resolver,
+            },
         );
     }
     for (session_index, entry) in suite.entries.iter().enumerate() {
@@ -3344,7 +3479,7 @@ pub fn replay_corpus_with_options(
         return Err(CorpusError::InvalidReplay(replay_failures.join("; ")));
     }
     Ok(CorpusReplaySummary {
-        schema: "scorepeek-private-corpus-replay-v1",
+        schema: "scorepeek-private-corpus-replay-v4",
         generation_sha256,
         session_count: suite.entries.len(),
         episode_count: episodes,
@@ -3381,6 +3516,9 @@ pub fn replay_corpus_with_options(
         memory_wait_us: 0,
         sessions: Vec::new(),
         corpus_wall_us: 0,
+        local_segment_decodes: 0,
+        remote_segment_downloads: 0,
+        remote_downloaded_bytes: 0,
     })
 }
 
@@ -3828,10 +3966,8 @@ fn replay_canonical_suite(
     store: &Path,
     generation_sha256: String,
     suite: &RegressionSuite,
-    bundle: &Path,
-    catalog_root: &Path,
-    diagnostic_root: &Path,
     options: CorpusReplayOptions,
+    environment: &CanonicalReplayEnvironment<'_>,
 ) -> Result<CorpusReplaySummary, CorpusError> {
     let replay_started = std::time::Instant::now();
     let available_parallelism = std::thread::available_parallelism().map_or(1, usize::from);
@@ -3890,8 +4026,8 @@ fn replay_canonical_suite(
         let descriptor = replay_descriptor(prepared.index, &prepared.session, &prepared.binding);
         match scorepeek::recognition_live::screen_field_observer::SharedRegisteredScreenFieldResources::load(
             &descriptor,
-            catalog_root,
-            bundle,
+            environment.catalog_root,
+            environment.bundle,
             text_workers,
         ) {
             Ok(shared) => break (source, prepared, Arc::new(shared)),
@@ -3953,7 +4089,8 @@ fn replay_canonical_suite(
         let activity = Arc::clone(&decode_activity);
         let preprocess_pool = preprocess_pool.clone();
         let store = store.to_owned();
-        let diagnostic_root = diagnostic_root.to_owned();
+        let diagnostic_root = environment.diagnostic_root.to_owned();
+        let segment_resolver = environment.segment_resolver.clone();
         handles.push(thread::spawn(move || {
             loop {
                 let message = receiver
@@ -3968,15 +4105,16 @@ fn replay_canonical_suite(
                     ReplayWork::Active(runtime) => runtime.session_id.clone(),
                 };
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    execute_replay_step(
-                        &store,
-                        &diagnostic_root,
-                        work,
-                        Arc::clone(&shared),
-                        &activity,
-                        &preprocess_pool,
-                        per_session_pending_limit,
-                    )
+                    let context = ReplayStepContext {
+                        store: &store,
+                        diagnostic_root: &diagnostic_root,
+                        shared: &shared,
+                        decode_activity: &activity,
+                        preprocess_pool: &preprocess_pool,
+                        outstanding_limit: per_session_pending_limit,
+                        segment_resolver: &segment_resolver,
+                    };
+                    execute_replay_step(&context, work)
                 }))
                 .unwrap_or_else(|_| {
                     Err(CorpusError::InvalidReplay(
@@ -4224,7 +4362,7 @@ fn replay_canonical_suite(
         .clone();
     decoder_details.sort_by_key(|decoder| decoder.decoder_id);
     Ok(CorpusReplaySummary {
-        schema: "scorepeek-private-corpus-replay-v3",
+        schema: "scorepeek-private-corpus-replay-v4",
         generation_sha256,
         session_count: suite.entries.len(),
         episode_count,
@@ -4265,6 +4403,20 @@ fn replay_canonical_suite(
         memory_wait_us,
         sessions,
         corpus_wall_us: u64::try_from(replay_started.elapsed().as_micros()).unwrap_or(u64::MAX),
+        local_segment_decodes: environment
+            .segment_resolver
+            .local_segment_decodes
+            .load(Ordering::Acquire),
+        remote_segment_downloads: environment
+            .segment_resolver
+            .remote
+            .as_ref()
+            .map_or(0, |remote| remote.metrics().downloaded_segments),
+        remote_downloaded_bytes: environment
+            .segment_resolver
+            .remote
+            .as_ref()
+            .map_or(0, |remote| remote.metrics().downloaded_bytes),
     })
 }
 
@@ -4412,36 +4564,30 @@ fn start_replay_session(
 }
 
 fn execute_replay_step(
-    store: &Path,
-    diagnostic_root: &Path,
+    context: &ReplayStepContext<'_>,
     scheduled: ScheduledReplayWork,
-    shared: Arc<
-        scorepeek::recognition_live::screen_field_observer::SharedRegisteredScreenFieldResources,
-    >,
-    decode_activity: &Arc<ReplayDecodeActivity>,
-    preprocess_pool: &ReplayPreprocessPool,
-    outstanding_limit: usize,
 ) -> Result<ReplayStep, CorpusError> {
     let slot_wait_us = u64::try_from(scheduled.queued_at.elapsed().as_micros()).unwrap_or(u64::MAX);
     match scheduled.work {
         ReplayWork::Queued(source) => {
-            let prepared = load_prepared_replay_session(store, &source)?;
+            let prepared = load_prepared_replay_session(context.store, &source)?;
             let mut runtime = start_replay_session(
-                store,
-                diagnostic_root,
+                context.store,
+                context.diagnostic_root,
                 prepared,
-                shared,
-                decode_activity,
+                Arc::clone(context.shared),
+                context.decode_activity,
                 source.memory_wait_us,
             )?;
             runtime.decoder_slot_wait_us =
                 runtime.decoder_slot_wait_us.saturating_add(slot_wait_us);
             process_replay_segment(
-                store,
+                context.store,
                 &mut runtime,
-                decode_activity,
-                preprocess_pool,
-                outstanding_limit,
+                context.decode_activity,
+                context.preprocess_pool,
+                context.outstanding_limit,
+                context.segment_resolver,
             )?;
             Ok(
                 if runtime.segment_index == runtime.canonical.segments.len() {
@@ -4453,21 +4599,22 @@ fn execute_replay_step(
         }
         ReplayWork::Prepared(prepared, memory_wait_us) => {
             let mut runtime = start_replay_session(
-                store,
-                diagnostic_root,
+                context.store,
+                context.diagnostic_root,
                 *prepared,
-                shared,
-                decode_activity,
+                Arc::clone(context.shared),
+                context.decode_activity,
                 memory_wait_us,
             )?;
             runtime.decoder_slot_wait_us =
                 runtime.decoder_slot_wait_us.saturating_add(slot_wait_us);
             process_replay_segment(
-                store,
+                context.store,
                 &mut runtime,
-                decode_activity,
-                preprocess_pool,
-                outstanding_limit,
+                context.decode_activity,
+                context.preprocess_pool,
+                context.outstanding_limit,
+                context.segment_resolver,
             )?;
             Ok(
                 if runtime.segment_index == runtime.canonical.segments.len() {
@@ -4481,11 +4628,12 @@ fn execute_replay_step(
             runtime.decoder_slot_wait_us =
                 runtime.decoder_slot_wait_us.saturating_add(slot_wait_us);
             process_replay_segment(
-                store,
+                context.store,
                 &mut runtime,
-                decode_activity,
-                preprocess_pool,
-                outstanding_limit,
+                context.decode_activity,
+                context.preprocess_pool,
+                context.outstanding_limit,
+                context.segment_resolver,
             )?;
             Ok(
                 if runtime.segment_index == runtime.canonical.segments.len() {
@@ -4504,6 +4652,7 @@ fn process_replay_segment(
     decode_activity: &Arc<ReplayDecodeActivity>,
     preprocess_pool: &ReplayPreprocessPool,
     outstanding_limit: usize,
+    segment_resolver: &SegmentResolver,
 ) -> Result<(), CorpusError> {
     let segment = runtime
         .canonical
@@ -4518,13 +4667,13 @@ fn process_replay_segment(
             CorpusError::InvalidReplay("canonical segment exceeds retained tick index".to_owned())
         })?
         .to_vec();
-    let object = session_object_for_source(
+    let object = segment_resolver.resolve(
         store,
         &runtime.session,
         &format!("recognition/{}", segment.path),
     )?;
     let mut preprocessing = VecDeque::new();
-    let decoded_digest = decode_canonical_frames_with_activity_and_timing(
+    let decoded_digest = decode_resolved_canonical_frames(
         &object,
         segment.frames,
         DecodeContext::Replay,
@@ -5007,13 +5156,18 @@ fn for_each_canonical_session_frame(
     session: &CaptureSession,
     observe: impl FnMut(&CanonicalTick, Box<[u8]>) -> Result<(), CorpusError> + Send,
 ) -> Result<(), CorpusError> {
-    for_each_canonical_session_frame_with_activity(store, session, None, observe)
+    let resolver = SegmentResolver {
+        remote: SegmentRemote::from_environment()?,
+        local_segment_decodes: Arc::new(AtomicU64::new(0)),
+    };
+    for_each_canonical_session_frame_with_activity(store, session, None, &resolver, observe)
 }
 
 fn for_each_canonical_session_frame_with_activity(
     store: &Path,
     session: &CaptureSession,
     activity: Option<&ReplayDecodeActivity>,
+    resolver: &SegmentResolver,
     mut observe: impl FnMut(&CanonicalTick, Box<[u8]>) -> Result<(), CorpusError> + Send,
 ) -> Result<(), CorpusError> {
     let canonical_manifest_object =
@@ -5031,8 +5185,7 @@ fn for_each_canonical_session_frame_with_activity(
         .collect::<Vec<_>>();
     let mut offset = 0usize;
     for segment in &canonical.segments {
-        let object =
-            session_object_for_source(store, session, &format!("recognition/{}", segment.path))?;
+        let object = resolver.resolve(store, session, &format!("recognition/{}", segment.path))?;
         let expected = retained
             .get(offset..offset.saturating_add(segment.frames))
             .ok_or_else(|| {
@@ -5040,12 +5193,12 @@ fn for_each_canonical_session_frame_with_activity(
                     "canonical segment exceeds retained tick index".to_owned(),
                 )
             })?;
-        let decoded_digest = decode_canonical_frames_with_activity(
+        let decoded_digest = decode_resolved_canonical_frames(
             &object,
             segment.frames,
             DecodeContext::Replay,
             activity,
-            |index, pixels| {
+            |index, pixels, _| {
                 let tick = expected.get(index).ok_or_else(|| {
                     CorpusError::InvalidReplay(
                         "canonical decoded frame exceeds tick index".to_owned(),
@@ -5111,6 +5264,45 @@ fn session_object_for_source(
     let object = store.join("objects").join(&artifact.sha256);
     verify_file(&object, &artifact.sha256, artifact.bytes)?;
     Ok(object)
+}
+
+impl SegmentResolver {
+    fn resolve(
+        &self,
+        store: &Path,
+        session: &CaptureSession,
+        source_path: &str,
+    ) -> Result<ResolvedSegment, CorpusError> {
+        let artifact = session
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.source_path == source_path)
+            .ok_or_else(|| {
+                CorpusError::InvalidReplay(format!(
+                    "canonical session artifact is unavailable: {source_path}"
+                ))
+            })?;
+        let object = store.join("objects").join(&artifact.sha256);
+        match object.symlink_metadata() {
+            Ok(_) => {
+                verify_file(&object, &artifact.sha256, artifact.bytes)?;
+                self.local_segment_decodes.fetch_add(1, Ordering::AcqRel);
+                Ok(ResolvedSegment::Local(object))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let remote = self.remote.as_ref().ok_or_else(|| {
+                    CorpusError::InvalidReplay(
+                        "remote remote_not_configured: canonical segment is not local".to_owned(),
+                    )
+                })?;
+                remote
+                    .materialize(&artifact.sha256, artifact.bytes)
+                    .map(ResolvedSegment::Remote)
+                    .map_err(|error| CorpusError::InvalidReplay(error.to_string()))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
 }
 
 fn validate_semantic_oracle(
@@ -6268,6 +6460,9 @@ fn invalid_replay<T>(detail: &str) -> Result<T, CorpusError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use object_store::ObjectStore;
+    use object_store::memory::InMemory;
+    use std::io::Seek as _;
 
     fn diagnostic_manifest() -> DiagnosticManifest {
         DiagnosticManifest {
@@ -6444,6 +6639,145 @@ mod tests {
         assert!(details.iter().all(|detail| detail.rss_peak_bytes > 0));
         assert!(activity.ffmpeg_rss_peak_total_bytes.load(Ordering::Acquire) > 0);
         assert!(activity.process_rss_peak_bytes.load(Ordering::Acquire) > 0);
+    }
+
+    #[test]
+    fn verified_temporary_segment_decodes_through_ffmpeg_stdin() {
+        let root = tempfile::tempdir().unwrap();
+        let segment = root.path().join("fixture.mkv");
+        let status = Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=1920x1080:r=10:d=0.1",
+                "-frames:v",
+                "1",
+                "-c:v",
+                "ffv1",
+            ])
+            .arg(&segment)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let digest = decode_canonical_source_with_program_and_timing(
+            DecodeSource::File(File::open(segment).unwrap()),
+            1,
+            DecodeContext::Replay,
+            None,
+            OsStr::new("ffmpeg"),
+            |_, pixels, _| {
+                assert_eq!(pixels.len(), 1920 * 1080 * 3);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(digest, crate::digest_bytes(&vec![0_u8; 1920 * 1080 * 3]));
+    }
+
+    #[test]
+    fn segment_resolver_gets_a_missing_local_object_from_remote() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("store");
+        ensure_store(&store).unwrap();
+        let bytes = b"remote segment";
+        let sha256 = digest(bytes);
+        let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let remote = SegmentRemote::new(object_store, "test".to_owned()).unwrap();
+        let mut source = tempfile::tempfile().unwrap();
+        source.write_all(bytes).unwrap();
+        source.rewind().unwrap();
+        remote
+            .upload_verified(source, &sha256, bytes.len() as u64)
+            .unwrap();
+        let resolver = SegmentResolver {
+            remote: Some(remote),
+            local_segment_decodes: Arc::new(AtomicU64::new(0)),
+        };
+        let session = CaptureSession {
+            schema: SESSION_SCHEMA.to_owned(),
+            diagnostic_sha256: "1".repeat(64),
+            source_kind: SourceKind::LiveRun,
+            source_session_id: "session".to_owned(),
+            capture_generation: 1,
+            profile_sha256: "2".repeat(64),
+            catalog_sha256: "3".repeat(64),
+            recognition_interval_ms: 100,
+            processed_ticks: 1,
+            busy_skips: 0,
+            maximum_consecutive_busy_skips: 0,
+            completeness: "complete".to_owned(),
+            canonical_frames: Vec::new(),
+            normalization_pairs: Vec::new(),
+            artifacts: vec![CorpusArtifact {
+                kind: "canonical_segment".to_owned(),
+                source_path: "recognition/segment-0000.mkv".to_owned(),
+                sha256,
+                bytes: bytes.len() as u64,
+            }],
+        };
+        let ResolvedSegment::Remote(segment) = resolver
+            .resolve(&store, &session, "recognition/segment-0000.mkv")
+            .unwrap()
+        else {
+            panic!("missing local segment must resolve remotely");
+        };
+        let mut actual = Vec::new();
+        segment.input().unwrap().read_to_end(&mut actual).unwrap();
+        assert_eq!(actual, bytes);
+        assert!(
+            !store
+                .join("objects")
+                .join(&session.artifacts[0].sha256)
+                .exists()
+        );
+    }
+
+    #[test]
+    fn local_segment_resolution_does_not_touch_the_configured_remote() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join("store");
+        ensure_store(&store).unwrap();
+        let bytes = b"local segment";
+        let sha256 = digest(bytes);
+        fs::write(store.join("objects").join(&sha256), bytes).unwrap();
+        let remote = SegmentRemote::new(Arc::new(InMemory::new()), "test".to_owned()).unwrap();
+        let resolver = SegmentResolver {
+            remote: Some(remote.clone()),
+            local_segment_decodes: Arc::new(AtomicU64::new(0)),
+        };
+        let session = CaptureSession {
+            schema: SESSION_SCHEMA.to_owned(),
+            diagnostic_sha256: "1".repeat(64),
+            source_kind: SourceKind::LiveRun,
+            source_session_id: "session".to_owned(),
+            capture_generation: 1,
+            profile_sha256: "2".repeat(64),
+            catalog_sha256: "3".repeat(64),
+            recognition_interval_ms: 100,
+            processed_ticks: 1,
+            busy_skips: 0,
+            maximum_consecutive_busy_skips: 0,
+            completeness: "complete".to_owned(),
+            canonical_frames: Vec::new(),
+            normalization_pairs: Vec::new(),
+            artifacts: vec![CorpusArtifact {
+                kind: "canonical_segment".to_owned(),
+                source_path: "recognition/segment-0000.mkv".to_owned(),
+                sha256: sha256.clone(),
+                bytes: bytes.len() as u64,
+            }],
+        };
+        assert!(matches!(
+            resolver
+                .resolve(&store, &session, "recognition/segment-0000.mkv")
+                .unwrap(),
+            ResolvedSegment::Local(_)
+        ));
+        assert!(!remote.recovery_started());
     }
 
     #[test]

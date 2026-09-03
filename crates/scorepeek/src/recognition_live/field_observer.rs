@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::{self, JoinHandle};
@@ -265,6 +265,7 @@ const DELIVERY_ABANDONED_INCREMENT: u64 = 1 << DELIVERY_OUTSTANDING_BITS;
 struct PendingDelivery {
     state: AtomicU8,
     counts: Arc<AtomicU64>,
+    worker_unavailable: Arc<AtomicBool>,
 }
 
 impl PendingDelivery {
@@ -294,6 +295,7 @@ impl PendingDelivery {
             )
             .is_ok()
         {
+            self.worker_unavailable.store(true, Ordering::Release);
             self.counts
                 .fetch_add(DELIVERY_ABANDONED_INCREMENT - 1, Ordering::AcqRel);
             true
@@ -411,6 +413,7 @@ pub struct FieldObserverWorker<O: FieldObserver> {
     submitted: u64,
     maximum_outstanding: u8,
     delivery_counts: Arc<AtomicU64>,
+    worker_unavailable: Arc<AtomicBool>,
     admission: Option<FieldObserverAdmission<O::Output>>,
 }
 
@@ -490,6 +493,7 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
         }
         let (sender, receiver) = mpsc::sync_channel(capacity);
         let delivery_counts = Arc::new(AtomicU64::new(0));
+        let worker_unavailable = Arc::new(AtomicBool::new(false));
         let mut workers = Vec::with_capacity(observers.len());
         if observers.len() == 1 {
             let observer = observers.pop().expect("one observer is available");
@@ -537,6 +541,7 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
             submitted: 0,
             maximum_outstanding,
             delivery_counts,
+            worker_unavailable,
             admission,
         })
     }
@@ -604,6 +609,7 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
                     delivery: PendingDelivery {
                         state: AtomicU8::new(DELIVERY_PENDING),
                         counts: Arc::clone(&self.delivery_counts),
+                        worker_unavailable: Arc::clone(&self.worker_unavailable),
                     },
                     sequence: frame.sequence(),
                 })
@@ -628,8 +634,16 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
             submitted,
             maximum_outstanding: _,
             delivery_counts,
+            worker_unavailable,
             admission: _,
         } = self;
+        if worker_unavailable.load(Ordering::Acquire) {
+            return incomplete_finish(
+                FieldObserverFinishStatus::WorkerUnavailable,
+                submitted,
+                &delivery_counts,
+            );
+        }
         let deadline = Instant::now() + timeout;
         let (response, receiver) = mpsc::sync_channel(workers.len());
         for _ in 0..workers.len() {
@@ -640,28 +654,33 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
                 match sender.try_send(message) {
                     Ok(()) => break,
                     Err(TrySendError::Full(returned)) if Instant::now() < deadline => {
+                        if worker_unavailable.load(Ordering::Acquire) {
+                            return incomplete_finish(
+                                FieldObserverFinishStatus::WorkerUnavailable,
+                                submitted,
+                                &delivery_counts,
+                            );
+                        }
                         message = returned;
                         thread::yield_now();
                     }
                     Err(TrySendError::Full(_)) => {
-                        return FieldObserverFinishOutcome {
-                            status: FieldObserverFinishStatus::Timeout,
+                        return incomplete_finish(
+                            if worker_unavailable.load(Ordering::Acquire) {
+                                FieldObserverFinishStatus::WorkerUnavailable
+                            } else {
+                                FieldObserverFinishStatus::Timeout
+                            },
                             submitted,
-                            completed: None,
-                            abandoned: Some(abandoned_at_finish(
-                                delivery_counts.load(Ordering::Acquire),
-                            )),
-                        };
+                            &delivery_counts,
+                        );
                     }
                     Err(TrySendError::Disconnected(_)) => {
-                        return FieldObserverFinishOutcome {
-                            status: FieldObserverFinishStatus::WorkerUnavailable,
+                        return incomplete_finish(
+                            FieldObserverFinishStatus::WorkerUnavailable,
                             submitted,
-                            completed: None,
-                            abandoned: Some(abandoned_at_finish(
-                                delivery_counts.load(Ordering::Acquire),
-                            )),
-                        };
+                            &delivery_counts,
+                        );
                     }
                 }
             }
@@ -672,15 +691,23 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
         for _ in 0..workers.len() {
             match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
                 Ok(count) => completed = completed.saturating_add(count),
-                Err(_) => {
-                    return FieldObserverFinishOutcome {
-                        status: FieldObserverFinishStatus::Timeout,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return incomplete_finish(
+                        FieldObserverFinishStatus::WorkerUnavailable,
                         submitted,
-                        completed: None,
-                        abandoned: Some(abandoned_at_finish(
-                            delivery_counts.load(Ordering::Acquire),
-                        )),
-                    };
+                        &delivery_counts,
+                    );
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    return incomplete_finish(
+                        if worker_unavailable.load(Ordering::Acquire) {
+                            FieldObserverFinishStatus::WorkerUnavailable
+                        } else {
+                            FieldObserverFinishStatus::Timeout
+                        },
+                        submitted,
+                        &delivery_counts,
+                    );
                 }
             }
         }
@@ -707,6 +734,7 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
             submitted,
             maximum_outstanding: _,
             delivery_counts,
+            worker_unavailable: _,
             admission: _,
         } = self;
         let (response, receiver) = mpsc::sync_channel(workers.len());
@@ -747,6 +775,19 @@ impl<O: FieldObserver> FieldObserverWorker<O> {
             completed,
             abandoned: Some(abandoned_at_finish(delivery_counts.load(Ordering::Acquire))),
         }
+    }
+}
+
+fn incomplete_finish(
+    status: FieldObserverFinishStatus,
+    submitted: u64,
+    delivery_counts: &AtomicU64,
+) -> FieldObserverFinishOutcome {
+    FieldObserverFinishOutcome {
+        status,
+        submitted,
+        completed: None,
+        abandoned: Some(abandoned_at_finish(delivery_counts.load(Ordering::Acquire))),
     }
 }
 
