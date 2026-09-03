@@ -187,8 +187,9 @@ outside the checkpoint; implementation history belongs in Git.
   workspace clippy, the complete serial `mise run test` suite (474 scorepeek library, 295 scorepeek
   binary, and 102 scorepeek-corpus library tests), and the active private generation replay pass.
   Replay retained 2 sessions, 14 accepted episodes, 12,460 canonical frames, zero negative frames,
-  and unchanged confirmed-event comparison. It used an isolated current numeric-manifest
-  activation; the developer's normal active pointer was unchanged afterward.
+  and unchanged confirmed-event comparison. The developer's normal numeric store now activates
+  the same current registered manifest, and the same replay passes without an isolated XDG data
+  store.
 - After independent review, the result resolver provenance is versioned as v6, play-type authority
   activation is part of resolver transition identity, the exact uppercase parser rejects case and
   Unicode-whitespace drift, and the unchanged result-crop artifact v2 remains a 20-crop contract.
@@ -247,10 +248,10 @@ outside the checkpoint; implementation history belongs in Git.
   recording-ready publication, and import while the watcher remains active.
 - Public `/v1.sock` authority, target support, prospective target behavior, push, release, and model
   publication remain unverified boundaries.
-- The target already has the private numeric manifest bound to the current play-option layout. The
-  developer machine's normal numeric store remains on the previous manifest; corpus verification
-  used an isolated temporary activation of the current registered manifest without mutating that
-  normal store.
+- The target and developer machine both have the private numeric manifest bound to the current
+  play-option layout. The developer machine's normal store activates manifest
+  `5e5b545d57a6197f4aaa6a863595f237cb19095903baa135960e4c257cda2137`; a subsequent complete active
+  corpus replay passes without an isolated XDG data store.
 
 ## Next executable task
 
