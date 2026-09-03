@@ -105,8 +105,12 @@ outside the checkpoint; implementation history belongs in Git.
   global pool of available parallelism minus four capped at twelve. Readers accept run-event v2
   through v8, reject unknown v9, and accept recognition v5 through v19.
 - The attempt corpus clean-cuts to complete joined-session v5 input and label v5 truth. Import keeps
-  lossless segments and the tick index as immutable objects without QOI expansion or pixel-content
-  deduplication. Replay decodes canonical retained frames only, starts no normalizer, uses production
+  the tick index and metadata as local immutable objects without QOI expansion or pixel-content
+  deduplication. With the environment-only S3 configuration, import publishes lossless canonical
+  segments remotely and does not copy them into the local corpus; without it, import remains local.
+  Consumers prefer local segments and otherwise fully download and verify an anonymous temporary
+  file before FFmpeg stdin decode. Corpus stores have no aggregate object-count or byte quota.
+  Replay decodes canonical retained frames only, starts no normalizer, uses production
   screen-episode and run-event reducers, and rejects missing/elided DECIDE TRANSITION or RESULT
   truth. Event comparison normalizes runtime IDs while preserving attempt-parent and ordered
   play-option relations.
@@ -122,11 +126,19 @@ outside the checkpoint; implementation history belongs in Git.
   Decoder count derives from one quarter of available parallelism and the 2048 MiB default
   memory account. Sessions share one registered OCR pool; timeline, ordered commit, attempt state,
   and final event comparison remain session-local. `--text-workers` and `--memory-mib` provide
-  bounded explicit replay controls. Summary v3 reports active/blocked/completed sessions, actual
+  bounded explicit replay controls. Summary v4 reports local/remote segment use together with
+  active/blocked/completed sessions, actual
   decoder overlap, child and per-session wall time, memory/decoder/ordered-commit waits, tracked
   memory, process RSS, and aggregate FFmpeg RSS.
 
 ## Verification boundary
+
+- S3-backed corpus code has isolated in-memory object-store coverage for environment parsing,
+  create-only verified upload/reuse, digest rejection, remote resolution without local publication,
+  expired owned-staging recovery, and anonymous-file materialization. A real FFmpeg integration
+  decodes the verified file through stdin. `mise run check`, pedantic workspace Clippy, the corpus
+  crate suite, and the complete `mise run test` suite pass. Real S3 provider execution,
+  active-corpus migration, and local segment eviction remain separately authorized and unverified.
 
 - The target session `run-1788272474-298014477-1183660-session-1` is the recorder failure oracle:
   5,626 recognition ticks produced 5,536 canonical tick records and 90 queue drops. The first large
@@ -145,10 +157,13 @@ outside the checkpoint; implementation history belongs in Git.
   session/generation binding through run-event serialization; canonical v2 memory/integrity fields
   are fail-closed, tick parsing is streaming bounded, and numeric authoring uses two decode passes
   per session. `mise run check`, pedantic workspace clippy, and the complete serial `mise run test`
-  suite pass after these final review fixes. Parallel
-  full-suite
-  runs exposed three existing `diagnostic_control` worker-availability flakes; every failing test
-  passed when rerun alone. Fresh target and real import timing verification is still pending.
+  suite pass after these final review fixes. Diagnostic-store anchor markers now remain persistent
+  in tests as they do in production, so teardown cannot split waiters across unlinked lock inodes;
+  the diagnostic worker also releases its supervisor token before publishing test completion.
+  Field-observer pending and finish paths share terminal worker loss and classify a disconnected
+  finish response as unavailable rather than timeout. These remove the repeatable first-run
+  `worker_unavailable` races instead of relying on a rerun.
+  Fresh target and real import timing verification is still pending.
 
 - Targeted Rust library and binary suites pass after removal of production result/music-select
   temporal reducers. Regression tests require no domain event before RESULT finalization, require

@@ -13,7 +13,7 @@ recorder, and joined diagnostic session v5 together. `--profile NAME` may appear
 `--record`. Routine capture diagnostics retain structured facts but no legacy QOI pixels. The
 canonical recording is therefore the session's only retained frame authority.
 
-Recording preflight requires bounded store capacity and a PATH-resolved FFmpeg that exposes
+Recording preflight requires bounded diagnostic-store capacity and a PATH-resolved FFmpeg that exposes
 `libx264rgb`. The artifact records the executable digest and first version line. The logically
 unbounded recorder uses one shared 1024 MiB memory account by default; use
 `--record-memory-mib MIB` with `--record` to change it. The TUI shows current, limit, high-water,
@@ -62,6 +62,20 @@ scorepeek-corpus corpus import-diagnostic --store /absolute/private-corpus-v2 --
 Import publishes the diagnostic components as immutable digest-addressed objects. The review draft
 lists retained sequence identities; it does not create a separate image object per tick.
 
+Set `SCOREPEEK_CORPUS_S3_URL=s3://bucket/optional/prefix` and
+`SCOREPEEK_CORPUS_S3_REGION=REGION` to keep canonical Matroska segments out of the local corpus.
+`SCOREPEEK_CORPUS_S3_ENDPOINT` may select an S3-compatible HTTPS origin and
+`SCOREPEEK_CORPUS_S3_PATH_STYLE` accepts `true` or `false`. Credentials use the standard AWS
+process environment with a complete static, web-identity, task-relative container, or full
+container-URI plus token-file credential set. Remote mode stores only segment objects in S3; all
+metadata stays local, and no setting or locator file is written into the corpus. Corpus storage has
+no aggregate byte or object-count quota. The first remote operation also reclaims only direct-child
+scorepeek staging objects older than seven days; local-only use performs no S3 request, and current,
+nested, and unrecognized staging keys are preserved.
+The target bucket must also have an `AbortIncompleteMultipartUpload` lifecycle rule because no
+process can clean up an upload ID after its own abrupt termination. Scorepeek aborts multipart
+uploads for failures it observes while still running.
+
 Regression truth uses only `scorepeek-private-session-regression-label-v5`. Each episode includes:
 
 - a label-local `attempt_key` and optional earlier `parent_attempt_key`;
@@ -99,6 +113,12 @@ synthetic pixels: PLAY and MODE SELECT gaps continue their semantic screen, whil
 UNKNOWN suspends until the next retained known frame or session end. A DecideTransition gap is an
 invalid suite.
 
+Replay and other segment consumers first use a verified local object. A missing segment is fetched
+from the environment-configured S3 namespace into an anonymous temporary file, checked against its
+declared byte length and encoded SHA-256, rewound, and passed to FFmpeg through stdin. The temporary
+file is discarded after that decode and is not cached. Missing remote configuration, missing
+objects, permission failures, truncated downloads, and digest differences fail closed.
+
 OCR may complete out of order but field evidence is committed by admission sequence. All sessions
 share one text pool. Each scheduler step runs one `-threads 1` FFmpeg child for one segment, then
 returns that session's ordered state to a FIFO so another ready session can use the slot before the
@@ -107,7 +127,8 @@ available parallelism, further constrained by memory; active session state is bo
 decoder count and all later sessions remain digest-only metadata. There is no fixed session limit.
 The 2048 MiB default memory account bounds decoder reservations, active session state, and pending
 field frames by backpressure; replay never drops them. `--memory-mib` accepts 256 through 8192, and
-`--text-workers` accepts one through available parallelism. Replay stdout v3 reports selected text,
+`--text-workers` accepts one through available parallelism. Replay stdout v4 additionally reports
+local segment decodes, remote segment downloads, and downloaded bytes; it retains selected text,
 preparation, and decoder concurrency; tracked memory high-water; decoder-consumer, preparation,
 field-queue, and ordered-commit waits; raw classification, crop, text, numeric, join, and catalog
 durations; stable per-session wall time; and corpus wall time. FFmpeg child wall time includes pipe

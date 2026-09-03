@@ -80,6 +80,10 @@
   numeric段階およびjoinのraw microsecondを保持し、集計statsは生成しない。認識判断を実装する段階ではoperator-owned local artifactへboundedなexact OCR text、
   run単位のexact catalog display/comparison string table、song ID、string reference、全candidate metric、判断と理由も保持する。さらに同一immutable descriptorのrecognition sessionと
   registered field workerを一つのapplication ownerへ統合した。
+  ADR 0109によりcorpus metadataはlocalに保持し、環境変数でS3が設定されたimportではcanonical Matroska segmentだけを
+  full-byte SHA-256検証付きでremote publishする。利用時はlocal objectを優先し、不在ならremote byte全体を匿名一時fileへ
+  GET・検証してからFFmpeg stdinへ渡し、decode後に破棄する。corpus storeにはlocal/remote/temporaryを問わずaggregate
+  object-countまたはbyte quotaを設けず、per-object/documentの入力安全上限とreplay memory accountだけを維持する。
   resource load完了後にdiagnostic-backed runを開始し、screen result、non-blocking field submit、diagnostic outcomeを分離して返す。
   opaque owner/pending tokenにより別runはoutputをconsumeできず、completed/disconnected handleは一度だけterminal resultを返す。
   capacity 2のexact pending-sequence ledgerからabandonmentを記録し、lifecycle timeout/worker lossは架空sequenceへ結び付けずunboundにする。

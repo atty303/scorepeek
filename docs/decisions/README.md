@@ -328,6 +328,9 @@ authoritative.
 - [ADR 0108: Publish a provisional RESULT lifecycle with the accepted payload](0108-publish-provisional-result-lifecycle.md)
   reuses the v2 result payload for early resolved/update/withdraw transitions while keeping the
   outer confirmed event as the sole score and history authority.
+- [ADR 0109: Store canonical corpus segments in S3](0109-store-canonical-segments-in-s3.md)
+  keeps corpus metadata local, publishes canonical Matroska segments to environment-configured S3,
+  materializes verified anonymous files on demand, and removes aggregate corpus storage quotas.
 
 ## Historical
 

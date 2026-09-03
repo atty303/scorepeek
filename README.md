@@ -339,7 +339,7 @@ source records.
 `scorepeek-corpus` is a separate workspace crate and offline binary; the
 game-session `scorepeek` crate does not depend on it. Ingest requires an
 explicit absolute private-store root and copies immutable source media into a
-bounded SHA-256-addressed store. Filesystem permissions, ownership, ACLs, and
+SHA-256-addressed store without an aggregate corpus quota. Filesystem permissions, ownership, ACLs, and
 retention are the operator's responsibility; scorepeek validates path types,
 resolved sizes and hashes, and no-clobber publication, not Unix modes or the absence of local
 symlinks.
@@ -354,8 +354,7 @@ extractor/annotation/frame hashes, and corpus-wide session/play/title
 grouped split isolation. Each suite selects either in-profile evaluation or the
 stricter profile-disjoint evaluation. It emits only opaque IDs, hashes, the
 selected split contract, and aggregate counts. See
-[the private corpus contract](docs/private-corpus.md) and
-[the recording workflow](docs/recording-dataset.ja.md). Replay indexes can now be
+[the private corpus contract](docs/private-corpus.md). Replay indexes can now be
 generated canonically from strict frame plans: an opaque episode digest becomes
 the episode ID, discontiguous reuse is rejected, and the stored source and every
 complete label are revalidated before private publication. The pinned offline
