@@ -314,12 +314,25 @@ outside the checkpoint; implementation history belongs in Git.
   play-option layout. The developer machine's normal store activates manifest
   `5e5b545d57a6197f4aaa6a863595f237cb19095903baa135960e4c257cda2137`; a subsequent complete active
   corpus replay passes without an isolated XDG data store.
+- Commit `3b2fd89d926b008c5e33efe39a25299a3e1c8250` was built and smoke-tested through the cargo-dist
+  path, then installed hash-first on `infinitas.lan`. The local, transferred, and independently
+  read-back executable SHA-256 is
+  `f993944b5d943dfa4dcccb526e33700f19a3e3aa1218b9148a9b9cc4b6b638e4`; version and `doctor`
+  succeeded, and the existing numeric manifest remained active. Target temporary and rollback
+  paths and the local `/tmp/scorepeek-target-install.4jaRma` directory were removed. PID `2041538`
+  was deliberately not interrupted and continues its existing
+  `run --record` session from the prior executable inode
+  `31859ec8841a2ca77cd548dba79fcd11c0a64860e5599e7902bc5ec568af8658`; the installed BPM-outline
+  build takes effect on the next invocation. Installation does not establish live recognition or
+  target-performance authority.
 
 ## Next executable task
 
 The SELECT SP/DP, independent music-selection state, and shared SP/DP PLAY recognition slice is
-implemented and replay-verified for the captured layouts. Obtain separate authorization before
-installing this build on the target. After installation, check `scorepeek run` through SP and DP
+implemented, replay-verified for the captured layouts, and installed for the next target
+invocation. Let the existing old-inode recording session finish normally; do not treat it as
+evidence for the installed build. Obtain separate authorization before a later live invocation,
+then check `scorepeek run` through SP and DP
 SELECT-to-PLAY transitions and capture SP with the graph-position setting changed: the TUI must
 retain readable selected song/chart information, clear it when SELECT ends, and report PLAY from
 the BPM outline regardless of graph position. Target performance gates, public socket authority,
