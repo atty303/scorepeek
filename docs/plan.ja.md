@@ -703,3 +703,15 @@ frame age、game p99 frametimeおよびOBS render/encode lagを比較してdefau
 - public source catalog、real fixture、trained modelの再配布
 - upstream branch/resource compatibility
 - public release、remote作成、push
+
+
+### MUSIC SELECT自己ベスト補完（ADR 0114）
+
+- 左SCORE DATAのEX SCORE・MISS COUNT・clear typeを登録済み認識基盤で読み、
+  譜面identity確定後に項目別2連続一致で安定化する。DJランクはchart notesとscoreから算出する。
+- resultとは別の`MusicSelectBestSnapshot`を共通observation接続・snapshot・replayへ流す。
+  初回・内容変更時に通知し、再訪は新観測とする。プレイ日時・回数・optionや同一プレイ達成は推定しない。
+- TUIのMusic Select Resolver paneへ選択状態、解決譜面、項目ごとの安定化、出力gate/revisionを表示する。
+  既存Watcher・Latest result・RESULT/attempt resolverを保持し、80×25でも全gateを表示する。
+- 実画像と完全ラベルはprivateに保持する。認識不能は部分snapshotに残し、誤採用を許容しない。
+  検証済みcoverageと未確認条件はSTATUS.mdを原典とする。DB保存・履歴補完UIは後続scope。

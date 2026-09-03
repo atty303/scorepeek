@@ -46,6 +46,7 @@ const CURRENT_OBSERVATION_SCHEMA_V16: &str = "scorepeek-recognition-observation-
 const CURRENT_OBSERVATION_SCHEMA_V17: &str = "scorepeek-recognition-observation-v17";
 const CURRENT_OBSERVATION_SCHEMA_V18: &str = "scorepeek-recognition-observation-v18";
 const CURRENT_OBSERVATION_SCHEMA_V19: &str = "scorepeek-recognition-observation-v19";
+const CURRENT_OBSERVATION_SCHEMA_V21: &str = "scorepeek-recognition-observation-v21";
 const CURRENT_OBSERVATION_SCHEMA_V20: &str = "scorepeek-recognition-observation-v20";
 const DRAFT_SCHEMA: &str = "scorepeek-private-music-select-motion-review-draft-v1";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-music-select-motion-review-summary-v1";
@@ -1820,6 +1821,7 @@ fn resolve_stored_music_select(
         constrained_text: None,
     };
     let observations = ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
+        best: scorepeek::recognition::MusicSelectBestObservation::default(),
         play_type: scorepeek::recognition::MusicSelectPlayTypeObservation::default(),
         central_title: dynamic(text("central_title")),
         artist: dynamic(text("artist")),
@@ -2363,7 +2365,8 @@ fn supported_observation_schema(value: &Value) -> bool {
                 | CURRENT_OBSERVATION_SCHEMA_V17
                 | CURRENT_OBSERVATION_SCHEMA_V18
                 | CURRENT_OBSERVATION_SCHEMA_V19
-                | CURRENT_OBSERVATION_SCHEMA_V20,
+                | CURRENT_OBSERVATION_SCHEMA_V20
+                | CURRENT_OBSERVATION_SCHEMA_V21,
         )
     )
 }
@@ -3238,9 +3241,9 @@ mod tests {
         CURRENT_OBSERVATION_SCHEMA_V14, CURRENT_OBSERVATION_SCHEMA_V15,
         CURRENT_OBSERVATION_SCHEMA_V16, CURRENT_OBSERVATION_SCHEMA_V17,
         CURRENT_OBSERVATION_SCHEMA_V18, CURRENT_OBSERVATION_SCHEMA_V19,
-        CURRENT_OBSERVATION_SCHEMA_V20, CorrectSongExpectation, CorrectSongLabel,
-        CorrectSongLabels, LATEST_OBSERVATION_SCHEMA, MAX_PROCESS_STDERR_BYTES, MotionEvidence,
-        MotionReviewDecision, MotionReviewDecisions, MusicSelectDwellPolicy,
+        CURRENT_OBSERVATION_SCHEMA_V20, CURRENT_OBSERVATION_SCHEMA_V21, CorrectSongExpectation,
+        CorrectSongLabel, CorrectSongLabels, LATEST_OBSERVATION_SCHEMA, MAX_PROCESS_STDERR_BYTES,
+        MotionEvidence, MotionReviewDecision, MotionReviewDecisions, MusicSelectDwellPolicy,
         MusicSelectTemporalCandidatePolicy, OBSERVATION_SCHEMA, ObservationRecord,
         OperatorReviewState, RegionMotion, ReviewCompleteness, ReviewState, ReviewedMotionPair,
         ReviewedMotionSet, ReviewedMotionSpan, VideoIdentity, apply_music_select_motion_review,
@@ -3271,13 +3274,14 @@ mod tests {
             CURRENT_OBSERVATION_SCHEMA_V18,
             CURRENT_OBSERVATION_SCHEMA_V19,
             CURRENT_OBSERVATION_SCHEMA_V20,
+            CURRENT_OBSERVATION_SCHEMA_V21,
         ] {
             assert!(supported_observation_schema(&serde_json::Value::String(
                 schema.to_owned()
             )));
         }
         assert!(!supported_observation_schema(&serde_json::Value::String(
-            "scorepeek-recognition-observation-v21".to_owned()
+            "scorepeek-recognition-observation-v22".to_owned()
         )));
     }
 

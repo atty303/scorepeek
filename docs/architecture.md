@@ -490,8 +490,8 @@ final identity check is outside the operator-trusted private-artifact boundary.
 ### Event API
 
 The ordinary foreground runtime exposes provisional recognition observations at
-`$XDG_RUNTIME_DIR/scorepeek/observations-v9.sock`. A connection begins with a bounded v9
-current-state snapshot and then receives sequenced `scorepeek-run-event-v9` NDJSON. This local
+`$XDG_RUNTIME_DIR/scorepeek/observations-v10.sock`. A connection begins with a bounded v10
+current-state snapshot and then receives sequenced `scorepeek-run-event-v10` NDJSON. This local
 observation surface may include raw OCR, foreground title geometry, joint candidates, and resolver
 metrics. `raw_screen_observed` is separate from semantic episode started, suspended, resumed,
 closing, and finalized transitions; `play_attempt_changed` contains the evidence-linked path and
@@ -535,18 +535,29 @@ last known state. Difficulty-only frames update the active successor or incumben
 song evidence; before any credible song they replace a single pending state. Snapshot and retry
 composition select the newer source sequence instead of adding difficulty history.
 
-The TUI has one vertical layout: four rows for Watcher, nine for Latest result, and the remaining
-rows for Resolver. Latest result prefers an active `PROVISIONAL` v2 payload, restores the newest
-`CONFIRMED` result after withdrawal, and adds only confirmed events to count/history. Resolver
-formats a typed tree containing raw and semantic screens, field age, incumbent/successor or result
-evidence, foreground title geometry, hierarchical runners, family contribution, attempt hierarchy,
-and every promotion gate. Raw marker and resolver-current difficulty are separate values, including
-the consecutive-known count. Green, cyan, yellow, red, dark gray, and white encode typed semantic
-state consistently while the same labels and gate symbols preserve meaning without color. It
-shows integer-second monotonic durations from the private 10 Hz tick, but that redraw creates no run
-event, socket record, plain-output line, or domain event. Raw OCR is limited to the current screen's
-important fields; full candidate sets, logits, and frame timing remain in artifacts. Terminals below 80 by
-25 are allowed to clip without a second layout.
+The TUI has one vertical layout: four rows for Watcher, eight for Latest result, seven for
+Music Select Resolver, and the remaining rows for RESULT/attempt Resolver. Latest result prefers
+an active `PROVISIONAL` v2 payload and restores the newest `CONFIRMED` result after withdrawal;
+only confirmed events enter count/history. Music Select Resolver shows activity/suspension,
+selection interval, resolved chart or identity wait reason, per-field consecutive evidence, and
+snapshot output revision/gate. It never recognizes or combines values. Unknown, explicit no record,
+not displayed, and pending `1/2` are distinct. A chart change clears best values; UNKNOWN suspends
+retained state and SELECT exit makes the pane inactive. At 80x25 the final pane uses four content
+lines for RESULT status, attempt path, wait reason and all gates. Taller displays retain the detailed
+RESULT tree. Terminals below 80x25 may clip.
+
+`music_select_best_observed` carries `scorepeek-music-select-best-snapshot-v1`, a supplemental
+observation of the game's self best, with session/generation, episode/selection interval, observation
+ID, source sequence, session-monotonic observation time, revision, chart and typed SCORE/MISS/clear
+values. Fields stabilize independently after two identical observations. Partial snapshots are
+allowed; initial and changed contents emit, identical contents deduplicate. Revisit creates a new
+observation. `music_select_resolver_changed` carries typed current resolver state separately, including
+its current snapshot for connecting clients. Neither record enters result count/history or attempt
+acceptance. DJ rank is derived from EX SCORE and chart notes, never OCR. Play time, count, achievement
+options and common-play association are not inferred. No DB persistence is implemented.
+Raw best OCR, numeric classes/margins and inference errors remain diagnostics controlled by
+`--record`; the published supplemental snapshot excludes them. See
+[ADR 0114](decisions/0114-observe-music-select-best-snapshots.md) for the measured layout and gates.
 
 The first public interface is a same-user Unix socket at
 `$XDG_RUNTIME_DIR/scorepeek/v1.sock`. It streams versioned NDJSON accepted

@@ -218,6 +218,11 @@ struct NumericObservationJob {
 
 enum NumericObserverMessage {
     Observe(Box<NumericObservationJob>),
+    SelectBest {
+        crops: scorepeek::recognition::MusicSelectBestCrops,
+        response:
+            mpsc::Sender<Result<scorepeek::recognition::BestNumericObservation, OnnxParityError>>,
+    },
     Finish,
 }
 
@@ -227,6 +232,21 @@ struct RegisteredNumericObserverWorker {
 }
 
 impl RegisteredNumericObserverWorker {
+    fn observe_best(
+        &self,
+        crops: &scorepeek::recognition::MusicSelectBestCrops,
+    ) -> Result<scorepeek::recognition::BestNumericObservation, OnnxParityError> {
+        let (response, receiver) = mpsc::channel();
+        self.sender
+            .send(NumericObserverMessage::SelectBest {
+                crops: crops.clone(),
+                response,
+            })
+            .map_err(|_| OnnxParityError::InvalidArtifact)?;
+        receiver
+            .recv()
+            .map_err(|_| OnnxParityError::InvalidArtifact)?
+    }
     fn start(mut runtime: RegisteredNumericRuntime) -> Result<Self, OnnxParityError> {
         let (sender, receiver) = mpsc::channel();
         let worker = std::thread::Builder::new()
@@ -236,6 +256,9 @@ impl RegisteredNumericObserverWorker {
                     match message {
                         NumericObserverMessage::Observe(job) => {
                             let _ = job.response.send(runtime.observe(&job.crops));
+                        }
+                        NumericObserverMessage::SelectBest { crops, response } => {
+                            let _ = response.send(runtime.observe_music_select_best(&crops));
                         }
                         NumericObserverMessage::Finish => return,
                     }
@@ -320,6 +343,36 @@ fn submit_fields(
     Ok(())
 }
 
+fn music_select_text_jobs(
+    crops: &scorepeek::recognition::MusicSelectScreenRgb8Crops,
+) -> Vec<(
+    scorepeek::recognition::ScreenTextField,
+    scorepeek::recognition::Rgb8Crop,
+)> {
+    use scorepeek::recognition::ScreenTextField;
+    let foreground = scorepeek::recognition::TitleEvidenceExtractor::REGISTERED
+        .extract(&crops.active_list_title);
+    let mut jobs = vec![
+        (
+            ScreenTextField::MusicSelectBestHeader,
+            crops.best.header.clone(),
+        ),
+        (
+            ScreenTextField::MusicSelectBestClearType,
+            crops.best.clear_type.clone(),
+        ),
+        (ScreenTextField::MusicSelectArtist, crops.artist.clone()),
+        (
+            ScreenTextField::MusicSelectActiveListTitle,
+            crops.active_list_title.clone(),
+        ),
+    ];
+    if let Some((crop, _)) = foreground {
+        jobs.push((ScreenTextField::MusicSelectActiveListTitle, crop));
+    }
+    jobs
+}
+
 fn submit_text_fields(
     text_pool: &RegisteredTextObserverPool,
     prefetched_text: &Mutex<BTreeMap<u64, PendingTextObservationBatch>>,
@@ -343,19 +396,7 @@ fn submit_text_fields(
             ),
         ],
         scorepeek::recognition::ScreenRgb8Crops::MusicSelect(crops) => {
-            let foreground = scorepeek::recognition::TitleEvidenceExtractor::REGISTERED
-                .extract(&crops.active_list_title);
-            let mut jobs = vec![
-                (ScreenTextField::MusicSelectArtist, crops.artist.clone()),
-                (
-                    ScreenTextField::MusicSelectActiveListTitle,
-                    crops.active_list_title.clone(),
-                ),
-            ];
-            if let Some((crop, _)) = foreground {
-                jobs.push((ScreenTextField::MusicSelectActiveListTitle, crop));
-            }
-            jobs
+            music_select_text_jobs(crops)
         }
     };
     let error_field = jobs[0].0;
@@ -1055,6 +1096,36 @@ impl RegisteredScreenFieldObserver {
         })
     }
 
+    fn observe_music_select_best(
+        &self,
+        crops: &scorepeek::recognition::MusicSelectScreenRgb8Crops,
+        text: &mut TextObservationBatch,
+    ) -> scorepeek::recognition::MusicSelectBestObservation {
+        use scorepeek::recognition::ScreenTextField;
+        let mut failures = Vec::new();
+        let numeric = self
+            .numeric_worker
+            .observe_best(&crops.best)
+            .unwrap_or_else(|error| {
+                failures.push(format!("numeric: {error}"));
+                scorepeek::recognition::BestNumericObservation::default()
+            });
+        let mut read = |field| {
+            take_text(text, field).map_or_else(
+                |error| {
+                    failures.push(format!("{field:?}: {error}"));
+                    String::new()
+                },
+                |value| value.open_text,
+            )
+        };
+        let header = read(ScreenTextField::MusicSelectBestHeader);
+        let clear = read(ScreenTextField::MusicSelectBestClearType);
+        let mut best = scorepeek::recognition::resolve_music_select_best(header, clear, numeric);
+        best.failures = failures;
+        best
+    }
+
     fn observe_music_select(
         &mut self,
         sequence: u64,
@@ -1070,16 +1141,7 @@ impl RegisteredScreenFieldObserver {
         })?;
         let foreground = scorepeek::recognition::TitleEvidenceExtractor::REGISTERED
             .extract(&crops.active_list_title);
-        let mut jobs = vec![
-            (ScreenTextField::MusicSelectArtist, crops.artist.clone()),
-            (
-                ScreenTextField::MusicSelectActiveListTitle,
-                crops.active_list_title.clone(),
-            ),
-        ];
-        if let Some((crop, _)) = &foreground {
-            jobs.push((ScreenTextField::MusicSelectActiveListTitle, crop.clone()));
-        }
+        let jobs = music_select_text_jobs(crops);
         let pending = if let Some(pending) = self
             .prefetched_text
             .lock()
@@ -1135,8 +1197,10 @@ impl RegisteredScreenFieldObserver {
             geometry: foreground.as_ref().map(|(_, geometry)| *geometry),
             mask_absent: foreground.is_none(),
         };
+        let best = self.observe_music_select_best(crops, &mut text);
         let fields = ScreenFieldObservations::MusicSelect(
             scorepeek::recognition::MusicSelectScreenFieldObservations {
+                best,
                 central_title: scorepeek::recognition::DynamicTextObservation::default(),
                 artist: take_text(&mut text, ScreenTextField::MusicSelectArtist).map_err(
                     |source| {
@@ -1368,6 +1432,7 @@ mod tests {
             constrained_text: None,
         };
         let fields = ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
+            best: scorepeek::recognition::MusicSelectBestObservation::default(),
             central_title: text("texture"),
             artist: text("artist"),
             play_type: scorepeek::recognition::MusicSelectPlayTypeObservation::default(),

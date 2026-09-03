@@ -11,6 +11,7 @@ use crate::catalog::Difficulty;
 
 mod catalog_candidates;
 mod ctc_sequence;
+mod music_select_best;
 mod music_select_play_type;
 mod music_select_resolver;
 mod numeric_character_layout;
@@ -31,6 +32,11 @@ pub use catalog_candidates::{
     CatalogCandidateSongEvidence, CatalogCandidateTextEvidence, CatalogNormalizedSimilarity,
     CatalogPrefixCandidateScore, CatalogTextCandidateScore, MusicSelectSongCandidateObservation,
     ResultSongCandidateObservation, ScreenCatalogCandidateObservations,
+};
+pub use music_select_best::{
+    BestClearType, BestNumericObservation, BestValue, MUSIC_SELECT_BEST_LAYOUT,
+    MusicSelectBestCrops, MusicSelectBestLayout, MusicSelectBestObservation, MusicSelectBestValues,
+    StableBestField, dj_rank, resolve_music_select_best,
 };
 pub use music_select_play_type::{
     MusicSelectPlayTypeObservation, MusicSelectPlayTypeState, MusicSelectPlayTypeUnknownReason,
@@ -1154,6 +1160,7 @@ pub struct ResultScreenRgb8Crops {
 /// Every currently measured music-select field crop used by one selection observation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MusicSelectScreenRgb8Crops {
+    pub best: MusicSelectBestCrops,
     pub canonical_layout_sha256: String,
     pub integrated_context_layout_sha256: String,
     pub central_title: Rgb8Crop,
@@ -1276,6 +1283,8 @@ pub enum ScreenRgb8Crops {
 /// One text field that can fail without fabricating a partial screen observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScreenTextField {
+    MusicSelectBestHeader,
+    MusicSelectBestClearType,
     ResultNumericBatch,
     ResultTitle,
     ResultArtist,
@@ -1307,6 +1316,8 @@ impl ScreenTextField {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::MusicSelectBestHeader => "music_select_best_header",
+            Self::MusicSelectBestClearType => "music_select_best_clear_type",
             Self::ResultNumericBatch => "result_numeric_batch",
             Self::ResultTitle => "result_title",
             Self::ResultArtist => "result_artist",
@@ -1362,7 +1373,9 @@ impl ScreenTextField {
             | Self::ResultPlayOptions
             | Self::MusicSelectCentralTitle
             | Self::MusicSelectArtist
-            | Self::MusicSelectActiveListTitle => None,
+            | Self::MusicSelectActiveListTitle
+            | Self::MusicSelectBestHeader
+            | Self::MusicSelectBestClearType => None,
         }
     }
 }
@@ -1396,6 +1409,7 @@ pub struct ResultScreenFieldObservations {
 /// Complete music-select field observations from the currently registered observers.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MusicSelectScreenFieldObservations {
+    pub best: MusicSelectBestObservation,
     pub central_title: DynamicTextObservation,
     pub artist: DynamicTextObservation,
     pub play_type: MusicSelectPlayTypeObservation,
@@ -1434,7 +1448,7 @@ impl ScreenFieldObservations {
     pub const fn diagnostic_field_counts(&self) -> (u8, u8) {
         match self {
             Self::Result(_) => (20, 0),
-            Self::MusicSelect(_) => (4, 1),
+            Self::MusicSelect(_) => (8, 1),
         }
     }
 }
@@ -1530,6 +1544,7 @@ pub fn observe_screen_fields<E>(
         }
         ScreenRgb8Crops::MusicSelect(crops) => {
             ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
+                best: MusicSelectBestObservation::default(),
                 central_title: observe(
                     ScreenTextField::MusicSelectCentralTitle,
                     &crops.central_title,
@@ -2706,6 +2721,7 @@ pub fn route_screen_rgb8_crops(
             play_options: crop(pixels, canonical.result.play_options)?,
         })),
         ScreenClass::MusicSelect => Ok(ScreenRgb8Crops::MusicSelect(MusicSelectScreenRgb8Crops {
+            best: MusicSelectBestCrops::extract(pixels)?,
             canonical_layout_sha256: CanonicalLayout::sha256(),
             integrated_context_layout_sha256: IntegratedContextLayout::sha256(),
             central_title: crop(pixels, canonical.music_select.selected_title)?,

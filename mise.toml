@@ -697,3 +697,11 @@ run = "scripts/start-transient-user-schedule.bash"
 [tasks."catalog:schedule:systemd:disable"]
 description = "Stop transient scheduling and disable the installed daily timer"
 run = "scripts/disable-user-schedule.bash"
+
+[tasks."ocr:select-best:probe"]
+description = "Read private canonical QOI frames with the registered SELECT best recognizers"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek --example select_best_probe -- "$@"
+'''

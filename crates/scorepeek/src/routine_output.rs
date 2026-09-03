@@ -1,3 +1,5 @@
+pub mod music_select_best;
+use music_select_best::{MusicSelectBestSnapshot, MusicSelectResolverState};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs::{self, DirBuilder};
@@ -46,8 +48,8 @@ fn duration_us(duration: Duration) -> u64 {
 const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const RESULT_HISTORY_CAPACITY: usize = 32;
-const SOCKET_NAME: &str = "observations-v9.sock";
-const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v9";
+const SOCKET_NAME: &str = "observations-v10.sock";
+pub const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v10";
 const NUMERIC_REQUIRED_OBSERVATIONS: u8 = 2;
 const PLAY_OPTIONS_REQUIRED_OBSERVATIONS: u8 = 2;
 
@@ -65,6 +67,16 @@ pub struct RunEvent {
     reason = "the event schema remains flat and values cross an already bounded queue"
 )]
 pub enum RunEventKind {
+    MusicSelectBestObserved {
+        session_id: String,
+        capture_generation: u64,
+        snapshot: MusicSelectBestSnapshot,
+    },
+    MusicSelectResolverChanged {
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        state: MusicSelectResolverState,
+    },
     WatcherStarted {
         invocation_id: String,
         profile_sha256: String,
@@ -1337,6 +1349,10 @@ impl SelectionEpochTracker {
 
 #[derive(Default)]
 struct MusicSelectResolver {
+    best: MusicSelectResolverState,
+    best_last_sequence: Option<u64>,
+    best_minimum_sequence: u64,
+    best_closed: bool,
     selection_epochs: SelectionEpochTracker,
 }
 
@@ -1356,6 +1372,17 @@ impl MusicSelectResolver {
             difficulty,
             play_type,
         );
+    }
+
+    fn accepts_best_observation(&mut self, sequence: u64) -> bool {
+        if self.best_closed
+            || sequence < self.best_minimum_sequence
+            || self.best_last_sequence.is_some_and(|last| sequence <= last)
+        {
+            return false;
+        }
+        self.best_last_sequence = Some(sequence);
+        true
     }
 
     fn selected(&self) -> Option<MusicSelectionState> {
@@ -1544,6 +1571,7 @@ impl RunEvent {
             scorepeek::recognition::ScreenFieldObservations::MusicSelect(fields) => (
                 "music_select",
                 json!({
+                    "best": fields.best,
                     "central_title": fields.central_title.open_text,
                     "artist": fields.artist.open_text,
                     "play_type": fields.play_type,
@@ -1717,6 +1745,7 @@ pub struct RunViewState {
     latest_result_detected: Option<Value>,
     latest_provisional_result: Option<ResultHistoryEntry>,
     latest_music_selection: Option<MusicSelectionState>,
+    music_select: MusicSelectResolverState,
     result_history: VecDeque<ResultHistoryEntry>,
     result_count: u64,
     #[serde(skip)]
@@ -1846,6 +1875,7 @@ impl RunViewState {
             latest_result_detected: None,
             latest_provisional_result: None,
             latest_music_selection: None,
+            music_select: MusicSelectResolverState::default(),
             result_history: VecDeque::with_capacity(RESULT_HISTORY_CAPACITY),
             result_count: 0,
             stable_result_song: None,
@@ -1868,6 +1898,9 @@ impl RunViewState {
     #[allow(clippy::too_many_lines)]
     fn reduce(&mut self, event: &RunEvent, serialized: &Value) {
         match &event.kind {
+            RunEventKind::MusicSelectResolverChanged { state, .. } => {
+                self.music_select = state.clone();
+            }
             RunEventKind::WatcherStarted { .. } => "starting".clone_into(&mut self.watcher_state),
             RunEventKind::SessionStarted {
                 session_id,
@@ -1879,6 +1912,7 @@ impl RunViewState {
                 self.active_session_id.clone_from(session_id);
                 self.capture_generation = Some(*capture_generation);
                 self.current_screen = None;
+                self.music_select = MusicSelectResolverState::default();
                 self.raw_screen = None;
                 self.latest_observation = None;
                 self.latest_stabilized_result = None;
@@ -1887,6 +1921,7 @@ impl RunViewState {
                 self.latest_numeric_result = None;
                 self.latest_provisional_result = None;
                 self.latest_music_selection = None;
+                self.music_select = MusicSelectResolverState::default();
                 self.stable_result_song = None;
                 self.latest_report = None;
                 if self.recording == "enabled" && self.status_recording != "degraded" {
@@ -1938,7 +1973,8 @@ impl RunViewState {
                 SemanticEpisodePhase::Finalized => self.current_screen = None,
                 SemanticEpisodePhase::Suspended | SemanticEpisodePhase::Closing => {}
             },
-            RunEventKind::ScreenTick { .. }
+            RunEventKind::MusicSelectBestObserved { .. }
+            | RunEventKind::ScreenTick { .. }
             | RunEventKind::ResolverStateChanged { .. }
             | RunEventKind::SelectionDifficultyChanged { .. } => {}
             RunEventKind::MusicSelectionChanged { state, .. } => {
@@ -2017,6 +2053,7 @@ impl RunViewState {
                 self.active_session_id = None;
                 self.capture_generation = None;
                 self.current_screen = None;
+                self.music_select = MusicSelectResolverState::default();
                 self.raw_screen = None;
                 self.latest_report = Some(report.clone());
                 self.message = format!("session finished: {outcome}");
@@ -2029,6 +2066,7 @@ impl RunViewState {
                 self.active_session_id = None;
                 self.capture_generation = None;
                 self.current_screen = None;
+                self.music_select = MusicSelectResolverState::default();
                 self.raw_screen = None;
                 self.latest_observation = None;
                 self.latest_stabilized_result = None;
@@ -2285,7 +2323,7 @@ fn accept_clients(
 fn snapshot_bytes(state: &Arc<Mutex<RunViewState>>, health: &ChannelHealth) -> Option<Vec<u8>> {
     let state = state.lock().ok()?.clone();
     let mut bytes = serde_json::to_vec(&json!({
-            "schema": "scorepeek-run-observation-snapshot-v9",
+            "schema": "scorepeek-run-observation-snapshot-v10",
         "state": state,
         "channel": health.value(),
     }))
@@ -2703,6 +2741,8 @@ impl RoutineOutput {
             | RunEventKind::ResolverStateChanged { .. }
             | RunEventKind::SelectionDifficultyChanged { .. }
             | RunEventKind::MusicSelectionChanged { .. }
+            | RunEventKind::MusicSelectBestObserved { .. }
+            | RunEventKind::MusicSelectResolverChanged { .. }
             | RunEventKind::ResultProvisionalChanged { .. }
             | RunEventKind::ResultDetected { .. } => self.publish_one(event),
         }
@@ -2722,6 +2762,15 @@ impl RoutineOutput {
             unreachable!("semantic episode dispatcher preserves event kind");
         };
         self.publish_one(event)?;
+        if screen == "music_select" && *phase != SemanticEpisodePhase::Started {
+            self.music_select_resolver.best_minimum_sequence = *sequence;
+            if matches!(
+                phase,
+                SemanticEpisodePhase::Closing | SemanticEpisodePhase::Finalized
+            ) {
+                self.music_select_resolver.best_closed = true;
+            }
+        }
         match phase {
             SemanticEpisodePhase::Started => {
                 self.semantic_episode_suspended = false;
@@ -3388,6 +3437,10 @@ impl RoutineOutput {
             selected_difficulty(fields),
             selected_play_type(fields),
         );
+        let current_observation = !self.semantic_episode_suspended
+            && self
+                .music_select_resolver
+                .accepts_best_observation(sequence);
         let difficulty_transitions = self.engine.selection_epochs.observe_at_with_play_type(
             sequence,
             monotonic_end_ms,
@@ -3428,6 +3481,62 @@ impl RoutineOutput {
                 &challenger_summary,
                 self.engine.selection_epochs.successor.observation_count,
             )?;
+        }
+        if current_observation && self.music_selection_episode_active {
+            let selection = self.music_select_resolver.selected().filter(|state| {
+                let MusicSelectionState::Selected {
+                    scorepeek_song_id,
+                    difficulty,
+                    play_type,
+                    ..
+                } = state
+                else {
+                    return false;
+                };
+                credible_song_set(joint_evidence) == BTreeSet::from([*scorepeek_song_id])
+                    && selected_difficulty(fields) == Some(*difficulty)
+                    && selected_play_type(fields) == Some(*play_type)
+            });
+            let identity_status = if selection.is_some() {
+                music_select_best::SelectIdentityStatus::Resolved
+            } else if selected_difficulty(fields).is_none() {
+                music_select_best::SelectIdentityStatus::AwaitingDifficulty
+            } else if selected_play_type(fields).is_none() {
+                music_select_best::SelectIdentityStatus::AwaitingPlayType
+            } else if credible_song_set(joint_evidence).is_empty() {
+                music_select_best::SelectIdentityStatus::AwaitingEvidence
+            } else if self.music_select_resolver.selected().is_some() {
+                music_select_best::SelectIdentityStatus::CurrentFrameConflict
+            } else {
+                music_select_best::SelectIdentityStatus::Stabilizing
+            };
+            let best =
+                serde_json::from_value::<scorepeek::recognition::MusicSelectBestObservation>(
+                    fields["best"].clone(),
+                )
+                .unwrap_or_default();
+            self.music_select_resolver.best.screen_episode_id = self.screen_episode_id;
+            self.music_select_resolver
+                .best
+                .observe(selection, best.values);
+            self.music_select_resolver.best.identity_status = identity_status;
+            if let (Some(session), Some(generation)) = (session_id, capture_generation)
+                && let Some(snapshot) = self.music_select_resolver.best.publish_candidate(
+                    session,
+                    generation,
+                    sequence,
+                    monotonic_end_ms,
+                )
+            {
+                self.publish_one(&RunEvent {
+                    schema: RUN_EVENT_SCHEMA.to_owned(),
+                    kind: RunEventKind::MusicSelectBestObserved {
+                        session_id: session.clone(),
+                        capture_generation: generation,
+                        snapshot,
+                    },
+                })?;
+            }
         }
         self.sync_music_selection(session_id, capture_generation, sequence)?;
         self.sync_resolver_snapshot(monotonic_end_ms, Some(sequence), Some(fields))?;
@@ -3697,6 +3806,49 @@ impl RoutineOutput {
         Ok(())
     }
 
+    fn sync_music_select_resolver_state(&mut self) -> Result<(), String> {
+        let (active, previous, session_id, capture_generation) = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| "run view state lock was poisoned".to_owned())?;
+            (
+                state.current_screen.as_deref() == Some("music_select")
+                    && self.music_selection_episode_active,
+                state.music_select.clone(),
+                state.active_session_id.clone(),
+                state.capture_generation,
+            )
+        };
+        let difficulty = self
+            .music_select_resolver
+            .selection_epochs
+            .active_difficulty_state();
+        let best = &mut self.music_select_resolver.best;
+        if !active {
+            *best = MusicSelectResolverState::default();
+        }
+        if active {
+            best.current_difficulty = difficulty.and_then(|(_, current)| current);
+            best.difficulty_target = difficulty.map(|(target, _)| target);
+        }
+        best.active = active;
+        best.suspended = active && self.semantic_episode_suspended;
+        best.screen_episode_id = self.screen_episode_id;
+        if *best != previous {
+            let state = best.clone();
+            self.publish_one(&RunEvent {
+                schema: RUN_EVENT_SCHEMA.to_owned(),
+                kind: RunEventKind::MusicSelectResolverChanged {
+                    session_id,
+                    capture_generation,
+                    state,
+                },
+            })?;
+        }
+        Ok(())
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one typed snapshot derives the complete fixed resolver tree and promotion gates"
@@ -3708,6 +3860,7 @@ impl RoutineOutput {
         raw_fields: Option<&Value>,
     ) -> Result<(), String> {
         self.screen_episode_last_ms = Some(now_ms);
+        self.sync_music_select_resolver_state()?;
         let current_screen = self
             .state
             .lock()
@@ -4420,7 +4573,8 @@ fn render(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(4),
-            Constraint::Length(9),
+            Constraint::Length(8),
+            Constraint::Length(7),
             Constraint::Min(0),
         ])
         .split(area);
@@ -4453,14 +4607,37 @@ fn render(
         rows[1],
     );
     frame.render_widget(
-        Paragraph::new(resolver_lines(&state.resolver, available_width))
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(resolver_color(&state.resolver)))
-                    .title("Resolver"),
-            ),
+        Paragraph::new(if rows[3].height < 12 {
+            compact_resolver_lines(&state.resolver, available_width)
+        } else {
+            resolver_lines(&state.resolver, available_width)
+        })
+        .wrap(Wrap { trim: false })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(resolver_color(&state.resolver)))
+                .title("Resolver"),
+        ),
+        rows[3],
+    );
+    frame.render_widget(
+        Paragraph::new(music_select_best::lines(
+            &state.music_select,
+            available_width,
+        ))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Music Select Resolver")
+                .border_style(Style::default().fg(if state.music_select.suspended {
+                    Color::Yellow
+                } else if state.music_select.chart.is_some() {
+                    Color::Cyan
+                } else {
+                    Color::DarkGray
+                })),
+        ),
         rows[2],
     );
 }
@@ -4580,44 +4757,16 @@ const fn gate_suffix(state: GateState) -> &'static str {
 }
 
 fn fixed_domain_lines(state: &RunViewState, available_width: usize) -> Vec<Line<'static>> {
-    let selection = match state.latest_music_selection.as_ref() {
-        Some(MusicSelectionState::Selected {
-            play_type,
-            difficulty,
-            level,
-            notes,
-            presentation,
-            ..
-        }) => fitted_value(
-            &format!(
-                "SELECTED {} {} Lv{} notes={notes} / ",
-                play_type_label(*play_type),
-                difficulty_label(*difficulty),
-                level,
-            ),
-            presentation
-                .display_titles
-                .first()
-                .map_or("?", String::as_str),
-            available_width,
-        ),
-        Some(MusicSelectionState::Unresolved { .. }) | None => "SELECTED -".to_owned(),
-    };
-    let selection_line = Line::from(Span::styled(selection, Style::default().fg(Color::Cyan)));
     if let Some(entry) = state.latest_provisional_result.as_ref() {
         let mut lines = expanded_result_history_entry_lines(entry, available_width, "PROVISIONAL");
         lines.truncate(6);
-        lines.insert(0, selection_line);
         return lines;
     }
     let Some(entry) = state.result_history.back() else {
-        return vec![
-            selection_line,
-            Line::from(Span::styled(
-                "No result payload yet",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ];
+        return vec![Line::from(Span::styled(
+            "No result payload yet",
+            Style::default().fg(Color::DarkGray),
+        ))];
     };
     let mut lines = expanded_result_history_entry_lines(
         entry,
@@ -4625,7 +4774,50 @@ fn fixed_domain_lines(state: &RunViewState, available_width: usize) -> Vec<Line<
         &format!("CONFIRMED #{}", entry.ordinal),
     );
     lines.truncate(6);
-    lines.insert(0, selection_line);
+    lines
+}
+
+fn compact_resolver_lines(snapshot: &ResolverDebugSnapshot, width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if snapshot.screen.as_deref() == Some("result")
+        && let Some(local) = &snapshot.local
+    {
+        lines.push(Line::from(fitted_value(
+            &format!(
+                "{:?} support={} songΔ={} chartΔ={} ",
+                local.state, local.support, local.song_margin, local.chart_margin
+            ),
+            local.top.as_deref().unwrap_or("-"),
+            width,
+        )));
+    } else {
+        lines.push(Line::from("No active RESULT resolution"));
+    }
+    lines.push(Line::from(snapshot.attempt.as_ref().map_or_else(
+        || "ATTEMPT -".to_owned(),
+        |a| {
+            format!(
+                "ATTEMPT #{} {} {}",
+                a.attempt_id
+                    .map_or_else(|| "-".to_owned(), |id| id.to_string()),
+                a.phase,
+                a.path
+            )
+        },
+    )));
+    lines.push(Line::from(fitted_value("", &snapshot.gate, width)));
+    lines.push(Line::from(
+        snapshot
+            .gates
+            .iter()
+            .map(|g| {
+                Span::styled(
+                    format!("{}{} ", g.label, gate_suffix(g.state)),
+                    Style::default().fg(gate_color(g.state)),
+                )
+            })
+            .collect::<Vec<_>>(),
+    ));
     lines
 }
 
@@ -4634,6 +4826,9 @@ fn fixed_domain_lines(state: &RunViewState, available_width: usize) -> Vec<Line<
     reason = "the fixed ten-line debug tree keeps semantic styles adjacent to their typed values"
 )]
 fn resolver_lines(snapshot: &ResolverDebugSnapshot, available_width: usize) -> Vec<Line<'static>> {
+    if snapshot.screen.as_deref() != Some("result") {
+        return compact_resolver_lines(snapshot, available_width);
+    }
     let semantic_color = if snapshot.suspended {
         Color::Yellow
     } else {
@@ -4737,45 +4932,6 @@ fn resolver_lines(snapshot: &ResolverDebugSnapshot, available_width: usize) -> V
             fitted_value("│  OPT ", &text, available_width),
             Style::default().fg(color),
         )));
-    } else {
-        let marker = snapshot
-            .raw_fields
-            .iter()
-            .find(|(key, _)| key == "marker")
-            .map_or("absent", |(_, value)| value.as_str());
-        let marker_compact = marker.split_whitespace().next().unwrap_or(marker);
-        let current_difficulty = snapshot.selection_difficulty;
-        lines.push(Line::from(vec![
-            Span::styled("│  DIFF marker ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                marker_compact.to_owned(),
-                Style::default().fg(marker_color(marker)),
-            ),
-            Span::raw(" → current "),
-            Span::styled(
-                current_difficulty.map_or_else(
-                    || "absent".to_owned(),
-                    |current| {
-                        format!(
-                            "{} streak={} target={}",
-                            difficulty_label(current.difficulty),
-                            current.consecutive_known,
-                            snapshot.selection_difficulty_target.map_or(
-                                "-",
-                                |target| match target {
-                                    SelectionDifficultyTarget::Pending => "pending",
-                                    SelectionDifficultyTarget::Incumbent => "incumbent",
-                                    SelectionDifficultyTarget::Successor => "successor",
-                                }
-                            )
-                        )
-                    },
-                ),
-                Style::default().fg(current_difficulty.map_or(Color::DarkGray, |current| {
-                    difficulty_color(current.difficulty)
-                })),
-            ),
-        ]));
     }
     if let Some(local) = &snapshot.local {
         lines.push(Line::from(vec![
@@ -4968,28 +5124,6 @@ const fn difficulty_color(difficulty: Difficulty) -> Color {
         Difficulty::Hyper => Color::Yellow,
         Difficulty::Another => Color::Red,
         Difficulty::Leggendaria => Color::Magenta,
-    }
-}
-
-fn marker_color(marker: &str) -> Color {
-    if marker.starts_with("known:") {
-        if marker.contains("beginner") {
-            Color::Green
-        } else if marker.contains("normal") {
-            Color::Blue
-        } else if marker.contains("hyper") {
-            Color::Yellow
-        } else if marker.contains("another") {
-            Color::Red
-        } else if marker.contains("leggendaria") {
-            Color::Magenta
-        } else {
-            Color::White
-        }
-    } else if marker == "absent" {
-        Color::DarkGray
-    } else {
-        Color::Yellow
     }
 }
 
@@ -5507,9 +5641,14 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         let snapshot: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v9");
+        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v10");
         assert_eq!(snapshot["state"]["invocation_id"], "invocation-1");
         assert_eq!(snapshot["state"]["next_channel_sequence"], 1);
+        assert_eq!(snapshot["state"]["music_select"]["active"], false);
+        assert_eq!(
+            snapshot["state"]["music_select"]["output"],
+            "identity_unresolved"
+        );
         assert_eq!(snapshot["channel"]["connected_clients"], 1);
 
         channel
@@ -5825,7 +5964,7 @@ mod tests {
             ))
             .unwrap();
         assert!(
-            fixed_domain_lines(&output.state.lock().unwrap(), 160)[1]
+            fixed_domain_lines(&output.state.lock().unwrap(), 160)[0]
                 .to_string()
                 .contains("CONFIRMED")
         );
@@ -5846,7 +5985,7 @@ mod tests {
         };
         output.publish(&resolved).unwrap();
         assert!(
-            fixed_domain_lines(&output.state.lock().unwrap(), 160)[1]
+            fixed_domain_lines(&output.state.lock().unwrap(), 160)[0]
                 .to_string()
                 .contains("PROVISIONAL")
         );
@@ -5866,7 +6005,7 @@ mod tests {
         };
         output.publish(&withdrawn).unwrap();
         assert!(
-            fixed_domain_lines(&output.state.lock().unwrap(), 160)[1]
+            fixed_domain_lines(&output.state.lock().unwrap(), 160)[0]
                 .to_string()
                 .contains("CONFIRMED")
         );
@@ -6269,7 +6408,7 @@ mod tests {
         for reader in &mut readers {
             let mut snapshot = String::new();
             reader.read_line(&mut snapshot).unwrap();
-            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v9"));
+            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v10"));
         }
         channel
             .publish(&json!({
@@ -6686,12 +6825,43 @@ mod tests {
         assert_eq!(value, "非常に長い曲名を完全な状態で保持する");
     }
 
+    fn populated_select_test_state() -> MusicSelectResolverState {
+        use scorepeek::recognition::{BestClearType, BestValue, MusicSelectBestValues};
+        let (_, evidence, _) = music_selection_test_observation();
+        let candidate = &evidence.candidates[0];
+        let selection = MusicSelectionState::Selected {
+            scorepeek_song_id: candidate.song_id,
+            play_type: candidate.chart.key.play_type,
+            difficulty: candidate.chart.key.difficulty,
+            level: candidate.chart.level,
+            notes: candidate.chart.notes,
+            presentation: candidate_song_presentation(candidate),
+        };
+        let mut state = MusicSelectResolverState {
+            active: true,
+            screen_episode_id: 1,
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            state.observe(
+                Some(selection.clone()),
+                MusicSelectBestValues {
+                    score: BestValue::Known(1200),
+                    miss_count: BestValue::Unknown,
+                    clear_type: BestValue::Known(BestClearType::Clear),
+                },
+            );
+        }
+        state.publish_candidate("session", 1, 2, 200).unwrap();
+        state
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "the 80x25 fixture spells out every simultaneously visible resolver node and gate"
     )]
-    fn fixed_three_pane_tui_renders_resolver_duration_and_clips_below_minimum() {
+    fn four_pane_tui_keeps_all_gates_at_minimum_size() {
         let mut state = RunViewState::new("invocation-1".to_owned(), "a".repeat(64), true);
         state.watcher_state = "session_active".to_owned();
         state.capture_generation = Some(3);
@@ -6826,8 +6996,9 @@ mod tests {
                 ("title".to_owned(), "OCR TITLE".to_owned()),
             ],
         };
+        state.music_select = populated_select_test_state();
         let health = ChannelHealth::default();
-        for (width, height) in [(80, 25), (79, 24)] {
+        for (width, height) in [(120, 40), (80, 25), (79, 24)] {
             let backend = TestBackend::new(width, height);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal
@@ -6841,13 +7012,13 @@ mod tests {
                     .iter()
                     .map(ratatui::buffer::Cell::symbol)
                     .collect::<String>();
+                assert!(rendered.contains("Music Select Resolver"));
+                assert!(rendered.contains("SCORE 1200  MISS unknown"));
+                assert!(rendered.contains("partial snapshot emitted revision=1"));
                 assert!(rendered.contains("Watcher"));
                 assert!(rendered.contains("Latest result"));
                 assert!(rendered.contains("Resolver"));
                 assert!(rendered.contains("episode=#18"));
-                assert!(rendered.contains("OPT raw=\"USE OPTION RANDOM\""));
-                assert!(rendered.contains("typed=RANDOM"));
-                assert!(rendered.contains("#18 12s"));
                 assert!(rendered.contains("ATTEMPT #14"));
                 assert!(rendered.contains("numeric…"));
                 assert!(rendered.contains("link✓"));
@@ -6893,6 +7064,11 @@ mod tests {
                     artist: "ARTIST".to_owned(),
                 },
             });
+            state.music_select.active = true;
+            state.music_select.observe(
+                state.latest_music_selection.clone(),
+                scorepeek::recognition::MusicSelectBestValues::default(),
+            );
             let mut terminal = Terminal::new(TestBackend::new(80, 25)).unwrap();
             terminal
                 .draw(|frame| {
@@ -6911,10 +7087,7 @@ mod tests {
                 .iter()
                 .map(ratatui::buffer::Cell::symbol)
                 .collect::<String>();
-            assert!(rendered.contains(&format!(
-                "SELECTED DP {} Lv12 notes=2000 / ",
-                difficulty_label(difficulty)
-            )));
+            assert!(rendered.contains(&format!("DP {} / ", difficulty_label(difficulty))));
             assert!(rendered.contains('…'));
         }
     }
@@ -6947,9 +7120,6 @@ mod tests {
         assert_eq!(difficulty_color(Difficulty::Hyper), Color::Yellow);
         assert_eq!(difficulty_color(Difficulty::Another), Color::Red);
         assert_eq!(difficulty_color(Difficulty::Leggendaria), Color::Magenta);
-        assert_eq!(marker_color("unknown:- score=0 margin=0"), Color::Yellow);
-        assert_eq!(marker_color("known:another score=1 margin=1"), Color::Red);
-        assert_eq!(marker_color("absent"), Color::DarkGray);
         assert_eq!(clear_type_color("FAILED"), Color::Red);
         assert_eq!(clear_type_color("ASSIST CLEAR"), Color::Yellow);
         assert_eq!(clear_type_color("F-COMBO"), Color::Green);
@@ -7980,6 +8150,192 @@ mod tests {
         (fields, evidence, presentation)
     }
 
+    fn select_best_test_episode(
+        session: &str,
+        phase: SemanticEpisodePhase,
+        sequence: u64,
+    ) -> RunEvent {
+        RunEvent {
+            schema: RUN_EVENT_SCHEMA.to_owned(),
+            kind: RunEventKind::SemanticScreenEpisodeChanged {
+                session_id: Some(session.to_owned()),
+                capture_generation: Some(1),
+                screen_episode_id: 1,
+                sequence,
+                monotonic_end_ms: sequence * 100,
+                screen: "music_select".to_owned(),
+                phase,
+            },
+        }
+    }
+
+    fn select_best_test_observation()
+    -> (Value, JointEvidenceObservation, SongResolutionPresentation) {
+        use scorepeek::recognition::{BestNumericObservation, BestValue};
+        let (mut fields, evidence, presentation) = music_selection_test_observation();
+        fields["best"] = serde_json::to_value(scorepeek::recognition::resolve_music_select_best(
+            "SCORE DATA".into(),
+            "CLEAR".into(),
+            BestNumericObservation {
+                score: BestValue::Known(1200),
+                miss_count: BestValue::Unknown,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+        (fields, evidence, presentation)
+    }
+
+    fn assert_connected_best(output: &RoutineOutput, observation_id: &str) {
+        let connected: Value = serde_json::from_slice(
+            &snapshot_bytes(&output.state, &ChannelHealth::default()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            connected["state"]["music_select"]["snapshot"]["observation_id"],
+            observation_id
+        );
+    }
+
+    #[test]
+    fn select_best_is_frame_bound_suspended_and_separate_from_results() {
+        use scorepeek::recognition::{BestClearType, BestValue};
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        let session = "invocation-1-session-1".to_owned();
+        let episode = |phase, sequence| select_best_test_episode(&session, phase, sequence);
+        output
+            .publish(&episode(SemanticEpisodePhase::Started, 1))
+            .unwrap();
+        let (mut fields, evidence, presentation) = select_best_test_observation();
+        let observe = |output: &mut RoutineOutput, sequence, fields: &Value| {
+            output
+                .reduce_music_select_observation(
+                    Some(&session),
+                    Some(1),
+                    sequence,
+                    sequence * 100,
+                    fields,
+                    &evidence,
+                    &presentation,
+                )
+                .unwrap();
+        };
+        for sequence in 2..=5 {
+            observe(&mut output, sequence, &fields);
+        }
+        let first = output
+            .state
+            .lock()
+            .unwrap()
+            .music_select
+            .snapshot
+            .clone()
+            .unwrap();
+        assert_eq!(first.values.score, BestValue::Known(1200));
+        assert_eq!(
+            first.values.clear_type,
+            BestValue::Known(BestClearType::Clear)
+        );
+        assert_eq!(first.revision, 1);
+        assert_connected_best(&output, &first.observation_id);
+        observe(&mut output, 5, &fields);
+        observe(&mut output, 3, &fields);
+        assert_eq!(
+            output.state.lock().unwrap().music_select.snapshot.as_ref(),
+            Some(&first)
+        );
+        output
+            .publish(&episode(SemanticEpisodePhase::Suspended, 6))
+            .unwrap();
+        fields["best"]["values"]["score"] = json!({"status":"known","value":1300});
+        observe(&mut output, 7, &fields);
+        let state = output.state.lock().unwrap().music_select.clone();
+        assert!(state.active && state.suspended);
+        assert_eq!(state.snapshot.as_ref(), Some(&first));
+        output
+            .publish(&episode(SemanticEpisodePhase::Resumed, 9))
+            .unwrap();
+        observe(&mut output, 8, &fields);
+        assert_eq!(
+            output.state.lock().unwrap().music_select.snapshot.as_ref(),
+            Some(&first)
+        );
+        observe(&mut output, 10, &fields);
+        assert_eq!(
+            output.state.lock().unwrap().music_select.score.consecutive,
+            1
+        );
+        observe(&mut output, 11, &fields);
+        assert_eq!(
+            output.state.lock().unwrap().music_select.score.accepted(),
+            BestValue::Known(1300)
+        );
+        fields["selected_difficulty"]["state"]["value"] = json!("another");
+        observe(&mut output, 12, &fields);
+        assert!(output.state.lock().unwrap().music_select.snapshot.is_none());
+        output
+            .publish(&episode(SemanticEpisodePhase::Closing, 13))
+            .unwrap();
+        output
+            .publish(&episode(SemanticEpisodePhase::Finalized, 13))
+            .unwrap();
+        observe(&mut output, 14, &fields);
+        assert!(!output.state.lock().unwrap().music_select.active);
+        assert!(output.state.lock().unwrap().result_history.is_empty());
+        let events = output.take_headless_events();
+        let snapshots: Vec<_> = events
+            .iter()
+            .filter_map(|e| match &e.kind {
+                RunEventKind::MusicSelectBestObserved { snapshot, .. } => Some(snapshot),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(snapshots.len(), 3); // Initial, score re-stabilizing partial, updated score.
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e.kind, RunEventKind::ResultDetected { .. }))
+        );
+    }
+
+    #[test]
+    fn best_suppression_does_not_discard_admitted_selection_identity() {
+        for phase in [
+            SemanticEpisodePhase::Suspended,
+            SemanticEpisodePhase::Closing,
+        ] {
+            let mut output = RoutineOutput::start_headless("invocation-1".into(), "a".repeat(64));
+            let session = "invocation-1-session-1".to_owned();
+            output
+                .publish(&select_best_test_episode(
+                    &session,
+                    SemanticEpisodePhase::Started,
+                    1,
+                ))
+                .unwrap();
+            output
+                .publish(&select_best_test_episode(&session, phase, 4))
+                .unwrap();
+            let (fields, evidence, presentation) = select_best_test_observation();
+            // These frames were admitted before the boundary and finish during drain.
+            for sequence in [2, 3] {
+                output
+                    .reduce_music_select_observation(
+                        Some(&session),
+                        Some(1),
+                        sequence,
+                        sequence * 100,
+                        &fields,
+                        &evidence,
+                        &presentation,
+                    )
+                    .unwrap();
+            }
+            assert!(output.music_select_resolver.selected().is_some());
+            assert!(output.state.lock().unwrap().music_select.snapshot.is_none());
+        }
+    }
+
     #[test]
     fn music_selection_lifecycle_is_deduplicated_and_does_not_accept_joint() {
         let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
@@ -8175,6 +8531,7 @@ mod tests {
         let shared = state();
         shared.lock().unwrap().current_screen = Some("music_select".to_owned());
         let mut output = test_output(Arc::clone(&shared), disconnected_test_channel());
+        output.music_selection_episode_active = true;
         let fields = json!({
             "selected_difficulty": {
                 "state": { "status": "known", "value": "normal" },
@@ -8210,11 +8567,11 @@ mod tests {
             snapshot.selection_difficulty.unwrap().difficulty,
             Difficulty::Normal
         );
-        let rendered = resolver_lines(&snapshot, 80)
+        let rendered = music_select_best::lines(&shared.lock().unwrap().music_select, 80)
             .iter()
             .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
             .collect::<String>();
-        assert!(rendered.contains("current NORMAL streak=1 target=pending"));
+        assert!(rendered.contains("NORMAL streak=1 target=pending"));
     }
 
     #[test]

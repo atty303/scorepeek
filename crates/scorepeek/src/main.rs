@@ -621,7 +621,7 @@ fn run_routine_live_session(
         state.recording_staging_store(),
     )?;
     output.publish(&routine_output::RunEvent {
-        schema: "scorepeek-run-event-v9".to_owned(),
+        schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
         kind: routine_output::RunEventKind::WatcherStarted {
             invocation_id: invocation_id.clone(),
             profile_sha256: selected.binding.capture_profile_sha256().to_owned(),
@@ -763,7 +763,7 @@ fn run_routine_live_session(
                         _ => "error",
                     };
                     output.publish(&routine_output::RunEvent {
-                        schema: "scorepeek-run-event-v9".to_owned(),
+                        schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
                         kind: routine_output::RunEventKind::SessionFinished {
                             session_id: session_id.clone(),
                             capture_generation: generation,
@@ -832,7 +832,7 @@ fn run_routine_live_session(
                                 if completeness == "complete" {
                                     recording_published = true;
                                     output.publish(&routine_output::RunEvent {
-                                        schema: "scorepeek-run-event-v9".to_owned(),
+                                        schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
                                         kind: routine_output::RunEventKind::RecordingReady {
                                             session_id: session_id.clone(),
                                             directory: published.directory.display().to_string(),
@@ -927,7 +927,7 @@ fn run_routine_live_session(
         }
     }
     output.publish(&routine_output::RunEvent {
-        schema: "scorepeek-run-event-v9".to_owned(),
+        schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
         kind: routine_output::RunEventKind::WatcherStopped {
             invocation_id,
             reason: "signal".to_owned(),
@@ -1315,7 +1315,7 @@ fn live_session_event_value(
     event: capture_live::GamescopeLiveSessionEvent<'_>,
 ) -> Result<serde_json::Value, String> {
     let schema = if session_id.is_some() {
-        "scorepeek-run-event-v9"
+        routine_output::RUN_EVENT_SCHEMA
     } else {
         "scorepeek-live-session-event-v1"
     };
@@ -1455,6 +1455,8 @@ fn live_session_event_value(
                 scorepeek::recognition::ScreenFieldObservations::MusicSelect(fields) => (
                     "music_select",
                     serde_json::json!({
+                        "best": fields.best,
+                        "play_type": fields.play_type,
                         "central_title": fields.central_title.open_text,
                         "artist": fields.artist.open_text,
                         "selected_difficulty": fields.selected_difficulty,
@@ -3886,6 +3888,45 @@ mod tests {
     }
 
     #[test]
+    fn live_serializer_and_reducer_keep_one_recording_schema() {
+        use crate::routine_output::{RoutineOutput, RunEvent};
+        let mut output = RoutineOutput::start_headless("invocation".into(), "a".repeat(64));
+        for event in [
+            GamescopeLiveSessionEvent::Started {
+                capture_generation: 1,
+                capture_profile_sha256: "profile",
+                normalizer_artifact_sha256: "normalizer",
+            },
+            GamescopeLiveSessionEvent::SemanticScreenEpisode {
+                screen_episode_id: 1,
+                sequence: 1,
+                monotonic_end_ms: 100,
+                screen: scorepeek::recognition::ScreenClass::MusicSelect,
+                phase: crate::capture_live::SemanticScreenEpisodePhase::Started,
+            },
+        ] {
+            let value =
+                live_session_event_value(Some("invocation-session-1"), Some(1), event).unwrap();
+            output
+                .publish(&RunEvent::from_value(value).unwrap())
+                .unwrap();
+        }
+        let events = output.take_headless_events();
+        assert!(events.iter().any(|event| matches!(
+            event.kind,
+            crate::routine_output::RunEventKind::MusicSelectResolverChanged { .. }
+        )));
+        let schemas: std::collections::BTreeSet<_> =
+            events.iter().map(|event| event.schema.as_str()).collect();
+        assert_eq!(
+            schemas.len(),
+            1,
+            "the corpus reader rejects mixed-schema sessions"
+        );
+        assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v10"));
+    }
+
+    #[test]
     fn routine_screen_events_separate_raw_observation_and_semantic_episode() {
         let value = live_session_event_value(
             Some("invocation-session-2"),
@@ -3899,7 +3940,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v9");
+        assert_eq!(value["schema"], "scorepeek-run-event-v10");
         assert_eq!(value["event"], "raw_screen_observed");
         assert_eq!(value["semantic_episode_id"], 1);
         assert_eq!(value["session_id"], "invocation-session-2");
@@ -3992,7 +4033,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v9");
+        assert_eq!(value["schema"], "scorepeek-run-event-v10");
         assert_eq!(value["session_id"], "invocation-session-2");
         assert_eq!(value["capture_generation"], 2);
         assert_eq!(value["sequence"], 1);

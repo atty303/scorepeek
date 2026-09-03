@@ -164,31 +164,24 @@ and saved geometry. Music-select/result scene detection and OCR during ordinary 
 authority for recognition support; scorepeek does not re-estimate geometry or switch profiles at
 runtime.
 
-On a terminal, `run` uses a full-screen status view. It keeps the latest OCR text and frame-local
-catalog resolution separate from a provisional stabilized result. Two equal result song and clear
-type observations within 250 ms stabilize independently; a later unknown preserves the stable
-value, while a different accepted value is shown as a conflict. Music-select song presentation
-stabilizes after 200 ms. A transient unknown retains the prior catalog identity as explicitly
-`HELD`, while a different accepted ID is `CHANGING` until it persists for 200 ms; retained unknown
-state expires after a 200 ms grace. Raw active-list and central-title OCR remain separate and are
-not rewritten by this presentation state. The accepted-event panel renders only the latest event
-within the watcher invocation. A provisional promotion panel carries a stable or explicitly held
-selection through observed `decide_transition`, `play`, and `result` screens, then identifies the
-next unsatisfied event gate. It shows matching results as `CONFIRMED`, mismatches as `CONFLICT`,
-missing path steps as incomplete, result-to-play retries as a new child attempt, and calibrated
-mandatory-numeric rejection as a field and confidence-boundary comparison without OCR candidates.
-The observation-channel panel is hidden; this presentation never changes result acceptance or the
-machine-readable channel.
-Redirected stdout contains only deduplicated human-readable state changes. Provisional
-machine-readable observations are available from
-`$XDG_RUNTIME_DIR/scorepeek/observations-v2.sock`: each client receives a current snapshot followed
-by `scorepeek-run-event-v2` NDJSON. Raw field observations remain unchanged and any derived
-`temporal_result_changed` record follows the observation that caused it. This observation socket is
-also the source of derived `temporal_music_select_changed` records and bounded raw `screen_changed`
-records used to reset screen-local temporal state. Additive `play_attempt_changed` records expose
-the same latest path and song state shown by the TUI; the connection snapshot carries that state for
-late clients.
-It is not the future accepted-event API at `$XDG_RUNTIME_DIR/scorepeek/v1.sock`.
+On a terminal, `run` shows Watcher, Latest result, Music Select Resolver, and RESULT/attempt
+Resolver panes. Latest result prefers the current provisional payload and otherwise shows the last
+confirmed result; only confirmed results enter the count/history. The Music Select Resolver shows
+selected chart identity, self-best SCORE/MISS/clear values, per-field `1/2` stabilization, and the
+snapshot output gate/revision. UNKNOWN suspends retained state; a changed chart clears values and
+SELECT exit returns it to inactive. The 80x25 layout keeps existing attempt gates visible.
+DJ rank is calculated from EX SCORE and chart notes, not recognized from the screen.
+
+Machine-readable observations share `$XDG_RUNTIME_DIR/scorepeek/observations-v10.sock`.
+Each connection receives a current v10 snapshot followed by sequenced `scorepeek-run-event-v10`
+NDJSON. `music_select_best_observed` carries a separate supplemental best snapshot; the current
+snapshot also includes typed `music_select_resolver_changed` state. These game records may have
+been achieved in different plays and never create result events, play counts, or history entries.
+This implements recognition/output/display, not a score history database. Raw recognition details
+remain diagnostic observations. Redirected stdout prints deduplicated human-readable state changes.
+This is separate from the future accepted-event API at `$XDG_RUNTIME_DIR/scorepeek/v1.sock`.
+See [the output contracts](docs/architecture.md#event-api) and
+[the SELECT best decision](docs/decisions/0114-observe-music-select-best-snapshots.md).
 
 With `--record`, in-progress components are grouped below
 `$XDG_STATE_HOME/scorepeek/recording-staging/<session-id>/` as `capture/`, `recognition/`,

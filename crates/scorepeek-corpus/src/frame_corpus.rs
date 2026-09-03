@@ -223,6 +223,16 @@ struct EventComponentManifest {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 enum StoredRunEventPayload {
+    MusicSelectBestObserved {
+        session_id: String,
+        capture_generation: u64,
+        snapshot: Value,
+    },
+    MusicSelectResolverChanged {
+        session_id: Option<String>,
+        capture_generation: Option<u64>,
+        state: Value,
+    },
     WatcherStarted {
         invocation_id: String,
         profile_sha256: String,
@@ -760,6 +770,7 @@ pub struct CorpusReplaySummary {
 #[derive(Debug, Serialize)]
 struct CorpusReplaySessionSummary {
     session_key: String,
+    music_select_best_snapshots: usize,
     wall_us: u64,
     canonical_frames: usize,
 }
@@ -3822,6 +3833,7 @@ enum ReplayWorkerResult {
 
 struct ReplaySessionOutcome {
     session_key: String,
+    music_select_best_snapshots: usize,
     episode_count: usize,
     canonical_frames: usize,
     negative_frames: usize,
@@ -4407,6 +4419,7 @@ fn replay_canonical_suite(
         memory_wait_us = memory_wait_us.saturating_add(outcome.memory_wait_us);
         sessions.push(CorpusReplaySessionSummary {
             session_key: outcome.session_key,
+            music_select_best_snapshots: outcome.music_select_best_snapshots,
             wall_us: outcome.wall_us,
             canonical_frames: outcome.canonical_frames,
         });
@@ -4571,7 +4584,7 @@ fn start_replay_session(
     );
     output
         .publish(&scorepeek::routine_output::RunEvent {
-            schema: "scorepeek-run-event-v9".to_owned(),
+            schema: scorepeek::routine_output::RUN_EVENT_SCHEMA.to_owned(),
             kind: scorepeek::routine_output::RunEventKind::SessionStarted {
                 session_id: Some(session_id.clone()),
                 capture_generation: session.capture_generation,
@@ -4925,7 +4938,7 @@ fn process_replay_frame(
     runtime
         .output
         .publish(&scorepeek::routine_output::RunEvent {
-            schema: "scorepeek-run-event-v9".to_owned(),
+            schema: scorepeek::routine_output::RUN_EVENT_SCHEMA.to_owned(),
             kind: scorepeek::routine_output::RunEventKind::RawScreenObserved {
                 session_id: Some(runtime.session_id.clone()),
                 capture_generation: Some(runtime.session.capture_generation),
@@ -5008,7 +5021,7 @@ fn finalize_replay_session(
     runtime
         .output
         .publish(&scorepeek::routine_output::RunEvent {
-            schema: "scorepeek-run-event-v9".to_owned(),
+            schema: scorepeek::routine_output::RUN_EVENT_SCHEMA.to_owned(),
             kind: scorepeek::routine_output::RunEventKind::SessionFinished {
                 session_id: runtime.session_id.clone(),
                 capture_generation: runtime.session.capture_generation,
@@ -5030,6 +5043,15 @@ fn finalize_replay_session(
     }
     let events = runtime.output.take_headless_events();
     validate_music_selection_oracle(&runtime.label, &events, &mut runtime.failures);
+    let music_select_best_snapshots = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                scorepeek::routine_output::RunEventKind::MusicSelectBestObserved { .. }
+            )
+        })
+        .count();
     let emitted = events
         .into_iter()
         .filter_map(|event| match event.kind {
@@ -5040,6 +5062,7 @@ fn finalize_replay_session(
     validate_semantic_oracle(&runtime.label, &emitted, &mut runtime.failures);
     Ok(ReplaySessionOutcome {
         session_key: runtime.session_id.clone(),
+        music_select_best_snapshots,
         episode_count: runtime.label.episodes.len(),
         canonical_frames: runtime.canonical_frames,
         negative_frames: runtime.label.negative_frames.len(),
@@ -5124,7 +5147,7 @@ fn publish_replay_semantic(
 ) -> Result<(), CorpusError> {
     output
         .publish(&scorepeek::routine_output::RunEvent {
-            schema: "scorepeek-run-event-v9".to_owned(),
+            schema: scorepeek::routine_output::RUN_EVENT_SCHEMA.to_owned(),
             kind: scorepeek::routine_output::RunEventKind::SemanticScreenEpisodeChanged {
                 session_id: Some(session_id.to_owned()),
                 capture_generation: Some(generation),
@@ -6472,6 +6495,7 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
                 | "scorepeek-run-event-v7"
                 | "scorepeek-run-event-v8"
                 | "scorepeek-run-event-v9"
+                | "scorepeek-run-event-v10"
         ) || event_schema
             .as_deref()
             .is_some_and(|expected| expected != schema)
@@ -6489,6 +6513,7 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
                 | "scorepeek-run-event-v7"
                 | "scorepeek-run-event-v8"
                 | "scorepeek-run-event-v9"
+                | "scorepeek-run-event-v10"
         ) {
             serde_json::from_value::<StoredRunEventPayload>(record.clone()).map_err(|_| {
                 CorpusError::InvalidRequest("diagnostic run event payload is invalid".to_owned())
@@ -7205,7 +7230,7 @@ mod tests {
     }
 
     #[test]
-    fn v9_run_event_stream_accepts_both_lifecycles_and_rejects_v10() {
+    fn legacy_lifecycle_streams_remain_readable_and_unknown_v11_is_rejected() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("events.ndjson");
         let manifest = diagnostic_manifest();
@@ -7232,9 +7257,71 @@ mod tests {
         assert_eq!(verify_session_events(&path, &manifest).unwrap(), 3);
         let future = fs::read_to_string(&path)
             .unwrap()
-            .replace("scorepeek-run-event-v9", "scorepeek-run-event-v10");
+            .replace("scorepeek-run-event-v9", "scorepeek-run-event-v11");
         fs::write(&path, future).unwrap();
         assert!(verify_session_events(&path, &manifest).is_err());
+    }
+
+    #[test]
+    fn v10_best_records_are_imported_separately_from_results() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events.ndjson");
+        let manifest = diagnostic_manifest();
+        let records = [
+            serde_json::json!({"event":"session_started", "capture_profile_sha256":"profile", "normalizer_artifact_sha256":"normalizer"}),
+            serde_json::json!({"event":"music_select_best_observed", "snapshot":{"contract":"scorepeek-music-select-best-snapshot-v1"}}),
+            serde_json::json!({"event":"music_select_resolver_changed", "state":{"active":false}}),
+            serde_json::json!({"event":"session_finished", "outcome":"ok", "report":{}}),
+        ];
+        let mut ndjson = String::new();
+        for (index, mut record) in records.into_iter().enumerate() {
+            record["schema"] = serde_json::json!("scorepeek-run-event-v10");
+            record["session_id"] = serde_json::json!("run-1-session-1");
+            record["capture_generation"] = serde_json::json!(1);
+            record["channel_sequence"] = serde_json::json!(index + 1);
+            ndjson.push_str(&serde_json::to_string(&record).unwrap());
+            ndjson.push('\n');
+        }
+        fs::write(&path, ndjson).unwrap();
+        assert_eq!(verify_session_events(&path, &manifest).unwrap(), 4);
+    }
+
+    #[test]
+    fn generated_resolver_session_passes_the_recording_reader() {
+        use scorepeek::routine_output::{RUN_EVENT_SCHEMA, RoutineOutput, RunEvent};
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events.ndjson");
+        let manifest = diagnostic_manifest();
+        let mut output = RoutineOutput::start_headless("run-1".into(), "a".repeat(64));
+        for mut record in [
+            serde_json::json!({"event":"session_started", "capture_profile_sha256":"profile", "normalizer_artifact_sha256":"normalizer"}),
+            serde_json::json!({"event":"semantic_screen_episode_changed", "screen_episode_id":1, "sequence":1, "monotonic_end_ms":100, "screen":"music_select", "phase":"started"}),
+            serde_json::json!({"event":"session_finished", "outcome":"ok", "report":{}}),
+        ] {
+            record["schema"] = serde_json::json!(RUN_EVENT_SCHEMA);
+            record["session_id"] = serde_json::json!("run-1-session-1");
+            record["capture_generation"] = serde_json::json!(1);
+            output
+                .publish(&RunEvent::from_value(record).unwrap())
+                .unwrap();
+        }
+        let events = output.take_headless_events();
+        assert!(events.iter().any(|event| matches!(
+            event.kind,
+            scorepeek::routine_output::RunEventKind::MusicSelectResolverChanged { .. }
+        )));
+        let mut bytes = Vec::new();
+        for (index, event) in events.iter().enumerate() {
+            let mut value = serde_json::to_value(event).unwrap();
+            value["channel_sequence"] = serde_json::json!(index + 1);
+            serde_json::to_writer(&mut bytes, &value).unwrap();
+            bytes.push(b'\n');
+        }
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(
+            verify_session_events(&path, &manifest).unwrap(),
+            events.len() as u64
+        );
     }
 
     #[test]

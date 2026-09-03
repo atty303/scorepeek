@@ -691,6 +691,7 @@ mod tests {
         for value in ["", " \t\n"] {
             let observations =
                 ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
+                    best: crate::recognition::MusicSelectBestObservation::default(),
                     central_title: text(value),
                     artist: text(value),
                     play_type: crate::recognition::MusicSelectPlayTypeObservation::default(),
@@ -722,6 +723,7 @@ mod tests {
         let domain = CatalogCandidateDomain::from_catalog(&catalog()).unwrap();
         let observations =
             ScreenFieldObservations::MusicSelect(MusicSelectScreenFieldObservations {
+                best: crate::recognition::MusicSelectBestObservation::default(),
                 central_title: text("CAT"),
                 artist: text("ALPHA"),
                 play_type: crate::recognition::MusicSelectPlayTypeObservation::default(),

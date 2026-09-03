@@ -355,3 +355,6 @@ authoritative.
 
 Historical ADRs describe the initial bootstrap design and are not implementation
 requirements after their named superseding decisions.
+
+- [ADR 0114: MUSIC SELECT best snapshots](0114-observe-music-select-best-snapshots.md) separates
+  supplemental game records from results and adds the Music Select Resolver state pane.

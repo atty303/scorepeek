@@ -8,7 +8,7 @@ objects, or deduplicate frames by pixel content.
 ## Recording boundary
 
 `scorepeek run` performs production recognition without saving artifacts. `scorepeek run --record`
-starts capture diagnostics, recognition observation v20, run-event v9, the canonical session
+starts capture diagnostics, recognition observation v21, run-event v10, the canonical session
 recorder, and joined diagnostic session v5 together. `--profile NAME` may appear before or after
 `--record`. Routine capture diagnostics retain structured facts but no legacy QOI pixels. The
 canonical recording is therefore the session's only retained frame authority.
@@ -170,3 +170,7 @@ imported, reviewed, and replayed from a temporary root. One-worker and default-p
 identical domain events. OCR wall time and whole-corpus wall time must both improve before the pool
 is called a speedup. Target install, numeric-manifest activation, public socket authority, push,
 release, and deletion of the old corpus are separate verified boundaries.
+
+SELECT best replay uses the same production observer and reducer. Per-session replay summaries
+include `music_select_best_snapshots`; these never enter the accepted-result oracle. The separate
+private field-label probe is described in [ADR 0114](decisions/0114-observe-music-select-best-snapshots.md).

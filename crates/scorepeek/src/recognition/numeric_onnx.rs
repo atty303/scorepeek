@@ -513,6 +513,72 @@ impl RegisteredNumericRuntime {
     pub const fn contract(&self) -> &NumericModelContract {
         &self.contract
     }
+
+    /// Runs the SELECT-specific measured cells through the registered numeric model.
+    /// # Errors
+    /// Rejects invalid crops, nonfinite output, or inference failure.
+    pub fn observe_music_select_best(
+        &mut self,
+        crops: &super::MusicSelectBestCrops,
+    ) -> Result<super::BestNumericObservation, OnnxParityError> {
+        let layout = super::MusicSelectBestLayout::load()?;
+        let cells = crops.numeric_cells()?;
+        let mut input = Vec::with_capacity(8 * FIXED_SLOT_FEATURE_DIMENSIONS);
+        for cell in &cells {
+            input.extend(fixed_slot_feature(
+                cell.pixels(),
+                cell.roi.width as usize,
+                cell.roi.height as usize,
+                NumericField::PreviousScore,
+            )?);
+        }
+        let outputs = self.session.run(ort::inputs![Tensor::from_array((
+            [8, FIXED_SLOT_FEATURE_DIMENSIONS],
+            input
+        ))?])?;
+        let (shape, logits) = outputs[0].try_extract_tensor::<f32>()?;
+        if shape.as_ref() != [8, 11] || logits.iter().any(|v| !v.is_finite()) {
+            return Err(OnnxParityError::InvalidArtifact);
+        }
+        let mut observation = super::BestNumericObservation::default();
+        let mut values = Vec::new();
+        for field in logits.chunks_exact(44) {
+            let mut text = String::new();
+            let mut minimum_margin = f32::INFINITY;
+            for row in field.chunks_exact(11) {
+                let mut ranked: Vec<_> = row.iter().copied().enumerate().collect();
+                ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+                text.push(char::from(b"_0123456789"[ranked[0].0]));
+                minimum_margin = minimum_margin.min(ranked[0].1 - ranked[1].1);
+            }
+            let margin = format!("{:.0}", minimum_margin * 1000.0)
+                .parse::<i32>()
+                .map_err(|_| OnnxParityError::InvalidArtifact)?;
+            // Dim leading zero placeholders can alternate between blank and zero, but blanks
+            // after a significant digit cannot be interpreted as digits.
+            let significant = text.trim_start_matches(['_', '0']);
+            let value = if margin >= layout.minimum_logit_margin_milli && !significant.contains('_')
+            {
+                if significant.is_empty() {
+                    text.ends_with('0').then_some(0)
+                } else {
+                    significant.parse().ok()
+                }
+            } else {
+                None
+            };
+            values.push(value.map_or(super::BestValue::Unknown, super::BestValue::Known));
+            observation.cell_classes.push(text);
+            observation.minimum_margins_milli.push(margin);
+        }
+        observation.score = values.remove(0);
+        observation.miss_count = if crops.miss_dashes() {
+            super::BestValue::NoRecord
+        } else {
+            values.remove(0)
+        };
+        Ok(observation)
+    }
 }
 
 fn select_numeric_fields(

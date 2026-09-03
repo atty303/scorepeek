@@ -1,0 +1,32 @@
+{
+  "schema": "scorepeek-music-select-best-layout-v1",
+  "header": {
+    "x": 54,
+    "y": 802,
+    "width": 118,
+    "height": 21
+  },
+  "clear_type": {
+    "x": 60,
+    "y": 884,
+    "width": 225,
+    "height": 29
+  },
+  "score": {
+    "x": 209,
+    "y": 833,
+    "width": 87,
+    "height": 18
+  },
+  "miss_count": {
+    "x": 209,
+    "y": 861,
+    "width": 87,
+    "height": 18
+  },
+  "cell_width": 21,
+  "cell_pitch": 22,
+  "minimum_logit_margin_milli": 1000,
+  "numeric_minimum_channel": 180,
+  "numeric_maximum_channel_difference": 50
+}
