@@ -28,6 +28,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use crate::CorpusError;
+use crate::replay_trace::{ReplayTrace, TraceStatus};
 use crate::segment_remote::{RemoteSegment, SegmentRemote};
 
 const DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v5";
@@ -769,6 +770,8 @@ pub struct CorpusReplaySummary {
 
 #[derive(Debug, Serialize)]
 struct CorpusReplaySessionSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trace: Option<Box<TraceStatus>>,
     session_key: String,
     music_select_best_snapshots: usize,
     wall_us: u64,
@@ -856,8 +859,9 @@ struct ReplayStepContext<'a> {
     segment_resolver: &'a SegmentResolver,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CorpusReplayOptions {
+    pub trace_dir: Option<PathBuf>,
     pub text_workers: Option<usize>,
     pub memory_mib: usize,
 }
@@ -865,6 +869,7 @@ pub struct CorpusReplayOptions {
 impl Default for CorpusReplayOptions {
     fn default() -> Self {
         Self {
+            trace_dir: None,
             text_workers: None,
             memory_mib: DEFAULT_REPLAY_MEMORY_MIB,
         }
@@ -3832,6 +3837,7 @@ enum ReplayWorkerResult {
 }
 
 struct ReplaySessionOutcome {
+    trace: Option<Box<TraceStatus>>,
     session_key: String,
     music_select_best_snapshots: usize,
     episode_count: usize,
@@ -4205,8 +4211,12 @@ fn replay_canonical_suite(
             }
         }));
     }
+    let trace = options
+        .trace_dir
+        .map(|path| Arc::new(Mutex::new(ReplayTrace::new(path, &generation_sha256))));
     let mut finalizer_handles = Vec::with_capacity(decode_workers);
     for _ in 0..decode_workers {
+        let trace = trace.clone();
         let receiver = Arc::clone(&finalize_receiver);
         let result_sender = result_sender.clone();
         finalizer_handles.push(thread::spawn(move || {
@@ -4219,7 +4229,7 @@ fn replay_canonical_suite(
                     break;
                 };
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    finalize_replay_session(runtime)
+                    finalize_replay_session(runtime, trace.as_ref())
                 }))
                 .unwrap_or_else(|_| {
                     Err(CorpusError::InvalidReplay(
@@ -4418,6 +4428,7 @@ fn replay_canonical_suite(
         decoder_slot_wait_us = decoder_slot_wait_us.saturating_add(outcome.decoder_slot_wait_us);
         memory_wait_us = memory_wait_us.saturating_add(outcome.memory_wait_us);
         sessions.push(CorpusReplaySessionSummary {
+            trace: outcome.trace,
             session_key: outcome.session_key,
             music_select_best_snapshots: outcome.music_select_best_snapshots,
             wall_us: outcome.wall_us,
@@ -4994,6 +5005,7 @@ fn process_replay_frame(
 
 fn finalize_replay_session(
     mut runtime: ReplaySessionRuntime,
+    trace: Option<&Arc<Mutex<ReplayTrace>>>,
 ) -> Result<ReplaySessionOutcome, CorpusError> {
     let finish_actions = runtime.timeline.finish();
     if finish_actions.is_empty() {
@@ -5042,6 +5054,14 @@ fn finalize_replay_session(
         return invalid_replay("production recognizer did not finish cleanly");
     }
     let events = runtime.output.take_headless_events();
+    let trace = trace.map(|trace| {
+        Box::new({
+            trace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .write_session(runtime.index, &runtime.session_id, &events)
+        })
+    });
     validate_music_selection_oracle(&runtime.label, &events, &mut runtime.failures);
     let music_select_best_snapshots = events
         .iter()
@@ -5061,6 +5081,7 @@ fn finalize_replay_session(
         .collect::<Vec<_>>();
     validate_semantic_oracle(&runtime.label, &emitted, &mut runtime.failures);
     Ok(ReplaySessionOutcome {
+        trace,
         session_key: runtime.session_id.clone(),
         music_select_best_snapshots,
         episode_count: runtime.label.episodes.len(),
@@ -6611,7 +6632,7 @@ fn verify_file(path: &Path, expected_sha256: &str, expected_bytes: u64) -> Resul
     Ok(())
 }
 
-fn digest_file(path: &Path) -> Result<String, CorpusError> {
+pub(crate) fn digest_file(path: &Path) -> Result<String, CorpusError> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 64 * 1024];
@@ -6631,7 +6652,7 @@ fn canonical_json(value: &impl Serialize) -> Result<Vec<u8>, CorpusError> {
     Ok(bytes)
 }
 
-fn digest(bytes: &[u8]) -> String {
+pub(crate) fn digest(bytes: &[u8]) -> String {
     hex(Sha256::digest(bytes))
 }
 

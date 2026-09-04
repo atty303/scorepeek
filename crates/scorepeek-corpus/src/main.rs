@@ -441,6 +441,7 @@ fn parse_corpus_replay_options(
     args: &[OsString],
 ) -> Result<(PathBuf, CorpusReplayOptions), String> {
     let mut store = None;
+    let mut trace_dir = None;
     let mut text_workers = None;
     let mut memory_mib = None;
     let mut index = 0;
@@ -448,6 +449,7 @@ fn parse_corpus_replay_options(
         let flag = args.get(index).and_then(|value| value.to_str());
         let value = args.get(index + 1).ok_or_else(corpus_replay_usage)?;
         match flag {
+            Some("--trace-dir") if trace_dir.is_none() => trace_dir = Some(PathBuf::from(value)),
             Some("--store") if store.is_none() => store = Some(PathBuf::from(value)),
             Some("--text-workers") if text_workers.is_none() => {
                 text_workers = Some(
@@ -474,6 +476,7 @@ fn parse_corpus_replay_options(
     Ok((
         store.ok_or_else(corpus_replay_usage)?,
         CorpusReplayOptions {
+            trace_dir,
             text_workers,
             memory_mib: memory_mib.unwrap_or(2_048),
         },
@@ -481,7 +484,7 @@ fn parse_corpus_replay_options(
 }
 
 fn corpus_replay_usage() -> String {
-    "usage: scorepeek-corpus corpus replay --store ROOT [--text-workers N] [--memory-mib N]"
+    "usage: scorepeek-corpus corpus replay --store ROOT [--text-workers N] [--memory-mib N] [--trace-dir DIR]"
         .to_owned()
 }
 
@@ -554,7 +557,7 @@ fn run_remaining(args: &[OsString]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "usage: scorepeek-corpus <diagnostic verify DIRECTORY|corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE|review show --draft FILE|review apply --store ROOT --draft FILE --labels FILE|corpus replay --store ROOT [--text-workers N] [--memory-mib N]|temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|music-list motion review-plan --output PLAN ARTIFACT|music-list motion review-apply --output REQUEST ARTIFACT PLAN DECISIONS|music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE|music-select motion review-apply --output REVIEWED DRAFT DECISIONS|music-select dwell evaluate --store ROOT --catalog-store ROOT --reviewed REVIEWED --output REPORT [--policy DWELL_MS ...]|music-select dwell evaluate-correctness --store ROOT --catalog-store ROOT --reviewed REVIEWED --labels LABELS --output REPORT [--policy DWELL_MS:UNKNOWN_GRACE_MS ...]>"
+            "usage: scorepeek-corpus <diagnostic verify DIRECTORY|corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE|review show --draft FILE|review apply --store ROOT --draft FILE --labels FILE|corpus replay --store ROOT [--text-workers N] [--memory-mib N] [--trace-dir DIR]|temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]|synthetic render --output DIRECTORY REQUEST|music-list observation-draft inspect|verify DOCUMENT|music-list motion measure --output ARTIFACT REQUEST|music-list motion verify ARTIFACT|music-list motion review-plan --output PLAN ARTIFACT|music-list motion review-apply --output REQUEST ARTIFACT PLAN DECISIONS|music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE|music-select motion review-apply --output REVIEWED DRAFT DECISIONS|music-select dwell evaluate --store ROOT --catalog-store ROOT --reviewed REVIEWED --output REPORT [--policy DWELL_MS ...]|music-select dwell evaluate-correctness --store ROOT --catalog-store ROOT --reviewed REVIEWED --labels LABELS --output REPORT [--policy DWELL_MS:UNKNOWN_GRACE_MS ...]>"
                 .to_owned(),
         ),
     }
@@ -575,7 +578,7 @@ fn print_usage() {
 
 fn usage_text() -> String {
     format!(
-        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus diagnostic verify DIRECTORY\n  scorepeek-corpus corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE\n  scorepeek-corpus review show --draft FILE\n  scorepeek-corpus review apply --store ROOT --draft FILE --labels FILE\n  scorepeek-corpus corpus replay --store ROOT [--text-workers N] [--memory-mib N]\n  scorepeek-corpus temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]\n  scorepeek-corpus music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE\n  scorepeek-corpus music-select motion review-apply --output REVIEWED DRAFT DECISIONS\n  scorepeek-corpus music-select dwell evaluate --store ROOT --catalog-store ROOT --reviewed REVIEWED --output REPORT [--policy DWELL_MS ...]\n  scorepeek-corpus music-select dwell evaluate-correctness --store ROOT --catalog-store ROOT --reviewed REVIEWED --labels LABELS --output REPORT [--policy DWELL_MS:UNKNOWN_GRACE_MS ...]",
+        "scorepeek-corpus {}\n\nUsage:\n  scorepeek-corpus diagnostic verify DIRECTORY\n  scorepeek-corpus corpus import-diagnostic --store ROOT --diagnostic DIRECTORY --review-draft FILE\n  scorepeek-corpus review show --draft FILE\n  scorepeek-corpus review apply --store ROOT --draft FILE --labels FILE\n  scorepeek-corpus corpus replay --store ROOT [--text-workers N] [--memory-mib N] [--trace-dir DIR]\n  scorepeek-corpus temporal evaluate --store ROOT [--policy OBSERVATIONS:GAP_MS ...]\n  scorepeek-corpus music-select motion review-plan --store ROOT --session-sha256 SHA256 --video FILE --output FILE\n  scorepeek-corpus music-select motion review-apply --output REVIEWED DRAFT DECISIONS\n  scorepeek-corpus music-select dwell evaluate --store ROOT --catalog-store ROOT --reviewed REVIEWED --output REPORT [--policy DWELL_MS ...]\n  scorepeek-corpus music-select dwell evaluate-correctness --store ROOT --catalog-store ROOT --reviewed REVIEWED --labels LABELS --output REPORT [--policy DWELL_MS:UNKNOWN_GRACE_MS ...]",
         env!("CARGO_PKG_VERSION")
     )
 }

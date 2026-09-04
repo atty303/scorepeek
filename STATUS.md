@@ -40,12 +40,16 @@ checkpoint; implementation history belongs in Git.
   The architecture, runtime schema v2, layouts and all acceptance thresholds are unchanged.
   Digest-bound provenance identifies the parent, private supervision, retention teacher and recipe.
 - Best fields need two equal consecutive observations independently. Partial snapshots are allowed.
-  Current-frame song/mode/difficulty must agree with resolved identity. Changed/unknown identity
-  clears best. Duplicate/reversed or pre-resume frames cannot update best; suspension retains state,
+  Current-frame song/mode/difficulty must agree with resolved identity. ADR 0118 retains the
+  interval and last publication across missing evidence while resetting field streaks and stopping
+  adoption. Contrary credible song/mode/difficulty evidence ends the interval and clears best. Duplicate/reversed or pre-resume frames cannot update best; suspension retains publication but resets field streaks,
   closing blocks supplemental emission, and SELECT exit clears it. First and changed content emit;
   revisit starts a new observation. No achievement date, play count, option or common-play relation
   is inferred. Admitted identity evidence still drains during suspension/close; supplemental
   suppression never discards identity evidence.
+- Resolver notifications compare semantic state: resolved clock/streak updates alone do not emit.
+  Internal observations remain fresh; connecting-client snapshots use the last published state.
+  Held identity, current stabilization and the last published revision are distinct in the TUI.
 - `music_select_best_observed` and typed `music_select_resolver_changed` share the observation
   connection, connecting-client snapshot and headless replay. The public supplemental payload
   excludes raw OCR/candidates. TUI has Watcher, Latest result, Music Select Resolver, and
@@ -61,7 +65,9 @@ checkpoint; implementation history belongs in Git.
   diagnostics. No live target, remote storage policy, or external service was changed here.
 - Private corpus import uses immutable local metadata and optional S3 segments, digest-bound ranged
   downloads, bounded shared replay workers/memory, production recognition/reducers and the existing
-  accepted-result oracle. Supplemental snapshot counts are now reported separately per session.
+  accepted-result oracle. Supplemental snapshot counts are reported separately per session. Optional `--trace-dir` saves
+  state/domain events (excluding raw field candidates), with a shared 256 MiB budget, no overwrite,
+  code/model/layout binding and non-interfering recording failure status.
 
 ## Verification
 
@@ -89,35 +95,37 @@ checkpoint; implementation history belongs in Git.
   The parent accepted SCORE 11/15 and MISS 12/15; sampled digit 6 now passes the unchanged margin.
   Session groups share identical glyphs; this is not an unseen-glyph holdout. Frames and complete
   labels remain private.
-- The newly labeled latest session passes production replay separately: six accepted RESULTs,
-  all labeled SELECT endpoints correct, 2,288 canonical frames, 46 supplemental snapshots
-  (recorded baseline 73), and no wrong/missing RESULT events.
-- Unit/lifecycle tests cover independent stability, rank boundaries, partial/changed/deduplicated
-  snapshots, revisit identity, impossible EX SCORE, selection clearing, suspension, late work and
-  separation from confirmed results. Existing socket and TUI regression tests are retained.
-- Registered-model full private production replay passes: 3 sessions, 16 accepted attempts, 13,683 canonical frames,
-  correct selection at every labeled SELECT span, and no wrong/missing RESULT events. Supplemental
-  snapshots total 64 (7/37/20 per session; pre-outline registered-model baseline 255). The run decoded
-  24 remote segments and took 478.9 s
-  on the development host. Live, replay and reducer producers share the v11 schema constant.
-- `mise run check`, workspace/all-target Clippy and fresh independent review pass. The live
-  serializer/reducer schema regression and generated-session reader regression pass.
-- The complete `RUST_TEST_THREADS=1 mise run test` passes without skipped tests (485 runtime,
-  300 binary, 127 corpus library and 5 corpus binary tests, plus 99 offline OCR tests).
-  ADR 0116's SELECT persistence, rejected foreign inputs and retained runtime-loss cases pass;
-  `mise run check`, workspace/all-target Clippy, fresh review and follow-up review also pass.
-  Default parallel execution encountered one `WorkerUnavailable` failure in the unchanged
-  diagnostic store root-lease rebinding test; earlier parallel execution and the final serial
-  execution passed. Its intermittent cause remains unverified.
-- The new registration passes the ordinary installer in an isolated model store, six numeric
-  manifest/runtime tests, the full serial workspace suite and fresh independent review. Private
-  weights and generation records are retained in the operator's private artifacts. The deployed
-  binary and live model store remain unchanged.
+- Current four-session production replay passes before and after interval/notification changes:
+  22 accepted RESULTs, all labeled SELECT endpoints correct, 15,971 canonical frames. The complete
+  RESULT and music-selection event streams are byte-equivalent as serialized values. Best snapshots
+  remain 109 total (baseline 9/44/35/21, after 8/44/37/20); counts alone are not a correctness oracle.
+- Resolver notifications decrease from 10,737 to 2,200. Adjacent notifications differing only in
+  sequence/time or resolved difficulty streak decrease from 8,023 to zero. Baseline traces contain
+  no same-chart adjacent snapshot restart candidates; retention correctness is also tested with
+  explicit missing-evidence, conflict, mode/difficulty, suspension and delayed-job scenarios.
+- Six manually reviewed frames label two short stationary intervals. Both baseline and updated
+  replay have zero wrong chart/value associations and zero duplicate publications in those intervals.
+  Three inspected scrolling frames have ambiguous central/list association and are excluded from
+  stationary truth. These samples do not establish zero error across all scrolling transitions.
+- SELECT lifecycle tests cover fresh two-observation recovery, no adoption while held, true revisit,
+  contrary ambiguous candidates, existing unresolved mode conflict, stale work and result separation.
+  Connecting snapshots preserve the last publication. Existing four-pane gate tests and held-state
+  rendering pass at 120x40 and 80x25. Trace capacity/no-overwrite tests pass.
+- `mise run check`, workspace/all-target Clippy and the complete default-parallel `mise run test`
+  pass (490 runtime, 305 binary, 128 corpus library, 5 corpus binary tests, plus 99 offline OCR tests).
+  The binding-mismatch fixture uses the existing isolated test supervisor. Independent final review
+  has no actionable findings.
+- Trace provenance binds the running executable and both SELECT layouts; the three-file hash is
+  explicitly a partial source fingerprint. Full production replay covers the final reducer/recognition
+  behavior. Subsequent writer-provenance and test-fixture-only corrections pass focused tests,
+  the complete suite and final review. Traces, six-frame interval labels and comparison reports are
+  retained privately under `select-stability-evaluation-v1` in the scorepeek XDG data directory.
 
 ## Unverified and next execution boundary
 
 - Confirm the new marker on target-live sessions; target install is a separate operation.
-- Investigate the intermittent diagnostic store lock-test failure under parallel test execution.
+- The previously observed diagnostic store root-lease test flake remains outside this change;
+  the separately reproduced binding-mismatch test supervisor conflict is corrected.
 - Additional capture coverage is needed for four-digit MISS, all remaining clear labels,
   other capture profiles, and target-live cost of the additional SELECT OCR jobs. The 27-frame
   best-value evaluation is a bounded sample, not a general zero-error claim. No explicit hidden-panel pattern

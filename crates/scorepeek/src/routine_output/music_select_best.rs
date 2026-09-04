@@ -16,7 +16,7 @@ pub struct BestChart {
 }
 
 impl BestChart {
-    fn from_selection(selection: MusicSelectionState) -> Option<Self> {
+    pub(super) fn from_selection(selection: MusicSelectionState) -> Option<Self> {
         let MusicSelectionState::Selected {
             scorepeek_song_id,
             play_type,
@@ -78,6 +78,12 @@ pub enum SelectIdentityStatus {
     Resolved,
 }
 
+pub(super) enum SelectFrameIdentity {
+    Confirmed(BestChart),
+    Missing(SelectIdentityStatus),
+    Conflicting(SelectIdentityStatus),
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MusicSelectResolverState {
     pub active: bool,
@@ -99,35 +105,45 @@ pub struct MusicSelectResolverState {
 }
 
 impl MusicSelectResolverState {
-    pub fn observe(
+    pub(super) fn hold(&mut self, reason: SelectIdentityStatus) {
+        self.score = StableBestField::default();
+        self.miss_count = StableBestField::default();
+        self.clear_type = StableBestField::default();
+        self.identity_status = reason;
+        self.output = BestOutputState::IdentityUnresolved;
+        self.snapshot = self.last_published.clone();
+    }
+
+    pub(super) fn end_interval(&mut self, reason: SelectIdentityStatus) {
+        self.hold(reason);
+        self.chart = None;
+        self.snapshot = None;
+        self.last_published = None;
+        self.revision = 0;
+    }
+
+    pub(super) fn observe_frame(
         &mut self,
-        selection: Option<MusicSelectionState>,
+        identity: SelectFrameIdentity,
         values: MusicSelectBestValues,
     ) {
-        let chart = selection.and_then(BestChart::from_selection);
-        if self.chart != chart {
-            self.selection_interval = self.selection_interval.saturating_add(1);
-            self.score = StableBestField::default();
-            self.miss_count = StableBestField::default();
-            self.clear_type = StableBestField::default();
-            self.snapshot = None;
-            self.last_published = None;
-            self.revision = 0;
-            self.chart = chart;
+        match identity {
+            SelectFrameIdentity::Confirmed(chart) => self.observe(chart, values),
+            SelectFrameIdentity::Missing(reason) => self.hold(reason),
+            SelectFrameIdentity::Conflicting(reason) => self.end_interval(reason),
         }
-        self.identity_status = if self.chart.is_some() {
-            SelectIdentityStatus::Resolved
-        } else {
-            SelectIdentityStatus::AwaitingEvidence
-        };
-        let Some(chart) = self.chart.as_ref() else {
-            self.output = BestOutputState::IdentityUnresolved;
-            return;
-        };
+    }
+
+    pub fn observe(&mut self, chart: BestChart, values: MusicSelectBestValues) {
+        let maximum_score = u64::from(chart.notes) * 2;
+        if self.chart.as_ref() != Some(&chart) {
+            self.end_interval(SelectIdentityStatus::Stabilizing);
+            self.selection_interval = self.selection_interval.saturating_add(1);
+            self.chart = Some(chart);
+        }
+        self.identity_status = SelectIdentityStatus::Resolved;
         let score = match values.score {
-            BestValue::Known(score) if u64::from(score) > u64::from(chart.notes) * 2 => {
-                BestValue::Unknown
-            }
+            BestValue::Known(score) if u64::from(score) > maximum_score => BestValue::Unknown,
             value => value,
         };
         self.score.observe(score);
@@ -145,8 +161,37 @@ impl MusicSelectResolverState {
             BestOutputState::Complete
         };
         if !values.has_observed_value() {
-            self.snapshot = None;
+            self.snapshot = self.last_published.clone();
         }
+    }
+
+    pub(super) fn same_notification(&self, previous: &Self) -> bool {
+        let difficulty = |state: &Self| {
+            state.current_difficulty.map(|current| {
+                (
+                    current.difficulty,
+                    if state.chart.is_none() {
+                        current.consecutive_known
+                    } else {
+                        0
+                    },
+                )
+            })
+        };
+        self.active == previous.active
+            && self.suspended == previous.suspended
+            && self.screen_episode_id == previous.screen_episode_id
+            && self.selection_interval == previous.selection_interval
+            && self.chart == previous.chart
+            && self.identity_status == previous.identity_status
+            && difficulty(self) == difficulty(previous)
+            && self.difficulty_target == previous.difficulty_target
+            && self.score == previous.score
+            && self.miss_count == previous.miss_count
+            && self.clear_type == previous.clear_type
+            && self.output == previous.output
+            && self.revision == previous.revision
+            && self.snapshot == previous.snapshot
     }
 
     fn values(&self) -> MusicSelectBestValues {
@@ -164,6 +209,9 @@ impl MusicSelectResolverState {
         source_sequence: u64,
         observed_monotonic_ms: u64,
     ) -> Option<MusicSelectBestSnapshot> {
+        if self.suspended || self.identity_status != SelectIdentityStatus::Resolved {
+            return None;
+        }
         let chart = self.chart.clone()?;
         let values = self.values();
         if !values.has_observed_value() {
@@ -227,6 +275,56 @@ fn field_label<T>(field: &StableBestField<T>, show: impl FnOnce(&T) -> String) -
     }
 }
 
+fn best_value_label<T>(value: &BestValue<T>, show: impl FnOnce(&T) -> String) -> String {
+    match value {
+        BestValue::Known(value) => show(value),
+        BestValue::NoRecord => "no record".to_owned(),
+        BestValue::NotDisplayed => "not displayed".to_owned(),
+        BestValue::Unknown => "unknown".to_owned(),
+    }
+}
+
+fn output_line(state: &MusicSelectResolverState) -> String {
+    let output = match state.output {
+        BestOutputState::IdentityUnresolved => "waiting: identity",
+        BestOutputState::Stabilizing => "waiting: values",
+        BestOutputState::Partial => "partial snapshot emitted",
+        BestOutputState::Complete => "snapshot emitted",
+    };
+    if matches!(
+        state.output,
+        BestOutputState::IdentityUnresolved | BestOutputState::Stabilizing
+    ) {
+        let reason = if state.suspended {
+            "suspended"
+        } else if state.output == BestOutputState::Stabilizing {
+            "values"
+        } else {
+            match state.identity_status {
+                SelectIdentityStatus::AwaitingDifficulty => "difficulty",
+                SelectIdentityStatus::AwaitingPlayType => "SP/DP",
+                SelectIdentityStatus::AwaitingEvidence => "evidence",
+                SelectIdentityStatus::CurrentFrameConflict => "identity conflict",
+                SelectIdentityStatus::Stabilizing | SelectIdentityStatus::Resolved => "identity",
+            }
+        };
+        state.snapshot.as_ref().map_or_else(
+            || format!("waiting: {reason}"),
+            |snapshot| {
+                format!(
+                    "waiting: {reason}; last r{} S={} M={} {}",
+                    snapshot.revision,
+                    best_value_label(&snapshot.values.score, u32::to_string),
+                    best_value_label(&snapshot.values.miss_count, u32::to_string),
+                    best_value_label(&snapshot.values.clear_type, |value| format!("{value:?}"))
+                )
+            },
+        )
+    } else {
+        format!("{output} revision={}", state.revision)
+    }
+}
+
 pub fn lines(state: &MusicSelectResolverState, width: usize) -> Vec<Line<'static>> {
     if !state.active {
         return vec![Line::from("inactive")];
@@ -261,7 +359,12 @@ pub fn lines(state: &MusicSelectResolverState, width: usize) -> Vec<Line<'static
         |c| {
             fitted_value(
                 &format!(
-                    "{} {} / ",
+                    "{}{} {} / ",
+                    if state.identity_status != SelectIdentityStatus::Resolved || state.suspended {
+                        "held "
+                    } else {
+                        ""
+                    },
                     play_type_label(c.play_type),
                     difficulty_label(c.difficulty)
                 ),
@@ -282,20 +385,20 @@ pub fn lines(state: &MusicSelectResolverState, width: usize) -> Vec<Line<'static
     let rank = state
         .snapshot
         .as_ref()
+        .filter(|_| {
+            matches!(
+                state.output,
+                BestOutputState::Partial | BestOutputState::Complete
+            )
+        })
         .and_then(|s| s.derived_dj_rank.as_deref())
         .unwrap_or("?");
-    let output = match state.output {
-        BestOutputState::IdentityUnresolved => "waiting: identity",
-        BestOutputState::Stabilizing => "waiting: values",
-        BestOutputState::Partial => "partial snapshot emitted",
-        BestOutputState::Complete => "snapshot emitted",
-    };
     vec![
         Line::from(heading),
         Line::from(chart),
         Line::from(values),
         Line::from(format!("{clear}  DJ {rank} (derived)")),
-        Line::from(format!("{output} revision={}", state.revision)),
+        Line::from(output_line(state)),
     ]
 }
 
@@ -303,13 +406,12 @@ pub fn lines(state: &MusicSelectResolverState, width: usize) -> Vec<Line<'static
 mod tests {
     use super::*;
 
-    fn selected(difficulty: Difficulty) -> MusicSelectionState {
+    fn selected(difficulty: Difficulty) -> BestChart {
         let song = serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
-        MusicSelectionState::Selected {
+        BestChart {
             scorepeek_song_id: song,
             play_type: PlayType::Single,
             difficulty,
-            level: 10,
             notes: 1000,
             presentation: SongPresentation {
                 scorepeek_song_id: song,
@@ -332,20 +434,20 @@ mod tests {
             screen_episode_id: 2,
             ..Default::default()
         };
-        state.observe(Some(selected(Difficulty::Hyper)), values(1500));
+        state.observe(selected(Difficulty::Hyper), values(1500));
         assert!(state.publish_candidate("session", 1, 1, 100).is_none());
-        state.observe(Some(selected(Difficulty::Hyper)), values(1500));
+        state.observe(selected(Difficulty::Hyper), values(1500));
         let first = state.publish_candidate("session", 1, 2, 200).unwrap();
         assert_eq!(first.derived_dj_rank.as_deref(), Some("A"));
         assert_eq!(state.output, BestOutputState::Partial);
         assert!(state.publish_candidate("session", 1, 3, 300).is_none());
-        state.observe(Some(selected(Difficulty::Another)), values(1600));
+        state.observe(selected(Difficulty::Another), values(1600));
         assert!(state.snapshot.is_none());
         assert_eq!(state.score.consecutive, 1);
-        state.observe(None, values(1600));
+        state.end_interval(SelectIdentityStatus::CurrentFrameConflict);
         assert_eq!(state.output, BestOutputState::IdentityUnresolved);
         for _ in 0..2 {
-            state.observe(Some(selected(Difficulty::Hyper)), values(1500));
+            state.observe(selected(Difficulty::Hyper), values(1500));
         }
         let revisit = state.publish_candidate("session", 1, 6, 600).unwrap();
         assert_ne!(first.observation_id, revisit.observation_id);
@@ -355,18 +457,63 @@ mod tests {
     fn unknown_gap_does_not_reemit_identical_content() {
         let mut state = MusicSelectResolverState::default();
         for _ in 0..2 {
-            state.observe(Some(selected(Difficulty::Hyper)), values(1500));
+            state.observe(selected(Difficulty::Hyper), values(1500));
         }
         let first = state.publish_candidate("session", 1, 2, 200).unwrap();
         state.observe(
-            Some(selected(Difficulty::Hyper)),
+            selected(Difficulty::Hyper),
             MusicSelectBestValues::default(),
         );
         for _ in 0..2 {
-            state.observe(Some(selected(Difficulty::Hyper)), values(1500));
+            state.observe(selected(Difficulty::Hyper), values(1500));
         }
         assert!(state.publish_candidate("session", 1, 5, 500).is_none());
         assert_eq!(state.snapshot.as_ref(), Some(&first));
+    }
+
+    #[test]
+    fn missing_identity_retains_publication_but_restarts_every_field() {
+        let mut state = MusicSelectResolverState {
+            active: true,
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            state.observe(selected(Difficulty::Hyper), values(1500));
+        }
+        let first = state.publish_candidate("session", 1, 2, 200).unwrap();
+        for reason in [
+            SelectIdentityStatus::AwaitingDifficulty,
+            SelectIdentityStatus::AwaitingPlayType,
+            SelectIdentityStatus::AwaitingEvidence,
+        ] {
+            state.observe_frame(SelectFrameIdentity::Missing(reason), values(1600));
+            assert_eq!(state.selection_interval, first.selection_interval);
+            assert_eq!(state.snapshot.as_ref(), Some(&first));
+            assert_eq!(state.score.consecutive, 0);
+            assert!(state.publish_candidate("session", 1, 3, 300).is_none());
+            let text = lines(&state, 78)
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains("held SP HYPER"));
+            assert!(text.contains("last r1 S=1500"));
+            state.observe(selected(Difficulty::Hyper), values(1500));
+            assert!(state.publish_candidate("session", 1, 4, 400).is_none());
+            state.observe(selected(Difficulty::Hyper), values(1500));
+            assert!(state.publish_candidate("session", 1, 5, 500).is_none());
+        }
+        state.observe_frame(
+            SelectFrameIdentity::Conflicting(SelectIdentityStatus::CurrentFrameConflict),
+            values(1500),
+        );
+        assert!(state.chart.is_none() && state.snapshot.is_none());
+        for _ in 0..2 {
+            state.observe(selected(Difficulty::Hyper), values(1500));
+        }
+        let revisit = state.publish_candidate("session", 1, 8, 800).unwrap();
+        assert_eq!(revisit.revision, 1);
+        assert_ne!(revisit.selection_interval, first.selection_interval);
     }
 
     #[test]
@@ -393,17 +540,18 @@ mod tests {
     fn unknown_clears_current_values_without_fabricating_a_history_result() {
         let mut state = MusicSelectResolverState::default();
         for _ in 0..2 {
-            state.observe(Some(selected(Difficulty::Hyper)), values(1500));
+            state.observe(selected(Difficulty::Hyper), values(1500));
         }
         assert!(state.publish_candidate("session", 1, 2, 200).is_some());
         state.observe(
-            Some(selected(Difficulty::Hyper)),
+            selected(Difficulty::Hyper),
             MusicSelectBestValues::default(),
         );
-        assert!(state.snapshot.is_none());
+        assert!(state.snapshot.is_some());
+        assert_eq!(state.score.accepted(), BestValue::Unknown);
         assert_eq!(state.output, BestOutputState::Stabilizing);
         for _ in 0..2 {
-            state.observe(Some(selected(Difficulty::Hyper)), values(2001));
+            state.observe(selected(Difficulty::Hyper), values(2001));
         }
         let partial = state.publish_candidate("session", 1, 5, 500).unwrap();
         assert_eq!(partial.values.score, BestValue::Unknown);

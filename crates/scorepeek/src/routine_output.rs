@@ -1374,6 +1374,45 @@ impl MusicSelectResolver {
         );
     }
 
+    fn best_frame_identity(
+        &self,
+        fields: &Value,
+        evidence: &JointEvidenceObservation,
+    ) -> music_select_best::SelectFrameIdentity {
+        use music_select_best::{BestChart, SelectFrameIdentity, SelectIdentityStatus};
+        let credible = credible_song_set(evidence);
+        let difficulty = selected_difficulty(fields);
+        let play_type = selected_play_type(fields);
+        let selected = self.selected().and_then(BestChart::from_selection);
+        if let Some(chart) = selected.as_ref()
+            && credible == BTreeSet::from([chart.scorepeek_song_id])
+            && difficulty == Some(chart.difficulty)
+            && play_type == Some(chart.play_type)
+        {
+            return SelectFrameIdentity::Confirmed(chart.clone());
+        }
+        let conflicting = self.best.chart.as_ref().is_some_and(|chart| {
+            credible.iter().any(|song| *song != chart.scorepeek_song_id)
+                || difficulty.is_some_and(|value| value != chart.difficulty)
+                || play_type.is_some_and(|value| value != chart.play_type)
+        });
+        if conflicting {
+            return SelectFrameIdentity::Conflicting(SelectIdentityStatus::CurrentFrameConflict);
+        }
+        let reason = if difficulty.is_none() {
+            SelectIdentityStatus::AwaitingDifficulty
+        } else if play_type.is_none() {
+            SelectIdentityStatus::AwaitingPlayType
+        } else if credible.is_empty() {
+            SelectIdentityStatus::AwaitingEvidence
+        } else if selected.is_some() {
+            SelectIdentityStatus::CurrentFrameConflict
+        } else {
+            SelectIdentityStatus::Stabilizing
+        };
+        SelectFrameIdentity::Missing(reason)
+    }
+
     fn accepts_best_observation(&mut self, sequence: u64) -> bool {
         if self.best_closed
             || sequence < self.best_minimum_sequence
@@ -2791,6 +2830,11 @@ impl RoutineOutput {
             }
             SemanticEpisodePhase::Suspended => {
                 self.semantic_episode_suspended = true;
+                if screen == "music_select" {
+                    self.music_select_resolver
+                        .best
+                        .hold(music_select_best::SelectIdentityStatus::AwaitingEvidence);
+                }
                 self.sync_resolver_snapshot(*monotonic_end_ms, Some(*sequence), None)?;
                 self.refresh()
             }
@@ -3483,33 +3527,9 @@ impl RoutineOutput {
             )?;
         }
         if current_observation && self.music_selection_episode_active {
-            let selection = self.music_select_resolver.selected().filter(|state| {
-                let MusicSelectionState::Selected {
-                    scorepeek_song_id,
-                    difficulty,
-                    play_type,
-                    ..
-                } = state
-                else {
-                    return false;
-                };
-                credible_song_set(joint_evidence) == BTreeSet::from([*scorepeek_song_id])
-                    && selected_difficulty(fields) == Some(*difficulty)
-                    && selected_play_type(fields) == Some(*play_type)
-            });
-            let identity_status = if selection.is_some() {
-                music_select_best::SelectIdentityStatus::Resolved
-            } else if selected_difficulty(fields).is_none() {
-                music_select_best::SelectIdentityStatus::AwaitingDifficulty
-            } else if selected_play_type(fields).is_none() {
-                music_select_best::SelectIdentityStatus::AwaitingPlayType
-            } else if credible_song_set(joint_evidence).is_empty() {
-                music_select_best::SelectIdentityStatus::AwaitingEvidence
-            } else if self.music_select_resolver.selected().is_some() {
-                music_select_best::SelectIdentityStatus::CurrentFrameConflict
-            } else {
-                music_select_best::SelectIdentityStatus::Stabilizing
-            };
+            let identity = self
+                .music_select_resolver
+                .best_frame_identity(fields, joint_evidence);
             let best =
                 serde_json::from_value::<scorepeek::recognition::MusicSelectBestObservation>(
                     fields["best"].clone(),
@@ -3518,8 +3538,7 @@ impl RoutineOutput {
             self.music_select_resolver.best.screen_episode_id = self.screen_episode_id;
             self.music_select_resolver
                 .best
-                .observe(selection, best.values);
-            self.music_select_resolver.best.identity_status = identity_status;
+                .observe_frame(identity, best.values);
             if let (Some(session), Some(generation)) = (session_id, capture_generation)
                 && let Some(snapshot) = self.music_select_resolver.best.publish_candidate(
                     session,
@@ -3835,7 +3854,7 @@ impl RoutineOutput {
         best.active = active;
         best.suspended = active && self.semantic_episode_suspended;
         best.screen_episode_id = self.screen_episode_id;
-        if *best != previous {
+        if !best.same_notification(&previous) {
             let state = best.clone();
             self.publish_one(&RunEvent {
                 schema: RUN_EVENT_SCHEMA.to_owned(),
@@ -6844,7 +6863,7 @@ mod tests {
         };
         for _ in 0..2 {
             state.observe(
-                Some(selection.clone()),
+                music_select_best::BestChart::from_selection(selection.clone()).unwrap(),
                 MusicSelectBestValues {
                     score: BestValue::Known(1200),
                     miss_count: BestValue::Unknown,
@@ -7066,7 +7085,10 @@ mod tests {
             });
             state.music_select.active = true;
             state.music_select.observe(
-                state.latest_music_selection.clone(),
+                music_select_best::BestChart::from_selection(
+                    state.latest_music_selection.clone().unwrap(),
+                )
+                .unwrap(),
                 scorepeek::recognition::MusicSelectBestValues::default(),
             );
             let mut terminal = Terminal::new(TestBackend::new(80, 25)).unwrap();
@@ -8290,12 +8312,315 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(snapshots.len(), 3); // Initial, score re-stabilizing partial, updated score.
+        assert_eq!(snapshots.len(), 2); // Initial and updated score after two fresh resume observations.
         assert!(
             !events
                 .iter()
                 .any(|e| matches!(e.kind, RunEventKind::ResultDetected { .. }))
         );
+    }
+
+    #[test]
+    fn held_select_pane_keeps_wait_reason_and_previous_revision_visible() {
+        use ratatui::backend::TestBackend;
+        let mut state = RunViewState::new("invocation".into(), "a".repeat(64), false);
+        state.music_select = populated_select_test_state();
+        state
+            .music_select
+            .hold(music_select_best::SelectIdentityStatus::AwaitingDifficulty);
+        for suspended in [false, true] {
+            state.music_select.suspended = suspended;
+            for (width, height) in [(120, 40), (80, 25)] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|frame| {
+                        render(
+                            frame,
+                            &state,
+                            Path::new("/run/scorepeek.sock"),
+                            &ChannelHealth::default(),
+                        );
+                    })
+                    .unwrap();
+                let text = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>();
+                for expected in [
+                    "held",
+                    "last r1 S=1200",
+                    "SCORE waiting",
+                    "Latest result",
+                    "Music Select Resolver",
+                    "Watcher",
+                ] {
+                    assert!(text.contains(expected), "{width}x{height}: {expected}");
+                }
+                assert!(text.contains(if suspended {
+                    "waiting: suspended"
+                } else {
+                    "waiting: difficulty"
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn select_notifications_skip_resolved_clock_updates_and_keep_connected_snapshot() {
+        let mut output = RoutineOutput::start_headless("invocation-1".into(), "a".repeat(64));
+        let session = "invocation-1-session-1".to_owned();
+        output
+            .publish(&select_best_test_episode(
+                &session,
+                SemanticEpisodePhase::Started,
+                1,
+            ))
+            .unwrap();
+        let (fields, evidence, presentation) = select_best_test_observation();
+        for sequence in 2..=5 {
+            output
+                .reduce_music_select_observation(
+                    Some(&session),
+                    Some(1),
+                    sequence,
+                    sequence * 100,
+                    &fields,
+                    &evidence,
+                    &presentation,
+                )
+                .unwrap();
+        }
+        let published = output.state.lock().unwrap().music_select.clone();
+        output.take_headless_events();
+        for sequence in 6..=20 {
+            output
+                .reduce_music_select_observation(
+                    Some(&session),
+                    Some(1),
+                    sequence,
+                    sequence * 100,
+                    &fields,
+                    &evidence,
+                    &presentation,
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            output
+                .music_select_resolver
+                .best
+                .current_difficulty
+                .unwrap()
+                .last_sequence,
+            20
+        );
+        let events = output.take_headless_events();
+        assert!(!events.iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::MusicSelectResolverChanged { .. }
+                | RunEventKind::MusicSelectBestObserved { .. }
+        )));
+        let connected: Value = serde_json::from_slice(
+            &snapshot_bytes(&output.state, &ChannelHealth::default()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            connected["state"]["music_select"],
+            serde_json::to_value(&published).unwrap()
+        );
+    }
+
+    #[test]
+    fn select_missing_frame_identity_holds_interval_without_adopting_values() {
+        for missing in ["difficulty", "mode", "song"] {
+            let mut output = RoutineOutput::start_headless("invocation-1".into(), "a".repeat(64));
+            let session = "invocation-1-session-1".to_owned();
+            output
+                .publish(&select_best_test_episode(
+                    &session,
+                    SemanticEpisodePhase::Started,
+                    1,
+                ))
+                .unwrap();
+            let (fields, evidence, presentation) = select_best_test_observation();
+            for sequence in 2..=5 {
+                output
+                    .reduce_music_select_observation(
+                        Some(&session),
+                        Some(1),
+                        sequence,
+                        sequence * 100,
+                        &fields,
+                        &evidence,
+                        &presentation,
+                    )
+                    .unwrap();
+            }
+            let first = output.music_select_resolver.best.snapshot.clone().unwrap();
+            output.take_headless_events();
+            let mut missing_fields = fields.clone();
+            let mut missing_evidence = evidence.clone();
+            missing_fields["best"]["values"]["score"] = json!({"status":"known","value":1400});
+            match missing {
+                "difficulty" => {
+                    missing_fields["selected_difficulty"]["state"] = json!({"status":"unknown"});
+                }
+                "mode" => missing_fields["play_type"]["state"] = json!({"status":"unknown"}),
+                _ => missing_evidence.candidates.clear(),
+            }
+            for sequence in 6..=8 {
+                output
+                    .reduce_music_select_observation(
+                        Some(&session),
+                        Some(1),
+                        sequence,
+                        sequence * 100,
+                        &missing_fields,
+                        &missing_evidence,
+                        &presentation,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    output.music_select_resolver.best.snapshot.as_ref(),
+                    Some(&first),
+                    "{missing}"
+                );
+                assert_eq!(
+                    output.music_select_resolver.best.score.consecutive, 0,
+                    "{missing}"
+                );
+            }
+            for sequence in 9..=10 {
+                output
+                    .reduce_music_select_observation(
+                        Some(&session),
+                        Some(1),
+                        sequence,
+                        sequence * 100,
+                        &fields,
+                        &evidence,
+                        &presentation,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    output.music_select_resolver.best.score.consecutive,
+                    u8::try_from(sequence - 8).unwrap()
+                );
+            }
+            assert_eq!(
+                output.music_select_resolver.best.snapshot.as_ref(),
+                Some(&first)
+            );
+            assert!(
+                !output.take_headless_events().iter().any(|event| matches!(
+                    event.kind,
+                    RunEventKind::MusicSelectBestObserved { .. }
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn select_conflicting_frames_end_interval_even_without_successor_resolution() {
+        for conflict in ["difficulty", "mode", "song", "ambiguous"] {
+            let mut output = RoutineOutput::start_headless("invocation-1".into(), "a".repeat(64));
+            let session = "invocation-1-session-1".to_owned();
+            output
+                .publish(&select_best_test_episode(
+                    &session,
+                    SemanticEpisodePhase::Started,
+                    1,
+                ))
+                .unwrap();
+            let (fields, evidence, presentation) = select_best_test_observation();
+            for sequence in 2..=5 {
+                output
+                    .reduce_music_select_observation(
+                        Some(&session),
+                        Some(1),
+                        sequence,
+                        sequence * 100,
+                        &fields,
+                        &evidence,
+                        &presentation,
+                    )
+                    .unwrap();
+            }
+            let first = output.music_select_resolver.best.snapshot.clone().unwrap();
+            let mut changed_fields = fields.clone();
+            let mut changed_evidence = evidence.clone();
+            match conflict {
+                "difficulty" => {
+                    changed_fields["selected_difficulty"]["state"]["value"] = json!("another");
+                }
+                "mode" => changed_fields["play_type"]["state"]["value"] = json!("single"),
+                _ => {
+                    let mut other = evidence.candidates[0].clone();
+                    other.song_id =
+                        serde_json::from_str("\"00000000-0000-0000-0000-000000000047\"").unwrap();
+                    if conflict == "song" {
+                        other.family_support = BTreeMap::from([(EvidenceFamily::SelectTitle, 100)]);
+                        other.support = 100;
+                        changed_evidence.candidates.clear();
+                    }
+                    changed_evidence.candidates.push(other);
+                    changed_evidence.catalog_song_count = 3;
+                }
+            }
+            output
+                .reduce_music_select_observation(
+                    Some(&session),
+                    Some(1),
+                    6,
+                    600,
+                    &changed_fields,
+                    &changed_evidence,
+                    &presentation,
+                )
+                .unwrap();
+            assert!(
+                output.music_select_resolver.best.chart.is_none(),
+                "{conflict}"
+            );
+            assert!(
+                output.music_select_resolver.best.snapshot.is_none(),
+                "{conflict}"
+            );
+            for sequence in 7..=15 {
+                output
+                    .reduce_music_select_observation(
+                        Some(&session),
+                        Some(1),
+                        sequence,
+                        sequence * 100,
+                        &fields,
+                        &evidence,
+                        &presentation,
+                    )
+                    .unwrap();
+            }
+            if conflict == "mode" {
+                // Conflicting mode support remains unresolved in the existing identity resolver.
+                assert!(
+                    output.music_select_resolver.selected().is_none(),
+                    "{conflict}"
+                );
+                assert!(
+                    output.music_select_resolver.best.snapshot.is_none(),
+                    "{conflict}"
+                );
+                continue;
+            }
+            let revisit = output.music_select_resolver.best.snapshot.as_ref().unwrap();
+            assert_ne!(
+                first.selection_interval, revisit.selection_interval,
+                "{conflict}"
+            );
+            assert_eq!(first.values, revisit.values, "{conflict}");
+        }
     }
 
     #[test]

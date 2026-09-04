@@ -170,14 +170,17 @@ On a terminal, `run` shows Watcher, Latest result, Music Select Resolver, and RE
 Resolver panes. Latest result prefers the current provisional payload and otherwise shows the last
 confirmed result; only confirmed results enter the count/history. The Music Select Resolver shows
 selected chart identity, self-best SCORE/MISS/clear values, per-field `1/2` stabilization, and the
-snapshot output gate/revision. UNKNOWN suspends retained state; a changed chart clears values and
-SELECT exit returns it to inactive. The 80x25 layout keeps existing attempt gates visible.
+snapshot output gate/revision. Missing identity evidence retains the interval as `held`, blocks
+value adoption and restarts field stabilization. UNKNOWN suspends the retained interval. Contrary
+song/mode/difficulty evidence clears values; SELECT exit returns it to inactive. Recovery with
+identical values does not re-emit a snapshot. The 80x25 layout keeps existing attempt gates visible.
 DJ rank is calculated from EX SCORE and chart notes, not recognized from the screen.
 
 Machine-readable observations share `$XDG_RUNTIME_DIR/scorepeek/observations-v11.sock`.
 Each connection receives a current v11 snapshot followed by sequenced `scorepeek-run-event-v11`
 NDJSON. `music_select_best_observed` carries a separate supplemental best snapshot; the current
-snapshot also includes typed `music_select_resolver_changed` state. These game records may have
+snapshot also includes the last published typed `music_select_resolver_changed` state. Resolver
+notifications track meaningful changes; resolved clock/streak updates alone do not notify. These game records may have
 been achieved in different plays and never create result events, play counts, or history entries.
 This implements recognition/output/display, not a score history database. Raw recognition details
 remain diagnostic observations. Redirected stdout prints deduplicated human-readable state changes.

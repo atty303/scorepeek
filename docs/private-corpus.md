@@ -174,3 +174,19 @@ release, and deletion of the old corpus are separate verified boundaries.
 SELECT best replay uses the same production observer and reducer. Per-session replay summaries
 include `music_select_best_snapshots`; these never enter the accepted-result oracle. The separate
 private field-label probe is described in [ADR 0114](decisions/0114-observe-music-select-best-snapshots.md).
+
+
+## SELECT event traces
+
+`mise run corpus:test --trace-dir DIR` retains production state/domain events as session-indexed
+NDJSON in a new directory. Raw `field_observation` records are excluded: their OCR candidate
+payloads remain in the existing recognition recordings. Headers identify the active corpus
+generation, executable digest, selected-source fingerprint, registered text/numeric manifests and integrated/best layout digests.
+Per-session `trace` summaries report path, written/total events, bytes and an optional error.
+The budget is 256 MiB across the run; existing directories/files are not overwritten. Trace
+capacity or filesystem failure does not alter result acceptance or the replay oracle. No output
+is created without `--trace-dir`; private traces must remain outside Git.
+
+Compare interval starts, held identity, conflicts, content revisions and episode revisits using
+source sequences. Endpoint SELECT labels do not assert a stationary span: inspect ambiguous
+frames and retain interval labels privately before declaring a reset or repeat erroneous.

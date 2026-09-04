@@ -19,6 +19,7 @@ mod frame_corpus;
 mod media;
 mod music_list;
 mod music_select_motion;
+mod replay_trace;
 mod segment_remote;
 mod temporal_evaluation;
 pub use frame_corpus::{

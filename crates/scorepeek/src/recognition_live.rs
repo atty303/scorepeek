@@ -904,10 +904,12 @@ mod tests {
     #[test]
     fn mismatched_generation_stops_before_recognition() {
         let root = tempfile::tempdir().unwrap();
-        let mut session = RecognitionSession::start(
+        let supervisor = std::sync::Mutex::new(std::sync::Weak::new());
+        let mut session = RecognitionSession::start_with_supervisor_for_test(
             root.path(),
             descriptor("mismatched-session", 1),
             DiagnosticPolicy::default(),
+            &supervisor,
         )
         .unwrap();
         let frame = BoundCanonicalFrame::for_test(2, 1, 0);

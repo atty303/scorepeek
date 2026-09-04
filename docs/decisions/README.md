@@ -6,6 +6,9 @@ authoritative.
 
 ## Current
 
+- [ADR 0118: Retain SELECT intervals across missing evidence](0118-retain-select-intervals-across-missing-evidence.md)
+  supersedes ADR 0114's unknown-identity reset and resolver notification comparison.
+
 - [ADR 0117: Recognize the SELECT marker outline](0117-recognize-select-marker-outline.md)
   supersedes ADR 0096's RGB area predicate with spatial marker-edge evidence.
 

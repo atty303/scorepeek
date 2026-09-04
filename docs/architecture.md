@@ -555,6 +555,12 @@ observation. `music_select_resolver_changed` carries typed current resolver stat
 its current snapshot for connecting clients. Neither record enters result count/history or attempt
 acceptance. DJ rank is derived from EX SCORE and chart notes, never OCR. Play time, count, achievement
 options and common-play association are not inferred. No DB persistence is implemented.
+Selection intervals survive missing identity evidence without accepting values from those frames.
+Every field needs two fresh observations after a gap or suspension. Contrary song/mode/difficulty
+evidence ends the interval, even before the next chart resolves. Resolver notifications compare
+semantic state and connecting snapshots retain the last publication. See
+[ADR 0118](decisions/0118-retain-select-intervals-across-missing-evidence.md) for the hold/reset
+contract and its unobservable-excursion limit.
 Raw best OCR, numeric classes/margins and inference errors remain diagnostics controlled by
 `--record`; the published supplemental snapshot excludes them. See
 [ADR 0114](decisions/0114-observe-music-select-best-snapshots.md) for the measured layout and gates.

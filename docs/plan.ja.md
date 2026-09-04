@@ -731,3 +731,15 @@ ADR 0115では、SELECT追加学習済みHOG/MLPを登録する。既存RESULT l
 PLAYER 01マーカーの上下の細い白枠と非白色の内側を測定する。色面積の大小では難易度を決めず、
 5 slotのうち閾値とmarginを満たす単独候補だけを採用する。新layout v6とpredicate v2を記録し、
 raw difficulty変更は最初の明確な観測から反映する。resolverの保持・best snapshotの重複抑制は別課題。
+
+
+### MUSIC SELECT区間保持と通知（ADR 0118）
+
+- 現在フレームの値採用条件と選択区間を分離する。反証のない証拠欠落では区間と前回出力を保持し、
+  値を採用しない。欠落・suspendedからの復帰後は各項目2観測をやり直す。同じ内容は再通知しない。
+- 別曲候補・既知の異なるmode/difficultyで旧区間を終了する。再訪を過去の同一譜面へ統合しない。
+  未観測の往復は識別できない。固定待機時間やunknown猶予は追加しない。
+- resolver通知は意味的な変化を比較する。内部の時刻・観測数は更新し、接続時snapshotは最後の配信状態と一致させる。
+  TUIはheld、待機理由、現在の安定化と過去の出力revisionを区別する。
+- 任意のcorpus replay traceで同一4 sessionの変更前後を比較する。raw OCRは既存記録を参照し、
+  traceの欠落を採用結果に影響させない。実機確認とtarget installは別操作とする。
