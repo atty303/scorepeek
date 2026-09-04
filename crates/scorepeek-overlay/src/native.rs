@@ -15,7 +15,7 @@ use blitz_traits::shell::{ColorScheme, Viewport};
 use dioxus_core::{Element, VirtualDom, schedule_update};
 use dioxus_native_dom::DioxusDocument;
 use scorepeek_overlay_handles::{Event, Shell};
-use scorepeek_overlay_ui::{OverlayState, overlay_panel};
+use scorepeek_overlay_ui::{Appearance, OXANIUM, OverlayState, overlay_panel};
 use serde::Serialize;
 use smithay_client_toolkit::reexports::calloop::ping::{Ping, make_ping};
 
@@ -23,13 +23,20 @@ type NativeUpdate = Rc<RefCell<Option<Arc<dyn Fn() + Send + Sync>>>>;
 
 #[derive(Clone)]
 struct NativeOverlayProps {
+    appearance: Appearance,
     state: Rc<RefCell<OverlayState>>,
     update: NativeUpdate,
 }
 
-fn native_overlay(NativeOverlayProps { state, update }: NativeOverlayProps) -> Element {
+fn native_overlay(
+    NativeOverlayProps {
+        state,
+        update,
+        appearance,
+    }: NativeOverlayProps,
+) -> Element {
     *update.borrow_mut() = Some(schedule_update());
-    overlay_panel(&state.borrow())
+    overlay_panel(&state.borrow(), appearance)
 }
 
 struct CalloopWaker(Ping);
@@ -64,6 +71,7 @@ pub fn run(config: Config, mut input: impl std::io::Read + Send + 'static) -> Re
         } else {
             "integer_scale_fallback"
         });
+    let appearance = config.appearance;
     let feed = Feed::start(config, Arc::new(move || wake.ping())).map_err(|e| e.to_string())?;
     let stop = Arc::clone(&feed.stop);
     std::thread::Builder::new()
@@ -75,6 +83,7 @@ pub fn run(config: Config, mut input: impl std::io::Read + Send + 'static) -> Re
         })
         .map_err(|e| e.to_string())?;
     let mut app = App::new(
+        appearance,
         shell,
         Waker::from(Arc::new(CalloopWaker(ping.0))),
         feed,
@@ -107,17 +116,24 @@ struct App {
     feed: Feed,
 }
 impl App {
-    fn new(shell: Shell, waker: Waker, feed: Feed, report: Rc<RefCell<RunReport>>) -> Self {
+    fn new(
+        appearance: Appearance,
+        shell: Shell,
+        waker: Waker,
+        feed: Feed,
+        report: Rc<RefCell<RunReport>>,
+    ) -> Self {
         let shared_state = Rc::new(RefCell::new(OverlayState::default()));
         let native_update = Rc::new(RefCell::new(None));
         let vdom = VirtualDom::new_with_props(
             native_overlay,
             NativeOverlayProps {
+                appearance,
                 state: Rc::clone(&shared_state),
                 update: Rc::clone(&native_update),
             },
         );
-        let mut document = DioxusDocument::new(vdom, DocumentConfig::default());
+        let mut document = DioxusDocument::new(vdom, document_config());
         document.initial_build();
 
         Self {
@@ -307,6 +323,90 @@ impl Operations {
     fn push(&mut self, name: &'static str) {
         if self.0.len() < 128 {
             self.0.push(name);
+        }
+    }
+}
+
+/// Registers the embedded Latin font without disabling Japanese system fallbacks.
+#[must_use]
+pub fn document_config() -> DocumentConfig {
+    let mut font_ctx = blitz_dom::FontContext::default();
+    font_ctx
+        .collection
+        .register_fonts(peniko::Blob::new(Arc::new(OXANIUM)), None);
+    DocumentConfig {
+        font_ctx: Some(font_ctx),
+        ..DocumentConfig::default()
+    }
+}
+
+#[cfg(test)]
+mod skin_tests {
+    use super::*;
+    use scorepeek_overlay_ui::{Layout, Skin};
+
+    #[test]
+    fn skins_keep_all_sections_in_view_and_settle_at_integer_and_fractional_scale() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/skin-preview.json")).unwrap();
+        let original: OverlayState = serde_json::from_value(fixture["state"].clone()).unwrap();
+        for skin in [Skin::CyanSystem, Skin::ResultAurora, Skin::DjBlackbox] {
+            for layout in [Layout::Compact, Layout::Sidebar] {
+                for scale in [1.0, 1.25] {
+                    for scenario in 0..5 {
+                        let mut state = original.clone();
+                        match scenario {
+                            1 => {
+                                state.connected = false;
+                            }
+                            2 => {
+                                state.result = None;
+                                state.selecting = true;
+                            }
+                            3 => {
+                                state.history = scorepeek_overlay_ui::History::default();
+                                state.result.as_mut().unwrap().fields.clear();
+                            }
+                            4 => {
+                                state = OverlayState::default();
+                            }
+                            _ => {}
+                        }
+                        let mut document = DioxusDocument::new(
+                            VirtualDom::new_with_props(
+                                native_overlay,
+                                NativeOverlayProps {
+                                    appearance: Appearance { skin, layout },
+                                    state: Rc::new(RefCell::new(state)),
+                                    update: Rc::new(RefCell::new(None)),
+                                },
+                            ),
+                            document_config(),
+                        );
+                        document.initial_build();
+                        let mut inner = document.inner.borrow_mut();
+                        inner.set_viewport(Viewport::new(750, 1350, scale, ColorScheme::Dark));
+                        inner.resolve(0.0);
+                        inner.resolve(1.0);
+                        assert!(!inner.is_animating(), "{skin:?} {layout:?} {scenario}");
+                        for selector in [".live", ".confirmation", ".history", ".overlay-footer"] {
+                            let id = inner.query_selector(selector).unwrap().unwrap();
+                            let rect = inner.get_client_bounding_rect(id).unwrap();
+                            assert!(rect.width > 0.0 && rect.height > 0.0);
+                            assert!(
+                                rect.x >= 0.0
+                                    && rect.x + rect.width <= 750.0 / f64::from(scale) + 1.0,
+                                "horizontal overflow: {skin:?} {layout:?} {selector}"
+                            );
+                            assert!(
+                                rect.y >= 0.0
+                                    && rect.y + rect.height <= 1350.0 / f64::from(scale) + 1.0,
+                                "vertical overflow: {skin:?} {layout:?} {selector}"
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 }

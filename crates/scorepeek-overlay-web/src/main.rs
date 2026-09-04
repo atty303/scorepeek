@@ -1,5 +1,5 @@
 use dioxus::prelude::*;
-use scorepeek_overlay_ui::{OverlayState, overlay_panel};
+use scorepeek_overlay_ui::{Appearance, OverlayState, overlay_panel};
 use std::{
     cell::{Cell, RefCell},
     rc::{Rc, Weak},
@@ -11,9 +11,35 @@ fn main() {
 }
 
 fn app() -> Element {
+    let appearance = use_hook(read_appearance);
+    let Ok(appearance) = appearance else {
+        return rsx! { p { "表示設定を読み込めません。ページを再読み込みしてください。" } };
+    };
     let mut state = use_signal(OverlayState::default);
     let _connection = use_hook(move || BrowserConnection::new(move |next| state.set(next)));
-    overlay_panel(&state.read())
+    overlay_panel(&state.read(), appearance)
+}
+
+fn read_appearance() -> Result<Appearance, String> {
+    let element = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| {
+            document
+                .query_selector("meta[name='scorepeek-appearance']")
+                .ok()
+                .flatten()
+        })
+        .ok_or("missing appearance")?;
+    Ok(Appearance {
+        skin: element
+            .get_attribute("data-skin")
+            .ok_or("missing skin")?
+            .parse()?,
+        layout: element
+            .get_attribute("data-layout")
+            .ok_or("missing layout")?
+            .parse()?,
+    })
 }
 
 struct BrowserConnection {

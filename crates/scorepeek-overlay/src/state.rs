@@ -1,5 +1,7 @@
 //! Public snapshot/live fold. No recognition or score-writing authority.
-use scorepeek_overlay_ui::{Chart, Confirmation, Field, History, OverlayState, ResultView};
+use scorepeek_overlay_ui::{
+    Chart, Confirmation, Field, FieldRole, History, OverlayState, ResultView,
+};
 use serde_json::Value;
 
 #[derive(Default)]
@@ -198,14 +200,14 @@ impl Consumer {
                 .into()
         });
         let mut fields = Vec::new();
-        for (label, key) in [
-            ("譜面", "difficulty"),
-            ("EX SCORE", "current_score"),
-            ("CLEAR", "clear_type"),
-            ("MISS", "miss_count"),
+        for (role, label, key) in [
+            (FieldRole::Score, "EX SCORE", "current_score"),
+            (FieldRole::Clear, "CLEAR", "clear_type"),
+            (FieldRole::Miss, "MISS COUNT", "miss_count"),
         ] {
             if let Some(value) = display_value(&result[key]) {
                 fields.push(Field {
+                    role,
                     label: label.into(),
                     value,
                 });
@@ -219,6 +221,7 @@ impl Consumer {
         ] {
             if let Some(value) = display_value(&result[key]) {
                 fields.push(Field {
+                    role: FieldRole::Detail,
                     label: label.into(),
                     value,
                 });
@@ -235,6 +238,7 @@ impl Consumer {
             )
             .unwrap_or(0)];
             fields.push(Field {
+                role: FieldRole::Rank,
                 label: "DJ RANK".into(),
                 value: rank.into(),
             });
@@ -265,6 +269,9 @@ impl Consumer {
         if !confirmed || self.view.result.is_some() || self.confirmation_key.is_none() {
             self.view.result = Some(ResultView {
                 title: title.clone(),
+                artist: song["artist"].as_str().unwrap_or_default().into(),
+                play_type: result["play_type"].as_str().unwrap_or_default().into(),
+                difficulty: result["difficulty"].as_str().unwrap_or_default().into(),
                 fields,
             });
             self.view.selecting = false;
@@ -369,7 +376,7 @@ mod tests {
         consumer.event(&result_event(1, false)).unwrap();
         assert!(!consumer.view.confirmation.as_ref().unwrap().confirmed);
         let fields = &consumer.view.result.as_ref().unwrap().fields;
-        assert!(!fields.iter().any(|field| field.label == "MISS"));
+        assert!(!fields.iter().any(|field| field.role == FieldRole::Miss));
         assert!(
             fields
                 .iter()

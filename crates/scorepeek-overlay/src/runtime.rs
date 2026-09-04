@@ -1,5 +1,5 @@
 use crate::state::Consumer;
-use scorepeek_overlay_ui::{Field, History, OverlayState};
+use scorepeek_overlay_ui::{Appearance, Field, FieldRole, History, HistoryPlay, OverlayState};
 use serde::{Deserialize, Serialize};
 use std::{
     io::{BufRead as _, BufReader, Read as _},
@@ -24,6 +24,7 @@ pub enum Backend {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Config {
     pub backend: Backend,
+    pub appearance: Appearance,
     pub socket: PathBuf,
     pub invocation: String,
     pub scores_db: Option<PathBuf>,
@@ -159,14 +160,17 @@ fn refresh_history(view: &mut OverlayState, path: Option<&std::path::Path>) {
                 status: "保存済み · bestは項目別".into(),
                 best: [
                     Field {
-                        label: "EX".into(),
+                        role: FieldRole::Score,
+                        label: "EX SCORE".into(),
                         value: optional(history.best.score),
                     },
                     Field {
+                        role: FieldRole::Miss,
                         label: "MISS".into(),
                         value: optional(history.best.miss),
                     },
                     Field {
+                        role: FieldRole::Clear,
                         label: "CLEAR".into(),
                         value: clear(history.best.clear),
                     },
@@ -175,14 +179,11 @@ fn refresh_history(view: &mut OverlayState, path: Option<&std::path::Path>) {
                 plays: history
                     .plays
                     .iter()
-                    .map(|play| {
-                        format!(
-                            "{} · EX {} / MISS {} / {}",
-                            notification_time(play.emitted_unix_ms),
-                            play.score,
-                            optional(play.miss),
-                            clear(Some(play.clear))
-                        )
+                    .map(|play| HistoryPlay {
+                        notified_at: notification_time(play.emitted_unix_ms),
+                        score: play.score.to_string(),
+                        miss: optional(play.miss),
+                        clear: clear(Some(play.clear)),
                     })
                     .collect(),
             };

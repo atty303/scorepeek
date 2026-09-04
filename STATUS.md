@@ -16,6 +16,10 @@ checkpoint; implementation history belongs in Git.
 
 ## Implemented authority
 
+- RESULT temporal acceptance compares the mandatory song/chart, clear, EX and judgment tuple.
+  Supplemental/reference changes do not revoke it (ADR 0083/0087); once accepted, repeated
+  supplemental payloads may update the presentation without blocking close-time confirmation.
+
 - ADR 0122 adds optional same-executable Wayland/OBS child consumers to normal run, shared Dioxus
   presentation, read-only selected-chart history, embedded browser assets and private overlay
   diagnostics. Overlay paths do not initialize recognition or change confirmation/save authority.
@@ -95,6 +99,17 @@ checkpoint; implementation history belongs in Git.
   code/model/layout binding and non-interfering recording failure status.
 
 ## Verification
+
+- Recorded-input reducer replay of the complete session with digest
+  `193550c1c3337905122585fb868c1c8831be3fab835c5ec9e5c03ef70c419594` confirms four results,
+  matching the four private visual labels. Restoring the old full-performance equality alone
+  reproduces three results: a final MISS `not_displayed` to `unknown` observation revokes the first.
+  The other three payloads are unchanged. This reuses recorded field/semantic inputs through the
+  production reducer; it is not fresh OCR, full corpus replay, target installation or live validation.
+  Candidate labels remain unapplied and no score database is backfilled.
+  All 504 library tests, library-only Clippy and the focused reducer tests pass.
+  Root check/test currently stop in unrelated, uncommitted overlay
+  formatting changes; this checkpoint does not claim an all-workspace validation pass for this fix.
 
 - ADR 0121 production predicate evaluation covers 89 retained frames from the SP graph-position
   failure session. The inspected left-graph PLAY frame changes from UNKNOWN to PLAY; the other

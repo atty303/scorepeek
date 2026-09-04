@@ -33,6 +33,10 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
         .unwrap();
     let config = Config {
         backend: Backend::Obs,
+        appearance: scorepeek_overlay::Appearance {
+            skin: scorepeek_overlay::Skin::ResultAurora,
+            layout: scorepeek_overlay::Layout::Compact,
+        },
         socket: temporary.path().join("absent.sock"),
         invocation: "test".into(),
         scores_db: None,
@@ -58,10 +62,24 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     assert!(page.starts_with("HTTP/1.1 200"));
     assert!(page.contains("text/html"));
     assert!(page.contains(".js"));
+    assert!(page.contains("data-skin=\"result-aurora\""));
+    assert!(page.contains("data-layout=\"compact\""));
+    let font = get(address, "/fonts/oxanium.ttf").unwrap();
+    assert!(font.starts_with(b"HTTP/1.1 200"));
+    assert!(font.windows(8).any(|bytes| bytes == b"font/ttf"));
+    assert!(font.ends_with(include_bytes!(
+        "../../scorepeek-overlay-ui/assets/fonts/Oxanium.ttf"
+    )));
+
     assert!(
         get(address, "/absent-asset")
             .unwrap()
             .starts_with(b"HTTP/1.1 404")
+    );
+    assert!(
+        String::from_utf8(get(address, "/fonts/OFL.txt").unwrap())
+            .unwrap()
+            .contains("SIL OPEN FONT LICENSE")
     );
     // A conflicting OBS child fails independently; the first remains available.
     children.start(&executable, &config).unwrap();

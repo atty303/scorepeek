@@ -67,6 +67,7 @@ mod server {
     use tokio::sync::Notify;
 
     struct Shared {
+        appearance: scorepeek_overlay_ui::Appearance,
         feed: Feed,
         changed: Arc<Notify>,
     }
@@ -88,10 +89,16 @@ mod server {
                 stop.store(true, Ordering::Release);
             })
             .map_err(|error| error.to_string())?;
-        let shared = Arc::new(Shared { feed, changed });
+        let shared = Arc::new(Shared {
+            appearance: config.appearance,
+            feed,
+            changed,
+        });
         let app = Router::new()
             .route("/", get(index))
             .route("/ws", get(socket))
+            .route("/fonts/oxanium.ttf", get(font))
+            .route("/fonts/OFL.txt", get(font_license))
             .route("/{*path}", get(asset))
             .with_state(Arc::clone(&shared));
         let listener = tokio::net::TcpListener::bind(config.listen)
@@ -107,8 +114,41 @@ mod server {
             .map_err(|error| error.to_string())
     }
 
-    async fn index() -> Response {
-        embedded("index.html")
+    async fn index(State(shared): State<Arc<Shared>>) -> Response {
+        let Some(asset) = Assets::get("index.html") else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        let Ok(html) = std::str::from_utf8(&asset.data) else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        };
+        let appearance = shared.appearance;
+        let initial = format!(
+            "<head><meta name=\"scorepeek-appearance\" data-skin=\"{}\" data-layout=\"{}\"><style>@font-face{{font-family:Oxanium;src:url('/fonts/oxanium.ttf') format('truetype');font-weight:200 800;font-style:normal;font-display:swap}}</style>",
+            appearance.skin.name(),
+            appearance.layout.name()
+        );
+        (
+            [
+                (header::CONTENT_TYPE, "text/html"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            html.replacen("<head>", &initial, 1),
+        )
+            .into_response()
+    }
+    async fn font() -> Response {
+        (
+            [(header::CONTENT_TYPE, "font/ttf")],
+            scorepeek_overlay_ui::OXANIUM,
+        )
+            .into_response()
+    }
+    async fn font_license() -> Response {
+        (
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            include_str!("../../scorepeek-overlay-ui/assets/fonts/OFL.txt"),
+        )
+            .into_response()
     }
     async fn asset(Path(path): Path<String>) -> Response {
         embedded(&path)

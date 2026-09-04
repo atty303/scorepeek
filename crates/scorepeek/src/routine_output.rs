@@ -500,7 +500,13 @@ fn same_numeric_tuple(left: &NumericResultView, right: &NumericResultView) -> bo
         && left.clear_type == right.clear_type
         && left.chart == right.chart
         && left.current_score == right.current_score
-        && left.performance == right.performance
+        && matches!(
+            (&left.performance, &right.performance),
+            (
+                ResultPerformanceResolution::Accepted { judgments: left, .. },
+                ResultPerformanceResolution::Accepted { judgments: right, .. }
+            ) if left == right
+        )
 }
 
 fn candidate_song_presentation(candidate: &JointEvidenceCandidate) -> SongPresentation {
@@ -3367,20 +3373,36 @@ impl RoutineOutput {
             performance,
             source_sequence: sequence,
         };
+        self.stabilize_numeric_result(view, chronology_reset)
+    }
+
+    fn stabilize_numeric_result(
+        &mut self,
+        view: NumericResultView,
+        chronology_reset: bool,
+    ) -> Option<(NumericResultTemporalState, NumericResultTransitionReason)> {
         if let Some(accepted) = &self.accepted_numeric_result {
             if same_numeric_tuple(accepted, &view) {
-                return None;
+                if accepted.performance == view.performance {
+                    self.pending_numeric_result = None;
+                    return None;
+                }
+            } else {
+                self.accepted_numeric_result = None;
             }
-            self.accepted_numeric_result = None;
         }
         let had_conflict = self
             .pending_numeric_result
             .as_ref()
             .is_some_and(|pending| !same_numeric_tuple(&pending.view, &view));
-        match &mut self.pending_numeric_result {
-            Some(pending) if same_numeric_tuple(&pending.view, &view) => {
+        let transition = match &mut self.pending_numeric_result {
+            Some(pending)
+                if same_numeric_tuple(&pending.view, &view)
+                    && (self.accepted_numeric_result.is_none()
+                        || pending.view.performance == view.performance) =>
+            {
                 pending.observations = pending.observations.saturating_add(1);
-                pending.view.source_sequence = sequence;
+                pending.view = view;
                 if pending.observations >= NUMERIC_REQUIRED_OBSERVATIONS {
                     self.accepted_numeric_result = Some(pending.view.clone());
                     self.pending_numeric_result = None;
@@ -3413,6 +3435,11 @@ impl RoutineOutput {
                     },
                 ))
             }
+        };
+        if self.accepted_numeric_result.is_some() && self.pending_numeric_result.is_some() {
+            None
+        } else {
+            transition
         }
     }
 
@@ -6266,6 +6293,142 @@ mod tests {
             }
         ));
         assert_eq!(output.state.lock().unwrap().result_count, 0);
+    }
+
+    #[test]
+    fn supplemental_dropout_at_result_exit_does_not_withdraw_or_block_confirmation() {
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        prepare_accepted_attempt(&mut output);
+        for sequence in 1..=3 {
+            let mut event = accepted_result_event(sequence);
+            let RunEventKind::FieldObservation {
+                parsed_result_fields,
+                ..
+            } = &mut event.kind
+            else {
+                unreachable!();
+            };
+            parsed_result_fields.as_mut().unwrap().miss_count = if sequence == 3 {
+                SupplementalResultValue::Unknown {
+                    reason: scorepeek::recognition::ResultFieldUnknownReason::Empty,
+                }
+            } else {
+                SupplementalResultValue::NotDisplayed
+            };
+            output.publish(&event).unwrap();
+        }
+        output
+            .publish(&semantic_episode_event(
+                4,
+                "result",
+                SemanticEpisodePhase::Finalized,
+            ))
+            .unwrap();
+        let results: Vec<_> = output
+            .headless_events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                RunEventKind::ResultDetected { result, .. } => Some(result),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].miss_count, SupplementalResultValue::NotDisplayed);
+        assert!(!output.headless_events.iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::ResultProvisionalChanged {
+                state: ResultProvisionalState::Withdrawn { .. },
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn supplemental_changes_never_gate_mandatory_acceptance_and_can_update_afterward() {
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        prepare_accepted_attempt(&mut output);
+        for (sequence, miss) in [(1, 3), (2, 4), (3, 5), (4, 5)] {
+            let mut event = accepted_result_event(sequence);
+            let RunEventKind::FieldObservation {
+                parsed_result_fields,
+                ..
+            } = &mut event.kind
+            else {
+                unreachable!();
+            };
+            parsed_result_fields.as_mut().unwrap().miss_count =
+                SupplementalResultValue::Known { value: miss };
+            output.publish(&event).unwrap();
+            if sequence >= 2 {
+                assert!(output.accepted_numeric_result.is_some());
+            }
+        }
+        output
+            .publish(&semantic_episode_event(
+                5,
+                "result",
+                SemanticEpisodePhase::Finalized,
+            ))
+            .unwrap();
+        let results: Vec<_> = output
+            .headless_events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                RunEventKind::ResultProvisionalChanged {
+                    state: ResultProvisionalState::Resolved { result, .. },
+                    ..
+                } => Some(result.miss_count.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            results,
+            vec![
+                SupplementalResultValue::Known { value: 4 },
+                SupplementalResultValue::Known { value: 5 }
+            ]
+        );
+        assert_eq!(output.state.lock().unwrap().result_count, 1);
+        assert!(!output.headless_events.iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::ResultProvisionalChanged {
+                state: ResultProvisionalState::Withdrawn { .. },
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn changed_mandatory_judgments_still_withdraw_and_block_confirmation() {
+        let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
+        prepare_accepted_attempt(&mut output);
+        output.publish(&accepted_result_event(1)).unwrap();
+        output.publish(&accepted_result_event(2)).unwrap();
+        let mut changed = accepted_result_event(3);
+        let RunEventKind::FieldObservation {
+            parsed_result_fields,
+            ..
+        } = &mut changed.kind
+        else {
+            unreachable!();
+        };
+        parsed_result_fields.as_mut().unwrap().good = ResultFieldValue::Known { value: 11 };
+        output.publish(&changed).unwrap();
+        output
+            .publish(&semantic_episode_event(
+                4,
+                "result",
+                SemanticEpisodePhase::Finalized,
+            ))
+            .unwrap();
+        assert_eq!(output.state.lock().unwrap().result_count, 0);
+        assert!(output.headless_events.iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::ResultProvisionalChanged {
+                state: ResultProvisionalState::Withdrawn { .. },
+                ..
+            }
+        )));
     }
 
     #[test]
