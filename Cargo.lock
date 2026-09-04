@@ -2224,6 +2224,7 @@ dependencies = [
  "byteorder-lite",
  "moxcms",
  "num-traits",
+ "png",
 ]
 
 [[package]]
@@ -4124,6 +4125,7 @@ dependencies = [
  "dioxus-core",
  "dioxus-native-dom",
  "fontique",
+ "image",
  "peniko",
  "rust-embed",
  "scorepeek-overlay-handles",

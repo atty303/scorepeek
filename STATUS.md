@@ -18,8 +18,9 @@ checkpoint; implementation history belongs in Git.
 
 - ADR 0123 adds three embedded CSS skins with startup selection and independent compact/sidebar
   layouts. Shared semantic UI retains Live, confirmation and selected-chart best/history.
-  Oxanium is embedded alongside system Japanese fallbacks; no raster assets, external CSS or
-  runtime font downloads are used. Appearance travels through private child config and OBS initial
+  ADR 0124 adds three embedded generated frames and an aurora header, with CSS nine-slice backgrounds.
+  Oxanium is embedded alongside system Japanese fallbacks; no external CSS or runtime downloads are used.
+  Appearance travels through private child config and OBS initial
   HTML, without changing the public event API or score persistence authority.
 
 - RESULT temporal acceptance compares the mandatory song/chart, clear, EX and judgment tuple.
@@ -106,10 +107,18 @@ checkpoint; implementation history belongs in Git.
 
 ## Verification
 
+- All six artwork skin/layout combinations render in native Vello and Chromium with the
+  embedded frames and header. Browser previews have no horizontal overflow. Native PNG decoding,
+  integer/fractional DOM bounds, and settled-animation tests pass. These are synthetic development
+  previews; target fullscreen/input/performance verification remains separate.
+  Full `mise run test` passes on repeat and `mise run dist:test` passes, including exact PNG bytes
+  from the moved binary. The first full run hit the previously recorded root-lease test flake
+  (`WorkerUnavailable`); its isolated run passes. Independent artwork review has no findings.
+
 - Skin development-host validation covers all three skins and both layouts in native DOM at
   integer/fractional scale, including disconnected, selecting, missing metrics/history and empty
   states; confirmation animation settles. Native Vello and Chromium renders show embedded Latin
-  and system Japanese text, clipped frames and gradients. Browser synthetic result/history has
+  and system Japanese text, decorated frames and gradients. Browser synthetic result/history has
   no horizontal text overflow in all six combinations. These are isolated synthetic previews,
   not Gamescope fullscreen, compositor/input-passthrough or OBS performance evidence.
   `mise run check`, all-target Clippy, `mise run test`, and `mise run dist:test` pass.

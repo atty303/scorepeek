@@ -256,6 +256,8 @@ impl App {
         }
         let mut inner = self.document.inner.borrow_mut();
         inner.resolve(self.started.elapsed().as_secs_f64());
+        // Embedded images complete synchronously during resolve; ingest them before painting.
+        inner.handle_messages();
         self.animating = inner.is_animating();
         if self.animating {
             self.shell.request_frame();
@@ -327,7 +329,24 @@ impl Operations {
     }
 }
 
-/// Registers the embedded Latin font without disabling Japanese system fallbacks.
+struct EmbeddedSkinAssets;
+
+impl blitz_traits::net::NetProvider for EmbeddedSkinAssets {
+    fn fetch(
+        &self,
+        _doc_id: usize,
+        request: blitz_traits::net::Request,
+        handler: Box<dyn blitz_traits::net::NetHandler>,
+    ) {
+        let bytes = scorepeek_overlay_ui::skin_asset(request.url.path()).unwrap_or_default();
+        handler.bytes(
+            request.url.to_string(),
+            blitz_traits::net::Bytes::from_static(bytes),
+        );
+    }
+}
+
+/// Registers embedded artwork and the Latin font, preserving Japanese system fallbacks.
 #[must_use]
 pub fn document_config() -> DocumentConfig {
     let mut font_ctx = blitz_dom::FontContext::default();
@@ -336,6 +355,8 @@ pub fn document_config() -> DocumentConfig {
         .register_fonts(peniko::Blob::new(Arc::new(OXANIUM)), None);
     DocumentConfig {
         font_ctx: Some(font_ctx),
+        base_url: Some("http://scorepeek.invalid/".into()),
+        net_provider: Some(Arc::new(EmbeddedSkinAssets)),
         ..DocumentConfig::default()
     }
 }
@@ -344,6 +365,14 @@ pub fn document_config() -> DocumentConfig {
 mod skin_tests {
     use super::*;
     use scorepeek_overlay_ui::{Layout, Skin};
+
+    #[test]
+    fn embedded_artwork_decodes_with_the_native_png_feature() {
+        for (path, bytes) in scorepeek_overlay_ui::SKIN_ASSETS {
+            let image = image::load_from_memory(bytes).expect(path);
+            assert!(image.width() >= 1024 && image.height() >= 768, "{path}");
+        }
+    }
 
     #[test]
     fn skins_keep_all_sections_in_view_and_settle_at_integer_and_fractional_scale() {

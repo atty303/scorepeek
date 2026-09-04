@@ -81,6 +81,27 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
             .unwrap()
             .contains("SIL OPEN FONT LICENSE")
     );
+    for name in [
+        "cyan-system-frame",
+        "result-aurora-frame",
+        "dj-blackbox-frame",
+        "result-aurora-header",
+    ] {
+        let image = get(address, &format!("/skins/{name}.png")).unwrap();
+        assert!(image.starts_with(b"HTTP/1.1 200"));
+        assert!(image.windows(9).any(|bytes| bytes == b"image/png"));
+        let expected = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("../scorepeek-overlay-ui/assets/skins/{name}.png")),
+        )
+        .unwrap();
+        assert!(image.ends_with(&expected));
+    }
+    assert!(
+        get(address, "/skins/missing.png")
+            .unwrap()
+            .starts_with(b"HTTP/1.1 404")
+    );
     // A conflicting OBS child fails independently; the first remains available.
     children.start(&executable, &config).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);

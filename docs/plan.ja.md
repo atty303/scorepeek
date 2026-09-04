@@ -768,11 +768,12 @@ OBSは同じUIをdioxus-webでbuildし、dx実assetをrust-embedで埋め込む�
 CPU/GPUとOBS lagを確認する。development-hostとtarget-machine supportは区別する。
 fresh review後に自分の変更だけmainへcommitする。push、deploy、autostart、releaseは含めない。
 
-### CSSスキンとレイアウト（ADR 0123）
+### スキンとレイアウト（ADR 0123 / 0124）
 
 共通UIにcyan-system（既定）、result-aurora、dj-blackboxをCSSで同梱し、`--overlay-skin`で起動時に選択する。
 `--overlay-wayland-layout compact|sidebar`はcompact、`--overlay-obs-layout compact|sidebar`はsidebarが既定。
 両方ともLive、直近プレイ確定、選択譜面BESTと直近5件を保持する。欧文・数字は固定版Oxaniumを同梱し、
-日本語はsystem fontsへfallbackする。画像asset、外部CSS読み込み、起動中の切替は初版に含めない。
+日本語はsystem fontsへfallbackする。ADR 0124で生成フレーム3点とAURORAヘッダーを追加する。
+画像は共通registryから両rendererへ同梱配信し、CSSの9分割背景で枠の角を保つ。外部CSS読み込み、起動中の切替は含めない。
 表示設定は子設定とOBS初期HTMLに限定し、公開event APIと保存authorityを変えない。
 整数・小数scaleのDOM/停止確認とheadless描画を開発hostで行い、実ゲーム上の表示と性能は明示live gateで確認する。

@@ -487,7 +487,7 @@ Third-party data is fetched locally and is not republished from this repository.
 
 ### Overlay skins
 
-Choose a built-in CSS skin at startup: `cyan-system` (default), `result-aurora`, or `dj-blackbox`.
+Choose a built-in skin at startup: `cyan-system` (default), `result-aurora`, or `dj-blackbox`.
 Both consumers share the skin. Native defaults to `compact`; OBS defaults to `sidebar`.
 Both layouts retain Live, confirmation, chart bests and the latest five saved plays.
 
@@ -501,5 +501,6 @@ scorepeek run --overlay obs --overlay-skin dj-blackbox --overlay-obs-layout comp
 
 Use `--overlay-wayland-layout compact|sidebar` to choose the native layout independently.
 Oxanium is embedded; Japanese uses system fonts. No font installation or runtime download is needed.
+Original frame textures and aurora lighting are embedded for both renderers; text and numbers remain live UI.
 Skins are selected at startup. The [design and preview command](docs/decisions/0123-add-css-overlay-skins.md)
 describe rendering and verification; live target validation still requires a dedicated score DB.

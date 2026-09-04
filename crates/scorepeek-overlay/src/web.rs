@@ -154,6 +154,9 @@ mod server {
         embedded(&path)
     }
     fn embedded(path: &str) -> Response {
+        if let Some(bytes) = scorepeek_overlay_ui::skin_asset(&format!("/{path}")) {
+            return ([(header::CONTENT_TYPE, "image/png")], bytes).into_response();
+        }
         #[cfg(feature = "embedded-web")]
         if let Some(asset) = Assets::get(path) {
             return (

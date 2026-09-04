@@ -6,6 +6,7 @@ authoritative.
 
 ## Current
 
+- [ADR 0124: Embedded overlay artwork](0124-embed-overlay-artwork.md) adds original generated frames and aurora lighting to the shared skins.
 - [ADR 0123: CSS overlay skins](0123-add-css-overlay-skins.md) replaces the fixed appearance and adds embedded Oxanium with independent layouts.
 
 - [ADR 0121: Search both SP BPM positions](0121-search-both-sp-bpm-positions.md)

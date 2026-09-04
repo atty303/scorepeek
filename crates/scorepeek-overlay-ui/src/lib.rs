@@ -3,7 +3,9 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 mod appearance;
+mod assets;
 pub use appearance::{Appearance, Layout, Skin};
+pub use assets::{SKIN_ASSETS, skin_asset};
 pub const OXANIUM: &[u8] = include_bytes!("../assets/fonts/Oxanium.ttf");
 pub const BASE_CSS: &str = include_str!("../styles/base.css");
 pub const SKIN_CSS: &str = concat!(
@@ -145,7 +147,7 @@ pub fn overlay_panel(state: &OverlayState, appearance: Appearance) -> Element {
         style { "{BASE_CSS}{SKIN_CSS}" }
         div { class: "overlay", "data-skin": skin, "data-layout": layout,
             section { class: if dimmed { "panel live stale" } else { "panel live" },
-                div { class: "frame-accent", aria_hidden: "true" }
+                {panel_chrome()}
                 header { class: "panel-bar", span { class: "wordmark", "score" span { "peek" } } span { class: "state-label", "{status}" } }
                 div { class: "chart-header",
                     if !mode.is_empty() || !difficulty.is_empty() {
@@ -179,6 +181,7 @@ pub fn overlay_panel(state: &OverlayState, appearance: Appearance) -> Element {
                 }
             }
             section { class: "panel confirmation", "data-confirmed": if confirmed { "true" } else { "false" },
+                {panel_chrome()}
                 div { class: "section-heading", "LAST PLAY" span { class: "status-light", aria_hidden: "true" } }
                 if let Some(confirmation) = &state.confirmation {
                     div { class: "confirmation-row", span { class: "confirmation-title", "{confirmation.title}" }
@@ -195,6 +198,7 @@ pub fn overlay_panel(state: &OverlayState, appearance: Appearance) -> Element {
 fn history_panel(state: &OverlayState) -> Element {
     rsx! {
             section { class: if state.selecting { "panel history stale" } else { "panel history" },
+                {panel_chrome()}
                 div { class: "section-heading", "CHART BEST" }
                 if let Some(chart) = &state.chart {
                     p { class: "history-chart", "{chart.title} / {mode_label(&chart.play_type)} {chart.difficulty}" }
@@ -216,5 +220,15 @@ fn history_panel(state: &OverlayState) -> Element {
                     }
                 }
             }
+    }
+}
+
+fn panel_chrome() -> Element {
+    rsx! {
+        div { class: "panel-chrome", aria_hidden: "true",
+            for region in ["nw", "n", "ne", "w", "center", "e", "sw", "s", "se"] {
+                div { "data-region": region }
+            }
+        }
     }
 }
