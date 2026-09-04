@@ -29,6 +29,7 @@ tar -xJf "$archive" -C "$work_dir"
 
 readonly root="$work_dir/scorepeek-${target}"
 readonly binary="$root/scorepeek"
+SCOREPEEK_TEST_BINARY="$binary" cargo test --locked -p scorepeek --features embedded-web --test overlay
 mkdir -p "$work_dir/home" "$work_dir/data" "$work_dir/cache"
 
 version_output="$($binary --version)"

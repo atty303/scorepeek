@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/scorepeek", "crates/scorepeek-corpus", "crates/scorepeek-scores"]
+members = ["crates/scorepeek", "crates/scorepeek-corpus", "crates/scorepeek-scores", "crates/scorepeek-overlay-ui", "crates/scorepeek-overlay", "crates/scorepeek-overlay-handles", "crates/scorepeek-overlay-web"]
 resolver = "3"
 
 [workspace.package]
@@ -15,12 +15,14 @@ installers = []
 packages = ["scorepeek"]
 source-tarball = false
 targets = ["x86_64-unknown-linux-gnu"]
+features = ["embedded-web"]
 
 [profile.dist]
 inherits = "release"
 lto = "thin"
 
 [workspace.dependencies]
+dioxus = { version = "=0.7.10", default-features = false, features = ["macro", "html", "signals", "hooks"] }
 encoding_rs = "0.8.35"
 futures-util = "0.3.34"
 imageproc = { version = "0.27.0", default-features = false }

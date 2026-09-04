@@ -9,6 +9,7 @@ publish = false
 dist = true
 
 [dependencies]
+scorepeek-overlay = { path = "../scorepeek-overlay" }
 scorepeek-scores = { path = "../scorepeek-scores" }
 encoding_rs.workspace = true
 imageproc.workspace = true
@@ -29,3 +30,6 @@ x11rb.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+embedded-web = ["scorepeek-overlay/embedded-web"]

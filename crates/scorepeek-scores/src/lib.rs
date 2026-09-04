@@ -1,4 +1,5 @@
 //! Persistence consumer for the public event v1 contract, independent of recognition.
+pub mod query;
 mod worker;
 pub use worker::{Health, Worker};
 

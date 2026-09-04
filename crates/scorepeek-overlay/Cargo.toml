@@ -1,0 +1,32 @@
+[package]
+name = "scorepeek-overlay"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+scorepeek-overlay-handles = { path = "../scorepeek-overlay-handles" }
+anyrender = "0.13.0"
+anyrender_vello = "0.14.0"
+blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "64eb27853aa2672486b7edf825fb044be78c9db3", default-features = false, features = ["system-fonts"] }
+blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "64eb27853aa2672486b7edf825fb044be78c9db3", default-features = false }
+blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "64eb27853aa2672486b7edf825fb044be78c9db3", default-features = false }
+dioxus-core = "=0.7.10"
+dioxus-native-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "64eb27853aa2672486b7edf825fb044be78c9db3", default-features = false, features = ["complex-scripts", "system-fonts"] }
+fontique = { version = "0.11.1", features = ["fontconfig-dlopen"] }
+peniko = "0.6.0"
+smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop"] }
+scorepeek-overlay-ui = { path = "../scorepeek-overlay-ui" }
+scorepeek-scores = { path = "../scorepeek-scores" }
+serde.workspace = true
+serde_json.workspace = true
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws"] }
+tokio = { workspace = true, features = ["net", "sync", "macros", "rt-multi-thread"] }
+rust-embed = { version = "8.12", features = ["mime-guess", "interpolate-folder-path", "deterministic-timestamps"], optional = true }
+
+[features]
+embedded-web = ["dep:rust-embed", "rust-embed/debug-embed"]
+
+[lints]
+workspace = true

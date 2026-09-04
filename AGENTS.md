@@ -13,7 +13,7 @@
   `docs/decisions/`; supersede an ADR with a new ADR instead of rewriting an
   accepted decision.
 - The current milestone is capture, recognition, and the versioned event API.
-  ADR 0120 includes local score persistence as an independent event consumer; UI remains out of scope.
+  ADR 0120 includes local score persistence as an independent event consumer; ADR 0122 adds native and OBS live overlays as independent consumers.
 
 ## Checkpoint and resumption
 

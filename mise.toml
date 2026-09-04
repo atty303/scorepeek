@@ -1,6 +1,7 @@
 min_version = "2026.8.3"
 
 [tools]
+"cargo:dioxus-cli" = "0.7.10"
 actionlint = "1.7.12"
 cargo-dist = "0.32.0"
 hk = "1.54.1"
@@ -43,6 +44,7 @@ matching_regex = "^ffprobe-(linux|osx|win)-(x64|arm64)(\\.exe)?$"
 bin = "ffprobe"
 
 [env]
+SCOREPEEK_WEB_ASSET_DIR = "{{ config_root }}/target/dx/scorepeek-overlay-web/release/web/public"
 HK_MISE = 1
 PKG_CONFIG = "{{ config_root }}/scripts/pkg-config-scorepeek.bash"
 LIBCLANG_PATH = "{{ exec(command='scripts/resolve-clang-build-input.bash library') }}"
@@ -69,10 +71,43 @@ run = "dist plan"
 
 [tasks."dist:build"]
 description = "Build the local Linux x86-64 release archive and checksum"
+depends = ["overlay:web:bundle"]
 run = "dist build"
+
+[tasks."overlay:web:check"]
+description = "Type-check the shared browser UI without bundling assets"
+run = "cargo check --locked -p scorepeek-overlay-web --target wasm32-unknown-unknown"
+
+[tasks."overlay:web:bundle"]
+description = "Build the real browser assets used by the distributed executable"
+run = "dx bundle --package scorepeek-overlay-web --web --release --locked"
+
+[tasks."overlay:web:test"]
+description = "Test real embedded assets and child lifecycle in isolated storage"
+depends = ["overlay:web:bundle"]
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+cargo test --locked -p scorepeek-overlay --features embedded-web --lib
+exec cargo test --locked -p scorepeek --features embedded-web --test overlay
+'''
+
+[tasks."overlay:test:live"]
+description = "Explicit live overlay run; supply a dedicated --scores-db instance and profile"
+depends = ["overlay:web:bundle"]
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+  *" --scores-db "*) ;;
+  *) echo 'Supply --scores-db with a dedicated verification instance.' >&2; exit 2 ;;
+esac
+exec cargo run --locked -p scorepeek --features embedded-web -- run --overlay wayland --overlay obs "$@"
+'''
 
 [tasks."dist:test"]
 description = "Build and smoke-test the local Linux x86-64 release archive"
+depends = ["overlay:web:bundle"]
 run = "scripts/test-dist-artifact.bash"
 
 [tasks.fix]
@@ -92,12 +127,14 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 mise run native:verify
+mise run overlay:web:check
 mise run check README.md
 mise run check
 mise run ocr:test
 mise run catalog:schedule:systemd:verify
 cargo clippy --locked --workspace --all-targets -- -D warnings
-exec cargo test --locked --workspace
+cargo test --locked --workspace
+exec mise run overlay:web:test
 '''
 
 [tasks.doctor]

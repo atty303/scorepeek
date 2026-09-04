@@ -9,12 +9,18 @@ checkpoint; implementation history belongs in Git.
   evidence-first attempt resolution, and versioned event API remain in progress.
 - RESULT v2 remains the confirmed play/history contract. MUSIC SELECT best snapshot v1 is a
   separate supplemental observation, not a play. ADR 0120 adds local score persistence;
-  query CLI and history supplementation UI remain outside the implemented scope.
+  query CLI remains outside scope. ADR 0122 adds independent Wayland/OBS live overlays.
 - The public live API is socket/snapshot v1. Diagnostic protocols remain run-event v11 and recognition observation v22.
   Joined sessions and private attempt labels remain v5. Readers retain supported older shapes and
   reject unknown versions.
 
 ## Implemented authority
+
+- ADR 0122 adds optional same-executable Wayland/OBS child consumers to normal run, shared Dioxus
+  presentation, read-only selected-chart history, embedded browser assets and private overlay
+  diagnostics. Overlay paths do not initialize recognition or change confirmation/save authority.
+  Children receive the resolved invocation/socket/DB and terminate on parent-pipe EOF, with bounded
+  parent cleanup. No overlay option preserves the existing overlay-free behavior.
 
 - ADR 0120 adds `scorepeek-scores` as an independent public event v1 consumer. Normal run saves to
   the XDG data score database; `--scores-db` selects an instance and `--no-scores` disables it.
@@ -160,6 +166,21 @@ checkpoint; implementation history belongs in Git.
   retained privately under `select-stability-evaluation-v1` in the scorepeek XDG data directory.
 
 ## Unverified and next execution boundary
+
+- Overlay unit tests (including ended-session, mid-play and withdrawn-result reconnect), shared WASM check and
+  real-asset child/lifecycle smoke tests pass on the development host. Root check/test and
+  distribution/archive tests pass; the extracted standalone binary serves the embedded bundle.
+  A production-binary synthetic run on Scroll configures Vulkan at fractional scale 1.25
+  (1728x3072 logical, 2160x3840 physical), receives selection/provisional/confirmation/next-selection
+  on both children, sends the expected WebSocket states and exits both children on parent EOF.
+  Native render calls stay at 41 during the final five-second idle interval. No score DB is used.
+  Actual GUI appearance, integer scale, Japanese glyphs, Gamescope fullscreen, input passthrough,
+  native/OBS visual agreement, live history and CPU/GPU/OBS lag still require the dedicated-DB
+  live gate. Existing spike observations do not certify the production
+  path. No target deployment, autostart, push or release is included.
+- Pinned dx produces a browser bundle, but its optional wasm-opt step reports unsupported DWARF
+  and skips optimization. Asset MIME/type tests pass on the emitted bundle; it is not claimed to
+  be wasm-opt optimized. Browser visual verification remains separate.
 
 - Validate layout v4 in a fresh target-live run after a separately requested target install.
   Retained-frame inspection does not recover unrecorded PLAY spans or backfill missing RESULTs.

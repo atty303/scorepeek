@@ -197,7 +197,31 @@ Explicit no-record clears that supplemental field. Combined bests use RESULT his
 values and current SELECT supplements. Guest DBs still receive the current game account's supplements.
 Save failure is shown as degraded while recognition continues; uncommitted data is not recoverable
 after a crash. See [the score database contract](docs/decisions/0120-persist-scores-as-event-consumer.md)
-for schema, source attribution, failure limits and timestamp semantics. No history query CLI or UI is included.
+for schema, source attribution, failure limits and timestamp semantics. No history query CLI is included.
+
+### Live overlays
+
+The release executable embeds the browser UI and can run either or both independent overlays:
+
+```sh
+scorepeek run --overlay wayland --overlay obs --overlay-output DP-1
+```
+
+Omit `--overlay-output` only when Wayland exposes one output. The native layer is input-transparent;
+OBS Browser Source uses `http://127.0.0.1:17384/` (set a transparent 1920×1080 source).
+`--overlay-listen IP:PORT` selects another loopback address. Omit both `--overlay` options for the
+normal overlay-free run. Overlay failures do not stop recognition or score saving.
+
+Both show Live selection/provisional results, the latest play's event-confirmation state and
+selected-chart integrated best/latest five saved plays. SELECT best receipt is not DB commit.
+`--no-scores` disables history too; missing/unreadable DBs do not stop Live. History dates are UTC
+notification dates, and best values may come from different plays. See
+[the overlay contract](docs/decisions/0122-add-live-overlay-consumers.md).
+
+Development: `mise run overlay:web:check` needs no bundle; `mise run overlay:web:test` builds and
+checks real assets and owned-child cleanup. `mise run dist:build` includes the assets in the
+single binary. `mise run overlay:test:live --scores-db PATH` is an explicit desktop gate requiring
+a dedicated test database. GUI and target-performance verification remain separate from unit tests.
 
 With `--record`, in-progress components are grouped below
 `$XDG_STATE_HOME/scorepeek/recording-staging/<session-id>/` as `capture/`, `recognition/`,

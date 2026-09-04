@@ -68,6 +68,9 @@ fn run_with_model_initializer(
     args: &[OsString],
     initialize: impl FnOnce(Option<&Path>) -> Result<PathBuf, String>,
 ) -> Result<(), String> {
+    if args.len() == 1 && args[0] == scorepeek_overlay::children::ENTRYPOINT {
+        return scorepeek_overlay::diagnostics::run();
+    }
     if let Some(result) = try_offline_program_information(args)
         .or_else(|| try_numeric_model_install(args))
         .or_else(|| try_doctor(args))
@@ -524,16 +527,25 @@ fn try_routine_live_session(args: &[OsString], bundle: &Path) -> Option<Result<(
         options.recording_memory_limit,
         options.scores_db,
         options.no_scores,
+        options.overlays,
         bundle,
     ))
 }
 
 struct RoutineRunOptions<'a> {
+    overlays: OverlayOptions,
     profile: Option<&'a OsStr>,
     scores_db: Option<&'a OsStr>,
     no_scores: bool,
     recording: bool,
     recording_memory_limit: canonical_recording::RecordingMemoryLimit,
+}
+
+#[derive(Default)]
+struct OverlayOptions {
+    backends: Vec<scorepeek_overlay::runtime::Backend>,
+    output: Option<String>,
+    listen: Option<std::net::SocketAddr>,
 }
 
 fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions<'_>, String> {
@@ -542,9 +554,45 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions<'
     let mut scores_db = None;
     let mut no_scores = false;
     let mut recording_memory_mib = None;
+    let mut overlays = OverlayOptions::default();
     let mut index = 0;
     while index < options.len() {
         match options[index].to_str() {
+            Some("--overlay" | "--overlay-output" | "--overlay-listen") => {
+                let option = options[index].to_str().unwrap_or_default();
+                index += 1;
+                let value = options
+                    .get(index)
+                    .and_then(|value| value.to_str())
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| format!("{option} requires a value"))?;
+                match option {
+                    "--overlay" => {
+                        let backend = match value {
+                            "wayland" => scorepeek_overlay::runtime::Backend::Wayland,
+                            "obs" => scorepeek_overlay::runtime::Backend::Obs,
+                            _ => return Err("--overlay must be wayland or obs".into()),
+                        };
+                        if overlays.backends.contains(&backend) {
+                            return Err("duplicate --overlay backend".into());
+                        }
+                        overlays.backends.push(backend);
+                    }
+                    "--overlay-output" if overlays.output.is_none() => {
+                        overlays.output = Some(value.into());
+                    }
+                    "--overlay-listen" if overlays.listen.is_none() => {
+                        let address: std::net::SocketAddr = value
+                            .parse()
+                            .map_err(|_| "--overlay-listen requires IP:PORT".to_owned())?;
+                        if !address.ip().is_loopback() {
+                            return Err("--overlay-listen must be loopback".into());
+                        }
+                        overlays.listen = Some(address);
+                    }
+                    _ => return Err(format!("duplicate {option}")),
+                }
+            }
             Some("--record") if !recording => recording = true,
             Some("--no-scores") if !no_scores => no_scores = true,
             Some("--scores-db") if scores_db.is_none() => {
@@ -586,6 +634,7 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions<'
         recording_memory_mib.unwrap_or(canonical_recording::DEFAULT_RECORDING_MEMORY_MIB),
     )?;
     Ok(RoutineRunOptions {
+        overlays,
         profile,
         scores_db,
         no_scores,
@@ -601,6 +650,7 @@ fn run_routine_live_session(
     recording_memory_limit: canonical_recording::RecordingMemoryLimit,
     scores_db: Option<&OsStr>,
     no_scores: bool,
+    overlays: OverlayOptions,
     bundle: &Path,
 ) -> Result<(), String> {
     let selected = local_profiles::select_for_run(profile_name)?;
@@ -641,7 +691,9 @@ fn run_routine_live_session(
         recording_enabled,
         state.recording_staging_store(),
     )?;
-    if !no_scores {
+    let scores_path = if no_scores {
+        None
+    } else {
         let path = if let Some(path) = scores_db {
             PathBuf::from(path)
         } else {
@@ -654,7 +706,35 @@ fn run_routine_live_session(
                 .ok_or_else(|| "scores database requires XDG_DATA_HOME or HOME".to_owned())?;
             root.join("scorepeek/scores.sqlite3")
         };
+        let path =
+            std::path::absolute(path).map_err(|error| format!("scores database path: {error}"))?;
         output.enable_scores(&path)?;
+        Some(path)
+    };
+    let mut overlay_children = scorepeek_overlay::children::Children::default();
+    for backend in overlays.backends {
+        let started = output
+            .event_socket_path()
+            .ok_or_else(|| "event socket unavailable".to_owned())
+            .and_then(|socket| {
+                let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+                overlay_children.start(
+                    &executable,
+                    &scorepeek_overlay::runtime::Config {
+                        backend,
+                        socket: socket.to_path_buf(),
+                        invocation: invocation_id.clone(),
+                        scores_db: scores_path.clone(),
+                        output: overlays.output.clone(),
+                        listen: overlays
+                            .listen
+                            .unwrap_or(std::net::SocketAddr::from(([127, 0, 0, 1], 17384))),
+                    },
+                )
+            });
+        if let Err(error) = started {
+            output.warning(format!("overlay unavailable: {error}"))?;
+        }
     }
     output.publish(&routine_output::RunEvent {
         schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
@@ -668,6 +748,7 @@ fn run_routine_live_session(
     let mut announced = None;
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
         output.refresh_scores()?;
+        output.refresh_overlays(&mut overlay_children)?;
         let Ok(snapshot) =
             scorepeek::capture::snapshot_gamescope_sources(std::time::Duration::from_millis(500))
         else {
@@ -756,6 +837,7 @@ fn run_routine_live_session(
                 }
                 let mut started = false;
                 let mut emit = |emission: LiveSessionEmission| {
+                    output.refresh_overlays(&mut overlay_children)?;
                     let output_started = std::time::Instant::now();
                     if let Some(binding) = emission.public_binding.clone() {
                         output.bind_public_session(binding);
@@ -966,6 +1048,8 @@ fn run_routine_live_session(
             }
         }
     }
+    overlay_children.shutdown();
+    output.refresh_overlays(&mut overlay_children)?;
     output.publish(&routine_output::RunEvent {
         schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
         kind: routine_output::RunEventKind::WatcherStopped {
@@ -3586,7 +3670,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...\n  scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...\n  scorepeek profile list\n  scorepeek run [--profile NAME] [--scores-db PATH | --no-scores] [--record [--record-memory-mib MIB]]\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition inspect-diagnostic-qoi --frame FILE --frame-sha256 SHA256\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
+        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...\n  scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...\n  scorepeek profile list\n  scorepeek run [--profile NAME] [--scores-db PATH | --no-scores] [--overlay wayland] [--overlay obs] [--overlay-output NAME] [--overlay-listen IP:PORT] [--record [--record-memory-mib MIB]]\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition inspect-diagnostic-qoi --frame FILE --frame-sha256 SHA256\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
         env!("CARGO_PKG_VERSION")
     );
     println!(
@@ -3671,6 +3755,44 @@ mod tests {
         let root = Path::new("/tmp/recognition");
         assert_eq!(optional_recognition_root(false, root), None);
         assert_eq!(optional_recognition_root(true, root), Some(root));
+    }
+
+    #[test]
+    fn overlay_options_allow_independent_and_simultaneous_consumers() {
+        for options in [
+            vec!["--overlay", "wayland"],
+            vec!["--overlay", "obs"],
+            vec![
+                "--overlay",
+                "wayland",
+                "--overlay",
+                "obs",
+                "--overlay-output",
+                "DP-1",
+                "--overlay-listen",
+                "127.0.0.1:17385",
+                "--no-scores",
+            ],
+        ] {
+            let values = options.iter().map(OsString::from).collect::<Vec<_>>();
+            assert!(parse_routine_run_options(&values).is_ok());
+        }
+        for options in [
+            vec!["--overlay"],
+            vec!["--overlay", "unknown"],
+            vec!["--overlay", "obs", "--overlay", "obs"],
+            vec!["--overlay-listen", "0.0.0.0:17384"],
+        ] {
+            let values = options.iter().map(OsString::from).collect::<Vec<_>>();
+            assert!(parse_routine_run_options(&values).is_err());
+        }
+        assert!(
+            parse_routine_run_options(&[])
+                .unwrap()
+                .overlays
+                .backends
+                .is_empty()
+        );
     }
 
     #[test]

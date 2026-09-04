@@ -20,6 +20,40 @@ fn values(store: &Store) -> (Option<i64>, Option<i64>, Option<i64>) {
         })
         .unwrap()
 }
+
+#[test]
+fn read_only_history_never_creates_and_tracks_committed_latest_five() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("history.sqlite3");
+    assert!(query::chart_history(&path, "song-a", "single", "hyper").is_err());
+    assert!(!path.exists());
+    let mut store = Store::open(&path).unwrap();
+    for sequence in 1..=7 {
+        apply(
+            &mut store,
+            &result(sequence, u32::try_from(sequence).unwrap() * 100),
+        );
+    }
+    let history = query::chart_history(&path, "song-a", "single", "hyper").unwrap();
+    assert_eq!(history.plays.len(), 5);
+    assert_eq!(history.plays[0].event_id, "run-a:7");
+    assert_eq!(history.plays[4].event_id, "run-a:3");
+    assert_eq!(history.best.score, Some(700));
+    assert!(
+        query::chart_history(&path, "song-b", "single", "hyper")
+            .unwrap()
+            .plays
+            .is_empty()
+    );
+    apply(&mut store, &result(8, 800));
+    assert_eq!(
+        query::chart_history(&path, "song-a", "single", "hyper")
+            .unwrap()
+            .plays[0]
+            .score,
+        800
+    );
+}
 #[test]
 fn select_only_updates_without_history_and_result_later_supports_best() {
     let dir = tempfile::tempdir().unwrap();

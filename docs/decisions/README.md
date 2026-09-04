@@ -363,6 +363,9 @@ authoritative.
   replaces the setting-dependent graph-panel predicate with the connected lower-center BPM outline
   while ignoring loading and fixed/variable BPM interior text.
 
+- [ADR 0122: Add independent native and OBS live overlays](0122-add-live-overlay-consumers.md)
+  adds same-executable child consumers and shared presentation without changing event/save authority.
+
 ## Historical
 
 - ADR 0001: upstream release/resource adoption

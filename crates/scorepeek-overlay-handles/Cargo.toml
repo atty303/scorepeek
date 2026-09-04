@@ -1,0 +1,19 @@
+[package]
+name = "scorepeek-overlay-handles"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+raw-window-handle = "0.6.2"
+wayland-client = { version = "0.31.11", features = ["system"] }
+smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop"] }
+wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = "deny"
+pedantic = "deny"

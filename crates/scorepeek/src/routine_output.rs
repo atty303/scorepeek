@@ -68,6 +68,9 @@ pub struct RunEvent {
     reason = "the event schema remains flat and values cross an already bounded queue"
 )]
 pub enum RunEventKind {
+    OverlayObserved {
+        observation: Value,
+    },
     MusicSelectBestObserved {
         session_id: String,
         capture_generation: u64,
@@ -1801,6 +1804,8 @@ pub struct RunViewState {
     recording_memory_high_water_bytes: u64,
     recording_dropped_frames: u64,
     next_channel_sequence: u64,
+    #[serde(skip)]
+    overlay_summary: String,
     message: String,
     resolver: ResolverDebugSnapshot,
 }
@@ -1908,6 +1913,7 @@ impl RunViewState {
             },
             watcher_state: "starting".to_owned(),
             scores_summary: None,
+            overlay_summary: String::new(),
             channel_start_failure: None,
             session_count: 0,
             active_session_id: None,
@@ -2020,7 +2026,8 @@ impl RunViewState {
                 SemanticEpisodePhase::Finalized => self.current_screen = None,
                 SemanticEpisodePhase::Suspended | SemanticEpisodePhase::Closing => {}
             },
-            RunEventKind::MusicSelectBestObserved { .. }
+            RunEventKind::OverlayObserved { .. }
+            | RunEventKind::MusicSelectBestObserved { .. }
             | RunEventKind::ScreenTick { .. }
             | RunEventKind::ResolverStateChanged { .. }
             | RunEventKind::SelectionDifficultyChanged { .. } => {}
@@ -2600,6 +2607,32 @@ pub struct RoutineEventProcessingTiming {
 }
 
 impl RoutineOutput {
+    pub fn refresh_overlays(
+        &mut self,
+        children: &mut scorepeek_overlay::children::Children,
+    ) -> Result<(), String> {
+        for message in children.poll() {
+            self.warning(message)?;
+        }
+        self.state
+            .lock()
+            .map_err(|_| "run view state lock was poisoned".to_owned())?
+            .overlay_summary = children.summary();
+        for observation in children.take_observations() {
+            self.publish(&RunEvent {
+                schema: RUN_EVENT_SCHEMA.to_owned(),
+                kind: RunEventKind::OverlayObserved { observation },
+            })?;
+        }
+        Ok(())
+    }
+    #[must_use]
+    pub fn event_socket_path(&self) -> Option<&Path> {
+        self.channel
+            .as_ref()
+            .map(|channel| channel.socket_path.as_path())
+    }
+
     fn publish_resolver_transition(
         &mut self,
         session_id: Option<&String>,
@@ -2934,7 +2967,8 @@ impl RoutineOutput {
             | RunEventKind::MusicSelectBestObserved { .. }
             | RunEventKind::MusicSelectResolverChanged { .. }
             | RunEventKind::ResultProvisionalChanged { .. }
-            | RunEventKind::ResultDetected { .. } => self.publish_one(event),
+            | RunEventKind::ResultDetected { .. }
+            | RunEventKind::OverlayObserved { .. } => self.publish_one(event),
         }
     }
 
@@ -4789,7 +4823,7 @@ fn human_bytes(bytes: u64) -> String {
 fn plain_status_line(state: &RunViewState, health: &ChannelHealth) -> String {
     let channel = health.value();
     format!(
-        "scorepeek: state={} sessions={} session={} generation={} channel={} clients={} dropped={} disconnected={} message={} {}",
+        "scorepeek: state={} sessions={} session={} generation={} channel={} clients={} dropped={} disconnected={} message={} {}{}",
         state.watcher_state,
         state.session_count,
         state.active_session_id.as_deref().unwrap_or("-"),
@@ -4805,6 +4839,7 @@ fn plain_status_line(state: &RunViewState, health: &ChannelHealth) -> String {
             .as_deref()
             .unwrap_or(&state.message),
         state.scores_summary.as_deref().unwrap_or("scores=disabled"),
+        state.overlay_summary,
     )
 }
 
@@ -4925,7 +4960,7 @@ fn fixed_watcher_lines(state: &RunViewState, health: &ChannelHealth) -> Vec<Line
             )),
         ]),
         Line::from(format!(
-            "recording={} mem={}/{} high={} frame_drop={}  channel={} clients={} drop={}  {}",
+            "recording={} mem={}/{} high={} frame_drop={}  channel={} clients={} drop={}{}  {}",
             state.status_recording,
             human_bytes(state.recording_memory_used_bytes),
             human_bytes(state.recording_memory_limit_bytes),
@@ -4934,6 +4969,7 @@ fn fixed_watcher_lines(state: &RunViewState, health: &ChannelHealth) -> Vec<Line
             channel["status"].as_str().unwrap_or("degraded"),
             channel["connected_clients"].as_u64().unwrap_or(0),
             channel["dropped_events"].as_u64().unwrap_or(0),
+            state.overlay_summary,
             state.message,
         )),
     ]

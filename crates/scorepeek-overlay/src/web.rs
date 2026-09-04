@@ -1,0 +1,166 @@
+use crate::runtime::Config;
+#[cfg(feature = "embedded-web")]
+#[derive(rust_embed::Embed)]
+#[folder = "$SCOREPEEK_WEB_ASSET_DIR/"]
+struct Assets;
+
+#[cfg(all(test, feature = "embedded-web"))]
+mod tests {
+    use super::Assets;
+    #[test]
+    fn real_bundle_contains_html_javascript_and_wasm_with_mime_types() {
+        assert_eq!(
+            Assets::get("index.html").unwrap().metadata.mimetype(),
+            "text/html"
+        );
+        for (suffix, mime) in [(".wasm", "application/wasm"), (".js", "text/javascript")] {
+            let path = Assets::iter()
+                .find(|path| path.ends_with(suffix))
+                .expect("real bundle asset");
+            let asset = Assets::get(&path).unwrap();
+            assert_eq!(asset.metadata.mimetype(), mime);
+            assert!(!asset.data.is_empty());
+        }
+    }
+}
+
+/// Serves only local embedded UI assets and display snapshots.
+/// # Errors
+/// Returns runtime, bind or worker errors.
+pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result<(), String> {
+    if !config.listen.ip().is_loopback() {
+        return Err("overlay listen must be loopback".into());
+    }
+    #[cfg(not(feature = "embedded-web"))]
+    {
+        let _ = (config, input);
+        Err("OBS overlay requires the embedded-web build (mise run dist:build)".into())
+    }
+    #[cfg(feature = "embedded-web")]
+    {
+        if Assets::get("index.html").is_none() {
+            return Err("embedded index.html is missing".into());
+        }
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())?;
+        runtime.block_on(server::serve(config, input))
+    }
+}
+
+#[cfg(feature = "embedded-web")]
+mod server {
+    use super::Assets;
+    use crate::runtime::{Config, Feed};
+    use axum::{
+        Router,
+        extract::{Path, State, WebSocketUpgrade, ws::Message},
+        http::{StatusCode, header},
+        response::{IntoResponse, Response},
+        routing::get,
+    };
+    use std::{
+        sync::{Arc, atomic::Ordering},
+        time::Duration,
+    };
+    use tokio::sync::Notify;
+
+    struct Shared {
+        feed: Feed,
+        changed: Arc<Notify>,
+    }
+
+    pub(super) async fn serve(
+        config: Config,
+        mut input: impl std::io::Read + Send + 'static,
+    ) -> Result<(), String> {
+        let changed = Arc::new(Notify::new());
+        let wake = Arc::clone(&changed);
+        let feed = Feed::start(config.clone(), Arc::new(move || wake.notify_waiters()))
+            .map_err(|error| error.to_string())?;
+        let stop = Arc::clone(&feed.stop);
+        std::thread::Builder::new()
+            .name("overlay-parent".into())
+            .spawn(move || {
+                let mut byte = [0];
+                let _ = input.read(&mut byte);
+                stop.store(true, Ordering::Release);
+            })
+            .map_err(|error| error.to_string())?;
+        let shared = Arc::new(Shared { feed, changed });
+        let app = Router::new()
+            .route("/", get(index))
+            .route("/ws", get(socket))
+            .route("/{*path}", get(asset))
+            .with_state(Arc::clone(&shared));
+        let listener = tokio::net::TcpListener::bind(config.listen)
+            .await
+            .map_err(|error| error.to_string())?;
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                while !shared.feed.stop.load(Ordering::Acquire) {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn index() -> Response {
+        embedded("index.html")
+    }
+    async fn asset(Path(path): Path<String>) -> Response {
+        embedded(&path)
+    }
+    fn embedded(path: &str) -> Response {
+        #[cfg(feature = "embedded-web")]
+        if let Some(asset) = Assets::get(path) {
+            return (
+                [(header::CONTENT_TYPE, asset.metadata.mimetype())],
+                asset.data,
+            )
+                .into_response();
+        }
+        let _ = path;
+        StatusCode::NOT_FOUND.into_response()
+    }
+    async fn socket(ws: WebSocketUpgrade, State(shared): State<Arc<Shared>>) -> Response {
+        ws.on_upgrade(move |mut socket| async move {
+            let mut sent = None;
+            loop {
+                let notified = shared.changed.notified();
+                let state = shared
+                    .feed
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                if sent.as_ref() != Some(&state) {
+                    let Ok(bytes) = serde_json::to_string(&state) else {
+                        break;
+                    };
+                    if tokio::time::timeout(
+                        Duration::from_secs(2),
+                        socket.send(Message::Text(bytes.into())),
+                    )
+                    .await
+                    .map_or(true, |result| result.is_err())
+                    {
+                        break;
+                    }
+                    sent = Some(state);
+                }
+                tokio::select! {
+                    () = notified => {},
+                    () = tokio::time::sleep(Duration::from_millis(250)) => {
+                        if shared.feed.stop.load(Ordering::Acquire) { break; }
+                    },
+                    message = socket.recv() => {
+                        if matches!(message, None | Some(Err(_) | Ok(Message::Close(_)))) { break; }
+                    }
+                }
+            }
+        })
+    }
+}

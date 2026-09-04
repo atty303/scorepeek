@@ -171,7 +171,7 @@ stable milestoneの実装順序とrelease gateの原典である。長期的な�
 - upstreamの画面構造は初期調査の着眼点にだけ利用できる。commitする座標は
   scorepeek自身のcaptureから再計測し、根拠fixtureへ結び付ける。
 - v1はcapture、catalog federation、認識core、offline OCR training、Unix socket
-  APIまでとする。UI、score保存、外部service連携は対象外とする。
+  APIに加え、ADR 0120でscore保存、ADR 0122で独立consumerのlive overlayを含める。外部service連携は対象外とする。
 - gameplay runtimeはRustとし、Pythonはoffline OCR trainingとONNX exportにだけ使う。
 - 実行・最終検証先は別のBazzite機、現在の開発機はbuild、source fixture test、
   model training/evaluation、capture replayを担当する。
@@ -693,7 +693,7 @@ frame age、game p99 frametimeおよびOBS render/encode lagを比較してdefau
 
 ## v1対象外
 
-- UI、cloud/外部service連携（score/history保存はADR 0120で追加）
+- cloud/外部service連携（score/history保存はADR 0120、live overlayはADR 0122で追加）
 - arbitrary resolution、HDR、未較正FSR/NIS/Reshade profile
 - public source catalog、real fixture、trained modelの再配布
 - upstream branch/resource compatibility
@@ -745,4 +745,25 @@ raw difficulty変更は最初の明確な観測から反映する。resolverの�
 SELECTは譜面・項目別の現在補完値として保持し、revision履歴を蓄積しない。RESULTなしのSELECT譜面も保存する。
 後のSELECT既知値とno-recordで補完を訂正でき、RESULT今回値・previous_bestとの統合値を再計算する。
 `--scores-db PATH`でrun単位の保存先を選び、`--no-scores`で無効化する。保存失敗は認識と配信へ干渉させない。
-日時、schema、出典、transaction、queueと終了上限はADR 0120を原典とする。UI・照会・過去記録importは含めない。
+日時、schema、出典、transaction、queueと終了上限はADR 0120を原典とする。過去記録importと照会CLIは含めない。
+
+### Live Overlay（ADR 0122）
+
+新branch/worktreeは作らずmainへ直接実装する。spike worktreeは参照用として保持し、丸ごとmergeしない。
+配布binaryはscorepeekだけとし、`run --overlay wayland --overlay obs`で独立した子processを同時起動できる。
+公開v1 socketのsnapshot/liveを表示stateへ変換し、認識内部state・capture resourceは共有しない。
+`--overlay-output NAME`は完全一致、`--overlay-listen IP:PORT`はloopbackのみ、既定127.0.0.1:17384。
+親のpipe EOFで終了し、有界待機後に自分の子だけ回収する。overlay失敗時も認識・保存・他方を継続する。
+
+共通Dioxus UIはLive、直近プレイ確定、選曲譜面best/直近5件の3枠。選曲確定をプレイ中も保持し、
+resolved provisionalで結果へ切り替える。確定はresult_detectedだけで判断し、DB commitを待たない。
+SELECT bestは項目別の取込状況だけで値を表示しない。履歴は共通read-only queryで1秒確認し、変更時だけ描画する。
+`--no-scores`では履歴も無効、DB作成・migration・別DBへのfallbackはしない。切断時も内容とDB照会を維持する。
+nativeはBlitz native-dom/AnyRender Vello/SCTK、system fonts、整数/fractional scaleと入力透過を使用する。
+OBSは同じUIをdioxus-webでbuildし、dx実assetをrust-embedで埋め込む。ブラウザ更新はrAFで集約する。
+診断はprivate pipeと既存recording面へ分離し、UIとWebSocketへ混ぜない。詳細契約はADR 0122を原典とする。
+
+自動検証はstate遷移、保存済みquery、子process、実Web asset、既存保存/API回帰へ絞る。
+専用DBの明示live taskで日本語font、scale、native/OBS一致、fullscreen前面、入力透過、idle/終了後残留、
+CPU/GPUとOBS lagを確認する。development-hostとtarget-machine supportは区別する。
+fresh review後に自分の変更だけmainへcommitする。push、deploy、autostart、releaseは含めない。
