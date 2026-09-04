@@ -9,6 +9,7 @@ publish = false
 dist = true
 
 [dependencies]
+scorepeek-scores = { path = "../scorepeek-scores" }
 encoding_rs.workspace = true
 imageproc.workspace = true
 ort.workspace = true

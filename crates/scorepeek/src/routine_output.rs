@@ -1769,6 +1769,8 @@ pub struct RunViewState {
     profile_sha256: String,
     recording: &'static str,
     watcher_state: String,
+    scores_summary: Option<String>,
+    channel_start_failure: Option<String>,
     session_count: u64,
     active_session_id: Option<String>,
     capture_generation: Option<u64>,
@@ -1905,6 +1907,8 @@ impl RunViewState {
                 "disabled"
             },
             watcher_state: "starting".to_owned(),
+            scores_summary: None,
+            channel_start_failure: None,
             session_count: 0,
             active_session_id: None,
             capture_generation: None,
@@ -2445,40 +2449,45 @@ fn commit_public_projection(
     projected: event_api::PublicState,
     events: &[event_api::PublicRecord],
     channel: Option<&EventChannel>,
+    scores: Option<&scorepeek_scores::Worker>,
 ) {
     if events.is_empty() {
         return;
     }
-    if channel.is_some_and(|channel| channel.health.server_failed.load(Ordering::Acquire)) {
-        return;
-    }
+    *current = projected;
     let records = events
         .iter()
-        .map(|event| {
-            event_api::encode(event).map(|bytes| QueuedEvent {
-                sequence: event.sequence,
-                bytes,
-            })
-        })
+        .map(event_api::encode)
         .collect::<Result<Vec<_>, _>>();
-    match records.and_then(|records| event_api::encode(&projected).map(|_| records)) {
-        Ok(records) => {
-            *current = projected;
-            if let Some(channel) = channel {
-                for record in records {
-                    channel.publish(record);
+    if let Some(scores) = scores {
+        match &records {
+            Ok(records) => {
+                for bytes in records {
+                    scores.offer(bytes);
                 }
             }
+            Err(error) => scores.reject("event_encoding", error),
         }
-        Err(_) => {
-            if let Some(channel) = channel {
-                channel
-                    .health
-                    .oversized_records
-                    .fetch_add(1, Ordering::AcqRel);
-                channel.health.server_failed.store(true, Ordering::Release);
-            }
+    }
+    let Some(channel) = channel else {
+        return;
+    };
+    if channel.health.server_failed.load(Ordering::Acquire) {
+        return;
+    }
+    if let Ok(records) = records.and_then(|records| event_api::encode(current).map(|_| records)) {
+        for (event, bytes) in events.iter().zip(records) {
+            channel.publish(QueuedEvent {
+                sequence: event.sequence,
+                bytes,
+            });
         }
+    } else {
+        channel
+            .health
+            .oversized_records
+            .fetch_add(1, Ordering::AcqRel);
+        channel.health.server_failed.store(true, Ordering::Release);
     }
 }
 
@@ -2544,6 +2553,7 @@ impl Drop for TerminalGuard {
 pub struct RoutineOutput {
     state: Arc<Mutex<RunViewState>>,
     channel: Option<EventChannel>,
+    scores: Option<scorepeek_scores::Worker>,
     display: Option<Display>,
     next_sequence: u64,
     engine: ResolverEngine,
@@ -2669,7 +2679,7 @@ impl RoutineOutput {
             profile_sha256,
             recording_enabled,
         )));
-        let channel = EventChannel::start(Arc::clone(&state))?;
+        let channel = EventChannel::start(Arc::clone(&state));
         let display = if io::stdout().is_terminal() {
             Display::Tui(TerminalGuard::new()?)
         } else {
@@ -2678,10 +2688,30 @@ impl RoutineOutput {
                 last_line: None,
             }
         };
+        Self::from_channel(state, channel, Some(display), event_store)
+    }
+
+    fn from_channel(
+        state: Arc<Mutex<RunViewState>>,
+        channel: Result<EventChannel, String>,
+        display: Option<Display>,
+        event_store: Option<PathBuf>,
+    ) -> Result<Self, String> {
+        let channel = match channel {
+            Ok(channel) => Some(channel),
+            Err(error) => {
+                state
+                    .lock()
+                    .map_err(|_| "run view state lock was poisoned".to_owned())?
+                    .channel_start_failure = Some(error);
+                None
+            }
+        };
         let mut output = Self {
             state,
-            channel: Some(channel),
-            display: Some(display),
+            channel,
+            scores: None,
+            display,
             next_sequence: 1,
             engine: ResolverEngine::default(),
             resolver_transitions: BTreeMap::new(),
@@ -2731,6 +2761,7 @@ impl RoutineOutput {
                 false,
             ))),
             channel: None,
+            scores: None,
             display: None,
             next_sequence: 1,
             engine: ResolverEngine::default(),
@@ -2772,6 +2803,23 @@ impl RoutineOutput {
     )]
     pub fn take_headless_events(&mut self) -> Vec<RunEvent> {
         std::mem::take(&mut self.headless_events)
+    }
+
+    pub fn refresh_scores(&mut self) -> Result<(), String> {
+        self.refresh()
+    }
+
+    pub fn enable_scores(&mut self, path: &Path) -> Result<(), String> {
+        self.scores = Some(scorepeek_scores::Worker::start(path));
+        self.state
+            .lock()
+            .map_err(|_| "run view state lock was poisoned".to_owned())?
+            .scores_summary = Some(format!("{}", path.display()));
+        self.refresh()
+    }
+
+    pub fn scores_health(&self) -> Option<scorepeek_scores::Health> {
+        self.scores.as_ref().map(scorepeek_scores::Worker::health)
     }
 
     pub fn bind_public_session(&mut self, binding: event_api::Binding) {
@@ -3059,6 +3107,9 @@ impl RoutineOutput {
         }
         if let Some(state) = self.engine.play_attempt.finish_session() {
             self.publish_play_attempt_update(session_id.clone(), capture_generation, None, state)?;
+        }
+        if let Some(scores) = &mut self.scores {
+            scores.finish();
         }
         self.publish_one(event)?;
         self.completed_event_artifact =
@@ -4200,6 +4251,7 @@ impl RoutineOutput {
                     projected,
                     &events,
                     self.channel.as_ref(),
+                    self.scores.as_ref(),
                 );
             }
         }
@@ -4208,6 +4260,15 @@ impl RoutineOutput {
             if let Ok(state) = self.state.lock() {
                 value["event_api_health"]["invocation_id"] = state.invocation_id.clone().into();
             }
+        }
+        if self.channel.is_none()
+            && let Ok(state) = self.state.lock()
+            && let Some(cause) = &state.channel_start_failure
+        {
+            value["event_api_health"] = json!({"status":"degraded", "error_type":"startup_failed", "cause":cause, "invocation_id":state.invocation_id});
+        }
+        if let Some(health) = self.scores_health() {
+            value["scores_health"] = serde_json::to_value(health).unwrap_or(Value::Null);
         }
         if let Some(worker) = &mut self.event_worker {
             worker.try_record(&value);
@@ -4249,7 +4310,13 @@ impl RoutineOutput {
                 )
                 .into_iter()
                 .collect::<Vec<_>>();
-            commit_public_projection(&mut state.public, projected, &events, self.channel.as_ref());
+            commit_public_projection(
+                &mut state.public,
+                projected,
+                &events,
+                self.channel.as_ref(),
+                self.scores.as_ref(),
+            );
         }
         self.refresh()
     }
@@ -4272,22 +4339,45 @@ impl RoutineOutput {
 
     fn refresh(&mut self) -> Result<(), String> {
         let output_started = Instant::now();
-        let state = self
+        let mut state = self
             .state
             .lock()
             .map_err(|_| "run view state lock was poisoned".to_owned())?
             .clone();
+        if let Some(health) = self.scores_health()
+            && let Some(path) = &state.scores_summary
+        {
+            state.scores_summary = Some(format!(
+                "scores={} unsaved={} db={path}",
+                if health.failure.is_some() {
+                    "degraded"
+                } else if health.flush.is_some() {
+                    "saved"
+                } else {
+                    "active"
+                },
+                health.pending + health.rejected
+            ));
+        }
         let Some(display) = &mut self.display else {
             return Ok(());
         };
-        let channel = self
+        let unavailable = ChannelHealth {
+            server_failed: AtomicBool::new(true),
+            ..ChannelHealth::default()
+        };
+        let health = self
             .channel
             .as_ref()
-            .ok_or_else(|| "run output channel is unavailable".to_owned())?;
+            .map_or(&unavailable, |channel| channel.health.as_ref());
+        let socket_path = self
+            .channel
+            .as_ref()
+            .map_or(Path::new(""), |channel| channel.socket_path.as_path());
         let result = match display {
-            Display::Tui(terminal) => terminal.draw(&state, &channel.socket_path, &channel.health),
+            Display::Tui(terminal) => terminal.draw(&state, socket_path, health),
             Display::Plain { output, last_line } => {
-                let line = plain_status_line(&state, &channel.health);
+                let line = plain_status_line(&state, health);
                 if last_line.as_deref() != Some(&line) {
                     writeln!(output, "{line}")
                         .and_then(|()| output.flush())
@@ -4303,6 +4393,15 @@ impl RoutineOutput {
                 .saturating_add(duration_us(output_started.elapsed()));
         }
         result
+    }
+}
+
+impl Drop for RoutineOutput {
+    fn drop(&mut self) {
+        if let Some(scores) = &mut self.scores {
+            scores.finish();
+            let _ = self.refresh();
+        }
     }
 }
 
@@ -4690,7 +4789,7 @@ fn human_bytes(bytes: u64) -> String {
 fn plain_status_line(state: &RunViewState, health: &ChannelHealth) -> String {
     let channel = health.value();
     format!(
-        "scorepeek: state={} sessions={} session={} generation={} channel={} clients={} dropped={} disconnected={} message={}",
+        "scorepeek: state={} sessions={} session={} generation={} channel={} clients={} dropped={} disconnected={} message={} {}",
         state.watcher_state,
         state.session_count,
         state.active_session_id.as_deref().unwrap_or("-"),
@@ -4701,7 +4800,11 @@ fn plain_status_line(state: &RunViewState, health: &ChannelHealth) -> String {
         channel["connected_clients"].as_u64().unwrap_or(0),
         channel["dropped_events"].as_u64().unwrap_or(0),
         channel["disconnected_clients"].as_u64().unwrap_or(0),
-        state.message,
+        state
+            .channel_start_failure
+            .as_deref()
+            .unwrap_or(&state.message),
+        state.scores_summary.as_deref().unwrap_or("scores=disabled"),
     )
 }
 
@@ -4728,7 +4831,10 @@ fn render(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(watcher_color(state, health)))
-                .title("Watcher"),
+                .title(state.scores_summary.as_ref().map_or_else(
+                    || "Watcher".to_owned(),
+                    |scores| format!("Watcher {scores}"),
+                )),
         ),
         rows[0],
     );
@@ -5385,6 +5491,165 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn scores_survive_socket_path_collision_at_startup() {
+        let temporary = tempfile::tempdir().unwrap();
+        let socket_directory = temporary.path().join("scorepeek");
+        fs::create_dir(&socket_directory).unwrap();
+        let socket_path = socket_directory.join(SOCKET_NAME);
+        fs::write(&socket_path, b"operator file").unwrap();
+        let state = state();
+        let channel = EventChannel::start_at(temporary.path(), Arc::clone(&state));
+        assert!(channel.is_err());
+        let mut output = RoutineOutput::from_channel(state, channel, None, None).unwrap();
+        let path = temporary.path().join("scores.sqlite3");
+        output.enable_scores(&path).unwrap();
+        prepare_accepted_attempt(&mut output);
+        output.publish(&accepted_result_event(1)).unwrap();
+        output.publish(&accepted_result_event(2)).unwrap();
+        output
+            .publish(&semantic_episode_event(
+                3,
+                "result",
+                SemanticEpisodePhase::Closing,
+            ))
+            .unwrap();
+        output
+            .publish(&semantic_episode_event(
+                3,
+                "result",
+                SemanticEpisodePhase::Finalized,
+            ))
+            .unwrap();
+        let health = output.scores.as_mut().unwrap().finish();
+        assert_eq!(health.committed, 1);
+        assert!(health.failure.is_none(), "{health:?}");
+        assert!(output.state.lock().unwrap().channel_start_failure.is_some());
+        output.refresh().unwrap();
+        drop(output);
+        assert_eq!(fs::read(socket_path).unwrap(), b"operator file");
+        let database = rusqlite::Connection::open(path).unwrap();
+        assert_eq!(
+            database
+                .query_row("SELECT count(*) FROM play_results", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn scores_consume_public_results_independently_of_socket_and_database_failures() {
+        let temporary = tempfile::tempdir().unwrap();
+        for failing_database in [false, true] {
+            let mut output = test_output(state(), disconnected_test_channel());
+            output.display = None;
+            let path = if failing_database {
+                temporary.path().to_owned()
+            } else {
+                temporary.path().join("scores.sqlite3")
+            };
+            output.enable_scores(&path).unwrap();
+            prepare_accepted_attempt(&mut output);
+            output.publish(&accepted_result_event(1)).unwrap();
+            output.publish(&accepted_result_event(2)).unwrap();
+            output
+                .publish(&semantic_episode_event(
+                    3,
+                    "result",
+                    SemanticEpisodePhase::Closing,
+                ))
+                .unwrap();
+            output
+                .publish(&semantic_episode_event(
+                    3,
+                    "result",
+                    SemanticEpisodePhase::Finalized,
+                ))
+                .unwrap();
+            let snapshot = serde_json::to_value(&output.state.lock().unwrap().public).unwrap();
+            let result = &snapshot["latest_result"];
+            assert_eq!(result["result"]["current_score"], 1286);
+            assert!(result["emitted_unix_ms"].as_i64().unwrap() > 0);
+            assert!(
+                output
+                    .channel
+                    .as_ref()
+                    .unwrap()
+                    .health
+                    .server_failed
+                    .load(Ordering::Acquire)
+            );
+            let health = output.scores.as_mut().unwrap().finish();
+            if failing_database {
+                assert_eq!(health.failure.as_deref(), Some("database_open"));
+            } else {
+                assert!(health.failure.is_none(), "{health:?}");
+                assert_eq!(health.committed, 1);
+                let database = rusqlite::Connection::open(&path).unwrap();
+                let json: String = database
+                    .query_row("SELECT event_json FROM play_results", [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(serde_json::from_str::<Value>(&json).unwrap(), *result);
+                let values: (i64, i64, i64) = database
+                    .query_row("SELECT score,miss,clear FROM chart_bests", [], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                    })
+                    .unwrap();
+                assert_eq!(values, (1286, 3, 4));
+            }
+        }
+    }
+
+    #[test]
+    fn scores_select_only_uses_production_projection_without_creating_a_play() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("scores.sqlite3");
+        let mut output = RoutineOutput::start_headless("invocation-1".into(), "a".repeat(64));
+        assert!(output.scores.is_none());
+        output.enable_scores(&path).unwrap();
+        let session = "invocation-1-session-1".to_owned();
+        output
+            .publish(&select_best_test_episode(
+                &session,
+                SemanticEpisodePhase::Started,
+                1,
+            ))
+            .unwrap();
+        let (fields, evidence, presentation) = select_best_test_observation();
+        for sequence in 2..=5 {
+            output
+                .reduce_music_select_observation(
+                    Some(&session),
+                    Some(1),
+                    sequence,
+                    sequence * 100,
+                    &fields,
+                    &evidence,
+                    &presentation,
+                )
+                .unwrap();
+        }
+        let health = output.scores.as_mut().unwrap().finish();
+        assert!(health.failure.is_none(), "{health:?}");
+        assert_eq!(health.committed, 1);
+        let database = rusqlite::Connection::open(path).unwrap();
+        assert_eq!(
+            database
+                .query_row("SELECT count(*) FROM play_results", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        let (score, result): (i64, Option<String>) = database
+            .query_row("SELECT score,result_score FROM chart_bests", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(score, 1200);
+        assert!(result.is_none());
+    }
+
     fn state() -> Arc<Mutex<RunViewState>> {
         Arc::new(Mutex::new(RunViewState::new(
             "invocation-1".to_owned(),
@@ -5397,6 +5662,7 @@ mod tests {
         RoutineOutput {
             state,
             channel: Some(channel),
+            scores: None,
             display: Some(Display::Plain {
                 output: BufWriter::new(io::stdout()),
                 last_line: None,
@@ -6779,6 +7045,7 @@ mod tests {
             projected,
             &records,
             output.channel.as_ref(),
+            None,
         );
         assert_eq!(
             output
@@ -6790,7 +7057,7 @@ mod tests {
                 .load(Ordering::Acquire),
             1
         );
-        assert_eq!(output.state.lock().unwrap().public.next_sequence, 1);
+        assert_eq!(output.state.lock().unwrap().public.next_sequence, 2);
         output.publish(&accepted_result_event(1)).unwrap();
     }
 

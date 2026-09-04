@@ -550,7 +550,8 @@ allowed; initial and changed contents emit, identical contents deduplicate. Revi
 observation. `music_select_resolver_changed` carries typed current resolver state separately, including
 its current snapshot for internal consumers. Public clients receive only the best payload and its invalidation. Neither record enters result count/history or attempt
 acceptance. DJ rank is derived from EX SCORE and chart notes, never OCR. Play time, count, achievement
-options and common-play association are not inferred. No DB persistence is implemented.
+options and common-play association are not inferred. ADR 0120 persists these supplements as current
+per-chart fields, including SELECT-only charts, without retaining their revision history.
 Selection intervals survive missing identity evidence without accepting values from those frames.
 Every field needs two fresh observations after a gap or suspension. Contrary song/mode/difficulty
 evidence ends the interval, even before the next chart resolves. Resolver notifications compare
@@ -579,7 +580,8 @@ catalog-adapter, or capture internals.
 | Recognition and temporal semantics | scorepeek Rust core |
 | Bounded replayable live diagnostics | scorepeek application, outside the public event stream |
 | Public event compatibility | scorepeek schema version |
-| Future UI and persistence | Later scorepeek applications |
+| Local score persistence | Independent `scorepeek-scores` event v1 consumer (ADR 0120) |
+| Future UI | Later scorepeek applications |
 
 ### MUSIC SELECT marker geometry
 

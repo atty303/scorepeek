@@ -2208,6 +2208,7 @@ dependencies = [
  "qoi",
  "ratatui",
  "rusqlite",
+ "scorepeek-scores",
  "serde",
  "serde_json",
  "sha2",
@@ -2233,6 +2234,16 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "scorepeek-scores"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

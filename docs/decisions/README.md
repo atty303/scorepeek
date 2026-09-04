@@ -6,6 +6,9 @@ authoritative.
 
 ## Current
 
+- [ADR 0120: Persist scores as an event consumer](0120-persist-scores-as-event-consumer.md)
+  adds independent SQLite persistence, correctable SELECT supplements and per-run DB selection.
+
 - [ADR 0119: Promote the public event socket](0119-promote-public-event-socket.md)
   replaces the observation endpoint with the typed snapshot/live v1 API; no history replay or request protocol.
 

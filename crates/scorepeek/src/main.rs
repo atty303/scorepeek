@@ -522,12 +522,16 @@ fn try_routine_live_session(args: &[OsString], bundle: &Path) -> Option<Result<(
             "disabled"
         },
         options.recording_memory_limit,
+        options.scores_db,
+        options.no_scores,
         bundle,
     ))
 }
 
 struct RoutineRunOptions<'a> {
     profile: Option<&'a OsStr>,
+    scores_db: Option<&'a OsStr>,
+    no_scores: bool,
     recording: bool,
     recording_memory_limit: canonical_recording::RecordingMemoryLimit,
 }
@@ -535,11 +539,21 @@ struct RoutineRunOptions<'a> {
 fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions<'_>, String> {
     let mut profile = None;
     let mut recording = false;
+    let mut scores_db = None;
+    let mut no_scores = false;
     let mut recording_memory_mib = None;
     let mut index = 0;
     while index < options.len() {
         match options[index].to_str() {
             Some("--record") if !recording => recording = true,
+            Some("--no-scores") if !no_scores => no_scores = true,
+            Some("--scores-db") if scores_db.is_none() => {
+                index += 1;
+                let Some(value) = options.get(index).filter(|value| !value.is_empty()) else {
+                    return Err("--scores-db requires a database path".to_owned());
+                };
+                scores_db = Some(value.as_os_str());
+            }
             Some("--profile") if profile.is_none() => {
                 index += 1;
                 let Some(value) = options.get(index) else {
@@ -562,6 +576,9 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions<'
         }
         index += 1;
     }
+    if no_scores && scores_db.is_some() {
+        return Err("--scores-db conflicts with --no-scores".to_owned());
+    }
     if recording_memory_mib.is_some() && !recording {
         return Err("--record-memory-mib requires --record".to_owned());
     }
@@ -570,6 +587,8 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions<'
     )?;
     Ok(RoutineRunOptions {
         profile,
+        scores_db,
+        no_scores,
         recording,
         recording_memory_limit,
     })
@@ -580,6 +599,8 @@ fn run_routine_live_session(
     profile_name: Option<&OsStr>,
     recording: &str,
     recording_memory_limit: canonical_recording::RecordingMemoryLimit,
+    scores_db: Option<&OsStr>,
+    no_scores: bool,
     bundle: &Path,
 ) -> Result<(), String> {
     let selected = local_profiles::select_for_run(profile_name)?;
@@ -620,6 +641,21 @@ fn run_routine_live_session(
         recording_enabled,
         state.recording_staging_store(),
     )?;
+    if !no_scores {
+        let path = if let Some(path) = scores_db {
+            PathBuf::from(path)
+        } else {
+            let root = env::var_os("XDG_DATA_HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .or_else(|| {
+                    env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
+                })
+                .ok_or_else(|| "scores database requires XDG_DATA_HOME or HOME".to_owned())?;
+            root.join("scorepeek/scores.sqlite3")
+        };
+        output.enable_scores(&path)?;
+    }
     output.publish(&routine_output::RunEvent {
         schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
         kind: routine_output::RunEventKind::WatcherStarted {
@@ -631,6 +667,7 @@ fn run_routine_live_session(
     let mut lifetimes = routine_watcher::SourceLifetimes::new();
     let mut announced = None;
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
+        output.refresh_scores()?;
         let Ok(snapshot) =
             scorepeek::capture::snapshot_gamescope_sources(std::time::Duration::from_millis(500))
         else {
@@ -3549,7 +3586,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...\n  scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...\n  scorepeek profile list\n  scorepeek run [--profile NAME] [--record [--record-memory-mib MIB]]\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition inspect-diagnostic-qoi --frame FILE --frame-sha256 SHA256\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
+        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...\n  scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...\n  scorepeek profile list\n  scorepeek run [--profile NAME] [--scores-db PATH | --no-scores] [--record [--record-memory-mib MIB]]\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition inspect-diagnostic-qoi --frame FILE --frame-sha256 SHA256\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
         env!("CARGO_PKG_VERSION")
     );
     println!(
@@ -3601,6 +3638,33 @@ mod tests {
     use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn scores_options_are_independent_of_recording_and_reject_conflicts() {
+        let options = [
+            OsString::from("--scores-db"),
+            OsString::from("guest.sqlite3"),
+        ];
+        let parsed = parse_routine_run_options(&options).unwrap();
+        assert_eq!(parsed.scores_db, Some(OsStr::new("guest.sqlite3")));
+        assert!(!parsed.recording);
+        assert!(!parsed.no_scores);
+        assert!(!parse_routine_run_options(&[]).unwrap().no_scores);
+        assert!(
+            parse_routine_run_options(&[OsString::from("--no-scores")])
+                .unwrap()
+                .no_scores
+        );
+        for options in [
+            vec!["--scores-db"],
+            vec!["--scores-db", ""],
+            vec!["--no-scores", "--scores-db", "guest.db"],
+            vec!["--no-scores", "--no-scores"],
+        ] {
+            let options = options.into_iter().map(OsString::from).collect::<Vec<_>>();
+            assert!(parse_routine_run_options(&options).is_err());
+        }
+    }
 
     #[test]
     fn unrecorded_run_disables_the_recognition_artifact_root() {

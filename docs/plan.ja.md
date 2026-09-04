@@ -693,7 +693,7 @@ frame age、game p99 frametimeおよびOBS render/encode lagを比較してdefau
 
 ## v1対象外
 
-- UI、score/history保存、cloud/外部service連携
+- UI、cloud/外部service連携（score/history保存はADR 0120で追加）
 - arbitrary resolution、HDR、未較正FSR/NIS/Reshade profile
 - public source catalog、real fixture、trained modelの再配布
 - upstream branch/resource compatibility
@@ -709,7 +709,7 @@ frame age、game p99 frametimeおよびOBS render/encode lagを比較してdefau
 - TUIのMusic Select Resolver paneへ選択状態、解決譜面、項目ごとの安定化、出力gate/revisionを表示する。
   既存Watcher・Latest result・RESULT/attempt resolverを保持し、80×25でも全gateを表示する。
 - 実画像と完全ラベルはprivateに保持する。認識不能は部分snapshotに残し、誤採用を許容しない。
-  検証済みcoverageと未確認条件はSTATUS.mdを原典とする。DB保存・履歴補完UIは後続scope。
+  検証済みcoverageと未確認条件はSTATUS.mdを原典とする。DB保存はADR 0120で追加し、履歴補完UIは後続scope。
 
 ADR 0115では、SELECT追加学習済みHOG/MLPを登録する。既存RESULT logitsの保持を併用し、
 採用閾値とlayoutは維持する。sessionを分けても同一glyphが重複する評価の制約を明記し、
@@ -738,3 +738,11 @@ raw difficulty変更は最初の明確な観測から反映する。resolverの�
   TUIはheld、待機理由、現在の安定化と過去の出力revisionを区別する。
 - 任意のcorpus replay traceで同一4 sessionの変更前後を比較する。raw OCRは既存記録を参照し、
   traceの欠落を採用結果に影響させない。実機確認とtarget installは別操作とする。
+
+### Score DB（ADR 0120）
+
+`scorepeek-scores`を公開event v1の独立consumerとして通常runへ組み込む。確定RESULTは履歴、
+SELECTは譜面・項目別の現在補完値として保持し、revision履歴を蓄積しない。RESULTなしのSELECT譜面も保存する。
+後のSELECT既知値とno-recordで補完を訂正でき、RESULT今回値・previous_bestとの統合値を再計算する。
+`--scores-db PATH`でrun単位の保存先を選び、`--no-scores`で無効化する。保存失敗は認識と配信へ干渉させない。
+日時、schema、出典、transaction、queueと終了上限はADR 0120を原典とする。UI・照会・過去記録importは含めない。

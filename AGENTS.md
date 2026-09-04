@@ -13,7 +13,7 @@
   `docs/decisions/`; supersede an ADR with a new ADR instead of rewriting an
   accepted decision.
 - The current milestone is capture, recognition, and the versioned event API.
-  UI and persistence are out of scope until explicitly requested.
+  ADR 0120 includes local score persistence as an independent event consumer; UI remains out of scope.
 
 ## Checkpoint and resumption
 

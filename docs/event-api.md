@@ -17,6 +17,7 @@ Each live record contains:
 | `invocation_id` | Identity of this process invocation |
 | `sequence` | Public-only counter starting at 1, increasing by one for each publication |
 | `event_id` | `<invocation_id>:<sequence>`; stable when that record appears in a snapshot |
+| `emitted_unix_ms` | Signed UTC Unix epoch milliseconds sampled at event generation; notification time, not play start or past achievement time |
 | `emitted_monotonic_ms` | Milliseconds since the invocation's output state was initialized, not wall time or play time |
 | `capture` | Session context, or `null` outside a capture session |
 | `event` | One of the kinds below |
@@ -80,14 +81,16 @@ additive fields may be ignored. Event IDs support deduplication, not recovery of
 
 Delivery is live-only. There is no persistent event log, resume cursor, retransmission, or guarantee
 that all RESULTs produced while disconnected will be recoverable. Process restart clears retained
-state. Applications requiring lossless play history need a separately designed persistence contract.
+state. The in-process scores consumer (ADR 0120) saves confirmed plays independently of socket delivery,
+but does not add replay or lossless guarantees to this endpoint.
 
 At most eight clients are served, with a nonblocking producer queue of 64 records. Each event and
 snapshot is at most 1 MiB including its newline. A slow client, partial write, or failed write closes
 that client alone. Producer overflow invalidates existing connections even if no later event arrives;
 new connections start from the latest snapshot and never continue the broken stream.
 An oversized record/snapshot or failed worker makes the public channel unavailable for the rest of
-that invocation; it neither truncates fields nor stops recognition. Bind failure is a startup error.
+that invocation; it neither truncates fields nor stops recognition. Socket initialization failure disables public delivery while recognition and the independent
+scores consumer continue; run status shows the failure.
 The runtime replaces only a stale Unix socket and removes only its own inode on shutdown.
 
 Raw OCR, candidate lists, resolver scores, processing timings, recording paths and history arrays
@@ -98,3 +101,8 @@ Samples reflect health at that internal publication, not an exact client-disconn
 The existing local diagnostic recording limits and completeness rules still apply. Without recording,
 live channel health remains available to the application's existing status presentation. No remote
 export or new recording default is introduced.
+
+Score persistence is documented in [ADR 0120](decisions/0120-persist-scores-as-event-consumer.md).
+Projection identity continues advancing after socket delivery is disabled; the scores consumer remains
+independent. Database health is not part of the public wire; internal recordings may include
+`scores_health` samples.

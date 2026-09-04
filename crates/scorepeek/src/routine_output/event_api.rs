@@ -5,7 +5,7 @@ use super::{
 };
 use serde::Serialize;
 use std::io::{self, Write};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 pub(super) const MAX_RECORD_BYTES: usize = 1024 * 1024;
 pub(super) const EVENT_SCHEMA: &str = "scorepeek-event-v1";
@@ -96,6 +96,7 @@ pub(super) struct PublicRecord {
     pub(super) sequence: u64,
     event_id: String,
     emitted_monotonic_ms: u64,
+    emitted_unix_ms: i64,
     capture: Option<CaptureContext>,
     #[serde(flatten)]
     kind: EventKind,
@@ -195,6 +196,10 @@ impl PublicState {
             invocation_id: self.invocation_id.clone(),
             sequence,
             event_id: format!("{}:{sequence}", self.invocation_id),
+            emitted_unix_ms: match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+                Ok(duration) => i64::try_from(duration.as_millis()).unwrap_or(i64::MAX),
+                Err(error) => -i64::try_from(error.duration().as_millis()).unwrap_or(i64::MAX),
+            },
             emitted_monotonic_ms: u64::try_from(self.started.elapsed().as_millis())
                 .unwrap_or(u64::MAX),
             capture,

@@ -8,13 +8,24 @@ checkpoint; implementation history belongs in Git.
 - M3 common PipeWire receiver/Gamescope observed-frame profile and M4 canonical recognition,
   evidence-first attempt resolution, and versioned event API remain in progress.
 - RESULT v2 remains the confirmed play/history contract. MUSIC SELECT best snapshot v1 is a
-  separate supplemental observation, not a play. DB persistence and history supplementation UI
-  remain outside the implemented scope.
+  separate supplemental observation, not a play. ADR 0120 adds local score persistence;
+  query CLI and history supplementation UI remain outside the implemented scope.
 - The public live API is socket/snapshot v1. Diagnostic protocols remain run-event v11 and recognition observation v22.
   Joined sessions and private attempt labels remain v5. Readers retain supported older shapes and
   reject unknown versions.
 
 ## Implemented authority
+
+- ADR 0120 adds `scorepeek-scores` as an independent public event v1 consumer. Normal run saves to
+  the XDG data score database; `--scores-db` selects an instance and `--no-scores` disables it.
+  Confirmed RESULTs are deduplicated history. SELECT-only charts have best rows without plays;
+  SELECT retains per-field current supplements, not revision history. Later known/no-record values
+  can correct supplements, while RESULT/previous-best sources retain cumulative bests.
+- Integrated chart bests retain per-field provenance and are recomputed after SELECT corrections.
+  Public events carry an immutable `emitted_unix_ms` notification timestamp. SQLite transactions,
+  WAL/FULL, bounded worker admission and bounded drain separate committed from unsaved data.
+  Socket failures no longer freeze public projection or score delivery. Save failures stop score
+  admission without changing recognition; run status and opt-in diagnostic health show degradation.
 
 - The registered PP-OCRv6-small and private fixed-cell HOG/MLP bundles remain the only text/numeric
   runtimes. Capture is canonical contiguous RGB8 1920x1080. Gamescope PLAY uses the independently
@@ -78,6 +89,12 @@ checkpoint; implementation history belongs in Git.
 
 ## Verification
 
+- Scores tests cover production projection to SQLite readback, SELECT-only charts, later RESULT,
+  downward SELECT corrections, partial/no-record fields, source ties, chart/instance separation,
+  transaction rollback, schema mismatch, concurrent database initialization, bounded locks, queue
+  overflow and shutdown timeout.
+  Socket worker loss and database initialization failure do not affect the other consumer.
+
 - Production Rust marker evaluation on the latest retained session processes 2,288 canonical frames.
   All 1,147 recorded SELECT observations resolve HYPER (old RGB predicate: 948 known, 199 unknown).
   This is recognition availability on an existing session, not a new-capture accuracy holdout.
@@ -119,7 +136,7 @@ checkpoint; implementation history belongs in Git.
   Connecting snapshots preserve the last publication. Existing four-pane gate tests and held-state
   rendering pass at 120x40 and 80x25. Trace capacity/no-overwrite tests pass.
 - `mise run check`, workspace/all-target Clippy and the complete default-parallel `mise run test`
-  pass (497 runtime, 312 binary, 128 corpus library, 5 corpus binary tests, plus 99 offline OCR tests).
+  pass (500 runtime, 316 binary, 128 corpus library, 5 corpus binary and 11 scores tests, plus 99 offline OCR tests).
   Public API tests cover snapshot/live folding, provenance readiness, old queued-record exclusion,
   overflow with no subsequent event, idle reconnects/write-half-close, partial/slow clients, record
   limits, channel failure non-interference, and socket ownership cleanup. Raw diagnostic records and
@@ -148,4 +165,5 @@ checkpoint; implementation history belongs in Git.
   same final runtime; all four sessions passed. Developer-host replay is not target-live verification.
 - Public API developer-host verification and independent review are complete. The versioned wire
   contract is ready for consumer integration. Target-live API performance and capture gates remain
-  unverified. No result history DB, deployment, release or push is included in the API promotion.
+  unverified. Score persistence is developer-host verified only; target-live cost, deployment, release
+  and push are not included.

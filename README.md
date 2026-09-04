@@ -60,7 +60,7 @@ ONNX export.
 - Validate Wayland Portal, Gamescope direct PipeWire, and a conditional OBS
   profile independently on the target Bazzite machine before selecting a
   default; none is a pixel correctness reference.
-- Keep UI, score persistence, and external-service integration outside v1.
+- Persist local scores as an independent event consumer; keep UI and external-service integration outside v1.
 
 See [the current committed checkpoint](STATUS.md),
 [the Japanese implementation plan](docs/plan.ja.md), the
@@ -181,9 +181,23 @@ Machine consumers connect to `$XDG_RUNTIME_DIR/scorepeek/v1.sock` for an initial
 provisional RESULTs, current selection, supplemental SELECT best, and operational status. Raw OCR
 and resolver diagnostics stay internal and in opt-in recordings. The old observation socket is removed.
 Reconnection restores current state; this live API does not recover every missed play or implement
-a history database. Redirected stdout remains deduplicated human-readable status.
+history replay. An independent in-process consumer saves scores without requiring a socket connection.
+Redirected stdout remains deduplicated human-readable status.
 See [Event API v1](docs/event-api.md) for wire fields, consumer state and delivery limits, and
 [the SELECT best decision](docs/decisions/0114-observe-music-select-best-snapshots.md).
+
+`run` saves confirmed plays and chart bests to `$XDG_DATA_HOME/scorepeek/scores.sqlite3`
+(defaulting to `$HOME/.local/share/scorepeek/scores.sqlite3`). Use `--scores-db PATH` to select another
+DB, including a guest DB, or `--no-scores` to disable saving. These options are independent of
+`--record`; switching DBs requires restarting run. A selected DB is never silently replaced by the default.
+
+SELECT-only charts are saved without creating plays. SELECT retains only the latest known supplement
+per field, allowing later observations to correct it; unknown/not-displayed leave it unchanged.
+Explicit no-record clears that supplemental field. Combined bests use RESULT history, its previous-best
+values and current SELECT supplements. Guest DBs still receive the current game account's supplements.
+Save failure is shown as degraded while recognition continues; uncommitted data is not recoverable
+after a crash. See [the score database contract](docs/decisions/0120-persist-scores-as-event-consumer.md)
+for schema, source attribution, failure limits and timestamp semantics. No history query CLI or UI is included.
 
 With `--record`, in-progress components are grouped below
 `$XDG_STATE_HOME/scorepeek/recording-staging/<session-id>/` as `capture/`, `recognition/`,
