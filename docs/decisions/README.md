@@ -6,6 +6,9 @@ authoritative.
 
 ## Current
 
+- [ADR 0121: Search both SP BPM positions](0121-search-both-sp-bpm-positions.md)
+  supersedes ADR 0113's fixed-position premise and PLAY search region.
+
 - [ADR 0120: Persist scores as an event consumer](0120-persist-scores-as-event-consumer.md)
   adds independent SQLite persistence, correctable SELECT supplements and per-run DB selection.
 

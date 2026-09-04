@@ -113,7 +113,7 @@ const CANONICAL_HEIGHT: u32 = 1_080;
 const CANONICAL_BYTES: usize = CANONICAL_WIDTH as usize * CANONICAL_HEIGHT as usize * 3;
 const CANONICAL_FRAME_CONTRACT_ID: &str = "scorepeek-canonical-rgb8-1920x1080-v1";
 const LAYOUT_SCHEMA: &str = "scorepeek-canonical-layout-v1";
-const SCREEN_PATH_LAYOUT_SCHEMA: &str = "scorepeek-screen-path-layout-v3";
+const SCREEN_PATH_LAYOUT_SCHEMA: &str = "scorepeek-screen-path-layout-v4";
 const NORMALIZER_SCHEMA: &str = "scorepeek-domain-normalizer-artifact-v1";
 const EXTRACTION_SCHEMA: &str = "scorepeek-private-canonical-frame-extraction-v1";
 const NORMALIZER_IMPLEMENTATION: &str = "ffmpeg-swscale-bt709-limited-to-rgb24-v1";
@@ -130,7 +130,7 @@ const MAX_NORMALIZER_BYTES: u64 = 64 * 1024;
 const PPM_HEADER: &[u8] = b"P6\n1920 1080\n255\n";
 const CANONICAL_FILE_BYTES: u64 = CANONICAL_BYTES as u64 + PPM_HEADER.len() as u64;
 const LAYOUT_BYTES: &[u8] = include_bytes!("canonical-layout-v1.json");
-const SCREEN_PATH_LAYOUT_BYTES: &[u8] = include_bytes!("screen-path-layout-v3.json");
+const SCREEN_PATH_LAYOUT_BYTES: &[u8] = include_bytes!("screen-path-layout-v4.json");
 const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v6.json");
 const INTEGRATED_CONTEXT_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
 
@@ -1975,7 +1975,7 @@ impl ScreenPathLayout {
             || layout.decide_transition.presence.cyan_pixels_min > decide_pixels
             || layout.decide_transition.presence.bright_pixels_min > decide_pixels
             || layout.decide_transition.presence.saturated_pixels_min > decide_pixels
-            || bpm_search_pixels > 100_000
+            || bpm_search_pixels > 128_000
             || play.cyan_component_pixels_min == 0
             || play.cyan_component_pixels_min > play.cyan_component_pixels_max
             || play.cyan_component_pixels_max > bpm_search_pixels
@@ -2073,7 +2073,7 @@ fn measure_bpm_outline(
         let measurement = BpmOutlineMeasurement {
             cyan_component_pixels: component_pixels,
             width: u32::try_from(max_x - min_x + 1)
-                .expect("BPM search ROI is bounded to 480 pixels wide"),
+                .expect("BPM search ROI is bounded by the canonical frame"),
             height: u32::try_from(component_height)
                 .expect("BPM search ROI is bounded to 140 pixels high"),
             top_edge_pixels: component_rows.iter().take(6).copied().max().unwrap_or(0),
@@ -3311,8 +3311,10 @@ mod tests {
 
     fn paint_play_presence(pixels: &mut [u8], layout: &ScreenPathLayout) {
         let roi = layout.play.bpm_outline_search;
-        let origin_x = roi.x as usize + 60;
-        let origin_y = roi.y as usize + 20;
+        paint_play_outline(pixels, roi.x as usize + 60, roi.y as usize + 20);
+    }
+
+    fn paint_play_outline(pixels: &mut [u8], origin_x: usize, origin_y: usize) {
         for y in 0..70_usize {
             let ranges = if y < 6 {
                 [(30, 320), (0, 0)]
@@ -3859,6 +3861,31 @@ mod tests {
             inspect(&test_frame(overlap)).unwrap().screen,
             ScreenClass::Unknown
         );
+    }
+
+    #[test]
+    fn bpm_outline_accepts_both_sp_graph_positions_and_rejects_solid_panels() {
+        // Positions measured independently from canonical captures, not derived from the ROI.
+        for origin_x in [866, 1283] {
+            let mut pixels = vec![0_u8; CANONICAL_BYTES];
+            paint_play_outline(&mut pixels, origin_x, 952);
+            assert_eq!(
+                inspect(&test_frame(pixels)).unwrap().screen,
+                ScreenClass::Play
+            );
+
+            let mut solid = vec![0_u8; CANONICAL_BYTES];
+            for y in 952..1023 {
+                for x in origin_x..origin_x + 340 {
+                    let index = (y * CANONICAL_WIDTH as usize + x) * 3;
+                    solid[index..index + 3].copy_from_slice(&[20, 100, 150]);
+                }
+            }
+            assert_eq!(
+                inspect(&test_frame(solid)).unwrap().screen,
+                ScreenClass::Unknown
+            );
+        }
     }
 
     #[test]

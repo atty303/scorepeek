@@ -1,5 +1,5 @@
 {
-  "schema": "scorepeek-screen-path-layout-v3",
+  "schema": "scorepeek-screen-path-layout-v4",
   "canonical_frame_contract_id": "scorepeek-canonical-rgb8-1920x1080-v1",
   "width": 1920,
   "height": 1080,
@@ -33,6 +33,6 @@
       "middle_row_pixels_max": 64,
       "bottom_edge_pixels_min": 300
     },
-    "bpm_outline_search": { "x": 760, "y": 940, "width": 480, "height": 140 }
+    "bpm_outline_search": { "x": 760, "y": 940, "width": 900, "height": 140 }
   }
 }

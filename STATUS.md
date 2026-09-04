@@ -29,7 +29,8 @@ checkpoint; implementation history belongs in Git.
 
 - The registered PP-OCRv6-small and private fixed-cell HOG/MLP bundles remain the only text/numeric
   runtimes. Capture is canonical contiguous RGB8 1920x1080. Gamescope PLAY uses the independently
-  measured BPM-outline screen-path layout v3; SELECT badges use the two explicitly approved crops.
+  measured BPM-outline screen-path layout v4 (ADR 0121), covering both SP graph positions; SELECT
+  badges use the two explicitly approved crops.
 - ADR 0117 replaces SELECT difficulty RGB area counts with the independently measured PLAYER 01
   outline in integrated-context layout v6. Both thin white edges must contrast with their interior;
   a single slot must meet 80% coverage and a 10-point winner margin. No extra model, template bitmap,
@@ -89,6 +90,16 @@ checkpoint; implementation history belongs in Git.
 
 ## Verification
 
+- ADR 0121 production predicate evaluation covers 89 retained frames from the SP graph-position
+  failure session. The inspected left-graph PLAY frame changes from UNKNOWN to PLAY; the other
+  88 classifications remain unchanged (including 77 known non-PLAY controls and two PLAY frames).
+  Synthetic regression covers both independently measured SP positions and rejects solid cyan
+  panels at both positions. Thresholds and the exactly-one-screen gate are unchanged.
+  A separate 786-frame legacy QOI comparison against the installed v3 build has zero screen
+  classification changes: 41 PLAY, 182 RESULT, 75 SELECT, 30 DECIDE, four MODE and 454 UNKNOWN.
+  An independently inspected DP PLAY frame also retains its classification and all outline metrics.
+  `mise run check`, the complete `mise run test` and independent review pass for this fix.
+
 - Scores tests cover production projection to SQLite readback, SELECT-only charts, later RESULT,
   downward SELECT corrections, partial/no-record fields, source ties, chart/instance separation,
   transaction rollback, schema mismatch, concurrent database initialization, bounded locks, queue
@@ -136,7 +147,7 @@ checkpoint; implementation history belongs in Git.
   Connecting snapshots preserve the last publication. Existing four-pane gate tests and held-state
   rendering pass at 120x40 and 80x25. Trace capacity/no-overwrite tests pass.
 - `mise run check`, workspace/all-target Clippy and the complete default-parallel `mise run test`
-  pass (500 runtime, 316 binary, 128 corpus library, 5 corpus binary and 11 scores tests, plus 99 offline OCR tests).
+  pass (501 runtime, 316 binary, 128 corpus library, 5 corpus binary and 11 scores tests, plus 99 offline OCR tests).
   Public API tests cover snapshot/live folding, provenance readiness, old queued-record exclusion,
   overflow with no subsequent event, idle reconnects/write-half-close, partial/slow clients, record
   limits, channel failure non-interference, and socket ownership cleanup. Raw diagnostic records and
@@ -149,6 +160,9 @@ checkpoint; implementation history belongs in Git.
   retained privately under `select-stability-evaluation-v1` in the scorepeek XDG data directory.
 
 ## Unverified and next execution boundary
+
+- Validate layout v4 in a fresh target-live run after a separately requested target install.
+  Retained-frame inspection does not recover unrecorded PLAY spans or backfill missing RESULTs.
 
 - Confirm the new marker on target-live sessions; target install is a separate operation.
 - The previously observed diagnostic store root-lease test flake remains outside this change;
