@@ -6,6 +6,9 @@ authoritative.
 
 ## Current
 
+- [ADR 0116: Limit recording completeness to runtime loss](0116-limit-recording-completeness-to-runtime-loss.md)
+  supersedes internal-contract degradation and duplicate fact validation in ADR 0025, 0026 and 0032.
+
 - [ADR 0004: Treat the Windows implementation as research only](0004-upstream-is-research-only.md)
   supersedes ADR 0001.
 - [ADR 0005: Federate external IIDX catalogs without fuzzy identity merging](0005-federate-external-catalogs.md)

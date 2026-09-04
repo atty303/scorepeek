@@ -96,10 +96,6 @@ pub fn replay_diagnostic_run(
             &requested.frame_id,
             &request.extraction_sha256,
         ) else {
-            worker.record_external_error(
-                crate::diagnostic_recording::DiagnosticErrorType::InvalidConfiguration,
-                requested.sequence,
-            );
             let _ = worker.finish(
                 DiagnosticRunStatus::Error,
                 requested.monotonic_start_ms,
@@ -108,10 +104,6 @@ pub fn replay_diagnostic_run(
             return Err("diagnostic replay canonical frame is invalid".to_owned());
         };
         if !frame_matches_request(&frame, requested, &request, previous_decode_index) {
-            worker.record_external_error(
-                crate::diagnostic_recording::DiagnosticErrorType::InvalidConfiguration,
-                requested.sequence,
-            );
             let _ = worker.finish(
                 DiagnosticRunStatus::Error,
                 requested.monotonic_start_ms,
@@ -536,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_requested_frame_is_a_partial_error_manifest() {
+    fn missing_requested_frame_is_an_input_error_without_recording_loss() {
         let _guard = replay_guard();
         let extraction = tempfile::tempdir().unwrap();
         let output = tempfile::tempdir().unwrap();
@@ -555,13 +547,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(manifest["status"], "error");
-        assert_eq!(manifest["completeness"], "partial");
-        assert_eq!(manifest["dropped_count"], 1);
-        assert_eq!(manifest["degradations"][0]["affected_sequence"], 2);
-        assert_eq!(
-            manifest["degradations"][0]["reason"],
-            "invalid_configuration"
-        );
+        assert_eq!(manifest["completeness"], "complete");
+        assert_eq!(manifest["dropped_count"], 0);
     }
 
     #[test]

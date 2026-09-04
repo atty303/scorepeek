@@ -299,9 +299,7 @@ impl DiagnosticWorkerHandle {
         if !matches!(self.state, DiagnosticWorkerState::Active { .. }) {
             return self.inactive_outcome();
         }
-        if !self.validate_frame_offer(&frame) {
-            return DiagnosticEnqueueOutcome::Rejected;
-        }
+        self.observe_frame_order(&frame);
         if !self.claim_sample_slot(frame.monotonic_start_ms) {
             return DiagnosticEnqueueOutcome::SkippedCadence;
         }
@@ -313,13 +311,13 @@ impl DiagnosticWorkerHandle {
         if !matches!(self.state, DiagnosticWorkerState::Active { .. }) {
             return self.inactive_outcome();
         }
-        if self.validate_frame_offer(frame) {
-            DiagnosticEnqueueOutcome::SkippedCadence
-        } else {
-            DiagnosticEnqueueOutcome::Rejected
-        }
+        self.observe_frame_order(frame);
+        DiagnosticEnqueueOutcome::SkippedCadence
     }
 
+    /// # Panics
+    ///
+    /// Panics if retained frames violate their previously admitted shape or order.
     pub fn try_record_observed_frames(
         &mut self,
         frames: Vec<DiagnosticOwnedFrame>,
@@ -338,12 +336,10 @@ impl DiagnosticWorkerHandle {
                     .last_offered_sequence
                     .is_some_and(|offered| frame.sequence <= offered)
         });
-        if !valid {
-            for frame in &frames {
-                self.record_queue_drop(DiagnosticErrorType::InvalidConfiguration, frame.sequence);
-            }
-            return DiagnosticEnqueueOutcome::Rejected;
-        }
+        assert!(
+            valid,
+            "retained diagnostic frames must match their admitted order and shape"
+        );
         let sequences = frames
             .iter()
             .map(|frame| frame.sequence)
@@ -356,23 +352,25 @@ impl DiagnosticWorkerHandle {
         self.try_send(DiagnosticWorkerMessage::Fact(fact), sequence)
     }
 
+    /// # Panics
+    ///
+    /// Panics if the supplied recognition tick is not monotonic.
     pub fn record_recognition_busy_skip(
         &mut self,
         sequence: u64,
         monotonic_start_ms: u64,
         monotonic_end_ms: u64,
     ) -> DiagnosticEnqueueOutcome {
-        if self
-            .last_offered_sequence
-            .is_some_and(|previous| sequence <= previous)
-            || self
-                .last_offered_monotonic_ms
-                .is_some_and(|previous| monotonic_start_ms <= previous)
-            || monotonic_end_ms < monotonic_start_ms
-        {
-            self.record_queue_drop(DiagnosticErrorType::TimingNonmonotonic, sequence);
-            return DiagnosticEnqueueOutcome::Rejected;
-        }
+        assert!(
+            !(self
+                .last_offered_sequence
+                .is_some_and(|previous| sequence <= previous)
+                || self
+                    .last_offered_monotonic_ms
+                    .is_some_and(|previous| monotonic_start_ms <= previous)
+                || monotonic_end_ms < monotonic_start_ms),
+            "recognition ticks must be monotonic"
+        );
         if let Some(previous) = self.last_offered_sequence
             && sequence > previous.saturating_add(1)
         {
@@ -415,9 +413,7 @@ impl DiagnosticWorkerHandle {
         if !matches!(self.state, DiagnosticWorkerState::Active { .. }) {
             return self.inactive_outcome();
         }
-        if !self.validate_frame_offer(&frame) {
-            return DiagnosticEnqueueOutcome::Rejected;
-        }
+        self.observe_frame_order(&frame);
         if !self.claim_sample_slot(frame.monotonic_start_ms) {
             return DiagnosticEnqueueOutcome::SkippedCadence;
         }
@@ -576,40 +572,30 @@ impl DiagnosticWorkerHandle {
         }
     }
 
-    fn validate_frame_offer(&mut self, frame: &DiagnosticOwnedFrame) -> bool {
-        if self
-            .last_offered_sequence
-            .is_some_and(|previous| frame.sequence <= previous)
-        {
-            self.record_queue_drop(DiagnosticErrorType::SequenceNonmonotonic, frame.sequence);
-            return false;
-        }
+    fn observe_frame_order(&mut self, frame: &DiagnosticOwnedFrame) {
+        assert!(
+            self.last_offered_sequence
+                .is_none_or(|previous| frame.sequence > previous)
+        );
+        assert_eq!(frame.pixels.len(), CANONICAL_BYTES);
+        assert!(frame.monotonic_end_ms >= frame.monotonic_start_ms);
+        assert!(frame.monotonic_start_ms >= self.run_monotonic_start_ms);
+        assert!(
+            self.last_offered_monotonic_ms
+                .is_none_or(|previous| frame.monotonic_start_ms > previous)
+        );
+        assert!(
+            self.last_offered_monotonic_end_ms
+                .is_none_or(|previous| frame.monotonic_end_ms >= previous)
+        );
         if let Some(previous) = self.last_offered_sequence
             && frame.sequence > previous.saturating_add(1)
         {
             self.record_sequence_gap(previous + 1, frame.sequence - 1);
         }
         self.last_offered_sequence = Some(frame.sequence);
-        let invalid_configuration = frame.pixels.len() != CANONICAL_BYTES
-            || frame.monotonic_end_ms < frame.monotonic_start_ms
-            || frame.monotonic_start_ms < self.run_monotonic_start_ms;
-        if invalid_configuration {
-            self.record_queue_drop(DiagnosticErrorType::InvalidConfiguration, frame.sequence);
-            return false;
-        }
-        if self
-            .last_offered_monotonic_ms
-            .is_some_and(|previous| frame.monotonic_start_ms <= previous)
-            || self
-                .last_offered_monotonic_end_ms
-                .is_some_and(|previous| frame.monotonic_end_ms < previous)
-        {
-            self.record_queue_drop(DiagnosticErrorType::TimingNonmonotonic, frame.sequence);
-            return false;
-        }
         self.last_offered_monotonic_ms = Some(frame.monotonic_start_ms);
         self.last_offered_monotonic_end_ms = Some(frame.monotonic_end_ms);
-        true
     }
 
     fn record_sequence_gap(&mut self, first: u64, last: u64) {
@@ -1253,44 +1239,6 @@ mod tests {
             thread::yield_now();
         }
         assert!(finished.load(Ordering::Acquire));
-    }
-
-    #[test]
-    fn rejected_offer_is_not_recounted_as_a_capture_gap() {
-        let root = tempfile::tempdir().unwrap();
-        let mut worker = DiagnosticWorkerHandle::start_inner(
-            root.path().to_owned(),
-            descriptor("rejected-offer-run"),
-            DiagnosticPolicy::default(),
-            2,
-            None,
-            DiagnosticWorkerHooks::default(),
-        );
-        assert_eq!(
-            worker.try_record_frame(frame(1, 0)),
-            DiagnosticEnqueueOutcome::Enqueued
-        );
-        let mut rejected = frame(2, 500);
-        rejected.pixels = Arc::new(Box::new([]));
-        assert_eq!(
-            worker.try_record_frame(rejected),
-            DiagnosticEnqueueOutcome::Rejected
-        );
-        assert_eq!(
-            worker.record_frame_until(frame(3, 1_000), Instant::now() + Duration::from_secs(1)),
-            DiagnosticEnqueueOutcome::Enqueued
-        );
-        let outcome = worker.finish(DiagnosticRunStatus::Success, 1_016, Duration::from_secs(5));
-        assert_eq!(outcome.completeness, Some(DiagnosticCompleteness::Partial));
-        let manifest: serde_json::Value = serde_json::from_slice(
-            &fs::read(root.path().join("rejected-offer-run/manifest.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(manifest["dropped_count"], 1);
-        assert_eq!(
-            manifest["degradation_reason_counts"][0]["reason"],
-            "invalid_configuration"
-        );
     }
 
     #[test]

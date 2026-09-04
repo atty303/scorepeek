@@ -718,14 +718,18 @@ impl DiagnosticRecorder {
         if !policy.enabled {
             return Self::Disabled;
         }
-        if !valid_policy(&policy)
-            || !valid_descriptor(descriptor)
-            || !valid_run_directory_name(directory_name)
-        {
-            return Self::Degraded(DiagnosticDegradation {
-                error_type: DiagnosticErrorType::InvalidConfiguration,
-            });
-        }
+        assert!(
+            valid_policy(&policy),
+            "diagnostic policy must be validated before recording"
+        );
+        assert!(
+            valid_descriptor(descriptor),
+            "diagnostic descriptor must match its typed run"
+        );
+        assert!(
+            valid_run_directory_name(directory_name),
+            "diagnostic directory name must be admitted"
+        );
         let root_metadata = match root.metadata() {
             Ok(metadata) if root.is_absolute() && metadata.is_dir() => metadata,
             _ => {
@@ -743,11 +747,7 @@ impl DiagnosticRecorder {
             binding: &descriptor.binding,
             policy: DiagnosticPolicyArtifact::from(&policy),
         };
-        let Ok(start_bytes) = canonical_json(&start) else {
-            return Self::Degraded(DiagnosticDegradation {
-                error_type: DiagnosticErrorType::InvalidConfiguration,
-            });
-        };
+        let start_bytes = canonical_json(&start).expect("typed diagnostic run must serialize");
         let store_lease = if managed_store {
             match DiagnosticStoreLease::acquire_for_run(
                 root,
@@ -952,30 +952,23 @@ impl ActiveDiagnosticRecorder {
         frame: DiagnosticFrameInput<'_>,
         detect_sequence_gaps: bool,
     ) -> DiagnosticRecordOutcome {
-        if frame.pixels.len() != CANONICAL_BYTES
-            || frame.monotonic_end_ms < frame.monotonic_start_ms
-            || frame.monotonic_start_ms < self.run_monotonic_start_ms
-        {
-            return self.drop(DiagnosticErrorType::InvalidConfiguration, frame.sequence);
-        }
-        if frame.source.is_some_and(|source| {
-            let minimum_stride = source.contract.width.checked_mul(4);
-            let expected_bytes = usize::try_from(source.stride)
-                .ok()
-                .and_then(|stride| stride.checked_mul(source.contract.height as usize));
-            source.contract.width == 0
-                || source.contract.height == 0
-                || minimum_stride.is_none_or(|minimum| source.stride < minimum)
-                || expected_bytes != Some(source.bytes.len())
-                || source.bytes.len() > MAX_SOURCE_FRAME_BYTES
-        }) {
-            return self.drop(DiagnosticErrorType::InvalidConfiguration, frame.sequence);
-        }
-        if self
-            .last_offered_sequence
-            .is_some_and(|previous| frame.sequence <= previous)
-        {
-            return self.drop(DiagnosticErrorType::SequenceNonmonotonic, frame.sequence);
+        assert_eq!(frame.pixels.len(), CANONICAL_BYTES);
+        assert!(frame.monotonic_end_ms >= frame.monotonic_start_ms);
+        assert!(frame.monotonic_start_ms >= self.run_monotonic_start_ms);
+        assert!(
+            self.last_offered_sequence
+                .is_none_or(|previous| frame.sequence > previous)
+        );
+        if let Some(source) = frame.source {
+            assert!(source.contract.width > 0 && source.contract.height > 0);
+            assert!(source.stride as usize >= source.contract.width as usize * 4);
+            assert_eq!(
+                source.bytes.len(),
+                source.stride as usize * source.contract.height as usize
+            );
+            if source.bytes.len() > MAX_SOURCE_FRAME_BYTES {
+                return self.drop(DiagnosticErrorType::CapacityExceeded, frame.sequence);
+            }
         }
         if detect_sequence_gaps
             && self
@@ -985,15 +978,14 @@ impl ActiveDiagnosticRecorder {
             let previous = self.last_offered_sequence.expect("checked as present");
             self.mark_sequence_gap(previous + 1, frame.sequence - 1);
         }
-        if self
-            .last_offered_monotonic_ms
-            .is_some_and(|previous| frame.monotonic_start_ms <= previous)
-            || self
-                .last_offered_monotonic_end_ms
-                .is_some_and(|previous| frame.monotonic_end_ms < previous)
-        {
-            return self.drop(DiagnosticErrorType::TimingNonmonotonic, frame.sequence);
-        }
+        assert!(
+            self.last_offered_monotonic_ms
+                .is_none_or(|previous| frame.monotonic_start_ms > previous)
+        );
+        assert!(
+            self.last_offered_monotonic_end_ms
+                .is_none_or(|previous| frame.monotonic_end_ms >= previous)
+        );
         self.last_offered_sequence = Some(frame.sequence);
         self.last_offered_monotonic_ms = Some(frame.monotonic_start_ms);
         self.last_offered_monotonic_end_ms = Some(frame.monotonic_end_ms);
@@ -1112,17 +1104,14 @@ impl ActiveDiagnosticRecorder {
         if self.facts_count >= MAX_FACTS_PER_RUN as u64 {
             return self.drop(DiagnosticErrorType::FactLimitExceeded, fact.sequence);
         }
-        if fact.monotonic_start_ms < self.run_monotonic_start_ms || !valid_fact(fact) {
-            return self.drop(DiagnosticErrorType::InvalidConfiguration, fact.sequence);
-        }
         let document = DiagnosticFactArtifactDocument {
             schema: "scorepeek-private-diagnostic-fact-v1",
             fact,
         };
-        let bytes = match canonical_json(&document) {
-            Ok(bytes) if bytes.len() <= MAX_FACT_BYTES => bytes,
-            _ => return self.drop(DiagnosticErrorType::InvalidConfiguration, fact.sequence),
-        };
+        let bytes = canonical_json(&document).expect("typed diagnostic fact must serialize");
+        if bytes.len() > MAX_FACT_BYTES {
+            return self.drop(DiagnosticErrorType::CapacityExceeded, fact.sequence);
+        }
         if self
             .bytes
             .checked_add(bytes.len() as u64)
@@ -1170,13 +1159,11 @@ impl ActiveDiagnosticRecorder {
         {
             self.mark_drop_for_sequence(DiagnosticErrorType::WriteFailed, None);
         }
-        if monotonic_end_ms < self.run_monotonic_start_ms
-            || self
-                .maximum_artifact_end_ms
-                .is_some_and(|last| monotonic_end_ms < last)
-        {
-            self.mark_drop_for_sequence(DiagnosticErrorType::TimingNonmonotonic, None);
-        }
+        assert!(monotonic_end_ms >= self.run_monotonic_start_ms);
+        assert!(
+            self.maximum_artifact_end_ms
+                .is_none_or(|last| monotonic_end_ms >= last)
+        );
         let trailing_gap = self.maximum_frame_coverage_end_ms.map_or_else(
             || monotonic_end_ms.saturating_sub(self.run_monotonic_start_ms),
             |last| monotonic_end_ms.saturating_sub(last),
@@ -1445,168 +1432,6 @@ fn valid_binding(binding: &DiagnosticBinding) -> bool {
         && binding.replay.as_ref().is_none_or(|replay| {
             valid_sha256(&replay.request_sha256) && valid_sha256(&replay.extraction_sha256)
         })
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "the strict diagnostic fact validator keeps the complete schema match in one place"
-)]
-fn valid_fact(fact: &DiagnosticFact) -> bool {
-    if fact.monotonic_end_ms < fact.monotonic_start_ms || !valid_fact_status_error(fact) {
-        return false;
-    }
-    let operation_matches = matches!(
-        (&fact.operation, &fact.detail),
-        (
-            DiagnosticOperation::CaptureFrame | DiagnosticOperation::NormalizeFrame,
-            DiagnosticDetail::Operation
-        ) | (
-            DiagnosticOperation::SampleRecognition,
-            DiagnosticDetail::SamplingSummary { .. } | DiagnosticDetail::RecognitionBusySkip
-        ) | (
-            DiagnosticOperation::InspectRecognition,
-            DiagnosticDetail::ScreenObservation { .. }
-                | DiagnosticDetail::ScreenPredicateObservation { .. }
-                | DiagnosticDetail::SongDecision { .. }
-                | DiagnosticDetail::FrameProcessingTiming { .. }
-        ) | (
-            DiagnosticOperation::ObserveFields,
-            DiagnosticDetail::FieldObservation { .. }
-                | DiagnosticDetail::FieldObservationBusySkip { .. }
-        ) | (
-            DiagnosticOperation::ReduceSongContext,
-            DiagnosticDetail::SongContextObservation { .. }
-        ) | (
-            DiagnosticOperation::DeliverEvent,
-            DiagnosticDetail::EventDelivery { .. }
-        ) | (
-            DiagnosticOperation::ChangeBinding,
-            DiagnosticDetail::BindingChange { .. }
-        )
-    );
-    if !operation_matches {
-        return false;
-    }
-    match &fact.detail {
-        DiagnosticDetail::SongContextObservation {
-            change,
-            candidate_set_sha256,
-        } => match change {
-            DiagnosticContextChange::Replaced | DiagnosticContextChange::Preserved => {
-                candidate_set_sha256.as_deref().is_some_and(valid_sha256)
-            }
-            DiagnosticContextChange::Cleared | DiagnosticContextChange::AlreadyEmpty => {
-                candidate_set_sha256.is_none()
-            }
-        },
-        DiagnosticDetail::SongDecision {
-            outcome, song_id, ..
-        } => match outcome {
-            DiagnosticDecisionOutcome::Accepted => song_id
-                .as_deref()
-                .is_some_and(|value| valid_bounded_text(value, 128)),
-            DiagnosticDecisionOutcome::Unknown | DiagnosticDecisionOutcome::Suppressed => {
-                song_id.is_none()
-            }
-        },
-        DiagnosticDetail::BindingChange {
-            next_binding_sha256,
-        } => valid_sha256(next_binding_sha256),
-        DiagnosticDetail::FieldObservation {
-            screen,
-            observed_fields,
-            unimplemented_fields,
-            failed_field,
-        } => match failed_field {
-            None => {
-                fact.status == DiagnosticOperationStatus::Success
-                    && fact.error_type.is_none()
-                    && matches!(
-                        (screen, observed_fields, unimplemented_fields),
-                        (DiagnosticScreen::Result, 20, 0)
-                            | (DiagnosticScreen::MusicSelection, 3, 1)
-                    )
-            }
-            Some(field) => {
-                fact.status == DiagnosticOperationStatus::Error
-                    && fact.error_type == Some(DiagnosticFactErrorType::FieldObservationFailed)
-                    && *observed_fields == 0
-                    && matches!(
-                        (screen, unimplemented_fields, field),
-                        (
-                            DiagnosticScreen::Result,
-                            0,
-                            DiagnosticTextField::ResultTitle
-                                | DiagnosticTextField::ResultArtist
-                                | DiagnosticTextField::ResultClearType
-                                | DiagnosticTextField::ResultDifficulty
-                                | DiagnosticTextField::ResultPlayType
-                                | DiagnosticTextField::ResultLevel
-                                | DiagnosticTextField::ResultNotes
-                                | DiagnosticTextField::ResultCurrentScore
-                                | DiagnosticTextField::ResultPreviousClearType
-                                | DiagnosticTextField::ResultPreviousScore
-                                | DiagnosticTextField::ResultPreviousMissCount
-                                | DiagnosticTextField::ResultMissCount
-                                | DiagnosticTextField::ResultPgreat
-                                | DiagnosticTextField::ResultGreat
-                                | DiagnosticTextField::ResultGood
-                                | DiagnosticTextField::ResultBad
-                                | DiagnosticTextField::ResultPoor
-                                | DiagnosticTextField::ResultFast
-                                | DiagnosticTextField::ResultSlow
-                                | DiagnosticTextField::ResultComboBreak
-                        ) | (
-                            DiagnosticScreen::MusicSelection,
-                            1,
-                            DiagnosticTextField::MusicSelectCentralTitle
-                                | DiagnosticTextField::MusicSelectArtist
-                                | DiagnosticTextField::MusicSelectActiveListTitle
-                        )
-                    )
-            }
-        },
-        _ => true,
-    }
-}
-
-fn valid_fact_status_error(fact: &DiagnosticFact) -> bool {
-    match (fact.status, fact.error_type) {
-        (DiagnosticOperationStatus::Success | DiagnosticOperationStatus::Cancel, None)
-        | (DiagnosticOperationStatus::Timeout, Some(DiagnosticFactErrorType::OperationTimedOut)) => {
-            true
-        }
-        (DiagnosticOperationStatus::Error, Some(error)) => match fact.operation {
-            DiagnosticOperation::CaptureFrame => {
-                error == DiagnosticFactErrorType::CaptureUnavailable
-            }
-            DiagnosticOperation::NormalizeFrame => {
-                error == DiagnosticFactErrorType::NormalizeFailed
-            }
-            DiagnosticOperation::SampleRecognition | DiagnosticOperation::ChangeBinding => false,
-            DiagnosticOperation::InspectRecognition => matches!(
-                error,
-                DiagnosticFactErrorType::RecognitionFailed
-                    | DiagnosticFactErrorType::SelectionConflict
-            ),
-            DiagnosticOperation::ObserveFields => {
-                error == DiagnosticFactErrorType::FieldObservationFailed
-            }
-            DiagnosticOperation::ReduceSongContext => {
-                error == DiagnosticFactErrorType::SelectionConflict
-            }
-            DiagnosticOperation::DeliverEvent => matches!(
-                error,
-                DiagnosticFactErrorType::EventDeliveryFailed
-                    | DiagnosticFactErrorType::ConsumerUnavailable
-            ),
-        },
-        _ => false,
-    }
-}
-
-fn valid_bounded_text(value: &str, maximum: usize) -> bool {
-    !value.is_empty() && value.len() <= maximum && !value.chars().any(char::is_control)
 }
 
 fn valid_sha256(value: &str) -> bool {
@@ -2016,96 +1841,6 @@ mod tests {
     }
 
     #[test]
-    fn nonmonotonic_timing_is_partial_even_when_sequences_increase() {
-        let root = tempfile::tempdir().unwrap();
-        let input = pixels(24);
-        let mut recorder = DiagnosticRecorder::start(
-            root.path(),
-            &descriptor("timing-run"),
-            DiagnosticPolicy::default(),
-        );
-        assert_eq!(
-            recorder.record_frame(frame(1, 1_000, &input)),
-            DiagnosticRecordOutcome::Recorded
-        );
-        assert_eq!(
-            recorder.record_frame(frame(2, 900, &input)),
-            DiagnosticRecordOutcome::Dropped(DiagnosticErrorType::TimingNonmonotonic)
-        );
-        assert_eq!(
-            recorder
-                .finish(DiagnosticRunStatus::Success, 1_016)
-                .completeness,
-            Some(DiagnosticCompleteness::Partial)
-        );
-    }
-
-    #[test]
-    fn frame_end_regression_is_partial_and_overlap_keeps_the_coverage_frontier() {
-        let root = tempfile::tempdir().unwrap();
-        let overlap_root = tempfile::tempdir().unwrap();
-        let input = pixels(25);
-        let mut regressing = DiagnosticRecorder::start(
-            root.path(),
-            &descriptor("end-regression-run"),
-            DiagnosticPolicy::default(),
-        );
-        let first = DiagnosticFrameInput {
-            sequence: 1,
-            monotonic_start_ms: 0,
-            monotonic_end_ms: 5_000,
-            pixels: &input,
-            source: None,
-        };
-        let regressed = DiagnosticFrameInput {
-            sequence: 2,
-            monotonic_start_ms: 1_000,
-            monotonic_end_ms: 1_016,
-            pixels: &input,
-            source: None,
-        };
-        assert_eq!(
-            regressing.record_frame(first),
-            DiagnosticRecordOutcome::Recorded
-        );
-        assert_eq!(
-            regressing.record_frame(regressed),
-            DiagnosticRecordOutcome::Dropped(DiagnosticErrorType::TimingNonmonotonic)
-        );
-        assert_eq!(
-            regressing
-                .finish(DiagnosticRunStatus::Success, 5_000)
-                .completeness,
-            Some(DiagnosticCompleteness::Partial)
-        );
-
-        let mut overlapping = DiagnosticRecorder::start(
-            overlap_root.path(),
-            &descriptor("overlap-run"),
-            DiagnosticPolicy::default(),
-        );
-        let extended = DiagnosticFrameInput {
-            monotonic_end_ms: 6_000,
-            ..regressed
-        };
-        assert_eq!(
-            overlapping.record_frame(first),
-            DiagnosticRecordOutcome::Recorded
-        );
-        assert_eq!(
-            overlapping.record_frame(extended),
-            DiagnosticRecordOutcome::Recorded
-        );
-        let outcome = overlapping.finish(DiagnosticRunStatus::Success, 6_000);
-        assert_eq!(outcome.completeness, Some(DiagnosticCompleteness::Complete));
-        let manifest: serde_json::Value = serde_json::from_slice(
-            &fs::read(overlap_root.path().join("overlap-run/manifest.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(manifest["maximum_observation_gap_ms"], 0);
-    }
-
-    #[test]
     fn capacity_and_sequence_gaps_downgrade_without_replacing_the_result() {
         let root = tempfile::tempdir().unwrap();
         let input = pixels(29);
@@ -2200,103 +1935,45 @@ mod tests {
     }
 
     #[test]
-    fn inconsistent_fact_variants_and_song_decisions_are_rejected() {
+    fn typed_select_field_summary_is_persisted_without_a_second_field_schema() {
         let root = tempfile::tempdir().unwrap();
         let mut recorder = DiagnosticRecorder::start(
             root.path(),
-            &descriptor("invalid-fact-run"),
+            &descriptor("select-fields"),
             DiagnosticPolicy::default(),
         );
-        let mismatched = DiagnosticFact {
-            sequence: 1,
-            monotonic_start_ms: 0,
-            monotonic_end_ms: 1,
-            operation: DiagnosticOperation::DeliverEvent,
+        let fact = DiagnosticFact {
+            sequence: 971,
+            monotonic_start_ms: 100,
+            monotonic_end_ms: 110,
+            operation: DiagnosticOperation::ObserveFields,
             status: DiagnosticOperationStatus::Success,
             error_type: None,
-            detail: DiagnosticDetail::ScreenObservation {
-                screen: DiagnosticScreen::Unknown,
+            detail: DiagnosticDetail::FieldObservation {
+                screen: DiagnosticScreen::MusicSelection,
+                observed_fields: 8,
+                unimplemented_fields: 1,
+                failed_field: None,
             },
         };
         assert_eq!(
-            recorder.record_fact(&mismatched),
-            DiagnosticRecordOutcome::Dropped(DiagnosticErrorType::InvalidConfiguration)
-        );
-        let missing_song = DiagnosticFact {
-            sequence: 2,
-            monotonic_start_ms: 2,
-            monotonic_end_ms: 3,
-            operation: DiagnosticOperation::InspectRecognition,
-            status: DiagnosticOperationStatus::Success,
-            error_type: None,
-            detail: DiagnosticDetail::SongDecision {
-                domain: DiagnosticDecisionDomain::Result,
-                outcome: DiagnosticDecisionOutcome::Accepted,
-                song_id: None,
-            },
-        };
-        assert_eq!(
-            recorder.record_fact(&missing_song),
-            DiagnosticRecordOutcome::Dropped(DiagnosticErrorType::InvalidConfiguration)
-        );
-        let _ = recorder.finish(DiagnosticRunStatus::Success, 3);
-        let manifest: serde_json::Value = serde_json::from_slice(
-            &fs::read(root.path().join("invalid-fact-run/manifest.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(manifest["degradations"][0]["affected_sequence"], 1);
-        assert_eq!(manifest["degradations"][1]["affected_sequence"], 2);
-    }
-
-    #[test]
-    fn fact_errors_are_operation_scoped_and_timeout_is_typed() {
-        let mut fact = DiagnosticFact {
-            sequence: 1,
-            monotonic_start_ms: 0,
-            monotonic_end_ms: 1,
-            operation: DiagnosticOperation::CaptureFrame,
-            status: DiagnosticOperationStatus::Error,
-            error_type: Some(DiagnosticFactErrorType::CaptureUnavailable),
-            detail: DiagnosticDetail::Operation,
-        };
-        assert!(valid_fact(&fact));
-        fact.error_type = Some(DiagnosticFactErrorType::SelectionConflict);
-        assert!(!valid_fact(&fact));
-        fact.status = DiagnosticOperationStatus::Timeout;
-        fact.error_type = Some(DiagnosticFactErrorType::OperationTimedOut);
-        assert!(valid_fact(&fact));
-        fact.error_type = None;
-        assert!(!valid_fact(&fact));
-    }
-
-    #[test]
-    fn run_boundaries_are_persisted_and_out_of_boundary_artifacts_are_partial() {
-        let root = tempfile::tempdir().unwrap();
-        let mut bound = descriptor("boundary-run");
-        bound.monotonic_start_ms = 1_000;
-        let input = pixels(43);
-        let mut recorder =
-            DiagnosticRecorder::start(root.path(), &bound, DiagnosticPolicy::default());
-        assert_eq!(
-            recorder.record_frame(frame(7, 999, &input)),
-            DiagnosticRecordOutcome::Dropped(DiagnosticErrorType::InvalidConfiguration)
-        );
-        assert_eq!(
-            recorder.record_frame(frame(8, 1_000, &input)),
+            recorder.record_fact(&fact),
             DiagnosticRecordOutcome::Recorded
         );
-        let outcome = recorder.finish(DiagnosticRunStatus::Success, 1_000);
-        assert_eq!(outcome.completeness, Some(DiagnosticCompleteness::Partial));
-        let run: serde_json::Value =
-            serde_json::from_slice(&fs::read(root.path().join("boundary-run/run.json")).unwrap())
-                .unwrap();
+        assert_eq!(
+            recorder
+                .finish(DiagnosticRunStatus::Success, 110)
+                .completeness,
+            Some(DiagnosticCompleteness::Complete)
+        );
+        let bytes = fs::read(root.path().join("select-fields/facts.ndjson")).unwrap();
+        let stored: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(stored["fact"]["detail"]["observed_fields"], 8);
         let manifest: serde_json::Value = serde_json::from_slice(
-            &fs::read(root.path().join("boundary-run/manifest.json")).unwrap(),
+            &fs::read(root.path().join("select-fields/manifest.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(run["monotonic_start_ms"], 1_000);
-        assert_eq!(manifest["monotonic_end_ms"], 1_000);
-        assert_eq!(manifest["last_error_type"], "timing_nonmonotonic");
+        assert_eq!(manifest["dropped_count"], 0);
     }
 
     #[test]
@@ -2308,20 +1985,13 @@ mod tests {
             DiagnosticPolicy::default(),
         );
         for sequence in 0..=MAX_DEGRADATIONS_PER_RUN as u64 {
-            let fact = DiagnosticFact {
-                sequence,
-                monotonic_start_ms: 0,
-                monotonic_end_ms: 0,
-                operation: DiagnosticOperation::DeliverEvent,
-                status: DiagnosticOperationStatus::Success,
-                error_type: None,
-                detail: DiagnosticDetail::ScreenObservation {
-                    screen: DiagnosticScreen::Unknown,
-                },
-            };
-            assert_eq!(
-                recorder.record_fact(&fact),
-                DiagnosticRecordOutcome::Dropped(DiagnosticErrorType::InvalidConfiguration)
+            recorder.record_external_degradations(
+                &[DiagnosticExternalDegradation::Drop(
+                    DiagnosticErrorType::QueueFull,
+                    sequence,
+                )],
+                &[],
+                None,
             );
         }
         let _ = recorder.finish(DiagnosticRunStatus::Success, 0);

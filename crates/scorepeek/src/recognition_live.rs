@@ -343,7 +343,6 @@ impl RecognitionSession {
     ) -> Result<RecognitionFrameResult<'a>, RecognitionSessionError> {
         let frame_started = Instant::now();
         if !self.bridge.matches_frame(frame) {
-            let _ = self.bridge.offer(frame);
             return Err(RecognitionSessionError::FrameBindingMismatch);
         }
         self.last_sequence = Some(frame.sequence());
@@ -417,7 +416,6 @@ impl RecognitionSession {
         prepared: PreparedRecognitionFrame,
     ) -> Result<RecognitionFrameResult<'a>, RecognitionSessionError> {
         if !self.bridge.matches_frame(frame) {
-            let _ = self.bridge.offer(frame);
             return Err(RecognitionSessionError::FrameBindingMismatch);
         }
         if prepared.pixel_address != frame.pixels().as_ptr() as usize
@@ -475,6 +473,9 @@ impl RecognitionSession {
     /// Records value-free diagnostics for one worker-bound field result.
     ///
     /// The returned diagnostic enqueue outcome is independent of and cannot mutate `observation`.
+    /// # Panics
+    ///
+    /// Panics if the field observation belongs to another run binding.
     pub fn record_field_observation<T, E>(
         &mut self,
         observation: &BoundFieldObservation<Result<T, ScreenFieldObservationError<E>>>,
@@ -482,11 +483,11 @@ impl RecognitionSession {
     where
         T: DiagnosticScreenFieldObservation,
     {
-        if observation.binding().run_id() != self.run_binding.run_id
-            || observation.binding().identity_sha256() != self.run_binding.binding_sha256
-        {
-            return self.bridge.reject_field_observation(observation.sequence());
-        }
+        assert_eq!(observation.binding().run_id(), self.run_binding.run_id);
+        assert_eq!(
+            observation.binding().identity_sha256(),
+            self.run_binding.binding_sha256
+        );
         self.bridge.record_field_observation_summary(
             observation.sequence(),
             observation.monotonic_start_ms(),
@@ -506,7 +507,9 @@ impl RecognitionSession {
         error: FieldObserverOfferError,
     ) {
         let error_type = match error {
-            FieldObserverOfferError::BindingMismatch => DiagnosticErrorType::InvalidConfiguration,
+            FieldObserverOfferError::BindingMismatch => {
+                unreachable!("field job must match its run binding")
+            }
             FieldObserverOfferError::OutstandingLimit => {
                 DiagnosticErrorType::FieldObserverOutstandingLimit
             }
@@ -558,13 +561,6 @@ impl RecognitionSession {
             frame.monotonic_end_ms(),
             screen,
         )
-    }
-
-    pub(crate) fn reject_pending_field_observation(&mut self) {
-        self.bridge.record_unbound_field_observer_degradation(
-            DiagnosticErrorType::InvalidConfiguration,
-            1,
-        );
     }
 
     pub(crate) fn record_abandoned_field_observation(&mut self, sequence: u64) {
@@ -692,9 +688,7 @@ mod tests {
     use scorepeek::recognition::{CanonicalLayout, ScreenClass};
 
     use super::*;
-    use crate::diagnostic_recording::{
-        DiagnosticBinding, DiagnosticCompleteness, DiagnosticResource,
-    };
+    use crate::diagnostic_recording::{DiagnosticBinding, DiagnosticResource};
 
     fn descriptor(run_id: &str, generation: u64) -> DiagnosticRunDescriptor {
         DiagnosticRunDescriptor {
@@ -913,44 +907,24 @@ mod tests {
         let mut session = RecognitionSession::start(
             root.path(),
             descriptor("mismatched-session", 1),
-            DiagnosticPolicy {
-                enabled: false,
-                ..DiagnosticPolicy::default()
-            },
+            DiagnosticPolicy::default(),
         )
         .unwrap();
+        let frame = BoundCanonicalFrame::for_test(2, 1, 0);
         assert!(matches!(
-            session.inspect(&BoundCanonicalFrame::for_test(2, 1, 0)),
+            session.inspect(&frame),
             Err(RecognitionSessionError::FrameBindingMismatch)
         ));
-    }
-
-    #[test]
-    fn diagnostic_sequence_rejection_does_not_change_recognition() {
-        let root = tempfile::tempdir().unwrap();
-        let supervisor = std::sync::Mutex::new(std::sync::Weak::new());
-        let frame = BoundCanonicalFrame::for_test(1, 1, 0);
-        let mut session = RecognitionSession::start_with_supervisor_for_test(
-            root.path(),
-            descriptor("sequence-rejection", 1),
-            DiagnosticPolicy::default(),
-            &supervisor,
-        )
-        .unwrap();
-        let first = session.inspect(&frame).unwrap();
-        assert_eq!(first.observation.screen(), ScreenClass::Unknown);
-        assert_eq!(first.diagnostic_frame, DiagnosticEnqueueOutcome::Enqueued);
-        let rejected = session.inspect(&frame).unwrap();
-        assert_eq!(rejected.observation.screen(), ScreenClass::Unknown);
-        assert_eq!(
-            rejected.diagnostic_frame,
-            DiagnosticEnqueueOutcome::Rejected
-        );
+        let prepared = PreparedRecognitionFrame::prepare(frame.pixels()).unwrap();
+        assert!(matches!(
+            session.inspect_prepared(&frame, prepared),
+            Err(RecognitionSessionError::FrameBindingMismatch)
+        ));
         assert_eq!(
             session
                 .finish(DiagnosticRunStatus::Success, 16)
                 .completeness,
-            Some(DiagnosticCompleteness::Partial)
+            Some(crate::diagnostic_recording::DiagnosticCompleteness::Complete)
         );
     }
 

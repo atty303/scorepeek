@@ -719,3 +719,9 @@ frame age、game p99 frametimeおよびOBS render/encode lagを比較してdefau
 ADR 0115では、SELECT追加学習済みHOG/MLPを登録する。既存RESULT logitsの保持を併用し、
 採用閾値とlayoutは維持する。sessionを分けても同一glyphが重複する評価の制約を明記し、
 昇格時には登録済みモデルを使った実際のRust SELECT／RESULT replayを検証する。
+
+### 記録完全性の意味（ADR 0116）
+
+`partial`／`dropped`はruntimeでのqueue・容量・保存・worker・終了処理による記録欠落を示す。
+内部で生成したtyped factを別schemaで再検証せず、内部binding・順序・shape違反を記録欠落へ変換しない。
+入力拒否や認識失敗のoperation statusと記録完全性は独立する。過去sessionの完全性は書き換えない。

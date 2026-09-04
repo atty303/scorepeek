@@ -287,14 +287,15 @@ impl DiagnosticBridge {
 
     /// Offers canonical evidence before recognition outcomes are known.
     ///
-    /// The offer never waits for queue capacity or diagnostic I/O. A binding mismatch is recorded
-    /// only as diagnostic degradation and cannot alter recognition or event results.
+    /// The offer never waits for queue capacity or diagnostic I/O.
+    /// # Panics
+    ///
+    /// Panics if the frame belongs to another run binding.
     pub fn offer(&mut self, frame: &BoundCanonicalFrame) -> DiagnosticEnqueueOutcome {
-        if !self.matches_frame(frame) {
-            self.worker
-                .record_external_error(DiagnosticErrorType::InvalidConfiguration, frame.sequence);
-            return DiagnosticEnqueueOutcome::Rejected;
-        }
+        assert!(
+            self.matches_frame(frame),
+            "diagnostic frame binding must match its run"
+        );
         if self.retention == DiagnosticRetention::FactsOnly {
             return DiagnosticEnqueueOutcome::Disabled;
         }
@@ -307,6 +308,9 @@ impl DiagnosticBridge {
         })
     }
 
+    /// # Panics
+    ///
+    /// Panics if the observation belongs to another run binding.
     pub fn record_frame_for_observation(
         &mut self,
         observation: &RecognitionObservation<'_>,
@@ -318,11 +322,10 @@ impl DiagnosticBridge {
             return self.offer(observation.frame());
         }
         let frame = observation.frame();
-        if !self.matches_frame(frame) {
-            self.worker
-                .record_external_error(DiagnosticErrorType::InvalidConfiguration, frame.sequence);
-            return DiagnosticEnqueueOutcome::Rejected;
-        }
+        assert!(
+            self.matches_frame(frame),
+            "diagnostic frame binding must match its run"
+        );
         let screen = observation.screen();
         let predicate = observation.predicate();
         let partial_result = screen == ScreenClass::Unknown
@@ -394,18 +397,19 @@ impl DiagnosticBridge {
         clippy::too_many_lines,
         reason = "one screen-predicate diagnostic preserves every bounded raw measurement and threshold"
     )]
+    /// # Panics
+    ///
+    /// Panics if the observation belongs to another run or layout.
     pub fn record_screen_observation(
         &mut self,
         observation: &RecognitionObservation<'_>,
     ) -> DiagnosticEnqueueOutcome {
         let frame = observation.frame();
-        if !self.matches_frame(frame)
-            || observation.canonical_layout_sha256() != self.canonical_layout_sha256
-        {
-            self.worker
-                .record_external_error(DiagnosticErrorType::InvalidConfiguration, frame.sequence);
-            return DiagnosticEnqueueOutcome::Rejected;
-        }
+        assert!(self.matches_frame(frame));
+        assert_eq!(
+            observation.canonical_layout_sha256(),
+            self.canonical_layout_sha256
+        );
         let screen = match observation.screen() {
             scorepeek::recognition::ScreenClass::Result => DiagnosticScreen::Result,
             scorepeek::recognition::ScreenClass::MusicSelect => DiagnosticScreen::MusicSelection,
@@ -556,15 +560,17 @@ impl DiagnosticBridge {
     }
 
     /// Records a typed screen-inspection failure without replacing its application error.
+    /// # Panics
+    ///
+    /// Panics if the frame belongs to another run binding.
     pub fn record_recognition_failure(
         &mut self,
         frame: &BoundCanonicalFrame,
     ) -> DiagnosticEnqueueOutcome {
-        if !self.matches_frame(frame) {
-            self.worker
-                .record_external_error(DiagnosticErrorType::InvalidConfiguration, frame.sequence);
-            return DiagnosticEnqueueOutcome::Rejected;
-        }
+        assert!(
+            self.matches_frame(frame),
+            "diagnostic frame binding must match its run"
+        );
         self.worker.try_record_fact(DiagnosticFact {
             sequence: frame.sequence,
             monotonic_start_ms: frame.monotonic_start_ms,
@@ -613,9 +619,7 @@ impl DiagnosticBridge {
             | ScreenClass::DecideTransition
             | ScreenClass::Play
             | ScreenClass::Unknown => {
-                self.worker
-                    .record_external_error(DiagnosticErrorType::InvalidConfiguration, sequence);
-                return DiagnosticEnqueueOutcome::Rejected;
+                unreachable!("field observation must belong to a field screen");
             }
         };
         let (status, error_type, observed_fields, unimplemented_fields, failed_field) = match output
@@ -631,15 +635,11 @@ impl DiagnosticBridge {
                 )
             }
             Ok(_) => {
-                self.worker
-                    .record_external_error(DiagnosticErrorType::InvalidConfiguration, sequence);
-                return DiagnosticEnqueueOutcome::Rejected;
+                unreachable!("field output must match its screen");
             }
             Err(failed_field) => {
                 let Some(field) = diagnostic_text_field(screen, failed_field) else {
-                    self.worker
-                        .record_external_error(DiagnosticErrorType::InvalidConfiguration, sequence);
-                    return DiagnosticEnqueueOutcome::Rejected;
+                    unreachable!("failed field must belong to its screen");
                 };
                 (
                     DiagnosticOperationStatus::Error,
@@ -699,12 +699,6 @@ impl DiagnosticBridge {
             error_type: None,
             detail: DiagnosticDetail::FieldObservationBusySkip { screen },
         })
-    }
-
-    pub(crate) fn reject_field_observation(&mut self, sequence: u64) -> DiagnosticEnqueueOutcome {
-        self.worker
-            .record_external_error(DiagnosticErrorType::InvalidConfiguration, sequence);
-        DiagnosticEnqueueOutcome::Rejected
     }
 
     pub(crate) fn record_field_observer_degradation(
@@ -1305,52 +1299,6 @@ mod tests {
         let source = fs::read(directory.join("source-00000000000000000001.qoi")).unwrap();
         let (_, pixels) = qoi::decode_to_vec(&source).unwrap();
         assert_eq!(pixels, vec![1; 24]);
-    }
-
-    #[test]
-    fn binding_change_is_rejected_and_makes_the_old_run_partial() {
-        let root = tempfile::tempdir().unwrap();
-        let mut bridge = DiagnosticBridge::start_for_test(
-            root.path(),
-            descriptor("old-generation", 1),
-            DiagnosticPolicy::default(),
-            2,
-        );
-        assert_eq!(
-            bridge.offer(&frame(2, 1, 0)),
-            DiagnosticEnqueueOutcome::Rejected
-        );
-        let outcome = bridge.finish(DiagnosticRunStatus::Success, 16);
-        assert_eq!(outcome.completeness, Some(DiagnosticCompleteness::Partial));
-        let manifest: serde_json::Value = serde_json::from_slice(
-            &fs::read(root.path().join("old-generation/manifest.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(manifest["last_error_type"], "invalid_configuration");
-        assert_eq!(manifest["frames"].as_array().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn screen_observation_rejects_a_different_layout_binding() {
-        let root = tempfile::tempdir().unwrap();
-        let canonical = frame(1, 1, 17);
-        let observation = RecognitionObservation::inspect(&canonical).unwrap();
-        let mut mismatched = descriptor("layout-mismatch", 1);
-        mismatched.binding.canonical_layout_sha256 = "4".repeat(64);
-        let mut bridge = DiagnosticBridge::start_for_test(
-            root.path(),
-            mismatched,
-            DiagnosticPolicy::default(),
-            2,
-        );
-        assert_eq!(
-            bridge.record_screen_observation(&observation),
-            DiagnosticEnqueueOutcome::Rejected
-        );
-        assert_eq!(
-            bridge.finish(DiagnosticRunStatus::Success, 33).completeness,
-            Some(DiagnosticCompleteness::Partial)
-        );
     }
 
     #[test]

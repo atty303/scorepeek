@@ -46,8 +46,12 @@ checkpoint; implementation history belongs in Git.
   connection, connecting-client snapshot and headless replay. The public supplemental payload
   excludes raw OCR/candidates. TUI has Watcher, Latest result, Music Select Resolver, and
   RESULT/attempt Resolver. At 80x25 the four panes occupy 4/8/7/6 rows and retain all attempt gates.
+- ADR 0116 restricts recording completeness to runtime persistence loss. Typed facts are written
+  without duplicate semantic validation; internal binding/shape/chronology defects are no longer
+  emitted as recording-drop reasons. Foreign pending jobs are rejected without degrading the run.
+  Existing historical reason names remain readable and stored session completeness is unchanged.
 - `--record` remains opt-in for capture/recognition/events/canonical artifacts. Without it, live
-  state and domain behavior operate without recording. Failed recording changes completeness only.
+  state and domain behavior operate without recording. Runtime recording loss changes completeness only.
   Canonical retained frames are lossless RGB Matroska segments with a shared memory account and
   typed intentional gaps. Successful joined publication clears owned staging; failures retain
   diagnostics. No live target, remote storage policy, or external service was changed here.
@@ -56,6 +60,11 @@ checkpoint; implementation history belongs in Git.
   accepted-result oracle. Supplemental snapshot counts are now reported separately per session.
 
 ## Verification
+
+- The latest private session exposed the obsolete SELECT field-count validator: all 1,147
+  successful SELECT field observations were rejected by diagnostic recording. Its canonical video
+  and event stream are complete; the original partial session and private labeling draft remain
+  unchanged. The new recorder persists the eight-field SELECT summary without semantic revalidation.
 
 - Registered-model Rust production evaluation has 27 digest-bound manually labeled frames: 15 visible
   score panels and 12 transition/other-screen controls. SCORE, MISS and clear each accept 15/15;
@@ -73,8 +82,10 @@ checkpoint; implementation history belongs in Git.
   on the development host. Live, replay and reducer producers share the v10 schema constant.
 - `mise run check`, workspace/all-target Clippy and fresh independent review pass. The live
   serializer/reducer schema regression and generated-session reader regression pass.
-- The complete `RUST_TEST_THREADS=1 mise run test` passes without skipped tests (493 runtime,
-  309 binary, 127 corpus library and 5 corpus binary tests, plus offline OCR validation).
+- The complete `RUST_TEST_THREADS=1 mise run test` passes without skipped tests (485 runtime,
+  300 binary, 127 corpus library and 5 corpus binary tests, plus 99 offline OCR tests).
+  ADR 0116's SELECT persistence, rejected foreign inputs and retained runtime-loss cases pass;
+  `mise run check`, workspace/all-target Clippy, fresh review and follow-up review also pass.
   Default parallel execution encountered one `WorkerUnavailable` failure in the unchanged
   diagnostic store root-lease rebinding test; earlier parallel execution and the final serial
   execution passed. Its intermittent cause remains unverified.

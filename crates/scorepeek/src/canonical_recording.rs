@@ -381,7 +381,6 @@ struct Recorder {
     dropped_frames: u64,
     partial: bool,
     encoder_failure: bool,
-    chronology_reset: bool,
     shutdown_timeout: bool,
     external_dropped: Arc<AtomicU64>,
     ffmpeg: ToolIdentity,
@@ -472,7 +471,6 @@ impl Recorder {
             dropped_frames: 0,
             partial: false,
             encoder_failure: false,
-            chronology_reset: false,
             shutdown_timeout: false,
             external_dropped,
             ffmpeg,
@@ -514,25 +512,14 @@ impl Recorder {
         let sequence = frame.sequence;
         let monotonic_ms = frame.monotonic_ms;
         let screen = frame.screen;
-        let chronology_reset = self
-            .previous_sequence
-            .is_some_and(|previous| sequence <= previous)
-            || self
-                .previous_monotonic_ms
-                .is_some_and(|previous| monotonic_ms < previous);
-        if chronology_reset {
-            self.partial = true;
-            self.chronology_reset = true;
-            self.memory.mark_degraded();
-            while let Some(mut pending) = self.ring.pop_front() {
-                pending.retained = true;
-                self.finalize_tick(pending);
-            }
-            self.close_segment();
-            self.last_retained_sequence = None;
-            self.previous_screen = None;
-            self.after_remaining = WINDOW_FRAMES;
-        }
+        assert!(
+            self.previous_sequence
+                .is_none_or(|previous| sequence > previous)
+        );
+        assert!(
+            self.previous_monotonic_ms
+                .is_none_or(|previous| monotonic_ms >= previous)
+        );
         let changed = self
             .previous_screen
             .is_none_or(|previous| previous != screen);
@@ -731,9 +718,6 @@ impl Recorder {
         }
         if self.tick_index_failure {
             completeness_reasons.push("tick_index_failure");
-        }
-        if self.chronology_reset {
-            completeness_reasons.push("chronology_reset");
         }
         let manifest = Manifest {
             schema: "scorepeek-canonical-session-recording-v2",
@@ -1305,27 +1289,6 @@ mod tests {
         assert_eq!(account.high_water.load(Ordering::Relaxed), 80);
         assert!(account.degraded.load(Ordering::Acquire));
         assert!(account.memory_limit_exceeded.load(Ordering::Acquire));
-    }
-
-    #[test]
-    fn chronology_reset_flushes_the_old_tail_but_degrades_the_session() {
-        let mut recorder = recorder();
-        for sequence in 1..=25 {
-            recorder.observe(frame(sequence, ScreenClass::Play));
-        }
-        recorder.observe(frame(1, ScreenClass::Result));
-        recorder.retain_session_tail();
-
-        assert_eq!(recorder.ticks.len(), 26);
-        assert!(
-            recorder.ticks[15..25]
-                .iter()
-                .all(|tick| tick.disposition == "retained")
-        );
-        assert_eq!(recorder.ticks[25].sequence, 1);
-        assert_eq!(recorder.ticks[25].disposition, "retained");
-        assert!(recorder.partial);
-        assert!(recorder.chronology_reset);
     }
 
     #[test]

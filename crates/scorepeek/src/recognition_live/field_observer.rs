@@ -1194,25 +1194,6 @@ mod tests {
         );
         let _ = session.finish(DiagnosticRunStatus::Success, 200);
 
-        let other_root = tempfile::tempdir().unwrap();
-        let mut other = RecognitionSession::start(
-            other_root.path(),
-            descriptor("other-field-output", 1),
-            DiagnosticPolicy {
-                enabled: false,
-                ..DiagnosticPolicy::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            other.record_field_observation(&observation),
-            crate::diagnostic_worker::DiagnosticEnqueueOutcome::Rejected
-        );
-        assert_eq!(
-            observation.output().as_ref().unwrap().screen(),
-            ScreenClass::Result
-        );
-        let _ = other.finish(DiagnosticRunStatus::Success, 200);
         assert_eq!(
             worker.finish(Duration::from_secs(1)).status,
             FieldObserverFinishStatus::Complete

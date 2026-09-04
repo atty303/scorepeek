@@ -623,7 +623,6 @@ impl<O: FieldObserver> FieldObservationSession<O> {
         E: Send + 'static,
     {
         if !Arc::ptr_eq(&pending.owner, &self.owner) {
-            self.recognition.reject_pending_field_observation();
             return FieldObservationSessionPoll::BindingMismatch;
         }
         let Some(index) = self
@@ -984,7 +983,7 @@ mod tests {
             second_session.finish(DiagnosticRunStatus::Success, 40, Duration::from_secs(1));
         assert_eq!(
             finished.diagnostic.completeness,
-            Some(DiagnosticCompleteness::Partial)
+            Some(DiagnosticCompleteness::Complete)
         );
     }
 
