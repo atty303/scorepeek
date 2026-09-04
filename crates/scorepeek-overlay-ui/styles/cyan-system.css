@@ -1,0 +1,6 @@
+.overlay[data-skin="cyan-system"] { --surface: linear-gradient(125deg, #0a1b2af5, #020811f5); --edge: #1c718a; --accent: #27e0ff; }
+[data-skin="cyan-system"] .panel { clip-path: polygon(var(--cut) 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, var(--cut) 100%, 0 calc(100% - var(--cut)), 0 var(--cut)); border-top-color: #32daef; border-bottom-color: #32daef; box-shadow: inset 3px 0 #0b3247, inset -3px 0 #0b3247; }
+[data-skin="cyan-system"] .frame-accent { background: repeating-linear-gradient(125deg, #28deff 0 12px, #082132 12px 17px); }
+[data-skin="cyan-system"] .chart-badge { border-color: #27d5ef; box-shadow: inset 2px 2px #164a5c, inset -2px -2px #164a5c; }
+[data-skin="cyan-system"] .metric-label { color: #68d9eb; }
+[data-skin="cyan-system"] .clear-banner { background: linear-gradient(90deg, #07425d55, #041b3000); }

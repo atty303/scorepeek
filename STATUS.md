@@ -16,6 +16,12 @@ checkpoint; implementation history belongs in Git.
 
 ## Implemented authority
 
+- ADR 0123 adds three embedded CSS skins with startup selection and independent compact/sidebar
+  layouts. Shared semantic UI retains Live, confirmation and selected-chart best/history.
+  Oxanium is embedded alongside system Japanese fallbacks; no raster assets, external CSS or
+  runtime font downloads are used. Appearance travels through private child config and OBS initial
+  HTML, without changing the public event API or score persistence authority.
+
 - RESULT temporal acceptance compares the mandatory song/chart, clear, EX and judgment tuple.
   Supplemental/reference changes do not revoke it (ADR 0083/0087); once accepted, repeated
   supplemental payloads may update the presentation without blocking close-time confirmation.
@@ -99,6 +105,16 @@ checkpoint; implementation history belongs in Git.
   code/model/layout binding and non-interfering recording failure status.
 
 ## Verification
+
+- Skin development-host validation covers all three skins and both layouts in native DOM at
+  integer/fractional scale, including disconnected, selecting, missing metrics/history and empty
+  states; confirmation animation settles. Native Vello and Chromium renders show embedded Latin
+  and system Japanese text, clipped frames and gradients. Browser synthetic result/history has
+  no horizontal text overflow in all six combinations. These are isolated synthetic previews,
+  not Gamescope fullscreen, compositor/input-passthrough or OBS performance evidence.
+  `mise run check`, all-target Clippy, `mise run test`, and `mise run dist:test` pass.
+  A moved archive binary serves the selected appearance, identical font bytes and embedded OFL;
+  child shutdown and conflict isolation pass. Independent review has no actionable findings.
 
 - Recorded-input reducer replay of the complete session with digest
   `193550c1c3337905122585fb868c1c8831be3fab835c5ec9e5c03ef70c419594` confirms four results,

@@ -759,7 +759,7 @@ SELECTは譜面・項目別の現在補完値として保持し、revision履歴
 resolved provisionalで結果へ切り替える。確定はresult_detectedだけで判断し、DB commitを待たない。
 SELECT bestは項目別の取込状況だけで値を表示しない。履歴は共通read-only queryで1秒確認し、変更時だけ描画する。
 `--no-scores`では履歴も無効、DB作成・migration・別DBへのfallbackはしない。切断時も内容とDB照会を維持する。
-nativeはBlitz native-dom/AnyRender Vello/SCTK、system fonts、整数/fractional scaleと入力透過を使用する。
+nativeはBlitz native-dom/AnyRender Vello/SCTK、同梱Oxanium＋日本語system fonts、整数/fractional scaleと入力透過を使用する。
 OBSは同じUIをdioxus-webでbuildし、dx実assetをrust-embedで埋め込む。ブラウザ更新はrAFで集約する。
 診断はprivate pipeと既存recording面へ分離し、UIとWebSocketへ混ぜない。詳細契約はADR 0122を原典とする。
 
@@ -767,3 +767,12 @@ OBSは同じUIをdioxus-webでbuildし、dx実assetをrust-embedで埋め込む�
 専用DBの明示live taskで日本語font、scale、native/OBS一致、fullscreen前面、入力透過、idle/終了後残留、
 CPU/GPUとOBS lagを確認する。development-hostとtarget-machine supportは区別する。
 fresh review後に自分の変更だけmainへcommitする。push、deploy、autostart、releaseは含めない。
+
+### CSSスキンとレイアウト（ADR 0123）
+
+共通UIにcyan-system（既定）、result-aurora、dj-blackboxをCSSで同梱し、`--overlay-skin`で起動時に選択する。
+`--overlay-wayland-layout compact|sidebar`はcompact、`--overlay-obs-layout compact|sidebar`はsidebarが既定。
+両方ともLive、直近プレイ確定、選択譜面BESTと直近5件を保持する。欧文・数字は固定版Oxaniumを同梱し、
+日本語はsystem fontsへfallbackする。画像asset、外部CSS読み込み、起動中の切替は初版に含めない。
+表示設定は子設定とOBS初期HTMLに限定し、公開event APIと保存authorityを変えない。
+整数・小数scaleのDOM/停止確認とheadless描画を開発hostで行い、実ゲーム上の表示と性能は明示live gateで確認する。

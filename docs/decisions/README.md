@@ -6,6 +6,8 @@ authoritative.
 
 ## Current
 
+- [ADR 0123: CSS overlay skins](0123-add-css-overlay-skins.md) replaces the fixed appearance and adds embedded Oxanium with independent layouts.
+
 - [ADR 0121: Search both SP BPM positions](0121-search-both-sp-bpm-positions.md)
   supersedes ADR 0113's fixed-position premise and PLAY search region.
 

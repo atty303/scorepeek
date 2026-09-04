@@ -1,0 +1,12 @@
+.overlay[data-skin="dj-blackbox"] { --accent: #d0ef65; --muted: #b0b4ad; --edge: #555a55; --surface: linear-gradient(115deg, #292c29f7, #101310f7 50%, #191c19f7); --cut: 6px; }
+[data-skin="dj-blackbox"] .panel { border: 2px solid #5d625c; border-radius: 5px; box-shadow: inset 0 2px #83878055, inset 0 -3px #000000aa; }
+[data-skin="dj-blackbox"] .frame-accent { width: 76px; height: 5px; margin: 8px 18px 0; background: repeating-linear-gradient(90deg, #c3e251 0 3px, transparent 3px 8px); }
+[data-skin="dj-blackbox"] .panel-bar { border-bottom: 3px double #555a55; }
+[data-skin="dj-blackbox"] .chart-header { background: linear-gradient(180deg, #ffffff04, #00000044); border-bottom: 3px double #555a55; }
+[data-skin="dj-blackbox"] .chart-badge { border-color: #767b73; border-radius: 2px; box-shadow: inset 0 2px 4px #00000099; }
+[data-skin="dj-blackbox"] .wordmark { font-style: normal; font-weight: 500; letter-spacing: 2px; }
+[data-skin="dj-blackbox"] .score-value { font-weight: 700; letter-spacing: -4px; color: #f0f0e7; }
+[data-skin="dj-blackbox"] .clear-banner { color: #ffce65; font-size: 17px; letter-spacing: 1px; background: #00000033; border: 1px solid #555a55; }
+[data-skin="dj-blackbox"] .state-label { color: #ffce65; }
+[data-skin="dj-blackbox"] .history-row { border-bottom-color: #83878033; }
+[data-skin="dj-blackbox"] .best-grid { background: #00000033; padding: 10px 0; border-top: 1px solid #555a55; }

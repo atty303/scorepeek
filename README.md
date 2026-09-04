@@ -484,3 +484,22 @@ No public license or redistribution grant is asserted. Development is private,
 and every external source, font, model, and runtime artifact must retain its
 provenance, immutable revision, digest, and applicable license or permission.
 Third-party data is fetched locally and is not republished from this repository.
+
+### Overlay skins
+
+Choose a built-in CSS skin at startup: `cyan-system` (default), `result-aurora`, or `dj-blackbox`.
+Both consumers share the skin. Native defaults to `compact`; OBS defaults to `sidebar`.
+Both layouts retain Live, confirmation, chart bests and the latest five saved plays.
+
+```sh
+scorepeek run --overlay wayland --overlay obs --overlay-skin result-aurora
+```
+
+```sh
+scorepeek run --overlay obs --overlay-skin dj-blackbox --overlay-obs-layout compact
+```
+
+Use `--overlay-wayland-layout compact|sidebar` to choose the native layout independently.
+Oxanium is embedded; Japanese uses system fonts. No font installation or runtime download is needed.
+Skins are selected at startup. The [design and preview command](docs/decisions/0123-add-css-overlay-skins.md)
+describe rendering and verification; live target validation still requires a dedicated score DB.

@@ -92,6 +92,10 @@ cargo test --locked -p scorepeek-overlay --features embedded-web --lib
 exec cargo test --locked -p scorepeek --features embedded-web --test overlay
 '''
 
+[tasks."overlay:skin:render"]
+description = "Render a skin preview JSON to a create-only PAM using native DOM/Vello (no Wayland or DB)"
+run = 'cargo run --locked -p scorepeek-overlay --example render_skin -- "$@"'
+
 [tasks."overlay:test:live"]
 description = "Explicit live overlay run; supply a dedicated --scores-db instance and profile"
 depends = ["overlay:web:bundle"]

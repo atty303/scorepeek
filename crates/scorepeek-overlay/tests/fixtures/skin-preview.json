@@ -1,0 +1,116 @@
+{
+  "appearance": {
+    "skin": "cyan-system",
+    "layout": "sidebar"
+  },
+  "state": {
+    "connected": true,
+    "selecting": false,
+    "chart": {
+      "song_id": "synthetic",
+      "play_type": "single",
+      "difficulty": "another",
+      "title": "NEON CIRCUIT / 星をつなぐ音",
+      "artist": "SAMPLE ARTIST"
+    },
+    "result": {
+      "title": "NEON CIRCUIT / 星をつなぐ音",
+      "artist": "SAMPLE ARTIST",
+      "play_type": "single",
+      "difficulty": "another",
+      "fields": [
+        {
+          "role": "score",
+          "label": "EX SCORE",
+          "value": "2846"
+        },
+        {
+          "role": "rank",
+          "label": "DJ RANK",
+          "value": "AA"
+        },
+        {
+          "role": "miss",
+          "label": "MISS COUNT",
+          "value": "12"
+        },
+        {
+          "role": "clear",
+          "label": "CLEAR",
+          "value": "HARD CLEAR"
+        },
+        {
+          "role": "detail",
+          "label": "FAST / SLOW",
+          "value": "23 / 18"
+        },
+        {
+          "role": "detail",
+          "label": "OPTIONS",
+          "value": "RANDOM / HARD"
+        }
+      ]
+    },
+    "confirmation": {
+      "title": "NEON CIRCUIT / 星をつなぐ音",
+      "confirmed": true
+    },
+    "best_received": [
+      true,
+      true,
+      true
+    ],
+    "history": {
+      "status": "保存済み · bestは項目別",
+      "best": [
+        {
+          "role": "score",
+          "label": "EX SCORE",
+          "value": "2921"
+        },
+        {
+          "role": "miss",
+          "label": "MISS",
+          "value": "7"
+        },
+        {
+          "role": "clear",
+          "label": "CLEAR",
+          "value": "EX HARD"
+        }
+      ],
+      "plays": [
+        {
+          "notified_at": "2026-09-04 12:50:00 UTC",
+          "score": "2846",
+          "miss": "12",
+          "clear": "HARD"
+        },
+        {
+          "notified_at": "2026-09-04 12:47:00 UTC",
+          "score": "2814",
+          "miss": "15",
+          "clear": "HARD"
+        },
+        {
+          "notified_at": "2026-09-04 12:44:00 UTC",
+          "score": "2782",
+          "miss": "18",
+          "clear": "HARD"
+        },
+        {
+          "notified_at": "2026-09-04 12:41:00 UTC",
+          "score": "2750",
+          "miss": "21",
+          "clear": "HARD"
+        },
+        {
+          "notified_at": "2026-09-04 12:38:00 UTC",
+          "score": "2718",
+          "miss": "24",
+          "clear": "HARD"
+        }
+      ]
+    }
+  }
+}
