@@ -19,7 +19,7 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 const CATALOG_SCHEMA: &str = "scorepeek-recognition-catalog-evidence-v1";
-const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v21";
+const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v22";
 const MANIFEST_SCHEMA: &str = "scorepeek-recognition-evidence-manifest-v3";
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -1149,7 +1149,7 @@ mod tests {
         };
 
         MusicSelectDifficultyObservation {
-            predicate_id: "scorepeek-player-marker-rgb-v1",
+            predicate_id: "scorepeek-player-marker-outline-v2",
             state: MusicSelectDifficultyState::Known(selected),
             winner_score_ppm: 500_000,
             runner_up_score_ppm: 0,
@@ -1163,9 +1163,8 @@ mod tests {
             ]
             .map(|difficulty| MusicSelectDifficultyMarkerEvidence {
                 difficulty,
-                panel_pixels_ppm: u32::from(difficulty == selected) * 500_000,
-                fill_pixels_ppm: u32::from(difficulty == selected) * 500_000,
-                glyph_pixels_ppm: u32::from(difficulty == selected) * 200_000,
+                top_edge_ppm: u32::from(difficulty == selected) * 500_000,
+                bottom_edge_ppm: u32::from(difficulty == selected) * 500_000,
                 score_ppm: u32::from(difficulty == selected) * 500_000,
                 qualifies: difficulty == selected,
             }),
@@ -1436,7 +1435,7 @@ mod tests {
         assert_eq!(outcome.status, RecognitionArtifactFinishStatus::Complete);
         assert_eq!(outcome.manifest_sha256.unwrap().len(), 64);
         let stored = fs::read_to_string(root.join("observations.ndjson")).unwrap();
-        assert!(stored.contains("scorepeek-recognition-observation-v21"));
+        assert!(stored.contains("scorepeek-recognition-observation-v22"));
         assert!(stored.contains("\"processing_timing\""));
         assert!(stored.contains("\"field_status\":\"completed\""));
         assert!(stored.contains("\"frame_total_us\":0"));

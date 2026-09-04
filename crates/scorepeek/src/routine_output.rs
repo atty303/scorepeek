@@ -48,8 +48,8 @@ fn duration_us(duration: Duration) -> u64 {
 const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const RESULT_HISTORY_CAPACITY: usize = 32;
-const SOCKET_NAME: &str = "observations-v10.sock";
-pub const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v10";
+const SOCKET_NAME: &str = "observations-v11.sock";
+pub const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v11";
 const NUMERIC_REQUIRED_OBSERVATIONS: u8 = 2;
 const PLAY_OPTIONS_REQUIRED_OBSERVATIONS: u8 = 2;
 
@@ -2323,7 +2323,7 @@ fn accept_clients(
 fn snapshot_bytes(state: &Arc<Mutex<RunViewState>>, health: &ChannelHealth) -> Option<Vec<u8>> {
     let state = state.lock().ok()?.clone();
     let mut bytes = serde_json::to_vec(&json!({
-            "schema": "scorepeek-run-observation-snapshot-v10",
+            "schema": "scorepeek-run-observation-snapshot-v11",
         "state": state,
         "channel": health.value(),
     }))
@@ -5641,7 +5641,7 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         let snapshot: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v10");
+        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v11");
         assert_eq!(snapshot["state"]["invocation_id"], "invocation-1");
         assert_eq!(snapshot["state"]["next_channel_sequence"], 1);
         assert_eq!(snapshot["state"]["music_select"]["active"], false);
@@ -6408,7 +6408,7 @@ mod tests {
         for reader in &mut readers {
             let mut snapshot = String::new();
             reader.read_line(&mut snapshot).unwrap();
-            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v10"));
+            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v11"));
         }
         channel
             .publish(&json!({

@@ -6496,6 +6496,7 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
                 | "scorepeek-run-event-v8"
                 | "scorepeek-run-event-v9"
                 | "scorepeek-run-event-v10"
+                | "scorepeek-run-event-v11"
         ) || event_schema
             .as_deref()
             .is_some_and(|expected| expected != schema)
@@ -6514,6 +6515,7 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
                 | "scorepeek-run-event-v8"
                 | "scorepeek-run-event-v9"
                 | "scorepeek-run-event-v10"
+                | "scorepeek-run-event-v11"
         ) {
             serde_json::from_value::<StoredRunEventPayload>(record.clone()).map_err(|_| {
                 CorpusError::InvalidRequest("diagnostic run event payload is invalid".to_owned())
@@ -7230,7 +7232,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_lifecycle_streams_remain_readable_and_unknown_v11_is_rejected() {
+    fn legacy_lifecycle_streams_remain_readable_and_unknown_v12_is_rejected() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("events.ndjson");
         let manifest = diagnostic_manifest();
@@ -7257,7 +7259,7 @@ mod tests {
         assert_eq!(verify_session_events(&path, &manifest).unwrap(), 3);
         let future = fs::read_to_string(&path)
             .unwrap()
-            .replace("scorepeek-run-event-v9", "scorepeek-run-event-v11");
+            .replace("scorepeek-run-event-v9", "scorepeek-run-event-v12");
         fs::write(&path, future).unwrap();
         assert!(verify_session_events(&path, &manifest).is_err());
     }

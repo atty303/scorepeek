@@ -725,3 +725,9 @@ ADR 0115では、SELECT追加学習済みHOG/MLPを登録する。既存RESULT l
 `partial`／`dropped`はruntimeでのqueue・容量・保存・worker・終了処理による記録欠落を示す。
 内部で生成したtyped factを別schemaで再検証せず、内部binding・順序・shape違反を記録欠落へ変換しない。
 入力拒否や認識失敗のoperation statusと記録完全性は独立する。過去sessionの完全性は書き換えない。
+
+### MUSIC SELECT difficultyの背景耐性（ADR 0117）
+
+PLAYER 01マーカーの上下の細い白枠と非白色の内側を測定する。色面積の大小では難易度を決めず、
+5 slotのうち閾値とmarginを満たす単独候補だけを採用する。新layout v6とpredicate v2を記録し、
+raw difficulty変更は最初の明確な観測から反映する。resolverの保持・best snapshotの重複抑制は別課題。

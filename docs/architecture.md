@@ -490,8 +490,8 @@ final identity check is outside the operator-trusted private-artifact boundary.
 ### Event API
 
 The ordinary foreground runtime exposes provisional recognition observations at
-`$XDG_RUNTIME_DIR/scorepeek/observations-v10.sock`. A connection begins with a bounded v10
-current-state snapshot and then receives sequenced `scorepeek-run-event-v10` NDJSON. This local
+`$XDG_RUNTIME_DIR/scorepeek/observations-v11.sock`. A connection begins with a bounded v11
+current-state snapshot and then receives sequenced `scorepeek-run-event-v11` NDJSON. This local
 observation surface may include raw OCR, foreground title geometry, joint candidates, and resolver
 metrics. `raw_screen_observed` is separate from semantic episode started, suspended, resumed,
 closing, and finalized transitions; `play_attempt_changed` contains the evidence-linked path and
@@ -579,3 +579,25 @@ catalog-adapter, or capture internals.
 | Bounded replayable live diagnostics | scorepeek application, outside the public event stream |
 | Public event compatibility | scorepeek schema version |
 | Future UI and persistence | Later scorepeek applications |
+
+### MUSIC SELECT marker geometry
+
+ADR 0117 uses integrated-context layout v6 and `scorepeek-player-marker-outline-v2`. Each of the
+five 128x30 crops covers the same measured marker geometry. The top edge samples columns 36..114
+(exclusive end), rows 8/9, against interior rows 11/12; the bottom edge samples columns 10..114,
+rows 26/27, against interior rows 23/24. A column matches when either edge pixel is neutral bright
+(min RGB >= 180, channel spread <= 45) and neither interior pixel is neutral bright. The minimum
+of the two matched fractions is the slot score. Exactly one slot must reach 800,000 ppm and exceed
+the runner-up by at least 100,000 ppm. This excludes broad bright background bands without
+requiring fixed panel colors, OCR, downloaded templates, or temporal voting.
+
+Recognition observation v22 and run-event/socket/snapshot v11 carry `top_edge_ppm` and
+`bottom_edge_ppm` instead of the old panel/fill/glyph area counts. Older recording versions remain
+readable. These diagnostics share the ordinary frame-bound observation and opt-in recording path.
+The accepted RESULT v2 and supplemental best snapshot v1 contracts are unchanged.
+
+`mise run ocr:select-difficulty:probe FILE.qoi ...` evaluates private canonical QOI files through
+the production crop and predicate. `--rgb-stream` instead reads consecutive RGB8 1920x1080 frames
+from stdin, rejecting a truncated last frame. It emits per-input observations for offline comparison;
+it deliberately does not classify the screen or claim song identity. Ground truth and non-SELECT
+controls must therefore be interpreted with their screen labels.

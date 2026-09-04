@@ -131,7 +131,7 @@ const PPM_HEADER: &[u8] = b"P6\n1920 1080\n255\n";
 const CANONICAL_FILE_BYTES: u64 = CANONICAL_BYTES as u64 + PPM_HEADER.len() as u64;
 const LAYOUT_BYTES: &[u8] = include_bytes!("canonical-layout-v1.json");
 const SCREEN_PATH_LAYOUT_BYTES: &[u8] = include_bytes!("screen-path-layout-v3.json");
-const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v5.json");
+const INTEGRATED_CONTEXT_LAYOUT_BYTES: &[u8] = include_bytes!("integrated-context-layout-v6.json");
 const INTEGRATED_CONTEXT_MODEL_ID: &str = "pp-ocrv6-small-rec-onnx-v1";
 
 fn calibrated_capture_profile(profile: &str) -> bool {
@@ -825,9 +825,6 @@ struct MusicSelectPlayTypeLayout {
 #[serde(deny_unknown_fields)]
 struct MusicSelectDifficultyLayout {
     predicate_id: String,
-    panel_pixels_min_ppm: u32,
-    fill_pixels_min_ppm: u32,
-    glyph_pixels_min_ppm: u32,
     score_min_ppm: u32,
     winner_margin_min_ppm: u32,
     beginner: Roi,
@@ -869,7 +866,7 @@ impl IntegratedContextLayout {
             .rois()
             .nth(10)
             .ok_or(RecognitionError::InvalidCanonicalLayout)?;
-        if layout.schema != "scorepeek-integrated-context-layout-v5"
+        if layout.schema != "scorepeek-integrated-context-layout-v6"
             || layout.canonical_frame_contract_id != CANONICAL_FRAME_CONTRACT_ID
             || layout.canonical_layout_sha256 != CanonicalLayout::sha256()
             || layout.result.artist != canonical.result.artist
@@ -906,7 +903,8 @@ impl IntegratedContextLayout {
         {
             return Err(RecognitionError::InvalidCanonicalLayout);
         }
-        if layout.music_select.selected_difficulty.predicate_id != "scorepeek-player-marker-rgb-v1"
+        if layout.music_select.selected_difficulty.predicate_id
+            != "scorepeek-player-marker-outline-v2"
         {
             return Err(RecognitionError::InvalidCanonicalLayout);
         }
@@ -1210,9 +1208,8 @@ pub enum MusicSelectDifficultyState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct MusicSelectDifficultyMarkerEvidence {
     pub difficulty: Difficulty,
-    pub panel_pixels_ppm: u32,
-    pub fill_pixels_ppm: u32,
-    pub glyph_pixels_ppm: u32,
+    pub top_edge_ppm: u32,
+    pub bottom_edge_ppm: u32,
     pub score_ppm: u32,
     pub qualifies: bool,
 }
@@ -1250,14 +1247,13 @@ pub(crate) fn test_music_select_difficulty(
     ]
     .map(|value| MusicSelectDifficultyMarkerEvidence {
         difficulty: value,
-        panel_pixels_ppm: 0,
-        fill_pixels_ppm: 0,
-        glyph_pixels_ppm: 0,
+        top_edge_ppm: 0,
+        bottom_edge_ppm: 0,
         score_ppm: 0,
         qualifies: false,
     });
     MusicSelectDifficultyObservation {
-        predicate_id: "scorepeek-player-marker-rgb-v1",
+        predicate_id: "scorepeek-player-marker-outline-v2",
         state: difficulty.map_or(
             MusicSelectDifficultyState::Unknown(MusicSelectDifficultyUnknownReason::NoCandidate),
             MusicSelectDifficultyState::Known,
@@ -2757,35 +2753,15 @@ pub fn observe_music_select_difficulty(
         .expect("the embedded integrated context layout is statically validated");
     let policy = &layout.music_select.selected_difficulty;
     let slots = crops.as_slots().map(|(difficulty, crop)| {
-        let panel_pixels_ppm = matching_pixels_ppm(crop, 0, 0, 128, 30, |r, g, b| {
-            (70..=225).contains(&r)
-                && (90..=235).contains(&g)
-                && (120..=240).contains(&b)
-                && b >= g
-                && g >= r
-        });
-        let fill_pixels_ppm = matching_pixels_ppm(crop, 4, 5, 120, 25, |r, g, b| {
-            (45..=160).contains(&r)
-                && (70..=190).contains(&g)
-                && (100..=230).contains(&b)
-                && i16::from(b) - i16::from(r) >= 25
-        });
-        let glyph_pixels_ppm = matching_pixels_ppm(crop, 9, 12, 110, 14, |r, g, b| {
-            r.min(g).min(b) >= 180 && r.max(g).max(b) - r.min(g).min(b) <= 45
-        });
-        let score_ppm = panel_pixels_ppm
-            .min(fill_pixels_ppm)
-            .min(glyph_pixels_ppm.saturating_mul(3));
+        let top_edge_ppm = marker_edge_ppm(crop, 36..114, 8, 11);
+        let bottom_edge_ppm = marker_edge_ppm(crop, 10..114, 26, 23);
+        let score_ppm = top_edge_ppm.min(bottom_edge_ppm);
         MusicSelectDifficultyMarkerEvidence {
             difficulty,
-            panel_pixels_ppm,
-            fill_pixels_ppm,
-            glyph_pixels_ppm,
+            top_edge_ppm,
+            bottom_edge_ppm,
             score_ppm,
-            qualifies: panel_pixels_ppm >= policy.panel_pixels_min_ppm
-                && fill_pixels_ppm >= policy.fill_pixels_min_ppm
-                && glyph_pixels_ppm >= policy.glyph_pixels_min_ppm
-                && score_ppm >= policy.score_min_ppm,
+            qualifies: score_ppm >= policy.score_min_ppm,
         }
     });
     let mut ranked = slots;
@@ -2810,7 +2786,7 @@ pub fn observe_music_select_difficulty(
         ),
     };
     MusicSelectDifficultyObservation {
-        predicate_id: "scorepeek-player-marker-rgb-v1",
+        predicate_id: "scorepeek-player-marker-outline-v2",
         state,
         winner_score_ppm: winner.score_ppm,
         runner_up_score_ppm: runner_up.score_ppm,
@@ -2819,25 +2795,30 @@ pub fn observe_music_select_difficulty(
     }
 }
 
-fn matching_pixels_ppm(
+fn marker_edge_ppm(
     crop: &Rgb8Crop,
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
-    matches: impl Fn(u8, u8, u8) -> bool,
+    columns: std::ops::Range<usize>,
+    edge_y: usize,
+    inside_y: usize,
 ) -> u32 {
-    let crop_width = usize::try_from(crop.roi.width).expect("validated marker width fits usize");
-    let mut count = 0_u64;
-    for row in y..y + height {
-        for column in x..x + width {
-            let offset = (row * crop_width + column) * 3;
-            let pixel = &crop.pixels[offset..offset + 3];
-            count += u64::from(matches(pixel[0], pixel[1], pixel[2]));
-        }
-    }
-    u32::try_from(count * 1_000_000 / u64::try_from(width * height).unwrap_or(u64::MAX))
-        .unwrap_or(1_000_000)
+    let white = |x: usize, y: usize| {
+        let offset = (y * crop.roi.width as usize + x) * 3;
+        let [r, g, b] = [
+            crop.pixels[offset],
+            crop.pixels[offset + 1],
+            crop.pixels[offset + 2],
+        ];
+        r.min(g).min(b) >= 180 && r.max(g).max(b) - r.min(g).min(b) <= 45
+    };
+    let count = columns.len();
+    let matched = columns
+        .filter(|&x| {
+            (white(x, edge_y) || white(x, edge_y + 1))
+                && !white(x, inside_y)
+                && !white(x, inside_y + 1)
+        })
+        .count();
+    u32::try_from(matched * 1_000_000 / count).expect("a matched fraction is at most one million")
 }
 
 const fn integrated_context_filename(field: IntegratedContextField) -> &'static str {
@@ -3586,30 +3567,31 @@ mod tests {
         assert_eq!(music.active_list_title.open_text, "music-3");
     }
 
-    fn marker_crop(selected: bool, glyph_pixels: usize) -> Rgb8Crop {
+    fn marker_crop(columns: usize) -> Rgb8Crop {
         let roi = Roi {
             x: 0,
             y: 0,
             width: 128,
             height: 30,
         };
-        let mut pixels = vec![0_u8; 128 * 30 * 3];
-        if selected {
-            for pixel in pixels.chunks_exact_mut(3) {
-                pixel.copy_from_slice(&[100, 130, 180]);
+        let mut pixels = vec![0; 128 * 30 * 3];
+        for (y, start, width) in [(8, 36, 78), (26, 10, 104)] {
+            for x in start..start + width * columns / 100 {
+                let offset = (y * 128 + x) * 3;
+                pixels[offset..offset + 3].fill(220);
             }
-        }
-        for index in 0..glyph_pixels.min(110 * 14) {
-            let row = 12 + index / 110;
-            let column = 9 + index % 110;
-            let offset = (row * 128 + column) * 3;
-            pixels[offset..offset + 3].copy_from_slice(&[200, 200, 200]);
         }
         Rgb8Crop { roi, pixels }
     }
 
     fn marker_crops(selected: &[Difficulty]) -> MusicSelectDifficultyMarkerCrops {
-        let crop = |difficulty| marker_crop(selected.contains(&difficulty), 110 * 14);
+        let crop = |difficulty| {
+            marker_crop(if selected.contains(&difficulty) {
+                100
+            } else {
+                0
+            })
+        };
         MusicSelectDifficultyMarkerCrops {
             beginner: crop(Difficulty::Beginner),
             normal: crop(Difficulty::Normal),
@@ -3636,39 +3618,41 @@ mod tests {
     }
 
     #[test]
-    fn fixed_music_select_marker_fails_closed_for_absent_multiple_and_bright_background() {
+    fn fixed_music_select_marker_rejects_absence_multiple_and_broad_background_bands() {
         assert_eq!(
-            observe_music_select_difficulty(&marker_crops(&[])).state,
-            MusicSelectDifficultyState::Unknown(MusicSelectDifficultyUnknownReason::NoCandidate)
+            observe_music_select_difficulty(&marker_crops(&[])).known(),
+            None
         );
         assert_eq!(
             observe_music_select_difficulty(&marker_crops(&[
                 Difficulty::Normal,
-                Difficulty::Hyper,
+                Difficulty::Hyper
             ]))
             .state,
             MusicSelectDifficultyState::Unknown(
                 MusicSelectDifficultyUnknownReason::MultipleCandidates
             )
         );
-        let bright = marker_crop(false, 110 * 14);
-        let crops = MusicSelectDifficultyMarkerCrops {
-            beginner: bright.clone(),
-            normal: bright.clone(),
-            hyper: bright.clone(),
-            another: bright.clone(),
-            leggendaria: bright,
-        };
+        for rows in [0..30, 8..13, 23..28] {
+            let mut crops = marker_crops(&[]);
+            for y in rows {
+                crops.normal.pixels[y * 128 * 3..(y + 1) * 128 * 3].fill(220);
+            }
+            assert_eq!(observe_music_select_difficulty(&crops).known(), None);
+        }
+        let mut crops = marker_crops(&[Difficulty::Hyper]);
+        crops.normal.pixels.fill(220);
         assert_eq!(
-            observe_music_select_difficulty(&crops).state,
-            MusicSelectDifficultyState::Unknown(MusicSelectDifficultyUnknownReason::NoCandidate)
+            observe_music_select_difficulty(&crops).known(),
+            Some(Difficulty::Hyper)
         );
     }
 
     #[test]
     fn fixed_music_select_marker_rejects_insufficient_winner_margin() {
-        let mut crops = marker_crops(&[Difficulty::Hyper]);
-        crops.normal = marker_crop(true, 200);
+        let mut crops = marker_crops(&[]);
+        crops.hyper = marker_crop(85);
+        crops.normal = marker_crop(79);
         assert_eq!(
             observe_music_select_difficulty(&crops).state,
             MusicSelectDifficultyState::Unknown(

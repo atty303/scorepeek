@@ -174,8 +174,8 @@ snapshot output gate/revision. UNKNOWN suspends retained state; a changed chart 
 SELECT exit returns it to inactive. The 80x25 layout keeps existing attempt gates visible.
 DJ rank is calculated from EX SCORE and chart notes, not recognized from the screen.
 
-Machine-readable observations share `$XDG_RUNTIME_DIR/scorepeek/observations-v10.sock`.
-Each connection receives a current v10 snapshot followed by sequenced `scorepeek-run-event-v10`
+Machine-readable observations share `$XDG_RUNTIME_DIR/scorepeek/observations-v11.sock`.
+Each connection receives a current v11 snapshot followed by sequenced `scorepeek-run-event-v11`
 NDJSON. `music_select_best_observed` carries a separate supplemental best snapshot; the current
 snapshot also includes typed `music_select_resolver_changed` state. These game records may have
 been achieved in different plays and never create result events, play counts, or history entries.

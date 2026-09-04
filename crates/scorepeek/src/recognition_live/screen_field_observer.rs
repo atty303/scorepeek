@@ -1461,7 +1461,7 @@ mod tests {
         };
 
         MusicSelectDifficultyObservation {
-            predicate_id: "scorepeek-player-marker-rgb-v1",
+            predicate_id: "scorepeek-player-marker-outline-v2",
             state: MusicSelectDifficultyState::Known(selected),
             winner_score_ppm: 500_000,
             runner_up_score_ppm: 0,
@@ -1475,9 +1475,8 @@ mod tests {
             ]
             .map(|difficulty| MusicSelectDifficultyMarkerEvidence {
                 difficulty,
-                panel_pixels_ppm: u32::from(difficulty == selected) * 500_000,
-                fill_pixels_ppm: u32::from(difficulty == selected) * 500_000,
-                glyph_pixels_ppm: u32::from(difficulty == selected) * 200_000,
+                top_edge_ppm: u32::from(difficulty == selected) * 500_000,
+                bottom_edge_ppm: u32::from(difficulty == selected) * 500_000,
                 score_ppm: u32::from(difficulty == selected) * 500_000,
                 qualifies: difficulty == selected,
             }),

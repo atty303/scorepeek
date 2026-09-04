@@ -6,6 +6,9 @@ authoritative.
 
 ## Current
 
+- [ADR 0117: Recognize the SELECT marker outline](0117-recognize-select-marker-outline.md)
+  supersedes ADR 0096's RGB area predicate with spatial marker-edge evidence.
+
 - [ADR 0116: Limit recording completeness to runtime loss](0116-limit-recording-completeness-to-runtime-loss.md)
   supersedes internal-contract degradation and duplicate fact validation in ADR 0025, 0026 and 0032.
 

@@ -705,3 +705,11 @@ run = '''
 set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek --example select_best_probe -- "$@"
 '''
+
+[tasks."ocr:select-difficulty:probe"]
+description = "Read private canonical QOI files or an RGB stream with the production difficulty marker predicate"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+exec cargo run --locked --quiet -p scorepeek --example select_difficulty_probe -- "$@"
+'''

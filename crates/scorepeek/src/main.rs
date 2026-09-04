@@ -3923,7 +3923,7 @@ mod tests {
             1,
             "the corpus reader rejects mixed-schema sessions"
         );
-        assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v10"));
+        assert_eq!(schemas.first().copied(), Some("scorepeek-run-event-v11"));
     }
 
     #[test]
@@ -3940,7 +3940,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v10");
+        assert_eq!(value["schema"], "scorepeek-run-event-v11");
         assert_eq!(value["event"], "raw_screen_observed");
         assert_eq!(value["semantic_episode_id"], 1);
         assert_eq!(value["session_id"], "invocation-session-2");
@@ -4033,7 +4033,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(value["schema"], "scorepeek-run-event-v10");
+        assert_eq!(value["schema"], "scorepeek-run-event-v11");
         assert_eq!(value["session_id"], "invocation-session-2");
         assert_eq!(value["capture_generation"], 2);
         assert_eq!(value["sequence"], 1);

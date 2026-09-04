@@ -10,7 +10,7 @@ checkpoint; implementation history belongs in Git.
 - RESULT v2 remains the confirmed play/history contract. MUSIC SELECT best snapshot v1 is a
   separate supplemental observation, not a play. DB persistence and history supplementation UI
   remain outside the implemented scope.
-- Current diagnostic protocols are run-event/socket/snapshot v10 and recognition observation v21.
+- Current diagnostic protocols are run-event/socket/snapshot v11 and recognition observation v22.
   Joined sessions and private attempt labels remain v5. Readers retain supported older shapes and
   reject unknown versions.
 
@@ -19,6 +19,10 @@ checkpoint; implementation history belongs in Git.
 - The registered PP-OCRv6-small and private fixed-cell HOG/MLP bundles remain the only text/numeric
   runtimes. Capture is canonical contiguous RGB8 1920x1080. Gamescope PLAY uses the independently
   measured BPM-outline screen-path layout v3; SELECT badges use the two explicitly approved crops.
+- ADR 0117 replaces SELECT difficulty RGB area counts with the independently measured PLAYER 01
+  outline in integrated-context layout v6. Both thin white edges must contrast with their interior;
+  a single slot must meet 80% coverage and a 10-point winner margin. No extra model, template bitmap,
+  dependency or temporal voting is introduced. Raw difficulty remains separate from best values.
 - Raw 10 Hz screen observations and semantic episodes are separate. UNKNOWN suspends, matching
   known screens resume, and transitions drain admitted work before RESULT finalization. Shared OCR
   workers commit observations in source order. Identity uses independent song/chart factors,
@@ -61,6 +65,18 @@ checkpoint; implementation history belongs in Git.
 
 ## Verification
 
+- Production Rust marker evaluation on the latest retained session processes 2,288 canonical frames.
+  All 1,147 recorded SELECT observations resolve HYPER (old RGB predicate: 948 known, 199 unknown).
+  This is recognition availability on an existing session, not a new-capture accuracy holdout.
+  The two stationary failure spans recover all 40 prior unknowns in 112 observations.
+- Additional retained legacy QOI evaluation covers 786 frames: all 75 recorded SELECT frames resolve
+  (62 HYPER, 13 ANOTHER); 244 RESULT/PLAY/transition/mode controls accept no marker. Raw UNKNOWN
+  frames include visible SELECT markers and are excluded from negative-screen accuracy claims.
+  Ten manually labeled images cover all five SP slots and DP HYPER; all ten are accepted correctly.
+  A separate 600-frame segment contains 166 SELECT frames across all five difficulties: known
+  increases from 76 to 166, with no disagreement on previously known observations.
+  DP other difficulties, other profiles and new-capture holdout remain unverified.
+
 - The latest private session exposed the obsolete SELECT field-count validator: all 1,147
   successful SELECT field observations were rejected by diagnostic recording. Its canonical video
   and event stream are complete; the original partial session and private labeling draft remain
@@ -73,13 +89,17 @@ checkpoint; implementation history belongs in Git.
   The parent accepted SCORE 11/15 and MISS 12/15; sampled digit 6 now passes the unchanged margin.
   Session groups share identical glyphs; this is not an unseen-glyph holdout. Frames and complete
   labels remain private.
+- The newly labeled latest session passes production replay separately: six accepted RESULTs,
+  all labeled SELECT endpoints correct, 2,288 canonical frames, 46 supplemental snapshots
+  (recorded baseline 73), and no wrong/missing RESULT events.
 - Unit/lifecycle tests cover independent stability, rank boundaries, partial/changed/deduplicated
   snapshots, revisit identity, impossible EX SCORE, selection clearing, suspension, late work and
   separation from confirmed results. Existing socket and TUI regression tests are retained.
 - Registered-model full private production replay passes: 3 sessions, 16 accepted attempts, 13,683 canonical frames,
   correct selection at every labeled SELECT span, and no wrong/missing RESULT events. Supplemental
-  snapshots total 255 (9/222/24 per session; parent model 253). The run decoded 24 remote segments and took 442.3 s
-  on the development host. Live, replay and reducer producers share the v10 schema constant.
+  snapshots total 64 (7/37/20 per session; pre-outline registered-model baseline 255). The run decoded
+  24 remote segments and took 478.9 s
+  on the development host. Live, replay and reducer producers share the v11 schema constant.
 - `mise run check`, workspace/all-target Clippy and fresh independent review pass. The live
   serializer/reducer schema regression and generated-session reader regression pass.
 - The complete `RUST_TEST_THREADS=1 mise run test` passes without skipped tests (485 runtime,
@@ -96,14 +116,17 @@ checkpoint; implementation history belongs in Git.
 
 ## Unverified and next execution boundary
 
+- Confirm the new marker on target-live sessions; target install is a separate operation.
 - Investigate the intermittent diagnostic store lock-test failure under parallel test execution.
 - Additional capture coverage is needed for four-digit MISS, all remaining clear labels,
   other capture profiles, and target-live cost of the additional SELECT OCR jobs. The 27-frame
-  evaluation is a bounded sample, not a general zero-error claim. No explicit hidden-panel pattern
+  best-value evaluation is a bounded sample, not a general zero-error claim. No explicit hidden-panel pattern
   is validated; `not_displayed` exists in the type but is not guessed from blank pixels.
 - Current active private regression generation is
-  `d2bd843f63729327663587a7b2227ec65f064554b1192bdf4dd754cfa08ff296`: 3 sessions, 16 accepted
-  attempts and 13,683 canonical frames. Developer-host replay is not target performance or live
-  verification.
+  `c4606091f2b2ca08686f4054a6cf080fc04f66a182c5177cbe9a9685b1ff4b20`: 4 sessions, 22 accepted
+  attempts and 15,971 canonical frames. The three original entries are unchanged. The latest
+  complete session now has its six manually reviewed RESULT/SELECT labels formally applied.
+  The original three-session suite and the additional session were replayed separately with the
+  same final runtime; all four sessions passed. Developer-host replay is not target-live verification.
 - `v1.sock` remains the planned accepted-event interface; current observation clients use
-  `observations-v10.sock`. No result history DB, deployment, release or push was performed.
+  `observations-v11.sock`. No result history DB, deployment, release or push was performed.
