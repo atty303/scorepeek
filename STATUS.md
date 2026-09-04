@@ -32,6 +32,9 @@ checkpoint; implementation history belongs in Git.
   type use the existing runtimes. Neutral-bright masking excludes dim leading placeholders; the
   fixed 1.0 numeric logit margin fails closed. Four measured dashes are explicit no recorded MISS;
   missing header or inconclusive OCR remains unknown. DJ rank is derived from chart notes/EX SCORE.
+- ADR 0115 registers the SELECT-adapted HOG/MLP weights through runtime manifest artifact v3.
+  The architecture, runtime schema v2, layouts and all acceptance thresholds are unchanged.
+  Digest-bound provenance identifies the parent, private supervision, retention teacher and recipe.
 - Best fields need two equal consecutive observations independently. Partial snapshots are allowed.
   Current-frame song/mode/difficulty must agree with resolved identity. Changed/unknown identity
   clears best. Duplicate/reversed or pre-resume frames cannot update best; suspension retains state,
@@ -54,18 +57,19 @@ checkpoint; implementation history belongs in Git.
 
 ## Verification
 
-- Private SELECT evaluation has 27 digest-bound manually labeled frames: 15 visible score panels
-  and 12 transition/other-screen controls. SCORE accepts 11/15 (73.3%), MISS 12/15 (80%), clear
-  15/15 (100%); all 38 accepted fields are correct, with no control-frame acceptance. Includes
+- Registered-model Rust production evaluation has 27 digest-bound manually labeled frames: 15 visible
+  score panels and 12 transition/other-screen controls. SCORE, MISS and clear each accept 15/15;
+  all 45 accepted fields are correct, with no control-frame acceptance. Includes
   recorded SP/DP SCORE/MISS, NO PLAY in SP/DP, FAILED, CLEAR, HARD CLEAR, EX HARD CLEAR and FULLCOMBO CLEAR.
-  The registered numeric model rejects sampled digit 6 at the fixed margin; those fields remain
-  unknown. Frames and complete labels are private under the operator's scorepeek data directory.
+  The parent accepted SCORE 11/15 and MISS 12/15; sampled digit 6 now passes the unchanged margin.
+  Session groups share identical glyphs; this is not an unseen-glyph holdout. Frames and complete
+  labels remain private.
 - Unit/lifecycle tests cover independent stability, rank boundaries, partial/changed/deduplicated
   snapshots, revisit identity, impossible EX SCORE, selection clearing, suspension, late work and
   separation from confirmed results. Existing socket and TUI regression tests are retained.
-- Full private production replay passes: 3 sessions, 16 accepted attempts, 13,683 canonical frames,
+- Registered-model full private production replay passes: 3 sessions, 16 accepted attempts, 13,683 canonical frames,
   correct selection at every labeled SELECT span, and no wrong/missing RESULT events. Supplemental
-  snapshots total 253 (9/220/24 per session). The run decoded 24 remote segments and took 439.2 s
+  snapshots total 255 (9/222/24 per session; parent model 253). The run decoded 24 remote segments and took 442.3 s
   on the development host. Live, replay and reducer producers share the v10 schema constant.
 - `mise run check`, workspace/all-target Clippy and fresh independent review pass. The live
   serializer/reducer schema regression and generated-session reader regression pass.
@@ -74,6 +78,10 @@ checkpoint; implementation history belongs in Git.
   Default parallel execution encountered one `WorkerUnavailable` failure in the unchanged
   diagnostic store root-lease rebinding test; earlier parallel execution and the final serial
   execution passed. Its intermittent cause remains unverified.
+- The new registration passes the ordinary installer in an isolated model store, six numeric
+  manifest/runtime tests, the full serial workspace suite and fresh independent review. Private
+  weights and generation records are retained in the operator's private artifacts. The deployed
+  binary and live model store remain unchanged.
 
 ## Unverified and next execution boundary
 

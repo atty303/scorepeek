@@ -104,7 +104,9 @@ Developers may instead provide a complete fixed small bundle with
 `scorepeek --model-bundle /absolute/directory <command...>`; scorepeek verifies the same registered
 contract and does not use the network. This is not an alternate-model selector.
 
-Result digits require the separately frozen private numeric bundle. Install its create-only,
+RESULT and MUSIC SELECT digits require the separately frozen private numeric bundle. The current
+registration uses the SELECT-adapted HOG/MLP weights (ADR 0115); older bundles do not satisfy it.
+Install its create-only,
 digest-bound model before `run` with
 `scorepeek numeric-model install --bundle /absolute/numeric-model-bundle`. There is no general-text
 numeric fallback: a missing or mismatched active bundle makes `run` fail closed. `scorepeek doctor`

@@ -358,3 +358,5 @@ requirements after their named superseding decisions.
 
 - [ADR 0114: MUSIC SELECT best snapshots](0114-observe-music-select-best-snapshots.md) separates
   supplemental game records from results and adds the Music Select Resolver state pane.
+- [ADR 0115: Promote SELECT-adapted numeric weights](0115-promote-select-adapted-numeric-model.md)
+  registers the additional-trained HOG/MLP weights with fixed thresholds and explicit overlap limits.

@@ -715,3 +715,7 @@ frame age、game p99 frametimeおよびOBS render/encode lagを比較してdefau
   既存Watcher・Latest result・RESULT/attempt resolverを保持し、80×25でも全gateを表示する。
 - 実画像と完全ラベルはprivateに保持する。認識不能は部分snapshotに残し、誤採用を許容しない。
   検証済みcoverageと未確認条件はSTATUS.mdを原典とする。DB保存・履歴補完UIは後続scope。
+
+ADR 0115では、SELECT追加学習済みHOG/MLPを登録する。既存RESULT logitsの保持を併用し、
+採用閾値とlayoutは維持する。sessionを分けても同一glyphが重複する評価の制約を明記し、
+昇格時には登録済みモデルを使った実際のRust SELECT／RESULT replayを検証する。

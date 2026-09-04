@@ -26,10 +26,10 @@ use super::{
 pub const NUMERIC_PREPROCESSOR_ID: &str = FIXED_SLOT_PREPROCESSOR_ID;
 pub const NUMERIC_MODEL_MANIFEST_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../models/manifests/numeric-fixed-slot-hog-mlp-runtime-v2.json"
+    "/../../models/manifests/numeric-fixed-slot-hog-mlp-runtime-v3.json"
 ));
 pub const NUMERIC_MODEL_MANIFEST_SHA256: &str =
-    "5e5b545d57a6197f4aaa6a863595f237cb19095903baa135960e4c257cda2137";
+    "3427a05c5360880b6facca83e565e6426aaf38c917494b2ae90f982da1fdfd91";
 const MAX_NUMERIC_MODEL_BYTES: u64 = 32 * 1024 * 1024;
 const NUMERIC_FEATURE_DIMENSIONS_I64: i64 = 2_244;
 const NUMERIC_OUTPUT_CLASSES_I64: i64 = 11;
