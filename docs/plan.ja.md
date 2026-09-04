@@ -112,7 +112,7 @@
   registered resourceとcandidate domainをcapture開始前にloadし、Gamescope capture loopからfield submit、inference、全song scoring、
   capture/worker/diagnosticの順序付き終了までを一つのbounded gateへ統合済み。private INFINITAS frameによる実submit、実行cost、
   queue behaviorとtarget上のfield性能は未検証。ADR 0078のprovisional result eventはADR 0083によりsupersedeされ、
-  public `/v1.sock` event authorityと1P/2P detectorは引き続き未実装である。RESULTのSP/DPは
+  public `/v1.sock` は ADR 0119 で実装する。1P/2P detector は未実装である。RESULTのSP/DPは
   measured slotのexact OCRとepisode内2観測で実装済みだが、DP実画像による検証は未完了である。
   さらにcorpus録画由来の全canonical frameをsource adapterから同じapplication sessionへ供給するrecording simulationを実装した。
   profileはrecording/recording manifest/source manifest/probe/coverage label/extraction/normalizer/layout/catalog/model/runtime、全frame span、source pacing、diagnostic
@@ -145,7 +145,7 @@
   freeze/delete、verified create-only local export、canonical producerからworkerへのnon-blocking live
   handoff、およびGamescopeのprofile-bound normalized frameから同じworkerへのownership transferまで。
   recognition input、target-host性能、
-  accepted field認識、event daemonは未着手）
+  当時の accepted field 認識・event daemon は後続 milestone で実装）
 - 別machine常用プレイ診断ループ: cargo-distによるLinux x86-64 CLI archiveとSHA-256 checksumの
   local生成まで実装。private catalog/modelは別管理とし、明示的marker calibration、profile選択だけの
   通常起動、bounded local evidence、選択runだけの明示transfer、development-machine replayを続ける。
@@ -237,21 +237,16 @@ DJ level、option、graph等は各fieldの独立fixture gateを満たしたも�
 
 ### Event API
 
-daemonは`$XDG_RUNTIME_DIR/scorepeek/v1.sock`からsame-UID clientへUTF-8 NDJSONを送る。
-filesystem permission、ownership、ACLはoperatorが管理し、scorepeekのevent protocolは
-Unix modeを受理条件またはconfidentiality保証にしない。
+ADR 0119 により `$XDG_RUNTIME_DIR/scorepeek/v1.sock` を正式な live API とする。
+接続時の公開 snapshot に続いて UTF-8 NDJSON を送る。request/ACK は設けず、再接続で現在状態を再取得する。
+公開対象は確定・暫定 RESULT、現在の選曲、SELECT best と稼働状態であり、raw OCR、候補、resolver 評価値、
+保存先や履歴配列は流さない。公開 schema/sequence は内部 run-event と独立させる。
 
-- request: `hello`、`get_status`、`subscribe`
-- provisional lifecycle: `result_provisional_changed`。resolved/update/withdrawをtypedに通知し、
-  result contentにはconfirmedと同じ`scorepeek-result-detected-v2` payloadを使う。保存authorityは持たない
-- accepted event: `result_detected`、`music_select_detected`。score/history保存authorityは外側のevent kindで判断する
-- lifecycle/status: capture generation、catalog/model readiness、quarantine summary
-- envelope: schema version、event ID、monotonic time、capture generation、capture/layout/
-  catalog/model/runtime digest
-- payload: immutable `scorepeek_song_id`、exact display title、INFINITAS status、typed fields
-
-画像、crop、raw OCR text、候補list、source record、保存履歴はsocketへ流さない。client queueは
-boundedとし、遅いclientだけを切断する。future UIはこのAPIだけへ依存する。
+snapshot と連番境界を同時に取得し、queue overflow は既存接続を切断する。遅い client の切断はその接続に限定する。
+切断中の全 RESULT 回収・永続ログ・再送は保証しない。既存の `observations-v11.sock` は廃止する。
+filesystem permission、ownership、ACL は operator が管理し、Unix mode を受理条件または confidentiality 保証にしない。
+詳細な wire contract と consumer state 更新規則は [Event API v1](event-api.md) を原典とする。
+future UI はこの公開 API を利用する。
 
 ## Catalog federation
 
@@ -627,7 +622,7 @@ flush timeoutは`partial | dropped` evidenceとして残すが、play、capture 
     `result_provisional_changed`を発行し、semantic RESULT close後の`result_detected`と同じv2 payloadを
     共用する。revision付きresolved/update/withdrawはdiagnostic artifactと現在TUIへ流すが、confirmed
     count/historyと将来のscore保存は外側の`result_detected`だけをauthorityとする。debug observation
-    socketはv8へ進めるが、future UIは実装予定のpublic `/v1.sock`へ依存させる。
+    内部記録は versioned run-event を維持し、ADR 0119 の public `/v1.sock` を future UI の接続先とする。
 11. **M8**: catalog update replay、full private holdout、Bazzite live flowをrelease gateへ統合する。
 
 M3/M4からM7へ進む間は、ADR 0049で通常のRust CLI配布へ置き換えたcross-machine delivery checkpointを縦に通す。event authorityや

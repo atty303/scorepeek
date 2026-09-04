@@ -6,6 +6,9 @@ authoritative.
 
 ## Current
 
+- [ADR 0119: Promote the public event socket](0119-promote-public-event-socket.md)
+  replaces the observation endpoint with the typed snapshot/live v1 API; no history replay or request protocol.
+
 - [ADR 0118: Retain SELECT intervals across missing evidence](0118-retain-select-intervals-across-missing-evidence.md)
   supersedes ADR 0114's unknown-identity reset and resolver notification comparison.
 

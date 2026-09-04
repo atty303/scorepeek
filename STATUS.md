@@ -10,7 +10,7 @@ checkpoint; implementation history belongs in Git.
 - RESULT v2 remains the confirmed play/history contract. MUSIC SELECT best snapshot v1 is a
   separate supplemental observation, not a play. DB persistence and history supplementation UI
   remain outside the implemented scope.
-- Current diagnostic protocols are run-event/socket/snapshot v11 and recognition observation v22.
+- The public live API is socket/snapshot v1. Diagnostic protocols remain run-event v11 and recognition observation v22.
   Joined sessions and private attempt labels remain v5. Readers retain supported older shapes and
   reject unknown versions.
 
@@ -50,10 +50,17 @@ checkpoint; implementation history belongs in Git.
 - Resolver notifications compare semantic state: resolved clock/streak updates alone do not emit.
   Internal observations remain fresh; connecting-client snapshots use the last published state.
   Held identity, current stabilization and the last published revision are distinct in the TUI.
-- `music_select_best_observed` and typed `music_select_resolver_changed` share the observation
-  connection, connecting-client snapshot and headless replay. The public supplemental payload
-  excludes raw OCR/candidates. TUI has Watcher, Latest result, Music Select Resolver, and
-  RESULT/attempt Resolver. At 80x25 the four panes occupy 4/8/7/6 rows and retain all attempt gates.
+- ADR 0119 promotes `v1.sock` to the public snapshot/live NDJSON API. Confirmed/provisional RESULT,
+  current selection, supplemental SELECT best and operational status have a separate typed projection,
+  public sequence, event identity and session binding. Raw observations, candidates, resolver state,
+  timing, recording paths and history arrays remain internal. The observation socket is removed;
+  TUI, run-event v11 recording and headless replay continue to use their existing internal contracts.
+- Snapshot and publication share the sequence boundary. Queue overflow disconnects existing clients;
+  slow clients are isolated. Events and snapshots are bounded to 1 MiB. Oversize or worker failure
+  disables public delivery without changing recognition. Reconnect restores current state, not all
+  missed plays. Detailed wire and consumer state rules are in `docs/event-api.md`.
+- TUI has Watcher, Latest result, Music Select Resolver, and RESULT/attempt Resolver. At 80x25
+  the four panes occupy 4/8/7/6 rows and retain all attempt gates.
 - ADR 0116 restricts recording completeness to runtime persistence loss. Typed facts are written
   without duplicate semantic validation; internal binding/shape/chronology defects are no longer
   emitted as recording-drop reasons. Foreign pending jobs are rejected without degrading the run.
@@ -112,9 +119,12 @@ checkpoint; implementation history belongs in Git.
   Connecting snapshots preserve the last publication. Existing four-pane gate tests and held-state
   rendering pass at 120x40 and 80x25. Trace capacity/no-overwrite tests pass.
 - `mise run check`, workspace/all-target Clippy and the complete default-parallel `mise run test`
-  pass (490 runtime, 305 binary, 128 corpus library, 5 corpus binary tests, plus 99 offline OCR tests).
-  The binding-mismatch fixture uses the existing isolated test supervisor. Independent final review
-  has no actionable findings.
+  pass (497 runtime, 312 binary, 128 corpus library, 5 corpus binary tests, plus 99 offline OCR tests).
+  Public API tests cover snapshot/live folding, provenance readiness, old queued-record exclusion,
+  overflow with no subsequent event, idle reconnects/write-half-close, partial/slow clients, record
+  limits, channel failure non-interference, and socket ownership cleanup. Raw diagnostic records and
+  accepted RESULT payloads remain separate. The binding-mismatch fixture uses the existing isolated
+  test supervisor. Independent final review of the API promotion has no actionable findings.
 - Trace provenance binds the running executable and both SELECT layouts; the three-file hash is
   explicitly a partial source fingerprint. Full production replay covers the final reducer/recognition
   behavior. Subsequent writer-provenance and test-fixture-only corrections pass focused tests,
@@ -136,5 +146,6 @@ checkpoint; implementation history belongs in Git.
   complete session now has its six manually reviewed RESULT/SELECT labels formally applied.
   The original three-session suite and the additional session were replayed separately with the
   same final runtime; all four sessions passed. Developer-host replay is not target-live verification.
-- `v1.sock` remains the planned accepted-event interface; current observation clients use
-  `observations-v11.sock`. No result history DB, deployment, release or push was performed.
+- Public API developer-host verification and independent review are complete. The versioned wire
+  contract is ready for consumer integration. Target-live API performance and capture gates remain
+  unverified. No result history DB, deployment, release or push is included in the API promotion.

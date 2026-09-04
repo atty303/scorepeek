@@ -1,3 +1,4 @@
+pub mod event_api;
 pub mod music_select_best;
 use music_select_best::{MusicSelectBestSnapshot, MusicSelectResolverState};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -48,7 +49,7 @@ fn duration_us(duration: Duration) -> u64 {
 const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const RESULT_HISTORY_CAPACITY: usize = 32;
-const SOCKET_NAME: &str = "observations-v11.sock";
+const SOCKET_NAME: &str = "v1.sock";
 pub const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v11";
 const NUMERIC_REQUIRED_OBSERVATIONS: u8 = 2;
 const PLAY_OPTIONS_REQUIRED_OBSERVATIONS: u8 = 2;
@@ -1762,6 +1763,8 @@ fn observed_song_presentation(
 
 #[derive(Clone, Debug, Serialize)]
 pub struct RunViewState {
+    #[serde(skip)]
+    public: event_api::PublicState,
     invocation_id: String,
     profile_sha256: String,
     recording: &'static str,
@@ -1893,6 +1896,7 @@ struct AttemptNodeSnapshot {
 impl RunViewState {
     fn new(invocation_id: String, profile_sha256: String, recording_enabled: bool) -> Self {
         Self {
+            public: event_api::PublicState::new(invocation_id.clone()),
             invocation_id,
             profile_sha256,
             recording: if recording_enabled {
@@ -2126,6 +2130,7 @@ struct ChannelHealth {
     dropped_events: AtomicU64,
     disconnected_clients: AtomicU64,
     server_failed: AtomicBool,
+    oversized_records: AtomicU64,
 }
 
 impl ChannelHealth {
@@ -2134,13 +2139,15 @@ impl ChannelHealth {
             "status": if self.server_failed.load(Ordering::Acquire) { "degraded" } else { "ready" },
             "connected_clients": self.connected_clients.load(Ordering::Acquire),
             "dropped_events": self.dropped_events.load(Ordering::Acquire),
+            "oversized_records": self.oversized_records.load(Ordering::Acquire),
+            "error_type": if self.oversized_records.load(Ordering::Acquire) > 0 { Some("record_too_large") } else if self.server_failed.load(Ordering::Acquire) { Some("worker_unavailable") } else if self.dropped_events.load(Ordering::Acquire) > 0 { Some("queue_overflow") } else { None },
             "disconnected_clients": self.disconnected_clients.load(Ordering::Acquire),
         })
     }
 }
 
-struct ObservationChannel {
-    sender: SyncSender<Vec<u8>>,
+struct EventChannel {
+    sender: SyncSender<QueuedEvent>,
     stop: Arc<AtomicBool>,
     health: Arc<ChannelHealth>,
     thread: Option<JoinHandle<()>>,
@@ -2176,7 +2183,7 @@ impl Drop for SocketPathGuard {
     }
 }
 
-impl ObservationChannel {
+impl EventChannel {
     fn start(state: Arc<Mutex<RunViewState>>) -> Result<Self, String> {
         let runtime = env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
@@ -2193,30 +2200,34 @@ impl ObservationChannel {
         let socket_path = directory.join(SOCKET_NAME);
         remove_stale_socket(&socket_path)?;
         let listener = UnixListener::bind(&socket_path)
-            .map_err(|error| format!("observation socket could not be bound: {error}"))?;
+            .map_err(|error| format!("event socket could not be bound: {error}"))?;
         let metadata = socket_path
             .symlink_metadata()
-            .map_err(|error| format!("observation socket could not be inspected: {error}"))?;
+            .map_err(|error| format!("event socket could not be inspected: {error}"))?;
         let socket_identity = (metadata.dev(), metadata.ino());
         let mut path_guard = SocketPathGuard::new(socket_path.clone(), socket_identity);
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("observation socket permissions could not be set: {error}"))?;
-        listener.set_nonblocking(true).map_err(|error| {
-            format!("observation socket could not be made nonblocking: {error}")
-        })?;
-        let (sender, receiver) = std::sync::mpsc::sync_channel::<Vec<u8>>(EVENT_QUEUE_CAPACITY);
+            .map_err(|error| format!("event socket permissions could not be set: {error}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|error| format!("event socket could not be made nonblocking: {error}"))?;
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<QueuedEvent>(EVENT_QUEUE_CAPACITY);
         let stop = Arc::new(AtomicBool::new(false));
         let health = Arc::new(ChannelHealth::default());
         let thread_stop = Arc::clone(&stop);
         let thread_health = Arc::clone(&health);
         let thread = thread::Builder::new()
-            .name("scorepeek-observation-socket".to_owned())
+            .name("scorepeek-event-socket".to_owned())
             .spawn(move || {
                 let mut clients = Vec::new();
                 loop {
+                    if thread_health.server_failed.load(Ordering::Acquire) {
+                        break;
+                    }
+                    prune_clients(&thread_health, &mut clients);
                     accept_clients(&listener, &state, &thread_health, &mut clients);
                     match receiver.recv_timeout(Duration::from_millis(20)) {
-                        Ok(bytes) => broadcast(&bytes, &thread_health, &mut clients),
+                        Ok(record) => broadcast(&record, &thread_health, &mut clients),
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                             if thread_stop.load(Ordering::Acquire) {
                                 break;
@@ -2225,9 +2236,9 @@ impl ObservationChannel {
                         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                     }
                 }
-                thread_health.connected_clients.store(0, Ordering::Release);
+                retain_clients(&thread_health, &mut clients, |_| false);
             })
-            .map_err(|error| format!("observation socket worker could not start: {error}"))?;
+            .map_err(|error| format!("event socket worker could not start: {error}"))?;
         let channel = Self {
             sender,
             stop,
@@ -2240,17 +2251,18 @@ impl ObservationChannel {
         Ok(channel)
     }
 
-    fn publish(&self, event: &Value) -> Result<(), String> {
-        let mut bytes = serde_json::to_vec(event)
-            .map_err(|error| format!("run observation serialization failed: {error}"))?;
-        bytes.push(b'\n');
-        try_send_event(&self.sender, &self.health, bytes);
-        Ok(())
+    fn publish(&self, event: QueuedEvent) {
+        try_send_event(&self.sender, &self.health, event);
     }
 }
 
-fn try_send_event(sender: &SyncSender<Vec<u8>>, health: &ChannelHealth, bytes: Vec<u8>) {
-    match sender.try_send(bytes) {
+struct QueuedEvent {
+    sequence: u64,
+    bytes: Vec<u8>,
+}
+
+fn try_send_event(sender: &SyncSender<QueuedEvent>, health: &ChannelHealth, event: QueuedEvent) {
+    match sender.try_send(event) {
         Ok(()) => {}
         Err(TrySendError::Full(_)) => {
             health.dropped_events.fetch_add(1, Ordering::AcqRel);
@@ -2261,7 +2273,7 @@ fn try_send_event(sender: &SyncSender<Vec<u8>>, health: &ChannelHealth, bytes: V
     }
 }
 
-impl Drop for ObservationChannel {
+impl Drop for EventChannel {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take()
@@ -2285,16 +2297,16 @@ fn remove_owned_socket(path: &Path, identity: (u64, u64)) {
 fn ensure_private_directory(path: &Path) -> Result<(), String> {
     match path.symlink_metadata() {
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(()),
-        Ok(_) => Err("observation socket directory is not a directory".to_owned()),
+        Ok(_) => Err("event socket directory is not a directory".to_owned()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             let mut builder = DirBuilder::new();
             builder.mode(0o700);
-            builder.create(path).map_err(|error| {
-                format!("observation socket directory could not be created: {error}")
-            })
+            builder
+                .create(path)
+                .map_err(|error| format!("event socket directory could not be created: {error}"))
         }
         Err(error) => Err(format!(
-            "observation socket directory could not be inspected: {error}"
+            "event socket directory could not be inspected: {error}"
         )),
     }
 }
@@ -2302,53 +2314,97 @@ fn ensure_private_directory(path: &Path) -> Result<(), String> {
 fn remove_stale_socket(path: &Path) -> Result<(), String> {
     match path.symlink_metadata() {
         Ok(metadata) if metadata.file_type().is_socket() => match UnixStream::connect(path) {
-            Ok(_) => Err("observation socket is already active".to_owned()),
+            Ok(_) => Err("event socket is already active".to_owned()),
             Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => fs::remove_file(path)
-                .map_err(|error| format!("stale observation socket could not be removed: {error}")),
+                .map_err(|error| format!("stale event socket could not be removed: {error}")),
             Err(error) => Err(format!(
-                "observation socket liveness could not be determined: {error}"
+                "event socket liveness could not be determined: {error}"
             )),
         },
-        Ok(_) => Err("observation socket path contains a non-socket entry".to_owned()),
+        Ok(_) => Err("event socket path contains a non-socket entry".to_owned()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!(
-            "observation socket path could not be inspected: {error}"
-        )),
+        Err(error) => Err(format!("event socket path could not be inspected: {error}")),
     }
+}
+
+struct EventClient {
+    stream: UnixStream,
+    next_sequence: u64,
+    epoch: u64,
+}
+
+fn prune_clients(health: &ChannelHealth, clients: &mut Vec<EventClient>) {
+    let epoch = health.dropped_events.load(Ordering::Acquire);
+    retain_clients(health, clients, |client| {
+        // On Linux AF_UNIX, a zero-byte send detects a closed peer without consuming requests
+        // or mistaking a client's write-half shutdown for loss of its receiving side.
+        client.epoch == epoch
+            && match client.stream.write(&[]) {
+                Ok(_) => true,
+                Err(error) => matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ),
+            }
+    });
+}
+
+fn retain_clients(
+    health: &ChannelHealth,
+    clients: &mut Vec<EventClient>,
+    mut keep: impl FnMut(&mut EventClient) -> bool,
+) {
+    let before = clients.len();
+    clients.retain_mut(|client| keep(client));
+    health
+        .disconnected_clients
+        .fetch_add((before - clients.len()) as u64, Ordering::AcqRel);
+    health
+        .connected_clients
+        .store(clients.len(), Ordering::Release);
 }
 
 fn accept_clients(
     listener: &UnixListener,
     state: &Arc<Mutex<RunViewState>>,
     health: &ChannelHealth,
-    clients: &mut Vec<UnixStream>,
+    clients: &mut Vec<EventClient>,
 ) {
-    loop {
+    // Bound admission work as well as established clients so a reconnect loop cannot starve delivery.
+    for _ in 0..MAX_CLIENTS {
         match listener.accept() {
-            Ok((stream, _)) => {
+            Ok((mut stream, _)) => {
+                prune_clients(health, clients);
                 if clients.len() >= MAX_CLIENTS || stream.set_nonblocking(true).is_err() {
                     health.disconnected_clients.fetch_add(1, Ordering::AcqRel);
                     continue;
                 }
-                clients.push(stream);
+                let Ok(state) = state.lock() else {
+                    health.server_failed.store(true, Ordering::Release);
+                    return;
+                };
+                if health.server_failed.load(Ordering::Acquire) {
+                    return;
+                }
+                let Ok(bytes) = event_api::encode(&state.public) else {
+                    health.oversized_records.fetch_add(1, Ordering::AcqRel);
+                    health.server_failed.store(true, Ordering::Release);
+                    return;
+                };
+                let next_sequence = state.public.next_sequence;
+                let epoch = health.dropped_events.load(Ordering::Acquire);
+                if stream.write_all(&bytes).is_err() {
+                    health.disconnected_clients.fetch_add(1, Ordering::AcqRel);
+                    continue;
+                }
+                clients.push(EventClient {
+                    stream,
+                    next_sequence,
+                    epoch,
+                });
                 health
                     .connected_clients
                     .store(clients.len(), Ordering::Release);
-                let Some(snapshot) = snapshot_bytes(state, health) else {
-                    clients.pop();
-                    health
-                        .connected_clients
-                        .store(clients.len(), Ordering::Release);
-                    health.server_failed.store(true, Ordering::Release);
-                    continue;
-                };
-                if clients.last_mut().unwrap().write_all(&snapshot).is_err() {
-                    clients.pop();
-                    health
-                        .connected_clients
-                        .store(clients.len(), Ordering::Release);
-                    health.disconnected_clients.fetch_add(1, Ordering::AcqRel);
-                }
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
             Err(_) => {
@@ -2359,30 +2415,71 @@ fn accept_clients(
     }
 }
 
-fn snapshot_bytes(state: &Arc<Mutex<RunViewState>>, health: &ChannelHealth) -> Option<Vec<u8>> {
-    let state = state.lock().ok()?.clone();
-    let mut bytes = serde_json::to_vec(&json!({
-            "schema": "scorepeek-run-observation-snapshot-v11",
-        "state": state,
-        "channel": health.value(),
-    }))
-    .ok()?;
-    bytes.push(b'\n');
-    Some(bytes)
+#[cfg(test)]
+fn snapshot_bytes(state: &Arc<Mutex<RunViewState>>, _health: &ChannelHealth) -> Option<Vec<u8>> {
+    event_api::encode(&state.lock().ok()?.public).ok()
 }
 
-fn broadcast(bytes: &[u8], health: &ChannelHealth, clients: &mut Vec<UnixStream>) {
-    clients.retain_mut(|client| {
-        if client.write_all(bytes).is_ok() {
-            true
-        } else {
-            health.disconnected_clients.fetch_add(1, Ordering::AcqRel);
-            false
+fn broadcast(record: &QueuedEvent, health: &ChannelHealth, clients: &mut Vec<EventClient>) {
+    let epoch = health.dropped_events.load(Ordering::Acquire);
+    retain_clients(health, clients, |client| {
+        if client.epoch != epoch {
+            return false;
         }
+        if record.sequence < client.next_sequence {
+            return true;
+        }
+        if record.sequence != client.next_sequence {
+            return false;
+        }
+        if client.stream.write_all(&record.bytes).is_err() {
+            return false;
+        }
+        client.next_sequence += 1;
+        true
     });
-    health
-        .connected_clients
-        .store(clients.len(), Ordering::Release);
+}
+
+fn commit_public_projection(
+    current: &mut event_api::PublicState,
+    projected: event_api::PublicState,
+    events: &[event_api::PublicRecord],
+    channel: Option<&EventChannel>,
+) {
+    if events.is_empty() {
+        return;
+    }
+    if channel.is_some_and(|channel| channel.health.server_failed.load(Ordering::Acquire)) {
+        return;
+    }
+    let records = events
+        .iter()
+        .map(|event| {
+            event_api::encode(event).map(|bytes| QueuedEvent {
+                sequence: event.sequence,
+                bytes,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>();
+    match records.and_then(|records| event_api::encode(&projected).map(|_| records)) {
+        Ok(records) => {
+            *current = projected;
+            if let Some(channel) = channel {
+                for record in records {
+                    channel.publish(record);
+                }
+            }
+        }
+        Err(_) => {
+            if let Some(channel) = channel {
+                channel
+                    .health
+                    .oversized_records
+                    .fetch_add(1, Ordering::AcqRel);
+                channel.health.server_failed.store(true, Ordering::Release);
+            }
+        }
+    }
 }
 
 enum Display {
@@ -2446,7 +2543,7 @@ impl Drop for TerminalGuard {
 #[allow(clippy::struct_excessive_bools)]
 pub struct RoutineOutput {
     state: Arc<Mutex<RunViewState>>,
-    channel: Option<ObservationChannel>,
+    channel: Option<EventChannel>,
     display: Option<Display>,
     next_sequence: u64,
     engine: ResolverEngine,
@@ -2572,7 +2669,7 @@ impl RoutineOutput {
             profile_sha256,
             recording_enabled,
         )));
-        let channel = ObservationChannel::start(Arc::clone(&state))?;
+        let channel = EventChannel::start(Arc::clone(&state))?;
         let display = if io::stdout().is_terminal() {
             Display::Tui(TerminalGuard::new()?)
         } else {
@@ -2675,6 +2772,12 @@ impl RoutineOutput {
     )]
     pub fn take_headless_events(&mut self) -> Vec<RunEvent> {
         std::mem::take(&mut self.headless_events)
+    }
+
+    pub fn bind_public_session(&mut self, binding: event_api::Binding) {
+        if let Ok(mut state) = self.state.lock() {
+            state.public.pending_binding = Some(binding);
+        }
     }
 
     pub fn publish(&mut self, event: &RunEvent) -> Result<(), String> {
@@ -4082,9 +4185,6 @@ impl RoutineOutput {
         if let Some(object) = value.as_object_mut() {
             object.insert("channel_sequence".to_owned(), sequence.into());
         }
-        if let Some(worker) = &mut self.event_worker {
-            worker.try_record(&value);
-        }
         {
             let mut state = self
                 .state
@@ -4092,11 +4192,27 @@ impl RoutineOutput {
                 .map_err(|_| "run view state lock was poisoned".to_owned())?;
             state.reduce(event, &value);
             state.next_channel_sequence = self.next_sequence;
+            if event_api::PublicState::observes(event) {
+                let mut projected = state.public.clone();
+                let events = projected.project(event);
+                commit_public_projection(
+                    &mut state.public,
+                    projected,
+                    &events,
+                    self.channel.as_ref(),
+                );
+            }
+        }
+        if let Some(channel) = &self.channel {
+            value["event_api_health"] = channel.health.value();
+            if let Ok(state) = self.state.lock() {
+                value["event_api_health"]["invocation_id"] = state.invocation_id.clone().into();
+            }
+        }
+        if let Some(worker) = &mut self.event_worker {
+            worker.try_record(&value);
         }
         self.headless_events.push(event.clone());
-        if let Some(channel) = &self.channel {
-            channel.publish(&value)?;
-        }
         if self.timing_active {
             self.output_us = self
                 .output_us
@@ -4125,6 +4241,15 @@ impl RoutineOutput {
             state.active_session_id = session_id.map(ToOwned::to_owned);
             state.capture_generation = generation;
             message.clone_into(&mut state.message);
+            let mut projected = state.public.clone();
+            let events = projected
+                .watcher(
+                    event_api::WatcherStatus::from_internal(state_name)
+                        .ok_or_else(|| "unknown public watcher state".to_owned())?,
+                )
+                .into_iter()
+                .collect::<Vec<_>>();
+            commit_public_projection(&mut state.public, projected, &events, self.channel.as_ref());
         }
         self.refresh()
     }
@@ -5268,7 +5393,7 @@ mod tests {
         )))
     }
 
-    fn test_output(state: Arc<Mutex<RunViewState>>, channel: ObservationChannel) -> RoutineOutput {
+    fn test_output(state: Arc<Mutex<RunViewState>>, channel: EventChannel) -> RoutineOutput {
         RoutineOutput {
             state,
             channel: Some(channel),
@@ -5310,10 +5435,10 @@ mod tests {
         }
     }
 
-    fn disconnected_test_channel() -> ObservationChannel {
+    fn disconnected_test_channel() -> EventChannel {
         let (sender, receiver) = std::sync::mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
         drop(receiver);
-        ObservationChannel {
+        EventChannel {
             sender,
             stop: Arc::new(AtomicBool::new(false)),
             health: Arc::new(ChannelHealth::default()),
@@ -5585,6 +5710,37 @@ mod tests {
         .unwrap()
     }
 
+    fn assert_public_fold(events: Vec<RunEvent>) {
+        let mut public = event_api::PublicState::new("invocation-1".into());
+        let mut consumer = serde_json::to_value(&public).unwrap();
+        for internal in events {
+            for record in public.project(&internal) {
+                let event = serde_json::to_value(record).unwrap();
+                event_api::tests::fold(&mut consumer, &event);
+                assert_eq!(consumer, serde_json::to_value(&public).unwrap());
+            }
+        }
+    }
+
+    fn wire_event(sequence: u64) -> QueuedEvent {
+        let mut public = event_api::PublicState::new("invocation-1".into());
+        public.next_sequence = sequence;
+        let event = public
+            .project(&RunEvent {
+                schema: RUN_EVENT_SCHEMA.into(),
+                kind: RunEventKind::WatcherStarted {
+                    invocation_id: "invocation-1".into(),
+                    profile_sha256: "a".repeat(64),
+                },
+            })
+            .pop()
+            .unwrap();
+        QueuedEvent {
+            sequence,
+            bytes: event_api::encode(&event).unwrap(),
+        }
+    }
+
     fn read_events(reader: &mut BufReader<UnixStream>, count: usize) -> Vec<Value> {
         let mut events = Vec::with_capacity(count);
         while events.len() < count {
@@ -5650,7 +5806,7 @@ mod tests {
     #[test]
     fn socket_sends_snapshot_before_live_events_and_removes_its_own_path() {
         let temporary = tempfile::tempdir().unwrap();
-        let channel = ObservationChannel::start_at(temporary.path(), state()).unwrap();
+        let channel = EventChannel::start_at(temporary.path(), state()).unwrap();
         let socket_path = channel.socket_path.clone();
         let stream = UnixStream::connect(&socket_path).unwrap();
         stream
@@ -5660,27 +5816,16 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         let snapshot: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(snapshot["schema"], "scorepeek-run-observation-snapshot-v11");
-        assert_eq!(snapshot["state"]["invocation_id"], "invocation-1");
-        assert_eq!(snapshot["state"]["next_channel_sequence"], 1);
-        assert_eq!(snapshot["state"]["music_select"]["active"], false);
-        assert_eq!(
-            snapshot["state"]["music_select"]["output"],
-            "identity_unresolved"
-        );
-        assert_eq!(snapshot["channel"]["connected_clients"], 1);
-
-        channel
-            .publish(&json!({
-                "schema": "scorepeek-run-event-v3",
-                "event": "watcher_started",
-                "channel_sequence": 1,
-            }))
-            .unwrap();
+        assert_eq!(snapshot["schema"], "scorepeek-event-snapshot-v1");
+        assert_eq!(snapshot["invocation_id"], "invocation-1");
+        assert_eq!(snapshot["next_sequence"], 1);
+        assert_eq!(snapshot["status"]["watcher"], "starting");
+        assert!(snapshot["music_select_best"].is_null());
+        channel.publish(wire_event(1));
         line.clear();
         reader.read_line(&mut line).unwrap();
         let event: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(event["event"], "watcher_started");
+        assert_eq!(event["event"], "status_changed");
         drop(channel);
         assert!(!socket_path.exists());
     }
@@ -5689,7 +5834,7 @@ mod tests {
     fn numeric_before_joint_identity_emits_once_after_attempt_confirmation() {
         let temporary = tempfile::tempdir().unwrap();
         let state = state();
-        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
+        let channel = EventChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
         let stream = UnixStream::connect(&channel.socket_path).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(1)))
@@ -5722,13 +5867,6 @@ mod tests {
             ))
             .unwrap();
         let completed = read_events_through(&mut reader, "result_detected", 20);
-        let confirmation = completed
-            .iter()
-            .position(|event| {
-                event["event"] == "play_attempt_changed"
-                    && event["state"]["attempt"]["result_relation"] == "confirmed"
-            })
-            .unwrap();
         let provisional = completed
             .iter()
             .position(|event| {
@@ -5740,20 +5878,28 @@ mod tests {
             .iter()
             .position(|event| event["event"] == "result_detected")
             .unwrap();
-        assert!(provisional < confirmation);
-        assert!(confirmation < result);
-        assert_eq!(completed[provisional]["schema"], RUN_EVENT_SCHEMA);
+        assert!(provisional < result);
+        assert_eq!(completed[provisional]["schema"], event_api::EVENT_SCHEMA);
         assert_eq!(
             completed[provisional]["state"]["result"],
             completed[result]["result"]
         );
-        assert!(completed.iter().any(|event| {
-            event["event"] == "numeric_result_changed" && event["state"]["status"] == "accepted"
-        }));
         assert_eq!(completed[result]["source_sequence"], 4);
-
+        assert!(
+            completed
+                .iter()
+                .all(|event| event["event"] != "field_observation"
+                    && event["event"] != "play_attempt_changed")
+        );
+        let internal = output.take_headless_events();
+        assert_public_fold(internal.clone());
+        assert!(
+            internal
+                .iter()
+                .any(|event| matches!(event.kind, RunEventKind::PlayAttemptChanged { .. }))
+        );
         output.publish(&accepted_result_event(4)).unwrap();
-        assert_eq!(read_events(&mut reader, 1)[0]["event"], "field_observation");
+        assert_eq!(output.state.lock().unwrap().result_count, 1);
     }
 
     #[test]
@@ -6135,7 +6281,7 @@ mod tests {
     fn incomplete_numeric_finalizes_the_attempt_as_rejected() {
         let temporary = tempfile::tempdir().unwrap();
         let state = state();
-        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
+        let channel = EventChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
         let mut output = test_output(state, channel);
         prepare_accepted_attempt(&mut output);
 
@@ -6168,7 +6314,7 @@ mod tests {
     fn stale_numeric_from_another_chart_cannot_confirm_the_attempt() {
         let temporary = tempfile::tempdir().unwrap();
         let state = state();
-        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
+        let channel = EventChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
         let mut output = test_output(state, channel);
         prepare_accepted_attempt(&mut output);
 
@@ -6204,7 +6350,7 @@ mod tests {
     fn failed_session_boundary_cannot_replace_semantic_result_finalization() {
         let temporary = tempfile::tempdir().unwrap();
         let state = state();
-        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
+        let channel = EventChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
         let mut output = test_output(state, channel);
         prepare_accepted_attempt(&mut output);
 
@@ -6226,7 +6372,7 @@ mod tests {
     fn normalized_result_evidence_completes_an_attempt_despite_wrong_select_title() {
         let temporary = tempfile::tempdir().unwrap();
         let state = state();
-        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
+        let channel = EventChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
         let mut output = test_output(Arc::clone(&state), channel);
         let correct_song_id =
             serde_json::from_str("\"00000000-0000-0000-0000-000000000001\"").unwrap();
@@ -6381,7 +6527,7 @@ mod tests {
     fn result_reentry_does_not_reemit_the_same_attempt() {
         let temporary = tempfile::tempdir().unwrap();
         let state = state();
-        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
+        let channel = EventChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
         let mut output = test_output(Arc::clone(&state), channel);
         prepare_accepted_attempt(&mut output);
 
@@ -6414,7 +6560,7 @@ mod tests {
     #[test]
     fn socket_broadcasts_one_live_event_to_multiple_clients() {
         let temporary = tempfile::tempdir().unwrap();
-        let channel = ObservationChannel::start_at(temporary.path(), state()).unwrap();
+        let channel = EventChannel::start_at(temporary.path(), state()).unwrap();
         let mut readers = (0..2)
             .map(|_| {
                 let stream = UnixStream::connect(&channel.socket_path).unwrap();
@@ -6427,36 +6573,21 @@ mod tests {
         for reader in &mut readers {
             let mut snapshot = String::new();
             reader.read_line(&mut snapshot).unwrap();
-            assert!(snapshot.contains("scorepeek-run-observation-snapshot-v11"));
+            assert!(snapshot.contains("scorepeek-event-snapshot-v1"));
         }
-        channel
-            .publish(&json!({
-                "schema": "scorepeek-run-event-v3",
-                "event": "watcher_started",
-                "channel_sequence": 1,
-            }))
-            .unwrap();
+        channel.publish(wire_event(1));
         for reader in &mut readers {
             let mut line = String::new();
             reader.read_line(&mut line).unwrap();
-            assert_eq!(
-                serde_json::from_str::<Value>(&line).unwrap()["channel_sequence"],
-                1
-            );
+            assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["sequence"], 1);
         }
     }
 
     #[test]
     fn publishing_without_clients_is_healthy() {
         let temporary = tempfile::tempdir().unwrap();
-        let channel = ObservationChannel::start_at(temporary.path(), state()).unwrap();
-        channel
-            .publish(&json!({
-                "schema": "scorepeek-run-event-v3",
-                "event": "watcher_started",
-                "channel_sequence": 1,
-            }))
-            .unwrap();
+        let channel = EventChannel::start_at(temporary.path(), state()).unwrap();
+        channel.publish(wire_event(1));
         std::thread::sleep(Duration::from_millis(40));
         assert!(!channel.health.server_failed.load(Ordering::Acquire));
         assert_eq!(channel.health.connected_clients.load(Ordering::Acquire), 0);
@@ -6465,7 +6596,7 @@ mod tests {
     #[test]
     fn a_slow_client_is_disconnected_without_degrading_the_server() {
         let temporary = tempfile::tempdir().unwrap();
-        let channel = ObservationChannel::start_at(temporary.path(), state()).unwrap();
+        let channel = EventChannel::start_at(temporary.path(), state()).unwrap();
         let stream = UnixStream::connect(&channel.socket_path).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(1)))
@@ -6473,14 +6604,9 @@ mod tests {
         let mut reader = BufReader::new(stream);
         let mut snapshot = String::new();
         reader.read_line(&mut snapshot).unwrap();
-        channel
-            .publish(&json!({
-                "schema": "scorepeek-run-event-v3",
-                "event": "field_observation",
-                "channel_sequence": 1,
-                "payload": "x".repeat(2 * 1024 * 1024),
-            }))
-            .unwrap();
+        let mut event = wire_event(1);
+        event.bytes = vec![b' '; event_api::MAX_RECORD_BYTES];
+        channel.publish(event);
         for _ in 0..50 {
             if channel.health.disconnected_clients.load(Ordering::Acquire) > 0 {
                 break;
@@ -6496,6 +6622,179 @@ mod tests {
     }
 
     #[test]
+    fn idle_clients_release_slots_without_public_events() {
+        let temporary = tempfile::tempdir().unwrap();
+        let channel = EventChannel::start_at(temporary.path(), state()).unwrap();
+        for _ in 0..(MAX_CLIENTS * 2) {
+            let stream = UnixStream::connect(&channel.socket_path).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            assert_eq!(
+                read_raw_event(&mut BufReader::new(stream))["next_sequence"],
+                1
+            );
+        }
+        let stream = UnixStream::connect(&channel.socket_path).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut reader = BufReader::new(stream);
+        assert_eq!(read_raw_event(&mut reader)["next_sequence"], 1);
+        channel.publish(wire_event(1));
+        assert_eq!(read_raw_event(&mut reader)["sequence"], 1);
+        // Inject the full-queue notification while the worker's actual queue is empty.
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(1);
+        try_send_event(&sender, &channel.health, wire_event(2));
+        try_send_event(&sender, &channel.health, wire_event(3));
+        assert_eq!(reader.read_line(&mut String::new()).unwrap(), 0);
+    }
+
+    #[test]
+    fn connecting_snapshot_skips_queued_history_and_overflow_disconnects() {
+        let temporary = tempfile::tempdir().unwrap();
+        let listener = UnixListener::bind(temporary.path().join("test.sock")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let state = state();
+        state.lock().unwrap().public.next_sequence = 3;
+        let health = ChannelHealth::default();
+        let mut clients = Vec::new();
+        let stream = UnixStream::connect(temporary.path().join("test.sock")).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        accept_clients(&listener, &state, &health, &mut clients);
+        assert_eq!(read_raw_event(&mut reader)["next_sequence"], 3);
+        broadcast(&wire_event(1), &health, &mut clients);
+        broadcast(&wire_event(2), &health, &mut clients);
+        broadcast(&wire_event(3), &health, &mut clients);
+        assert_eq!(read_raw_event(&mut reader)["sequence"], 3);
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(1);
+        try_send_event(&sender, &health, wire_event(4));
+        try_send_event(&sender, &health, wire_event(5));
+        state.lock().unwrap().public.next_sequence = 6;
+        broadcast(&wire_event(4), &health, &mut clients);
+        assert!(clients.is_empty());
+        assert_eq!(reader.read_line(&mut String::new()).unwrap(), 0);
+        let stream = UnixStream::connect(temporary.path().join("test.sock")).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        accept_clients(&listener, &state, &health, &mut clients);
+        assert_eq!(read_raw_event(&mut reader)["next_sequence"], 6);
+        broadcast(&wire_event(4), &health, &mut clients);
+        broadcast(&wire_event(6), &health, &mut clients);
+        assert_eq!(read_raw_event(&mut reader)["sequence"], 6);
+    }
+
+    #[test]
+    fn partial_write_disconnects_only_that_client() {
+        let health = ChannelHealth::default();
+        let (slow, _slow_peer) = UnixStream::pair().unwrap();
+        slow.set_nonblocking(true).unwrap();
+        // Fill the send buffer deterministically without relying on the platform buffer size.
+        let mut slow = slow;
+        while slow.write(&[b'x'; 4096]).is_ok() {}
+        let (fast, fast_peer) = UnixStream::pair().unwrap();
+        fast.set_nonblocking(true).unwrap();
+        fast_peer
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut clients = vec![
+            EventClient {
+                stream: slow,
+                next_sequence: 1,
+                epoch: 0,
+            },
+            EventClient {
+                stream: fast,
+                next_sequence: 1,
+                epoch: 0,
+            },
+        ];
+        broadcast(&wire_event(1), &health, &mut clients);
+        assert_eq!(clients.len(), 1);
+        assert_eq!(
+            read_raw_event(&mut BufReader::new(fast_peer))["sequence"],
+            1
+        );
+        assert_eq!(health.disconnected_clients.load(Ordering::Acquire), 1);
+        assert!(!health.server_failed.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn public_worker_loss_and_oversize_do_not_fail_internal_publication() {
+        let mut output = test_output(state(), disconnected_test_channel());
+        output.display = None;
+        output
+            .publish(&RunEvent {
+                schema: RUN_EVENT_SCHEMA.into(),
+                kind: RunEventKind::WatcherStarted {
+                    invocation_id: "invocation-1".into(),
+                    profile_sha256: "a".repeat(64),
+                },
+            })
+            .unwrap();
+        assert!(
+            output
+                .channel
+                .as_ref()
+                .unwrap()
+                .health
+                .server_failed
+                .load(Ordering::Acquire)
+        );
+        output.publish(&accepted_result_event(1)).unwrap();
+        assert!(
+            output
+                .take_headless_events()
+                .iter()
+                .any(|event| matches!(event.kind, RunEventKind::FieldObservation { .. }))
+        );
+
+        let temporary = tempfile::tempdir().unwrap();
+        let state = state();
+        let channel = EventChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
+        let mut output = test_output(state, channel);
+        output.display = None;
+        let mut projected = output.state.lock().unwrap().public.clone();
+        let records = projected.project(&RunEvent {
+            schema: RUN_EVENT_SCHEMA.into(),
+            kind: RunEventKind::MusicSelectionChanged {
+                session_id: Some("x".repeat(event_api::MAX_RECORD_BYTES)),
+                capture_generation: Some(1),
+                screen_episode_id: 1,
+                source_sequence: 1,
+                revision: 1,
+                state: MusicSelectionState::Unresolved {
+                    reason: MusicSelectionUnresolvedReason::EvidenceUnresolved,
+                },
+            },
+        });
+        commit_public_projection(
+            &mut output.state.lock().unwrap().public,
+            projected,
+            &records,
+            output.channel.as_ref(),
+        );
+        assert_eq!(
+            output
+                .channel
+                .as_ref()
+                .unwrap()
+                .health
+                .oversized_records
+                .load(Ordering::Acquire),
+            1
+        );
+        assert_eq!(output.state.lock().unwrap().public.next_sequence, 1);
+        output.publish(&accepted_result_event(1)).unwrap();
+    }
+
+    #[test]
     fn stale_socket_is_replaced_but_other_entries_are_preserved() {
         let temporary = tempfile::tempdir().unwrap();
         let directory = temporary.path().join("scorepeek");
@@ -6503,11 +6802,11 @@ mod tests {
         let socket_path = directory.join(SOCKET_NAME);
         let stale = UnixListener::bind(&socket_path).unwrap();
         drop(stale);
-        let channel = ObservationChannel::start_at(temporary.path(), state()).unwrap();
+        let channel = EventChannel::start_at(temporary.path(), state()).unwrap();
         drop(channel);
 
         fs::write(&socket_path, b"owned by operator").unwrap();
-        let Err(error) = ObservationChannel::start_at(temporary.path(), state()) else {
+        let Err(error) = EventChannel::start_at(temporary.path(), state()) else {
             panic!("non-socket entry must not be replaced");
         };
         assert!(error.contains("non-socket"));
@@ -6517,7 +6816,7 @@ mod tests {
         let target = directory.join("target");
         fs::write(&target, b"target").unwrap();
         symlink(&target, &socket_path).unwrap();
-        let Err(error) = ObservationChannel::start_at(temporary.path(), state()) else {
+        let Err(error) = EventChannel::start_at(temporary.path(), state()) else {
             panic!("symlink must not be replaced");
         };
         assert!(error.contains("non-socket"));
@@ -6537,7 +6836,7 @@ mod tests {
         fs::create_dir(&directory).unwrap();
         let socket_path = directory.join(SOCKET_NAME);
         let listener = UnixListener::bind(&socket_path).unwrap();
-        let Err(error) = ObservationChannel::start_at(temporary.path(), state()) else {
+        let Err(error) = EventChannel::start_at(temporary.path(), state()) else {
             panic!("active socket must not be replaced");
         };
         assert!(error.contains("already active"));
@@ -6566,7 +6865,7 @@ mod tests {
     #[test]
     fn cleanup_preserves_an_entry_that_replaced_the_owned_socket() {
         let temporary = tempfile::tempdir().unwrap();
-        let channel = ObservationChannel::start_at(temporary.path(), state()).unwrap();
+        let channel = EventChannel::start_at(temporary.path(), state()).unwrap();
         let socket_path = channel.socket_path.clone();
         fs::remove_file(&socket_path).unwrap();
         fs::write(&socket_path, b"replacement").unwrap();
@@ -6577,7 +6876,7 @@ mod tests {
     #[test]
     fn cleanup_preserves_a_socket_with_a_different_identity() {
         let temporary = tempfile::tempdir().unwrap();
-        let channel = ObservationChannel::start_at(temporary.path(), state()).unwrap();
+        let channel = EventChannel::start_at(temporary.path(), state()).unwrap();
         let socket_path = channel.socket_path.clone();
         fs::remove_file(&socket_path).unwrap();
         let replacement = UnixListener::bind(&socket_path).unwrap();
@@ -6594,10 +6893,10 @@ mod tests {
 
     #[test]
     fn full_event_queue_is_counted_without_blocking_the_producer() {
-        let (sender, _receiver) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+        let (sender, _receiver) = std::sync::mpsc::sync_channel::<QueuedEvent>(1);
         let health = ChannelHealth::default();
-        try_send_event(&sender, &health, vec![1]);
-        try_send_event(&sender, &health, vec![2]);
+        try_send_event(&sender, &health, wire_event(1));
+        try_send_event(&sender, &health, wire_event(2));
         assert_eq!(health.dropped_events.load(Ordering::Acquire), 1);
         assert!(!health.server_failed.load(Ordering::Acquire));
     }
@@ -8214,7 +8513,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            connected["state"]["music_select"]["snapshot"]["observation_id"],
+            connected["music_select_best"]["snapshot"]["observation_id"],
             observation_id
         );
     }
@@ -8318,6 +8617,7 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e.kind, RunEventKind::ResultDetected { .. }))
         );
+        assert_public_fold(events);
     }
 
     #[test]
@@ -8428,8 +8728,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            connected["state"]["music_select"],
-            serde_json::to_value(&published).unwrap()
+            connected["music_select_best"]["snapshot"],
+            serde_json::to_value(&published.snapshot).unwrap()
         );
     }
 
@@ -9163,21 +9463,15 @@ mod tests {
 
     #[test]
     fn resolver_transition_records_raw_and_normalized_family_contributions() {
-        let temporary = tempfile::tempdir().unwrap();
-        let state = state();
-        let channel = ObservationChannel::start_at(temporary.path(), Arc::clone(&state)).unwrap();
-        let stream = UnixStream::connect(&channel.socket_path).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        let mut reader = BufReader::new(stream);
-        let mut snapshot = String::new();
-        reader.read_line(&mut snapshot).unwrap();
-        let mut output = test_output(state, channel);
+        let mut output = RoutineOutput::start_headless("invocation-1".into(), "a".repeat(64));
 
         output.publish(&accepted_result_event(1)).unwrap();
-        assert_eq!(read_raw_event(&mut reader)["event"], "field_observation");
-        let transition = read_raw_event(&mut reader);
+        let events = output.take_headless_events();
+        assert!(matches!(
+            events[0].kind,
+            RunEventKind::FieldObservation { .. }
+        ));
+        let transition = events[1].to_value().unwrap();
         assert_eq!(transition["event"], "resolver_state_changed");
         assert_eq!(transition["scope"], "result");
         assert_eq!(transition["state"], "song_projected");
@@ -9192,8 +9486,10 @@ mod tests {
         assert_eq!(transition["observation_count"], 1);
 
         output.publish(&accepted_result_event(2)).unwrap();
-        let transition = (0..4)
-            .map(|_| read_raw_event(&mut reader))
+        let transition = output
+            .take_headless_events()
+            .into_iter()
+            .map(|event| event.to_value().unwrap())
             .find(|event| {
                 event["event"] == "resolver_state_changed"
                     && event["scope"] == "result"

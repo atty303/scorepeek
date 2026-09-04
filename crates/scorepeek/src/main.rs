@@ -720,6 +720,9 @@ fn run_routine_live_session(
                 let mut started = false;
                 let mut emit = |emission: LiveSessionEmission| {
                     let output_started = std::time::Instant::now();
+                    if let Some(binding) = emission.public_binding.clone() {
+                        output.bind_public_session(binding);
+                    }
                     let event = run_event_from_live_emission(emission)?;
                     if matches!(
                         &event.kind,
@@ -1149,11 +1152,13 @@ fn execute_live_session(
     let diagnostic_preflight = prepare_live_diagnostic_root(Path::new(diagnostic_root), &policy);
     if session_id.is_none() {
         emit(LiveSessionEmission {
+            public_binding: None,
             value: serde_json::to_value(&diagnostic_preflight)
                 .map_err(|error| format!("live result serialization failed: {error}"))?,
             authority_joint_evidence: None,
         })?;
     }
+    let public_binding = descriptor.binding.clone();
     let report = capture_live::run_gamescope_live_session(
         capture_live::GamescopeFieldObservationGateConfig {
             handoff: capture_live::GamescopeDiagnosticHandoffGateConfig {
@@ -1190,10 +1195,26 @@ fn execute_live_session(
             } else {
                 None
             };
+            let binding = match event {
+                capture_live::GamescopeLiveSessionEvent::Started {
+                    capture_profile_sha256,
+                    normalizer_artifact_sha256,
+                    ..
+                } => Some(routine_output::event_api::Binding {
+                    capture_profile: capture_profile_sha256.to_owned(),
+                    normalizer: normalizer_artifact_sha256.to_owned(),
+                    canonical_layout: public_binding.canonical_layout_sha256.clone(),
+                    catalog: public_binding.catalog_sha256.clone(),
+                    model: public_binding.model_sha256.clone(),
+                    runtime: public_binding.runtime_sha256.clone(),
+                }),
+                _ => None,
+            };
             let value =
                 live_session_event_value(session_id, session_id.map(|_| generation.get()), event)?;
             let serialization_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
             let mut timing = emit(LiveSessionEmission {
+                public_binding: binding,
                 value,
                 authority_joint_evidence,
             })?;
@@ -1209,6 +1230,7 @@ fn execute_live_session(
 }
 
 struct LiveSessionEmission {
+    public_binding: Option<routine_output::event_api::Binding>,
     value: serde_json::Value,
     authority_joint_evidence:
         Option<recognition_live::screen_field_observer::JointEvidenceObservation>,
@@ -4084,6 +4106,7 @@ mod tests {
         );
 
         let event = run_event_from_live_emission(LiveSessionEmission {
+            public_binding: None,
             value,
             authority_joint_evidence: Some(authority.clone()),
         })

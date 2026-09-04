@@ -489,17 +489,13 @@ final identity check is outside the operator-trusted private-artifact boundary.
 
 ### Event API
 
-The ordinary foreground runtime exposes provisional recognition observations at
-`$XDG_RUNTIME_DIR/scorepeek/observations-v11.sock`. A connection begins with a bounded v11
-current-state snapshot and then receives sequenced `scorepeek-run-event-v11` NDJSON. This local
-observation surface may include raw OCR, foreground title geometry, joint candidates, and resolver
-metrics. `raw_screen_observed` is separate from semantic episode started, suspended, resumed,
-closing, and finalized transitions; `play_attempt_changed` contains the evidence-linked path and
-typed final relation without altering raw recognition;
-`next_channel_sequence` marks the first event not represented by the snapshot so a client can
-discard an already-represented live record and detect later gaps. It is intentionally separate from
-accepted domain events. TTY stdout renders the same typed run state as a TUI, while non-TTY stdout
-reports only human-readable state changes.
+The ordinary runtime owns `$XDG_RUNTIME_DIR/scorepeek/v1.sock`. A typed projection converts
+ordered internal publications into a public snapshot and live domain/status events. Public state
+and sequence boundaries share one lock, while nonblocking bounded delivery isolates slow clients.
+Raw observations, resolver metrics and recording paths stay in internal events and opt-in diagnostic
+artifacts. The old observation socket is removed. TTY stdout renders internal state as a TUI;
+non-TTY stdout reports human-readable status. [Event API v1](event-api.md) is the wire and delivery
+contract; [ADR 0119](decisions/0119-promote-public-event-socket.md) records the transport decision.
 
 `music_selection_changed` is a UI-only state projection with an episode-local revision. It emits
 the first selected chart, later song/chart replacements, a retreat to unresolved, and episode end.
@@ -552,7 +548,7 @@ ID, source sequence, session-monotonic observation time, revision, chart and typ
 values. Fields stabilize independently after two identical observations. Partial snapshots are
 allowed; initial and changed contents emit, identical contents deduplicate. Revisit creates a new
 observation. `music_select_resolver_changed` carries typed current resolver state separately, including
-its current snapshot for connecting clients. Neither record enters result count/history or attempt
+its current snapshot for internal consumers. Public clients receive only the best payload and its invalidation. Neither record enters result count/history or attempt
 acceptance. DJ rank is derived from EX SCORE and chart notes, never OCR. Play time, count, achievement
 options and common-play association are not inferred. No DB persistence is implemented.
 Selection intervals survive missing identity evidence without accepting values from those frames.
@@ -565,9 +561,8 @@ Raw best OCR, numeric classes/margins and inference errors remain diagnostics co
 `--record`; the published supplemental snapshot excludes them. See
 [ADR 0114](decisions/0114-observe-music-select-best-snapshots.md) for the measured layout and gates.
 
-The first public interface is a same-user Unix socket at
-`$XDG_RUNTIME_DIR/scorepeek/v1.sock`. It streams versioned NDJSON accepted
-domain events, never pixels, OCR candidate text, source snapshots, or stored
+The public interface is a same-user Unix socket at
+`$XDG_RUNTIME_DIR/scorepeek/v1.sock`. It streams versioned NDJSON domain and operational-state events, never pixels, OCR candidate text, source snapshots, or stored
 history. Future UI code must consume this API and must not import recognizer,
 catalog-adapter, or capture internals.
 

@@ -176,16 +176,13 @@ song/mode/difficulty evidence clears values; SELECT exit returns it to inactive.
 identical values does not re-emit a snapshot. The 80x25 layout keeps existing attempt gates visible.
 DJ rank is calculated from EX SCORE and chart notes, not recognized from the screen.
 
-Machine-readable observations share `$XDG_RUNTIME_DIR/scorepeek/observations-v11.sock`.
-Each connection receives a current v11 snapshot followed by sequenced `scorepeek-run-event-v11`
-NDJSON. `music_select_best_observed` carries a separate supplemental best snapshot; the current
-snapshot also includes the last published typed `music_select_resolver_changed` state. Resolver
-notifications track meaningful changes; resolved clock/streak updates alone do not notify. These game records may have
-been achieved in different plays and never create result events, play counts, or history entries.
-This implements recognition/output/display, not a score history database. Raw recognition details
-remain diagnostic observations. Redirected stdout prints deduplicated human-readable state changes.
-This is separate from the future accepted-event API at `$XDG_RUNTIME_DIR/scorepeek/v1.sock`.
-See [the output contracts](docs/architecture.md#event-api) and
+Machine consumers connect to `$XDG_RUNTIME_DIR/scorepeek/v1.sock` for an initial
+`scorepeek-event-snapshot-v1` followed by `scorepeek-event-v1` NDJSON. It publishes confirmed and
+provisional RESULTs, current selection, supplemental SELECT best, and operational status. Raw OCR
+and resolver diagnostics stay internal and in opt-in recordings. The old observation socket is removed.
+Reconnection restores current state; this live API does not recover every missed play or implement
+a history database. Redirected stdout remains deduplicated human-readable status.
+See [Event API v1](docs/event-api.md) for wire fields, consumer state and delivery limits, and
 [the SELECT best decision](docs/decisions/0114-observe-music-select-best-snapshots.md).
 
 With `--record`, in-progress components are grouped below
