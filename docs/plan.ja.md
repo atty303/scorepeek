@@ -782,9 +782,12 @@ Waylandの保存outputが消失した場合、収まるnamed output、なけれ�
 
 cyan-system（既定）、result-aurora、dj-blackboxをcanvas単位で選ぶ。同じ意味DOMと状態logicを共有しつつ、
 skin CSSは承認済みdesign masterから作った同梱PNGをbackground/maskとして積極的に使う。装飾に必要なDOM boxは共有構造へ追加できるが、
-runtime値とgraphはtext/SVGのままとする。欧文・数字は固定版OxaniumとOFL 1.1を同梱し、日本語はsystem fontへfallbackする。
-外部CSS/asset downloadは行わない。常時animationは使わず、RESULT確定の短い強調後は描画を停止する。
+ADR 0131により情報設計を保って素材・字体・常時演出を強化する。runtime値は即時に正しい値を表示し、count-upはしない。
+Oxanium/Orbitron/Rajdhaniと日本語1 familyのNoto Sans JPをlicense付きで同梱する。
+DOM/CSS・素材・意味に対応したmotion設定は共通とし、native RustとOBS JavaScriptで駆動する。
+演出はwidget外へ広がりcanvasでcropする。利用者がcanvasとwidget配置で調整する。
+外部CSS/asset downloadは行わない。表示中は常時animationを許容し、非表示native surfaceはidleにする。
 
-開発hostではstrict TOML、atomic save、lease/revision、DB query、公開event fold、全skinのnative DOM、WASM、embedded assetとidle停止を検証する。
+開発hostではstrict TOML、atomic save、lease/revision、DB query、公開event fold、全skinのnative DOM、WASM、embedded asset、時刻を指定したmotion描画と非表示停止を検証する。
 実機ではWayland output境界、整数/小数scale、入力、ゲーム上の可読性と占有面積、OBS Interaction、CPU/GPU/OBS lagを別のlive gateで確認する。
 fresh review後にこの変更だけmainへcommitする。push、deploy、autostart、releaseは含めない。

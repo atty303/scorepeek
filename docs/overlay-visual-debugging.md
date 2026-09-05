@@ -36,3 +36,8 @@ data and never initializes capture, recognition, Wayland or OBS.
 Native and browser images are evidence for human or Codex comparison; pixel equality is not an
 acceptance condition. Actual Wayland composition/input delivery and rendering inside OBS remain live
 verification boundaries.
+
+A scenario may set `skin` to `cyan-system`, `result-aurora`, or `dj-blackbox`.
+`{"action":"motion","seconds":2.25}` samples the production native motion driver at an explicit
+nonnegative timestamp and records another PNG/layout pair. Use multiple timestamps to inspect
+changing paint as well as stable text. The action is a development capture clock, not a runtime setting.

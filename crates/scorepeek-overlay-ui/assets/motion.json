@@ -1,0 +1,442 @@
+[
+  {
+    "selector": ".skin-energy",
+    "property": "opacity",
+    "from": 0.25,
+    "to": 0.7,
+    "period": 7,
+    "phase": 0,
+    "unit": "",
+    "wave": "sine"
+  },
+  {
+    "selector": ".skin-energy",
+    "property": "left",
+    "from": -5,
+    "to": 1,
+    "period": 11,
+    "phase": 0,
+    "unit": "%",
+    "wave": "sine"
+  },
+  {
+    "selector": ".skin-glint",
+    "property": "left",
+    "from": -20,
+    "to": 100,
+    "period": 4,
+    "phase": 0,
+    "unit": "%",
+    "wave": "ramp"
+  },
+  {
+    "selector": ".skin-trace",
+    "property": "opacity",
+    "from": 0.35,
+    "to": 1,
+    "period": 2.8,
+    "phase": 0,
+    "unit": "",
+    "wave": "sine"
+  },
+  {
+    "selector": "[data-clear=\"full-combo\"]",
+    "property": "opacity",
+    "from": 0.82,
+    "to": 1,
+    "period": 0.72,
+    "phase": 0,
+    "unit": "",
+    "wave": "sine"
+  },
+  {
+    "selector": "[data-clear=\"ex-hard\"]",
+    "property": "opacity",
+    "from": 0.82,
+    "to": 1,
+    "period": 1.1,
+    "phase": 0,
+    "unit": "",
+    "wave": "sine"
+  },
+  {
+    "selector": ".lamp[data-state=\"active\"],.lamp[data-state=\"persisted\"]",
+    "property": "opacity",
+    "from": 0.68,
+    "to": 1,
+    "period": 1.8,
+    "phase": 0,
+    "unit": "",
+    "wave": "sine"
+  },
+  {
+    "selector": ".lamp[data-state=\"processing\"]",
+    "property": "opacity",
+    "from": 0.4,
+    "to": 1,
+    "period": 0.8,
+    "phase": 0,
+    "unit": "",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-0",
+    "property": "left",
+    "from": 0,
+    "to": 6,
+    "period": 3.0,
+    "phase": 0.0,
+    "unit": "%",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-0",
+    "property": "top",
+    "from": 108,
+    "to": -8,
+    "period": 4.0,
+    "phase": 0.0,
+    "unit": "%",
+    "wave": "ramp"
+  },
+  {
+    "selector": ".fx-particle-0",
+    "property": "opacity",
+    "from": 0,
+    "to": 0.9,
+    "period": 2.0,
+    "phase": 0.0,
+    "unit": "",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-1",
+    "property": "left",
+    "from": 8,
+    "to": 14,
+    "period": 3.31,
+    "phase": 0.13,
+    "unit": "%",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-1",
+    "property": "top",
+    "from": 108,
+    "to": -8,
+    "period": 4.23,
+    "phase": 0.173,
+    "unit": "%",
+    "wave": "ramp"
+  },
+  {
+    "selector": ".fx-particle-1",
+    "property": "opacity",
+    "from": 0,
+    "to": 0.9,
+    "period": 2.17,
+    "phase": 0.173,
+    "unit": "",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-2",
+    "property": "left",
+    "from": 16,
+    "to": 22,
+    "period": 3.62,
+    "phase": 0.26,
+    "unit": "%",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-2",
+    "property": "top",
+    "from": 108,
+    "to": -8,
+    "period": 4.46,
+    "phase": 0.346,
+    "unit": "%",
+    "wave": "ramp"
+  },
+  {
+    "selector": ".fx-particle-2",
+    "property": "opacity",
+    "from": 0,
+    "to": 0.9,
+    "period": 2.34,
+    "phase": 0.346,
+    "unit": "",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-3",
+    "property": "left",
+    "from": 24,
+    "to": 30,
+    "period": 3.9299999999999997,
+    "phase": 0.39,
+    "unit": "%",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-3",
+    "property": "top",
+    "from": 108,
+    "to": -8,
+    "period": 4.69,
+    "phase": 0.5189999999999999,
+    "unit": "%",
+    "wave": "ramp"
+  },
+  {
+    "selector": ".fx-particle-3",
+    "property": "opacity",
+    "from": 0,
+    "to": 0.9,
+    "period": 2.51,
+    "phase": 0.5189999999999999,
+    "unit": "",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-4",
+    "property": "left",
+    "from": 32,
+    "to": 38,
+    "period": 4.24,
+    "phase": 0.52,
+    "unit": "%",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-4",
+    "property": "top",
+    "from": 108,
+    "to": -8,
+    "period": 4.92,
+    "phase": 0.692,
+    "unit": "%",
+    "wave": "ramp"
+  },
+  {
+    "selector": ".fx-particle-4",
+    "property": "opacity",
+    "from": 0,
+    "to": 0.9,
+    "period": 2.68,
+    "phase": 0.692,
+    "unit": "",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-5",
+    "property": "left",
+    "from": 40,
+    "to": 46,
+    "period": 4.55,
+    "phase": 0.65,
+    "unit": "%",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-5",
+    "property": "top",
+    "from": 108,
+    "to": -8,
+    "period": 5.15,
+    "phase": 0.865,
+    "unit": "%",
+    "wave": "ramp"
+  },
+  {
+    "selector": ".fx-particle-5",
+    "property": "opacity",
+    "from": 0,
+    "to": 0.9,
+    "period": 2.85,
+    "phase": 0.865,
+    "unit": "",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-6",
+    "property": "left",
+    "from": 48,
+    "to": 54,
+    "period": 4.859999999999999,
+    "phase": 0.78,
+    "unit": "%",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-6",
+    "property": "top",
+    "from": 108,
+    "to": -8,
+    "period": 5.38,
+    "phase": 1.0379999999999998,
+    "unit": "%",
+    "wave": "ramp"
+  },
+  {
+    "selector": ".fx-particle-6",
+    "property": "opacity",
+    "from": 0,
+    "to": 0.9,
+    "period": 3.02,
+    "phase": 1.0379999999999998,
+    "unit": "",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-7",
+    "property": "left",
+    "from": 56,
+    "to": 62,
+    "period": 5.17,
+    "phase": 0.91,
+    "unit": "%",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-7",
+    "property": "top",
+    "from": 108,
+    "to": -8,
+    "period": 5.61,
+    "phase": 1.2109999999999999,
+    "unit": "%",
+    "wave": "ramp"
+  },
+  {
+    "selector": ".fx-particle-7",
+    "property": "opacity",
+    "from": 0,
+    "to": 0.9,
+    "period": 3.1900000000000004,
+    "phase": 1.2109999999999999,
+    "unit": "",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-8",
+    "property": "left",
+    "from": 64,
+    "to": 70,
+    "period": 5.48,
+    "phase": 1.04,
+    "unit": "%",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-8",
+    "property": "top",
+    "from": 108,
+    "to": -8,
+    "period": 5.84,
+    "phase": 1.384,
+    "unit": "%",
+    "wave": "ramp"
+  },
+  {
+    "selector": ".fx-particle-8",
+    "property": "opacity",
+    "from": 0,
+    "to": 0.9,
+    "period": 3.3600000000000003,
+    "phase": 1.384,
+    "unit": "",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-9",
+    "property": "left",
+    "from": 72,
+    "to": 78,
+    "period": 5.79,
+    "phase": 1.17,
+    "unit": "%",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-9",
+    "property": "top",
+    "from": 108,
+    "to": -8,
+    "period": 6.07,
+    "phase": 1.557,
+    "unit": "%",
+    "wave": "ramp"
+  },
+  {
+    "selector": ".fx-particle-9",
+    "property": "opacity",
+    "from": 0,
+    "to": 0.9,
+    "period": 3.5300000000000002,
+    "phase": 1.557,
+    "unit": "",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-10",
+    "property": "left",
+    "from": 80,
+    "to": 86,
+    "period": 6.1,
+    "phase": 1.3,
+    "unit": "%",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-10",
+    "property": "top",
+    "from": 108,
+    "to": -8,
+    "period": 6.300000000000001,
+    "phase": 1.73,
+    "unit": "%",
+    "wave": "ramp"
+  },
+  {
+    "selector": ".fx-particle-10",
+    "property": "opacity",
+    "from": 0,
+    "to": 0.9,
+    "period": 3.7,
+    "phase": 1.73,
+    "unit": "",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-11",
+    "property": "left",
+    "from": 88,
+    "to": 94,
+    "period": 6.41,
+    "phase": 1.4300000000000002,
+    "unit": "%",
+    "wave": "sine"
+  },
+  {
+    "selector": ".fx-particle-11",
+    "property": "top",
+    "from": 108,
+    "to": -8,
+    "period": 6.53,
+    "phase": 1.9029999999999998,
+    "unit": "%",
+    "wave": "ramp"
+  },
+  {
+    "selector": ".fx-particle-11",
+    "property": "opacity",
+    "from": 0,
+    "to": 0.9,
+    "period": 3.87,
+    "phase": 1.9029999999999998,
+    "unit": "",
+    "wave": "sine"
+  }
+]

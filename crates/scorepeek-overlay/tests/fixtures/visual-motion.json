@@ -1,0 +1,32 @@
+{
+  "logical_size": [
+    1920,
+    1080
+  ],
+  "skin": "result-aurora",
+  "editing": true,
+  "selectors": [
+    ".overlay-canvas",
+    ".widget",
+    ".skin-energy",
+    ".skin-glint",
+    ".fx-particle-0",
+    ".clear-value",
+    ".number-face",
+    ".detail-row.options"
+  ],
+  "actions": [
+    {
+      "action": "click",
+      "selector": ".native-panel-toggle"
+    },
+    {
+      "action": "motion",
+      "seconds": 2.25
+    },
+    {
+      "action": "motion",
+      "seconds": 3.75
+    }
+  ]
+}

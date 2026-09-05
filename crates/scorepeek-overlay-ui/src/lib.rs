@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 
 mod appearance;
 mod assets;
+pub mod motion;
 pub use appearance::{Appearance, Skin};
-pub use assets::{SKIN_ASSETS, skin_asset};
+pub use assets::{FONT_ASSETS, FONT_CSS, FONT_LICENSES, SKIN_ASSETS, skin_asset};
 pub const OXANIUM: &[u8] = include_bytes!("../assets/fonts/Oxanium.ttf");
 pub const BASE_CSS: &str = include_str!("../styles/base.css");
 pub const EDITOR_CSS: &str = concat!(
@@ -17,7 +18,8 @@ pub const EDITOR_CSS: &str = concat!(
 pub const SKIN_CSS: &str = concat!(
     include_str!("../styles/cyan-system.css"),
     include_str!("../styles/result-aurora.css"),
-    include_str!("../styles/dj-blackbox.css")
+    include_str!("../styles/dj-blackbox.css"),
+    include_str!("../styles/rich.css")
 );
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -251,7 +253,7 @@ fn lamp(state: LampState, label: Option<&str>, class: &str) -> Element {
     rsx! { div { class: "lamp-group {class}", if let Some(label) = label { span { class: "lamp-label", "{label}" } } span { class: "lamp", "data-state": state, aria_hidden: "true" } } }
 }
 fn chrome() -> Element {
-    rsx! { div { class: "skin-frame", aria_hidden: "true", div { class: "skin-surface" } div { class: "skin-corners" } div { class: "skin-light" } div { class: "skin-hardware" } } }
+    rsx! { div { class: "skin-frame", aria_hidden: "true", div { class: "skin-surface" } div { class: "skin-corners" } div { class: "skin-light" } div { class: "skin-hardware" } div { class:"material-frame", for edge in ["nw","n","ne","e","se","s","sw","w"] { i { class:"material-edge {edge}" } } } div { class: "skin-energy" } div { class: "skin-glint" } div { class: "skin-trace" } for index in 0..12 { i { class: "fx-particle fx-particle-{index}" } } } }
 }
 
 /// Renders the approved five-widget master composition.
@@ -325,7 +327,7 @@ fn render_widget(
             rsx! { section { class: "widget selection-widget", {chrome()} div { class: "widget-content selection-content",
                 {lamp(if state.history.recorded { LampState::Active } else { LampState::Inactive }, None, "recorded-lamp")}
                 div { class: "song-copy", h1 { title: title, "{title}" } p { title: artist, "{artist}" } }
-                div { class: "chart-rail", span { class: "play-type", "{play_type}" } span { class: "difficulty", "{difficulty}" } span { "LV {level}" } span { "NOTES {notes}" } }
+                div { class: "chart-rail", span { class: "play-type", "{play_type}" } span { class: "difficulty", "data-difficulty": difficulty, "{difficulty}" } span { "LV {level}" } span { "NOTES {notes}" } }
             } } }
         }
         WidgetKind::Score => score_widget(state),
@@ -437,12 +439,12 @@ fn score_widget(state: &OverlayState) -> Element {
         ("PLAY OPTIONS", &state.detail.play_options, "options"),
     ];
     rsx! { section { class: "widget score-widget", {chrome()} div { class: "widget-content score-content",
-        div { class: "best-section", h2 { "BEST" } div { class: "best-grid", div { class: "score-main", label { "EX SCORE" } strong { "{shown(&state.best.score)}" } span { class: "clear-value", "{shown(&state.best.clear)}" } } div { class: "best-side", label { "DJ LEVEL" } strong { class: "dj-level", "{shown(&state.best.dj_level)}" } label { "MISS COUNT" } b { "{shown(&state.best.miss)}" } } } }
+        div { class: "best-section", h2 { "BEST" } div { class: "best-grid", div { class: "score-main", label { "EX SCORE" } strong { span { class:"number-depth", aria_hidden:"true", "{shown(&state.best.score)}" } span { class:"number-face", "{shown(&state.best.score)}" } } span { class: "clear-value", "data-clear": motion::clear_role(&state.best.clear), "{shown(&state.best.clear)}" } } div { class: "best-side", label { "DJ LEVEL" } strong { class: "dj-level", "data-rank": shown(&state.best.dj_level), "{shown(&state.best.dj_level)}" } label { "MISS COUNT" } b { "{shown(&state.best.miss)}" } } } }
         div { class: "detail-section", h2 { "RESULT DETAIL" } for (label, value, class) in fields { div { class: "detail-row {class}", span { "{label}" } b { "{shown(value)}" } } } }
     } } }
 }
 fn history_list(history: &History, count: u32) -> Element {
-    rsx! { section { class: "widget history-list-widget", {chrome()} div { class: "widget-content history-content", h2 { "HISTORY" } div { class: "history-row history-head", span { "DATE" } span { "EX SCORE" } span { "DJ LEVEL" } span { "MISS" } span { "CLEAR" } } for play in history.plays.iter().take(count as usize) { div { class: "history-row", time { "{play.notified_at}" } b { "{play.score}" } span { "{play.dj_level}" } span { "{play.miss}" } span { "{play.clear}" } } } } } }
+    rsx! { section { class: "widget history-list-widget", {chrome()} div { class: "widget-content history-content", h2 { "HISTORY" } div { class: "history-row history-head", span { "DATE" } span { "EX SCORE" } span { "DJ LEVEL" } span { "MISS" } span { "CLEAR" } } for play in history.plays.iter().take(count as usize) { div { class: "history-row", time { "{play.notified_at}" } b { "{play.score}" } span { "data-rank": &play.dj_level, "{play.dj_level}" } span { "{play.miss}" } span { "data-clear": motion::clear_role(&play.clear), "{play.clear}" } } } } } }
 }
 fn history_graph(history: &History, months: u32) -> Element {
     let start = match months {

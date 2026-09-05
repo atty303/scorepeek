@@ -392,3 +392,6 @@ requirements after their named superseding decisions.
   supplemental game records from results and adds the Music Select Resolver state pane.
 - [ADR 0115: Promote SELECT-adapted numeric weights](0115-promote-select-adapted-numeric-model.md)
   registers the additional-trained HOG/MLP weights with fixed thresholds and explicit overlap limits.
+
+- [ADR 0131: Rich semantic overlay presentation](0131-rich-semantic-overlay-presentation.md)
+  shares DOM, CSS, assets and motion settings across native Rust and browser JavaScript drivers.

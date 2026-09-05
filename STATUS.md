@@ -45,7 +45,10 @@ checkpoint; implementation history belongs in Git.
   visible until the next RESULT or session end. Persistence state no longer drives the lamp.
 - CYAN SYSTEM, RESULT AURORA and DJ BLACKBOX are canvas-level skins using the approved embedded frame
   artwork through CSS backgrounds. Oxanium and OFL 1.1 are embedded alongside Japanese system-font
-  fallbacks. Runtime values remain text/SVG; result emphasis is finite and the settled DOM is idle.
+  fallbacks. ADR 0131 adds embedded Orbitron/Rajdhani and one Noto Sans JP family, new transparent
+  energy/circuit artwork and semantic clear/difficulty/rank treatments. Shared motion tracks drive
+  native Blitz styles and browser JS continuously while visible, without changing actual values.
+  Decorations overflow widgets and are cropped by the canvas; hidden native surfaces remain idle.
 - Score/history widgets read only committed SQLite state. BEST integrates RESULT and SELECT sources;
   representative RESULT ordering is highest EX score, known/lower miss, then latest receipt time.
   History rows include DJ LEVEL. The graph uses exact timestamps, labeled DJ LEVEL thresholds and a
@@ -167,13 +170,19 @@ checkpoint; implementation history belongs in Git.
   native output handoff, compositor cursor behavior and real OBS Interaction remain unverified.
 
 - Overlay development-host verification covers all three skin DOMs, embedded PNG decode, fixed
-  widget bounds and settled animation. A production native headless render confirms Japanese/Latin
+  widget bounds and explicit motion time samples. A production native headless render confirms Japanese/Latin
   text, selection rail, DB-derived BEST/DETAIL, DJ LEVEL history and graph dots/thresholds. Strict
   TOML, missing-file creation, invalid-canvas isolation, atomic save, lease/revision conflict,
   backend canvas management, local-time formatting and readback triggers have focused tests.
   The browser WASM type-checks and the real dx bundle contains served JS/WASM/font/artwork with correct
   MIME types; embedded-asset and child-EOF tests pass. `wasm-opt` still reports unsupported DWARF and
   the bundle proceeds without that optional optimization.
+- ADR 0131's three rich skins have native PNG/layout/manifest inspection and 1920x1080 Codex Browser
+  inspection through the production editor and canvas iframes. Native samples at 2.25 and 3.75 seconds
+  keep widget/value geometry fixed while light and particles move; inactive/active/error lamp paint
+  remains distinct. Native graph SVG polylines are still absent with the currently disabled Blitz
+  SVG feature; enabling that feature and its transitive dependencies awaits approval. Browser graph
+  polylines render. These checks do not establish live Wayland or OBS composition.
 - Repository checks and the complete workspace suite pass: 508 library,
   325 binary, 128 corpus library, 5 corpus binary, 31 overlay, 3 handle, 4 overlay-UI, 0 overlay-web
   and 13 score tests, plus doctests. The embedded-web overlay suite has 32 tests. The 99 offline OCR tests and

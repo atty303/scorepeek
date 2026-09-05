@@ -114,6 +114,8 @@ mod server {
             .route("/ws/stage", get(stage_socket))
             .route("/ws/{id}", get(socket))
             .route("/fonts/oxanium.ttf", get(font))
+            .route("/fonts/{name}", get(extra_font))
+            .route("/motion.js", get(motion_script))
             .route("/fonts/OFL.txt", get(font_license))
             .route("/{*path}", get(asset))
             .with_state(Arc::clone(&shared));
@@ -210,7 +212,29 @@ mod server {
                 (header::CONTENT_TYPE, "text/html"),
                 (header::CACHE_CONTROL, "no-store"),
             ],
-            html.replacen("<head>", &initial, 1),
+            html.replacen("<head>", &initial, 1).replace("</head>", &format!("<style>{}</style><script id=\"scorepeek-motion\" type=\"application/json\">{}</script><script defer src=\"/motion.js\"></script></head>", scorepeek_overlay_ui::FONT_CSS, scorepeek_overlay_ui::motion::SPEC)),
+        )
+            .into_response()
+    }
+    async fn extra_font(Path(name): Path<String>) -> Response {
+        if let Some((_, text)) = scorepeek_overlay_ui::FONT_LICENSES
+            .iter()
+            .find(|(path, _)| *path == name)
+        {
+            return ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], *text).into_response();
+        }
+        scorepeek_overlay_ui::FONT_ASSETS
+            .iter()
+            .find(|(path, _)| *path == name)
+            .map_or_else(
+                || StatusCode::NOT_FOUND.into_response(),
+                |(_, bytes)| ([(header::CONTENT_TYPE, "font/ttf")], *bytes).into_response(),
+            )
+    }
+    async fn motion_script() -> Response {
+        (
+            [(header::CONTENT_TYPE, "text/javascript")],
+            scorepeek_overlay_ui::motion::BROWSER_DRIVER,
         )
             .into_response()
     }
