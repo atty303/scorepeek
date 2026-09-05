@@ -136,9 +136,9 @@ checkpoint; implementation history belongs in Git.
   absent or stale, persists the resolved name through the parent, retries transient save conflicts,
   and releases an active editor lease when its surface exits. Focused fallback tests, workspace
   all-target Clippy and the complete suite pass on the development host.
-- Commit `38485ff2f03a0c9cff928210fb12c0d1a69399cb` was built with `mise run dist:test` and
+- Commit `a90541c2c4d9cc93327dcaa2332ba16183bafc56` was built with `mise run dist:test` and
   installed on `infinitas.lan` as `/home/atty/.local/bin/scorepeek`. The installed binary SHA-256
-  is `c775d74ddbecbd8afa16168ba6e1e2bbba2f107ada70340575ece2bdfbe36dd8`; target readback confirms
+  is `967e735c0de182a2869d14f66ea15f5291cde196b7fd629fd3817b09aa42d7be`; target readback confirms
   the overlay CLI flags and the existing numeric model remains active. No scorepeek process was
   running, and the same-directory staging and rollback files were removed after atomic replacement.
 
