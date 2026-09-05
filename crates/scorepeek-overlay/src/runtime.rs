@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Backend {
     Wayland,
@@ -33,6 +33,8 @@ pub struct Config {
     pub listen: SocketAddr,
     pub unknown_grace_ms: u32,
     pub settings_revision: u64,
+    #[serde(default)]
+    pub edit_on_start: bool,
 }
 
 pub struct Feed {

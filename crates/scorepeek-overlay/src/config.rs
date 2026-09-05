@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -71,8 +71,6 @@ pub struct Canvas {
     #[serde(default = "default_opacity_percent")]
     pub opacity_percent: u8,
     #[serde(default)]
-    pub z: u32,
-    #[serde(default)]
     pub output: Option<String>,
     #[serde(default)]
     pub initial_placement: Option<InitialPlacement>,
@@ -105,7 +103,6 @@ pub struct Widget {
     pub y: i32,
     pub width: u32,
     pub height: u32,
-    pub z: u32,
     #[serde(default)]
     pub settings: WidgetSettings,
 }
@@ -226,11 +223,16 @@ impl Canvas {
     pub fn presentation(&self) -> scorepeek_overlay_ui::CanvasPresentation {
         scorepeek_overlay_ui::CanvasPresentation {
             id: self.id.clone(),
+            enabled: self.enabled,
             skin: self.skin,
             revision: self.revision,
             show_on: self.show_on.clone(),
             opacity_percent: self.opacity_percent,
-            z: self.z,
+            output: self.output.clone(),
+            x: self.x,
+            y: self.y,
+            width: self.width,
+            height: self.height,
             widgets: self
                 .widgets
                 .iter()
@@ -247,7 +249,6 @@ impl Canvas {
                     y: widget.y,
                     width: widget.width,
                     height: widget.height,
-                    z: widget.z,
                     settings: scorepeek_overlay_ui::WidgetSettings {
                         history_count: widget.settings.history_count,
                         graph_months: widget.settings.graph_months,
@@ -258,11 +259,17 @@ impl Canvas {
     }
 
     pub fn apply_presentation(&mut self, presentation: &scorepeek_overlay_ui::CanvasPresentation) {
+        self.enabled = presentation.enabled;
         self.skin = presentation.skin;
         self.revision = presentation.revision;
         self.show_on.clone_from(&presentation.show_on);
         self.opacity_percent = presentation.opacity_percent;
-        self.z = presentation.z;
+        self.output.clone_from(&presentation.output);
+        self.initial_placement = None;
+        self.x = presentation.x;
+        self.y = presentation.y;
+        self.width = presentation.width;
+        self.height = presentation.height;
         self.widgets = presentation
             .widgets
             .iter()
@@ -279,7 +286,6 @@ impl Canvas {
                 y: widget.y,
                 width: widget.width,
                 height: widget.height,
-                z: widget.z,
                 settings: WidgetSettings {
                     history_count: widget.settings.history_count,
                     graph_months: widget.settings.graph_months,
@@ -314,24 +320,82 @@ pub fn load_or_create(path: &Path) -> Result<(OverlayConfig, Vec<ConfigIssue>), 
     let bytes = fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|error| format!("overlay TOML is not UTF-8: {error}"))?;
-    let mut config: OverlayConfig =
+    let mut document: toml::Value =
         toml::from_str(text).map_err(|error| format!("overlay TOML: {error}"))?;
+    let schema = document
+        .get("schema_version")
+        .and_then(toml::Value::as_integer)
+        .ok_or("overlay schema_version is required")?;
+    let migrated = schema == 2;
+    if migrated {
+        migrate_v2_document(&mut document)?;
+    } else if schema != i64::from(SCHEMA_VERSION) {
+        return Err(format!("overlay schema_version must be {SCHEMA_VERSION}"));
+    }
+    let mut config: OverlayConfig = document
+        .clone()
+        .try_into()
+        .map_err(|error| format!("overlay TOML: {error}"))?;
     let (valid, issues) = config.validated()?;
+    if migrated {
+        let migrated = toml::to_string_pretty(&document)
+            .map_err(|error| format!("serialize migrated overlay TOML: {error}"))?;
+        write_atomic(path, migrated.as_bytes())?;
+    }
     config.canvases = valid;
     Ok((config, issues))
+}
+
+fn migrate_v2_document(document: &mut toml::Value) -> Result<(), String> {
+    let root = document
+        .as_table_mut()
+        .ok_or("overlay TOML root must be a table")?;
+    root.insert(
+        "schema_version".into(),
+        toml::Value::Integer(i64::from(SCHEMA_VERSION)),
+    );
+    let canvases = root
+        .get_mut("canvases")
+        .and_then(toml::Value::as_array_mut)
+        .ok_or("overlay canvases must be an array")?;
+    for canvas in canvases {
+        let table = canvas
+            .as_table_mut()
+            .ok_or("overlay canvas must be a table")?;
+        table.remove("z");
+        if let Some(widgets) = table.get_mut("widgets").and_then(toml::Value::as_array_mut) {
+            for widget in widgets {
+                widget
+                    .as_table_mut()
+                    .ok_or("overlay widget must be a table")?
+                    .remove("z");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Replaces a configuration durably in the same directory.
 /// # Errors
 /// Returns validation, serialization, or filesystem errors.
 pub fn save_atomic(path: &Path, config: &OverlayConfig) -> Result<(), String> {
-    config.validated()?;
+    let (_, issues) = config.validated()?;
+    if let Some(issue) = issues.first() {
+        return Err(format!(
+            "overlay canvas {}: {}",
+            issue.canvas_id, issue.message
+        ));
+    }
+    let bytes = toml::to_string_pretty(config)
+        .map_err(|error| format!("serialize overlay TOML: {error}"))?;
+    write_atomic(path, bytes.as_bytes())
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "overlay config has no parent directory".to_owned())?;
     fs::create_dir_all(parent).map_err(|error| format!("create {}: {error}", parent.display()))?;
-    let bytes = toml::to_string_pretty(config)
-        .map_err(|error| format!("serialize overlay TOML: {error}"))?;
     let temporary = parent.join(format!(".overlay.toml.{}.tmp", std::process::id()));
     let mut file = OpenOptions::new()
         .create_new(true)
@@ -339,7 +403,7 @@ pub fn save_atomic(path: &Path, config: &OverlayConfig) -> Result<(), String> {
         .open(&temporary)
         .map_err(|error| format!("create {}: {error}", temporary.display()))?;
     let result = (|| {
-        file.write_all(bytes.as_bytes())?;
+        file.write_all(bytes)?;
         file.sync_all()?;
         fs::rename(&temporary, path)?;
         fs::File::open(parent)?.sync_all()
@@ -432,7 +496,6 @@ fn initial_canvases(backend: Backend) -> Vec<Canvas> {
             560,
             72,
             None,
-            100,
             vec![("status", WidgetKind::Status, 0, 0)],
         ),
         initial_canvas(
@@ -443,7 +506,6 @@ fn initial_canvases(backend: Backend) -> Vec<Canvas> {
             560,
             960,
             Some(vec![ScreenKind::MusicSelect]),
-            10,
             dashboard_widgets(),
         ),
         initial_canvas(
@@ -454,7 +516,6 @@ fn initial_canvases(backend: Backend) -> Vec<Canvas> {
             560,
             120,
             Some(vec![ScreenKind::DecideTransition, ScreenKind::Play]),
-            10,
             vec![("selection", WidgetKind::Selection, 0, 0)],
         ),
         initial_canvas(
@@ -465,7 +526,6 @@ fn initial_canvases(backend: Backend) -> Vec<Canvas> {
             560,
             960,
             Some(vec![ScreenKind::Result]),
-            10,
             dashboard_widgets(),
         ),
     ]
@@ -489,17 +549,15 @@ fn initial_canvas(
     width: u32,
     height: u32,
     show_on: Option<Vec<scorepeek_overlay_ui::ScreenKind>>,
-    z: u32,
     widgets: Vec<(&str, WidgetKind, i32, i32)>,
 ) -> Canvas {
-    let widget = |id: &str, kind, x, y, width, height, z| Widget {
+    let widget = |id: &str, kind, x, y, width, height| Widget {
         id: id.into(),
         kind,
         x,
         y,
         width,
         height,
-        z,
         settings: WidgetSettings::default(),
     };
     Canvas {
@@ -509,7 +567,6 @@ fn initial_canvas(
         skin: Skin::CyanSystem,
         show_on,
         opacity_percent: 100,
-        z,
         output: None,
         initial_placement: (backend == Backend::Wayland).then_some(InitialPlacement::UpperRight),
         x,
@@ -519,8 +576,7 @@ fn initial_canvas(
         revision: 0,
         widgets: widgets
             .into_iter()
-            .enumerate()
-            .map(|(z, (id, kind, x, y))| {
+            .map(|(id, kind, x, y)| {
                 let (width, height) = scorepeek_overlay_ui::default_widget_size(match kind {
                     WidgetKind::Status => scorepeek_overlay_ui::WidgetKind::Status,
                     WidgetKind::Selection => scorepeek_overlay_ui::WidgetKind::Selection,
@@ -528,15 +584,7 @@ fn initial_canvas(
                     WidgetKind::HistoryList => scorepeek_overlay_ui::WidgetKind::HistoryList,
                     WidgetKind::HistoryGraph => scorepeek_overlay_ui::WidgetKind::HistoryGraph,
                 });
-                widget(
-                    id,
-                    kind,
-                    x,
-                    y,
-                    width,
-                    height,
-                    u32::try_from(z).unwrap_or(u32::MAX),
-                )
+                widget(id, kind, x, y, width, height)
             })
             .collect(),
     }
@@ -551,7 +599,6 @@ pub fn empty_canvas(id: String, backend: Backend) -> Canvas {
         skin: Skin::CyanSystem,
         show_on: None,
         opacity_percent: 100,
-        z: 0,
         output: None,
         initial_placement: None,
         x: 20,
@@ -685,8 +732,39 @@ mod tests {
         config.schema_version = 1;
         assert_eq!(
             config.validated().unwrap_err(),
-            "overlay schema_version must be 2"
+            "overlay schema_version must be 3"
         );
+    }
+
+    #[test]
+    fn schema_v2_is_migrated_atomically_by_removing_z_only() {
+        let root = temporary("migrate-v2");
+        let path = root.join("overlay.toml");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut value = toml::Value::try_from(OverlayConfig::initial()).unwrap();
+        value["schema_version"] = toml::Value::Integer(2);
+        let canvases = value["canvases"].as_array_mut().unwrap();
+        canvases[0]
+            .as_table_mut()
+            .unwrap()
+            .insert("z".into(), 7.into());
+        canvases[0]["widgets"].as_array_mut().unwrap()[0]
+            .as_table_mut()
+            .unwrap()
+            .insert("z".into(), 9.into());
+        std::fs::write(&path, toml::to_string_pretty(&value).unwrap()).unwrap();
+
+        let (loaded, issues) = load_or_create(&path).unwrap();
+        assert!(issues.is_empty());
+        assert_eq!(loaded.schema_version, 3);
+        let persisted = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !persisted
+                .lines()
+                .any(|line| line.trim_start().starts_with("z ="))
+        );
+        assert!(persisted.contains("schema_version = 3"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

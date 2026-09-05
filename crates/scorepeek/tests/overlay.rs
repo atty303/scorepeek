@@ -25,6 +25,7 @@ fn get(address: SocketAddr, path: &str) -> std::io::Result<Vec<u8>> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     let temporary = tempfile::tempdir().unwrap();
     let address = TcpListener::bind("127.0.0.1:0")
@@ -50,6 +51,7 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
         listen: address,
         unknown_grace_ms: 1_000,
         settings_revision: 0,
+        edit_on_start: false,
     };
     let executable = std::env::var_os("SCOREPEEK_TEST_BINARY").map_or_else(
         || Path::new(env!("CARGO_BIN_EXE_scorepeek")).to_path_buf(),
@@ -73,10 +75,15 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     assert!(page.contains("result-aurora"));
     assert!(page.contains("scorepeek-canvas"));
     let stage = String::from_utf8(get(address, "/overlay").unwrap()).unwrap();
-    assert!(stage.contains("width:100vw;height:100vh"));
     assert!(stage.starts_with("HTTP/1.1 200"));
-    assert!(stage.contains("/ws/stage"));
+    assert!(stage.contains("/stage.js"));
+    assert!(stage.contains("id=\"editor\""));
     assert!(stage.contains("obs-selection"));
+    let stage_script = String::from_utf8(get(address, "/stage.js").unwrap()).unwrap();
+    assert!(stage_script.contains("/ws/stage"));
+    assert!(stage_script.contains("acquire_backend"));
+    assert!(stage_script.contains("SCOREPEEK OVERLAY"));
+    assert!(!stage_script.contains("stage.replaceChildren"));
     let font = get(address, "/fonts/oxanium.ttf").unwrap();
     assert!(font.starts_with(b"HTTP/1.1 200"));
     assert!(font.windows(8).any(|bytes| bytes == b"font/ttf"));

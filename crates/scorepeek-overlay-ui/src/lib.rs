@@ -8,6 +8,12 @@ pub use appearance::{Appearance, Skin};
 pub use assets::{SKIN_ASSETS, skin_asset};
 pub const OXANIUM: &[u8] = include_bytes!("../assets/fonts/Oxanium.ttf");
 pub const BASE_CSS: &str = include_str!("../styles/base.css");
+pub const EDITOR_CSS: &str = concat!(
+    include_str!("../styles/editor.css"),
+    include_str!("../styles/native-editor-v2.css"),
+    include_str!("../styles/native-editor-v3.css"),
+    include_str!("../styles/native-editor-v4.css")
+);
 pub const SKIN_CSS: &str = concat!(
     include_str!("../styles/cyan-system.css"),
     include_str!("../styles/result-aurora.css"),
@@ -191,7 +197,6 @@ pub struct WidgetLayout {
     pub y: i32,
     pub width: u32,
     pub height: u32,
-    pub z: u32,
     #[serde(default)]
     pub settings: WidgetSettings,
 }
@@ -200,6 +205,8 @@ pub struct WidgetLayout {
 #[serde(deny_unknown_fields)]
 pub struct CanvasPresentation {
     pub id: String,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     pub skin: Skin,
     pub revision: u64,
     #[serde(default)]
@@ -207,12 +214,29 @@ pub struct CanvasPresentation {
     #[serde(default = "default_opacity_percent")]
     pub opacity_percent: u8,
     #[serde(default)]
-    pub z: u32,
+    pub output: Option<String>,
+    #[serde(default)]
+    pub x: i32,
+    #[serde(default)]
+    pub y: i32,
+    #[serde(default = "default_canvas_width")]
+    pub width: u32,
+    #[serde(default = "default_canvas_height")]
+    pub height: u32,
     pub widgets: Vec<WidgetLayout>,
 }
 
+const fn default_enabled() -> bool {
+    true
+}
 const fn default_opacity_percent() -> u8 {
     100
+}
+const fn default_canvas_width() -> u32 {
+    560
+}
+const fn default_canvas_height() -> u32 {
+    1040
 }
 
 fn mode_label(mode: &str) -> &str {
@@ -264,32 +288,22 @@ pub fn overlay_canvas(
     let notes = chart
         .and_then(|v| v.notes)
         .map_or_else(String::new, |v| v.to_string());
-    let selected_label = selected.unwrap_or("NO SELECTION");
-    let selected_widget = selected.and_then(|id| widgets.iter().find(|widget| widget.id == id));
     rsx! {
-        style { "{BASE_CSS}{SKIN_CSS}" }
+        style { "{BASE_CSS}{SKIN_CSS}{EDITOR_CSS}" }
         main { class: if editing { "overlay-canvas editing" } else { "overlay-canvas" }, "data-skin": skin,
             for widget in widgets {
                 div {
                     key: "{widget.id}",
                     class: if selected == Some(widget.id.as_str()) { "widget-slot selected" } else { "widget-slot" },
                     "data-widget-id": "{widget.id}",
-                    style: format!("left:{}px;top:{}px;width:{}px;height:{}px;z-index:{}", widget.x, widget.y, widget.width, widget.height, widget.z),
+                    style: format!("left:{}px;top:{}px;width:{}px;height:{}px", widget.x, widget.y, widget.width, widget.height),
                     {render_widget(widget, state, title, artist, play_type, &difficulty, &level, &notes)}
-                    if editing { div { class: "resize-handle", aria_hidden: "true" } }
-                }
-            }
-            if editing {
-                div { class: "native-editor-shell", strong { "CANVAS EDIT" } span { class:"native-skin-options", b { "CYAN" } b { "AURORA" } b { "BLACKBOX" } } b { class:"native-done", "DONE" } }
-                div { class: "native-widget-palette", span { "STATUS" } span { "SELECTION" } span { "SCORE" } span { "HISTORY LIST" } span { "HISTORY GRAPH" } }
-                div { class: "native-editor-inspector", strong { "INSPECTOR" } span { "{selected_label}" } b { class:"native-remove", "REMOVE" }
-                    if let Some(widget)=selected_widget {
-                        if widget.kind == WidgetKind::HistoryList { div { class:"native-setting", for value in [5,10,20,50] { b { "{value}" } } } }
-                        if widget.kind == WidgetKind::HistoryGraph { div { class:"native-setting", for value in [1,3,6,12] { b { "{value}M" } } } }
-                        b { class:"native-return", "キャンバス内へ戻す" }
+                    if editing {
+                        for corner in ["nw", "ne", "sw", "se"] {
+                            i { class: "resize-handle {corner}", aria_hidden: "true" }
+                        }
                     }
                 }
-                i { class: "native-canvas-resize" }
             }
         }
     }
@@ -325,23 +339,92 @@ fn render_widget(
 
 #[must_use]
 pub fn default_widgets() -> Vec<WidgetLayout> {
-    let widget = |id: &str, kind, y, height, z| WidgetLayout {
+    let widget = |id: &str, kind, y, height| WidgetLayout {
         id: id.into(),
         kind,
         x: 0,
         y,
         width: 560,
         height,
-        z,
         settings: WidgetSettings::default(),
     };
     vec![
-        widget("status", WidgetKind::Status, 0, 74, 0),
-        widget("selection", WidgetKind::Selection, 82, 120, 1),
-        widget("score", WidgetKind::Score, 210, 300, 2),
-        widget("history-list", WidgetKind::HistoryList, 518, 236, 3),
-        widget("history-graph", WidgetKind::HistoryGraph, 762, 278, 4),
+        widget("status", WidgetKind::Status, 0, 74),
+        widget("selection", WidgetKind::Selection, 82, 120),
+        widget("score", WidgetKind::Score, 210, 300),
+        widget("history-list", WidgetKind::HistoryList, 518, 236),
+        widget("history-graph", WidgetKind::HistoryGraph, 762, 278),
     ]
+}
+
+/// Stable editor-only data for arranging widgets while the recognition session is inactive.
+#[must_use]
+pub fn editor_sample_state() -> OverlayState {
+    let day = 86_400_000_i64;
+    let end = 1_788_134_400_000_i64;
+    let graph = (0..18)
+        .map(|index| GraphPlay {
+            received_unix_ms: end - day * i64::from(178 - index * 10),
+            score_ratio: 0.64 + f64::from(index) * 0.014,
+            miss_ratio: Some((0.31 - f64::from(index) * 0.012).max(0.025)),
+        })
+        .collect();
+    OverlayState {
+        connected: false,
+        chart: Some(Chart {
+            song_id: "editor-sample".into(),
+            play_type: "double".into(),
+            difficulty: "another".into(),
+            title: "超長い日本語楽曲名・オーバーレイ表示確認用".into(),
+            artist: "SAMPLE ARTIST / LONG CREDIT".into(),
+            level: Some(12),
+            notes: Some(1987),
+        }),
+        system: LampState::Inactive,
+        result_ingest: LampState::Persisted,
+        best: BestView {
+            score: "3842".into(),
+            dj_level: "AAA".into(),
+            miss: "17".into(),
+            clear: "EX HARD CLEAR".into(),
+        },
+        detail: ResultDetail {
+            pgreat: "1524".into(),
+            great: "794".into(),
+            good: "28".into(),
+            bad: "6".into(),
+            poor: "19".into(),
+            fast: "61".into(),
+            slow: "54".into(),
+            combo_break: "21".into(),
+            play_options: "RANDOM / HARD".into(),
+        },
+        history: History {
+            recorded: true,
+            plays: (0..20)
+                .map(|index| HistoryPlay {
+                    notified_at: format!("2026.08.{:02} 21:{:02}", 28 - index, 10 + index),
+                    score: (3842 - index * 13).to_string(),
+                    dj_level: if index < 4 { "AAA" } else { "AA" }.into(),
+                    miss: (17 + index).to_string(),
+                    clear: if index % 3 == 0 { "EXH" } else { "HARD" }.into(),
+                })
+                .collect(),
+            graph,
+            graph_start_unix_ms: [
+                end - day * 30,
+                end - day * 90,
+                end - day * 183,
+                end - day * 365,
+            ],
+            graph_end_unix_ms: end,
+        },
+        screen: ScreenView {
+            kind: Some(ScreenKind::MusicSelect),
+            suspended_since_unix_ms: None,
+            revision: 0,
+        },
+    }
 }
 
 fn score_widget(state: &OverlayState) -> Element {
@@ -504,7 +587,6 @@ mod tests {
             y: 0,
             width: 560,
             height: 72,
-            z: 0,
             settings: WidgetSettings::default(),
         };
         let widgets = [widget("status"), widget("status-1"), widget("status-3")];

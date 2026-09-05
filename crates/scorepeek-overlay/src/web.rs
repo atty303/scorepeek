@@ -58,6 +58,7 @@ mod server {
         routing::get,
     };
     use std::{
+        fmt::Write as _,
         sync::{Arc, Mutex, atomic::Ordering},
         time::Duration,
     };
@@ -65,7 +66,6 @@ mod server {
 
     struct Shared {
         canvases: Mutex<Vec<crate::config::Canvas>>,
-        config_path: std::path::PathBuf,
         control_socket: std::path::PathBuf,
         feed: Feed,
         changed: Arc<Notify>,
@@ -88,16 +88,22 @@ mod server {
                 stop.store(true, Ordering::Release);
             })
             .map_err(|error| error.to_string())?;
+        let managed_canvases = config
+            .canvases
+            .iter()
+            .filter(|canvas| canvas.backend == crate::runtime::Backend::Obs)
+            .cloned()
+            .collect();
         let shared = Arc::new(Shared {
-            canvases: Mutex::new(config.canvases.clone()),
-            config_path: config.config_path.clone(),
+            canvases: Mutex::new(managed_canvases),
             control_socket: config.control_socket.clone(),
             feed,
             changed,
         });
         let app = Router::new()
             .route("/", get(canvas_index))
-            .route("/overlay", get(stage_index))
+            .route("/overlay", get(stage_editor_index))
+            .route("/stage.js", get(stage_script))
             .route("/canvas/{id}", get(index))
             .route("/ws/stage", get(stage_socket))
             .route("/ws/{id}", get(socket))
@@ -123,57 +129,36 @@ mod server {
             .canvases
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let links = canvases
-            .iter()
-            .map(|canvas| {
-                format!(
-                    "<li><a href=\"/canvas/{}\">{}</a></li>",
-                    canvas.id, canvas.id
-                )
-            })
-            .collect::<String>();
+        let links = canvases.iter().fold(String::new(), |mut links, canvas| {
+            let _ = write!(
+                links,
+                "<li><a href=\"/canvas/{}\">{}</a></li>",
+                canvas.id, canvas.id
+            );
+            links
+        });
         (
             [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
             format!("<!doctype html><title>scorepeek canvases</title><ul>{links}</ul>"),
         )
             .into_response()
     }
-    async fn stage_index(State(shared): State<Arc<Shared>>) -> Response {
+    async fn stage_editor_index(State(shared): State<Arc<Shared>>) -> Response {
         let canvases = shared
             .canvases
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let layout = canvases
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
-            .map(|canvas| {
-                serde_json::json!({
-                    "id": canvas.id,
-                    "x": canvas.x,
-                    "y": canvas.y,
-                    "width": canvas.width,
-                    "height": canvas.height,
-                    "z": canvas.z,
-                    "show_on": canvas.show_on,
-                })
-            })
+            .map(crate::config::Canvas::presentation)
             .collect::<Vec<_>>();
-        let Ok(layout) = serde_json::to_string(&layout) else {
+        let Ok(canvases) = serde_json::to_string(&canvases) else {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         };
-        let layout = layout.replace('<', "\\u003c");
+        let canvases = canvases.replace('<', "\\u003c");
         let html = format!(
-            r#"<!doctype html><meta charset="utf-8"><title>scorepeek OBS overlay</title>
-<style>html,body{{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}}iframe{{position:absolute;border:0;background:transparent}}#menu{{display:none;position:fixed;z-index:2147483647;padding:8px;background:#071019ee;border:1px solid #27e5f3;color:#fff;font:13px sans-serif}}#menu button{{display:block;width:100%;margin:3px 0;background:#122531;color:#fff;border:1px solid #65808c;padding:6px}}</style>
-<div id="stage"></div><div id="menu"></div><script id="layout" type="application/json">{layout}</script>
-<script>
-const stage=document.querySelector('#stage'),menu=document.querySelector('#menu');let layout=JSON.parse(document.querySelector('#layout').textContent),screen=null,preview=null,editing=null;
-function visible(c){{return preview===c.id||!c.show_on||c.show_on.includes(screen)}}
-function render(){{const existing=new Map([...stage.children].map(n=>[n.dataset.id,n]));for(const c of layout){{let f=existing.get(c.id);if(!f){{f=document.createElement('iframe');f.dataset.id=c.id;f.src='/canvas/'+encodeURIComponent(c.id);stage.append(f)}}const edit=editing===c.id;f.style.cssText=edit?`left:0;top:0;width:100vw;height:100vh;z-index:2147483646;display:block`:`left:${{c.x}}px;top:${{c.y}}px;width:${{c.width}}px;height:${{c.height}}px;z-index:${{c.z}};display:${{visible(c)?'block':'none'}}`;existing.delete(c.id)}}for(const f of existing.values())f.remove()}}
-function openMenu(e){{e.preventDefault();menu.replaceChildren();for(const c of layout){{const b=document.createElement('button');b.textContent=c.id;b.onclick=()=>{{if(editing&&editing!==c.id){{const old=[...stage.children].find(f=>f.dataset.id===editing);if(old)old.src=old.src;editing=null}}preview=c.id;menu.style.display='none';render()}};menu.append(b)}}menu.style.left=e.clientX+'px';menu.style.top=e.clientY+'px';menu.style.display='block'}}
-document.body.addEventListener('contextmenu',openMenu);document.body.addEventListener('pointerdown',e=>{{if(!menu.contains(e.target))menu.style.display='none'}});render();
-addEventListener('message',e=>{{if(typeof e.data!=='string'||!e.data.startsWith('scorepeek:'))return;const [,kind,id]=e.data.split(':');if(kind==='editing'){{editing=id;render()}}else if(kind==='select'){{if(editing&&editing!==id){{const old=[...stage.children].find(f=>f.dataset.id===editing);if(old)old.src=old.src;editing=null}}preview=id;render()}}else if(kind==='done'&&editing===id){{editing=null;preview=null;render()}}}});
-function connect(){{const ws=new WebSocket(`ws://${{location.host}}/ws/stage`);ws.onmessage=e=>{{const m=JSON.parse(e.data);if(m.type==='stage'){{layout=m.canvases;screen=m.state.screen.kind;render()}}}};ws.onclose=()=>setTimeout(connect,1000)}}connect();
-</script>"#
+            r#"<!doctype html><html><head><meta charset="utf-8"><title>scorepeek OBS overlay</title><style>{}{}</style></head><body><div id="stage"></div><aside id="editor"></aside><button id="return">RETURN TO EDITOR</button><div id="notice"></div><script id="initial" type="application/json">{canvases}</script><script src="/stage.js"></script></body></html>"#,
+            scorepeek_overlay_ui::EDITOR_CSS,
+            include_str!("../../scorepeek-overlay-ui/styles/stage.css")
         );
         (
             [
@@ -184,6 +169,15 @@ function connect(){{const ws=new WebSocket(`ws://${{location.host}}/ws/stage`);w
         )
             .into_response()
     }
+
+    async fn stage_script() -> Response {
+        (
+            [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+            include_str!("stage.js"),
+        )
+            .into_response()
+    }
+
     async fn index(Path(id): Path<String>, State(shared): State<Arc<Shared>>) -> Response {
         let Some(asset) = Assets::get("index.html") else {
             return StatusCode::NOT_FOUND.into_response();
@@ -308,36 +302,19 @@ function connect(){{const ws=new WebSocket(`ws://${{location.host}}/ws/stage`);w
                     message = socket.recv() => {
                         match message {
                             Some(Ok(Message::Text(text))) => {
-                                let mut request_kind = None;
-                                let response = serde_json::from_str::<crate::control::Request>(&text).map_err(|error| error.to_string()).and_then(|request| {
-                                    request_kind = Some(match &request {
-                                        crate::control::Request::Acquire { .. } | crate::control::Request::KeepAlive { .. } | crate::control::Request::Release { .. } => "lease",
-                                        crate::control::Request::ReplaceCanvas { .. } | crate::control::Request::SetGeometry { .. } | crate::control::Request::SetOutput { .. } => "canvas_mutation",
-                                        crate::control::Request::SetUnknownGrace { .. } => "settings",
-                                        crate::control::Request::ListCanvases { .. } => "canvas_list",
-                                        crate::control::Request::AddCanvas { .. } | crate::control::Request::DeleteCanvas { .. } | crate::control::Request::SetCanvasEnabled { .. } => "canvas_manager",
-                                    });
-                                    let targets_canvas = match &request {
-                                        crate::control::Request::Acquire { canvas_id, .. } | crate::control::Request::KeepAlive { canvas_id, .. } | crate::control::Request::Release { canvas_id, .. } => canvas_id == &id,
-                                        crate::control::Request::ReplaceCanvas { canvas_id, .. } | crate::control::Request::SetGeometry { canvas_id, .. } | crate::control::Request::SetOutput { canvas_id, .. } | crate::control::Request::SetUnknownGrace { canvas_id, .. } => canvas_id == &id,
-                                        crate::control::Request::ListCanvases { backend } | crate::control::Request::AddCanvas { backend, .. } | crate::control::Request::DeleteCanvas { backend, .. } | crate::control::Request::SetCanvasEnabled { backend, .. } => *backend == crate::runtime::Backend::Obs,
-                                    };
-                                    if !targets_canvas { return Err("control request targets another canvas".into()); }
-                                    crate::control::request(&shared.control_socket, &request)
-                                }).unwrap_or_else(|error| crate::control::Response { ok:false, readonly:true, canvas:None, error:Some(error), canvases:Vec::new(), backend_revision:None, settings_revision:None, unknown_grace_ms:None });
-                                if let Some(presentation) = &response.canvas {
-                                    let mut canvases = shared.canvases.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                                    if let Some(current) = canvases.iter_mut().find(|current| current.id == presentation.id) {
-                                        current.apply_presentation(presentation);
+                                let reply = serde_json::json!({
+                                    "type":"control",
+                                    "request":"display_only",
+                                    "response":crate::control::Response {
+                                        ok:false,
+                                        readonly:true,
+                                        error:Some("このURLは表示専用です。編集には /overlay をOBS Browser SourceのInteractionで開いてください。".into()),
+                                        canvases:Vec::new(),
+                                        backend_revision:None,
                                     }
-                                }
-                                if response.backend_revision.is_some()
-                                    && let Ok((config, _)) = crate::config::load_or_create(&shared.config_path)
-                                {
-                                    *shared.canvases.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = config.canvases.into_iter().filter(|canvas| canvas.backend == crate::runtime::Backend::Obs && canvas.enabled).collect();
-                                }
-                                shared.changed.notify_waiters();
-                                let Ok(reply) = serde_json::to_string(&serde_json::json!({"type":"control", "request":request_kind, "response":response})) else { break; };
+                                });
+                                let Ok(reply) = serde_json::to_string(&reply) else { break; };
+                                let _ = text;
                                 if socket.send(Message::Text(reply.into())).await.is_err() { break; }
                             }
                             None | Some(Err(_) | Ok(Message::Close(_))) => break,
@@ -365,13 +342,7 @@ function connect(){{const ws=new WebSocket(`ws://${{location.host}}/ws/stage`);w
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .iter()
-                    .map(|canvas| {
-                        serde_json::json!({
-                            "id": canvas.id, "x": canvas.x, "y": canvas.y,
-                            "width": canvas.width, "height": canvas.height,
-                            "z": canvas.z, "show_on": canvas.show_on,
-                        })
-                    })
+                    .map(crate::config::Canvas::presentation)
                     .collect::<Vec<_>>();
                 let message =
                     serde_json::json!({"type":"stage", "state":state, "canvases":canvases})
@@ -391,7 +362,53 @@ function connect(){{const ws=new WebSocket(`ws://${{location.host}}/ws/stage`);w
                     () = tokio::time::sleep(Duration::from_millis(250)) => {
                         if shared.feed.stop.load(Ordering::Acquire) { break; }
                     },
-                    message = socket.recv() => if message.is_none() { break; },
+                    message = socket.recv() => {
+                        match message {
+                            Some(Ok(Message::Text(text))) => {
+                                let response = serde_json::from_str::<crate::control::Request>(&text)
+                                    .map_err(|error| error.to_string())
+                                    .and_then(|request| {
+                                        let obs = match &request {
+                                            crate::control::Request::AcquireBackend { backend, .. }
+                                            | crate::control::Request::KeepAliveBackend { backend, .. }
+                                            | crate::control::Request::ReleaseBackend { backend, .. }
+                                            | crate::control::Request::GetBackend { backend }
+                                            | crate::control::Request::UpdateBackendDraft { backend, .. }
+                                            | crate::control::Request::CommitBackend { backend, .. } => {
+                                                *backend == crate::runtime::Backend::Obs
+                                            }
+                                        };
+                                        if !obs { return Err("stage control only accepts the OBS backend".into()); }
+                                        crate::control::request(&shared.control_socket, &request)
+                                    })
+                                    .unwrap_or_else(|error| crate::control::Response {
+                                        ok:false,
+                                        readonly:true,
+                                        error:Some(error),
+                                        canvases:Vec::new(),
+                                        backend_revision:None,
+                                    });
+                                if !response.canvases.is_empty() {
+                                    let mut canvases = shared.canvases.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    for presentation in &response.canvases {
+                                        if let Some(canvas) = canvases.iter_mut().find(|canvas| canvas.id == presentation.id) {
+                                            canvas.apply_presentation(presentation);
+                                        } else {
+                                            let mut canvas = crate::config::empty_canvas(presentation.id.clone(), crate::runtime::Backend::Obs);
+                                            canvas.apply_presentation(presentation);
+                                            canvases.push(canvas);
+                                        }
+                                    }
+                                    canvases.retain(|canvas| response.canvases.iter().any(|item| item.id == canvas.id));
+                                }
+                                shared.changed.notify_waiters();
+                                let reply = serde_json::json!({"type":"control", "response":response}).to_string();
+                                if socket.send(Message::Text(reply.into())).await.is_err() { break; }
+                            }
+                            None | Some(Err(_) | Ok(Message::Close(_))) => break,
+                            _ => {}
+                        }
+                    },
                 }
             }
         })

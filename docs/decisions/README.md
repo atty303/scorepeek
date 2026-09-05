@@ -6,6 +6,7 @@ authoritative.
 
 ## Current
 
+- [ADR 0128: Backend workspace overlay editor](0128-use-backend-workspace-overlay-editor.md) adds schema-v3 backend drafts, a fixed sidebar workspace, safe Wayland output fallback, and same-URL OBS Interaction editing.
 - [ADR 0126: Result ingest lifecycle](0126-publish-result-ingest-lifecycle.md) adds the bounded processing/persisted/failed state to the local public event API.
 - [ADR 0125: Overlay canvases and widgets](0125-compose-overlay-canvases-from-widgets.md) replaces fixed overlay layouts and startup appearance switches with TOML canvases, editable widgets and per-canvas skins.
 - [ADR 0124: Embedded overlay artwork](0124-embed-overlay-artwork.md) adds original generated frames and aurora lighting to the shared skins.

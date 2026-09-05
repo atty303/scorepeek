@@ -1,0 +1,6 @@
+.native-canvas-handle{display:block;position:absolute;width:10px;height:10px;border:1px solid #fff;background:#101722;box-shadow:0 0 7px #00ddff;z-index:6;transform:scale(calc(1 / var(--preview-scale,1)))}
+.native-canvas-handle.nw{left:-6px;top:-6px}.native-canvas-handle.ne{right:-6px;top:-6px}.native-canvas-handle.sw{left:-6px;bottom:-6px}.native-canvas-handle.se{right:-6px;bottom:-6px}
+.native-widget-settings{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px;padding:8px;border:1px solid #303b48}.native-widget-settings strong{flex-basis:100%;font-size:10px;color:#9ba9b9}.native-widget-settings button{font-size:9px;padding:5px 7px}
+.native-preview-scale{position:fixed;right:12px;top:12px;z-index:9999;padding:5px 8px;border:1px solid #3e4c5a;background:#101720;color:#91a0b1;font:10px Oxanium,system-ui,sans-serif}
+.native-placement-ghost{position:fixed;z-index:11000;min-width:150px;padding:12px;border:1px dashed #5ee7ff;background:#0bd4ee22;color:#fff;pointer-events:none;font:10px Oxanium,system-ui,sans-serif}
+.native-canvas-manager details{width:100%;margin-top:8px}.native-canvas-manager summary{cursor:pointer;color:#91a0b1;font-size:10px;letter-spacing:.08em}.native-canvas-manager details button{margin:4px 4px 0 0;font-size:9px;padding:5px 7px}

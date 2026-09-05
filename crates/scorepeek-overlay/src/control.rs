@@ -1,10 +1,11 @@
 use crate::{
-    config::{OverlayConfig, empty_canvas, save_atomic},
+    config::{Canvas, OverlayConfig, empty_canvas, save_atomic},
     runtime::Backend,
 };
+use scorepeek_overlay_ui::CanvasPresentation;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::{BufRead as _, BufReader, Write as _},
     os::unix::net::{UnixListener, UnixStream},
     path::{Path, PathBuf},
@@ -21,92 +22,53 @@ const LEASE_TIMEOUT: Duration = Duration::from_secs(15);
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Request {
-    Acquire {
-        canvas_id: String,
+    AcquireBackend {
+        backend: Backend,
         editor_id: String,
     },
-    KeepAlive {
-        canvas_id: String,
+    KeepAliveBackend {
+        backend: Backend,
         editor_id: String,
     },
-    Release {
-        canvas_id: String,
+    ReleaseBackend {
+        backend: Backend,
         editor_id: String,
     },
-    ReplaceCanvas {
-        canvas_id: String,
-        editor_id: String,
-        expected_revision: u64,
-        presentation: scorepeek_overlay_ui::CanvasPresentation,
-    },
-    SetGeometry {
-        canvas_id: String,
-        editor_id: String,
-        expected_revision: u64,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    },
-    SetOutput {
-        canvas_id: String,
-        editor_id: String,
-        expected_revision: u64,
-        output: String,
-    },
-    SetUnknownGrace {
-        canvas_id: String,
-        editor_id: String,
-        expected_revision: u64,
-        unknown_grace_ms: u32,
-    },
-    ListCanvases {
+    GetBackend {
         backend: Backend,
     },
-    AddCanvas {
+    UpdateBackendDraft {
         backend: Backend,
-        expected_revision: u64,
-        canvas_id: String,
+        editor_id: String,
+        canvases: Vec<CanvasPresentation>,
     },
-    DeleteCanvas {
+    CommitBackend {
         backend: Backend,
+        editor_id: String,
         expected_revision: u64,
-        canvas_id: String,
+        canvases: Vec<CanvasPresentation>,
     },
-    SetCanvasEnabled {
-        backend: Backend,
-        expected_revision: u64,
-        canvas_id: String,
-        enabled: bool,
-    },
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CanvasSummary {
-    pub id: String,
-    pub enabled: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Response {
     pub ok: bool,
     pub readonly: bool,
-    pub canvas: Option<scorepeek_overlay_ui::CanvasPresentation>,
     pub error: Option<String>,
     #[serde(default)]
-    pub canvases: Vec<CanvasSummary>,
+    pub canvases: Vec<CanvasPresentation>,
     pub backend_revision: Option<u64>,
-    pub settings_revision: Option<u64>,
-    pub unknown_grace_ms: Option<u32>,
 }
 
 struct Lease {
     editor_id: String,
     touched: Instant,
+    base_revision: u64,
+    draft: Vec<CanvasPresentation>,
 }
 struct State {
     config: OverlayConfig,
-    leases: BTreeMap<String, Lease>,
+    leases: BTreeMap<Backend, Lease>,
 }
 
 pub struct Controller {
@@ -116,7 +78,7 @@ pub struct Controller {
 }
 
 impl Controller {
-    /// Starts the parent-owned configuration writer.
+    /// Starts the parent-owned, backend-transactional configuration writer.
     /// # Errors
     /// Returns socket or worker creation errors.
     pub fn start(path: &Path, config: OverlayConfig) -> Result<Self, String> {
@@ -140,10 +102,10 @@ impl Controller {
         let worker = std::thread::Builder::new()
             .name("overlay-config-writer".into())
             .spawn(move || {
-                let state = Arc::new(Mutex::new(State {
+                let state = Mutex::new(State {
                     config,
                     leases: BTreeMap::new(),
-                }));
+                });
                 while !stopping.load(Ordering::Acquire) {
                     match listener.accept() {
                         Ok((stream, _)) => handle(stream, &config_path, &state),
@@ -161,6 +123,7 @@ impl Controller {
             worker: Some(worker),
         })
     }
+
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -179,22 +142,77 @@ impl Drop for Controller {
 }
 
 fn handle(mut stream: UnixStream, path: &Path, shared: &Mutex<State>) {
-    let response = read_request(&stream)
-        .and_then(|request| apply(request, path, shared))
-        .unwrap_or_else(|error| Response {
+    let response = match read_request(&stream) {
+        Ok(request) => {
+            let identity = request_identity(&request);
+            apply(request, path, shared)
+                .unwrap_or_else(|error| failed_response(shared, identity, error))
+        }
+        Err(error) => Response {
             ok: false,
             readonly: true,
-            canvas: None,
             error: Some(error),
             canvases: Vec::new(),
             backend_revision: None,
-            settings_revision: None,
-            unknown_grace_ms: None,
-        });
+        },
+    };
     if let Ok(mut bytes) = serde_json::to_vec(&response) {
         bytes.push(b'\n');
         let _ = stream.write_all(&bytes);
     }
+}
+
+fn request_identity(request: &Request) -> Option<(Backend, String)> {
+    match request {
+        Request::AcquireBackend { backend, editor_id }
+        | Request::KeepAliveBackend { backend, editor_id }
+        | Request::ReleaseBackend { backend, editor_id }
+        | Request::UpdateBackendDraft {
+            backend, editor_id, ..
+        }
+        | Request::CommitBackend {
+            backend, editor_id, ..
+        } => Some((*backend, editor_id.clone())),
+        Request::GetBackend { .. } => None,
+    }
+}
+
+fn failed_response(
+    shared: &Mutex<State>,
+    identity: Option<(Backend, String)>,
+    error: String,
+) -> Response {
+    let Ok(state) = shared.lock() else {
+        return Response {
+            ok: false,
+            readonly: true,
+            error: Some(error),
+            canvases: Vec::new(),
+            backend_revision: None,
+        };
+    };
+    let Some((backend, editor_id)) = identity else {
+        return Response {
+            ok: false,
+            readonly: true,
+            error: Some(error),
+            canvases: Vec::new(),
+            backend_revision: None,
+        };
+    };
+    let owns_lease = state
+        .leases
+        .get(&backend)
+        .is_some_and(|lease| lease.editor_id == editor_id);
+    let mut response = if owns_lease {
+        lease_response(&state, backend)
+    } else {
+        backend_response(&state.config, backend, true)
+    };
+    response.ok = false;
+    response.readonly = !owns_lease;
+    response.error = Some(error);
+    response
 }
 
 fn read_request(stream: &UnixStream) -> Result<Request, String> {
@@ -214,390 +232,225 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
         .leases
         .retain(|_, lease| lease.touched.elapsed() < LEASE_TIMEOUT);
     match request {
-        Request::Acquire {
-            canvas_id,
-            editor_id,
-        } => {
-            let canvas = state
-                .config
-                .canvases
-                .iter()
-                .find(|canvas| canvas.id == canvas_id)
-                .cloned()
-                .ok_or("canvas not found")?;
+        Request::AcquireBackend { backend, editor_id } => {
+            if let Some(lease) = state
+                .leases
+                .get_mut(&backend)
+                .filter(|lease| lease.editor_id == editor_id)
+            {
+                lease.touched = Instant::now();
+                crate::diagnostics::emit(
+                    "overlay_editor_lease",
+                    &serde_json::json!({"backend":backend,"status":"retained"}),
+                );
+                return Ok(lease_response(&state, backend));
+            }
             let readonly = state
                 .leases
-                .get(&canvas_id)
+                .get(&backend)
                 .is_some_and(|lease| lease.editor_id != editor_id);
             if !readonly {
+                let base_revision = state.config.backend_revisions.get(backend);
+                let draft = state
+                    .config
+                    .canvases
+                    .iter()
+                    .filter(|canvas| canvas.backend == backend)
+                    .map(Canvas::presentation)
+                    .collect();
                 state.leases.insert(
-                    canvas_id,
+                    backend,
                     Lease {
                         editor_id,
                         touched: Instant::now(),
+                        base_revision,
+                        draft,
                     },
                 );
             }
-            Ok(Response {
-                ok: true,
-                readonly,
-                canvas: Some(canvas.presentation()),
-                error: None,
-                canvases: Vec::new(),
-                backend_revision: None,
-                settings_revision: Some(state.config.settings_revision),
-                unknown_grace_ms: Some(state.config.unknown_grace_ms),
-            })
+            crate::diagnostics::emit(
+                "overlay_editor_lease",
+                &serde_json::json!({
+                    "backend": backend, "status": if readonly { "readonly" } else { "acquired" }
+                }),
+            );
+            if readonly {
+                Ok(backend_response(&state.config, backend, true))
+            } else {
+                Ok(lease_response(&state, backend))
+            }
         }
-        Request::KeepAlive {
-            canvas_id,
-            editor_id,
-        } => {
-            let lease = state
-                .leases
-                .get_mut(&canvas_id)
-                .filter(|lease| lease.editor_id == editor_id)
-                .ok_or("editor lease lost")?;
-            lease.touched = Instant::now();
-            Ok(Response {
-                ok: true,
-                readonly: false,
-                canvas: None,
-                error: None,
-                canvases: Vec::new(),
-                backend_revision: None,
-                settings_revision: None,
-                unknown_grace_ms: None,
-            })
+        Request::KeepAliveBackend { backend, editor_id } => {
+            require_lease(&mut state, backend, &editor_id)?;
+            Ok(empty_response(false))
         }
-        Request::Release {
-            canvas_id,
-            editor_id,
-        } => {
+        Request::ReleaseBackend { backend, editor_id } => {
             if state
                 .leases
-                .get(&canvas_id)
+                .get(&backend)
                 .is_some_and(|lease| lease.editor_id == editor_id)
             {
-                state.leases.remove(&canvas_id);
+                state.leases.remove(&backend);
             }
-            Ok(Response {
-                ok: true,
-                readonly: false,
-                canvas: None,
-                error: None,
-                canvases: Vec::new(),
-                backend_revision: None,
-                settings_revision: None,
-                unknown_grace_ms: None,
-            })
+            crate::diagnostics::emit(
+                "overlay_editor_lease",
+                &serde_json::json!({
+                    "backend": backend, "status":"released"
+                }),
+            );
+            Ok(empty_response(false))
         }
-        Request::ReplaceCanvas {
-            canvas_id,
-            editor_id,
-            expected_revision,
-            presentation,
-        } => {
-            if presentation.id != canvas_id {
-                return Err("canvas presentation id mismatch".into());
-            }
-            let lease = state
-                .leases
-                .get_mut(&canvas_id)
-                .filter(|lease| lease.editor_id == editor_id)
-                .ok_or("editor lease lost")?;
-            lease.touched = Instant::now();
-            let index = state
-                .config
-                .canvases
-                .iter()
-                .position(|current| current.id == canvas_id)
-                .ok_or("canvas not found")?;
-            let current = &state.config.canvases[index];
-            if current.revision != expected_revision {
-                return Err("canvas revision conflict".into());
-            }
-            let mut canvas = current.clone();
-            canvas.skin = presentation.skin;
-            canvas.show_on.clone_from(&presentation.show_on);
-            canvas.opacity_percent = presentation.opacity_percent;
-            canvas.z = presentation.z;
-            canvas.widgets = presentation
-                .widgets
-                .iter()
-                .map(|widget| crate::config::Widget {
-                    id: widget.id.clone(),
-                    kind: match widget.kind {
-                        scorepeek_overlay_ui::WidgetKind::Status => {
-                            crate::config::WidgetKind::Status
-                        }
-                        scorepeek_overlay_ui::WidgetKind::Selection => {
-                            crate::config::WidgetKind::Selection
-                        }
-                        scorepeek_overlay_ui::WidgetKind::Score => crate::config::WidgetKind::Score,
-                        scorepeek_overlay_ui::WidgetKind::HistoryList => {
-                            crate::config::WidgetKind::HistoryList
-                        }
-                        scorepeek_overlay_ui::WidgetKind::HistoryGraph => {
-                            crate::config::WidgetKind::HistoryGraph
-                        }
-                    },
-                    x: widget.x,
-                    y: widget.y,
-                    width: widget.width,
-                    height: widget.height,
-                    z: widget.z,
-                    settings: crate::config::WidgetSettings {
-                        history_count: widget.settings.history_count,
-                        graph_months: widget.settings.graph_months,
-                    },
-                })
-                .collect();
-            canvas.revision = expected_revision
-                .checked_add(1)
-                .ok_or("canvas revision exhausted")?;
-            let previous = state.config.canvases[index].clone();
-            state.config.canvases[index] = canvas.clone();
-            if let Err(error) = save_atomic(path, &state.config) {
-                state.config.canvases[index] = previous;
-                return Err(error);
-            }
-            Ok(Response {
-                ok: true,
-                readonly: false,
-                canvas: Some(canvas.presentation()),
-                error: None,
-                canvases: Vec::new(),
-                backend_revision: None,
-                settings_revision: None,
-                unknown_grace_ms: None,
-            })
-        }
-        Request::SetGeometry {
-            canvas_id,
-            editor_id,
-            expected_revision,
-            x,
-            y,
-            width,
-            height,
-        } => {
-            let lease = state
-                .leases
-                .get_mut(&canvas_id)
-                .filter(|lease| lease.editor_id == editor_id)
-                .ok_or("editor lease lost")?;
-            lease.touched = Instant::now();
-            let index = state
-                .config
-                .canvases
-                .iter()
-                .position(|canvas| canvas.id == canvas_id)
-                .ok_or("canvas not found")?;
-            if state.config.canvases[index].revision != expected_revision {
-                return Err("canvas revision conflict".into());
-            }
-            let previous = state.config.canvases[index].clone();
-            let canvas = &mut state.config.canvases[index];
-            canvas.x = x;
-            canvas.y = y;
-            canvas.initial_placement = None;
-            canvas.width = width.max(32);
-            canvas.height = height.max(32);
-            canvas.revision = canvas
-                .revision
-                .checked_add(1)
-                .ok_or("canvas revision exhausted")?;
-            let response = canvas.presentation();
-            if let Err(error) = save_atomic(path, &state.config) {
-                state.config.canvases[index] = previous;
-                return Err(error);
-            }
-            Ok(Response {
-                ok: true,
-                readonly: false,
-                canvas: Some(response),
-                error: None,
-                canvases: Vec::new(),
-                backend_revision: None,
-                settings_revision: None,
-                unknown_grace_ms: None,
-            })
-        }
-        Request::SetOutput {
-            canvas_id,
-            editor_id,
-            expected_revision,
-            output,
-        } => {
-            let lease = state
-                .leases
-                .get_mut(&canvas_id)
-                .filter(|lease| lease.editor_id == editor_id)
-                .ok_or("editor lease lost")?;
-            lease.touched = Instant::now();
-            let index = state
-                .config
-                .canvases
-                .iter()
-                .position(|canvas| canvas.id == canvas_id)
-                .ok_or("canvas not found")?;
-            if state.config.canvases[index].revision != expected_revision {
-                return Err("canvas revision conflict".into());
-            }
-            let previous = state.config.canvases[index].clone();
-            let canvas = &mut state.config.canvases[index];
-            canvas.output = Some(output);
-            canvas.revision = canvas
-                .revision
-                .checked_add(1)
-                .ok_or("canvas revision exhausted")?;
-            let response = canvas.presentation();
-            if let Err(error) = save_atomic(path, &state.config) {
-                state.config.canvases[index] = previous;
-                return Err(error);
-            }
-            Ok(Response {
-                ok: true,
-                readonly: false,
-                canvas: Some(response),
-                error: None,
-                canvases: Vec::new(),
-                backend_revision: None,
-                settings_revision: None,
-                unknown_grace_ms: None,
-            })
-        }
-        Request::SetUnknownGrace {
-            canvas_id,
-            editor_id,
-            expected_revision,
-            unknown_grace_ms,
-        } => {
-            let lease = state
-                .leases
-                .get_mut(&canvas_id)
-                .filter(|lease| lease.editor_id == editor_id)
-                .ok_or("editor lease lost")?;
-            lease.touched = Instant::now();
-            if state.config.settings_revision != expected_revision {
-                return Err("overlay settings revision conflict".into());
-            }
-            if unknown_grace_ms > 10_000 {
-                return Err("overlay unknown_grace_ms must be at most 10000".into());
-            }
-            let previous = state.config.clone();
-            state.config.unknown_grace_ms = unknown_grace_ms;
-            state.config.settings_revision = expected_revision
-                .checked_add(1)
-                .ok_or("overlay settings revision exhausted")?;
-            persist_or_rollback(path, &mut state.config, previous)?;
-            Ok(Response {
-                ok: true,
-                readonly: false,
-                canvas: None,
-                error: None,
-                canvases: Vec::new(),
-                backend_revision: None,
-                settings_revision: Some(state.config.settings_revision),
-                unknown_grace_ms: Some(state.config.unknown_grace_ms),
-            })
-        }
-        Request::ListCanvases { backend } => Ok(manager_response(&state.config, backend)),
-        Request::AddCanvas {
+        Request::GetBackend { backend } => Ok(backend_response(&state.config, backend, true)),
+        Request::UpdateBackendDraft {
             backend,
-            expected_revision,
-            canvas_id,
+            editor_id,
+            canvases,
         } => {
-            require_backend_revision(&state.config, backend, expected_revision)?;
-            let previous = state.config.clone();
-            state.config.canvases.push(empty_canvas(canvas_id, backend));
-            state.config.backend_revisions.increment(backend)?;
-            persist_or_rollback(path, &mut state.config, previous)?;
-            Ok(manager_response(&state.config, backend))
+            let replacements = build_replacements(&state.config, backend, canvases.clone())?;
+            drop(replacements);
+            let lease = state
+                .leases
+                .get_mut(&backend)
+                .filter(|lease| lease.editor_id == editor_id)
+                .ok_or("editor lease lost")?;
+            lease.touched = Instant::now();
+            lease.draft = canvases;
+            Ok(lease_response(&state, backend))
         }
-        Request::DeleteCanvas {
+        Request::CommitBackend {
             backend,
+            editor_id,
             expected_revision,
-            canvas_id,
+            canvases,
         } => {
-            require_backend_revision(&state.config, backend, expected_revision)?;
+            require_lease(&mut state, backend, &editor_id)?;
+            if state.config.backend_revisions.get(backend) != expected_revision {
+                return Err("backend revision conflict".into());
+            }
+            let replacements = build_replacements(&state.config, backend, canvases)?;
             let previous = state.config.clone();
             state
                 .config
                 .canvases
-                .retain(|canvas| !(canvas.backend == backend && canvas.id == canvas_id));
-            if state.config.canvases.len() == previous.canvases.len() {
-                return Err("canvas not found".into());
+                .retain(|canvas| canvas.backend != backend);
+            state.config.canvases.extend(replacements);
+            state.config.backend_revisions.increment(backend)?;
+            if let Err(error) = save_atomic(path, &state.config) {
+                state.config = previous;
+                crate::diagnostics::emit(
+                    "overlay_editor_commit",
+                    &serde_json::json!({
+                        "backend": backend, "status":"failed", "error":error
+                    }),
+                );
+                return Err(error);
             }
-            state.config.backend_revisions.increment(backend)?;
-            persist_or_rollback(path, &mut state.config, previous)?;
-            state.leases.remove(&canvas_id);
-            Ok(manager_response(&state.config, backend))
-        }
-        Request::SetCanvasEnabled {
-            backend,
-            expected_revision,
-            canvas_id,
-            enabled,
-        } => {
-            require_backend_revision(&state.config, backend, expected_revision)?;
-            let previous = state.config.clone();
-            let canvas = state
-                .config
-                .canvases
-                .iter_mut()
-                .find(|canvas| canvas.backend == backend && canvas.id == canvas_id)
-                .ok_or("canvas not found")?;
-            canvas.enabled = enabled;
-            state.config.backend_revisions.increment(backend)?;
-            persist_or_rollback(path, &mut state.config, previous)?;
-            Ok(manager_response(&state.config, backend))
+            crate::diagnostics::emit(
+                "overlay_editor_commit",
+                &serde_json::json!({
+                    "backend": backend, "status":"saved",
+                    "canvas_count":state.config.canvases.iter().filter(|canvas|canvas.backend == backend).count()
+                }),
+            );
+            Ok(backend_response(&state.config, backend, false))
         }
     }
 }
 
-fn require_backend_revision(
-    config: &OverlayConfig,
-    backend: Backend,
-    expected: u64,
-) -> Result<(), String> {
-    if config.backend_revisions.get(backend) != expected {
-        return Err("backend canvas-list revision conflict".into());
-    }
-    Ok(())
-}
-
-fn persist_or_rollback(
-    path: &Path,
-    config: &mut OverlayConfig,
-    previous: OverlayConfig,
-) -> Result<(), String> {
-    if let Err(error) = save_atomic(path, config) {
-        *config = previous;
-        return Err(error);
-    }
-    Ok(())
-}
-
-fn manager_response(config: &OverlayConfig, backend: Backend) -> Response {
+fn empty_response(readonly: bool) -> Response {
     Response {
         ok: true,
-        readonly: false,
-        canvas: None,
+        readonly,
+        error: None,
+        canvases: Vec::new(),
+        backend_revision: None,
+    }
+}
+
+fn require_lease(state: &mut State, backend: Backend, editor_id: &str) -> Result<(), String> {
+    let lease = state
+        .leases
+        .get_mut(&backend)
+        .filter(|lease| lease.editor_id == editor_id)
+        .ok_or("editor lease lost")?;
+    lease.touched = Instant::now();
+    Ok(())
+}
+
+fn build_replacements(
+    config: &OverlayConfig,
+    backend: Backend,
+    presentations: Vec<CanvasPresentation>,
+) -> Result<Vec<Canvas>, String> {
+    if presentations.is_empty() {
+        return Err("backend must retain at least one canvas".into());
+    }
+    if !presentations.iter().any(|canvas| canvas.enabled) {
+        return Err("backend must retain at least one enabled canvas".into());
+    }
+    let other_ids = config
+        .canvases
+        .iter()
+        .filter(|canvas| canvas.backend != backend)
+        .map(|canvas| canvas.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut ids = BTreeSet::new();
+    let mut replacements = Vec::with_capacity(presentations.len());
+    for presentation in presentations {
+        if !ids.insert(presentation.id.clone()) || other_ids.contains(presentation.id.as_str()) {
+            return Err("canvas ids must be globally unique".into());
+        }
+        let mut canvas = config
+            .canvases
+            .iter()
+            .find(|canvas| canvas.backend == backend && canvas.id == presentation.id)
+            .cloned()
+            .unwrap_or_else(|| empty_canvas(presentation.id.clone(), backend));
+        let changed = canvas.presentation() != presentation;
+        canvas.apply_presentation(&presentation);
+        if changed {
+            canvas.revision = canvas
+                .revision
+                .checked_add(1)
+                .ok_or("canvas revision exhausted")?;
+        }
+        replacements.push(canvas);
+    }
+    let mut candidate = config.clone();
+    candidate
+        .canvases
+        .retain(|canvas| canvas.backend != backend);
+    candidate.canvases.extend(replacements.clone());
+    let (_, issues) = candidate.validated()?;
+    if let Some(issue) = issues.first() {
+        return Err(format!("canvas {}: {}", issue.canvas_id, issue.message));
+    }
+    Ok(replacements)
+}
+
+fn backend_response(config: &OverlayConfig, backend: Backend, readonly: bool) -> Response {
+    Response {
+        ok: true,
+        readonly,
         error: None,
         canvases: config
             .canvases
             .iter()
             .filter(|canvas| canvas.backend == backend)
-            .map(|canvas| CanvasSummary {
-                id: canvas.id.clone(),
-                enabled: canvas.enabled,
-            })
+            .map(Canvas::presentation)
             .collect(),
         backend_revision: Some(config.backend_revisions.get(backend)),
-        settings_revision: Some(config.settings_revision),
-        unknown_grace_ms: Some(config.unknown_grace_ms),
+    }
+}
+
+fn lease_response(state: &State, backend: Backend) -> Response {
+    let lease = state.leases.get(&backend).expect("lease exists");
+    Response {
+        ok: true,
+        readonly: false,
+        error: None,
+        canvases: lease.draft.clone(),
+        backend_revision: Some(lease.base_revision),
     }
 }
 
@@ -626,20 +479,27 @@ pub fn request(path: &Path, request: &Request) -> Result<Response, String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn lease_and_revision_serialize_canvas_edits() {
-        let root =
-            std::env::temp_dir().join(format!("scorepeek-overlay-control-{}", std::process::id()));
+    fn fixture(name: &str) -> (PathBuf, Mutex<State>) {
+        let root = std::env::temp_dir().join(format!(
+            "scorepeek-overlay-control-{name}-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("overlay.toml");
-        let config = OverlayConfig::initial();
-        let shared = Mutex::new(State {
-            config,
-            leases: BTreeMap::new(),
-        });
+        (
+            root.join("overlay.toml"),
+            Mutex::new(State {
+                config: OverlayConfig::initial(),
+                leases: BTreeMap::new(),
+            }),
+        )
+    }
+
+    #[test]
+    fn backend_lease_serializes_editors_and_commit_is_atomic() {
+        let (path, shared) = fixture("atomic");
         let first = apply(
-            Request::Acquire {
-                canvas_id: "obs-status".into(),
+            Request::AcquireBackend {
+                backend: Backend::Obs,
                 editor_id: "first".into(),
             },
             &path,
@@ -647,154 +507,105 @@ mod tests {
         )
         .unwrap();
         assert!(!first.readonly);
-        let second = apply(
-            Request::Acquire {
-                canvas_id: "obs-status".into(),
-                editor_id: "second".into(),
-            },
-            &path,
-            &shared,
-        )
-        .unwrap();
-        assert!(second.readonly);
-        let mut presentation = first.canvas.unwrap();
-        presentation.skin = scorepeek_overlay_ui::Skin::DjBlackbox;
-        let saved = apply(
-            Request::ReplaceCanvas {
-                canvas_id: "obs-status".into(),
+        assert!(
+            apply(
+                Request::AcquireBackend {
+                    backend: Backend::Obs,
+                    editor_id: "second".into()
+                },
+                &path,
+                &shared
+            )
+            .unwrap()
+            .readonly
+        );
+        let mut draft = first.canvases;
+        draft[0].skin = scorepeek_overlay_ui::Skin::DjBlackbox;
+        let updated = apply(
+            Request::UpdateBackendDraft {
+                backend: Backend::Obs,
                 editor_id: "first".into(),
-                expected_revision: presentation.revision,
-                presentation,
+                canvases: draft.clone(),
             },
             &path,
             &shared,
         )
         .unwrap();
-        assert_eq!(saved.canvas.unwrap().revision, 1);
-        assert!(
-            apply(
-                Request::SetGeometry {
-                    canvas_id: "obs-status".into(),
-                    editor_id: "first".into(),
-                    expected_revision: 0,
-                    x: 0,
-                    y: 0,
-                    width: 560,
-                    height: 1040,
-                },
-                &path,
-                &shared,
-            )
-            .is_err()
+        let reacquired = apply(
+            Request::AcquireBackend {
+                backend: Backend::Obs,
+                editor_id: "first".into(),
+            },
+            &path,
+            &shared,
+        )
+        .unwrap();
+        assert_eq!(reacquired.canvases, updated.canvases);
+        let saved = apply(
+            Request::CommitBackend {
+                backend: Backend::Obs,
+                editor_id: "first".into(),
+                expected_revision: first.backend_revision.unwrap(),
+                canvases: draft,
+            },
+            &path,
+            &shared,
+        )
+        .unwrap();
+        assert_eq!(saved.backend_revision, Some(1));
+        assert_eq!(
+            saved.canvases[0].skin,
+            scorepeek_overlay_ui::Skin::DjBlackbox
         );
-        std::fs::remove_dir_all(root).unwrap();
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("dj-blackbox")
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]
-    fn backend_revision_guards_canvas_management() {
-        let root =
-            std::env::temp_dir().join(format!("scorepeek-overlay-manager-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("overlay.toml");
-        let shared = Mutex::new(State {
-            config: OverlayConfig::initial(),
-            leases: BTreeMap::new(),
-        });
-        let added = apply(
-            Request::AddCanvas {
-                backend: Backend::Obs,
-                expected_revision: 0,
-                canvas_id: "obs-empty".into(),
-            },
-            &path,
-            &shared,
-        )
-        .unwrap();
-        assert_eq!(added.backend_revision, Some(1));
-        assert_eq!(added.canvases.len(), 5);
-        assert!(
-            apply(
-                Request::DeleteCanvas {
-                    backend: Backend::Obs,
-                    expected_revision: 0,
-                    canvas_id: "obs-empty".into(),
-                },
-                &path,
-                &shared,
-            )
-            .is_err()
-        );
-        apply(
-            Request::DeleteCanvas {
-                backend: Backend::Obs,
-                expected_revision: 1,
-                canvas_id: "obs-empty".into(),
-            },
-            &path,
-            &shared,
-        )
-        .unwrap();
-        assert!(
-            apply(
-                Request::SetCanvasEnabled {
-                    backend: Backend::Obs,
-                    expected_revision: 2,
-                    canvas_id: "obs-missing".into(),
-                    enabled: false,
-                },
-                &path,
-                &shared,
-            )
-            .is_err()
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn global_grace_uses_its_own_revision_under_a_canvas_lease() {
-        let root =
-            std::env::temp_dir().join(format!("scorepeek-overlay-settings-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("overlay.toml");
-        let shared = Mutex::new(State {
-            config: OverlayConfig::initial(),
-            leases: BTreeMap::new(),
-        });
-        apply(
-            Request::Acquire {
-                canvas_id: "wayland-status".into(),
+    fn failed_commit_keeps_lease_and_previous_document() {
+        let (path, shared) = fixture("failure");
+        let acquired = apply(
+            Request::AcquireBackend {
+                backend: Backend::Wayland,
                 editor_id: "editor".into(),
             },
             &path,
             &shared,
         )
         .unwrap();
-        let changed = apply(
-            Request::SetUnknownGrace {
-                canvas_id: "wayland-status".into(),
+        let mut invalid = acquired.canvases;
+        invalid[0].widgets[0].x = -3;
+        let error = apply(
+            Request::CommitBackend {
+                backend: Backend::Wayland,
                 editor_id: "editor".into(),
                 expected_revision: 0,
-                unknown_grace_ms: 2_000,
+                canvases: invalid,
             },
             &path,
             &shared,
         )
-        .unwrap();
-        assert_eq!(changed.settings_revision, Some(1));
-        assert_eq!(changed.unknown_grace_ms, Some(2_000));
+        .unwrap_err();
+        let response = failed_response(&shared, Some((Backend::Wayland, "editor".into())), error);
+        assert!(!response.ok);
+        assert!(!response.readonly);
+        assert!(!response.canvases.is_empty());
         assert!(
             apply(
-                Request::SetUnknownGrace {
-                    canvas_id: "wayland-status".into(),
-                    editor_id: "editor".into(),
-                    expected_revision: 0,
-                    unknown_grace_ms: 500,
+                Request::KeepAliveBackend {
+                    backend: Backend::Wayland,
+                    editor_id: "editor".into()
                 },
                 &path,
-                &shared,
+                &shared
             )
-            .is_err()
+            .is_ok()
         );
-        std::fs::remove_dir_all(root).unwrap();
+        assert!(!path.exists());
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

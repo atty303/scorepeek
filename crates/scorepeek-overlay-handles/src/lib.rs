@@ -111,9 +111,15 @@ pub struct Shell {
     started: Instant,
     pub output_name: Option<String>,
     pub available_outputs: Vec<String>,
+    pub output_descriptions: Vec<OutputDescription>,
     pub position: [i32; 2],
     pub output_logical_size: Option<[u32; 2]>,
     pub fractional_scaling: bool,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutputDescription {
+    pub name: String,
+    pub logical_size: Option<[u32; 2]>,
 }
 impl Shell {
     /// Creates an interactive layer on the requested or deterministic default output.
@@ -183,22 +189,40 @@ impl Shell {
         app.seat = globals
             .bind::<wayland_client::protocol::wl_seat::WlSeat, _, _>(&qh, 1..=9, ())
             .ok();
-        let selection = select_output(&app.output_state, output)?;
+        let selection = select_output(&app.output_state, output, [width, height])?;
         let available_outputs = app
             .output_state
             .outputs()
             .filter_map(|output| app.output_state.info(&output).and_then(|info| info.name))
             .collect();
+        let output_descriptions = app
+            .output_state
+            .outputs()
+            .filter_map(|output| {
+                let info = app.output_state.info(&output)?;
+                Some(OutputDescription {
+                    name: info.name?,
+                    logical_size: info.logical_size.and_then(|(width, height)| {
+                        Some([u32::try_from(width).ok()?, u32::try_from(height).ok()?])
+                    }),
+                })
+            })
+            .collect();
         let output_logical_size = selection.info.logical_size.and_then(|(width, height)| {
             Some([u32::try_from(width).ok()?, u32::try_from(height).ok()?])
         });
+        let surface_width = output_logical_size.map_or(width, |size| width.min(size[0]));
+        let surface_height = output_logical_size.map_or(height, |size| height.min(size[1]));
+        app.width = surface_width;
+        app.height = surface_height;
+        app.fallback = [surface_width, surface_height];
         app.selected_output = Some(selection.output.clone());
 
         let resolved_x = if upper_right {
             selection
                 .info
                 .logical_size
-                .and_then(|(output_width, _)| upper_right_x(output_width, width, x))
+                .and_then(|(output_width, _)| upper_right_x(output_width, surface_width, x))
                 .unwrap_or(x)
         } else {
             x
@@ -224,7 +248,7 @@ impl Shell {
         layer.set_margin(y, 0, 0, resolved_x);
         layer.set_exclusive_zone(-1);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.set_size(width, height);
+        layer.set_size(surface_width, surface_height);
         app.scale = selection.info.scale_factor.max(1);
         layer.commit();
 
@@ -249,6 +273,7 @@ impl Shell {
             owner,
             output_name: selection.info.name,
             available_outputs,
+            output_descriptions,
             position: [resolved_x, y],
             output_logical_size,
             fractional_scaling: app.viewport.is_some(),
@@ -313,6 +338,17 @@ impl Shell {
         self.available_outputs = outputs
             .iter()
             .filter_map(|info| info.name.clone())
+            .collect();
+        self.output_descriptions = outputs
+            .iter()
+            .filter_map(|info| {
+                Some(OutputDescription {
+                    name: info.name.clone()?,
+                    logical_size: info.logical_size.and_then(|(width, height)| {
+                        Some([u32::try_from(width).ok()?, u32::try_from(height).ok()?])
+                    }),
+                })
+            })
             .collect();
         if let Some(name) = self.output_name.as_deref()
             && let Some(info) = outputs
@@ -768,7 +804,11 @@ struct SelectedOutput {
     info: OutputInfo,
 }
 
-fn select_output(state: &OutputState, requested: Option<&str>) -> Result<SelectedOutput, String> {
+fn select_output(
+    state: &OutputState,
+    requested: Option<&str>,
+    required: [u32; 2],
+) -> Result<SelectedOutput, String> {
     let mut outputs: Vec<_> = state
         .outputs()
         .filter_map(|output| {
@@ -780,29 +820,51 @@ fn select_output(state: &OutputState, requested: Option<&str>) -> Result<Selecte
 
     let index = choose_output_index(
         requested,
-        outputs
-            .iter()
-            .map(|candidate| candidate.info.name.as_deref()),
+        outputs.iter().map(|candidate| {
+            let size = candidate.info.logical_size.and_then(|(width, height)| {
+                Some([u32::try_from(width).ok()?, u32::try_from(height).ok()?])
+            });
+            (candidate.info.name.as_deref(), size)
+        }),
+        required,
     )?;
     Ok(outputs.swap_remove(index))
 }
 
 fn choose_output_index<'a>(
     requested: Option<&str>,
-    names: impl IntoIterator<Item = Option<&'a str>>,
+    outputs: impl IntoIterator<Item = (Option<&'a str>, Option<[u32; 2]>)>,
+    required: [u32; 2],
 ) -> Result<usize, String> {
-    let names = names.into_iter().collect::<Vec<_>>();
+    let outputs = outputs.into_iter().collect::<Vec<_>>();
     if let Some(requested) = requested
-        && let Some(index) = names.iter().position(|name| *name == Some(requested))
+        && let Some(index) = outputs
+            .iter()
+            .position(|(name, _)| *name == Some(requested))
     {
         return Ok(index);
     }
-    names
+    if let Some((index, _)) = outputs
         .iter()
         .enumerate()
-        .filter_map(|(index, name)| name.map(|name| (index, name)))
-        .min_by_key(|(index, name)| (*name, *index))
-        .map(|(index, _)| index)
+        .filter_map(|(index, (name, size))| Some((index, ((*name)?, (*size)?))))
+        .filter(|(_, (_, size))| size[0] >= required[0] && size[1] >= required[1])
+        .min_by_key(|(index, (name, _))| (*name, *index))
+    {
+        return Ok(index);
+    }
+    outputs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (name, size))| Some((index, (*name)?, (*size)?)))
+        .max_by_key(|(index, name, size)| {
+            (
+                u64::from(size[0]) * u64::from(size[1]),
+                std::cmp::Reverse(*name),
+                std::cmp::Reverse(*index),
+            )
+        })
+        .map(|(index, _, _)| index)
         .ok_or_else(|| "no named Wayland output".into())
 }
 
@@ -826,19 +888,58 @@ mod tests {
     #[test]
     fn unspecified_output_chooses_a_stable_visible_default() {
         assert_eq!(
-            choose_output_index(None, [Some("HDMI-A-1"), Some("DP-3")]),
+            choose_output_index(
+                None,
+                [
+                    (Some("HDMI-A-1"), Some([1920, 1080])),
+                    (Some("DP-3"), Some([1920, 1080]))
+                ],
+                [560, 1040]
+            ),
             Ok(1)
         );
         assert_eq!(
-            choose_output_index(Some("HDMI-A-1"), [Some("DP-3"), Some("HDMI-A-1")]),
+            choose_output_index(
+                Some("HDMI-A-1"),
+                [
+                    (Some("DP-3"), Some([1920, 1080])),
+                    (Some("HDMI-A-1"), Some([1920, 1080]))
+                ],
+                [560, 1040]
+            ),
             Ok(1)
         );
         assert_eq!(
-            choose_output_index(Some("disconnected"), [Some("HDMI-A-1"), Some("DP-3")]),
+            choose_output_index(
+                Some("disconnected"),
+                [
+                    (Some("HDMI-A-1"), Some([1920, 1080])),
+                    (Some("DP-3"), Some([1920, 1080]))
+                ],
+                [560, 1040]
+            ),
             Ok(1)
         );
-        assert_eq!(choose_output_index(None, [None, Some("DP-3")]), Ok(1));
-        assert!(choose_output_index(None, []).is_err());
-        assert!(choose_output_index(None, [None]).is_err());
+        assert_eq!(
+            choose_output_index(
+                None,
+                [(None, None), (Some("DP-3"), Some([1920, 1080]))],
+                [560, 1040]
+            ),
+            Ok(1)
+        );
+        assert_eq!(
+            choose_output_index(
+                Some("gone"),
+                [
+                    (Some("small"), Some([1280, 720])),
+                    (Some("large"), Some([1920, 1080]))
+                ],
+                [2000, 1200]
+            ),
+            Ok(1)
+        );
+        assert!(choose_output_index(None, [], [560, 1040]).is_err());
+        assert!(choose_output_index(None, [(None, None)], [560, 1040]).is_err());
     }
 }

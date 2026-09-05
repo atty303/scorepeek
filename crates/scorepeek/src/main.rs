@@ -544,6 +544,7 @@ struct RoutineRunOptions<'a> {
 #[derive(Default)]
 struct OverlayOptions {
     wayland: bool,
+    wayland_edit: bool,
     obs: bool,
     config_path: Option<PathBuf>,
 }
@@ -568,6 +569,10 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions<'
                 overlays.config_path = Some(PathBuf::from(value));
             }
             Some("--overlay-wayland") if !overlays.wayland => overlays.wayland = true,
+            Some("--overlay-wayland-edit") if !overlays.wayland_edit => {
+                overlays.wayland = true;
+                overlays.wayland_edit = true;
+            }
             Some("--overlay-obs") if !overlays.obs => overlays.obs = true,
             Some("--record") if !recording => recording = true,
             Some("--no-scores") if !no_scores => no_scores = true,
@@ -755,6 +760,8 @@ fn run_routine_live_session(
                             .map_err(|error| format!("overlay obs_listen: {error}"))?,
                         unknown_grace_ms: overlay_config.unknown_grace_ms,
                         settings_revision: overlay_config.settings_revision,
+                        edit_on_start: backend == scorepeek_overlay::runtime::Backend::Wayland
+                            && overlays.wayland_edit,
                     },
                 )
             });
@@ -3703,6 +3710,7 @@ fn print_usage() {
     println!(
         "  scorepeek recognition field-resource-load-gate --catalog-store DIRECTORY --catalog-sha256 SHA256"
     );
+    println!("  run option: --overlay-wayland-edit (enables Wayland and opens the editor)");
     println!(
         "  scorepeek diagnostic reevaluate --session DIRECTORY --session-sha256 SHA256 --output DIRECTORY"
     );
@@ -3788,6 +3796,7 @@ mod tests {
     fn overlay_options_allow_independent_and_simultaneous_consumers() {
         for options in [
             vec!["--overlay-wayland"],
+            vec!["--overlay-wayland-edit"],
             vec!["--overlay-obs"],
             vec![
                 "--overlay-wayland",
@@ -3811,6 +3820,9 @@ mod tests {
         }
         let parsed = parse_routine_run_options(&[]).unwrap();
         assert!(!parsed.overlays.wayland && !parsed.overlays.obs);
+        let edit_args = [OsString::from("--overlay-wayland-edit")];
+        let edit = parse_routine_run_options(&edit_args).unwrap();
+        assert!(edit.overlays.wayland && edit.overlays.wayland_edit);
     }
 
     #[test]

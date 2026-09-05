@@ -18,19 +18,24 @@ checkpoint; implementation history belongs in Git.
 
 - ADR 0125 replaces the fixed overlay cards/layout flags with independently positioned status,
   selection, score, history-list and history-graph widgets. ADR 0127 advances the strict overlay
-  TOML to schema v2 and adds screen-aware canvases.
+  TOML with screen-aware canvases. ADR 0128 advances it to schema v3, removes canvas/widget z-order,
+  and automatically migrates schema v2 by deleting only `z`.
   `--overlay-wayland` and `--overlay-obs` enable the backends; `--overlay-config` selects the document.
   Missing configuration creates status, MUSIC SELECT, DECIDE/PLAY and RESULT canvases per backend.
-  Each canvas has optional semantic-screen filters and z-order; Wayland also has 1–100% content
+  Each canvas has optional semantic-screen filters; Wayland also has 1–100% content
   opacity. UNKNOWN and socket loss retain the previous screen for the configured global grace. The
-  parent is the sole atomic writer; per-canvas leases/revisions and backend-list revisions reject
-  stale concurrent edits.
+  parent is the sole atomic writer. One backend lease owns the complete in-memory draft; SAVE checks
+  the backend revision and atomically replaces it once, while a failed save retains draft and lease.
   Wayland owns one interactive surface per enabled native canvas and shares one feed/visibility
   clock across them. Hidden surfaces are transparent, idle and have an empty input region. OBS
   exposes stable `/canvas/<id>` URLs plus the full-screen `/overlay` multi-canvas Browser Source.
-  Browser Source Interaction edits the same canvas page. Right-click enters; DONE exits. Editing a
-  compact native canvas temporarily expands and repositions its surface inside the selected output;
-  `/overlay` likewise promotes the edited iframe to the full stage. DONE restores saved geometry.
+  Browser Source Interaction edits the same `/overlay` page; `/canvas/<id>` is display-only.
+  Right-click opens a fixed sidebar beside the output-coordinate preview. The workspace shows every
+  canvas, offers an independent semantic-screen preview and fixed inactive sample data, and supports
+  one geometry undo. PREVIEW ACTUAL hides the editor except for its return control.
+  Wayland missing-output recovery opens the same unsaved draft on a deterministic fitting or largest
+  output and shrinks only the canvas boundary when required. SAVE adopts it; DISCARD leaves TOML
+  untouched and suppresses that canvas for the run. `--overlay-wayland-edit` opens this recovery editor.
 - CYAN SYSTEM, RESULT AURORA and DJ BLACKBOX are canvas-level skins using the approved embedded frame
   artwork through CSS backgrounds. Oxanium and OFL 1.1 are embedded alongside Japanese system-font
   fallbacks. Runtime values remain text/SVG; result emphasis is finite and the settled DOM is idle.
@@ -141,13 +146,11 @@ checkpoint; implementation history belongs in Git.
   MIME types; embedded-asset and child-EOF tests pass. `wasm-opt` still reports unsupported DWARF and
   the bundle proceeds without that optional optimization.
 - Repository checks and the complete workspace suite pass: 506 library,
-  323 binary, 128 corpus library, 5 corpus binary, 26 overlay, 3 handle, 4 overlay-UI, 3 overlay-web
-  and 13 score tests, plus doctests. The embedded-web overlay suite has 27 tests. The 99 offline OCR tests and
+  323 binary, 128 corpus library, 5 corpus binary, 27 overlay, 3 handle, 4 overlay-UI, 0 overlay-web
+  and 13 score tests, plus doctests. The embedded-web overlay suite has 28 tests. The 99 offline OCR tests and
   repository checks also pass. A subsequent focused rerun passes all 5 public API tests, including
   the added semantic-screen phase contract, plus the overlay and embedded-web suites.
-  A supplementary all-features/all-targets pedantic Clippy invocation stops on two pre-existing
-  `scorepeek-overlay/src/web.rs` lints (`format_collect` and `match_same_arms`); the standard
-  repository checks do not enable that failing lint combination.
+  The supplementary all-features/all-targets pedantic Clippy invocation also passes.
 - Target investigation found two connected outputs while the initial Wayland canvas omitted
   `output`; the previous child rejected that multi-output state before creating a surface. The
   native child now selects the first named connected output in stable name order when `output` is
@@ -235,7 +238,7 @@ checkpoint; implementation history belongs in Git.
   Connecting snapshots preserve the last publication. Existing four-pane gate tests and held-state
   rendering pass at 120x40 and 80x25. Trace capacity/no-overwrite tests pass.
 - `mise run check`, workspace/all-target Clippy and the complete default-parallel `mise run test`
-  pass (501 runtime, 316 binary, 128 corpus library, 5 corpus binary and 11 scores tests, plus 99 offline OCR tests).
+  pass (506 runtime, 323 binary, 128 corpus library, 5 corpus binary and 13 scores tests, plus 99 offline OCR tests).
   Public API tests cover snapshot/live folding, provenance readiness, old queued-record exclusion,
   overflow with no subsequent event, idle reconnects/write-half-close, partial/slow clients, record
   limits, channel failure non-interference, and socket ownership cleanup. Raw diagnostic records and
@@ -250,9 +253,9 @@ checkpoint; implementation history belongs in Git.
 ## Unverified and next execution boundary
 
 - Target-live validation is still required for screen-driven surface visibility, configured
-  opacity, forced cursor shapes/fallback, peer-surface z behavior, OBS `/overlay` empty-space menu
-  and hidden-canvas preview, compositor output selection/bounds, initial
-  upper-right placement, cross-output drag prevention and native canvas-list/output hot reconciliation,
+  opacity, forced cursor shapes/fallback, OBS `/overlay` Interaction workspace and display-only
+  canvas guidance, compositor output selection/bounds, missing-output save/discard, initial
+  upper-right placement, output switching and native canvas-list/output hot reconciliation,
   integer/fractional visual equality, Gamescope foreground behavior, OBS Interaction, readability,
   CPU/GPU/OBS lag and idle render cost. Development-host DOM/headless/browser tests do not certify
   those target behaviors. Target binary installation is complete; no live run, autostart, push or
