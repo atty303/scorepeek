@@ -543,53 +543,9 @@ struct RoutineRunOptions<'a> {
 
 #[derive(Default)]
 struct OverlayOptions {
-    skin: Option<scorepeek_overlay::Skin>,
-    wayland_layout: Option<scorepeek_overlay::Layout>,
-    obs_layout: Option<scorepeek_overlay::Layout>,
-    backends: Vec<scorepeek_overlay::runtime::Backend>,
-    output: Option<String>,
-    listen: Option<std::net::SocketAddr>,
-}
-
-impl OverlayOptions {
-    fn set(&mut self, option: &str, value: &str) -> Result<(), String> {
-        match option {
-            "--overlay-skin" if self.skin.is_none() => {
-                self.skin = Some(value.parse()?);
-            }
-            "--overlay-wayland-layout" if self.wayland_layout.is_none() => {
-                self.wayland_layout = Some(value.parse()?);
-            }
-            "--overlay-obs-layout" if self.obs_layout.is_none() => {
-                self.obs_layout = Some(value.parse()?);
-            }
-            "--overlay" => {
-                let backend = match value {
-                    "wayland" => scorepeek_overlay::runtime::Backend::Wayland,
-                    "obs" => scorepeek_overlay::runtime::Backend::Obs,
-                    _ => return Err("--overlay must be wayland or obs".into()),
-                };
-                if self.backends.contains(&backend) {
-                    return Err("duplicate --overlay backend".into());
-                }
-                self.backends.push(backend);
-            }
-            "--overlay-output" if self.output.is_none() => {
-                self.output = Some(value.into());
-            }
-            "--overlay-listen" if self.listen.is_none() => {
-                let address: std::net::SocketAddr = value
-                    .parse()
-                    .map_err(|_| "--overlay-listen requires IP:PORT".to_owned())?;
-                if !address.ip().is_loopback() {
-                    return Err("--overlay-listen must be loopback".into());
-                }
-                self.listen = Some(address);
-            }
-            _ => return Err(format!("duplicate {option}")),
-        }
-        Ok(())
-    }
+    wayland: bool,
+    obs: bool,
+    config_path: Option<PathBuf>,
 }
 
 fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions<'_>, String> {
@@ -602,23 +558,17 @@ fn parse_routine_run_options(options: &[OsString]) -> Result<RoutineRunOptions<'
     let mut index = 0;
     while index < options.len() {
         match options[index].to_str() {
-            Some(
-                "--overlay"
-                | "--overlay-output"
-                | "--overlay-listen"
-                | "--overlay-skin"
-                | "--overlay-wayland-layout"
-                | "--overlay-obs-layout",
-            ) => {
+            Some("--overlay-config") if overlays.config_path.is_none() => {
                 let option = options[index].to_str().unwrap_or_default();
                 index += 1;
                 let value = options
                     .get(index)
-                    .and_then(|value| value.to_str())
                     .filter(|value| !value.is_empty())
                     .ok_or_else(|| format!("{option} requires a value"))?;
-                overlays.set(option, value)?;
+                overlays.config_path = Some(PathBuf::from(value));
             }
+            Some("--overlay-wayland") if !overlays.wayland => overlays.wayland = true,
+            Some("--overlay-obs") if !overlays.obs => overlays.obs = true,
             Some("--record") if !recording => recording = true,
             Some("--no-scores") if !no_scores => no_scores = true,
             Some("--scores-db") if scores_db.is_none() => {
@@ -738,7 +688,48 @@ fn run_routine_live_session(
         Some(path)
     };
     let mut overlay_children = scorepeek_overlay::children::Children::default();
-    for backend in overlays.backends {
+    let overlay_config_path = overlays
+        .config_path
+        .unwrap_or_else(scorepeek_overlay::config::default_path);
+    let requested_backends = [
+        overlays
+            .wayland
+            .then_some(scorepeek_overlay::runtime::Backend::Wayland),
+        overlays
+            .obs
+            .then_some(scorepeek_overlay::runtime::Backend::Obs),
+    ];
+    let loaded_overlay_config = if overlays.wayland || overlays.obs {
+        Some(scorepeek_overlay::config::load_or_create(
+            &overlay_config_path,
+        )?)
+    } else {
+        None
+    };
+    let overlay_controller = loaded_overlay_config
+        .as_ref()
+        .map(|(config, _)| {
+            scorepeek_overlay::control::Controller::start(&overlay_config_path, config.clone())
+        })
+        .transpose()?;
+    if let Some((_, issues)) = &loaded_overlay_config {
+        for issue in issues {
+            output.warning(format!(
+                "overlay canvas {} ignored: {}",
+                issue.canvas_id, issue.message
+            ))?;
+        }
+    }
+    for backend in requested_backends.into_iter().flatten() {
+        let (overlay_config, _) = loaded_overlay_config
+            .as_ref()
+            .expect("overlay config loaded");
+        let canvases = overlay_config
+            .validated()?
+            .0
+            .into_iter()
+            .filter(|canvas| canvas.backend == backend && canvas.enabled)
+            .collect::<Vec<_>>();
         let started = output
             .event_socket_path()
             .ok_or_else(|| "event socket unavailable".to_owned())
@@ -748,24 +739,20 @@ fn run_routine_live_session(
                     &executable,
                     &scorepeek_overlay::runtime::Config {
                         backend,
-                        appearance: scorepeek_overlay::Appearance {
-                            skin: overlays.skin.unwrap_or_default(),
-                            layout: match backend {
-                                scorepeek_overlay::runtime::Backend::Wayland => overlays
-                                    .wayland_layout
-                                    .unwrap_or(scorepeek_overlay::Layout::Compact),
-                                scorepeek_overlay::runtime::Backend::Obs => overlays
-                                    .obs_layout
-                                    .unwrap_or(scorepeek_overlay::Layout::Sidebar),
-                            },
-                        },
+                        canvases,
+                        config_path: overlay_config_path.clone(),
+                        control_socket: overlay_controller
+                            .as_ref()
+                            .expect("overlay controller started")
+                            .path()
+                            .to_owned(),
                         socket: socket.to_path_buf(),
                         invocation: invocation_id.clone(),
                         scores_db: scores_path.clone(),
-                        output: overlays.output.clone(),
-                        listen: overlays
-                            .listen
-                            .unwrap_or(std::net::SocketAddr::from(([127, 0, 0, 1], 17384))),
+                        listen: overlay_config
+                            .obs_listen
+                            .parse()
+                            .map_err(|error| format!("overlay obs_listen: {error}"))?,
                     },
                 )
             });
@@ -874,6 +861,7 @@ fn run_routine_live_session(
                 }
                 let mut started = false;
                 let mut emit = |emission: LiveSessionEmission| {
+                    output.refresh_scores()?;
                     output.refresh_overlays(&mut overlay_children)?;
                     let output_started = std::time::Instant::now();
                     if let Some(binding) = emission.public_binding.clone() {
@@ -3707,7 +3695,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...\n  scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...\n  scorepeek profile list\n  scorepeek run [--profile NAME] [--scores-db PATH | --no-scores] [--overlay wayland] [--overlay obs] [--overlay-output NAME] [--overlay-listen IP:PORT] [--overlay-skin cyan-system|result-aurora|dj-blackbox] [--overlay-wayland-layout compact|sidebar] [--overlay-obs-layout compact|sidebar] [--record [--record-memory-mib MIB]]\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition inspect-diagnostic-qoi --frame FILE --frame-sha256 SHA256\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
+        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...\n  scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...\n  scorepeek profile list\n  scorepeek run [--profile NAME] [--scores-db PATH | --no-scores] [--overlay-wayland] [--overlay-obs] [--overlay-config PATH] [--record [--record-memory-mib MIB]]\n  scorepeek capture gamescope-live-gate --duration-ms MILLISECONDS [--consume-interval-ms MILLISECONDS]\n  scorepeek capture gamescope-lifecycle-gate --duration-ms MILLISECONDS --runs RUNS --consume-interval-ms MILLISECONDS\n  scorepeek capture gamescope-calibration-sample --output DIRECTORY --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-calibration-session-sample --output DIRECTORY --environment-id ID --gamescope-version VERSION --backend BACKEND --output-width PIXELS --output-height PIXELS --nested-width PIXELS --nested-height PIXELS --nested-refresh HZ --scaler SCALER --filter FILTER\n  scorepeek capture gamescope-profile-binding-author --calibration DIRECTORY --calibration-sha256 SHA256 --output FILE --left-numerator N --left-denominator D --top-numerator N --top-denominator D --width-numerator N --width-denominator D --height-numerator N --height-denominator D\n  scorepeek capture gamescope-binding-admission-gate --binding FILE --binding-sha256 SHA256\n  scorepeek capture gamescope-canonical-frame-gate --binding FILE --binding-sha256 SHA256 --capture-generation GENERATION\n  scorepeek catalog sync\n  scorepeek diagnostic status --root DIRECTORY\n  scorepeek diagnostic list --root DIRECTORY\n  scorepeek diagnostic freeze --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic delete --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256_OR_NONE\n  scorepeek diagnostic export --root DIRECTORY --run-id RUN_ID --run-sha256 SHA256 --manifest-sha256 SHA256 --destination DIRECTORY\n  scorepeek diagnostic replay --request FILE --request-sha256 SHA256 --extraction DIRECTORY --output-root DIRECTORY\n  scorepeek recognition inspect --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID\n  scorepeek recognition inspect-diagnostic-qoi --frame FILE --frame-sha256 SHA256\n  scorepeek recognition crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition music-select-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-crop --extraction DIRECTORY --extraction-sha256 SHA256 --frame-id FRAME_ID --output DIRECTORY\n  scorepeek recognition integrated-context-observe --crop-artifact DIRECTORY --crop-artifact-sha256 SHA256 --output DIRECTORY\n  scorepeek recognition provisional-title-candidates --catalog-store DIRECTORY --output FILE\n  scorepeek recognition title-dictionary-audit --catalog-store DIRECTORY --dictionary FILE\n  scorepeek recognition title-model-export-requirements --catalog-store DIRECTORY --baseline-dictionary FILE --output DIRECTORY\n  scorepeek recognition title-spike --catalog-store DIRECTORY --ocr-text TEXT --ocr-confidence SCORE\n  scorepeek recognition title-official-onnx-decode --model FILE --dictionary FILE --request FILE\n  scorepeek recognition title-official-dynamic-onnx-decode --model-id MODEL_ID --bundle DIRECTORY --request FILE\n  scorepeek recognition title-onnx-parity --model FILE --reference DIRECTORY --reference-sha256 SHA256 --crop-artifact DIRECTORY --catalog-store DIRECTORY --dictionary FILE --minimum-log-probability SCORE --minimum-runner-up-margin SCORE\n  scorepeek recognition title-model-contract-parity --model FILE --model-sha256 SHA256 --reference DIRECTORY --reference-sha256 SHA256 --dictionary FILE",
         env!("CARGO_PKG_VERSION")
     );
     println!(
@@ -3797,17 +3785,13 @@ mod tests {
     #[test]
     fn overlay_options_allow_independent_and_simultaneous_consumers() {
         for options in [
-            vec!["--overlay", "wayland"],
-            vec!["--overlay", "obs"],
+            vec!["--overlay-wayland"],
+            vec!["--overlay-obs"],
             vec![
-                "--overlay",
-                "wayland",
-                "--overlay",
-                "obs",
-                "--overlay-output",
-                "DP-1",
-                "--overlay-listen",
-                "127.0.0.1:17385",
+                "--overlay-wayland",
+                "--overlay-obs",
+                "--overlay-config",
+                "overlay.toml",
                 "--no-scores",
             ],
         ] {
@@ -3815,70 +3799,26 @@ mod tests {
             assert!(parse_routine_run_options(&values).is_ok());
         }
         for options in [
-            vec!["--overlay"],
-            vec!["--overlay", "unknown"],
-            vec!["--overlay", "obs", "--overlay", "obs"],
-            vec!["--overlay-listen", "0.0.0.0:17384"],
+            vec!["--overlay-wayland", "--overlay-wayland"],
+            vec!["--overlay-obs", "--overlay-obs"],
+            vec!["--overlay-config"],
+            vec!["--overlay-config", "a", "--overlay-config", "b"],
         ] {
             let values = options.iter().map(OsString::from).collect::<Vec<_>>();
             assert!(parse_routine_run_options(&values).is_err());
         }
-        assert!(
-            parse_routine_run_options(&[])
-                .unwrap()
-                .overlays
-                .backends
-                .is_empty()
-        );
+        let parsed = parse_routine_run_options(&[]).unwrap();
+        assert!(!parsed.overlays.wayland && !parsed.overlays.obs);
     }
 
     #[test]
-    fn overlay_appearance_options_are_typed_and_reject_duplicates() {
-        for skin in ["cyan-system", "result-aurora", "dj-blackbox"] {
-            let args = [
-                "--overlay-skin",
-                skin,
-                "--overlay-wayland-layout",
-                "sidebar",
-                "--overlay-obs-layout",
-                "compact",
-            ]
-            .map(OsString::from);
-            let parsed = parse_routine_run_options(&args).unwrap();
-            assert_eq!(parsed.overlays.skin.unwrap().name(), skin);
-            assert_eq!(
-                parsed.overlays.wayland_layout,
-                Some(scorepeek_overlay::Layout::Sidebar)
-            );
-            assert_eq!(
-                parsed.overlays.obs_layout,
-                Some(scorepeek_overlay::Layout::Compact)
-            );
-        }
-        for args in [
-            vec!["--overlay-skin"],
-            vec!["--overlay-skin", "unknown"],
-            vec![
-                "--overlay-skin",
-                "cyan-system",
-                "--overlay-skin",
-                "dj-blackbox",
-            ],
-            vec!["--overlay-wayland-layout", "unknown"],
-            vec![
-                "--overlay-obs-layout",
-                "compact",
-                "--overlay-obs-layout",
-                "sidebar",
-            ],
-        ] {
-            assert!(
-                parse_routine_run_options(
-                    &args.into_iter().map(OsString::from).collect::<Vec<_>>()
-                )
-                .is_err()
-            );
-        }
+    fn overlay_config_path_is_preserved() {
+        let args = ["--overlay-obs", "--overlay-config", "custom.toml"].map(OsString::from);
+        let parsed = parse_routine_run_options(&args).unwrap();
+        assert_eq!(
+            parsed.overlays.config_path.as_deref(),
+            Some(Path::new("custom.toml"))
+        );
     }
 
     #[test]

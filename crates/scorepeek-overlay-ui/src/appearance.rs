@@ -33,36 +33,6 @@ impl std::str::FromStr for Skin {
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Layout {
-    #[default]
-    Compact,
-    Sidebar,
-}
-
-impl Layout {
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Compact => "compact",
-            Self::Sidebar => "sidebar",
-        }
-    }
-}
-
-impl std::str::FromStr for Layout {
-    type Err = String;
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "compact" => Ok(Self::Compact),
-            "sidebar" => Ok(Self::Sidebar),
-            _ => Err("layout must be compact or sidebar".into()),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Appearance {
     pub skin: Skin,
-    pub layout: Layout,
 }

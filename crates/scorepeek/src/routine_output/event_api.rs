@@ -3,6 +3,7 @@ use super::{
     MusicSelectBestSnapshot, MusicSelectionState, ResultDomainEvent, ResultProvisionalState,
     RunEvent, RunEventKind, SongPresentation,
 };
+use crate::play_attempt::{PlayAttemptPhase, PlayAttemptResultRelation, PlayAttemptState};
 use serde::Serialize;
 use std::io::{self, Write};
 use std::time::{Instant, SystemTime};
@@ -86,6 +87,8 @@ pub(super) struct Status {
     capture: Option<CaptureContext>,
     catalog: Readiness,
     model: Readiness,
+    scores: Option<Readiness>,
+    recording: Option<Readiness>,
     last_session_outcome: Option<SessionOutcome>,
 }
 
@@ -128,6 +131,27 @@ enum EventKind {
     StatusChanged {
         status: Status,
     },
+    ResultIngestChanged {
+        ingest: Option<ResultIngest>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ResultIngestState {
+    Processing,
+    Persisted,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct ResultIngest {
+    id: String,
+    state: ResultIngestState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result_event_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -140,10 +164,15 @@ pub(super) struct PublicState {
     provisional_result: Option<PublicRecord>,
     music_selection: Option<PublicRecord>,
     music_select_best: Option<PublicRecord>,
+    result_ingest: Option<PublicRecord>,
     #[serde(skip)]
     started: Instant,
     #[serde(skip)]
     pub(super) pending_binding: Option<Binding>,
+    #[serde(skip)]
+    scores_enabled: bool,
+    #[serde(skip)]
+    ingest_started: Option<Instant>,
 }
 
 impl PublicState {
@@ -157,15 +186,49 @@ impl PublicState {
                 capture: None,
                 catalog: Readiness::NotReady,
                 model: Readiness::NotReady,
+                scores: None,
+                recording: None,
                 last_session_outcome: None,
             },
             latest_result: None,
             provisional_result: None,
             music_selection: None,
             music_select_best: None,
+            result_ingest: None,
             started: Instant::now(),
             pending_binding: None,
+            scores_enabled: false,
+            ingest_started: None,
         }
+    }
+
+    pub(super) fn enable_scores(&mut self) {
+        self.scores_enabled = true;
+        self.status.scores = Some(Readiness::Ready);
+    }
+
+    pub(super) fn enable_recording(&mut self) {
+        self.status.recording = Some(Readiness::NotReady);
+    }
+
+    pub(super) fn scores_health(&mut self, healthy: bool) -> Option<PublicRecord> {
+        let readiness = if healthy {
+            Readiness::Ready
+        } else {
+            Readiness::Unavailable
+        };
+        if self.status.scores == Some(readiness) {
+            return None;
+        }
+        self.status.scores = Some(readiness);
+        let record = self.event(
+            EventKind::StatusChanged {
+                status: self.status.clone(),
+            },
+            self.status.capture.clone(),
+        );
+        self.retain(&record);
+        Some(record)
     }
 
     fn capture(
@@ -237,12 +300,109 @@ impl PublicState {
                 | RunEventKind::SessionFinished { .. }
                 | RunEventKind::WatcherStarted { .. }
                 | RunEventKind::WatcherStopped { .. }
+                | RunEventKind::SemanticScreenEpisodeChanged { .. }
+                | RunEventKind::PlayAttemptChanged { .. }
+                | RunEventKind::RecordingHealthChanged { .. }
+                | RunEventKind::RecordingFinalizing { .. }
+                | RunEventKind::RecordingReady { .. }
         )
     }
 
     // This state is updated only by the same ordered publications used by live recognition/replay.
+    #[allow(clippy::too_many_lines)]
     pub(super) fn project(&mut self, event: &RunEvent) -> Vec<PublicRecord> {
         let mut records = Vec::new();
+        if matches!(
+            event.kind,
+            RunEventKind::SessionFinished { .. } | RunEventKind::WatcherStopped { .. }
+        ) && self.ingest_processing()
+        {
+            if let Some(ingest) =
+                self.current_ingest(ResultIngestState::Failed, Some("interrupted"), None)
+            {
+                let failed = self.event(
+                    EventKind::ResultIngestChanged {
+                        ingest: Some(ingest),
+                    },
+                    self.status.capture.clone(),
+                );
+                self.retain(&failed);
+                records.push(failed);
+            }
+            if let Some((kind, capture)) = self.lifecycle(event) {
+                let status = self.event(kind, capture);
+                self.retain(&status);
+                records.push(status);
+            }
+            return records;
+        }
+        if let RunEventKind::SemanticScreenEpisodeChanged {
+            screen,
+            phase: super::SemanticEpisodePhase::Started,
+            screen_episode_id,
+            capture_generation,
+            session_id,
+            ..
+        } = &event.kind
+        {
+            if screen == "result" && self.scores_enabled {
+                self.ingest_started = Some(Instant::now());
+                let ingest = ResultIngest {
+                    id: format!("{}:result:{screen_episode_id}", self.invocation_id),
+                    state: ResultIngestState::Processing,
+                    result_event_id: None,
+                    reason: None,
+                };
+                let record = self.event(
+                    EventKind::ResultIngestChanged {
+                        ingest: Some(ingest),
+                    },
+                    self.capture(session_id.as_ref(), *capture_generation),
+                );
+                self.retain(&record);
+                return vec![record];
+            }
+            if matches!(screen.as_str(), "decide_transition" | "play")
+                && self.result_ingest.is_some()
+            {
+                let record = self.event(
+                    EventKind::ResultIngestChanged { ingest: None },
+                    self.capture(session_id.as_ref(), *capture_generation),
+                );
+                self.retain(&record);
+                return vec![record];
+            }
+        }
+        if let RunEventKind::PlayAttemptChanged {
+            state,
+            session_id,
+            capture_generation,
+            ..
+        } = &event.kind
+        {
+            let failed = match state {
+                PlayAttemptState::UnlinkedResult { .. } => true,
+                PlayAttemptState::Attempt { attempt } => {
+                    attempt.phase == PlayAttemptPhase::Completed
+                        && attempt.result_relation != PlayAttemptResultRelation::Confirmed
+                }
+                PlayAttemptState::Idle => false,
+            };
+            if failed && self.result_ingest.is_some() {
+                let ingest = self.current_ingest(
+                    ResultIngestState::Failed,
+                    Some("recognition_failed"),
+                    None,
+                );
+                let record = self.event(
+                    EventKind::ResultIngestChanged { ingest },
+                    self.capture(session_id.as_ref(), *capture_generation),
+                );
+                self.retain(&record);
+                return vec![record];
+            }
+            return records;
+        }
         let (kind, capture) = match &event.kind {
             RunEventKind::ResultDetected {
                 session_id,
@@ -320,8 +480,118 @@ impl PublicState {
         };
         let record = self.event(kind, capture);
         self.retain(&record);
+        let result_event_id = matches!(record.kind, EventKind::ResultDetected { .. })
+            .then(|| record.event_id.clone());
         records.push(record);
+        if let Some(result_event_id) = result_event_id
+            && let Some(update) = self.attach_result_to_ingest(result_event_id)
+        {
+            records.push(update);
+        }
         records
+    }
+
+    fn attach_result_to_ingest(&mut self, result_event_id: String) -> Option<PublicRecord> {
+        if !self.ingest_processing() {
+            return None;
+        }
+        let ingest =
+            self.current_ingest(ResultIngestState::Processing, None, Some(result_event_id))?;
+        let update = self.event(
+            EventKind::ResultIngestChanged {
+                ingest: Some(ingest),
+            },
+            self.status.capture.clone(),
+        );
+        self.retain(&update);
+        Some(update)
+    }
+
+    fn current_ingest(
+        &self,
+        state: ResultIngestState,
+        reason: Option<&'static str>,
+        result_event_id: Option<String>,
+    ) -> Option<ResultIngest> {
+        let record = self.result_ingest.as_ref()?;
+        let EventKind::ResultIngestChanged {
+            ingest: Some(current),
+        } = &record.kind
+        else {
+            return None;
+        };
+        Some(ResultIngest {
+            id: current.id.clone(),
+            state,
+            result_event_id: result_event_id.or_else(|| current.result_event_id.clone()),
+            reason,
+        })
+    }
+
+    fn ingest_processing(&self) -> bool {
+        self.result_ingest.as_ref().is_some_and(|record| {
+            matches!(
+                &record.kind,
+                EventKind::ResultIngestChanged {
+                    ingest: Some(ResultIngest {
+                        state: ResultIngestState::Processing,
+                        ..
+                    })
+                }
+            )
+        })
+    }
+
+    pub(super) fn complete_result(
+        &mut self,
+        result_event_id: &str,
+        persisted: bool,
+    ) -> Option<PublicRecord> {
+        if !self.ingest_processing() {
+            return None;
+        }
+        let current = self.current_ingest(
+            if persisted {
+                ResultIngestState::Persisted
+            } else {
+                ResultIngestState::Failed
+            },
+            (!persisted).then_some("persistence_failed"),
+            None,
+        )?;
+        if current.result_event_id.as_deref() != Some(result_event_id) {
+            return None;
+        }
+        let record = self.event(
+            EventKind::ResultIngestChanged {
+                ingest: Some(current),
+            },
+            self.status.capture.clone(),
+        );
+        self.retain(&record);
+        Some(record)
+    }
+
+    pub(super) fn fail_result(&mut self, reason: &'static str) -> Option<PublicRecord> {
+        if !self.ingest_processing() {
+            return None;
+        }
+        let ingest = self.current_ingest(ResultIngestState::Failed, Some(reason), None)?;
+        let record = self.event(
+            EventKind::ResultIngestChanged {
+                ingest: Some(ingest),
+            },
+            self.status.capture.clone(),
+        );
+        self.retain(&record);
+        Some(record)
+    }
+
+    pub(super) fn ingest_timed_out(&self) -> bool {
+        self.ingest_processing()
+            && self
+                .ingest_started
+                .is_some_and(|started| started.elapsed() >= std::time::Duration::from_secs(5))
     }
 
     fn retain(&mut self, record: &PublicRecord) {
@@ -339,6 +609,18 @@ impl PublicState {
                 self.music_select_best = snapshot.as_ref().map(|_| record.clone());
             }
             EventKind::StatusChanged { .. } => {}
+            EventKind::ResultIngestChanged { ingest } => {
+                self.result_ingest = ingest.as_ref().map(|_| record.clone());
+                if !matches!(
+                    ingest,
+                    Some(ResultIngest {
+                        state: ResultIngestState::Processing,
+                        ..
+                    })
+                ) {
+                    self.ingest_started = None;
+                }
+            }
         }
     }
 
@@ -364,9 +646,12 @@ impl PublicState {
                     }),
                     catalog: readiness,
                     model: readiness,
+                    scores: self.status.scores,
+                    recording: self.status.recording.map(|_| Readiness::Ready),
                     last_session_outcome: None,
                 };
                 self.clear_current();
+                self.result_ingest = None;
                 (
                     EventKind::StatusChanged {
                         status: self.status.clone(),
@@ -404,6 +689,37 @@ impl PublicState {
                 },
                 None,
             ),
+            RunEventKind::RecordingHealthChanged { state, .. } => {
+                self.status.recording = Some(if matches!(state.as_str(), "active" | "pressured") {
+                    Readiness::Ready
+                } else {
+                    Readiness::Unavailable
+                });
+                (
+                    EventKind::StatusChanged {
+                        status: self.status.clone(),
+                    },
+                    self.status.capture.clone(),
+                )
+            }
+            RunEventKind::RecordingFinalizing { .. } => {
+                self.status.recording = Some(Readiness::NotReady);
+                (
+                    EventKind::StatusChanged {
+                        status: self.status.clone(),
+                    },
+                    self.status.capture.clone(),
+                )
+            }
+            RunEventKind::RecordingReady { .. } => {
+                self.status.recording = Some(Readiness::Ready);
+                (
+                    EventKind::StatusChanged {
+                        status: self.status.clone(),
+                    },
+                    self.status.capture.clone(),
+                )
+            }
             _ => return None,
         };
         Some(value)
@@ -503,6 +819,13 @@ pub(super) mod tests {
                     event.clone()
                 }
             }
+            "result_ingest_changed" => {
+                snapshot["result_ingest"] = if event["ingest"].is_null() {
+                    Value::Null
+                } else {
+                    event.clone()
+                }
+            }
             kind => panic!("unexpected public kind: {kind}"),
         }
     }
@@ -581,5 +904,46 @@ pub(super) mod tests {
         let at_limit = "x".repeat(MAX_RECORD_BYTES - 3);
         assert_eq!(encode(&at_limit).unwrap().len(), MAX_RECORD_BYTES);
         assert!(encode(&(at_limit + "x")).is_err());
+    }
+
+    #[test]
+    fn result_ingest_failure_is_sticky_until_the_next_play() {
+        let mut state = PublicState::new("run".into());
+        state.enable_scores();
+        let result_started = run(RunEventKind::SemanticScreenEpisodeChanged {
+            session_id: Some("session".into()),
+            capture_generation: Some(7),
+            screen_episode_id: 8,
+            sequence: 80,
+            monotonic_end_ms: 8000,
+            screen: "result".into(),
+            phase: super::super::SemanticEpisodePhase::Started,
+        });
+        let processing = state.project(&result_started);
+        assert_eq!(processing.len(), 1);
+        let processing = serde_json::to_value(&processing[0]).unwrap();
+        assert_eq!(processing["ingest"]["state"], "processing");
+        let failed = state.fail_result("persistence_failed").unwrap();
+        let failed = serde_json::to_value(failed).unwrap();
+        assert_eq!(failed["ingest"]["state"], "failed");
+        assert!(state.complete_result("unknown", true).is_none());
+        assert!(
+            state
+                .attach_result_to_ingest("late-result".into())
+                .is_none()
+        );
+
+        let play_started = run(RunEventKind::SemanticScreenEpisodeChanged {
+            session_id: Some("session".into()),
+            capture_generation: Some(7),
+            screen_episode_id: 9,
+            sequence: 90,
+            monotonic_end_ms: 9000,
+            screen: "play".into(),
+            phase: super::super::SemanticEpisodePhase::Started,
+        });
+        let cleared = state.project(&play_started);
+        assert_eq!(cleared.len(), 1);
+        assert!(serde_json::to_value(&cleared[0]).unwrap()["ingest"].is_null());
     }
 }

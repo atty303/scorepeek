@@ -1,4 +1,1 @@
-.overlay[data-skin="cyan-system"] { --frame-image: url("/skins/cyan-system-frame.png"); --edge: #1c718a; --accent: #27e0ff; }
-[data-skin="cyan-system"] .chart-badge { border-color: #27d5ef; box-shadow: inset 2px 2px #164a5c, inset -2px -2px #164a5c; }
-[data-skin="cyan-system"] .metric-label { color: #68d9eb; }
-[data-skin="cyan-system"] .clear-banner { background: linear-gradient(90deg, #07425d55, #041b3000); }
+[data-skin=cyan-system]{--text:#f2f6fa;--accent:#12daf6;--panel:#020710e8;--surface:linear-gradient(135deg,#071526f2,#01040aee);--line:#12dff4;--dim:#087489aa;--metal:#96abb8;--ok:#54e56b;--warn:#ffd041;--bad:#ff4b45;--graph-score:#10dff4;--graph-miss:#ffc719;--frame-image:url('/skins/cyan-system-frame.png');--frame-opacity:.72}.overlay-canvas[data-skin=cyan-system] .widget{clip-path:polygon(12px 0,calc(100% - 12px) 0,100% 12px,100% calc(100% - 12px),calc(100% - 12px) 100%,12px 100%,0 calc(100% - 12px),0 12px)}

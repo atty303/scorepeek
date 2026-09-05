@@ -33,14 +33,18 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
         .unwrap();
     let config = Config {
         backend: Backend::Obs,
-        appearance: scorepeek_overlay::Appearance {
-            skin: scorepeek_overlay::Skin::ResultAurora,
-            layout: scorepeek_overlay::Layout::Compact,
+        canvases: {
+            let mut canvas = scorepeek_overlay::config::OverlayConfig::initial()
+                .canvases
+                .remove(1);
+            canvas.skin = scorepeek_overlay::Skin::ResultAurora;
+            vec![canvas]
         },
+        config_path: temporary.path().join("overlay.toml"),
+        control_socket: temporary.path().join("absent-control.sock"),
         socket: temporary.path().join("absent.sock"),
         invocation: "test".into(),
         scores_db: None,
-        output: None,
         listen: address,
     };
     let executable = std::env::var_os("SCOREPEEK_TEST_BINARY").map_or_else(
@@ -52,7 +56,7 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     let deadline = Instant::now() + Duration::from_secs(10);
     let page = loop {
         assert!(children.poll().is_empty(), "overlay exited before serving");
-        if let Ok(page) = get(address, "/") {
+        if let Ok(page) = get(address, "/canvas/obs-main") {
             break page;
         }
         assert!(Instant::now() < deadline, "overlay never served index");
@@ -62,8 +66,8 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     assert!(page.starts_with("HTTP/1.1 200"));
     assert!(page.contains("text/html"));
     assert!(page.contains(".js"));
-    assert!(page.contains("data-skin=\"result-aurora\""));
-    assert!(page.contains("data-layout=\"compact\""));
+    assert!(page.contains("result-aurora"));
+    assert!(page.contains("scorepeek-canvas"));
     let font = get(address, "/fonts/oxanium.ttf").unwrap();
     assert!(font.starts_with(b"HTTP/1.1 200"));
     assert!(font.windows(8).any(|bytes| bytes == b"font/ttf"));

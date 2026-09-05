@@ -16,22 +16,33 @@ checkpoint; implementation history belongs in Git.
 
 ## Implemented authority
 
-- ADR 0123 adds three embedded CSS skins with startup selection and independent compact/sidebar
-  layouts. Shared semantic UI retains Live, confirmation and selected-chart best/history.
-  ADR 0124 adds three embedded generated frames and an aurora header, with CSS nine-slice backgrounds.
-  Oxanium is embedded alongside system Japanese fallbacks; no external CSS or runtime downloads are used.
-  Appearance travels through private child config and OBS initial
-  HTML, without changing the public event API or score persistence authority.
+- ADR 0125 replaces the fixed overlay cards/layout flags with strict schema-v1 TOML canvases and
+  independently positioned status, selection, score, history-list and history-graph widgets.
+  `--overlay-wayland` and `--overlay-obs` enable the backends; `--overlay-config` selects the document.
+  Missing configuration creates one 560x1040 five-widget canvas per backend. The parent is the sole
+  atomic writer; per-canvas leases/revisions and backend-list revisions reject stale concurrent edits.
+  Wayland owns one interactive surface per enabled native canvas. OBS exposes stable `/canvas/<id>`
+  URLs and uses Browser Source Interaction to edit that same page. Right-click enters; DONE exits.
+- CYAN SYSTEM, RESULT AURORA and DJ BLACKBOX are canvas-level skins using the approved embedded frame
+  artwork through CSS backgrounds. Oxanium and OFL 1.1 are embedded alongside Japanese system-font
+  fallbacks. Runtime values remain text/SVG; result emphasis is finite and the settled DOM is idle.
+- Score/history widgets read only committed SQLite state. BEST integrates RESULT and SELECT sources;
+  representative RESULT ordering is highest EX score, known/lower miss, then latest receipt time.
+  History rows include DJ LEVEL. The graph uses exact timestamps, labeled DJ LEVEL thresholds and a
+  fixed 0-100% MISS RATE axis, clipping larger MISS ratios and leaving unknown values disconnected.
 
 - RESULT temporal acceptance compares the mandatory song/chart, clear, EX and judgment tuple.
   Supplemental/reference changes do not revoke it (ADR 0083/0087); once accepted, repeated
   supplemental payloads may update the presentation without blocking close-time confirmation.
 
-- ADR 0122 adds optional same-executable Wayland/OBS child consumers to normal run, shared Dioxus
-  presentation, read-only selected-chart history, embedded browser assets and private overlay
-  diagnostics. Overlay paths do not initialize recognition or change confirmation/save authority.
-  Children receive the resolved invocation/socket/DB and terminate on parent-pipe EOF, with bounded
-  parent cleanup. No overlay option preserves the existing overlay-free behavior.
+- ADR 0126 adds a public `result_ingest_changed` lifecycle and nullable snapshot slot. With scores
+  enabled, RESULT begins processing; committed or duplicate DB success becomes persisted, while
+  recognition, persistence, timeout or interruption failures remain failed until DECIDE/PLAY clears
+  them. Status adds nullable score and recording readiness. Unknown additive v1 events are ignored
+  only after envelope and sequence validation. This does not make the public RESULT a DB authority.
+- Overlay consumers still do not initialize recognition or own capture resources. Children receive
+  invocation/socket/DB/config and terminate on parent-pipe EOF; one overlay failure does not stop
+  recognition, persistence or its peer. No overlay flag preserves the overlay-free behavior.
 
 - ADR 0120 adds `scorepeek-scores` as an independent public event v1 consumer. Normal run saves to
   the XDG data score database; `--scores-db` selects an instance and `--no-scores` disables it.
@@ -107,23 +118,18 @@ checkpoint; implementation history belongs in Git.
 
 ## Verification
 
-- All six artwork skin/layout combinations render in native Vello and Chromium with the
-  embedded frames and header. Browser previews have no horizontal overflow. Native PNG decoding,
-  integer/fractional DOM bounds, and settled-animation tests pass. These are synthetic development
-  previews; target fullscreen/input/performance verification remains separate.
-  Full `mise run test` passes on repeat and `mise run dist:test` passes, including exact PNG bytes
-  from the moved binary. The first full run hit the previously recorded root-lease test flake
-  (`WorkerUnavailable`); its isolated run passes. Independent artwork review has no findings.
-
-- Skin development-host validation covers all three skins and both layouts in native DOM at
-  integer/fractional scale, including disconnected, selecting, missing metrics/history and empty
-  states; confirmation animation settles. Native Vello and Chromium renders show embedded Latin
-  and system Japanese text, decorated frames and gradients. Browser synthetic result/history has
-  no horizontal text overflow in all six combinations. These are isolated synthetic previews,
-  not Gamescope fullscreen, compositor/input-passthrough or OBS performance evidence.
-  `mise run check`, all-target Clippy, `mise run test`, and `mise run dist:test` pass.
-  A moved archive binary serves the selected appearance, identical font bytes and embedded OFL;
-  child shutdown and conflict isolation pass. Independent review has no actionable findings.
+- Overlay development-host verification covers all three skin DOMs, embedded PNG decode, fixed
+  widget bounds and settled animation. A production native headless render confirms Japanese/Latin
+  text, selection rail, DB-derived BEST/DETAIL, DJ LEVEL history and graph dots/thresholds. Strict
+  TOML, missing-file creation, invalid-canvas isolation, atomic save, lease/revision conflict,
+  backend canvas management, local-time formatting and readback triggers have focused tests.
+  The browser WASM type-checks and the real dx bundle contains served JS/WASM/font/artwork with correct
+  MIME types; embedded-asset and child-EOF tests pass. `wasm-opt` still reports unsupported DWARF and
+  the bundle proceeds without that optional optimization.
+- Workspace/all-target Clippy passes. The complete workspace suite passes on repeat: 505 library,
+  322 binary, 128 corpus library, 5 corpus binary, 18 overlay, 2 handle, 3 overlay-UI, 3 overlay-web
+  and 13 score tests, plus doctests. The embedded-web overlay suite has 19 tests. The 99 offline OCR tests and
+  repository checks also pass.
 
 - Recorded-input reducer replay of the complete session with digest
   `193550c1c3337905122585fb868c1c8831be3fab835c5ec9e5c03ef70c419594` confirms four results,
@@ -207,17 +213,11 @@ checkpoint; implementation history belongs in Git.
 
 ## Unverified and next execution boundary
 
-- Overlay unit tests (including ended-session, mid-play and withdrawn-result reconnect), shared WASM check and
-  real-asset child/lifecycle smoke tests pass on the development host. Root check/test and
-  distribution/archive tests pass; the extracted standalone binary serves the embedded bundle.
-  A production-binary synthetic run on Scroll configures Vulkan at fractional scale 1.25
-  (1728x3072 logical, 2160x3840 physical), receives selection/provisional/confirmation/next-selection
-  on both children, sends the expected WebSocket states and exits both children on parent EOF.
-  Native render calls stay at 41 during the final five-second idle interval. No score DB is used.
-  Actual GUI appearance, integer scale, Japanese glyphs, Gamescope fullscreen, input passthrough,
-  native/OBS visual agreement, live history and CPU/GPU/OBS lag still require the dedicated-DB
-  live gate. Existing spike observations do not certify the production
-  path. No target deployment, autostart, push or release is included.
+- Target-live validation is still required for compositor output selection/bounds, initial
+  upper-right placement, cross-output drag prevention and native canvas-list/output hot reconciliation,
+  integer/fractional visual equality, Gamescope foreground behavior, OBS Interaction, readability,
+  CPU/GPU/OBS lag and idle render cost. Development-host DOM/headless/browser tests do not certify
+  those target behaviors. No target deployment, autostart, push or release is included.
 - Pinned dx produces a browser bundle, but its optional wasm-opt step reports unsupported DWARF
   and skips optimization. Asset MIME/type tests pass on the emitted bundle; it is not claimed to
   be wasm-opt optimized. Browser visual verification remains separate.

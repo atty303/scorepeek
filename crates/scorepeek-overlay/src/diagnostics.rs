@@ -14,7 +14,14 @@ pub(crate) fn emit(operation: &str, data: &impl Serialize) {
 /// Returns configuration or overlay errors after emitting the terminal diagnostic.
 pub fn run() -> Result<(), String> {
     let (config, input) = crate::runtime::read_config()?;
-    emit("appearance_selected", &config.appearance);
+    emit(
+        "canvases_loaded",
+        &serde_json::json!({
+            "backend": config.backend,
+            "canvas_count": config.canvases.len(),
+            "canvas_ids": config.canvases.iter().map(|canvas| canvas.id.as_str()).collect::<Vec<_>>(),
+        }),
+    );
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match config.backend {
         crate::runtime::Backend::Wayland => crate::native::run(config, input),
         crate::runtime::Backend::Obs => crate::web::run(config, input),

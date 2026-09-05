@@ -1,7 +1,1 @@
-.overlay[data-skin="result-aurora"] { --frame-image: url("/skins/result-aurora-frame.png"); --accent: #ffdd84; --muted: #c6b8dc; --edge: #81758e; }
-[data-skin="result-aurora"] .chart-header { min-height: 118px; margin: 0 10px; padding-left: calc(var(--pad) - 10px); padding-right: calc(var(--pad) - 10px); background: url("/skins/result-aurora-header.png") center / cover no-repeat; }
-[data-skin="result-aurora"] .song-title { font-style: italic; }
-[data-skin="result-aurora"] .score-value { color: #ffe39b; font-style: italic; font-weight: 800; }
-[data-skin="result-aurora"] .rank-value { color: #ffe39b; }
-[data-skin="result-aurora"] .clear-banner { color: #ffe8b2; font-style: italic; background: linear-gradient(90deg, transparent, #ad813b35, transparent); }
-[data-skin="result-aurora"] .history .section-heading, [data-skin="result-aurora"] .history-heading { color: #d1a5ff; }
+[data-skin=result-aurora]{--text:#f4f1f6;--accent:#e4aef8;--panel:#090613ed;--surface:linear-gradient(120deg,#140729f4,#030209ee 58%,#1b0828e8);--line:#d7c9df;--dim:#8157a488;--metal:#ddd4e4;--ok:#b9ff66;--warn:#ffd25d;--bad:#ff567d;--graph-score:#d368f2;--graph-miss:#ffd334;--frame-image:url('/skins/result-aurora-frame.png');--frame-opacity:.8}.overlay-canvas[data-skin=result-aurora] .skin-surface:after{content:"";position:absolute;inset:0;background:url('/skins/result-aurora-header.png') center/cover;opacity:.13;mix-blend-mode:screen}.overlay-canvas[data-skin=result-aurora] .widget{clip-path:polygon(10px 0,calc(100% - 10px) 0,100% 10px,100% calc(100% - 10px),calc(100% - 10px) 100%,10px 100%,0 calc(100% - 10px),0 10px)}.overlay-canvas[data-skin=result-aurora] .score-main strong,.overlay-canvas[data-skin=result-aurora] .song-copy h1{font-style:italic}

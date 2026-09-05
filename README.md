@@ -201,272 +201,39 @@ for schema, source attribution, failure limits and timestamp semantics. No histo
 
 ### Live overlays
 
-The release executable embeds the browser UI and can run either or both independent overlays:
+The release executable embeds both renderers. Enable either or both and optionally select the
+strict TOML document:
 
 ```sh
-scorepeek run --overlay wayland --overlay obs --overlay-output DP-1
+scorepeek run --overlay-wayland --overlay-obs --overlay-config ./overlay.toml
 ```
 
-Omit `--overlay-output` only when Wayland exposes one output. The native layer is input-transparent;
-OBS Browser Source uses `http://127.0.0.1:17384/` (set a transparent 1920×1080 source).
-`--overlay-listen IP:PORT` selects another loopback address. Omit both `--overlay` options for the
-normal overlay-free run. Overlay failures do not stop recognition or score saving.
+Without `--overlay-config`, the document is `$XDG_CONFIG_HOME/scorepeek/overlay.toml` (or the
+standard HOME fallback). The first run creates one enabled 560x1040 canvas for each backend with
+status, selection, score, history-list and history-graph widgets. OBS serves stable canvas URLs such
+as `http://127.0.0.1:3939/canvas/obs-main`; configure that URL once as a Browser Source. The listen
+address is `obs_listen` in TOML. Omit both enable flags for an overlay-free run.
 
-Both show Live selection/provisional results, the latest play's event-confirmation state and
-selected-chart integrated best/latest five saved plays. SELECT best receipt is not DB commit.
-`--no-scores` disables history too; missing/unreadable DBs do not stop Live. History dates are UTC
-notification dates, and best values may come from different plays. See
-[the overlay contract](docs/decisions/0122-add-live-overlay-consumers.md).
+Right-click anywhere on the Wayland canvas or the OBS page in Browser Source Interaction to enter
+its editor; DONE is the only exit. Drag/resize widgets, add or remove them, switch among CYAN SYSTEM,
+RESULT AURORA and DJ BLACKBOX, and configure history rows or graph range. OBS also manages its canvas
+list there. Wayland normally uses left-drag to move a canvas, keeps at least 32 pixels visible on its
+selected output, and recreates a surface when its output selection changes. The initial native canvas
+uses a 20-pixel upper-right inset. All edits pass through the parent and are atomically saved to TOML.
+
+Selection shows title/artist plus a separate SP/DP, difficulty, level and notes rail. Score, recorded
+state, RESULT detail and history come only from committed SQLite readback. History dates use local
+notification time. The graph labels DJ LEVEL thresholds and uses a fixed 0-100% MISS RATE axis.
+`--no-scores` disables those DB-derived values. Overlay failure does not stop recognition or saving.
+See [the canvas contract](docs/decisions/0125-compose-overlay-canvases-from-widgets.md) and
+[RESULT ingest lifecycle](docs/decisions/0126-publish-result-ingest-lifecycle.md).
 
 Development: `mise run overlay:web:check` needs no bundle; `mise run overlay:web:test` builds and
-checks real assets and owned-child cleanup. `mise run dist:build` includes the assets in the
-single binary. `mise run overlay:test:live --scores-db PATH` is an explicit desktop gate requiring
-a dedicated test database. GUI and target-performance verification remain separate from unit tests.
+checks real assets and owned-child cleanup. `mise run dist:build` includes Oxanium, its OFL license,
+three skin frames and the browser bundle in the single binary. `mise run overlay:test:live
+--scores-db PATH` is an explicit desktop gate requiring a dedicated test database. GUI and target
+performance verification remain separate from unit tests.
 
-With `--record`, in-progress components are grouped below
-`$XDG_STATE_HOME/scorepeek/recording-staging/<session-id>/` as `capture/`, `recognition/`,
-`events/`, and `canonical/`. Successful joined-session publication removes that complete staging
-tree. Failed publication retains it for diagnosis. Published sessions remain below
-`$XDG_STATE_HOME/scorepeek/diagnostic-sessions/<session-id>/`. At later session admission, each
-store reclaims oldest entries as needed to retain fewer than eight existing generations and leave
-4 GiB of its 8 GiB aggregate allowance available for the new session.
-
-## Development
-
-Install [mise](https://mise.jdx.dev/), then use the repository entry points:
-
-The Linux x86-64 PipeWire build additionally expects a host `cc`, a shared
-libclang with matching Clang resource headers, and the PipeWire runtime
-library. Mise supplies the checksum-pinned development SDK and native pkgconf;
-Python, Zig, Podman, Distrobox, and host pkg-config are not required for this
-path. `mise run native:verify` reports the exact detected boundary and executes
-a minimal SDK-linked probe against the default host PipeWire runtime.
-
-```text
-mise trust
-mise install
-mise run check
-mise run fix
-mise run native:verify
-mise run test
-mise run doctor
-mise run capture:gamescope:test:live -- --duration-ms 3000
-mise run capture:gamescope:test:live -- --duration-ms 3000 --consume-interval-ms 250
-mise run capture:gamescope:test:lifecycle -- --duration-ms 100 --runs 100 --consume-interval-ms 0
-mise run capture:gamescope:calibration:sample -- --output /absolute/private/sample --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear
-mise run capture:gamescope:calibration:session-sample -- --output /absolute/private/session-sample --environment-id development-machine-v1 --gamescope-version 3.16.19-128-g7282613+ --backend wayland --output-width 2556 --output-height 1428 --nested-width 1920 --nested-height 1080 --nested-refresh 120 --scaler auto --filter linear
-mise run capture:gamescope:binding:author -- --calibration /absolute/private/session-sample --calibration-sha256 SHA256 --output /absolute/private/binding.json --left-numerator 26 --left-denominator 3 --top-numerator 0 --top-denominator 1 --width-numerator 7616 --width-denominator 3 --height-numerator 1428 --height-denominator 1
-mise run capture:gamescope:test:result-recognition -- --binding /absolute/private/binding.json --binding-sha256 SHA256 --capture-generation 1 --duration-ms 30000 --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --canonical-layout-sha256 LAYOUT_SHA256 --catalog-sha256 CATALOG_SHA256 --recording enabled --recognition-artifact /absolute/private/new-recognition-evidence
-mise run run:gamescope -- --binding /absolute/private/binding.json --binding-sha256 SHA256 --capture-generation 1 --diagnostic-root /absolute/private/diagnostics --catalog-store /absolute/private/catalog --run-id UNIQUE_RUN_ID --build-sha256 BUILD_SHA256 --canonical-layout-sha256 LAYOUT_SHA256 --catalog-sha256 CATALOG_SHA256 --recording enabled --recognition-artifact /absolute/private/new-recognition-evidence
-mise run catalog:sync
-scorepeek run --profile gamescope-4k --record
-cargo run --locked --quiet -p scorepeek-corpus -- diagnostic verify /absolute/recorded-session
-cargo run --locked --quiet -p scorepeek-corpus -- corpus import-diagnostic --store /absolute/private-corpus-v2 --diagnostic /absolute/recorded-session --review-draft /absolute/review.json
-cargo run --locked --quiet -p scorepeek-corpus -- review apply --store /absolute/private-corpus-v2 --draft /absolute/review.json --labels /absolute/operator-labels-v5.json
-mise run corpus:test
-mise run corpus:temporal:evaluate
-mise run corpus:music-select:dwell:evaluate -- --reviewed /absolute/private/music-select-motion-reviewed.json --output /absolute/private/music-select-dwell-evaluation.json
-mise run recognition:inspect -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID
-mise run recognition:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/crops
-mise run recognition:music-select:crop -- --extraction /absolute/private/canonical --extraction-sha256 FRAME_EXTRACTION_SHA256 --frame-id FRAME_ID --output /absolute/private/music-select-crops
-mise run recognition:title:dictionary:audit -- --catalog-store /absolute/private/catalog --dictionary /absolute/private/models/inference.yml
-mise run ocr:sync
-mise run ocr:model:fetch
-mise run ocr:onnx:model:fetch
-mise run ocr:official-model:fetch -- --model-id pp-ocrv6-small-rec-onnx-v1
-mise run ocr:official-model:fetch -- --model-id pp-ocrv6-tiny-rec-onnx-v1
-mise run ocr:official-model:fetch -- --model-id pp-ocrv6-medium-rec-onnx-v1
-mise run ocr:official-model:fetch -- --model-id pp-ocrv5-mobile-rec-onnx-v1
-mise run ocr:official-model:fetch -- --model-id pp-ocrv5-server-rec-onnx-v1
-mise run ocr:spike -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --output /absolute/private/ocr-result.json
-mise run recognition:title:spike -- --catalog-store /absolute/private/catalog --ocr-text OCR_TEXT --ocr-confidence OCR_CONFIDENCE
-mise run ocr:parity:reference -- --crop-artifact /absolute/private/crops --crop-manifest-sha256 CROP_MANIFEST_SHA256 --candidates /absolute/private/parity-candidates.json --output /absolute/private/paddle-reference
-mise run ocr:parity:run -- --model /absolute/private/models/inference.onnx --reference /absolute/private/paddle-reference --reference-sha256 REFERENCE_MANIFEST_SHA256 --crop-artifact /absolute/private/crops --catalog-store /absolute/private/catalog --dictionary /absolute/private/models/inference.yml --minimum-log-probability SCORE --minimum-runner-up-margin SCORE
-mise run corpus:synthetic:render -- --output /absolute/new/output-directory /absolute/synthetic-request.json
-mise run catalog:schedule:systemd:verify
-```
-
-`corpus:temporal:evaluate` compares the production result reducer's default two-observation policy
-with a three-observation policy without changing the active suite. Its JSON is descriptive,
-generation-bound evidence; see [the offline temporal evaluation contract](docs/temporal-evaluation.md).
-
-`corpus:music-select:dwell:evaluate` replays session-bound music-select OCR through the exact
-content-addressed catalog generation and production resolver, then compares time-only dwell
-candidates with complete operator-reviewed motion truth. Its create-only JSON is descriptive and
-selects no runtime policy.
-
-The developer `run:gamescope` gate keeps one admitted provider connected until SIGINT or SIGTERM.
-Its control path does not signal Gamescope, INFINITAS, or the process group. Stdout is bounded
-NDJSON with exact OCR and typed result-song decisions. Full
-candidate evidence stays in the create-only private recognition artifact, while predicate counts
-and sampled pixels stay in the private diagnostic root.
-
-`check` is non-mutating, `fix` applies supported formatting fixes, and `test`
-contains every reproducible repository check. Live Bazzite, Portal, OBS,
-Gamescope, and GPU verification remains in explicit target-only tasks.
-
-`mise run doctor` prints a versioned JSON doctor report whose target inventory uses fixed local
-commands and allowlisted parsers. Missing target tools are reported as `unavailable`;
-command stderr is never included. Running Gamescope flags and authenticated OBS
-state remain unavailable until an exact, secret-safe probe contract exists.
-
-`capture:gamescope:test:live` is a target-only, ephemeral diagnostic gate for an
-already running exact Gamescope `Video/Source`. It accepts only a bounded
-1-to-60,000-ms duration and an optional 0-to-60,000-ms consumer interval,
-requests 60/1 capture through PipeWire, and emits one versioned JSON report
-containing typed lifecycle facts and aggregate frame counts. A nonzero consumer
-interval exercises bounded latest-frame replacement without moving sleeps,
-filesystem access, encoding, or diagnostic serialization into the PipeWire
-callback.
-
-`capture:gamescope:test:lifecycle` repeats the same acquire, receiver, and
-receiver-before-provider shutdown path from 2 through 100 times. Its bounded
-JSON report summarizes each run and process FD, thread, and resident-byte
-snapshots before, after warmup, at the observed maximum, and after the final
-run. The resource values are observations rather than a calibrated RSS leak
-threshold. Both gates are uncalibrated: they neither write pixels nor create a
-capture profile, normalizer, canonical diagnostic run, or support claim.
-
-`capture:gamescope:calibration:sample` captures exactly one owned raw BGRx
-frame after first-frame reception and receiver-before-provider shutdown. The
-absolute create-only output directory contains the private pixels and a
-canonical manifest binding their SHA-256 to the exact observed contract,
-bounded capture facts, and an explicitly operator-declared Gamescope nested
-size, refresh, scaler, and filter. Filesystem access, hashing, serialization,
-and fsync occur only after callback-driven capture has stopped. An incomplete
-scorepeek-owned directory can be recovered, while a complete, foreign, or
-unknown output is never replaced. The completion manifest is atomically
-published from an fsync-complete private staging file. The artifact remains explicitly
-uncalibrated: declared scaling configuration and negotiated caps do not assign
-a capture profile or authorize recognition.
-
-`capture:gamescope:calibration:session-sample` is the profile-authoring input
-gate. It additionally binds bounded exact environment, Gamescope version,
-backend, requested output dimensions, and the complete nested scaling
-configuration, and rejects the sample if negotiated dimensions differ from the
-declared output. `capture:gamescope:binding:author` independently selects that
-complete private sample by manifest SHA-256, rehashes its raw frame, accepts
-only explicit rational geometry, and publishes one create-only canonical
-binding file. Its JSON result contains only binding/profile digests and a
-stable error category; paths, provenance strings, pixels, and arbitrary
-properties are not emitted. Neither command establishes a calibrated runtime
-lease, `ObservedFrame`, recognition handoff, or supported profile.
-
-`scorepeek catalog sync` acquires the catalog writer lock, resolves Tachi's
-`main` branch to an exact Git commit, serially fetches the three IIDX seed JSON
-collections at that commit, fetches and safely decodes the three Textage table
-assignments without executing JavaScript, then fetches the dqn/iidxapi
-INFINITAS roster. It applies strict status, redirect, timeout, size, encoding,
-grammar, schema, digest, source-health, and federation gates before activation.
-Verified source bytes are kept privately below
-`$XDG_CACHE_HOME/scorepeek`, while the content-addressed catalog is stored below
-`$XDG_DATA_HOME/scorepeek`; the usual `$HOME/.cache` and
-`$HOME/.local/share` fallbacks apply when those variables are unset. The Tachi
-cache admits at most 8 verified revisions and 512 MiB total, the Textage and
-dqn caches each admit at most 64 revisions and 64 MiB total, and the catalog
-store admits at most 32 snapshots, 128 MiB per snapshot and 512 MiB total. New
-content fails closed when a limit is reached. The command emits revision,
-digest, record count, active digest, and aggregate quarantine counts without raw
-source records.
-
-`scorepeek-corpus` is a separate workspace crate and offline binary; the
-game-session `scorepeek` crate does not depend on it. Ingest requires an
-explicit absolute private-store root and copies immutable source media into a
-SHA-256-addressed store without an aggregate corpus quota. Filesystem permissions, ownership, ACLs, and
-retention are the operator's responsibility; scorepeek validates path types,
-resolved sizes and hashes, and no-clobber publication, not Unix modes or the absence of local
-symlinks.
-Before assigning
-splits, generation sealing records every current fixture binding in one
-immutable content-addressed generation. Replay-suite validation reads that
-generation plus canonical complete-label documents, source manifests, and media
-from the store. It requires complete generation coverage and checks source PTS
-plus decode ordering, opaque fixture and episode IDs, observed capture-profile
-bindings, separate normalizer/canonical-frame/layout bindings,
-extractor/annotation/frame hashes, and corpus-wide session/play/title
-grouped split isolation. Each suite selects either in-profile evaluation or the
-stricter profile-disjoint evaluation. It emits only opaque IDs, hashes, the
-selected split contract, and aggregate counts. See
-[the private corpus contract](docs/private-corpus.md). Replay indexes can now be
-generated canonically from strict frame plans: an opaque episode digest becomes
-the episode ID, discontiguous reuse is rejected, and the stored source and every
-complete label are revalidated before private publication. The pinned offline
-media path accepts only self-contained Matroska, streams stored bytes through
-stdin with only FFmpeg's `pipe` protocol enabled, probes PTS and decode-index
-evidence, extracts only an explicit strictly ordered observed-frame selection
-as RGB8 P6 PPM, and hashes both pixel payloads and files. Observed extraction
-does not normalize pixels or create canonical layout evidence. The separate
-canonical command admits only an exact registered profile, and
-`recognition:crop` validates its extraction digest and normalizer before
-exporting shared-layout field crops. All real outputs remain private and
-external to the repository. The separate seed-only synthetic renderer emits
-deterministic RGB8 PPM title crops and a canonical manifest without accepting
-catalog text, fonts, images, or private corpus data. Its procedural ASCII
-domain establishes the renderer contract but is not yet representative
-production OCR training data. Python 3.12 and uv are mise-pinned; PaddleOCR and
-PaddlePaddle are uv-locked for offline experiments only. The registered
-PP-OCRv6 model is explicitly fetched into a local content-addressed model
-store and is never auto-downloaded by recognition. A separately registered
-official ONNX graph is also fetched only by the explicit offline task. The
-diagnostic parity path verifies exact graph bytes, reproduces Paddle's complete
-BGR/resize/normalize input from the bound RGB8 crop in Rust, compares Rust/ONNX
-Runtime output and CTC token order, and scores the active catalog with the
-registered dictionary. It neither accepts a bare image nor emits an accepted
-title. The aggregate dictionary audit binds its result to the exact active
-catalog and registered dictionary, reports every rejected non-search variant
-by display kind and rejection class, and emits no catalog strings. Production
-glyph/font coverage, scorepeek-owned export, replay execution, threshold
-calibration, and supported-profile evaluation remain later stages and will not
-become Python game-session runtime dependencies.
-
-`scorepeek catalog sync` is the scheduling interface. A user may keep recurring
-execution disabled and run it manually, or select any scheduler that preserves
-the desired daily jitter; no schedule is enabled automatically. The standard
-recommended route is a systemd user timer, with a per-run delay of up to six
-hours. All routes invoke the same command and therefore share the catalog
-writer lock and fail-closed exit behavior.
-
-The scheduler deliberately does not select a catalog acquisition mode. The
-current command always builds from validated sources on the host. If a future
-source-policy and ADR decision permits GitHub-managed catalog distribution, the
-same command boundary will allow a user to choose local self-build or verified
-provided-catalog acquisition, and GitHub scheduling will run the self-build
-orchestration. No provided-catalog path is enabled today.
-
-The systemd installer builds a locked release binary at
-`%h/.local/bin/scorepeek`, installs the user units below
-`$XDG_CONFIG_HOME/systemd/user` (or `$HOME/.config/systemd/user`), and enables
-the timer only when explicitly invoked:
-
-```text
-mise run catalog:schedule:systemd:install
-```
-
-The installed service records the current absolute `$XDG_DATA_HOME` and
-`$XDG_CACHE_HOME` values, or their standard home-directory fallbacks, so later
-scheduled runs use the same catalog roots as the installing shell. Re-run the
-installer after intentionally changing those roots.
-
-The persistent host deployment is explicit and is not performed by
-`mise run test`; its non-mutating unit verification is included.
-All scorepeek systemd scheduling can be stopped, and the installed timer can be
-disabled without removing the binary or unit files, with
-`mise run catalog:schedule:systemd:disable`. This also stops a running transient
-timer, allowing an immediate return to manual-only synchronization.
-Persistent and transient timers are mutually exclusive: either activation task
-fails closed and points to this disable task when the other mode is active or
-enabled.
-
-To keep a daily timer only for the lifetime of the current systemd user manager
-without installing unit files or enabling it across restarts, use:
-
-```text
-mise run catalog:schedule:systemd:start:transient
-```
-
-This transient route runs the locked release binary from the current repository
-and deliberately sets `Persistent=false`; moving the repository invalidates
-that transient service. Keeping recurring execution disabled requires no setup
 and leaves `mise run catalog:sync` as the manual route.
 
 `mise run catalog:schedule:systemd:verify` can also perform that non-mutating
@@ -487,20 +254,8 @@ Third-party data is fetched locally and is not republished from this repository.
 
 ### Overlay skins
 
-Choose a built-in skin at startup: `cyan-system` (default), `result-aurora`, or `dj-blackbox`.
-Both consumers share the skin. Native defaults to `compact`; OBS defaults to `sidebar`.
-Both layouts retain Live, confirmation, chart bests and the latest five saved plays.
-
-```sh
-scorepeek run --overlay wayland --overlay obs --overlay-skin result-aurora
-```
-
-```sh
-scorepeek run --overlay obs --overlay-skin dj-blackbox --overlay-obs-layout compact
-```
-
-Use `--overlay-wayland-layout compact|sidebar` to choose the native layout independently.
-Oxanium is embedded; Japanese uses system fonts. No font installation or runtime download is needed.
-Original frame textures and aurora lighting are embedded for both renderers; text and numbers remain live UI.
-Skins are selected at startup. The [design and preview command](docs/decisions/0123-add-css-overlay-skins.md)
-describe rendering and verification; live target validation still requires a dedicated score DB.
+CYAN SYSTEM, RESULT AURORA and DJ BLACKBOX are stored per canvas in TOML and can be changed from the
+canvas editor. The native and browser renderers share the same semantic DOM and CSS skin variables.
+Approved generated frame and aurora artwork is embedded as CSS backgrounds; live text and SVG/chart
+values are never baked into those images. Oxanium is embedded for Latin/numeric text and Japanese
+uses system-font fallback. See the [approved design masters](docs/design/overlay-canvas/README.md).

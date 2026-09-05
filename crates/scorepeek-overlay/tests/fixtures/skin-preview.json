@@ -1,116 +1,51 @@
 {
-  "appearance": {
-    "skin": "cyan-system",
-    "layout": "sidebar"
-  },
+  "appearance": { "skin": "cyan-system" },
   "state": {
     "connected": true,
-    "selecting": false,
     "chart": {
       "song_id": "synthetic",
       "play_type": "single",
       "difficulty": "another",
       "title": "NEON CIRCUIT / 星をつなぐ音",
-      "artist": "SAMPLE ARTIST"
-    },
-    "result": {
-      "title": "NEON CIRCUIT / 星をつなぐ音",
       "artist": "SAMPLE ARTIST",
-      "play_type": "single",
-      "difficulty": "another",
-      "fields": [
-        {
-          "role": "score",
-          "label": "EX SCORE",
-          "value": "2846"
-        },
-        {
-          "role": "rank",
-          "label": "DJ RANK",
-          "value": "AA"
-        },
-        {
-          "role": "miss",
-          "label": "MISS COUNT",
-          "value": "12"
-        },
-        {
-          "role": "clear",
-          "label": "CLEAR",
-          "value": "HARD CLEAR"
-        },
-        {
-          "role": "detail",
-          "label": "FAST / SLOW",
-          "value": "23 / 18"
-        },
-        {
-          "role": "detail",
-          "label": "OPTIONS",
-          "value": "RANDOM / HARD"
-        }
-      ]
+      "level": 12,
+      "notes": 1877
     },
-    "confirmation": {
-      "title": "NEON CIRCUIT / 星をつなぐ音",
-      "confirmed": true
+    "system": "active",
+    "result_ingest": "persisted",
+    "best": {
+      "score": "2921",
+      "dj_level": "AA",
+      "miss": "7",
+      "clear": "EX HARD CLEAR"
     },
-    "best_received": [
-      true,
-      true,
-      true
-    ],
+    "detail": {
+      "pgreat": "1380",
+      "great": "161",
+      "good": "4",
+      "bad": "1",
+      "poor": "7",
+      "fast": "23",
+      "slow": "18",
+      "combo_break": "12",
+      "play_options": "RANDOM / HARD"
+    },
     "history": {
-      "status": "保存済み · bestは項目別",
-      "best": [
-        {
-          "role": "score",
-          "label": "EX SCORE",
-          "value": "2921"
-        },
-        {
-          "role": "miss",
-          "label": "MISS",
-          "value": "7"
-        },
-        {
-          "role": "clear",
-          "label": "CLEAR",
-          "value": "EX HARD"
-        }
-      ],
+      "recorded": true,
       "plays": [
-        {
-          "notified_at": "2026-09-04 12:50:00 UTC",
-          "score": "2846",
-          "miss": "12",
-          "clear": "HARD"
-        },
-        {
-          "notified_at": "2026-09-04 12:47:00 UTC",
-          "score": "2814",
-          "miss": "15",
-          "clear": "HARD"
-        },
-        {
-          "notified_at": "2026-09-04 12:44:00 UTC",
-          "score": "2782",
-          "miss": "18",
-          "clear": "HARD"
-        },
-        {
-          "notified_at": "2026-09-04 12:41:00 UTC",
-          "score": "2750",
-          "miss": "21",
-          "clear": "HARD"
-        },
-        {
-          "notified_at": "2026-09-04 12:38:00 UTC",
-          "score": "2718",
-          "miss": "24",
-          "clear": "HARD"
-        }
-      ]
+        { "notified_at": "2026-09-05 22:31:00", "score": "2846", "dj_level": "AA", "miss": "12", "clear": "HARD CLEAR" },
+        { "notified_at": "2026-08-20 21:47:00", "score": "2921", "dj_level": "AA", "miss": "7", "clear": "EX HARD CLEAR" },
+        { "notified_at": "2026-07-18 19:02:00", "score": "2784", "dj_level": "A", "miss": "15", "clear": "CLEAR" },
+        { "notified_at": "2026-06-17 18:11:00", "score": "2651", "dj_level": "A", "miss": "20", "clear": "CLEAR" },
+        { "notified_at": "2026-05-15 23:09:00", "score": "2468", "dj_level": "B", "miss": "28", "clear": "FAILED" }
+      ],
+      "graph": [
+        { "received_unix_ms": 1750000000000, "score_ratio": 0.65, "miss_ratio": 0.05 },
+        { "received_unix_ms": 1755000000000, "score_ratio": 0.72, "miss_ratio": 0.03 },
+        { "received_unix_ms": 1760000000000, "score_ratio": 0.78, "miss_ratio": 0.01 }
+      ],
+      "graph_start_unix_ms": [1757321600000, 1751964800000, 1743920000000, 1727849600000],
+      "graph_end_unix_ms": 1760000000000
     }
   }
 }

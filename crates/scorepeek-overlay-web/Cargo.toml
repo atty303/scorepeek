@@ -17,6 +17,7 @@ scorepeek-overlay-ui = { path = "../scorepeek-overlay-ui" }
 dioxus.workspace = true
 dioxus-web = { version = "=0.7.10", default-features = false }
 serde_json.workspace = true
+serde.workspace = true
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = ["Document", "Element", "Window", "Location", "WebSocket", "MessageEvent", "Event", "CloseEvent"] }
 

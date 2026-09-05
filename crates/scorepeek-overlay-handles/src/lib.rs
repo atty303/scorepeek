@@ -5,7 +5,7 @@ use raw_window_handle::{
 };
 use smithay_client_toolkit::dispatch2::Dispatch2;
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region},
+    compositor::{CompositorHandler, CompositorState, FrameCallbackData},
     delegate_registry,
     output::{OutputHandler, OutputInfo, OutputState},
     reexports::{
@@ -77,6 +77,16 @@ pub enum Event {
     },
     Frame,
     Wake,
+    PointerMotion {
+        x: f64,
+        y: f64,
+    },
+    PointerButton {
+        button: u32,
+        pressed: bool,
+        x: f64,
+        y: f64,
+    },
     Closed,
 }
 pub struct Shell {
@@ -85,13 +95,24 @@ pub struct Shell {
     event_loop: EventLoop<'static, Platform>,
     started: Instant,
     pub output_name: Option<String>,
+    pub available_outputs: Vec<String>,
+    pub position: [i32; 2],
+    pub output_logical_size: Option<[u32; 2]>,
     pub fractional_scaling: bool,
 }
 impl Shell {
-    /// Creates an input-transparent layer on an unambiguous output.
+    /// Creates an interactive layer on an unambiguous output.
     /// # Errors
     /// Returns connection, global binding, output selection or event-loop failures.
-    pub fn open(output: Option<&str>, ping: PingSource) -> Result<Self, String> {
+    pub fn open(
+        output: Option<&str>,
+        width: u32,
+        height: u32,
+        x: i32,
+        y: i32,
+        upper_right: bool,
+        ping: PingSource,
+    ) -> Result<Self, String> {
         let conn = Connection::connect_to_env().map_err(|e| e.to_string())?;
 
         let (globals, mut event_queue) = registry_queue_init(&conn).map_err(|e| e.to_string())?;
@@ -105,8 +126,8 @@ impl Shell {
             output_state: OutputState::new(&globals, &qh),
             owner: None,
             selected_output: None,
-            width: 0,
-            height: 0,
+            width,
+            height,
             scale: 1,
             fractional_scale: None,
             fractional: None,
@@ -114,18 +135,38 @@ impl Shell {
             configured: false,
             needs_configure: false,
             frame_pending: false,
-            fallback: [1280, 720],
+            fallback: [width, height],
             events: Vec::new(),
             failure: None,
+            seat: None,
+            pointer: None,
+            pointer_position: [0.0, 0.0],
         };
 
         event_queue.roundtrip(&mut app).map_err(|e| e.to_string())?;
+        app.seat = globals
+            .bind::<wayland_client::protocol::wl_seat::WlSeat, _, _>(&qh, 1..=9, ())
+            .ok();
         let selection = select_output(&app.output_state, output)?;
-        app.fallback = selection.info.logical_size.map_or([1280, 720], |(w, h)| {
-            [w.max(1).cast_unsigned(), h.max(1).cast_unsigned()]
+        let available_outputs = app
+            .output_state
+            .outputs()
+            .filter_map(|output| app.output_state.info(&output).and_then(|info| info.name))
+            .collect();
+        let output_logical_size = selection.info.logical_size.and_then(|(width, height)| {
+            Some([u32::try_from(width).ok()?, u32::try_from(height).ok()?])
         });
         app.selected_output = Some(selection.output.clone());
 
+        let resolved_x = if upper_right {
+            selection
+                .info
+                .logical_size
+                .and_then(|(output_width, _)| upper_right_x(output_width, width, x))
+                .unwrap_or(x)
+        } else {
+            x
+        };
         let surface = compositor.create_surface(&qh);
         if let (Ok(manager), Ok(viewporter)) = (
             globals.bind::<WpFractionalScaleManagerV1, _, _>(&qh, 1..=1, ScaleData),
@@ -136,9 +177,6 @@ impl Shell {
             manager.destroy();
             viewporter.destroy();
         }
-        let empty_region = Region::new(&compositor).map_err(|e| e.to_string())?;
-        surface.set_input_region(Some(empty_region.wl_region()));
-
         let layer = layer_shell.create_layer_surface(
             &qh,
             surface.clone(),
@@ -146,10 +184,11 @@ impl Shell {
             Some("scorepeek-overlay"),
             Some(&selection.output),
         );
-        layer.set_anchor(Anchor::TOP | Anchor::RIGHT | Anchor::BOTTOM | Anchor::LEFT);
+        layer.set_anchor(Anchor::TOP | Anchor::LEFT);
+        layer.set_margin(y, 0, 0, resolved_x);
         layer.set_exclusive_zone(-1);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.set_size(0, 0);
+        layer.set_size(width, height);
         app.scale = selection.info.scale_factor.max(1);
         layer.commit();
 
@@ -173,6 +212,9 @@ impl Shell {
         Ok(Self {
             owner,
             output_name: selection.info.name,
+            available_outputs,
+            position: [resolved_x, y],
+            output_logical_size,
             fractional_scaling: app.viewport.is_some(),
             state: app,
             event_loop,
@@ -190,6 +232,7 @@ impl Shell {
         self.event_loop
             .dispatch(timeout, &mut self.state)
             .map_err(|e| e.to_string())?;
+        self.refresh_output_snapshot();
         if let Some(error) = self.state.failure.take() {
             return Err(error);
         }
@@ -223,6 +266,28 @@ impl Shell {
         }
         Ok(std::mem::take(&mut self.state.events))
     }
+
+    fn refresh_output_snapshot(&mut self) {
+        let outputs: Vec<_> = self
+            .state
+            .output_state
+            .outputs()
+            .filter_map(|output| self.state.output_state.info(&output))
+            .collect();
+        self.available_outputs = outputs
+            .iter()
+            .filter_map(|info| info.name.clone())
+            .collect();
+        if let Some(name) = self.output_name.as_deref()
+            && let Some(info) = outputs
+                .iter()
+                .find(|info| info.name.as_deref() == Some(name))
+        {
+            self.output_logical_size = info.logical_size.and_then(|(width, height)| {
+                Some([u32::try_from(width).ok()?, u32::try_from(height).ok()?])
+            });
+        }
+    }
     /// Requests at most one frame callback for the next renderer commit.
     pub fn request_frame(&mut self) {
         if !self.state.frame_pending {
@@ -231,6 +296,21 @@ impl Shell {
             self.state.frame_pending = true;
         }
     }
+    pub fn set_geometry(&mut self, x: i32, y: i32, width: u32, height: u32) {
+        self.state.width = width.max(32);
+        self.state.height = height.max(32);
+        self.owner.layer.set_margin(y, 0, 0, x);
+        self.owner
+            .layer
+            .set_size(self.state.width, self.state.height);
+        self.owner.layer.commit();
+    }
+}
+
+fn upper_right_x(output_width: i32, surface_width: u32, inset: i32) -> Option<i32> {
+    output_width
+        .checked_sub(i32::try_from(surface_width).ok()?)?
+        .checked_sub(inset.max(0))
 }
 struct Platform {
     qh: QueueHandle<Self>,
@@ -250,6 +330,75 @@ struct Platform {
     fallback: [u32; 2],
     events: Vec<Event>,
     failure: Option<String>,
+    seat: Option<wayland_client::protocol::wl_seat::WlSeat>,
+    pointer: Option<wayland_client::protocol::wl_pointer::WlPointer>,
+    pointer_position: [f64; 2],
+}
+
+impl wayland_client::Dispatch<wayland_client::protocol::wl_seat::WlSeat, ()> for Platform {
+    fn event(
+        state: &mut Self,
+        seat: &wayland_client::protocol::wl_seat::WlSeat,
+        event: wayland_client::protocol::wl_seat::Event,
+        (): &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wayland_client::protocol::wl_seat::Event::Capabilities { capabilities } = event
+            && capabilities.into_result().is_ok_and(|caps| {
+                caps.contains(wayland_client::protocol::wl_seat::Capability::Pointer)
+            })
+            && state.pointer.is_none()
+        {
+            state.pointer = Some(seat.get_pointer(qh, ()));
+        }
+    }
+}
+
+impl wayland_client::Dispatch<wayland_client::protocol::wl_pointer::WlPointer, ()> for Platform {
+    fn event(
+        state: &mut Self,
+        _: &wayland_client::protocol::wl_pointer::WlPointer,
+        event: wayland_client::protocol::wl_pointer::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use wayland_client::protocol::wl_pointer;
+        match event {
+            wl_pointer::Event::Enter {
+                surface_x,
+                surface_y,
+                ..
+            }
+            | wl_pointer::Event::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                state.pointer_position = [surface_x, surface_y];
+                state.events.push(Event::PointerMotion {
+                    x: surface_x,
+                    y: surface_y,
+                });
+            }
+            wl_pointer::Event::Button {
+                button,
+                state: button_state,
+                ..
+            } => {
+                if let Ok(button_state) = button_state.into_result() {
+                    state.events.push(Event::PointerButton {
+                        button,
+                        pressed: button_state == wl_pointer::ButtonState::Pressed,
+                        x: state.pointer_position[0],
+                        y: state.pointer_position[1],
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
 }
 impl CompositorHandler for Platform {
     fn scale_factor_changed(
@@ -435,17 +584,24 @@ fn select_output(state: &OutputState, requested: Option<&str>) -> Result<Selecte
             .ok_or_else(|| format!("Wayland output not found: {name}")),
         None if outputs.len() == 1 => Ok(outputs.into_iter().next().expect("length checked")),
         None if outputs.is_empty() => Err("no Wayland output".into()),
-        None => Err("multiple Wayland outputs; pass --overlay-output".into()),
+        None => Err("multiple Wayland outputs; set canvas.output in overlay TOML".into()),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::scaled_size;
+    use super::{scaled_size, upper_right_x};
     #[test]
     fn integer_and_fractional_buffers_round_up() {
         assert_eq!(scaled_size(1920, 120), 1920);
         assert_eq!(scaled_size(960, 240), 1920);
         assert_eq!(scaled_size(1001, 150), 1252);
+    }
+
+    #[test]
+    fn upper_right_position_uses_logical_output_width_and_inset() {
+        assert_eq!(upper_right_x(1920, 560, 20), Some(1340));
+        assert_eq!(upper_right_x(1920, 560, -20), Some(1360));
+        assert_eq!(upper_right_x(100, 560, 20), Some(-480));
     }
 }

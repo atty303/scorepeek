@@ -1,7 +1,7 @@
 //! Persistence consumer for the public event v1 contract, independent of recognition.
 pub mod query;
 mod worker;
-pub use worker::{Health, Worker};
+pub use worker::{Completion, CompletionOutcome, Health, Worker};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};

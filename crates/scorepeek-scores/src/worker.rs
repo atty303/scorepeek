@@ -10,6 +10,18 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Completion {
+    pub event_id: String,
+    pub outcome: CompletionOutcome,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompletionOutcome {
+    Persisted,
+    Failed,
+}
+
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_QUEUE_BYTES: usize = 8 * 1024 * 1024;
 const QUEUE_RECORDS: usize = 64;
@@ -48,6 +60,7 @@ pub struct Worker {
     sender: Option<SyncSender<Message>>,
     health: Arc<Mutex<Health>>,
     done: Receiver<()>,
+    completions: Receiver<Completion>,
     thread: Option<JoinHandle<()>>,
 }
 impl Worker {
@@ -56,13 +69,16 @@ impl Worker {
     pub fn start(path: &Path) -> Self {
         let (sender, receiver) = mpsc::sync_channel::<Message>(QUEUE_RECORDS);
         let (done_sender, done) = mpsc::channel();
+        let (completion_sender, completions) = mpsc::channel();
         let health = Arc::new(Mutex::new(Health::default()));
         let worker_health = Arc::clone(&health);
         let path = path.to_owned();
         let spawn = thread::Builder::new()
             .name("scorepeek-scores".into())
             .spawn(move || {
-                let outcome = std::panic::catch_unwind(|| run(&path, &receiver, &worker_health));
+                let outcome = std::panic::catch_unwind(|| {
+                    run(&path, &receiver, &worker_health, &completion_sender);
+                });
                 if outcome.is_err() {
                     worker_health
                         .lock()
@@ -85,6 +101,7 @@ impl Worker {
             sender: Some(sender),
             health,
             done,
+            completions,
             thread,
         }
     }
@@ -169,6 +186,11 @@ impl Worker {
             .clone()
     }
 
+    #[must_use]
+    pub fn take_completions(&self) -> Vec<Completion> {
+        self.completions.try_iter().collect()
+    }
+
     /// Stops admission and waits at most two seconds. Pending commits are not claimed as saved.
     pub fn finish(&mut self) -> Health {
         self.sender.take();
@@ -211,7 +233,12 @@ impl Drop for Worker {
     }
 }
 
-fn run(path: &Path, receiver: &Receiver<Message>, health: &Mutex<Health>) {
+fn run(
+    path: &Path,
+    receiver: &Receiver<Message>,
+    health: &Mutex<Health>,
+    completions: &mpsc::Sender<Completion>,
+) {
     let mut store = match Store::open(path) {
         Ok(store) => store,
         Err(error) => {
@@ -241,10 +268,14 @@ fn run(path: &Path, receiver: &Receiver<Message>, health: &Mutex<Health>) {
                 health.pending -= 1;
                 if changed {
                     health.committed += 1;
-                    health.last_committed_event_id = Some(message.event_id);
+                    health.last_committed_event_id = Some(message.event_id.clone());
                 } else {
                     health.duplicates += 1;
                 }
+                let _ = completions.send(Completion {
+                    event_id: message.event_id,
+                    outcome: CompletionOutcome::Persisted,
+                });
             }
             Err(error) => {
                 let kind = match error {
@@ -252,6 +283,10 @@ fn run(path: &Path, receiver: &Receiver<Message>, health: &Mutex<Health>) {
                     _ => "database_write",
                 };
                 health.fail(kind, &error);
+                let _ = completions.send(Completion {
+                    event_id: message.event_id,
+                    outcome: CompletionOutcome::Failed,
+                });
                 return;
             }
         }
@@ -276,10 +311,12 @@ mod tests {
     fn queue_limits_stop_admission_without_blocking() {
         let (sender, _receiver) = mpsc::sync_channel(1);
         let (_done_sender, done) = mpsc::channel();
+        let (_completion_sender, completions) = mpsc::channel();
         let worker = Worker {
             sender: Some(sender),
             health: Arc::new(Mutex::new(Health::default())),
             done,
+            completions,
             thread: None,
         };
         worker.offer(&event());
@@ -297,6 +334,7 @@ mod tests {
         let (sender, _receiver) = mpsc::sync_channel(1);
         let (release, wait) = mpsc::channel();
         let (done_sender, done) = mpsc::channel();
+        let (_completion_sender, completions) = mpsc::channel();
         let handle = thread::spawn(move || {
             wait.recv().unwrap();
             done_sender.send(()).unwrap();
@@ -305,6 +343,7 @@ mod tests {
             sender: Some(sender),
             health: Arc::new(Mutex::new(Health::default())),
             done,
+            completions,
             thread: Some(handle),
         };
         worker.offer(&event());

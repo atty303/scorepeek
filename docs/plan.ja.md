@@ -747,33 +747,40 @@ SELECTは譜面・項目別の現在補完値として保持し、revision履歴
 `--scores-db PATH`でrun単位の保存先を選び、`--no-scores`で無効化する。保存失敗は認識と配信へ干渉させない。
 日時、schema、出典、transaction、queueと終了上限はADR 0120を原典とする。過去記録importと照会CLIは含めない。
 
-### Live Overlay（ADR 0122）
+### Live Overlay canvas（ADR 0122 / 0125）
 
-新branch/worktreeは作らずmainへ直接実装する。spike worktreeは参照用として保持し、丸ごとmergeしない。
-配布binaryはscorepeekだけとし、`run --overlay wayland --overlay obs`で独立した子processを同時起動できる。
-公開v1 socketのsnapshot/liveを表示stateへ変換し、認識内部state・capture resourceは共有しない。
-`--overlay-output NAME`は完全一致、`--overlay-listen IP:PORT`はloopbackのみ、既定127.0.0.1:17384。
-親のpipe EOFで終了し、有界待機後に自分の子だけ回収する。overlay失敗時も認識・保存・他方を継続する。
+配布binaryは`scorepeek`だけとし、`run --overlay-wayland`と`run --overlay-obs`で独立consumerを有効化する。
+`--overlay-config PATH`はschema v1のTOMLを選び、未指定時は`$XDG_CONFIG_HOME/scorepeek/overlay.toml`を使う。
+未作成ならWayland/OBS各1枚、560x1040、5 widgetの初期canvasをatomicに作成する。Wayland初期canvasは選択outputの右上から20px内側に置く。backendはcanvas作成後に変更しない。
+global/schema errorは全体を拒否し、個別canvas errorはそのcanvasだけを隔離する。各backendはvalidかつenabledなcanvasを1枚以上保持する。
 
-共通Dioxus UIはLive、直近プレイ確定、選曲譜面best/直近5件の3枠。選曲確定をプレイ中も保持し、
-resolved provisionalで結果へ切り替える。確定はresult_detectedだけで判断し、DB commitを待たない。
-SELECT bestは項目別の取込状況だけで値を表示しない。履歴は共通read-only queryで1秒確認し、変更時だけ描画する。
-`--no-scores`では履歴も無効、DB作成・migration・別DBへのfallbackはしない。切断時も内容とDB照会を維持する。
-nativeはBlitz native-dom/AnyRender Vello/SCTK、同梱Oxanium＋日本語system fonts、整数/fractional scaleと入力透過を使用する。
-OBSは同じUIをdioxus-webでbuildし、dx実assetをrust-embedで埋め込む。ブラウザ更新はrAFで集約する。
-診断はprivate pipeと既存recording面へ分離し、UIとWebSocketへ混ぜない。詳細契約はADR 0122を原典とする。
+Waylandは有効canvasごとのlayer surfaceを1 child内で所有し、TOMLのoutput、論理座標とsizeを適用する。
+OBSは1 HTTP childが`/canvas/<id>`の安定URLを配信し、外枠sizeはBrowser Source viewportに従う。
+通常表示はwidget外を透明にする。Waylandは入力を常時受け、通常の左dragでcanvasを移動する。
+OBSの通常dragは永続座標を変更せず、OBS Transformに任せる。どちらも右clickで同じcanvas内editorへ入り、DONEだけで終了する。
+editorはwidget追加・削除・移動・resize、skin、履歴件数、graph期間を編集する。位置とsizeは常時4px gridへ揃え、canvas/他widgetの端と中心にもsnapする。
+font sizeと内部layoutは固定し、縮小時は余白を減らした後にclipする。per-canvas lease、canvas revision、backend-list revisionで競合を拒否する。
+parentだけがtyped controlを受け、検証後にTOMLをatomic replaceし、失敗時はmemory stateもrollbackする。
 
-自動検証はstate遷移、保存済みquery、子process、実Web asset、既存保存/API回帰へ絞る。
-専用DBの明示live taskで日本語font、scale、native/OBS一致、fullscreen前面、入力透過、idle/終了後残留、
-CPU/GPUとOBS lagを確認する。development-hostとtarget-machine supportは区別する。
-fresh review後に自分の変更だけmainへcommitする。push、deploy、autostart、releaseは含めない。
+共通UIは次の独立widgetを持つ。
 
-### スキンとレイアウト（ADR 0123 / 0124）
+- status: scorepeek logoとSYSTEM/RESULT lamp。SYSTEMはactive sessionに必要なcatalog/modelおよび有効なscore/recording経路がreadyのときだけactive。RESULTは現在の取込をprocessing/persisted/failedで示す。
+- selection: title/artist左側の無label縦長recorded lampと、別railのSP/DP・difficulty・level・notes。score値は表示しない。recordedはSQLiteにSELECT由来のno-recordを含むcommit済み知識があることを示す。
+- score: 曲名を繰り返さず、SQLite由来の統合BESTとRESULT DETAILを表示する。代表RESULTはEX score最大、既知MISS優先かつ最小、received時刻最新の辞書順で1件選ぶ。PGREAT/GREAT/GOOD/BAD/POOR/FAST/SLOW/COMBO BREAK/PLAY OPTIONSを保持する。
+- history list: local通知日時、EX SCORE、DJ LEVEL、MISS、CLEAR。件数は5/10/20/50、既定5。
+- history graph: 1/3/6/12か月、既定6のlocal calendarによる固定時間範囲へexact timestampで配置する。scoreは%凡例を出さずDJ LEVEL閾値を示す。MISS RATE軸は常に0–100%、100%超をclipし、unknownは線を切る。最大範囲内の新しい4096 playを上限とし、時刻順へ戻して描画する。
 
-共通UIにcyan-system（既定）、result-aurora、dj-blackboxをCSSで同梱し、`--overlay-skin`で起動時に選択する。
-`--overlay-wayland-layout compact|sidebar`はcompact、`--overlay-obs-layout compact|sidebar`はsidebarが既定。
-両方ともLive、直近プレイ確定、選択譜面BESTと直近5件を保持する。欧文・数字は固定版Oxaniumを同梱し、
-日本語はsystem fontsへfallbackする。ADR 0124で生成フレーム3点とAURORAヘッダーを追加する。
-画像は共通registryから両rendererへ同梱配信し、CSSの9分割背景で枠の角を保つ。外部CSS読み込み、起動中の切替は含めない。
-表示設定は子設定とOBS初期HTMLに限定し、公開event APIと保存authorityを変えない。
-整数・小数scaleのDOM/停止確認とheadless描画を開発hostで行い、実ゲーム上の表示と性能は明示live gateで確認する。
+選曲変化、SELECT best、RESULTのDB commitおよび5秒のrecovery pollでreadonly SQLiteを再照会する。
+表示するBEST、RESULT DETAIL、recorded、historyは常にcommit済みDB stateから作り、最新公開RESULTを直接score widgetへ流用しない。
+親pipe EOFで子を有界回収し、overlay失敗は認識・保存・他backendを停止しない。
+
+### Overlay skinとasset（ADR 0123 / 0124 / 0125）
+
+cyan-system（既定）、result-aurora、dj-blackboxをcanvas単位で選ぶ。同じ意味DOMと状態logicを共有しつつ、
+skin CSSは承認済みdesign masterから作った同梱PNGをbackground/maskとして積極的に使う。装飾に必要なDOM boxは共有構造へ追加できるが、
+runtime値とgraphはtext/SVGのままとする。欧文・数字は固定版OxaniumとOFL 1.1を同梱し、日本語はsystem fontへfallbackする。
+外部CSS/asset downloadは行わない。常時animationは使わず、RESULT確定の短い強調後は描画を停止する。
+
+開発hostではstrict TOML、atomic save、lease/revision、DB query、公開event fold、全skinのnative DOM、WASM、embedded assetとidle停止を検証する。
+実機ではWayland output境界、整数/小数scale、入力、ゲーム上の可読性と占有面積、OBS Interaction、CPU/GPU/OBS lagを別のlive gateで確認する。
+fresh review後にこの変更だけmainへcommitする。push、deploy、autostart、releaseは含めない。

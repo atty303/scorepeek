@@ -1908,8 +1908,12 @@ struct AttemptNodeSnapshot {
 
 impl RunViewState {
     fn new(invocation_id: String, profile_sha256: String, recording_enabled: bool) -> Self {
+        let mut public = event_api::PublicState::new(invocation_id.clone());
+        if recording_enabled {
+            public.enable_recording();
+        }
         Self {
-            public: event_api::PublicState::new(invocation_id.clone()),
+            public,
             invocation_id,
             profile_sha256,
             recording: if recording_enabled {
@@ -2845,15 +2849,81 @@ impl RoutineOutput {
     }
 
     pub fn refresh_scores(&mut self) -> Result<(), String> {
+        let completions = self
+            .scores
+            .as_ref()
+            .map(scorepeek_scores::Worker::take_completions)
+            .unwrap_or_default();
+        for completion in completions {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "run view state lock was poisoned".to_owned())?;
+            let mut projected = state.public.clone();
+            let event = projected.complete_result(
+                &completion.event_id,
+                completion.outcome == scorepeek_scores::CompletionOutcome::Persisted,
+            );
+            let events = event.into_iter().collect::<Vec<_>>();
+            commit_public_projection(
+                &mut state.public,
+                projected,
+                &events,
+                self.channel.as_ref(),
+                None,
+            );
+        }
+        let persistence_failed = self
+            .scores_health()
+            .is_some_and(|health| health.failure.is_some());
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "run view state lock was poisoned".to_owned())?;
+        let mut projected = state.public.clone();
+        let health_events = projected
+            .scores_health(!persistence_failed)
+            .into_iter()
+            .collect::<Vec<_>>();
+        commit_public_projection(
+            &mut state.public,
+            projected,
+            &health_events,
+            self.channel.as_ref(),
+            None,
+        );
+        let reason = if persistence_failed || state.public.ingest_timed_out() {
+            Some("persistence_failed")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            let mut projected = state.public.clone();
+            let events = projected
+                .fail_result(reason)
+                .into_iter()
+                .collect::<Vec<_>>();
+            commit_public_projection(
+                &mut state.public,
+                projected,
+                &events,
+                self.channel.as_ref(),
+                None,
+            );
+        }
+        drop(state);
         self.refresh()
     }
 
     pub fn enable_scores(&mut self, path: &Path) -> Result<(), String> {
         self.scores = Some(scorepeek_scores::Worker::start(path));
-        self.state
+        let mut state = self
+            .state
             .lock()
-            .map_err(|_| "run view state lock was poisoned".to_owned())?
-            .scores_summary = Some(format!("{}", path.display()));
+            .map_err(|_| "run view state lock was poisoned".to_owned())?;
+        state.scores_summary = Some(format!("{}", path.display()));
+        state.public.enable_scores();
+        drop(state);
         self.refresh()
     }
 

@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+chrono.workspace = true
 scorepeek-overlay-handles = { path = "../scorepeek-overlay-handles" }
 anyrender = "0.13.0"
 anyrender_vello = "0.14.0"
@@ -13,6 +14,7 @@ blitz-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "64eb27853aa267
 blitz-paint = { git = "https://github.com/DioxusLabs/blitz", rev = "64eb27853aa2672486b7edf825fb044be78c9db3", default-features = false }
 blitz-traits = { git = "https://github.com/DioxusLabs/blitz", rev = "64eb27853aa2672486b7edf825fb044be78c9db3", default-features = false }
 dioxus-core = "=0.7.10"
+dioxus.workspace = true
 dioxus-native-dom = { git = "https://github.com/DioxusLabs/blitz", rev = "64eb27853aa2672486b7edf825fb044be78c9db3", default-features = false, features = ["complex-scripts", "system-fonts"] }
 fontique = { version = "0.11.1", features = ["fontconfig-dlopen"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
@@ -24,6 +26,7 @@ serde.workspace = true
 serde_json.workspace = true
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws"] }
 tokio = { workspace = true, features = ["net", "sync", "macros", "rt-multi-thread"] }
+toml.workspace = true
 rust-embed = { version = "8.12", features = ["mime-guess", "interpolate-folder-path", "deterministic-timestamps"], optional = true }
 
 [features]
