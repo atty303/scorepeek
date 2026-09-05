@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 mod appearance;
 mod assets;
+mod frame;
 pub mod motion;
 pub use appearance::{Appearance, Skin};
 pub use assets::{FONT_ASSETS, FONT_CSS, FONT_LICENSES, SKIN_ASSETS, skin_asset};
@@ -141,11 +142,11 @@ pub enum WidgetKind {
 #[must_use]
 pub const fn default_widget_size(kind: WidgetKind) -> (u32, u32) {
     match kind {
-        WidgetKind::Status => (560, 72),
-        WidgetKind::Selection => (560, 120),
-        WidgetKind::Score => (560, 300),
-        WidgetKind::HistoryList => (560, 236),
-        WidgetKind::HistoryGraph => (560, 280),
+        WidgetKind::Status => (560, 60),
+        WidgetKind::Selection => (560, 140),
+        WidgetKind::Score => (560, 216),
+        WidgetKind::HistoryList => (560, 172),
+        WidgetKind::HistoryGraph => (560, 224),
     }
 }
 
@@ -250,10 +251,15 @@ fn shown(value: &str) -> &str {
 }
 fn lamp(state: LampState, label: Option<&str>, class: &str) -> Element {
     let state = format!("{state:?}").to_ascii_lowercase();
-    rsx! { div { class: "lamp-group {class}", if let Some(label) = label { span { class: "lamp-label", "{label}" } } span { class: "lamp", "data-state": state, aria_hidden: "true" } } }
+    rsx! { div { class: "lamp-group {class}", span { class: "lamp", "data-state": state, aria_hidden: "true" } if let Some(label) = label { span { class: "lamp-label", "{label}" } } } }
 }
-fn chrome() -> Element {
-    rsx! { div { class: "skin-frame", aria_hidden: "true", div { class: "skin-surface" } div { class: "skin-corners" } div { class: "skin-hardware" } div { class:"material-frame", for edge in ["nw","ne","se","sw"] { i { class:"material-edge {edge}" } } } div { class: "skin-energy" } div { class: "skin-glint" } div { class: "skin-trace" } for index in 0..12 { i { class: "fx-particle fx-particle-{index}" } } } }
+fn chrome(widget: &WidgetLayout, skin: Skin) -> Element {
+    rsx! { div { class: "skin-frame", aria_hidden: "true",
+        div { class: "skin-surface" }
+        {frame::render(widget, skin)}
+        div { class: "skin-energy" }
+        div { class: "skin-glint" }
+    } }
 }
 
 /// Renders the approved five-widget master composition.
@@ -297,7 +303,7 @@ pub fn overlay_canvas(
                     class: if selected == Some(widget.id.as_str()) { "widget-slot selected" } else { "widget-slot" },
                     "data-widget-id": "{widget.id}",
                     style: format!("left:{}px;top:{}px;width:{}px;height:{}px", widget.x, widget.y, widget.width, widget.height),
-                    {render_widget(widget, state, title, artist, play_type, &difficulty, &level, &notes, graph_colors)}
+                    {render_widget(widget, state, title, artist, play_type, &difficulty, &level, &notes, appearance.skin)}
                     if editing {
                         for corner in ["nw", "ne", "sw", "se"] {
                             i { class: "resize-handle {corner}", aria_hidden: "true" }
@@ -319,22 +325,22 @@ fn render_widget(
     difficulty: &str,
     level: &str,
     notes: &str,
-    graph_colors: appearance::GraphColors,
+    skin: Skin,
 ) -> Element {
     match widget.kind {
         WidgetKind::Status => {
-            rsx! { section { class: "widget status-widget", {chrome()} div { class: "widget-content status-content", span { class: "wordmark", "score" span { "peek" } } div { class: "status-lamps", {lamp(state.system, Some("SYSTEM"), "system-lamp")} {lamp(state.result_signal, Some("RESULT"), "result-lamp")} } } } }
+            rsx! { section { class: "widget status-widget", {chrome(widget, skin)} div { class: "widget-content status-content", span { class: "wordmark", "score" span { "peek" } } div { class: "status-lamps", {lamp(state.system, Some("SYSTEM"), "system-lamp")} {lamp(state.result_signal, Some("RESULT"), "result-lamp")} } } } }
         }
         WidgetKind::Selection => {
-            rsx! { section { class: "widget selection-widget", {chrome()} div { class: "widget-content selection-content",
+            rsx! { section { class: "widget selection-widget", {chrome(widget, skin)} div { class: "widget-content selection-content",
                 {lamp(if state.history.recorded { LampState::Active } else { LampState::Inactive }, None, "recorded-lamp")}
                 div { class: "song-copy", h1 { title: title, "{title}" } p { title: artist, "{artist}" } }
                 div { class: "chart-rail", span { class: "play-type", "{play_type}" } span { class: "difficulty", "data-difficulty": difficulty, "{difficulty}" } span { "LV {level}" } span { "NOTES {notes}" } }
             } } }
         }
-        WidgetKind::Score => score_widget(state),
-        WidgetKind::HistoryList => history_list(&state.history, widget.settings.history_count),
-        WidgetKind::HistoryGraph => history_graph(&state.history, widget, graph_colors),
+        WidgetKind::Score => score_widget(state, widget, skin),
+        WidgetKind::HistoryList => history_list(&state.history, widget, skin),
+        WidgetKind::HistoryGraph => history_graph(&state.history, widget, skin),
     }
 }
 
@@ -350,11 +356,11 @@ pub fn default_widgets() -> Vec<WidgetLayout> {
         settings: WidgetSettings::default(),
     };
     vec![
-        widget("status", WidgetKind::Status, 0, 74),
-        widget("selection", WidgetKind::Selection, 82, 120),
-        widget("score", WidgetKind::Score, 210, 300),
-        widget("history-list", WidgetKind::HistoryList, 518, 236),
-        widget("history-graph", WidgetKind::HistoryGraph, 762, 278),
+        widget("status", WidgetKind::Status, 0, 60),
+        widget("selection", WidgetKind::Selection, 68, 140),
+        widget("score", WidgetKind::Score, 216, 216),
+        widget("history-list", WidgetKind::HistoryList, 440, 172),
+        widget("history-graph", WidgetKind::HistoryGraph, 620, 224),
     ]
 }
 
@@ -428,7 +434,7 @@ pub fn editor_sample_state() -> OverlayState {
     }
 }
 
-fn score_widget(state: &OverlayState) -> Element {
+fn score_widget(state: &OverlayState, widget: &WidgetLayout, skin: Skin) -> Element {
     let fields = [
         ("PGREAT", &state.detail.pgreat, "pgreat"),
         ("GREAT", &state.detail.great, "great"),
@@ -440,26 +446,24 @@ fn score_widget(state: &OverlayState) -> Element {
         ("COMBO BREAK", &state.detail.combo_break, "combo"),
         ("PLAY OPTIONS", &state.detail.play_options, "options"),
     ];
-    rsx! { section { class: "widget score-widget", {chrome()} div { class: "widget-content score-content",
+    rsx! { section { class: "widget score-widget", {chrome(widget, skin)} div { class: "widget-content score-content",
         div { class: "best-section", h2 { "BEST" } div { class: "best-grid", div { class: "score-main", label { "EX SCORE" } strong { span { class:"number-depth", aria_hidden:"true", "{shown(&state.best.score)}" } span { class:"number-face", "{shown(&state.best.score)}" } } span { class: "clear-value", "data-clear": motion::clear_role(&state.best.clear), "{shown(&state.best.clear)}" } } div { class: "best-side", label { "DJ LEVEL" } strong { class: "dj-level", "data-rank": shown(&state.best.dj_level), "{shown(&state.best.dj_level)}" } label { "MISS COUNT" } b { "{shown(&state.best.miss)}" } } } }
         div { class: "detail-section", h2 { "RESULT DETAIL" } for (label, value, class) in fields { div { class: "detail-row {class}", span { "{label}" } b { "{shown(value)}" } } } }
     } } }
 }
-fn history_list(history: &History, count: u32) -> Element {
-    rsx! { section { class: "widget history-list-widget", {chrome()} div { class: "widget-content history-content", h2 { "HISTORY" } div { class: "history-row history-head", span { "DATE" } span { "EX SCORE" } span { "DJ LEVEL" } span { "MISS" } span { "CLEAR" } } for play in history.plays.iter().take(count as usize) { div { class: "history-row", time { "{play.notified_at}" } b { "{play.score}" } span { "data-rank": &play.dj_level, "{play.dj_level}" } span { "{play.miss}" } span { "data-clear": motion::clear_role(&play.clear), "{play.clear}" } } } } } }
+fn history_list(history: &History, widget: &WidgetLayout, skin: Skin) -> Element {
+    let count = widget.settings.history_count;
+    rsx! { section { class: "widget history-list-widget", {chrome(widget, skin)} div { class: "widget-content history-content", h2 { "HISTORY" } div { class: "history-row history-head", span { "DATE" } span { "EX SCORE" } span { "DJ LEVEL" } span { "MISS" } span { "CLEAR" } } for play in history.plays.iter().take(count as usize) { div { class: "history-row", time { "{play.notified_at}" } b { "{play.score}" } span { "data-rank": &play.dj_level, "{play.dj_level}" } span { "{play.miss}" } span { "data-clear": motion::clear_role(&play.clear), "{play.clear}" } } } } } }
 }
-fn history_graph(
-    history: &History,
-    widget: &WidgetLayout,
-    colors: appearance::GraphColors,
-) -> Element {
+fn history_graph(history: &History, widget: &WidgetLayout, skin: Skin) -> Element {
+    let colors = skin.graph_colors();
     // Blitz paints inline SVG as a contained image. Share the plot viewport with CSS
     // so its image aspect ratio also follows widget resizing.
     let padding_x = 18;
-    let padding_y = 16;
+    let padding_y = 12;
     let score_axis = 36;
     let miss_axis = 39;
-    let header_space = 72;
+    let header_space = 52;
     let plot_width = widget
         .width
         .saturating_sub(2 * padding_x + score_axis + miss_axis)
@@ -517,7 +521,7 @@ fn history_graph(
         ("D", 33.333),
         ("E", 22.222),
     ];
-    rsx! { section { class: "widget history-graph-widget", style: geometry, {chrome()} div { class: "widget-content graph-content", h2 { "HISTORY GRAPH" } div { class: "graph-legend", span { class: "score-key", "DJ LEVEL" } span { class: "miss-key", "MISS RATE" } } div { class: "plot", div { class: "level-axis", for (level,threshold) in levels { span { style: format!("top:{:.3}%",100.0-threshold), "{level}" } } } div { class: "plot-area", for (level,threshold) in levels { i { class: "threshold", "data-level": level, style: format!("top:{:.3}%",100.0-threshold) } } for style in score_dots { i { class:"graph-dot score-dot",style } } for style in miss_dots { i { class:"graph-dot miss-dot",style } } svg { width: "{plot_width}", height: "{plot_height}", view_box: "0 0 1000 100", preserve_aspect_ratio: "none", polyline { class: "score-line", fill: "none", stroke: colors.score, stroke_width: "1.25", vector_effect: "non-scaling-stroke", points: "{points.0}" } for segment in points.1 { polyline { class: "miss-line", fill: "none", stroke: colors.miss, stroke_width: "1.25", vector_effect: "non-scaling-stroke", points: "{segment}" } } } } div { class: "miss-axis", for value in ["100%","75%","50%","25%","0%"] { span { "{value}" } } } } } } }
+    rsx! { section { class: "widget history-graph-widget", style: geometry, {chrome(widget, skin)} div { class: "widget-content graph-content", h2 { "HISTORY GRAPH" } div { class: "graph-legend", span { class: "score-key", "DJ LEVEL" } span { class: "miss-key", "MISS RATE" } } div { class: "plot", div { class: "level-axis", for (level,threshold) in levels { span { style: format!("top:{:.3}%",100.0-threshold), "{level}" } } } div { class: "plot-area", for (level,threshold) in levels { i { class: "threshold", "data-level": level, style: format!("top:{:.3}%",100.0-threshold) } } for style in score_dots { i { class:"graph-dot score-dot",style } } for style in miss_dots { i { class:"graph-dot miss-dot",style } } svg { width: "{plot_width}", height: "{plot_height}", view_box: "0 0 1000 100", preserve_aspect_ratio: "none", polyline { class: "score-line", fill: "none", stroke: colors.score, stroke_width: "1.25", vector_effect: "non-scaling-stroke", points: "{points.0}" } for segment in points.1 { polyline { class: "miss-line", fill: "none", stroke: colors.miss, stroke_width: "1.25", vector_effect: "non-scaling-stroke", points: "{segment}" } } } } div { class: "miss-axis", for value in ["100%","75%","50%","25%","0%"] { span { "{value}" } } } } } } }
 }
 fn dot_style(time: i64, ratio: f64, start: i64, end: i64) -> String {
     let x = (time_ratio(time, start, end) * 100.0).clamp(0.0, 100.0);

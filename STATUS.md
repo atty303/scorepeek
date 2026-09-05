@@ -43,14 +43,15 @@ checkpoint; implementation history belongs in Git.
 - ADR 0130 makes the status widget RESULT lamp a provisional-readiness signal. A new RESULT is
   unlit, resolved is green, withdrawn or exit without resolution is red, and the outcome remains
   visible until the next RESULT or session end. Persistence state no longer drives the lamp.
-- CYAN SYSTEM, RESULT AURORA and DJ BLACKBOX are canvas-level skins using the approved embedded frame
-  artwork through CSS backgrounds. Oxanium and OFL 1.1 are embedded alongside Japanese system-font
+- CYAN SYSTEM, RESULT AURORA and DJ BLACKBOX are canvas-level skins using shared SVG contours
+  and embedded surface artwork. Oxanium and OFL 1.1 are embedded alongside Japanese system-font
   fallbacks. ADR 0131 adds embedded Orbitron/Rajdhani, new transparent
   energy/circuit artwork and semantic clear/difficulty/rank treatments. Shared motion tracks drive
   native Blitz styles and browser JS continuously while visible, without changing actual values.
   Decorations overflow widgets and are cropped by the canvas; hidden native surfaces remain idle.
-  ADR 0132 prioritizes restrained frames and moving accents; Japanese uses system fonts without an
-  embedded Noto bundle.
+  ADR 0133 restores the original design sheets as the visual reference, with compact new-widget
+  proportions, chamfered contours and restrained semantic motion. Saved geometry is not rearranged.
+  Japanese uses system fonts without an embedded Noto bundle (ADR 0132).
 - Score/history widgets read only committed SQLite state. BEST integrates RESULT and SELECT sources;
   representative RESULT ordering is highest EX score, known/lower miss, then latest receipt time.
   History rows include DJ LEVEL. The graph uses exact timestamps, labeled DJ LEVEL thresholds and a

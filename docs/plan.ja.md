@@ -781,8 +781,9 @@ Waylandの保存outputが消失した場合、収まるnamed output、なけれ�
 ### Overlay skinとasset（ADR 0123 / 0124 / 0125）
 
 cyan-system（既定）、result-aurora、dj-blackboxをcanvas単位で選ぶ。同じ意味DOMと状態logicを共有しつつ、
-skin CSSは承認済みdesign masterから作った同梱PNGをbackground/maskとして積極的に使う。装飾に必要なDOM boxは共有構造へ追加できるが、
-ADR 0131により情報設計を保って素材・字体・常時演出を強化する。runtime値は即時に正しい値を表示し、count-upはしない。
+ADR 0133により原典design masterの比率・輪郭・配色・文字階層へ忠実に合わせる。
+frameは共有SVGで角と線幅を保ち、素材面は同梱PNGとCSSで表現する。
+新規widgetは原典のコンパクトな比率とし、保存済み配置は自動変更しない。runtime値は即時に正しい値を表示し、count-upはしない。
 Oxanium/Orbitron/Rajdhaniをlicense付きで同梱する。日本語はシステムのNoto Sans JP等を使い、同梱しない（ADR 0132）。
 DOM/CSS・素材・意味に対応したmotion設定は共通とし、native RustとOBS JavaScriptで駆動する。
 演出はwidget外へ広がりcanvasでcropする。利用者がcanvasとwidget配置で調整する。

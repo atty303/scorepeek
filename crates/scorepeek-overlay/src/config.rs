@@ -514,7 +514,7 @@ fn initial_canvases(backend: Backend) -> Vec<Canvas> {
             x,
             100,
             560,
-            120,
+            140,
             Some(vec![ScreenKind::DecideTransition, ScreenKind::Play]),
             vec![("selection", WidgetKind::Selection, 0, 0)],
         ),
@@ -534,9 +534,9 @@ fn initial_canvases(backend: Backend) -> Vec<Canvas> {
 fn dashboard_widgets() -> Vec<(&'static str, WidgetKind, i32, i32)> {
     vec![
         ("selection", WidgetKind::Selection, 0, 0),
-        ("score", WidgetKind::Score, 0, 128),
-        ("history-list", WidgetKind::HistoryList, 0, 436),
-        ("history-graph", WidgetKind::HistoryGraph, 0, 680),
+        ("score", WidgetKind::Score, 0, 148),
+        ("history-list", WidgetKind::HistoryList, 0, 372),
+        ("history-graph", WidgetKind::HistoryGraph, 0, 552),
     ]
 }
 

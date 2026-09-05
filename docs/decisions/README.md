@@ -397,3 +397,6 @@ requirements after their named superseding decisions.
   shares DOM, CSS, assets and motion settings across native Rust and browser JavaScript drivers.
 - [ADR 0132: Motion-led overlay and system Japanese fonts](0132-motion-led-overlay-and-system-japanese-fonts.md)
   favors moving accents over dense frames and uses system Japanese fonts.
+
+- [ADR 0133: Restore overlay design fidelity](0133-restore-overlay-design-fidelity.md)
+  restores the original design sheets as the visual reference while preserving semantic motion.
