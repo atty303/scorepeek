@@ -87,7 +87,7 @@ fn native_overlay(
 ) -> Element {
     *update.borrow_mut() = Some(schedule_update());
     rsx! {
-        div { style:format!("display:{};opacity:{}",if visible.get(){"block"}else{"none"},f32::from(settings.borrow().opacity_percent)/100.0),
+        div { class:"canvas-content",style:format!("display:{};opacity:{}",if visible.get(){"block"}else{"none"},f32::from(settings.borrow().opacity_percent)/100.0),
             {overlay_canvas(
                 &state.borrow(),
                 appearance.get(),
@@ -1615,6 +1615,59 @@ mod skin_tests {
                 let rect = inner.get_client_bounding_rect(id).unwrap();
                 assert!(rect.width > 0.0 && rect.height > 0.0, "{skin:?} {selector}");
             }
+        }
+    }
+
+    #[test]
+    fn compact_canvas_content_fills_the_viewport_and_does_not_clip_widgets() {
+        let mut document = DioxusDocument::new(
+            VirtualDom::new_with_props(
+                native_overlay,
+                NativeOverlayProps {
+                    appearance: Rc::new(Cell::new(Appearance {
+                        skin: Skin::CyanSystem,
+                    })),
+                    widgets: Rc::new(RefCell::new(vec![WidgetLayout {
+                        id: "status".into(),
+                        kind: scorepeek_overlay_ui::WidgetKind::Status,
+                        x: 0,
+                        y: 0,
+                        width: 560,
+                        height: 72,
+                        z: 0,
+                        settings: scorepeek_overlay_ui::WidgetSettings::default(),
+                    }])),
+                    editing: Rc::new(Cell::new(false)),
+                    selected: Rc::new(RefCell::new(None)),
+                    managed: Rc::new(RefCell::new(Vec::new())),
+                    outputs: Rc::new(RefCell::new(Vec::new())),
+                    state: Rc::new(RefCell::new(OverlayState::default())),
+                    visible: Rc::new(Cell::new(true)),
+                    settings: Rc::new(RefCell::new(NativeCanvasSettings {
+                        show_on: None,
+                        opacity_percent: 100,
+                        z: 0,
+                        unknown_grace_ms: 1000,
+                        settings_revision: 0,
+                    })),
+                    update: Rc::new(RefCell::new(None)),
+                },
+            ),
+            document_config(),
+        );
+        document.initial_build();
+        let mut inner = document.inner.borrow_mut();
+        inner.set_viewport(Viewport::new(560, 72, 1.0, ColorScheme::Dark));
+        inner.resolve(0.0);
+        inner.resolve(1.0);
+
+        for selector in [".canvas-content", ".overlay-canvas", ".status-widget"] {
+            let id = inner.query_selector(selector).unwrap().unwrap();
+            let rect = inner.get_client_bounding_rect(id).unwrap();
+            assert!(
+                rect.width >= 559.0 && rect.height >= 71.0,
+                "{selector}: {rect:?}"
+            );
         }
     }
 

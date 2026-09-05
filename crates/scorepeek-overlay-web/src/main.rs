@@ -220,7 +220,7 @@ fn app() -> Element {
         || scorepeek_overlay_ui::canvas_visible(canvas().show_on.as_deref(), state().screen);
     rsx! {
         div { class:"overlay-root",oncontextmenu:enter,onpointermove:moving,onpointerup:finish,ondragover:move|event|event.prevent_default(),ondrop:drop_widget,
-            div { style:if shown{"display:block"}else{"display:none"},
+            div { class:"canvas-content",style:if shown{"display:block"}else{"display:none"},
                 {overlay_canvas(&state.read(),Appearance{skin:canvas().skin},&canvas().widgets,editing(),selected_id.as_deref())}
             }
             if editing() {
