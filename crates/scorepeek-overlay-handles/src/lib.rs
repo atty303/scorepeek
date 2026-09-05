@@ -101,7 +101,7 @@ pub struct Shell {
     pub fractional_scaling: bool,
 }
 impl Shell {
-    /// Creates an interactive layer on an unambiguous output.
+    /// Creates an interactive layer on the requested or deterministic default output.
     /// # Errors
     /// Returns connection, global binding, output selection or event-loop failures.
     pub fn open(
@@ -568,7 +568,7 @@ struct SelectedOutput {
 }
 
 fn select_output(state: &OutputState, requested: Option<&str>) -> Result<SelectedOutput, String> {
-    let outputs: Vec<_> = state
+    let mut outputs: Vec<_> = state
         .outputs()
         .filter_map(|output| {
             state
@@ -577,20 +577,37 @@ fn select_output(state: &OutputState, requested: Option<&str>) -> Result<Selecte
         })
         .collect();
 
-    match requested {
-        Some(name) => outputs
-            .into_iter()
-            .find(|candidate| candidate.info.name.as_deref() == Some(name))
-            .ok_or_else(|| format!("Wayland output not found: {name}")),
-        None if outputs.len() == 1 => Ok(outputs.into_iter().next().expect("length checked")),
-        None if outputs.is_empty() => Err("no Wayland output".into()),
-        None => Err("multiple Wayland outputs; set canvas.output in overlay TOML".into()),
+    let index = choose_output_index(
+        requested,
+        outputs
+            .iter()
+            .map(|candidate| candidate.info.name.as_deref()),
+    )?;
+    Ok(outputs.swap_remove(index))
+}
+
+fn choose_output_index<'a>(
+    requested: Option<&str>,
+    names: impl IntoIterator<Item = Option<&'a str>>,
+) -> Result<usize, String> {
+    let names = names.into_iter().collect::<Vec<_>>();
+    if let Some(requested) = requested
+        && let Some(index) = names.iter().position(|name| *name == Some(requested))
+    {
+        return Ok(index);
     }
+    names
+        .iter()
+        .enumerate()
+        .filter_map(|(index, name)| name.map(|name| (index, name)))
+        .min_by_key(|(index, name)| (*name, *index))
+        .map(|(index, _)| index)
+        .ok_or_else(|| "no named Wayland output".into())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{scaled_size, upper_right_x};
+    use super::{choose_output_index, scaled_size, upper_right_x};
     #[test]
     fn integer_and_fractional_buffers_round_up() {
         assert_eq!(scaled_size(1920, 120), 1920);
@@ -603,5 +620,24 @@ mod tests {
         assert_eq!(upper_right_x(1920, 560, 20), Some(1340));
         assert_eq!(upper_right_x(1920, 560, -20), Some(1360));
         assert_eq!(upper_right_x(100, 560, 20), Some(-480));
+    }
+
+    #[test]
+    fn unspecified_output_chooses_a_stable_visible_default() {
+        assert_eq!(
+            choose_output_index(None, [Some("HDMI-A-1"), Some("DP-3")]),
+            Ok(1)
+        );
+        assert_eq!(
+            choose_output_index(Some("HDMI-A-1"), [Some("DP-3"), Some("HDMI-A-1")]),
+            Ok(1)
+        );
+        assert_eq!(
+            choose_output_index(Some("disconnected"), [Some("HDMI-A-1"), Some("DP-3")]),
+            Ok(1)
+        );
+        assert_eq!(choose_output_index(None, [None, Some("DP-3")]), Ok(1));
+        assert!(choose_output_index(None, []).is_err());
+        assert!(choose_output_index(None, [None]).is_err());
     }
 }

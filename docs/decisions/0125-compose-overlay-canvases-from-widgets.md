@@ -20,6 +20,11 @@ top-left pixels. Widgets have persistent IDs, kind, 4px-aligned position and siz
 settings. The initial kinds are status, selection, score, history list and history graph. Shrinking
 a widget reduces internal spacing before clipping; it never scales its typography.
 
+An explicit native `output` remains authoritative while it exists. When it is absent or no longer
+connected, Wayland chooses the first named connected output in stable name order so a multi-output
+first run always exposes the editor, then persists the resolved name through the parent writer.
+Choosing another output in the editor persists its name and recreates the surface there.
+
 Right-clicking anywhere enters the editor. The only editor exit is DONE. Wayland remains mouse
 interactive: normal left-drag moves its canvas, while edit mode moves/resizes widgets or the canvas.
 OBS uses the same URL and DOM in Browser Source Interaction; normal drag remains available to OBS

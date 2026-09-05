@@ -127,9 +127,15 @@ checkpoint; implementation history belongs in Git.
   MIME types; embedded-asset and child-EOF tests pass. `wasm-opt` still reports unsupported DWARF and
   the bundle proceeds without that optional optimization.
 - Workspace/all-target Clippy passes. The complete workspace suite passes on repeat: 505 library,
-  322 binary, 128 corpus library, 5 corpus binary, 18 overlay, 2 handle, 3 overlay-UI, 3 overlay-web
+  322 binary, 128 corpus library, 5 corpus binary, 18 overlay, 3 handle, 3 overlay-UI, 3 overlay-web
   and 13 score tests, plus doctests. The embedded-web overlay suite has 19 tests. The 99 offline OCR tests and
   repository checks also pass.
+- Target investigation found two connected outputs while the initial Wayland canvas omitted
+  `output`; the previous child rejected that multi-output state before creating a surface. The
+  native child now selects the first named connected output in stable name order when `output` is
+  absent or stale, persists the resolved name through the parent, retries transient save conflicts,
+  and releases an active editor lease when its surface exits. Focused fallback tests, workspace
+  all-target Clippy and the complete suite pass on the development host.
 - Commit `38485ff2f03a0c9cff928210fb12c0d1a69399cb` was built with `mise run dist:test` and
   installed on `infinitas.lan` as `/home/atty/.local/bin/scorepeek`. The installed binary SHA-256
   is `c775d74ddbecbd8afa16168ba6e1e2bbba2f107ada70340575ece2bdfbe36dd8`; target readback confirms

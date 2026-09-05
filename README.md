@@ -218,8 +218,11 @@ Right-click anywhere on the Wayland canvas or the OBS page in Browser Source Int
 its editor; DONE is the only exit. Drag/resize widgets, add or remove them, switch among CYAN SYSTEM,
 RESULT AURORA and DJ BLACKBOX, and configure history rows or graph range. OBS also manages its canvas
 list there. Wayland normally uses left-drag to move a canvas, keeps at least 32 pixels visible on its
-selected output, and recreates a surface when its output selection changes. The initial native canvas
-uses a 20-pixel upper-right inset. All edits pass through the parent and are atomically saved to TOML.
+selected output, and recreates a surface when its output selection changes. When `output` is absent,
+the initial native canvas uses the first named output in stable name order and a 20-pixel upper-right
+inset, so its editor is reachable on a multi-output desktop. An absent or disconnected configured
+output is replaced in TOML with that reachable output. Selecting another output in the editor saves
+that explicit choice. All edits pass through the parent and are atomically saved to TOML.
 
 Selection shows title/artist plus a separate SP/DP, difficulty, level and notes rail. Score, recorded
 state, RESULT detail and history come only from committed SQLite readback. History dates use local

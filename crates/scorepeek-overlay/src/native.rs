@@ -243,6 +243,7 @@ fn run_canvas(
         .first()
         .ok_or("Wayland overlay has no enabled canvas")?
         .clone();
+    let configured_output = canvas.output.clone();
     let shell = Shell::open(
         canvas.output.as_deref(),
         canvas.width,
@@ -252,6 +253,28 @@ fn run_canvas(
         canvas.initial_placement == Some(crate::config::InitialPlacement::UpperRight),
         ping.1,
     )?;
+    let mut pending_resolved_output = None;
+    if let Some(selected_output) = shell.output_name.as_deref()
+        && canvas.output.as_deref() != Some(selected_output)
+    {
+        let result = persist_resolved_output(&config.control_socket, &canvas.id, selected_output);
+        if let Ok(revision) = result {
+            canvas.output = Some(selected_output.to_owned());
+            canvas.revision = revision;
+        } else {
+            pending_resolved_output = Some(selected_output.to_owned());
+        }
+        crate::diagnostics::emit(
+            "native_output_reconciled",
+            &serde_json::json!({
+                "canvas_id": canvas.id,
+                "configured_output": configured_output,
+                "selected_output": selected_output,
+                "persisted": result.is_ok(),
+                "error": result.err(),
+            }),
+        );
+    }
     canvas.x = shell.position[0];
     canvas.y = shell.position[1];
     let outputs = shell.available_outputs.clone();
@@ -282,6 +305,7 @@ fn run_canvas(
         control_socket,
         outputs,
         Rc::clone(&report),
+        pending_resolved_output,
     );
     let result = app.run();
     app.renderer.suspend();
@@ -293,6 +317,55 @@ fn run_canvas(
     report.operations.push("shutdown");
     crate::diagnostics::emit("native_summary", &*report);
     result
+}
+
+fn persist_resolved_output(
+    socket: &std::path::Path,
+    canvas_id: &str,
+    output: &str,
+) -> Result<u64, String> {
+    let editor_id = format!("wayland-bootstrap-{}-{canvas_id}", std::process::id());
+    let acquired = crate::control::request(
+        socket,
+        &crate::control::Request::Acquire {
+            canvas_id: canvas_id.to_owned(),
+            editor_id: editor_id.clone(),
+        },
+    )?;
+    if !acquired.ok || acquired.readonly {
+        return Err(acquired
+            .error
+            .unwrap_or_else(|| "canvas lease unavailable".into()));
+    }
+    let updated = acquired.canvas.as_ref().map_or_else(
+        || Err("canvas lease response omitted presentation".into()),
+        |canvas| {
+            crate::control::request(
+                socket,
+                &crate::control::Request::SetOutput {
+                    canvas_id: canvas_id.to_owned(),
+                    editor_id: editor_id.clone(),
+                    expected_revision: canvas.revision,
+                    output: output.to_owned(),
+                },
+            )
+        },
+    );
+    let _ = crate::control::request(
+        socket,
+        &crate::control::Request::Release {
+            canvas_id: canvas_id.to_owned(),
+            editor_id,
+        },
+    );
+    let updated = updated?;
+    if !updated.ok {
+        return Err(updated.error.unwrap_or_else(|| "output save failed".into()));
+    }
+    updated
+        .canvas
+        .map(|canvas| canvas.revision)
+        .ok_or_else(|| "output save response omitted presentation".into())
 }
 struct App {
     // Renderer is dropped before the shell; its own Arc handle also retains ownership.
@@ -322,6 +395,8 @@ struct App {
     managed: Rc<RefCell<Vec<crate::control::CanvasSummary>>>,
     backend_revision: u64,
     outputs: Rc<RefCell<Vec<String>>>,
+    pending_resolved_output: Option<String>,
+    next_output_persist: Instant,
 }
 
 enum NativeInteraction {
@@ -353,6 +428,7 @@ impl App {
         control_socket: std::path::PathBuf,
         outputs: Vec<String>,
         report: Rc<RefCell<RunReport>>,
+        pending_resolved_output: Option<String>,
     ) -> Self {
         let shared_state = Rc::new(RefCell::new(OverlayState::default()));
         let native_update = Rc::new(RefCell::new(None));
@@ -409,6 +485,8 @@ impl App {
             managed,
             backend_revision: 0,
             outputs,
+            pending_resolved_output,
+            next_output_persist: Instant::now() + Duration::from_secs(1),
         }
     }
     fn run(&mut self) -> Result<(), String> {
@@ -418,6 +496,7 @@ impl App {
                 .external_stop
                 .load(std::sync::atomic::Ordering::Acquire)
         {
+            self.retry_resolved_output();
             if self.editing.get() && Instant::now() >= self.next_keepalive {
                 let _ = self.request(crate::control::Request::KeepAlive {
                     canvas_id: self.canvas.id.clone(),
@@ -487,6 +566,32 @@ impl App {
             }
         }
         Ok(())
+    }
+    fn retry_resolved_output(&mut self) {
+        if Instant::now() < self.next_output_persist {
+            return;
+        }
+        let Some(output) = self.pending_resolved_output.clone() else {
+            return;
+        };
+        let result = persist_resolved_output(&self.control_socket, &self.canvas.id, &output);
+        if let Ok(revision) = result {
+            self.canvas.output = Some(output.clone());
+            self.canvas.revision = revision;
+            self.pending_resolved_output = None;
+        } else {
+            self.next_output_persist = Instant::now() + Duration::from_secs(1);
+        }
+        crate::diagnostics::emit(
+            "native_output_reconciled",
+            &serde_json::json!({
+                "canvas_id": self.canvas.id,
+                "selected_output": output,
+                "persisted": result.is_ok(),
+                "retry": true,
+                "error": result.err(),
+            }),
+        );
     }
     #[allow(clippy::needless_pass_by_value)]
     fn request(&mut self, request: crate::control::Request) -> Option<crate::control::Response> {
@@ -655,6 +760,7 @@ impl App {
                         });
                         if response.as_ref().is_some_and(|response| response.ok) {
                             self.canvas.output = Some(output);
+                            self.pending_resolved_output = None;
                         }
                         return;
                     }
@@ -1040,6 +1146,20 @@ impl App {
                 .push("dioxus_blitz_initial_paint");
         }
         Ok(())
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        if self.editing.get() {
+            let _ = crate::control::request(
+                &self.control_socket,
+                &crate::control::Request::Release {
+                    canvas_id: self.canvas.id.clone(),
+                    editor_id: self.editor_id.clone(),
+                },
+            );
+        }
     }
 }
 fn magnetic_snap(
