@@ -140,25 +140,32 @@ checkpoint; implementation history belongs in Git.
   The browser WASM type-checks and the real dx bundle contains served JS/WASM/font/artwork with correct
   MIME types; embedded-asset and child-EOF tests pass. `wasm-opt` still reports unsupported DWARF and
   the bundle proceeds without that optional optimization.
-- Workspace/all-target Clippy passes. The complete workspace suite passes: 506 library,
-  322 binary, 128 corpus library, 5 corpus binary, 25 overlay, 3 handle, 4 overlay-UI, 3 overlay-web
-  and 13 score tests, plus doctests. The embedded-web overlay suite has 26 tests. The 99 offline OCR tests and
+- Repository checks and the complete workspace suite pass: 506 library,
+  323 binary, 128 corpus library, 5 corpus binary, 26 overlay, 3 handle, 4 overlay-UI, 3 overlay-web
+  and 13 score tests, plus doctests. The embedded-web overlay suite has 27 tests. The 99 offline OCR tests and
   repository checks also pass. A subsequent focused rerun passes all 5 public API tests, including
   the added semantic-screen phase contract, plus the overlay and embedded-web suites.
+  A supplementary all-features/all-targets pedantic Clippy invocation stops on two pre-existing
+  `scorepeek-overlay/src/web.rs` lints (`format_collect` and `match_same_arms`); the standard
+  repository checks do not enable that failing lint combination.
 - Target investigation found two connected outputs while the initial Wayland canvas omitted
   `output`; the previous child rejected that multi-output state before creating a surface. The
   native child now selects the first named connected output in stable name order when `output` is
   absent or stale, persists the resolved name through the parent, retries transient save conflicts,
   and releases an active editor lease when its surface exits. Focused fallback tests, workspace
   all-target Clippy and the complete suite pass on the development host.
-- Commit `2e3396137a4e1afd1a17148f3ccab90c085b4b7d` was built with `mise run dist:test` and
+- Target use of the prior build established that native surfaces, render workers and Vulkan were
+  active while every widget was visually absent. The shared intermediate DOM wrapper had no definite
+  height; its absolutely positioned widget descendants did not contribute layout height, and the
+  nested canvas clipped them at zero height. Commit `d0d510f94179afd55ff6b6dde74e93af0d44f158`
+  gives that wrapper full-canvas geometry in both Wayland and OBS and adds a 560x72 regression that
+  checks the wrapper, canvas and status widget bounds. The complete development-host suite passes.
+- Commit `d0d510f94179afd55ff6b6dde74e93af0d44f158` was built with `mise run dist:test` and
   installed on `infinitas.lan` as `/home/atty/.local/bin/scorepeek`. The installed binary SHA-256
-  is `f150eab84766edb6315d29d8abdd103a6be9384ff653b4e48c68f6a847f307cf`; target readback confirms
-  the new overlay CLI flags and the existing numeric model remains active. The pre-install process
-  remains live on the replaced binary inode and was not restarted. The target overlay TOML remains
-  schema v1, so a subsequent schema-v2 run will reject it until the operator resets or manually
-  rewrites that file. No config migration was attempted, and the same-directory staging and rollback
-  files were removed after atomic replacement.
+  is `2dfd53f2710ca902e3cc6300a3735d9ad3bf530aa53f6d90bad0bd78c7a047e3`; target readback verified
+  the hash and version, and same-directory staging and rollback files were removed after atomic
+  replacement. No scorepeek run or overlay child remained at post-install inspection, so the next
+  run will load this binary. Target visual confirmation of the repaired widgets remains outstanding.
 
 - Recorded-input reducer replay of the complete session with digest
   `193550c1c3337905122585fb868c1c8831be3fab835c5ec9e5c03ef70c419594` confirms four results,
