@@ -71,6 +71,12 @@ mod server {
         changed: Arc<Notify>,
     }
 
+    #[derive(serde::Deserialize)]
+    struct StageControlEnvelope {
+        request_id: u64,
+        request: crate::control::Request,
+    }
+
     pub(super) async fn serve(
         config: Config,
         mut input: impl std::io::Read + Send + 'static,
@@ -156,7 +162,7 @@ mod server {
         };
         let canvases = canvases.replace('<', "\\u003c");
         let html = format!(
-            r#"<!doctype html><html><head><meta charset="utf-8"><title>scorepeek OBS overlay</title><style>{}{}</style></head><body><div id="stage"></div><aside id="editor"></aside><button id="return">RETURN TO EDITOR</button><div id="notice"></div><script id="initial" type="application/json">{canvases}</script><script src="/stage.js"></script></body></html>"#,
+            r#"<!doctype html><html><head><meta charset="utf-8"><title>scorepeek OBS overlay</title><style>{}{}</style></head><body><div id="stage"></div><button id="panel-toggle" aria-label="Hide editor panel">‹<i></i></button><aside id="editor"></aside><button id="return">RETURN TO EDITOR</button><div id="notice"></div><script id="initial" type="application/json">{canvases}</script><script src="/stage.js"></script></body></html>"#,
             scorepeek_overlay_ui::EDITOR_CSS,
             include_str!("../../scorepeek-overlay-ui/styles/stage.css")
         );
@@ -311,6 +317,7 @@ mod server {
                                         error:Some("このURLは表示専用です。編集には /overlay をOBS Browser SourceのInteractionで開いてください。".into()),
                                         canvases:Vec::new(),
                                         backend_revision:None,
+                                        dirty:false,
                                     }
                                 });
                                 let Ok(reply) = serde_json::to_string(&reply) else { break; };
@@ -365,9 +372,12 @@ mod server {
                     message = socket.recv() => {
                         match message {
                             Some(Ok(Message::Text(text))) => {
-                                let response = serde_json::from_str::<crate::control::Request>(&text)
+                                let envelope = serde_json::from_str::<StageControlEnvelope>(&text);
+                                let request_id = envelope.as_ref().map_or(0, |value| value.request_id);
+                                let response = envelope
                                     .map_err(|error| error.to_string())
-                                    .and_then(|request| {
+                                    .and_then(|envelope| {
+                                        let request = envelope.request;
                                         let obs = match &request {
                                             crate::control::Request::AcquireBackend { backend, .. }
                                             | crate::control::Request::KeepAliveBackend { backend, .. }
@@ -387,6 +397,7 @@ mod server {
                                         error:Some(error),
                                         canvases:Vec::new(),
                                         backend_revision:None,
+                                        dirty:false,
                                     });
                                 if !response.canvases.is_empty() {
                                     let mut canvases = shared.canvases.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -402,7 +413,7 @@ mod server {
                                     canvases.retain(|canvas| response.canvases.iter().any(|item| item.id == canvas.id));
                                 }
                                 shared.changed.notify_waiters();
-                                let reply = serde_json::json!({"type":"control", "response":response}).to_string();
+                                let reply = serde_json::json!({"type":"control", "request_id":request_id, "response":response}).to_string();
                                 if socket.send(Message::Text(reply.into())).await.is_err() { break; }
                             }
                             None | Some(Err(_) | Ok(Message::Close(_))) => break,

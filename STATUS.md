@@ -19,7 +19,8 @@ checkpoint; implementation history belongs in Git.
 - ADR 0125 replaces the fixed overlay cards/layout flags with independently positioned status,
   selection, score, history-list and history-graph widgets. ADR 0127 advances the strict overlay
   TOML with screen-aware canvases. ADR 0128 advances it to schema v3, removes canvas/widget z-order,
-  and automatically migrates schema v2 by deleting only `z`.
+  and automatically migrates schema v2 by deleting only `z`. ADR 0129 overlays a responsive editor
+  panel on a one-to-one output preview and assigns canvas movement to edit-only right-drag.
   `--overlay-wayland` and `--overlay-obs` enable the backends; `--overlay-config` selects the document.
   Missing configuration creates status, MUSIC SELECT, DECIDE/PLAY and RESULT canvases per backend.
   Each canvas has optional semantic-screen filters; Wayland also has 1–100% content
@@ -30,9 +31,12 @@ checkpoint; implementation history belongs in Git.
   clock across them. Hidden surfaces are transparent, idle and have an empty input region. OBS
   exposes stable `/canvas/<id>` URLs plus the full-screen `/overlay` multi-canvas Browser Source.
   Browser Source Interaction edits the same `/overlay` page; `/canvas/<id>` is display-only.
-  Right-click opens a fixed sidebar beside the output-coordinate preview. The workspace shows every
-  canvas, offers an independent semantic-screen preview and fixed inactive sample data, and supports
-  one geometry undo. PREVIEW ACTUAL hides the editor except for its return control.
+  Right-click opens an opaque 360–480px panel over the output-coordinate preview. The workspace shows
+  every canvas, offers an independent semantic-screen preview and fixed inactive sample data, and
+  supports one geometry undo. WIDGETS/CANVAS tabs and expandable low-frequency sections keep controls
+  inside the panel; selected buttons and canvas enablement expose visible and ARIA state. Wayland lists
+  connector, model and logical output size in the CANVAS tab. PREVIEW ACTUAL hides the editor except
+  for its return control. During editing, right-drag moves canvases and left-drag moves widgets.
   Wayland missing-output recovery opens the same unsaved draft on a deterministic fitting or largest
   output and shrinks only the canvas boundary when required. SAVE adopts it; DISCARD leaves TOML
   untouched and suppresses that canvas for the run. `--overlay-wayland-edit` opens this recovery editor.
@@ -135,7 +139,11 @@ checkpoint; implementation history belongs in Git.
   suspension/disconnect grace and immediate known-screen replacement have focused development-host
   tests. Workspace compilation covers the Wayland cursor-shape and generated fallback cursor,
   empty input regions, shared feed, content opacity, preview lease transfer and OBS stage routes.
-  Target visual/interaction checks for these additions remain outstanding.
+  Current native target screenshots confirm one-to-one preview and stable panel/footer layout on the
+  5120x1440 integer-scale output and both rotated 3840x2160 fractional-scale outputs. A headless
+  1920x1080 Chromium screenshot confirms the same `/overlay` editor composition and clean initial
+  draft state. Each overlay process was stopped immediately after its screenshot. Pointer gestures,
+  native output handoff, compositor cursor behavior and real OBS Interaction remain unverified.
 
 - Overlay development-host verification covers all three skin DOMs, embedded PNG decode, fixed
   widget bounds and settled animation. A production native headless render confirms Japanese/Latin
@@ -146,8 +154,8 @@ checkpoint; implementation history belongs in Git.
   MIME types; embedded-asset and child-EOF tests pass. `wasm-opt` still reports unsupported DWARF and
   the bundle proceeds without that optional optimization.
 - Repository checks and the complete workspace suite pass: 506 library,
-  323 binary, 128 corpus library, 5 corpus binary, 27 overlay, 3 handle, 4 overlay-UI, 0 overlay-web
-  and 13 score tests, plus doctests. The embedded-web overlay suite has 28 tests. The 99 offline OCR tests and
+  323 binary, 128 corpus library, 5 corpus binary, 28 overlay, 3 handle, 4 overlay-UI, 0 overlay-web
+  and 13 score tests, plus doctests. The embedded-web overlay suite has 29 tests. The 99 offline OCR tests and
   repository checks also pass. A subsequent focused rerun passes all 5 public API tests, including
   the added semantic-screen phase contract, plus the overlay and embedded-web suites.
   The supplementary all-features/all-targets pedantic Clippy invocation also passes.
@@ -256,10 +264,10 @@ checkpoint; implementation history belongs in Git.
   opacity, forced cursor shapes/fallback, OBS `/overlay` Interaction workspace and display-only
   canvas guidance, compositor output selection/bounds, missing-output save/discard, initial
   upper-right placement, output switching and native canvas-list/output hot reconciliation,
-  integer/fractional visual equality, Gamescope foreground behavior, OBS Interaction, readability,
-  CPU/GPU/OBS lag and idle render cost. Development-host DOM/headless/browser tests do not certify
-  those target behaviors. Target binary installation is complete; no live run, autostart, push or
-  release is included.
+  gesture behavior across integer/fractional outputs, Gamescope foreground behavior, real OBS
+  Interaction, readability, CPU/GPU/OBS lag and idle render cost. Current screenshots certify layout
+  only, not interaction or performance. The previously installed target binary predates ADR 0129;
+  this editor revision has not been installed. No autostart, push or release is included.
 - Pinned dx produces a browser bundle, but its optional wasm-opt step reports unsupported DWARF
   and skips optimization. Asset MIME/type tests pass on the emitted bundle; it is not claimed to
   be wasm-opt optimized. Browser visual verification remains separate.

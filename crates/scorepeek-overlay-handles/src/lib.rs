@@ -119,6 +119,7 @@ pub struct Shell {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OutputDescription {
     pub name: String,
+    pub model: String,
     pub logical_size: Option<[u32; 2]>,
 }
 impl Shell {
@@ -202,6 +203,7 @@ impl Shell {
                 let info = app.output_state.info(&output)?;
                 Some(OutputDescription {
                     name: info.name?,
+                    model: info.model,
                     logical_size: info.logical_size.and_then(|(width, height)| {
                         Some([u32::try_from(width).ok()?, u32::try_from(height).ok()?])
                     }),
@@ -344,6 +346,7 @@ impl Shell {
             .filter_map(|info| {
                 Some(OutputDescription {
                     name: info.name.clone()?,
+                    model: info.model.clone(),
                     logical_size: info.logical_size.and_then(|(width, height)| {
                         Some([u32::try_from(width).ok()?, u32::try_from(height).ok()?])
                     }),

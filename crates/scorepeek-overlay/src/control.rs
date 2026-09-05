@@ -58,6 +58,8 @@ pub struct Response {
     #[serde(default)]
     pub canvases: Vec<CanvasPresentation>,
     pub backend_revision: Option<u64>,
+    #[serde(default)]
+    pub dirty: bool,
 }
 
 struct Lease {
@@ -154,6 +156,7 @@ fn handle(mut stream: UnixStream, path: &Path, shared: &Mutex<State>) {
             error: Some(error),
             canvases: Vec::new(),
             backend_revision: None,
+            dirty: false,
         },
     };
     if let Ok(mut bytes) = serde_json::to_vec(&response) {
@@ -189,6 +192,7 @@ fn failed_response(
             error: Some(error),
             canvases: Vec::new(),
             backend_revision: None,
+            dirty: false,
         };
     };
     let Some((backend, editor_id)) = identity else {
@@ -198,6 +202,7 @@ fn failed_response(
             error: Some(error),
             canvases: Vec::new(),
             backend_revision: None,
+            dirty: false,
         };
     };
     let owns_lease = state
@@ -298,7 +303,7 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
                     "backend": backend, "status":"released"
                 }),
             );
-            Ok(empty_response(false))
+            Ok(backend_response(&state.config, backend, false))
         }
         Request::GetBackend { backend } => Ok(backend_response(&state.config, backend, true)),
         Request::UpdateBackendDraft {
@@ -364,6 +369,7 @@ fn empty_response(readonly: bool) -> Response {
         error: None,
         canvases: Vec::new(),
         backend_revision: None,
+        dirty: false,
     }
 }
 
@@ -440,17 +446,26 @@ fn backend_response(config: &OverlayConfig, backend: Backend, readonly: bool) ->
             .map(Canvas::presentation)
             .collect(),
         backend_revision: Some(config.backend_revisions.get(backend)),
+        dirty: false,
     }
 }
 
 fn lease_response(state: &State, backend: Backend) -> Response {
     let lease = state.leases.get(&backend).expect("lease exists");
+    let saved = state
+        .config
+        .canvases
+        .iter()
+        .filter(|canvas| canvas.backend == backend)
+        .map(Canvas::presentation)
+        .collect::<Vec<_>>();
     Response {
         ok: true,
         readonly: false,
         error: None,
         canvases: lease.draft.clone(),
         backend_revision: Some(lease.base_revision),
+        dirty: lease.draft != saved,
     }
 }
 
@@ -507,6 +522,7 @@ mod tests {
         )
         .unwrap();
         assert!(!first.readonly);
+        assert!(!first.dirty);
         assert!(
             apply(
                 Request::AcquireBackend {
@@ -531,6 +547,7 @@ mod tests {
             &shared,
         )
         .unwrap();
+        assert!(updated.dirty);
         let reacquired = apply(
             Request::AcquireBackend {
                 backend: Backend::Obs,
@@ -540,6 +557,7 @@ mod tests {
             &shared,
         )
         .unwrap();
+        assert!(reacquired.dirty);
         assert_eq!(reacquired.canvases, updated.canvases);
         let saved = apply(
             Request::CommitBackend {
@@ -552,6 +570,7 @@ mod tests {
             &shared,
         )
         .unwrap();
+        assert!(!saved.dirty);
         assert_eq!(saved.backend_revision, Some(1));
         assert_eq!(
             saved.canvases[0].skin,
@@ -562,6 +581,17 @@ mod tests {
                 .unwrap()
                 .contains("dj-blackbox")
         );
+        let released = apply(
+            Request::ReleaseBackend {
+                backend: Backend::Obs,
+                editor_id: "first".into(),
+            },
+            &path,
+            &shared,
+        )
+        .unwrap();
+        assert!(!released.dirty);
+        assert_eq!(released.canvases, saved.canvases);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

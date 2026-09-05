@@ -2,6 +2,7 @@ const stage = document.querySelector('#stage');
 const panel = document.querySelector('#editor');
 const notice = document.querySelector('#notice');
 const returnButton = document.querySelector('#return');
+const panelToggle = document.querySelector('#panel-toggle');
 let saved = JSON.parse(document.querySelector('#initial').textContent);
 let draft = structuredClone(saved);
 let backendRevision = 0;
@@ -13,11 +14,19 @@ let selectedWidget = null;
 let editing = false;
 let readonly = true;
 let actualPreview = false;
+let panelOpen = true;
+let editorTab = 'widgets';
+let widgetAddOpen = false;
+let manageOpen = false;
 let undo = null;
 let drag = null;
 let pendingDelete = null;
 let placingKind = null;
 let placingPoint = {x:0, y:0};
+let nextRequestId = 1;
+let presentationGeneration = 0;
+let discardPending = false;
+const pendingControls = new Map();
 let socket;
 
 const screenOptions = [
@@ -33,7 +42,9 @@ const sizes = {
   'history-list': [560, 236], 'history-graph': [560, 280],
 };
 const snap = value => Math.round(value / 4) * 4;
+const gridFloor = value => Math.max(0, Math.floor(value / 4) * 4);
 const current = () => draft.find(canvas => canvas.id === selectedCanvas);
+const isDirty = () => JSON.stringify(draft) !== JSON.stringify(saved);
 const visible = canvas => !canvas.show_on || canvas.show_on.includes(editing ? previewScreen : screen);
 const nextId = (stem, values) => {
   for (let index = 1; ; index += 1) {
@@ -41,7 +52,13 @@ const nextId = (stem, values) => {
     if (!values.some(value => value.id === id)) return id;
   }
 };
-const send = value => socket?.readyState === WebSocket.OPEN && socket.send(JSON.stringify(value));
+const send = (request, callback) => {
+  if (socket?.readyState !== WebSocket.OPEN) return false;
+  const requestId = nextRequestId++;
+  if (callback) pendingControls.set(requestId, callback);
+  socket.send(JSON.stringify({request_id: requestId, request}));
+  return true;
+};
 const draftChanged = () => {
   send({command:'update_backend_draft', backend:'obs', editor_id:editorId, canvases:draft});
   render();
@@ -49,6 +66,11 @@ const draftChanged = () => {
 
 function connect() {
   socket = new WebSocket(`ws://${location.host}/ws/stage`);
+  socket.onopen = () => {
+    if (editing) send({command: 'acquire_backend', backend: 'obs', editor_id: editorId}, response => {
+      if (response.ok && !response.readonly && discardPending) sendDiscardRelease();
+    });
+  };
   socket.onmessage = event => {
     const message = JSON.parse(event.data);
     if (message.type === 'stage') {
@@ -71,21 +93,34 @@ function connect() {
       }
       if (response.canvases?.length) {
         draft = structuredClone(response.canvases);
+        if (!response.dirty) saved = structuredClone(response.canvases);
+        presentationGeneration += 1;
         if (!selectedCanvas || !draft.some(canvas => canvas.id === selectedCanvas)) {
           selectedCanvas = draft[0]?.id ?? null;
         }
       }
       if (response.error) showNotice(response.error, true);
+      const callback = pendingControls.get(message.request_id);
+      if (callback) {
+        pendingControls.delete(message.request_id);
+        callback(response);
+      }
       render();
     }
   };
-  socket.onclose = () => setTimeout(connect, 1000);
+  socket.onclose = () => {
+    pendingControls.clear();
+    readonly = true;
+    render();
+    setTimeout(connect, 1000);
+  };
 }
 
 function enterEditor(event) {
   event.preventDefault();
   if (editing) return;
   editing = true;
+  panelOpen = true;
   actualPreview = false;
   readonly = true;
   send({command: 'acquire_backend', backend: 'obs', editor_id: editorId});
@@ -107,27 +142,44 @@ function showNotice(text, error = false) {
 function save() {
   if (readonly) return;
   send({command: 'commit_backend', backend: 'obs', editor_id: editorId,
-    expected_revision: backendRevision, canvases: draft});
-  const wait = event => {
-    const message = JSON.parse(event.data);
-    if (message.type !== 'control') return;
-    socket.removeEventListener('message', wait);
-    if (!message.response.ok) return;
-    saved = structuredClone(message.response.canvases);
+    expected_revision: backendRevision, canvases: draft}, response => {
+    if (!response.ok) return;
+    saved = structuredClone(response.canvases);
     draft = structuredClone(saved);
     closeEditor();
-  };
-  socket.addEventListener('message', wait);
+  });
 }
 
 function discard() {
-  draft = structuredClone(saved);
-  closeEditor();
+  if (readonly || discardPending) return;
+  discardPending = true;
+  sendDiscardRelease();
+}
+
+function sendDiscardRelease() {
+  if (!send({command: 'release_backend', backend: 'obs', editor_id: editorId}, response => {
+    if (!response.ok) {
+      discardPending = false;
+      render();
+      return;
+    }
+    discardPending = false;
+    finishClose();
+  })) {
+    readonly = true;
+    showNotice('Editor connection lost; reconnecting before discard.', true);
+    render();
+  }
 }
 
 function closeEditor() {
   send({command: 'release_backend', backend: 'obs', editor_id: editorId});
+  finishClose();
+}
+
+function finishClose() {
   editing = false;
+  discardPending = false;
   actualPreview = false;
   selectedWidget = null;
   undo = null;
@@ -135,11 +187,9 @@ function closeEditor() {
 }
 
 function renderStage() {
-  const previewWidth = editing && !actualPreview ? innerWidth - 320 : innerWidth;
-  const scale = editing && !actualPreview ? Math.min(1, previewWidth / innerWidth) : 1;
-  stage.style.left = editing && !actualPreview ? '320px' : '0';
-  stage.style.transform = `scale(${scale})`;
-  stage.style.transformOrigin = 'top left';
+  const scale = 1;
+  stage.style.left = '0';
+  stage.style.transform = 'none';
   const seen = new Set();
   for (const canvas of draft) {
     if (!canvas.enabled || !visible(canvas)) continue;
@@ -156,8 +206,14 @@ function renderStage() {
     frame.className = `stage-canvas ${canvas.id === selectedCanvas && editing ? 'selected' : ''}`;
     frame.style.cssText = `left:${canvas.x}px;top:${canvas.y}px;width:${canvas.width}px;height:${canvas.height}px`;
     const iframe = frame.querySelector('iframe');
-    const source = `/canvas/${encodeURIComponent(canvas.id)}${editing && inactive ? '?sample=1' : ''}`;
+    const query = new URLSearchParams();
+    if (editing && inactive) query.set('sample', '1');
+    query.set('presentation', `${presentationGeneration}`);
+    const source = `/canvas/${encodeURIComponent(canvas.id)}?${query}`;
     if (iframe.getAttribute('src') !== source) iframe.src = source;
+    frame.onpointerdown = event => {
+      if (editing && !actualPreview && event.button === 2) startCanvasDrag(event, canvas);
+    };
     frame.querySelectorAll('.stage-widget-hit,.canvas-resize').forEach(element => element.remove());
     if (editing && !actualPreview && canvas.id === selectedCanvas) {
       addWidgetHandles(frame, canvas, scale);
@@ -184,6 +240,10 @@ function renderStage() {
     document.body.append(ghost);
   }
   returnButton.style.display = actualPreview ? 'block' : 'none';
+  panelToggle.style.display = editing && !actualPreview ? 'block' : 'none';
+  panelToggle.className = isDirty() ? 'dirty' : '';
+  panelToggle.innerHTML = `${panelOpen ? '‹' : '›'}<i></i>`;
+  panelToggle.setAttribute('aria-label', panelOpen ? 'Hide editor panel' : 'Show editor panel');
 }
 function addWidgetHandles(frame, canvas, scale) {
   for (const widget of canvas.widgets) {
@@ -204,7 +264,7 @@ function addWidgetHandles(frame, canvas, scale) {
 }
 
 function startWidgetDrag(event, canvas, widget, corner, scale) {
-  if (readonly) return;
+  if (readonly || event.button !== 0) return;
   event.preventDefault();
   event.stopPropagation();
   selectedWidget = widget.id;
@@ -216,7 +276,7 @@ function startWidgetDrag(event, canvas, widget, corner, scale) {
 }
 
 function startCanvasDrag(event, canvas) {
-  if (readonly) return;
+  if (readonly || event.button !== 2) return;
   event.preventDefault();
   selectedCanvas = canvas.id;
   selectedWidget = null;
@@ -245,8 +305,8 @@ addEventListener('pointermove', event => {
   const dx = (event.clientX - drag.startX) / (drag.scale || 1);
   const dy = (event.clientY - drag.startY) / (drag.scale || 1);
   if (drag.kind === 'canvas') {
-    drag.canvas.x = Math.max(0, Math.min(innerWidth - drag.canvas.width, snap(drag.original.x + dx)));
-    drag.canvas.y = Math.max(0, Math.min(innerHeight - drag.canvas.height, snap(drag.original.y + dy)));
+    drag.canvas.x = Math.max(0, Math.min(gridFloor(innerWidth - drag.canvas.width), snap(drag.original.x + dx)));
+    drag.canvas.y = Math.max(0, Math.min(gridFloor(innerHeight - drag.canvas.height), snap(drag.original.y + dy)));
   } else if (drag.kind === 'canvas-resize') {
     const west = drag.corner.includes('w'); const north = drag.corner.includes('n');
     let left = west ? snap(drag.original.x + dx) : drag.original.x;
@@ -256,7 +316,7 @@ addEventListener('pointermove', event => {
     const minWidth = Math.max(32, ...drag.canvas.widgets.map(widget => widget.x + widget.width));
     const minHeight = Math.max(32, ...drag.canvas.widgets.map(widget => widget.y + widget.height));
     left = Math.max(0, Math.min(left, right - minWidth)); top = Math.max(0, Math.min(top, bottom - minHeight));
-    right = Math.min(innerWidth, Math.max(right, left + minWidth)); bottom = Math.min(innerHeight, Math.max(bottom, top + minHeight));
+    right = Math.min(gridFloor(innerWidth), Math.max(right, left + minWidth)); bottom = Math.min(gridFloor(innerHeight), Math.max(bottom, top + minHeight));
     Object.assign(drag.canvas, {x:left, y:top, width:right-left, height:bottom-top});
   } else if (!drag.corner) {
     drag.widget.x = Math.max(0, Math.min(drag.canvas.width - drag.widget.width, snap(drag.original.x + dx)));
@@ -283,10 +343,10 @@ addEventListener('pointerup', () => {
 stage.addEventListener('click', event => {
   if (!placingKind || readonly) return;
   const canvas = current(); if (!canvas) return;
-  const scale = Math.min(1, (innerWidth - 320) / innerWidth);
+  const scale = 1;
   const [naturalWidth, naturalHeight] = sizes[placingKind];
   const width = Math.min(naturalWidth, canvas.width); const height = Math.min(naturalHeight, canvas.height);
-  const x = Math.max(0, Math.min(canvas.width - width, snap((event.clientX - 320) / scale - canvas.x)));
+  const x = Math.max(0, Math.min(canvas.width - width, snap(event.clientX / scale - canvas.x)));
   const y = Math.max(0, Math.min(canvas.height - height, snap(event.clientY / scale - canvas.y)));
   const id = nextId(placingKind, canvas.widgets);
   canvas.widgets.push({id, kind:placingKind, x, y, width, height, settings:{history_count:5, graph_months:6}});
@@ -322,15 +382,16 @@ function undoGeometry() {
 
 function renderPanel() {
   panel.replaceChildren();
-  if (!editing || actualPreview) { panel.style.display = 'none'; return; }
+  if (!editing || actualPreview || !panelOpen) { panel.style.display = 'none'; return; }
   panel.style.display = 'flex';
+  panel.style.width = `${Math.max(360, Math.min(480, Math.round(innerWidth / 5)))}px`;
   const canvas = current();
-  const previewScale = Math.min(1, (innerWidth - 320) / innerWidth);
-  panel.innerHTML = `<header><strong>SCOREPEEK OVERLAY</strong><small>OBS EDITOR · PREVIEW ${Math.round(previewScale * 100)}%</small>${inactive ? '<b>SAMPLE DATA</b>' : ''}</header>`;
+  panel.innerHTML = `<header><strong>SCOREPEEK OVERLAY</strong><small>OBS EDITOR</small>${inactive ? '<b>SAMPLE DATA</b>' : ''}${isDirty() ? '<i class="unsaved-dot"></i>' : ''}</header><p class="section-label">PREVIEW DATA</p>`;
   const tabs = document.createElement('div'); tabs.className = 'preview-tabs';
   for (const [label, value] of screenOptions) {
     const button = document.createElement('button'); button.textContent = label;
-    button.className = previewScreen === value ? 'active' : '';
+    button.className = previewScreen === value ? 'selected' : '';
+    button.setAttribute('aria-selected', previewScreen === value);
     button.onclick = () => { previewScreen = value; render(); };
     tabs.append(button);
   }
@@ -338,34 +399,44 @@ function renderPanel() {
   const nav = document.createElement('nav');
   for (const item of draft) {
     const button = document.createElement('button');
-    button.textContent = `${item.enabled ? '●' : '○'} ${item.id}`;
-    button.className = item.id === selectedCanvas ? 'active' : '';
-    button.onpointerdown = event => item.id === selectedCanvas ? startCanvasDrag(event, item) : null;
+    button.className = `canvas-row ${item.id === selectedCanvas ? 'selected' : ''} ${item.enabled ? '' : 'disabled'}`;
+    button.setAttribute('aria-selected', item.id === selectedCanvas);
+    button.innerHTML = `<span>${item.id}</span><i class="canvas-enabled-lamp ${item.enabled ? 'on' : 'off'}"></i>`;
     button.onclick = () => { selectedCanvas = item.id; selectedWidget = null; pendingDelete = null; render(); };
     nav.append(button);
   }
   panel.append(nav);
-  if (canvas) panel.append(canvasDetail(canvas));
+  const workTabs = document.createElement('div'); workTabs.className = 'editor-tabs';
+  for (const [label, value] of [['WIDGETS','widgets'],['CANVAS','canvas']]) {
+    const button = document.createElement('button'); button.textContent = label;
+    button.className = editorTab === value ? 'selected' : '';
+    button.setAttribute('aria-selected', editorTab === value);
+    button.onclick = () => { editorTab = value; renderPanel(); };
+    workTabs.append(button);
+  }
+  panel.append(workTabs);
+  const body = document.createElement('div'); body.className = 'editor-tab-body';
+  if (canvas) body.append(editorTab === 'widgets' ? widgetDetail(canvas) : canvasSettings(canvas));
+  panel.append(body);
   const footer = document.createElement('footer');
   for (const [label, action, primary] of [
     ['UNDO GEOMETRY', undoGeometry], ['PREVIEW ACTUAL', () => { actualPreview = true; render(); }],
     ['DISCARD', discard], ['SAVE AND CLOSE', save, true],
   ]) {
     const button = document.createElement('button'); button.textContent = label; button.onclick = action;
-    button.disabled = readonly || (label === 'UNDO GEOMETRY' && !undo);
-    if (primary) button.className = 'primary'; footer.append(button);
+    button.disabled = readonly || discardPending || (label === 'UNDO GEOMETRY' && !undo) || ((label === 'DISCARD' || primary) && !isDirty());
+    if (primary && isDirty()) button.className = 'primary'; footer.append(button);
   }
   panel.append(footer);
 }
 
-function canvasDetail(canvas) {
+function widgetDetail(canvas) {
   const section = document.createElement('section');
-  const visibility = canvas.show_on ? canvas.show_on.map(value => screenOptions.find(item => item[1] === value)?.[0]).join(' / ') : 'ALWAYS';
-  section.innerHTML = `<h2>${canvas.id}</h2><small>${visibility}</small>`;
   const widgets = document.createElement('div'); widgets.className = 'widget-list';
   for (const widget of canvas.widgets) {
     const row = document.createElement('button'); row.textContent = widget.id;
-    row.className = widget.id === selectedWidget ? 'active' : '';
+    row.className = widget.id === selectedWidget ? 'selected' : '';
+    row.setAttribute('aria-selected', widget.id === selectedWidget);
     row.onclick = () => { selectedWidget = widget.id; pendingDelete = null; renderPanel(); renderStage(); };
     widgets.append(row);
   }
@@ -380,7 +451,8 @@ function canvasDetail(canvas) {
     for (const value of values) {
       const button = document.createElement('button');
       button.textContent = selected.kind === 'history-graph' ? `${value}M` : `${value}`;
-      button.className = selected.settings[key] === value ? 'active' : '';
+      button.className = selected.settings[key] === value ? 'selected' : '';
+      button.setAttribute('aria-pressed', selected.settings[key] === value);
       button.onclick = () => { selected.settings[key] = value; draftChanged(); };
       controls.append(button);
     }
@@ -395,6 +467,8 @@ function canvasDetail(canvas) {
     controls.append(remove); section.append(controls);
   }
   const add = document.createElement('details');
+  add.open = widgetAddOpen;
+  add.ontoggle = () => { widgetAddOpen = add.open; };
   add.innerHTML = `<summary>＋ ADD WIDGET</summary>${placingKind ? '<small>配置位置をクリック</small>' : ''}`;
   for (const [label, kind] of widgetOptions) {
     const button = document.createElement('button'); button.textContent = label;
@@ -408,50 +482,68 @@ function canvasDetail(canvas) {
     const cancel = document.createElement('button'); cancel.textContent = 'CANCEL PLACEMENT';
     cancel.onclick = () => { placingKind = null; render(); }; section.append(cancel);
   }
-  section.append(settings(canvas));
   return section;
 }
 
-function settings(canvas) {
-  const details = document.createElement('details');
-  details.innerHTML = '<summary>CANVAS SETTINGS</summary><h3>VISIBILITY</h3>';
-  const always = document.createElement('button'); always.textContent = 'ALWAYS';
-  always.className = canvas.show_on ? '' : 'active'; always.onclick = () => { canvas.show_on = null; draftChanged(); };
-  details.append(always);
-  for (const [label, value] of screenOptions) {
+function canvasSettings(canvas) {
+  const section = document.createElement('section');
+  section.innerHTML = '<h2>VISIBILITY</h2>';
+  const modes = document.createElement('div'); modes.className = 'visibility-mode';
+  for (const [label, specific] of [['ALL SCREENS', false], ['SPECIFIC SCREENS', true]]) {
+    const selected = specific ? !!canvas.show_on : !canvas.show_on;
     const button = document.createElement('button'); button.textContent = label;
-    button.className = canvas.show_on?.includes(value) ? 'active' : '';
-    button.onclick = () => {
-      const values = canvas.show_on ? [...canvas.show_on] : [];
-      const index = values.indexOf(value); index >= 0 ? values.splice(index, 1) : values.push(value);
-      canvas.show_on = values.length ? values : null; draftChanged();
-    };
-    details.append(button);
+    button.className = selected ? 'selected' : ''; button.setAttribute('aria-pressed', selected);
+    button.onclick = () => { canvas.show_on = specific ? [previewScreen] : null; draftChanged(); };
+    modes.append(button);
   }
-  const skins = document.createElement('div'); skins.innerHTML = '<h3>APPEARANCE</h3>';
+  section.append(modes);
+  if (canvas.show_on) {
+    const screens = document.createElement('div'); screens.className = 'screen-filter';
+    for (const [label, value] of screenOptions) {
+      const selected = canvas.show_on.includes(value);
+      const button = document.createElement('button'); button.textContent = `${selected ? '✓ ' : ''}${label}`;
+      button.className = selected ? 'selected' : ''; button.setAttribute('aria-pressed', selected);
+      button.onclick = () => {
+        const values = [...canvas.show_on]; const index = values.indexOf(value);
+        index >= 0 ? values.splice(index, 1) : values.push(value);
+        canvas.show_on = values.length ? values : null; draftChanged();
+      };
+      screens.append(button);
+    }
+    section.append(screens);
+  }
+  const skins = document.createElement('div'); skins.innerHTML = '<h2>APPEARANCE</h2>'; skins.className = 'skin-settings';
   for (const [label, value] of [['CYAN','cyan-system'],['AURORA','result-aurora'],['BLACKBOX','dj-blackbox']]) {
     const button = document.createElement('button'); button.textContent = label;
-    button.className = canvas.skin === value ? 'active' : ''; button.onclick = () => { canvas.skin = value; draftChanged(); };
+    button.className = canvas.skin === value ? 'selected' : ''; button.setAttribute('aria-pressed', canvas.skin === value);
+    button.onclick = () => { canvas.skin = value; draftChanged(); };
     skins.append(button);
   }
-  details.append(skins);
-  const enabled = document.createElement('button'); enabled.textContent = canvas.enabled ? 'DISABLE CANVAS' : 'ENABLE CANVAS';
-  enabled.onclick = () => { canvas.enabled = !canvas.enabled; draftChanged(); }; details.append(enabled);
+  section.append(skins);
+  const manage = document.createElement('details'); manage.innerHTML = '<summary>MANAGE CANVAS</summary>';
+  manage.open = manageOpen;
+  manage.ontoggle = () => { manageOpen = manage.open; };
+  const enabled = document.createElement('button'); enabled.innerHTML = `<span>CANVAS ENABLED</span><i>${canvas.enabled ? '✓' : ''}</i>`;
+  enabled.className = `canvas-switch ${canvas.enabled ? 'selected' : ''}`; enabled.setAttribute('aria-pressed', canvas.enabled);
+  enabled.onclick = () => { canvas.enabled = !canvas.enabled; draftChanged(); }; manage.append(enabled);
   const remove = document.createElement('button'); remove.textContent = pendingDelete === canvas.id ? 'CONFIRM DELETE' : 'DELETE CANVAS';
+  remove.className = 'danger';
   remove.disabled = draft.length <= 1; remove.onclick = () => {
     if (pendingDelete !== canvas.id) { pendingDelete = canvas.id; renderPanel(); return; }
     draft = draft.filter(item => item.id !== canvas.id); selectedCanvas = draft[0]?.id ?? null; pendingDelete = null; draftChanged();
-  }; details.append(remove);
+  }; manage.append(remove);
   const create = document.createElement('button'); create.textContent = 'ADD EMPTY CANVAS'; create.onclick = () => {
     const id = nextId('obs-canvas', draft);
-    draft.push({id, enabled:true, skin:'cyan-system', revision:0, show_on:null, opacity_percent:100, output:null, x:0, y:0, width:snap(Math.min(560, innerWidth)), height:snap(Math.min(1040, innerHeight)), widgets:[]});
+    draft.push({id, enabled:true, skin:'cyan-system', revision:0, show_on:null, opacity_percent:100, output:null, x:0, y:0, width:gridFloor(Math.min(560, innerWidth)), height:gridFloor(Math.min(1040, innerHeight)), widgets:[]});
     selectedCanvas = id; draftChanged();
-  }; details.append(create);
-  return details;
+  }; manage.append(create);
+  section.append(manage);
+  return section;
 }
 
 function render() { renderStage(); renderPanel(); }
 returnButton.onclick = () => { actualPreview = false; render(); };
+panelToggle.onclick = () => { panelOpen = !panelOpen; render(); };
 addEventListener('resize', render);
 connect();
 render();

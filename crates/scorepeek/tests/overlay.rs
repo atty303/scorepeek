@@ -78,11 +78,17 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     assert!(stage.starts_with("HTTP/1.1 200"));
     assert!(stage.contains("/stage.js"));
     assert!(stage.contains("id=\"editor\""));
+    assert!(stage.contains("id=\"panel-toggle\""));
     assert!(stage.contains("obs-selection"));
     let stage_script = String::from_utf8(get(address, "/stage.js").unwrap()).unwrap();
     assert!(stage_script.contains("/ws/stage"));
     assert!(stage_script.contains("acquire_backend"));
     assert!(stage_script.contains("SCOREPEEK OVERLAY"));
+    assert!(stage_script.contains("event.button === 2"));
+    assert!(stage_script.contains("ALL SCREENS"));
+    assert!(stage_script.contains("request_id"));
+    assert!(stage_script.contains("presentationGeneration"));
+    assert!(!stage_script.contains("innerWidth - 320"));
     assert!(!stage_script.contains("stage.replaceChildren"));
     let font = get(address, "/fonts/oxanium.ttf").unwrap();
     assert!(font.starts_with(b"HTTP/1.1 200"));
