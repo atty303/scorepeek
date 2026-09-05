@@ -40,6 +40,7 @@ A retained result carries its original session context even after that session e
 | `music_select_best_observed` | `snapshot`: existing `scorepeek-music-select-best-snapshot-v1` payload, or `null` to clear the current best observation. Supplemental game record, not a play. |
 | `status_changed` | `status`: current operational state described below. |
 | `result_ingest_changed` | `ingest`: nullable RESULT persistence lifecycle. An ingest has an opaque `id`, `processing|persisted|failed` state, optional `result_event_id`, and an optional bounded reason. It is status, not another play. |
+| `score_store_changed` | `revision`, `chart`. Live-only notification after a successful score transaction, including an idempotent or unchanged write. `revision` increases within the process invocation; `chart` contains `scorepeek_song_id`, `play_type`, and `difficulty`. It carries no score values and is an invalidation hint, not database state. |
 | `screen_state_changed` | `state`: nullable semantic screen episode. A state has `screen_episode_id`, `music_select|mode_select|decide_transition|play|result` screen, and `suspended`. This is presentation context, not recognition evidence. |
 
 SELECT missing evidence and suspension retain the last publication without adopting new values.
@@ -73,10 +74,12 @@ To maintain the same state as the server:
    `provisional_result`; a null best snapshot clears `music_select_best`. Confirmed RESULT also
    clears `provisional_result`.
 4. Replace `result_ingest` on `result_ingest_changed`. Processing starts at a RESULT semantic episode when scores are enabled. Confirmed RESULT attaches its event ID; committed/duplicate DB success becomes `persisted`; write failure or a five-second timeout becomes `failed` with `persistence_failed`; recognition failure uses `recognition_failed`; interruption uses `interrupted`. A later success cannot overwrite failure. DECIDE or PLAY clears the slot.
-5. Replace `screen_state` on `screen_state_changed`. Started/resumed semantic episodes publish an
+5. Treat `score_store_changed` as a committed-store invalidation. Consumers interested in its chart
+   reread their database projection; the event has no snapshot slot and does not itself supply data.
+6. Replace `screen_state` on `screen_state_changed`. Started/resumed semantic episodes publish an
    unsuspended state, UNKNOWN suspension publishes the retained screen with `suspended: true`,
    finalization publishes `null`, and closing publishes no visibility change.
-6. Replace `status` on `status_changed`. A `session_active`, `session_finished`, or `stopped` status
+7. Replace `status` on `status_changed`. A `session_active`, `session_finished`, or `stopped` status
    clears selection, provisional result, best, and screen slots, while retaining `latest_result`.
 
 The server obtains snapshot and sequence boundary under the same lock as publication. It filters
@@ -110,5 +113,5 @@ export or new recording default is introduced.
 
 Score persistence is documented in [ADR 0120](decisions/0120-persist-scores-as-event-consumer.md).
 Projection identity continues advancing after socket delivery is disabled; the scores consumer remains
-independent. Database health is not part of the public wire; internal recordings may include
-`scores_health` samples.
+independent. Database health is not part of the public wire; `score_store_changed` reports only a
+successful transaction boundary. Internal recordings may include `scores_health` samples.

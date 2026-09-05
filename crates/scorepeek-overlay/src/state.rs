@@ -9,6 +9,8 @@ pub struct Consumer {
     invocation: String,
     next_sequence: Option<u64>,
     selection_record: Option<Value>,
+    session_id: Option<String>,
+    result_episode_id: Option<u64>,
 }
 
 impl Consumer {
@@ -28,8 +30,13 @@ impl Consumer {
                     ..Self::default()
                 };
                 let active = record["status"]["watcher"] == "session_active";
+                let previous_session = self.session_id.clone();
+                let previous_result = self.view.result_signal;
+                let previous_episode = self.result_episode_id;
                 replacement.apply_status(&record["status"]);
                 let mut slots: Vec<_> = [
+                    "latest_result",
+                    "provisional_result",
                     "screen_state",
                     "music_selection",
                     "music_select_best",
@@ -41,6 +48,12 @@ impl Consumer {
                 slots.sort_by_key(|v| v["sequence"].as_u64());
                 for slot in slots {
                     replacement.event(slot)?;
+                }
+                if active
+                    && replacement.session_id == previous_session
+                    && self.invocation == invocation
+                {
+                    replacement.retain_result_signal(previous_result, previous_episode);
                 }
                 if active
                     && replacement.view.chart.is_none()
@@ -79,11 +92,22 @@ impl Consumer {
             "screen_state_changed" => {
                 self.view.screen.revision = self.view.screen.revision.saturating_add(1);
                 let Some(state) = record.get("state").filter(|value| !value.is_null()) else {
+                    self.finish_result_episode();
                     self.view.screen.kind = None;
                     self.view.screen.suspended_since_unix_ms = None;
                     return Ok(());
                 };
-                self.view.screen.kind = Some(screen_kind(text(state, "screen")?)?);
+                let screen = screen_kind(text(state, "screen")?)?;
+                if screen == ScreenKind::Result {
+                    let episode = number(state, "screen_episode_id")?;
+                    if self.result_episode_id != Some(episode) {
+                        self.result_episode_id = Some(episode);
+                        self.view.result_signal = LampState::Inactive;
+                    }
+                } else {
+                    self.finish_result_episode();
+                }
+                self.view.screen.kind = Some(screen);
                 self.view.screen.suspended_since_unix_ms = state["suspended"]
                     .as_bool()
                     .ok_or("missing screen suspended flag")?
@@ -106,23 +130,33 @@ impl Consumer {
                 }
             }
             "result_ingest_changed" => {
-                self.view.result_ingest = match record
-                    .get("ingest")
-                    .filter(|v| !v.is_null())
-                    .and_then(|v| v["state"].as_str())
-                {
-                    None => LampState::Inactive,
-                    Some("processing") => LampState::Processing,
-                    Some("persisted") => LampState::Persisted,
-                    Some("failed") => LampState::Failed,
-                    _ => return Err("unsupported result ingest state".into()),
-                };
-                if self.view.result_ingest == LampState::Persisted {
-                    self.query_revision = self.query_revision.saturating_add(1);
+                validate_result_ingest(record)?;
+            }
+            "result_provisional_changed" => {
+                let episode = number(record, "screen_episode_id")?;
+                if self.result_episode_id == Some(episode) {
+                    self.view.result_signal = match text(&record["state"], "status")? {
+                        "resolved" => LampState::Active,
+                        "withdrawn" => LampState::Error,
+                        _ => return Err("unsupported provisional result state".into()),
+                    };
                 }
             }
-            "music_select_best_observed" => {
-                self.query_revision = self.query_revision.saturating_add(1);
+            "result_detected" => {
+                if record["capture"]["session_id"].as_str() == self.session_id.as_deref() {
+                    self.view.result_signal = LampState::Active;
+                }
+            }
+            "score_store_changed" => {
+                let _ = number(record, "revision")?;
+                let chart = &record["chart"];
+                if self.view.chart.as_ref().is_some_and(|current| {
+                    chart["scorepeek_song_id"].as_str() == Some(current.song_id.as_str())
+                        && chart["play_type"].as_str() == Some(current.play_type.as_str())
+                        && chart["difficulty"].as_str() == Some(current.difficulty.as_str())
+                }) {
+                    self.query_revision = self.query_revision.saturating_add(1);
+                }
             }
             "status_changed" => {
                 self.apply_status(&record["status"]);
@@ -130,6 +164,8 @@ impl Consumer {
                     record["status"]["watcher"].as_str(),
                     Some("session_finished" | "stopped")
                 ) {
+                    self.view.result_signal = LampState::Inactive;
+                    self.result_episode_id = None;
                     self.view.chart = None;
                     self.view.history = History::default();
                     self.view.screen.kind = None;
@@ -143,6 +179,12 @@ impl Consumer {
         Ok(())
     }
     fn apply_status(&mut self, status: &Value) {
+        let session_id = status["capture"]["session_id"].as_str().map(str::to_owned);
+        if self.session_id.is_some() && self.session_id != session_id {
+            self.view.result_signal = LampState::Inactive;
+            self.result_episode_id = None;
+        }
+        self.session_id = session_id;
         let dependencies_ready = ["catalog", "model"]
             .into_iter()
             .all(|key| status[key] == "ready")
@@ -156,6 +198,34 @@ impl Consumer {
             }
             _ => LampState::Error,
         };
+    }
+
+    fn finish_result_episode(&mut self) {
+        if self.result_episode_id.take().is_some() && self.view.result_signal == LampState::Inactive
+        {
+            self.view.result_signal = LampState::Error;
+        }
+    }
+
+    fn retain_result_signal(&mut self, previous: LampState, previous_episode: Option<u64>) {
+        match (previous_episode, self.result_episode_id) {
+            (Some(previous_episode), Some(current_episode))
+                if previous_episode == current_episode =>
+            {
+                if self.view.result_signal == LampState::Inactive {
+                    self.view.result_signal = previous;
+                }
+            }
+            (Some(_), None) => {
+                self.view.result_signal = if previous == LampState::Inactive {
+                    LampState::Error
+                } else {
+                    previous
+                };
+            }
+            (None, None) => self.view.result_signal = previous,
+            _ => {}
+        }
     }
 
     pub fn disconnect(&mut self, now_unix_ms: i64) {
@@ -177,6 +247,16 @@ impl Consumer {
             self.view.screen.suspended_since_unix_ms = None;
             self.view.screen.revision = self.view.screen.revision.saturating_add(1);
         }
+    }
+}
+
+fn validate_result_ingest(record: &Value) -> Result<(), String> {
+    let Some(ingest) = record.get("ingest").filter(|value| !value.is_null()) else {
+        return Ok(());
+    };
+    match text(ingest, "state")? {
+        "processing" | "persisted" | "failed" => Ok(()),
+        _ => Err("unsupported result ingest state".into()),
     }
 }
 
@@ -248,27 +328,173 @@ mod tests {
     }
 
     #[test]
-    fn committed_db_inputs_trigger_a_readback() {
+    fn only_matching_store_commits_trigger_a_readback() {
         let mut c = Consumer::default();
+        c.event(&json!({"event":"music_selection_changed","state":{"status":"selected","scorepeek_song_id":"s","play_type":"single","difficulty":"hyper","presentation":{"display_titles":["T"]}}})).unwrap();
         c.event(&json!({"event":"music_select_best_observed","snapshot":null}))
             .unwrap();
         c.event(&json!({"event":"result_ingest_changed","ingest":{"state":"persisted"}}))
             .unwrap();
-        assert_eq!(c.query_revision, 2);
+        c.event(&json!({"event":"score_store_changed","revision":1,"chart":{"scorepeek_song_id":"other","play_type":"single","difficulty":"hyper"}})).unwrap();
+        assert_eq!(c.query_revision, 0);
+        c.event(&json!({"event":"score_store_changed","revision":2,"chart":{"scorepeek_song_id":"s","play_type":"single","difficulty":"hyper"}})).unwrap();
+        assert_eq!(c.query_revision, 1);
+    }
+
+    #[test]
+    fn result_signal_tracks_provisional_readiness_until_the_next_result() {
+        let mut c = Consumer::default();
+        c.apply_status(&json!({"watcher":"session_active","capture":{"session_id":"session"},"catalog":"ready","model":"ready","scores":"ready","recording":null}));
+        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":100,"state":{"screen_episode_id":7,"screen":"result","suspended":false}})).unwrap();
+        assert_eq!(c.view.result_signal, LampState::Inactive);
+        c.event(&json!({"event":"result_provisional_changed","screen_episode_id":7,"state":{"status":"resolved"}})).unwrap();
+        assert_eq!(c.view.result_signal, LampState::Active);
+        c.event(&json!({"event":"result_provisional_changed","screen_episode_id":7,"state":{"status":"withdrawn"}})).unwrap();
+        assert_eq!(c.view.result_signal, LampState::Error);
+        c.event(&json!({"event":"result_provisional_changed","screen_episode_id":7,"state":{"status":"resolved"}})).unwrap();
+        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":200,"state":null}))
+            .unwrap();
+        assert_eq!(c.view.result_signal, LampState::Active);
+        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":300,"state":{"screen_episode_id":8,"screen":"result","suspended":false}})).unwrap();
+        assert_eq!(c.view.result_signal, LampState::Inactive);
+        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":400,"state":null}))
+            .unwrap();
+        assert_eq!(c.view.result_signal, LampState::Error);
+        c.event(&json!({"event":"status_changed","status":{"watcher":"session_finished","capture":null}})).unwrap();
+        assert_eq!(c.view.result_signal, LampState::Inactive);
+    }
+
+    #[test]
+    fn same_session_reconnect_retains_result_signal_and_new_session_clears_it() {
+        let status = json!({
+            "watcher":"session_active",
+            "capture":{"session_id":"session"},
+            "catalog":"ready",
+            "model":"ready",
+            "scores":"ready",
+            "recording":null
+        });
+        let screen = json!({
+            "event":"screen_state_changed",
+            "sequence":2,
+            "emitted_unix_ms":100,
+            "state":{"screen_episode_id":7,"screen":"result","suspended":false}
+        });
+        let mut c = Consumer::default();
+        c.apply(
+            &json!({
+                "schema":"scorepeek-event-snapshot-v1",
+                "invocation_id":"a",
+                "next_sequence":3,
+                "status":status,
+                "screen_state":screen
+            }),
+            "a",
+        )
+        .unwrap();
+        c.apply(
+            &json!({
+                "schema":"scorepeek-event-v1",
+                "invocation_id":"a",
+                "sequence":3,
+                "event":"result_provisional_changed",
+                "screen_episode_id":7,
+                "state":{"status":"resolved"}
+            }),
+            "a",
+        )
+        .unwrap();
+        c.disconnect(200);
+        c.expire_screen(1_200, 1_000);
+        assert_eq!(c.view.result_signal, LampState::Active);
+
+        c.apply(
+            &json!({
+                "schema":"scorepeek-event-snapshot-v1",
+                "invocation_id":"a",
+                "next_sequence":4,
+                "status":status,
+                "screen_state":screen
+            }),
+            "a",
+        )
+        .unwrap();
+        assert_eq!(c.view.result_signal, LampState::Active);
+
+        c.apply(
+            &json!({
+                "schema":"scorepeek-event-snapshot-v1",
+                "invocation_id":"a",
+                "next_sequence":5,
+                "status":{
+                    "watcher":"session_active",
+                    "capture":{"session_id":"next-session"},
+                    "catalog":"ready",
+                    "model":"ready",
+                    "scores":"ready",
+                    "recording":null
+                }
+            }),
+            "a",
+        )
+        .unwrap();
+        assert_eq!(c.view.result_signal, LampState::Inactive);
+    }
+
+    #[test]
+    fn first_snapshot_restores_a_resolved_provisional_result() {
+        let mut c = Consumer::default();
+        c.apply(
+            &json!({
+                "schema":"scorepeek-event-snapshot-v1",
+                "invocation_id":"a",
+                "next_sequence":4,
+                "status":{
+                    "watcher":"session_active",
+                    "capture":{"session_id":"session"},
+                    "catalog":"ready",
+                    "model":"ready",
+                    "scores":"ready",
+                    "recording":null
+                },
+                "screen_state":{
+                    "event":"screen_state_changed",
+                    "sequence":2,
+                    "emitted_unix_ms":100,
+                    "state":{"screen_episode_id":7,"screen":"result","suspended":false}
+                },
+                "provisional_result":{
+                    "event":"result_provisional_changed",
+                    "sequence":3,
+                    "screen_episode_id":7,
+                    "state":{"status":"resolved"}
+                }
+            }),
+            "a",
+        )
+        .unwrap();
+        assert_eq!(c.view.result_signal, LampState::Active);
+        c.event(&json!({
+            "event":"screen_state_changed",
+            "emitted_unix_ms":200,
+            "state":null
+        }))
+        .unwrap();
+        assert_eq!(c.view.result_signal, LampState::Active);
     }
 
     #[test]
     fn suspended_and_disconnected_screens_expire_after_the_configured_grace() {
         let mut c = Consumer::default();
-        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":100,"state":{"screen":"music_select","suspended":false}})).unwrap();
+        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":100,"state":{"screen_episode_id":1,"screen":"music_select","suspended":false}})).unwrap();
         assert_eq!(c.view.screen.kind, Some(ScreenKind::MusicSelect));
-        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":200,"state":{"screen":"music_select","suspended":true}})).unwrap();
+        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":200,"state":{"screen_episode_id":1,"screen":"music_select","suspended":true}})).unwrap();
         c.expire_screen(1_199, 1_000);
         assert_eq!(c.view.screen.kind, Some(ScreenKind::MusicSelect));
         c.expire_screen(1_200, 1_000);
         assert_eq!(c.view.screen.kind, None);
 
-        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":300,"state":{"screen":"play","suspended":false}})).unwrap();
+        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":300,"state":{"screen_episode_id":2,"screen":"play","suspended":false}})).unwrap();
         c.disconnect(400);
         c.expire_screen(1_400, 1_000);
         assert_eq!(c.view.screen.kind, None);
@@ -277,8 +503,8 @@ mod tests {
     #[test]
     fn a_new_known_screen_replaces_a_suspended_screen_without_waiting() {
         let mut c = Consumer::default();
-        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":100,"state":{"screen":"music_select","suspended":true}})).unwrap();
-        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":101,"state":{"screen":"result","suspended":false}})).unwrap();
+        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":100,"state":{"screen_episode_id":1,"screen":"music_select","suspended":true}})).unwrap();
+        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":101,"state":{"screen_episode_id":2,"screen":"result","suspended":false}})).unwrap();
         assert_eq!(c.view.screen.kind, Some(ScreenKind::Result));
         assert_eq!(c.view.screen.suspended_since_unix_ms, None);
     }

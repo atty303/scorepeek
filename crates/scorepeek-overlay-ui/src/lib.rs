@@ -39,9 +39,6 @@ pub enum LampState {
     Inactive,
     Active,
     Error,
-    Processing,
-    Persisted,
-    Failed,
 }
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BestView {
@@ -93,7 +90,7 @@ pub struct OverlayState {
     #[serde(default)]
     pub system: LampState,
     #[serde(default)]
-    pub result_ingest: LampState,
+    pub result_signal: LampState,
     #[serde(default)]
     pub best: BestView,
     #[serde(default)]
@@ -322,7 +319,7 @@ fn render_widget(
 ) -> Element {
     match widget.kind {
         WidgetKind::Status => {
-            rsx! { section { class: "widget status-widget", {chrome()} div { class: "widget-content status-content", span { class: "wordmark", "score" span { "peek" } } div { class: "status-lamps", {lamp(state.system, Some("SYSTEM"), "system-lamp")} {lamp(state.result_ingest, Some("RESULT"), "result-lamp")} } } } }
+            rsx! { section { class: "widget status-widget", {chrome()} div { class: "widget-content status-content", span { class: "wordmark", "score" span { "peek" } } div { class: "status-lamps", {lamp(state.system, Some("SYSTEM"), "system-lamp")} {lamp(state.result_signal, Some("RESULT"), "result-lamp")} } } } }
         }
         WidgetKind::Selection => {
             rsx! { section { class: "widget selection-widget", {chrome()} div { class: "widget-content selection-content",
@@ -381,7 +378,7 @@ pub fn editor_sample_state() -> OverlayState {
             notes: Some(1987),
         }),
         system: LampState::Inactive,
-        result_ingest: LampState::Persisted,
+        result_signal: LampState::Active,
         best: BestView {
             score: "3842".into(),
             dj_level: "AAA".into(),

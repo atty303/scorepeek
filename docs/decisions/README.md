@@ -6,6 +6,7 @@ authoritative.
 
 ## Current
 
+- [ADR 0130: RESULT readiness and score-store invalidation](0130-separate-result-readiness-and-score-store-invalidation.md) separates the RESULT readiness lamp from persistence, adds committed-store invalidation, and routes parent controller diagnostics away from terminal output.
 - [ADR 0129: Overlay editor panel and direct manipulation](0129-overlay-editor-panel-and-direct-manipulation.md) keeps the output preview at one-to-one scale, overlays a responsive stateful panel, and assigns canvas movement to edit-only right-drag.
 - [ADR 0128: Backend workspace overlay editor](0128-use-backend-workspace-overlay-editor.md) adds schema-v3 backend drafts, a fixed sidebar workspace, safe Wayland output fallback, and same-URL OBS Interaction editing.
 - [ADR 0126: Result ingest lifecycle](0126-publish-result-ingest-lifecycle.md) adds the bounded processing/persisted/failed state to the local public event API.

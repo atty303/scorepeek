@@ -12,7 +12,7 @@
       "notes": 1877
     },
     "system": "active",
-    "result_ingest": "persisted",
+    "result_signal": "active",
     "best": {
       "score": "2921",
       "dj_level": "AA",

@@ -137,6 +137,10 @@ enum EventKind {
     ResultIngestChanged {
         ingest: Option<ResultIngest>,
     },
+    ScoreStoreChanged {
+        revision: u64,
+        chart: scorepeek_scores::ChartIdentity,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -184,6 +188,8 @@ pub(super) struct PublicState {
     scores_enabled: bool,
     #[serde(skip)]
     ingest_started: Option<Instant>,
+    #[serde(skip)]
+    score_store_revision: u64,
 }
 
 impl PublicState {
@@ -211,6 +217,7 @@ impl PublicState {
             pending_binding: None,
             scores_enabled: false,
             ingest_started: None,
+            score_store_revision: 0,
         }
     }
 
@@ -611,6 +618,20 @@ impl PublicState {
         Some(record)
     }
 
+    pub(super) fn score_store_changed(
+        &mut self,
+        chart: scorepeek_scores::ChartIdentity,
+    ) -> PublicRecord {
+        self.score_store_revision = self.score_store_revision.saturating_add(1);
+        self.event(
+            EventKind::ScoreStoreChanged {
+                revision: self.score_store_revision,
+                chart,
+            },
+            None,
+        )
+    }
+
     pub(super) fn fail_result(&mut self, reason: &'static str) -> Option<PublicRecord> {
         if !self.ingest_processing() {
             return None;
@@ -650,7 +671,7 @@ impl PublicState {
             EventKind::MusicSelectBestObserved { snapshot } => {
                 self.music_select_best = snapshot.as_ref().map(|_| record.clone());
             }
-            EventKind::StatusChanged { .. } => {}
+            EventKind::StatusChanged { .. } | EventKind::ScoreStoreChanged { .. } => {}
             EventKind::ResultIngestChanged { ingest } => {
                 self.result_ingest = ingest.as_ref().map(|_| record.clone());
                 if !matches!(
@@ -952,6 +973,30 @@ pub(super) mod tests {
         fold(&mut consumer, &wire);
         assert_eq!(consumer, serde_json::to_value(&state).unwrap());
         assert!(state.watcher(WatcherStatus::CatalogUnavailable).is_none());
+    }
+
+    #[test]
+    fn score_store_changes_are_live_invalidations_with_a_monotonic_revision() {
+        let mut state = PublicState::new("run".into());
+        let chart = scorepeek_scores::ChartIdentity {
+            scorepeek_song_id: "song".into(),
+            play_type: "single".into(),
+            difficulty: "hyper".into(),
+        };
+        let first = serde_json::to_value(state.score_store_changed(chart.clone())).unwrap();
+        let second = serde_json::to_value(state.score_store_changed(chart)).unwrap();
+        assert_eq!(first["event"], "score_store_changed");
+        assert_eq!(first["revision"], 1);
+        assert_eq!(first["chart"]["scorepeek_song_id"], "song");
+        assert!(first["capture"].is_null());
+        assert_eq!(second["revision"], 2);
+        assert_eq!(state.next_sequence, 3);
+        assert!(
+            serde_json::to_value(&state)
+                .unwrap()
+                .get("score_store_changed")
+                .is_none()
+        );
     }
 
     #[test]

@@ -221,6 +221,16 @@ fn worker_drains_and_database_instances_are_separate() {
     assert!(health.failure.is_none(), "{health:?}");
     assert_eq!(health.committed, 1);
     assert_eq!(health.pending, 0);
+    let completions = worker.take_completions();
+    assert_eq!(completions.len(), 1);
+    assert_eq!(
+        completions[0].chart,
+        Some(ChartIdentity {
+            scorepeek_song_id: "song-a".into(),
+            play_type: "single".into(),
+            difficulty: "hyper".into(),
+        })
+    );
     let store = Store::open(&path).unwrap();
     assert_eq!(values(&store).0, Some(180));
     let other = Store::open(&other).unwrap();

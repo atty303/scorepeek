@@ -781,7 +781,7 @@ fn run_routine_live_session(
     let mut announced = None;
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
         output.refresh_scores()?;
-        output.refresh_overlays(&mut overlay_children)?;
+        output.refresh_overlays(&mut overlay_children, overlay_controller.as_ref())?;
         let Ok(snapshot) =
             scorepeek::capture::snapshot_gamescope_sources(std::time::Duration::from_millis(500))
         else {
@@ -871,7 +871,7 @@ fn run_routine_live_session(
                 let mut started = false;
                 let mut emit = |emission: LiveSessionEmission| {
                     output.refresh_scores()?;
-                    output.refresh_overlays(&mut overlay_children)?;
+                    output.refresh_overlays(&mut overlay_children, overlay_controller.as_ref())?;
                     let output_started = std::time::Instant::now();
                     if let Some(binding) = emission.public_binding.clone() {
                         output.bind_public_session(binding);
@@ -1083,7 +1083,7 @@ fn run_routine_live_session(
         }
     }
     overlay_children.shutdown();
-    output.refresh_overlays(&mut overlay_children)?;
+    output.refresh_overlays(&mut overlay_children, overlay_controller.as_ref())?;
     output.publish(&routine_output::RunEvent {
         schema: routine_output::RUN_EVENT_SCHEMA.to_owned(),
         kind: routine_output::RunEventKind::WatcherStopped {

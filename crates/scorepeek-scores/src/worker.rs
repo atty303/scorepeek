@@ -14,6 +14,14 @@ use std::{
 pub struct Completion {
     pub event_id: String,
     pub outcome: CompletionOutcome,
+    pub chart: Option<ChartIdentity>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ChartIdentity {
+    pub scorepeek_song_id: String,
+    pub play_type: String,
+    pub difficulty: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,6 +61,7 @@ struct Message {
     bytes: Vec<u8>,
     received_unix_ms: u64,
     event_id: String,
+    chart: Option<ChartIdentity>,
 }
 
 /// Bounded, non-blocking consumer. Dropping it attempts a bounded drain.
@@ -152,6 +161,7 @@ impl Worker {
             bytes: bytes.to_vec(),
             received_unix_ms,
             event_id: header["event_id"].as_str().unwrap_or_default().to_owned(),
+            chart: chart_identity(&header),
         };
         match sender.try_send(message) {
             Ok(()) => {
@@ -275,6 +285,7 @@ fn run(
                 let _ = completions.send(Completion {
                     event_id: message.event_id,
                     outcome: CompletionOutcome::Persisted,
+                    chart: message.chart,
                 });
             }
             Err(error) => {
@@ -286,11 +297,25 @@ fn run(
                 let _ = completions.send(Completion {
                     event_id: message.event_id,
                     outcome: CompletionOutcome::Failed,
+                    chart: message.chart,
                 });
                 return;
             }
         }
     }
+}
+
+fn chart_identity(event: &serde_json::Value) -> Option<ChartIdentity> {
+    let chart = match event["event"].as_str()? {
+        "result_detected" => &event["result"],
+        "music_select_best_observed" => &event["snapshot"]["chart"],
+        _ => return None,
+    };
+    Some(ChartIdentity {
+        scorepeek_song_id: chart["scorepeek_song_id"].as_str()?.to_owned(),
+        play_type: chart["play_type"].as_str()?.to_owned(),
+        difficulty: chart["difficulty"].as_str()?.to_owned(),
+    })
 }
 pub(crate) fn unix_ms() -> Option<u64> {
     SystemTime::now()

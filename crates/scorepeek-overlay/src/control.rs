@@ -5,7 +5,7 @@ use crate::{
 use scorepeek_overlay_ui::CanvasPresentation;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io::{BufRead as _, BufReader, Write as _},
     os::unix::net::{UnixListener, UnixStream},
     path::{Path, PathBuf},
@@ -18,6 +18,7 @@ use std::{
 };
 
 const LEASE_TIMEOUT: Duration = Duration::from_secs(15);
+const DIAGNOSTIC_CAPACITY: usize = 128;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
@@ -71,11 +72,14 @@ struct Lease {
 struct State {
     config: OverlayConfig,
     leases: BTreeMap<Backend, Lease>,
+    diagnostics: VecDeque<serde_json::Value>,
+    dropped_diagnostics: u64,
 }
 
 pub struct Controller {
     path: PathBuf,
     stop: Arc<AtomicBool>,
+    state: Arc<Mutex<State>>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -101,20 +105,33 @@ impl Controller {
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = Arc::clone(&stop);
         let config_path = path.to_owned();
+        let state = Arc::new(Mutex::new(State {
+            config,
+            leases: BTreeMap::new(),
+            diagnostics: VecDeque::new(),
+            dropped_diagnostics: 0,
+        }));
+        let worker_state = Arc::clone(&state);
         let worker = std::thread::Builder::new()
             .name("overlay-config-writer".into())
             .spawn(move || {
-                let state = Mutex::new(State {
-                    config,
-                    leases: BTreeMap::new(),
-                });
                 while !stopping.load(Ordering::Acquire) {
                     match listener.accept() {
-                        Ok((stream, _)) => handle(stream, &config_path, &state),
+                        Ok((stream, _)) => handle(stream, &config_path, &worker_state),
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(25));
                         }
-                        Err(_) => break,
+                        Err(error) => {
+                            if let Ok(mut state) = worker_state.lock() {
+                                state.observe(
+                                    "overlay_controller",
+                                    serde_json::json!({
+                                        "status":"failed", "error_type":"accept", "error":error.to_string()
+                                    }),
+                                );
+                            }
+                            break;
+                        }
                     }
                 }
             })
@@ -122,6 +139,7 @@ impl Controller {
         Ok(Self {
             path: socket,
             stop,
+            state,
             worker: Some(worker),
         })
     }
@@ -129,6 +147,41 @@ impl Controller {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Takes bounded parent-process diagnostics without writing to terminal streams.
+    #[must_use]
+    pub fn take_observations(&self) -> Vec<serde_json::Value> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut observations = state.diagnostics.drain(..).collect::<Vec<_>>();
+        if state.dropped_diagnostics > 0 {
+            observations.push(serde_json::json!({
+                "operation":"overlay_controller_diagnostics",
+                "data":{"status":"dropped","count":state.dropped_diagnostics}
+            }));
+            state.dropped_diagnostics = 0;
+        }
+        observations
+    }
+}
+
+impl State {
+    fn observe(&mut self, operation: &str, data: serde_json::Value) {
+        if self.diagnostics.len() == DIAGNOSTIC_CAPACITY {
+            self.dropped_diagnostics = self.dropped_diagnostics.saturating_add(1);
+        } else {
+            self.diagnostics.push_back(serde_json::Value::Object(
+                [
+                    ("operation".to_owned(), operation.into()),
+                    ("data".to_owned(), data),
+                ]
+                .into_iter()
+                .collect(),
+            ));
+        }
     }
 }
 
@@ -244,9 +297,9 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
                 .filter(|lease| lease.editor_id == editor_id)
             {
                 lease.touched = Instant::now();
-                crate::diagnostics::emit(
+                state.observe(
                     "overlay_editor_lease",
-                    &serde_json::json!({"backend":backend,"status":"retained"}),
+                    serde_json::json!({"backend":backend,"status":"retained"}),
                 );
                 return Ok(lease_response(&state, backend));
             }
@@ -273,9 +326,9 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
                     },
                 );
             }
-            crate::diagnostics::emit(
+            state.observe(
                 "overlay_editor_lease",
-                &serde_json::json!({
+                serde_json::json!({
                     "backend": backend, "status": if readonly { "readonly" } else { "acquired" }
                 }),
             );
@@ -297,9 +350,9 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
             {
                 state.leases.remove(&backend);
             }
-            crate::diagnostics::emit(
+            state.observe(
                 "overlay_editor_lease",
-                &serde_json::json!({
+                serde_json::json!({
                     "backend": backend, "status":"released"
                 }),
             );
@@ -342,19 +395,25 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
             state.config.backend_revisions.increment(backend)?;
             if let Err(error) = save_atomic(path, &state.config) {
                 state.config = previous;
-                crate::diagnostics::emit(
+                state.observe(
                     "overlay_editor_commit",
-                    &serde_json::json!({
+                    serde_json::json!({
                         "backend": backend, "status":"failed", "error":error
                     }),
                 );
                 return Err(error);
             }
-            crate::diagnostics::emit(
+            let canvas_count = state
+                .config
+                .canvases
+                .iter()
+                .filter(|canvas| canvas.backend == backend)
+                .count();
+            state.observe(
                 "overlay_editor_commit",
-                &serde_json::json!({
+                serde_json::json!({
                     "backend": backend, "status":"saved",
-                    "canvas_count":state.config.canvases.iter().filter(|canvas|canvas.backend == backend).count()
+                    "canvas_count":canvas_count
                 }),
             );
             Ok(backend_response(&state.config, backend, false))
@@ -505,6 +564,8 @@ mod tests {
             Mutex::new(State {
                 config: OverlayConfig::initial(),
                 leases: BTreeMap::new(),
+                diagnostics: VecDeque::new(),
+                dropped_diagnostics: 0,
             }),
         )
     }
@@ -592,6 +653,21 @@ mod tests {
         .unwrap();
         assert!(!released.dirty);
         assert_eq!(released.canvases, saved.canvases);
+        let diagnostics = shared
+            .lock()
+            .unwrap()
+            .diagnostics
+            .drain(..)
+            .collect::<Vec<_>>();
+        assert!(diagnostics.iter().any(|record| {
+            record["operation"] == "overlay_editor_commit" && record["data"]["status"] == "saved"
+        }));
+        assert!(diagnostics.iter().all(|record| {
+            matches!(
+                record["operation"].as_str(),
+                Some("overlay_editor_lease" | "overlay_editor_commit")
+            )
+        }));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

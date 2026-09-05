@@ -36,8 +36,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut inner = document.inner.borrow_mut();
     inner.set_viewport(Viewport::new(600, 1080, 1.0, ColorScheme::Dark));
     inner.resolve(0.0);
+    scorepeek_overlay::native::apply_motion(&mut inner, 1.0);
     inner.resolve(1.0);
-    assert!(!inner.is_animating(), "skin must settle after confirmation");
+    inner.handle_messages();
     let mut renderer = VelloImageRenderer::new(600, 1080);
     let mut pixels = Vec::new();
     renderer.render_to_vec(

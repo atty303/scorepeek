@@ -2620,6 +2620,7 @@ impl RoutineOutput {
     pub fn refresh_overlays(
         &mut self,
         children: &mut scorepeek_overlay::children::Children,
+        controller: Option<&scorepeek_overlay::control::Controller>,
     ) -> Result<(), String> {
         for message in children.poll() {
             self.warning(message)?;
@@ -2629,12 +2630,26 @@ impl RoutineOutput {
             .map_err(|_| "run view state lock was poisoned".to_owned())?
             .overlay_summary = children.summary();
         for observation in children.take_observations() {
-            self.publish(&RunEvent {
-                schema: RUN_EVENT_SCHEMA.to_owned(),
-                kind: RunEventKind::OverlayObserved { observation },
-            })?;
+            self.publish_overlay_observation(observation)?;
+        }
+        if let Some(controller) = controller {
+            for record in controller.take_observations() {
+                self.publish_overlay_observation(serde_json::json!({
+                    "source":"controller", "record":record
+                }))?;
+            }
         }
         Ok(())
+    }
+
+    fn publish_overlay_observation(&mut self, observation: Value) -> Result<(), String> {
+        self.publish_one_inner(
+            &RunEvent {
+                schema: RUN_EVENT_SCHEMA.to_owned(),
+                kind: RunEventKind::OverlayObserved { observation },
+            },
+            false,
+        )
     }
     #[must_use]
     pub fn event_socket_path(&self) -> Option<&Path> {
@@ -2855,16 +2870,19 @@ impl RoutineOutput {
             .map(scorepeek_scores::Worker::take_completions)
             .unwrap_or_default();
         for completion in completions {
+            let persisted = completion.outcome == scorepeek_scores::CompletionOutcome::Persisted;
             let mut state = self
                 .state
                 .lock()
                 .map_err(|_| "run view state lock was poisoned".to_owned())?;
             let mut projected = state.public.clone();
-            let event = projected.complete_result(
-                &completion.event_id,
-                completion.outcome == scorepeek_scores::CompletionOutcome::Persisted,
-            );
-            let events = event.into_iter().collect::<Vec<_>>();
+            let mut events = projected
+                .complete_result(&completion.event_id, persisted)
+                .into_iter()
+                .collect::<Vec<_>>();
+            if persisted && let Some(chart) = completion.chart {
+                events.push(projected.score_store_changed(chart));
+            }
             commit_public_projection(
                 &mut state.public,
                 projected,
@@ -3221,6 +3239,7 @@ impl RoutineOutput {
         if let Some(scores) = &mut self.scores {
             scores.finish();
         }
+        self.refresh_scores()?;
         self.publish_one(event)?;
         self.completed_event_artifact =
             self.event_worker.take().map(RunEventArtifactWorker::finish);
@@ -4360,6 +4379,10 @@ impl RoutineOutput {
     }
 
     fn publish_one(&mut self, event: &RunEvent) -> Result<(), String> {
+        self.publish_one_inner(event, true)
+    }
+
+    fn publish_one_inner(&mut self, event: &RunEvent, refresh: bool) -> Result<(), String> {
         let output_started = Instant::now();
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
@@ -4410,7 +4433,7 @@ impl RoutineOutput {
                 .output_us
                 .saturating_add(duration_us(output_started.elapsed()));
         }
-        self.refresh()
+        if refresh { self.refresh() } else { Ok(()) }
     }
 
     pub fn take_completed_event_artifact(&mut self) -> Option<RunEventArtifactOutcome> {
@@ -5763,9 +5786,15 @@ mod tests {
                 )
                 .unwrap();
         }
+        let before_store_change = output.state.lock().unwrap().public.next_sequence;
         let health = output.scores.as_mut().unwrap().finish();
         assert!(health.failure.is_none(), "{health:?}");
         assert_eq!(health.committed, 1);
+        output.refresh_scores().unwrap();
+        assert_eq!(
+            output.state.lock().unwrap().public.next_sequence,
+            before_store_change + 1
+        );
         let database = rusqlite::Connection::open(path).unwrap();
         assert_eq!(
             database
@@ -5781,6 +5810,58 @@ mod tests {
             .unwrap();
         assert_eq!(score, 1200);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn watcher_stop_publishes_store_changes_drained_during_shutdown() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("scores.sqlite3");
+        let mut output = RoutineOutput::start_headless("invocation-1".into(), "a".repeat(64));
+        output.enable_scores(&path).unwrap();
+        let session = "invocation-1-session-1".to_owned();
+        output
+            .publish(&select_best_test_episode(
+                &session,
+                SemanticEpisodePhase::Started,
+                1,
+            ))
+            .unwrap();
+        let (fields, evidence, presentation) = select_best_test_observation();
+        for sequence in 2..=5 {
+            output
+                .reduce_music_select_observation(
+                    Some(&session),
+                    Some(1),
+                    sequence,
+                    sequence * 100,
+                    &fields,
+                    &evidence,
+                    &presentation,
+                )
+                .unwrap();
+        }
+        let before_stop = output.state.lock().unwrap().public.next_sequence;
+        output
+            .publish(&RunEvent {
+                schema: RUN_EVENT_SCHEMA.to_owned(),
+                kind: RunEventKind::WatcherStopped {
+                    invocation_id: "invocation-1".into(),
+                    reason: "test".into(),
+                },
+            })
+            .unwrap();
+
+        let snapshot = serde_json::to_value(&output.state.lock().unwrap().public).unwrap();
+        assert_eq!(snapshot["status"]["watcher"], "stopped");
+        assert_eq!(snapshot["next_sequence"], before_stop + 2);
+        assert_eq!(
+            rusqlite::Connection::open(path)
+                .unwrap()
+                .query_row("SELECT count(*) FROM chart_bests", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 
     fn state() -> Arc<Mutex<RunViewState>> {

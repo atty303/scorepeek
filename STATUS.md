@@ -40,6 +40,9 @@ checkpoint; implementation history belongs in Git.
   Wayland missing-output recovery opens the same unsaved draft on a deterministic fitting or largest
   output and shrinks only the canvas boundary when required. SAVE adopts it; DISCARD leaves TOML
   untouched and suppresses that canvas for the run. `--overlay-wayland-edit` opens this recovery editor.
+- ADR 0130 makes the status widget RESULT lamp a provisional-readiness signal. A new RESULT is
+  unlit, resolved is green, withdrawn or exit without resolution is red, and the outcome remains
+  visible until the next RESULT or session end. Persistence state no longer drives the lamp.
 - CYAN SYSTEM, RESULT AURORA and DJ BLACKBOX are canvas-level skins using the approved embedded frame
   artwork through CSS backgrounds. Oxanium and OFL 1.1 are embedded alongside Japanese system-font
   fallbacks. Runtime values remain text/SVG; result emphasis is finite and the settled DOM is idle.
@@ -47,6 +50,9 @@ checkpoint; implementation history belongs in Git.
   representative RESULT ordering is highest EX score, known/lower miss, then latest receipt time.
   History rows include DJ LEVEL. The graph uses exact timestamps, labeled DJ LEVEL thresholds and a
   fixed 0-100% MISS RATE axis, clipping larger MISS ratios and leaving unknown values disconnected.
+  Successful SELECT/RESULT score transactions publish a live-only `score_store_changed` chart
+  invalidation, so a matching overlay rereads SQLite immediately. The five-second poll remains a
+  recovery path for external writes or missed notifications.
 
 - RESULT temporal acceptance compares the mandatory song/chart, clear, EX and judgment tuple.
   Supplemental/reference changes do not revoke it (ADR 0083/0087); once accepted, repeated
@@ -59,7 +65,9 @@ checkpoint; implementation history belongs in Git.
   only after envelope and sequence validation. This does not make the public RESULT a DB authority.
 - Overlay consumers still do not initialize recognition or own capture resources. Children receive
   invocation/socket/DB/config and terminate on parent-pipe EOF; one overlay failure does not stop
-  recognition, persistence or its peer. No overlay flag preserves the overlay-free behavior.
+  recognition, persistence or its peer. Parent controller diagnostics use a bounded in-process queue
+  and the recording path rather than writing JSON to the TUI terminal. No overlay flag preserves the
+  overlay-free behavior.
 
 - ADR 0120 adds `scorepeek-scores` as an independent public event v1 consumer. Normal run saves to
   the XDG data score database; `--scores-db` selects an instance and `--no-scores` disables it.
@@ -166,11 +174,12 @@ checkpoint; implementation history belongs in Git.
   The browser WASM type-checks and the real dx bundle contains served JS/WASM/font/artwork with correct
   MIME types; embedded-asset and child-EOF tests pass. `wasm-opt` still reports unsupported DWARF and
   the bundle proceeds without that optional optimization.
-- Repository checks and the complete workspace suite pass: 506 library,
-  323 binary, 128 corpus library, 5 corpus binary, 28 overlay, 3 handle, 4 overlay-UI, 0 overlay-web
-  and 13 score tests, plus doctests. The embedded-web overlay suite has 29 tests. The 99 offline OCR tests and
-  repository checks also pass. A subsequent focused rerun passes all 5 public API tests, including
-  the added semantic-screen phase contract, plus the overlay and embedded-web suites.
+- Repository checks and the complete workspace suite pass: 508 library,
+  325 binary, 128 corpus library, 5 corpus binary, 31 overlay, 3 handle, 4 overlay-UI, 0 overlay-web
+  and 13 score tests, plus doctests. The embedded-web overlay suite has 32 tests. The 99 offline OCR tests and
+  repository checks also pass. Public API and overlay state tests include score-store invalidation,
+  RESULT readiness across withdrawal/re-resolution, fresh and same-session reconnect restoration,
+  and completion publication after shutdown drain.
   The supplementary all-features/all-targets pedantic Clippy invocation also passes.
 - Target investigation found two connected outputs while the initial Wayland canvas omitted
   `output`; the previous child rejected that multi-output state before creating a surface. The
@@ -278,6 +287,8 @@ checkpoint; implementation history belongs in Git.
 
 ## Unverified and next execution boundary
 
+- The score-store invalidation, RESULT readiness lamp, and parent-controller TUI isolation are
+  development-host verified but not installed or exercised in a target-live game session.
 - Target-live validation is still required for screen-driven surface visibility, configured
   opacity, forced cursor shapes/fallback, OBS `/overlay` Interaction workspace and display-only
   canvas guidance, compositor output selection/bounds, missing-output save/discard, initial

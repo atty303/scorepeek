@@ -747,7 +747,7 @@ SELECTは譜面・項目別の現在補完値として保持し、revision履歴
 `--scores-db PATH`でrun単位の保存先を選び、`--no-scores`で無効化する。保存失敗は認識と配信へ干渉させない。
 日時、schema、出典、transaction、queueと終了上限はADR 0120を原典とする。過去記録importと照会CLIは含めない。
 
-### Live Overlay canvas（ADR 0122 / 0125 / 0127 / 0128 / 0129）
+### Live Overlay canvas（ADR 0122 / 0125 / 0127 / 0128 / 0129 / 0130）
 
 配布binaryは`scorepeek`だけとし、`run --overlay-wayland`と`run --overlay-obs`で独立consumerを有効化する。
 `--overlay-config PATH`はschema v3のTOMLを選び、未指定時は`$XDG_CONFIG_HOME/scorepeek/overlay.toml`を使う。schema v2は`z`だけを除去して自動migrationし、schema v1は拒否する。`--overlay-wayland-edit`はWaylandを有効化して起動時に編集workspaceを開く。
@@ -768,15 +768,15 @@ Waylandの保存outputが消失した場合、収まるnamed output、なけれ�
 
 共通UIは次の独立widgetを持つ。
 
-- status: scorepeek logoとSYSTEM/RESULT lamp。SYSTEMはactive sessionに必要なcatalog/modelおよび有効なscore/recording経路がreadyのときだけactive。RESULTは現在の取込をprocessing/persisted/failedで示す。
+- status: scorepeek logoとSYSTEM/RESULT lamp。SYSTEMはactive sessionに必要なcatalog/modelおよび有効なscore/recording経路がreadyのときだけactive。RESULTは新しいRESULTで消灯し、provisional resolvedで緑、withdrawnまたはresolvedなしのRESULT退出で赤とする。緑/赤は次のRESULTまで保持し、session終了で消灯する。DB commit待ちやamber表示には使わない。
 - selection: title/artist左側の無label縦長recorded lampと、別railのSP/DP・difficulty・level・notes。score値は表示しない。recordedはSQLiteにSELECT由来のno-recordを含むcommit済み知識があることを示す。
 - score: 曲名を繰り返さず、SQLite由来の統合BESTとRESULT DETAILを表示する。代表RESULTはEX score最大、既知MISS優先かつ最小、received時刻最新の辞書順で1件選ぶ。PGREAT/GREAT/GOOD/BAD/POOR/FAST/SLOW/COMBO BREAK/PLAY OPTIONSを保持する。
 - history list: local通知日時、EX SCORE、DJ LEVEL、MISS、CLEAR。件数は5/10/20/50、既定5。
 - history graph: 1/3/6/12か月、既定6のlocal calendarによる固定時間範囲へexact timestampで配置する。scoreは%凡例を出さずDJ LEVEL閾値を示す。MISS RATE軸は常に0–100%、100%超をclipし、unknownは線を切る。最大範囲内の新しい4096 playを上限とし、時刻順へ戻して描画する。
 
-選曲変化、SELECT best、RESULTのDB commitおよび5秒のrecovery pollでreadonly SQLiteを再照会する。
+選曲変化と、SELECT/RESULT transaction成功後の公開`score_store_changed`でreadonly SQLiteを再照会する。通知は譜面identityとinvocation内revisionだけを持ち、表示値は持たない。5秒pollは外部writer・通知欠落・再接続だけのrecoveryとする。
 表示するBEST、RESULT DETAIL、recorded、historyは常にcommit済みDB stateから作り、最新公開RESULTを直接score widgetへ流用しない。
-親pipe EOFで子を有界回収し、overlay失敗は認識・保存・他backendを停止しない。
+親pipe EOFで子を有界回収し、overlay失敗は認識・保存・他backendを停止しない。親config controllerの診断はbounded queueからrun-event recordingへ流し、TUIのterminal streamへJSONを直接出力しない。
 
 ### Overlay skinとasset（ADR 0123 / 0124 / 0125）
 

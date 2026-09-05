@@ -2082,10 +2082,14 @@ impl App {
             return Err("native renderer inactive".into());
         }
         let mut inner = self.document.inner.borrow_mut();
-        inner.resolve(self.started.elapsed().as_secs_f64());
+        let seconds = self.started.elapsed().as_secs_f64();
+        if self.visible.get() {
+            apply_motion(&mut inner, seconds);
+        }
+        inner.resolve(seconds);
         // Embedded images complete synchronously during resolve; ingest them before painting.
         inner.handle_messages();
-        self.animating = inner.is_animating();
+        self.animating = self.visible.get();
         if self.animating {
             self.shell.request_frame();
         }
@@ -2207,6 +2211,23 @@ impl blitz_traits::net::NetProvider for EmbeddedSkinAssets {
     }
 }
 
+/// Applies the same presentation tracks used by the browser, without changing domain state.
+pub fn apply_motion(document: &mut blitz_dom::BaseDocument, seconds: f64) {
+    static TRACKS: std::sync::LazyLock<Vec<scorepeek_overlay_ui::motion::Track>> =
+        std::sync::LazyLock::new(|| {
+            serde_json::from_str(scorepeek_overlay_ui::motion::SPEC)
+                .expect("embedded motion specification")
+        });
+    for track in TRACKS.iter() {
+        if let Ok(nodes) = document.query_selector_all(&track.selector) {
+            let value = track.value(seconds);
+            for node in nodes {
+                document.set_style_property(node, &track.property, &value);
+            }
+        }
+    }
+}
+
 /// Registers embedded artwork and the Latin font, preserving Japanese system fallbacks.
 #[must_use]
 pub fn document_config() -> DocumentConfig {
@@ -2214,6 +2235,11 @@ pub fn document_config() -> DocumentConfig {
     font_ctx
         .collection
         .register_fonts(peniko::Blob::new(Arc::new(OXANIUM)), None);
+    for (_, bytes) in scorepeek_overlay_ui::FONT_ASSETS {
+        font_ctx
+            .collection
+            .register_fonts(peniko::Blob::new(Arc::new(*bytes)), None);
+    }
     DocumentConfig {
         font_ctx: Some(font_ctx),
         base_url: Some("http://scorepeek.invalid/".into()),
@@ -2225,6 +2251,7 @@ pub fn document_config() -> DocumentConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VisualDebugScenario {
+    pub skin: Option<scorepeek_overlay_ui::Skin>,
     #[serde(default = "visual_debug_default_size")]
     pub logical_size: [u32; 2],
     #[serde(default = "visual_debug_default_scale")]
@@ -2253,6 +2280,9 @@ const fn visual_debug_default_editing() -> bool {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VisualDebugAction {
+    Motion {
+        seconds: f64,
+    },
     SetEditing {
         value: bool,
     },
@@ -2357,12 +2387,17 @@ impl VisualDebugSession {
     #[allow(clippy::too_many_lines)]
     fn new(scenario: &VisualDebugScenario, physical_size: [u32; 2]) -> Result<Self, String> {
         let config = crate::config::OverlayConfig::initial();
-        let managed = config
+        let mut managed = config
             .canvases
             .into_iter()
             .filter(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
             .map(|canvas| canvas.presentation())
             .collect::<Vec<_>>();
+        if let Some(skin) = scenario.skin {
+            for canvas in &mut managed {
+                canvas.skin = skin;
+            }
+        }
         let selected_index = scenario
             .canvas_id
             .as_ref()
@@ -2468,7 +2503,9 @@ impl VisualDebugSession {
             ColorScheme::Dark,
         ));
         inner.resolve(0.0);
+        apply_motion(&mut inner, 1.0);
         inner.resolve(1.0);
+        inner.handle_messages();
     }
 
     fn click(&mut self, selector: &str) -> Result<(), String> {
@@ -2831,6 +2868,16 @@ pub fn run_visual_debug(
         )?;
         for (index, action) in scenario.actions.iter().enumerate() {
             let name = match action {
+                VisualDebugAction::Motion { seconds } => {
+                    if !seconds.is_finite() || *seconds < 0.0 {
+                        return Err("motion seconds must be finite and nonnegative".into());
+                    }
+                    let mut inner = session.document.inner.borrow_mut();
+                    apply_motion(&mut inner, *seconds);
+                    inner.resolve(*seconds);
+                    inner.handle_messages();
+                    format!("motion-{seconds}")
+                }
                 VisualDebugAction::SetEditing { value } => {
                     session.editing.set(*value);
                     session.resolve();
@@ -3070,7 +3117,9 @@ mod skin_tests {
         let mut inner = document.inner.borrow_mut();
         inner.set_viewport(Viewport::new(560, 72, 1.0, ColorScheme::Dark));
         inner.resolve(0.0);
+        apply_motion(&mut inner, 1.0);
         inner.resolve(1.0);
+        inner.handle_messages();
 
         for selector in [".canvas-content", ".overlay-canvas", ".status-widget"] {
             let id = inner.query_selector(selector).unwrap().unwrap();
@@ -3180,7 +3229,9 @@ mod skin_tests {
         let mut inner = document.inner.borrow_mut();
         inner.set_viewport(Viewport::new(1920, 1080, 1.0, ColorScheme::Dark));
         inner.resolve(0.0);
+        apply_motion(&mut inner, 1.0);
         inner.resolve(1.0);
+        inner.handle_messages();
 
         let panel = inner
             .get_client_bounding_rect(
