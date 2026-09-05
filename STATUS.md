@@ -135,6 +135,19 @@ checkpoint; implementation history belongs in Git.
 
 ## Verification
 
+- Overlay visual debugging now has two reproducible development-host entries. The native scenario
+  runner keeps one Dioxus editor workspace across selector clicks, Blitz scrolls and logical-pixel
+  drags, renders every step through native DOM/Blitz/Vello without a Wayland connection, and writes
+  correlated PNG, selector-layout JSON and a complete/partial typed manifest. The OBS runner serves
+  the production `/overlay`, canvas iframe, WebSocket and editor from a create-only dedicated config
+  on loopback without capture, recognition, Wayland or a score DB. The checked-in 1920x1080 scenario completes through
+  panel toggles, tab selection, scroll and right-drag; Codex Browser opens the runner URL, enters the
+  editor by right-click, reads the iframe DOM and captures the composed image. This visual path
+  exposes native paint/CSS differences that positive DOM rectangles alone do not establish. Pixel
+  equality is intentionally not an acceptance gate; actual Wayland composition/input delivery and
+  rendering inside OBS remain live boundaries. A 1.25-scale headless run records 800x600 logical
+  geometry and emits 1000x750 PNGs; invalid scenario dimensions are retained as `scenario_invalid`.
+
 - Schema-v2 defaults/rejection, screen filters, semantic-screen snapshot/live folding,
   suspension/disconnect grace and immediate known-screen replacement have focused development-host
   tests. Workspace compilation covers the Wayland cursor-shape and generated fallback cursor,

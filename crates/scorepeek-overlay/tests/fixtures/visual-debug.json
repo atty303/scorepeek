@@ -1,0 +1,22 @@
+{
+  "logical_size": [1920, 1080],
+  "scale": 1.0,
+  "canvas_id": "wayland-status",
+  "editing": true,
+  "selectors": [
+    ".canvas-content",
+    ".overlay-canvas",
+    ".widget-slot",
+    ".native-panel-toggle",
+    ".native-canvas-manager",
+    ".editor-tab-body"
+  ],
+  "actions": [
+    { "action": "click", "selector": ".native-panel-toggle" },
+    { "action": "click", "selector": ".native-panel-toggle" },
+    { "action": "click", "selector": ".editor-tab[data-tab='canvas']" },
+    { "action": "scroll", "selector": ".editor-tab-body", "dx": 0, "dy": -320 },
+    { "action": "drag", "from": [500, 50], "to": [600, 150], "button": "right" },
+    { "action": "capture", "name": "final-editor" }
+  ]
+}

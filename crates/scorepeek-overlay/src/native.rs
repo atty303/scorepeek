@@ -17,7 +17,7 @@ use dioxus_core::{VirtualDom, schedule_update};
 use dioxus_native_dom::DioxusDocument;
 use scorepeek_overlay_handles::{CursorStyle, Event, OutputDescription, Shell};
 use scorepeek_overlay_ui::{Appearance, OXANIUM, OverlayState, WidgetLayout, overlay_canvas};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use smithay_client_toolkit::reexports::calloop::ping::{Ping, make_ping};
 
 type NativeUpdate = Rc<RefCell<Option<Arc<dyn Fn() + Send + Sync>>>>;
@@ -2219,6 +2219,717 @@ pub fn document_config() -> DocumentConfig {
         base_url: Some("http://scorepeek.invalid/".into()),
         net_provider: Some(Arc::new(EmbeddedSkinAssets)),
         ..DocumentConfig::default()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VisualDebugScenario {
+    #[serde(default = "visual_debug_default_size")]
+    pub logical_size: [u32; 2],
+    #[serde(default = "visual_debug_default_scale")]
+    pub scale: f32,
+    pub canvas_id: Option<String>,
+    #[serde(default = "visual_debug_default_editing")]
+    pub editing: bool,
+    #[serde(default)]
+    pub selectors: Vec<String>,
+    #[serde(default)]
+    pub actions: Vec<VisualDebugAction>,
+}
+
+const fn visual_debug_default_size() -> [u32; 2] {
+    [1920, 1080]
+}
+
+const fn visual_debug_default_scale() -> f32 {
+    1.0
+}
+
+const fn visual_debug_default_editing() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum VisualDebugAction {
+    SetEditing {
+        value: bool,
+    },
+    Click {
+        selector: String,
+    },
+    Scroll {
+        selector: String,
+        dx: f64,
+        dy: f64,
+    },
+    Drag {
+        from: [f64; 2],
+        to: [f64; 2],
+        button: VisualDebugButton,
+    },
+    Capture {
+        name: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VisualDebugButton {
+    Left,
+    Right,
+}
+
+#[derive(Serialize)]
+struct VisualDebugManifest {
+    schema_version: u32,
+    run_id: String,
+    resource: VisualDebugResource,
+    logical_size: [u32; 2],
+    physical_size: Option<[u32; 2]>,
+    scale: f32,
+    status: &'static str,
+    completeness: &'static str,
+    operations: Vec<VisualDebugOperation>,
+    error: Option<VisualDebugError>,
+}
+
+#[derive(Serialize)]
+struct VisualDebugResource {
+    program: &'static str,
+    version: &'static str,
+    renderer: &'static str,
+}
+
+#[derive(Serialize)]
+struct VisualDebugOperation {
+    sequence: usize,
+    action: String,
+    status: &'static str,
+    image: String,
+    layout: String,
+}
+
+#[derive(Serialize)]
+struct VisualDebugError {
+    operation: String,
+    error_type: &'static str,
+    message: String,
+}
+
+#[derive(Serialize)]
+struct VisualDebugLayout {
+    schema_version: u32,
+    logical_size: [u32; 2],
+    physical_size: [u32; 2],
+    scale: f32,
+    elements: Vec<VisualDebugElement>,
+}
+
+#[derive(Serialize)]
+struct VisualDebugElement {
+    selector: String,
+    matches: Vec<[f64; 4]>,
+}
+
+struct VisualDebugSession {
+    document: DioxusDocument,
+    logical_size: [u32; 2],
+    physical_size: [u32; 2],
+    scale: f32,
+    appearance: Rc<Cell<Appearance>>,
+    widgets: Rc<RefCell<Vec<WidgetLayout>>>,
+    editing: Rc<Cell<bool>>,
+    actual_preview: Rc<Cell<bool>>,
+    panel_open: Rc<Cell<bool>>,
+    editor_tab: Rc<Cell<EditorTab>>,
+    output_open: Rc<Cell<bool>>,
+    manage_open: Rc<Cell<bool>>,
+    widget_add_open: Rc<Cell<bool>>,
+    selected: Rc<RefCell<Option<String>>>,
+    managed: Rc<RefCell<Vec<scorepeek_overlay_ui::CanvasPresentation>>>,
+    settings: Rc<RefCell<NativeCanvasSettings>>,
+    update: NativeUpdate,
+}
+
+impl VisualDebugSession {
+    #[allow(clippy::too_many_lines)]
+    fn new(scenario: &VisualDebugScenario, physical_size: [u32; 2]) -> Result<Self, String> {
+        let config = crate::config::OverlayConfig::initial();
+        let managed = config
+            .canvases
+            .into_iter()
+            .filter(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
+            .map(|canvas| canvas.presentation())
+            .collect::<Vec<_>>();
+        let selected_index = scenario
+            .canvas_id
+            .as_ref()
+            .map_or(Some(0), |id| {
+                managed.iter().position(|canvas| &canvas.id == id)
+            })
+            .ok_or_else(|| "canvas_id does not select a Wayland canvas".to_owned())?;
+        let canvas = managed
+            .get(selected_index)
+            .cloned()
+            .ok_or_else(|| "the initial Wayland workspace is empty".to_owned())?;
+        let appearance = Rc::new(Cell::new(Appearance { skin: canvas.skin }));
+        let widgets = Rc::new(RefCell::new(canvas.widgets.clone()));
+        let editing = Rc::new(Cell::new(scenario.editing));
+        let actual_preview = Rc::new(Cell::new(false));
+        let panel_open = Rc::new(Cell::new(true));
+        let editor_tab = Rc::new(Cell::new(EditorTab::Widgets));
+        let output_open = Rc::new(Cell::new(false));
+        let manage_open = Rc::new(Cell::new(false));
+        let widget_add_open = Rc::new(Cell::new(false));
+        let selected = Rc::new(RefCell::new(None));
+        let managed = Rc::new(RefCell::new(managed));
+        let settings = Rc::new(RefCell::new(NativeCanvasSettings {
+            id: canvas.id,
+            output: canvas.output,
+            show_on: canvas.show_on,
+            opacity_percent: canvas.opacity_percent,
+            x: canvas.x,
+            y: canvas.y,
+            width: canvas.width,
+            height: canvas.height,
+            preview_screen: scorepeek_overlay_ui::ScreenKind::MusicSelect,
+            panel_width: editor_panel_width(Some(scenario.logical_size[0])),
+        }));
+        let update = Rc::new(RefCell::new(None));
+        let props = NativeOverlayProps {
+            appearance: Rc::clone(&appearance),
+            widgets: Rc::clone(&widgets),
+            editing: Rc::clone(&editing),
+            actual_preview: Rc::clone(&actual_preview),
+            panel_open: Rc::clone(&panel_open),
+            editor_tab: Rc::clone(&editor_tab),
+            output_open: Rc::clone(&output_open),
+            manage_open: Rc::clone(&manage_open),
+            widget_add_open: Rc::clone(&widget_add_open),
+            dirty: Rc::new(Cell::new(false)),
+            selected: Rc::clone(&selected),
+            pending_widget: Rc::new(Cell::new(None)),
+            pending_point: Rc::new(Cell::new([0.0, 0.0])),
+            pending_delete: Rc::new(RefCell::new(None)),
+            managed: Rc::clone(&managed),
+            outputs: Rc::new(RefCell::new(vec![OutputDescription {
+                name: "HEADLESS-1".into(),
+                model: "scorepeek visual debugger".into(),
+                logical_size: Some(scenario.logical_size),
+            }])),
+            state: Rc::new(RefCell::new(scorepeek_overlay_ui::editor_sample_state())),
+            visible: Rc::new(Cell::new(true)),
+            settings: Rc::clone(&settings),
+            update: Rc::clone(&update),
+        };
+        let mut document = DioxusDocument::new(
+            VirtualDom::new_with_props(native_overlay, props),
+            document_config(),
+        );
+        document.initial_build();
+        let mut session = Self {
+            document,
+            logical_size: scenario.logical_size,
+            physical_size,
+            scale: scenario.scale,
+            appearance,
+            widgets,
+            editing,
+            actual_preview,
+            panel_open,
+            editor_tab,
+            output_open,
+            manage_open,
+            widget_add_open,
+            selected,
+            managed,
+            settings,
+            update,
+        };
+        session.resolve();
+        Ok(session)
+    }
+
+    fn resolve(&mut self) {
+        if let Some(update) = self.update.borrow().as_ref() {
+            update();
+        }
+        while self
+            .document
+            .poll(Some(TaskContext::from_waker(Waker::noop())))
+        {}
+        let mut inner = self.document.inner.borrow_mut();
+        inner.set_viewport(Viewport::new(
+            self.physical_size[0],
+            self.physical_size[1],
+            self.scale,
+            ColorScheme::Dark,
+        ));
+        inner.resolve(0.0);
+        inner.resolve(1.0);
+    }
+
+    fn click(&mut self, selector: &str) -> Result<(), String> {
+        let matched = {
+            let inner = self.document.inner.borrow();
+            inner
+                .query_selector(selector)
+                .map_err(|_| "invalid selector".to_owned())?
+                .is_some()
+        };
+        if !matched {
+            return Err(format!("selector did not match: {selector}"));
+        }
+        match selector {
+            ".native-panel-toggle" => self.panel_open.set(!self.panel_open.get()),
+            ".actual-action" => self.actual_preview.set(true),
+            ".native-return-editor" => self.actual_preview.set(false),
+            ".widget-add-summary" => self.widget_add_open.set(!self.widget_add_open.get()),
+            ".output-summary" => self.output_open.set(!self.output_open.get()),
+            ".manage-summary" => self.manage_open.set(!self.manage_open.get()),
+            _ if selector.contains("data-tab='widgets'") => {
+                self.editor_tab.set(EditorTab::Widgets);
+            }
+            _ if selector.contains("data-tab='canvas'") => self.editor_tab.set(EditorTab::Canvas),
+            _ if selector.contains("preview-screen") => {
+                let index = selector_index(selector)?;
+                let screens = [
+                    scorepeek_overlay_ui::ScreenKind::MusicSelect,
+                    scorepeek_overlay_ui::ScreenKind::ModeSelect,
+                    scorepeek_overlay_ui::ScreenKind::DecideTransition,
+                    scorepeek_overlay_ui::ScreenKind::Play,
+                    scorepeek_overlay_ui::ScreenKind::Result,
+                ];
+                self.settings.borrow_mut().preview_screen = *screens
+                    .get(index)
+                    .ok_or_else(|| "preview screen index is out of range".to_owned())?;
+            }
+            _ if selector.contains("skin-option") => {
+                let skins = [
+                    scorepeek_overlay_ui::Skin::CyanSystem,
+                    scorepeek_overlay_ui::Skin::ResultAurora,
+                    scorepeek_overlay_ui::Skin::DjBlackbox,
+                ];
+                let skin = *skins
+                    .get(selector_index(selector)?)
+                    .ok_or_else(|| "skin index is out of range".to_owned())?;
+                self.appearance.set(Appearance { skin });
+                self.sync_selected_canvas();
+            }
+            _ if selector.contains("canvas-row") => {
+                let id = selector_attribute(selector, "data-canvas-id")?;
+                let canvas = self
+                    .managed
+                    .borrow()
+                    .iter()
+                    .find(|canvas| canvas.id == id)
+                    .cloned()
+                    .ok_or_else(|| "canvas row is not in the workspace".to_owned())?;
+                self.appearance.set(Appearance { skin: canvas.skin });
+                self.widgets.borrow_mut().clone_from(&canvas.widgets);
+                let mut settings = self.settings.borrow_mut();
+                settings.id = canvas.id;
+                settings.output = canvas.output;
+                settings.show_on = canvas.show_on;
+                settings.opacity_percent = canvas.opacity_percent;
+                settings.x = canvas.x;
+                settings.y = canvas.y;
+                settings.width = canvas.width;
+                settings.height = canvas.height;
+            }
+            _ if selector.contains("widget-row") => {
+                *self.selected.borrow_mut() = Some(selector_attribute(selector, "data-widget-id")?);
+            }
+            _ => {
+                return Err(format!(
+                    "visual debugger does not implement click for: {selector}"
+                ));
+            }
+        }
+        self.resolve();
+        Ok(())
+    }
+
+    fn scroll(&mut self, selector: &str, dx: f64, dy: f64) -> Result<(), String> {
+        let mut inner = self.document.inner.borrow_mut();
+        let node = inner
+            .query_selector(selector)
+            .map_err(|_| "invalid selector".to_owned())?
+            .ok_or_else(|| format!("selector did not match: {selector}"))?;
+        inner.scroll_node_by(node, dx, dy, |_| {});
+        inner.resolve(1.0);
+        Ok(())
+    }
+
+    fn drag(
+        &mut self,
+        from: [f64; 2],
+        to: [f64; 2],
+        button: VisualDebugButton,
+    ) -> Result<(), String> {
+        if !self.editing.get() || self.actual_preview.get() {
+            return Err("drag requires the editable preview".into());
+        }
+        let panel_width = f64::from(self.settings.borrow().panel_width);
+        if from[0] < panel_width {
+            return Err("drag start is inside the editor panel".into());
+        }
+        let dx = snap_i32(to[0] - from[0]);
+        let dy = snap_i32(to[1] - from[1]);
+        match button {
+            VisualDebugButton::Right => {
+                let mut settings = self.settings.borrow_mut();
+                let inside = from[0] >= f64::from(settings.x)
+                    && from[1] >= f64::from(settings.y)
+                    && from[0] < f64::from(settings.x) + f64::from(settings.width)
+                    && from[1] < f64::from(settings.y) + f64::from(settings.height);
+                if !inside {
+                    return Err("right drag did not start on the selected canvas".into());
+                }
+                settings.x = settings.x.saturating_add(dx).clamp(
+                    0,
+                    maximum_grid_position(self.logical_size[0], settings.width),
+                );
+                settings.y = settings.y.saturating_add(dy).clamp(
+                    0,
+                    maximum_grid_position(self.logical_size[1], settings.height),
+                );
+            }
+            VisualDebugButton::Left => {
+                let settings = self.settings.borrow();
+                let local = [
+                    from[0] - f64::from(settings.x),
+                    from[1] - f64::from(settings.y),
+                ];
+                let mut widgets = self.widgets.borrow_mut();
+                let widget = widgets
+                    .iter_mut()
+                    .rfind(|widget| {
+                        local[0] >= f64::from(widget.x)
+                            && local[1] >= f64::from(widget.y)
+                            && local[0]
+                                < f64::from(
+                                    widget.x + i32::try_from(widget.width).unwrap_or(i32::MAX),
+                                )
+                            && local[1]
+                                < f64::from(
+                                    widget.y + i32::try_from(widget.height).unwrap_or(i32::MAX),
+                                )
+                    })
+                    .ok_or_else(|| "left drag did not start on a widget".to_owned())?;
+                widget.x = widget.x.saturating_add(dx).clamp(
+                    0,
+                    i32::try_from(settings.width.saturating_sub(widget.width)).unwrap_or(i32::MAX),
+                );
+                widget.y = widget.y.saturating_add(dy).clamp(
+                    0,
+                    i32::try_from(settings.height.saturating_sub(widget.height))
+                        .unwrap_or(i32::MAX),
+                );
+                *self.selected.borrow_mut() = Some(widget.id.clone());
+            }
+        }
+        self.sync_selected_canvas();
+        self.resolve();
+        Ok(())
+    }
+
+    fn sync_selected_canvas(&self) {
+        let settings = self.settings.borrow();
+        let widgets = self.widgets.borrow();
+        if let Some(canvas) = self
+            .managed
+            .borrow_mut()
+            .iter_mut()
+            .find(|canvas| canvas.id == settings.id)
+        {
+            canvas.skin = self.appearance.get().skin;
+            canvas.widgets.clone_from(&widgets);
+            canvas.x = settings.x;
+            canvas.y = settings.y;
+            canvas.width = settings.width;
+            canvas.height = settings.height;
+        }
+    }
+
+    fn render(&mut self, path: &std::path::Path) -> Result<(), String> {
+        use anyrender::ImageRenderer as _;
+        let mut renderer =
+            anyrender_vello::VelloImageRenderer::new(self.physical_size[0], self.physical_size[1]);
+        let mut pixels = Vec::new();
+        let mut inner = self.document.inner.borrow_mut();
+        renderer.render_to_vec(
+            |scene| {
+                paint_scene(
+                    scene,
+                    &mut inner,
+                    f64::from(self.scale),
+                    self.physical_size[0],
+                    self.physical_size[1],
+                    0,
+                    0,
+                );
+            },
+            &mut pixels,
+        );
+        image::save_buffer_with_format(
+            path,
+            &pixels,
+            self.physical_size[0],
+            self.physical_size[1],
+            image::ColorType::Rgba8,
+            image::ImageFormat::Png,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    fn layout(&self, selectors: &[String]) -> Result<VisualDebugLayout, String> {
+        let inner = self.document.inner.borrow();
+        let mut elements = Vec::with_capacity(selectors.len());
+        for selector in selectors {
+            let nodes = inner
+                .query_selector_all(selector)
+                .map_err(|_| format!("invalid selector: {selector}"))?;
+            let matches = nodes
+                .iter()
+                .filter_map(|node| inner.get_client_bounding_rect(*node))
+                .map(|rect| [rect.x, rect.y, rect.width, rect.height])
+                .collect();
+            elements.push(VisualDebugElement {
+                selector: selector.clone(),
+                matches,
+            });
+        }
+        Ok(VisualDebugLayout {
+            schema_version: 1,
+            logical_size: self.logical_size,
+            physical_size: self.physical_size,
+            scale: self.scale,
+            elements,
+        })
+    }
+}
+
+fn visual_debug_physical_size(logical_size: [u32; 2], scale: f32) -> Result<[u32; 2], String> {
+    fn scaled(logical: u32, scale: f32) -> Result<u32, String> {
+        let physical = (f64::from(logical) * f64::from(scale)).ceil();
+        if !physical.is_finite() || physical <= 0.0 || physical > f64::from(u32::MAX) {
+            Err("scaled physical size is out of range".to_owned())
+        } else {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Ok(physical as u32)
+        }
+    }
+
+    if logical_size.contains(&0) || !scale.is_finite() || scale <= 0.0 {
+        return Err("logical size and scale must be positive".into());
+    }
+
+    Ok([
+        scaled(logical_size[0], scale)?,
+        scaled(logical_size[1], scale)?,
+    ])
+}
+
+fn validate_visual_debug_scenario(scenario: &VisualDebugScenario) -> Result<[u32; 2], String> {
+    let physical_size = visual_debug_physical_size(scenario.logical_size, scenario.scale)?;
+    if let Some(canvas_id) = scenario.canvas_id.as_ref()
+        && !crate::config::OverlayConfig::initial()
+            .canvases
+            .iter()
+            .any(|canvas| {
+                canvas.backend == crate::runtime::Backend::Wayland && canvas.id == *canvas_id
+            })
+    {
+        return Err("canvas_id does not select a Wayland canvas".into());
+    }
+    Ok(physical_size)
+}
+
+fn selector_index(selector: &str) -> Result<usize, String> {
+    selector_attribute(selector, "data-index")?
+        .parse()
+        .map_err(|_| "selector data-index must be an integer".to_owned())
+}
+
+fn selector_attribute(selector: &str, name: &str) -> Result<String, String> {
+    let prefix = format!("{name}='");
+    let start = selector
+        .find(&prefix)
+        .map(|position| position + prefix.len())
+        .ok_or_else(|| format!("selector must include {name}='…'"))?;
+    let end = selector[start..]
+        .find('\'')
+        .map(|position| start + position)
+        .ok_or_else(|| format!("selector must close {name}"))?;
+    Ok(selector[start..end].to_owned())
+}
+
+/// Runs the deterministic native visual debugger without connecting to Wayland.
+///
+/// The output directory must not exist. Every operation produces a PNG and a selector-layout JSON;
+/// `manifest.json` correlates them and records a typed failure when the scenario stops early.
+///
+/// # Errors
+/// Returns a scenario, interaction, rendering, or artifact-write error after recording it in the
+/// run manifest whenever the output directory was created successfully.
+#[allow(clippy::too_many_lines)]
+pub fn run_visual_debug(
+    scenario: &VisualDebugScenario,
+    output: &std::path::Path,
+) -> Result<(), String> {
+    std::fs::create_dir(output).map_err(|error| format!("create output directory: {error}"))?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let physical_size = validate_visual_debug_scenario(scenario);
+    let scenario_invalid = physical_size.is_err();
+    let mut manifest = VisualDebugManifest {
+        schema_version: 1,
+        run_id: format!("{timestamp}-{}", std::process::id()),
+        resource: VisualDebugResource {
+            program: "scorepeek-overlay-native-visual-debug",
+            version: env!("CARGO_PKG_VERSION"),
+            renderer: "dioxus-native-dom/blitz/vello",
+        },
+        logical_size: scenario.logical_size,
+        physical_size: physical_size.as_ref().ok().copied(),
+        scale: scenario.scale,
+        status: "running",
+        completeness: "partial",
+        operations: Vec::new(),
+        error: None,
+    };
+    let result: Result<(), String> = (|| {
+        let validated_physical_size = physical_size.as_ref().map_err(Clone::clone)?;
+        let mut session = VisualDebugSession::new(scenario, *validated_physical_size)?;
+        let selectors = if scenario.selectors.is_empty() {
+            [
+                ".canvas-content",
+                ".overlay-canvas",
+                ".widget-slot",
+                ".native-panel-toggle",
+                ".native-canvas-manager",
+                ".editor-tab-body",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+        } else {
+            scenario.selectors.clone()
+        };
+        capture_visual_debug(
+            &mut session,
+            output,
+            &selectors,
+            &mut manifest,
+            0,
+            "initial",
+        )?;
+        for (index, action) in scenario.actions.iter().enumerate() {
+            let name = match action {
+                VisualDebugAction::SetEditing { value } => {
+                    session.editing.set(*value);
+                    session.resolve();
+                    format!("set-editing-{value}")
+                }
+                VisualDebugAction::Click { selector } => {
+                    session.click(selector)?;
+                    "click".into()
+                }
+                VisualDebugAction::Scroll { selector, dx, dy } => {
+                    session.scroll(selector, *dx, *dy)?;
+                    "scroll".into()
+                }
+                VisualDebugAction::Drag { from, to, button } => {
+                    session.drag(*from, *to, *button)?;
+                    "drag".into()
+                }
+                VisualDebugAction::Capture { name } => sanitize_artifact_name(name),
+            };
+            capture_visual_debug(
+                &mut session,
+                output,
+                &selectors,
+                &mut manifest,
+                index + 1,
+                &name,
+            )?;
+        }
+        Ok(())
+    })();
+    match &result {
+        Ok(()) => {
+            manifest.status = "success";
+            manifest.completeness = "complete";
+        }
+        Err(message) => {
+            manifest.status = "error";
+            manifest.error = Some(VisualDebugError {
+                operation: format!("operation-{}", manifest.operations.len()),
+                error_type: if scenario_invalid {
+                    "scenario_invalid"
+                } else if message.contains("selector") || message.contains("drag") {
+                    "interaction_target_invalid"
+                } else {
+                    "artifact_write_failed"
+                },
+                message: message.clone(),
+            });
+        }
+    }
+    let bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
+    std::fs::write(output.join("manifest.json"), bytes)
+        .map_err(|error| format!("write manifest: {error}"))?;
+    result
+}
+
+fn capture_visual_debug(
+    session: &mut VisualDebugSession,
+    output: &std::path::Path,
+    selectors: &[String],
+    manifest: &mut VisualDebugManifest,
+    sequence: usize,
+    name: &str,
+) -> Result<(), String> {
+    let stem = format!("{sequence:03}-{}", sanitize_artifact_name(name));
+    let image_name = format!("{stem}.png");
+    let layout_name = format!("{stem}.layout.json");
+    session.render(&output.join(&image_name))?;
+    let layout = session.layout(selectors)?;
+    std::fs::write(
+        output.join(&layout_name),
+        serde_json::to_vec_pretty(&layout).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    manifest.operations.push(VisualDebugOperation {
+        sequence,
+        action: name.to_owned(),
+        status: "success",
+        image: image_name,
+        layout: layout_name,
+    });
+    Ok(())
+}
+
+fn sanitize_artifact_name(name: &str) -> String {
+    let sanitized = name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "capture".into()
+    } else {
+        sanitized
     }
 }
 
