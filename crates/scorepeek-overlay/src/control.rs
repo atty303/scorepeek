@@ -54,6 +54,12 @@ pub enum Request {
         expected_revision: u64,
         output: String,
     },
+    SetUnknownGrace {
+        canvas_id: String,
+        editor_id: String,
+        expected_revision: u64,
+        unknown_grace_ms: u32,
+    },
     ListCanvases {
         backend: Backend,
     },
@@ -90,6 +96,8 @@ pub struct Response {
     #[serde(default)]
     pub canvases: Vec<CanvasSummary>,
     pub backend_revision: Option<u64>,
+    pub settings_revision: Option<u64>,
+    pub unknown_grace_ms: Option<u32>,
 }
 
 struct Lease {
@@ -180,6 +188,8 @@ fn handle(mut stream: UnixStream, path: &Path, shared: &Mutex<State>) {
             error: Some(error),
             canvases: Vec::new(),
             backend_revision: None,
+            settings_revision: None,
+            unknown_grace_ms: None,
         });
     if let Ok(mut bytes) = serde_json::to_vec(&response) {
         bytes.push(b'\n');
@@ -235,6 +245,8 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
                 error: None,
                 canvases: Vec::new(),
                 backend_revision: None,
+                settings_revision: Some(state.config.settings_revision),
+                unknown_grace_ms: Some(state.config.unknown_grace_ms),
             })
         }
         Request::KeepAlive {
@@ -254,6 +266,8 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
                 error: None,
                 canvases: Vec::new(),
                 backend_revision: None,
+                settings_revision: None,
+                unknown_grace_ms: None,
             })
         }
         Request::Release {
@@ -274,6 +288,8 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
                 error: None,
                 canvases: Vec::new(),
                 backend_revision: None,
+                settings_revision: None,
+                unknown_grace_ms: None,
             })
         }
         Request::ReplaceCanvas {
@@ -303,6 +319,9 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
             }
             let mut canvas = current.clone();
             canvas.skin = presentation.skin;
+            canvas.show_on.clone_from(&presentation.show_on);
+            canvas.opacity_percent = presentation.opacity_percent;
+            canvas.z = presentation.z;
             canvas.widgets = presentation
                 .widgets
                 .iter()
@@ -350,6 +369,8 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
                 error: None,
                 canvases: Vec::new(),
                 backend_revision: None,
+                settings_revision: None,
+                unknown_grace_ms: None,
             })
         }
         Request::SetGeometry {
@@ -399,6 +420,8 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
                 error: None,
                 canvases: Vec::new(),
                 backend_revision: None,
+                settings_revision: None,
+                unknown_grace_ms: None,
             })
         }
         Request::SetOutput {
@@ -441,6 +464,43 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
                 error: None,
                 canvases: Vec::new(),
                 backend_revision: None,
+                settings_revision: None,
+                unknown_grace_ms: None,
+            })
+        }
+        Request::SetUnknownGrace {
+            canvas_id,
+            editor_id,
+            expected_revision,
+            unknown_grace_ms,
+        } => {
+            let lease = state
+                .leases
+                .get_mut(&canvas_id)
+                .filter(|lease| lease.editor_id == editor_id)
+                .ok_or("editor lease lost")?;
+            lease.touched = Instant::now();
+            if state.config.settings_revision != expected_revision {
+                return Err("overlay settings revision conflict".into());
+            }
+            if unknown_grace_ms > 10_000 {
+                return Err("overlay unknown_grace_ms must be at most 10000".into());
+            }
+            let previous = state.config.clone();
+            state.config.unknown_grace_ms = unknown_grace_ms;
+            state.config.settings_revision = expected_revision
+                .checked_add(1)
+                .ok_or("overlay settings revision exhausted")?;
+            persist_or_rollback(path, &mut state.config, previous)?;
+            Ok(Response {
+                ok: true,
+                readonly: false,
+                canvas: None,
+                error: None,
+                canvases: Vec::new(),
+                backend_revision: None,
+                settings_revision: Some(state.config.settings_revision),
+                unknown_grace_ms: Some(state.config.unknown_grace_ms),
             })
         }
         Request::ListCanvases { backend } => Ok(manager_response(&state.config, backend)),
@@ -536,6 +596,8 @@ fn manager_response(config: &OverlayConfig, backend: Backend) -> Response {
             })
             .collect(),
         backend_revision: Some(config.backend_revisions.get(backend)),
+        settings_revision: Some(config.settings_revision),
+        unknown_grace_ms: Some(config.unknown_grace_ms),
     }
 }
 
@@ -577,7 +639,7 @@ mod tests {
         });
         let first = apply(
             Request::Acquire {
-                canvas_id: "obs-main".into(),
+                canvas_id: "obs-status".into(),
                 editor_id: "first".into(),
             },
             &path,
@@ -587,7 +649,7 @@ mod tests {
         assert!(!first.readonly);
         let second = apply(
             Request::Acquire {
-                canvas_id: "obs-main".into(),
+                canvas_id: "obs-status".into(),
                 editor_id: "second".into(),
             },
             &path,
@@ -599,7 +661,7 @@ mod tests {
         presentation.skin = scorepeek_overlay_ui::Skin::DjBlackbox;
         let saved = apply(
             Request::ReplaceCanvas {
-                canvas_id: "obs-main".into(),
+                canvas_id: "obs-status".into(),
                 editor_id: "first".into(),
                 expected_revision: presentation.revision,
                 presentation,
@@ -612,7 +674,7 @@ mod tests {
         assert!(
             apply(
                 Request::SetGeometry {
-                    canvas_id: "obs-main".into(),
+                    canvas_id: "obs-status".into(),
                     editor_id: "first".into(),
                     expected_revision: 0,
                     x: 0,
@@ -649,7 +711,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(added.backend_revision, Some(1));
-        assert_eq!(added.canvases.len(), 2);
+        assert_eq!(added.canvases.len(), 5);
         assert!(
             apply(
                 Request::DeleteCanvas {
@@ -677,8 +739,56 @@ mod tests {
                 Request::SetCanvasEnabled {
                     backend: Backend::Obs,
                     expected_revision: 2,
-                    canvas_id: "obs-main".into(),
+                    canvas_id: "obs-missing".into(),
                     enabled: false,
+                },
+                &path,
+                &shared,
+            )
+            .is_err()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn global_grace_uses_its_own_revision_under_a_canvas_lease() {
+        let root =
+            std::env::temp_dir().join(format!("scorepeek-overlay-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("overlay.toml");
+        let shared = Mutex::new(State {
+            config: OverlayConfig::initial(),
+            leases: BTreeMap::new(),
+        });
+        apply(
+            Request::Acquire {
+                canvas_id: "wayland-status".into(),
+                editor_id: "editor".into(),
+            },
+            &path,
+            &shared,
+        )
+        .unwrap();
+        let changed = apply(
+            Request::SetUnknownGrace {
+                canvas_id: "wayland-status".into(),
+                editor_id: "editor".into(),
+                expected_revision: 0,
+                unknown_grace_ms: 2_000,
+            },
+            &path,
+            &shared,
+        )
+        .unwrap();
+        assert_eq!(changed.settings_revision, Some(1));
+        assert_eq!(changed.unknown_grace_ms, Some(2_000));
+        assert!(
+            apply(
+                Request::SetUnknownGrace {
+                    canvas_id: "wayland-status".into(),
+                    editor_id: "editor".into(),
+                    expected_revision: 0,
+                    unknown_grace_ms: 500,
                 },
                 &path,
                 &shared,

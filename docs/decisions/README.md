@@ -370,6 +370,9 @@ authoritative.
 
 - [ADR 0122: Add independent native and OBS live overlays](0122-add-live-overlay-consumers.md)
   adds same-executable child consumers and shared presentation without changing event/save authority.
+- [ADR 0127: Switch overlay canvases by semantic screen](0127-switch-overlay-canvases-by-semantic-screen.md)
+  adds schema-v2 screen filters, shared Wayland visibility, opacity/cursor behavior and the full-screen
+  OBS canvas stage.
 
 ## Historical
 

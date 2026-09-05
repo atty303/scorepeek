@@ -8,12 +8,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OverlayConfig {
     pub schema_version: u32,
+    #[serde(default)]
+    pub settings_revision: u64,
+    #[serde(default = "default_unknown_grace_ms")]
+    pub unknown_grace_ms: u32,
     #[serde(default)]
     pub backend_revisions: BackendRevisions,
     #[serde(default = "default_listen")]
@@ -62,6 +66,12 @@ pub struct Canvas {
     pub enabled: bool,
     #[serde(default)]
     pub skin: Skin,
+    #[serde(default)]
+    pub show_on: Option<Vec<scorepeek_overlay_ui::ScreenKind>>,
+    #[serde(default = "default_opacity_percent")]
+    pub opacity_percent: u8,
+    #[serde(default)]
+    pub z: u32,
     #[serde(default)]
     pub output: Option<String>,
     #[serde(default)]
@@ -152,12 +162,14 @@ impl OverlayConfig {
     pub fn initial() -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
+            settings_revision: 0,
+            unknown_grace_ms: default_unknown_grace_ms(),
             backend_revisions: BackendRevisions::default(),
             obs_listen: default_listen(),
-            canvases: vec![
-                initial_canvas("wayland-main", Backend::Wayland),
-                initial_canvas("obs-main", Backend::Obs),
-            ],
+            canvases: [Backend::Wayland, Backend::Obs]
+                .into_iter()
+                .flat_map(initial_canvases)
+                .collect(),
         }
     }
 
@@ -167,6 +179,9 @@ impl OverlayConfig {
     pub fn validated(&self) -> Result<(Vec<Canvas>, Vec<ConfigIssue>), String> {
         if self.schema_version != SCHEMA_VERSION {
             return Err(format!("overlay schema_version must be {SCHEMA_VERSION}"));
+        }
+        if self.unknown_grace_ms > 10_000 {
+            return Err("overlay unknown_grace_ms must be at most 10000".into());
         }
         let listen = self
             .obs_listen
@@ -213,6 +228,9 @@ impl Canvas {
             id: self.id.clone(),
             skin: self.skin,
             revision: self.revision,
+            show_on: self.show_on.clone(),
+            opacity_percent: self.opacity_percent,
+            z: self.z,
             widgets: self
                 .widgets
                 .iter()
@@ -242,6 +260,9 @@ impl Canvas {
     pub fn apply_presentation(&mut self, presentation: &scorepeek_overlay_ui::CanvasPresentation) {
         self.skin = presentation.skin;
         self.revision = presentation.revision;
+        self.show_on.clone_from(&presentation.show_on);
+        self.opacity_percent = presentation.opacity_percent;
+        self.z = presentation.z;
         self.widgets = presentation
             .widgets
             .iter()
@@ -345,6 +366,15 @@ fn validate_canvas(canvas: &Canvas, canvas_ids: &mut BTreeSet<String>) -> Result
     if canvas.width < 32 || canvas.height < 32 {
         return Err("canvas dimensions must be at least 32x32".into());
     }
+    if canvas.show_on.as_ref().is_some_and(Vec::is_empty) {
+        return Err("canvas show_on must be omitted or non-empty".into());
+    }
+    if canvas.opacity_percent == 0 || canvas.opacity_percent > 100 {
+        return Err("canvas opacity_percent must be between 1 and 100".into());
+    }
+    if canvas.backend == Backend::Obs && canvas.opacity_percent != 100 {
+        return Err("OBS canvas opacity_percent must be 100".into());
+    }
     if canvas.x % 4 != 0
         || canvas.y % 4 != 0
         || !canvas.width.is_multiple_of(4)
@@ -386,7 +416,82 @@ fn validate_canvas(canvas: &Canvas, canvas_ids: &mut BTreeSet<String>) -> Result
     Ok(())
 }
 
-fn initial_canvas(id: &str, backend: Backend) -> Canvas {
+fn initial_canvases(backend: Backend) -> Vec<Canvas> {
+    use scorepeek_overlay_ui::ScreenKind;
+    let prefix = match backend {
+        Backend::Wayland => "wayland",
+        Backend::Obs => "obs",
+    };
+    let x = if backend == Backend::Obs { 1340 } else { 20 };
+    vec![
+        initial_canvas(
+            format!("{prefix}-status"),
+            backend,
+            x,
+            20,
+            560,
+            72,
+            None,
+            100,
+            vec![("status", WidgetKind::Status, 0, 0)],
+        ),
+        initial_canvas(
+            format!("{prefix}-selection"),
+            backend,
+            x,
+            100,
+            560,
+            960,
+            Some(vec![ScreenKind::MusicSelect]),
+            10,
+            dashboard_widgets(),
+        ),
+        initial_canvas(
+            format!("{prefix}-play"),
+            backend,
+            x,
+            100,
+            560,
+            120,
+            Some(vec![ScreenKind::DecideTransition, ScreenKind::Play]),
+            10,
+            vec![("selection", WidgetKind::Selection, 0, 0)],
+        ),
+        initial_canvas(
+            format!("{prefix}-result"),
+            backend,
+            x,
+            100,
+            560,
+            960,
+            Some(vec![ScreenKind::Result]),
+            10,
+            dashboard_widgets(),
+        ),
+    ]
+}
+
+fn dashboard_widgets() -> Vec<(&'static str, WidgetKind, i32, i32)> {
+    vec![
+        ("selection", WidgetKind::Selection, 0, 0),
+        ("score", WidgetKind::Score, 0, 128),
+        ("history-list", WidgetKind::HistoryList, 0, 436),
+        ("history-graph", WidgetKind::HistoryGraph, 0, 680),
+    ]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn initial_canvas(
+    id: String,
+    backend: Backend,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    show_on: Option<Vec<scorepeek_overlay_ui::ScreenKind>>,
+    z: u32,
+    widgets: Vec<(&str, WidgetKind, i32, i32)>,
+) -> Canvas {
     let widget = |id: &str, kind, x, y, width, height, z| Widget {
         id: id.into(),
         kind,
@@ -398,32 +503,42 @@ fn initial_canvas(id: &str, backend: Backend) -> Canvas {
         settings: WidgetSettings::default(),
     };
     Canvas {
-        id: id.into(),
+        id,
         backend,
         enabled: true,
         skin: Skin::CyanSystem,
+        show_on,
+        opacity_percent: 100,
+        z,
         output: None,
         initial_placement: (backend == Backend::Wayland).then_some(InitialPlacement::UpperRight),
-        x: 20,
-        y: 20,
-        width: default_width(),
-        height: default_height(),
+        x,
+        y,
+        width,
+        height,
         revision: 0,
-        widgets: vec![
-            widget("status", WidgetKind::Status, 0, 0, 560, 72, 0),
-            widget("selection", WidgetKind::Selection, 0, 80, 560, 120, 1),
-            widget("score", WidgetKind::Score, 0, 208, 560, 300, 2),
-            widget("history-list", WidgetKind::HistoryList, 0, 516, 560, 236, 3),
-            widget(
-                "history-graph",
-                WidgetKind::HistoryGraph,
-                0,
-                760,
-                560,
-                280,
-                4,
-            ),
-        ],
+        widgets: widgets
+            .into_iter()
+            .enumerate()
+            .map(|(z, (id, kind, x, y))| {
+                let (width, height) = scorepeek_overlay_ui::default_widget_size(match kind {
+                    WidgetKind::Status => scorepeek_overlay_ui::WidgetKind::Status,
+                    WidgetKind::Selection => scorepeek_overlay_ui::WidgetKind::Selection,
+                    WidgetKind::Score => scorepeek_overlay_ui::WidgetKind::Score,
+                    WidgetKind::HistoryList => scorepeek_overlay_ui::WidgetKind::HistoryList,
+                    WidgetKind::HistoryGraph => scorepeek_overlay_ui::WidgetKind::HistoryGraph,
+                });
+                widget(
+                    id,
+                    kind,
+                    x,
+                    y,
+                    width,
+                    height,
+                    u32::try_from(z).unwrap_or(u32::MAX),
+                )
+            })
+            .collect(),
     }
 }
 
@@ -434,6 +549,9 @@ pub fn empty_canvas(id: String, backend: Backend) -> Canvas {
         backend,
         enabled: true,
         skin: Skin::CyanSystem,
+        show_on: None,
+        opacity_percent: 100,
+        z: 0,
         output: None,
         initial_placement: None,
         x: 20,
@@ -453,6 +571,12 @@ const fn default_width() -> u32 {
 }
 const fn default_height() -> u32 {
     1040
+}
+const fn default_unknown_grace_ms() -> u32 {
+    1_000
+}
+const fn default_opacity_percent() -> u8 {
+    100
 }
 const fn default_history_count() -> u32 {
     5
@@ -493,7 +617,7 @@ mod tests {
             ..config.canvases[0].clone()
         });
         let (valid, issues) = config.validated().unwrap();
-        assert_eq!(valid.len(), 2);
+        assert_eq!(valid.len(), 8);
         assert_eq!(issues.len(), 1);
     }
 
@@ -509,7 +633,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(&path, toml::to_string(&config).unwrap()).unwrap();
         let (loaded, issues) = load_or_create(&path).unwrap();
-        assert_eq!(loaded.canvases.len(), 2);
+        assert_eq!(loaded.canvases.len(), 8);
         assert_eq!(issues.len(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -532,7 +656,7 @@ mod tests {
         invalid.widgets[0].x = 1;
         config.canvases.push(invalid);
         let (valid, issues) = config.validated().unwrap();
-        assert_eq!(valid.len(), 2);
+        assert_eq!(valid.len(), 8);
         assert_eq!(issues[0].canvas_id, "wayland-off-grid");
         assert!(issues[0].message.contains("4px grid"));
     }
@@ -553,5 +677,62 @@ mod tests {
         let (loaded, _) = load_or_create(&path).unwrap();
         assert_eq!(loaded, created);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn schema_v1_is_rejected_without_migration() {
+        let mut config = OverlayConfig::initial();
+        config.schema_version = 1;
+        assert_eq!(
+            config.validated().unwrap_err(),
+            "overlay schema_version must be 2"
+        );
+    }
+
+    #[test]
+    fn initial_config_has_four_screen_layouts_per_backend() {
+        let config = OverlayConfig::initial();
+        for backend in [Backend::Wayland, Backend::Obs] {
+            let canvases = config
+                .canvases
+                .iter()
+                .filter(|canvas| canvas.backend == backend)
+                .collect::<Vec<_>>();
+            assert_eq!(canvases.len(), 4);
+            assert_eq!(
+                canvases
+                    .iter()
+                    .filter(|canvas| canvas.show_on.is_none())
+                    .count(),
+                1
+            );
+            assert!(canvases.iter().any(|canvas| {
+                canvas.show_on.as_deref() == Some(&[scorepeek_overlay_ui::ScreenKind::MusicSelect])
+            }));
+        }
+    }
+
+    #[test]
+    fn visibility_and_opacity_are_strict() {
+        let mut empty = OverlayConfig::initial();
+        empty.canvases[0].show_on = Some(Vec::new());
+        assert!(empty.validated().unwrap().1[0].message.contains("show_on"));
+
+        let mut transparent = OverlayConfig::initial();
+        transparent.canvases[0].opacity_percent = 0;
+        assert!(
+            transparent.validated().unwrap().1[0]
+                .message
+                .contains("opacity")
+        );
+
+        let mut obs = OverlayConfig::initial();
+        let canvas = obs
+            .canvases
+            .iter_mut()
+            .find(|canvas| canvas.backend == Backend::Obs)
+            .unwrap();
+        canvas.opacity_percent = 50;
+        assert!(obs.validated().unwrap().1[0].message.contains("OBS"));
     }
 }

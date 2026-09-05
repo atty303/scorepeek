@@ -747,18 +747,19 @@ SELECTは譜面・項目別の現在補完値として保持し、revision履歴
 `--scores-db PATH`でrun単位の保存先を選び、`--no-scores`で無効化する。保存失敗は認識と配信へ干渉させない。
 日時、schema、出典、transaction、queueと終了上限はADR 0120を原典とする。過去記録importと照会CLIは含めない。
 
-### Live Overlay canvas（ADR 0122 / 0125）
+### Live Overlay canvas（ADR 0122 / 0125 / 0127）
 
 配布binaryは`scorepeek`だけとし、`run --overlay-wayland`と`run --overlay-obs`で独立consumerを有効化する。
-`--overlay-config PATH`はschema v1のTOMLを選び、未指定時は`$XDG_CONFIG_HOME/scorepeek/overlay.toml`を使う。
-未作成ならWayland/OBS各1枚、560x1040、5 widgetの初期canvasをatomicに作成する。Wayland初期canvasは選択outputの右上から20px内側に置く。backendはcanvas作成後に変更しない。
+`--overlay-config PATH`はschema v2のTOMLを選び、未指定時は`$XDG_CONFIG_HOME/scorepeek/overlay.toml`を使う。schema v1はmigrationせず拒否する。
+未作成ならWayland/OBSそれぞれに常時status、MUSIC SELECT dashboard、DECIDE/PLAY compact selection、RESULT dashboardの4 canvasをatomicに作成する。Wayland初期canvasは選択outputの右上から20px内側に置く。backendはcanvas作成後に変更しない。
 global/schema errorは全体を拒否し、個別canvas errorはそのcanvasだけを隔離する。各backendはvalidかつenabledなcanvasを1枚以上保持する。
 
 Waylandは有効canvasごとのlayer surfaceを1 child内で所有し、TOMLのoutput、論理座標とsizeを適用する。
-OBSは1 HTTP childが`/canvas/<id>`の安定URLを配信し、外枠sizeはBrowser Source viewportに従う。
+OBSは1 HTTP childが`/canvas/<id>`の安定URLと、複数canvasを論理pixel座標・z順で配置する全画面`/overlay`を配信する。viewport外はclipする。
 通常表示はwidget外を透明にする。Waylandは入力を常時受け、通常の左dragでcanvasを移動する。
 OBSの通常dragは永続座標を変更せず、OBS Transformに任せる。どちらも右clickで同じcanvas内editorへ入り、DONEだけで終了する。
 editorはwidget追加・削除・移動・resize、skin、履歴件数、graph期間を編集する。位置とsizeは常時4px gridへ揃え、canvas/他widgetの端と中心にもsnapする。
+canvasの`show_on`はmusic-select/mode-select/decide-transition/play/resultを複数選択でき、省略時は常時表示する。UNKNOWNとsocket切断は既定1000msのglobal grace後に非表示とし、既知screenは即時切替、session終了は即時非表示にする。Waylandは1 feed/clockを共有し、非表示surfaceを透明commit・空input region・idleにする。Wayland contentの`opacity_percent`は1–100、OBSは100固定とする。cursor-shape protocolと24px fallback cursorをeditor状態に応じて表示する。
 font sizeと内部layoutは固定し、縮小時は余白を減らした後にclipする。per-canvas lease、canvas revision、backend-list revisionで競合を拒否する。
 parentだけがtyped controlを受け、検証後にTOMLをatomic replaceし、失敗時はmemory stateもrollbackする。
 

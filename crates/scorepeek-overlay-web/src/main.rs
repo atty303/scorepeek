@@ -38,6 +38,8 @@ fn app() -> Element {
     let mut pending_new = use_signal(|| None::<WidgetKind>);
     let mut managed_canvases = use_signal(Vec::<CanvasSummary>::new);
     let mut backend_revision = use_signal(|| 0_u64);
+    let mut settings_revision = use_signal(|| 0_u64);
+    let mut unknown_grace_ms = use_signal(|| 1000_u32);
     let editor_id = use_hook(|| {
         format!(
             "browser-{}",
@@ -65,6 +67,12 @@ fn app() -> Element {
                     backend_revision.set(revision);
                     managed_canvases.set(response.canvases);
                 }
+                if let Some(revision) = response.settings_revision {
+                    settings_revision.set(revision);
+                }
+                if let Some(value) = response.unknown_grace_ms {
+                    unknown_grace_ms.set(value);
+                }
             },
             move || {
                 let mut next = unavailable_canvas();
@@ -82,6 +90,7 @@ fn app() -> Element {
             editing.set(true);
             connection.acquire(&editor_id);
             connection.list_canvases();
+            notify_parent("editing", &canvas().id);
         }
     };
     let done = {
@@ -92,6 +101,7 @@ fn app() -> Element {
             editing.set(false);
             selected.set(None);
             drag.set(None);
+            notify_parent("done", &canvas().id);
         }
     };
     let moving = move |event: Event<PointerData>| {
@@ -206,9 +216,13 @@ fn app() -> Element {
             .find(|widget| &widget.id == id)
             .cloned()
     });
+    let shown = editing()
+        || scorepeek_overlay_ui::canvas_visible(canvas().show_on.as_deref(), state().screen);
     rsx! {
         div { class:"overlay-root",oncontextmenu:enter,onpointermove:moving,onpointerup:finish,ondragover:move|event|event.prevent_default(),ondrop:drop_widget,
-            {overlay_canvas(&state.read(),Appearance{skin:canvas().skin},&canvas().widgets,editing(),selected_id.as_deref())}
+            div { style:if shown{"display:block"}else{"display:none"},
+                {overlay_canvas(&state.read(),Appearance{skin:canvas().skin},&canvas().widgets,editing(),selected_id.as_deref())}
+            }
             if editing() {
                 div { class:"editor-toolbar",strong{"CANVAS EDIT"}
                     for (label,skin) in [("CYAN",scorepeek_overlay_ui::Skin::CyanSystem),("AURORA",scorepeek_overlay_ui::Skin::ResultAurora),("BLACKBOX",scorepeek_overlay_ui::Skin::DjBlackbox)] { button { disabled:readonly(),onclick:{let connection=Rc::clone(&connection);let editor_id=editor_id.clone();move|_|{let mut next=canvas();next.skin=skin;canvas.set(next.clone());connection.replace(&editor_id,&next);}},"{label}"} }
@@ -216,7 +230,7 @@ fn app() -> Element {
                 }
                 div { class:"widget-palette",strong{"WIDGETS"} for kind in [WidgetKind::Status,WidgetKind::Selection,WidgetKind::Score,WidgetKind::HistoryList,WidgetKind::HistoryGraph] { button { draggable:!readonly(),ondragstart:move|_|pending_new.set(Some(kind)),"{kind_name(kind)}" } } }
                 div { class:"canvas-manager", strong { "OBS CANVASES" }
-                    for item in managed_canvases() { a { href:format!("/canvas/{}",item.id), class:if item.id==canvas().id{"current"}else{""}, "{item.id}" } }
+                    for item in managed_canvases() { a { href:format!("/canvas/{}",item.id), class:if item.id==canvas().id{"current"}else{""}, onclick:{let id=item.id.clone();move|event|if is_framed(){event.prevent_default();notify_parent("select",&id)}}, "{item.id}" } }
                     button { disabled:readonly(), onclick:{let connection=Rc::clone(&connection);move|_|connection.add_canvas(backend_revision())}, "ADD EMPTY" }
                     button { disabled:readonly() || managed_canvases().len() <= 1, onclick:{let connection=Rc::clone(&connection);let id=canvas().id.clone();move|_|connection.delete_canvas(backend_revision(),&id)}, "DELETE CURRENT" }
                     button { disabled:readonly(), onclick:{let connection=Rc::clone(&connection);let id=canvas().id.clone();let enabled=managed_canvases().iter().find(|item|item.id==id).is_none_or(|item|item.enabled);move|_|connection.set_enabled(backend_revision(),&id,!enabled)}, "ENABLE / DISABLE" }
@@ -232,7 +246,14 @@ fn app() -> Element {
                     if widget.kind == WidgetKind::HistoryGraph { span { "RANGE" } div { class:"setting-options", for value in [1,3,6,12] { button { disabled:readonly() || widget.settings.graph_months == value, onclick:{let connection=Rc::clone(&connection);let editor_id=editor_id.clone();let id=widget.id.clone();move|_|{let mut next=canvas();if let Some(w)=next.widgets.iter_mut().find(|w|w.id==id){w.settings.graph_months=value}canvas.set(next.clone());connection.replace(&editor_id,&next);}},"{value}M" } } } }
                     button { disabled:readonly(),onclick:{let connection=Rc::clone(&connection);let editor_id=editor_id.clone();let id=widget.id.clone();move|_|{let mut next=canvas();next.widgets.retain(|w|w.id!=id);canvas.set(next.clone());selected.set(None);connection.replace(&editor_id,&next);}},"REMOVE" }
                     button { disabled:readonly(),onclick:{let connection=Rc::clone(&connection);let editor_id=editor_id.clone();let id=widget.id.clone();move|_|{let mut next=canvas();if let Some(w)=next.widgets.iter_mut().find(|w|w.id==id){w.x=w.x.max(0);w.y=w.y.max(0)}canvas.set(next.clone());connection.replace(&editor_id,&next);}},"キャンバス内へ戻す" }
-                } }
+                } else { span { "CANVAS" } }
+                    span { "SHOW ON" }
+                    div { class:"setting-options screens", for (label,kind) in [("SELECT",scorepeek_overlay_ui::ScreenKind::MusicSelect),("MODE",scorepeek_overlay_ui::ScreenKind::ModeSelect),("DECIDE",scorepeek_overlay_ui::ScreenKind::DecideTransition),("PLAY",scorepeek_overlay_ui::ScreenKind::Play),("RESULT",scorepeek_overlay_ui::ScreenKind::Result)] { button { disabled:readonly(),class:if canvas().show_on.as_ref().is_some_and(|values|values.contains(&kind)){"active"}else{""},onclick:{let connection=Rc::clone(&connection);let editor_id=editor_id.clone();move|_|{let mut next=canvas();let mut values=next.show_on.take().unwrap_or_default();if let Some(index)=values.iter().position(|value|*value==kind){values.remove(index);}else{values.push(kind)}next.show_on=(!values.is_empty()).then_some(values);canvas.set(next.clone());connection.replace(&editor_id,&next);}},"{label}" } } }
+                    button { disabled:readonly(), onclick:{let connection=Rc::clone(&connection);let editor_id=editor_id.clone();move|_|{let mut next=canvas();next.show_on=None;canvas.set(next.clone());connection.replace(&editor_id,&next);}}, "ALWAYS" }
+                    div { class:"setting-options", button { disabled:readonly(),onclick:{let connection=Rc::clone(&connection);let editor_id=editor_id.clone();move|_|{let mut next=canvas();next.z=next.z.saturating_sub(1);canvas.set(next.clone());connection.replace(&editor_id,&next);}},"Z−" } button { disabled:readonly(),onclick:{let connection=Rc::clone(&connection);let editor_id=editor_id.clone();move|_|{let mut next=canvas();next.z=next.z.saturating_add(1);canvas.set(next.clone());connection.replace(&editor_id,&next);}},"Z+" } }
+                    span { "UNKNOWN GRACE {unknown_grace_ms}ms" }
+                    div { class:"setting-options", for value in [0,500,1000,2000] { button { disabled:readonly(),onclick:{let connection=Rc::clone(&connection);let editor_id=editor_id.clone();move|_|connection.set_unknown_grace(&editor_id,settings_revision(),value)},"{value}" } } }
+                }
             }
         }
         style { "{EDITOR_CSS}" }
@@ -308,6 +329,27 @@ fn read_canvas() -> Result<CanvasPresentation, String> {
     serde_json::from_str(&element.text_content().ok_or("missing canvas body")?)
         .map_err(|e| e.to_string())
 }
+fn notify_parent(kind: &str, canvas_id: &str) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(Some(parent)) = window.parent() else {
+        return;
+    };
+    let _ = parent.post_message(
+        &wasm_bindgen::JsValue::from_str(&format!("scorepeek:{kind}:{canvas_id}")),
+        "*",
+    );
+}
+fn is_framed() -> bool {
+    web_sys::window().is_some_and(|window| {
+        window
+            .parent()
+            .ok()
+            .flatten()
+            .is_some_and(|parent| parent != window)
+    })
+}
 const EDITOR_CSS: &str = r".native-editor-shell,.native-widget-palette,.native-editor-inspector,.native-canvas-resize{display:none}.overlay-root{width:100vw;height:100vh;overflow:hidden}.editor-toolbar,.widget-palette,.editor-inspector,.canvas-manager{position:fixed;z-index:100000;background:#071019ee;border:1px solid #27e5f3;color:#eef;padding:8px;display:flex;gap:7px;align-items:center;font:12px Oxanium,sans-serif}.editor-toolbar{left:8px;right:8px;top:8px}.editor-toolbar .editor-state{margin-left:auto}.widget-palette{left:8px;top:58px;flex-direction:column;align-items:stretch}.canvas-manager{left:8px;top:250px;width:145px;flex-direction:column;align-items:stretch}.canvas-manager a{color:#a9f7ff;text-decoration:none;overflow:hidden;text-overflow:ellipsis}.canvas-manager a.current{color:#fff;background:#147083}.editor-inspector{right:8px;top:58px;width:180px;flex-direction:column;align-items:stretch}.setting-options{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}.editor-toolbar button,.widget-palette button,.editor-inspector button,.canvas-manager button{background:#122531;color:#fff;border:1px solid #65808c;padding:5px}.editor-hitbox{position:absolute;border:1px dashed #fff9;cursor:move}.editor-hitbox>span{background:#000c;padding:2px 4px;font:10px Oxanium;color:#fff}.editor-resize{position:absolute;right:0;bottom:0;width:18px;height:18px;border-right:4px solid #27e5f3;border-bottom:4px solid #27e5f3;cursor:nwse-resize}";
 
 #[derive(Deserialize)]
@@ -318,6 +360,10 @@ struct ControlResponse {
     #[serde(default)]
     canvases: Vec<CanvasSummary>,
     backend_revision: Option<u64>,
+    #[serde(default)]
+    settings_revision: Option<u64>,
+    #[serde(default)]
+    unknown_grace_ms: Option<u32>,
 }
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -326,11 +372,12 @@ enum ControlKind {
     CanvasMutation,
     CanvasList,
     CanvasManager,
+    Settings,
 }
 const fn control_updates_readonly(request: Option<ControlKind>) -> bool {
     matches!(
         request,
-        Some(ControlKind::Lease | ControlKind::CanvasMutation)
+        Some(ControlKind::Lease | ControlKind::CanvasMutation | ControlKind::Settings)
     )
 }
 fn reconcile_canvas_response(
@@ -607,6 +654,9 @@ impl BrowserConnection {
     fn set_enabled(&self, revision: u64, canvas_id: &str, enabled: bool) {
         self.send(json!({"command":"set_canvas_enabled","backend":"obs","expected_revision":revision,"canvas_id":canvas_id,"enabled":enabled}));
     }
+    fn set_unknown_grace(&self, editor: &str, revision: u64, value: u32) {
+        self.send(json!({"command":"set_unknown_grace","canvas_id":self.canvas_id,"editor_id":editor,"expected_revision":revision,"unknown_grace_ms":value}));
+    }
     #[allow(clippy::needless_pass_by_value)]
     fn send(&self, value: serde_json::Value) -> bool {
         if let (Some(socket), Ok(text)) =
@@ -657,6 +707,9 @@ impl BrowserConnection {
 }
 impl Drop for BrowserConnection {
     fn drop(&mut self) {
+        if let Some(editor) = self.lease.take() {
+            self.send_release(&editor);
+        }
         if let Some(socket) = self.socket.take() {
             socket.set_onmessage(None);
             socket.set_onclose(None);
@@ -684,6 +737,9 @@ mod tests {
                 id: "obs-main".into(),
                 skin,
                 revision,
+                show_on: None,
+                opacity_percent: 100,
+                z: 0,
                 widgets: Vec::new(),
             },
         }
@@ -733,6 +789,8 @@ mod tests {
             canvas: None,
             canvases: Vec::new(),
             backend_revision: None,
+            settings_revision: None,
+            unknown_grace_ms: None,
         };
 
         reconcile_canvas_response(

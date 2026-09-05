@@ -94,6 +94,33 @@ pub struct OverlayState {
     pub detail: ResultDetail,
     #[serde(default)]
     pub history: History,
+    #[serde(default)]
+    pub screen: ScreenView,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScreenKind {
+    MusicSelect,
+    ModeSelect,
+    DecideTransition,
+    Play,
+    Result,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ScreenView {
+    #[serde(default)]
+    pub kind: Option<ScreenKind>,
+    #[serde(default)]
+    pub suspended_since_unix_ms: Option<i64>,
+    #[serde(default)]
+    pub revision: u64,
+}
+
+#[must_use]
+pub fn canvas_visible(show_on: Option<&[ScreenKind]>, screen: ScreenView) -> bool {
+    show_on.is_none_or(|screens| screen.kind.is_some_and(|kind| screens.contains(&kind)))
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -175,7 +202,17 @@ pub struct CanvasPresentation {
     pub id: String,
     pub skin: Skin,
     pub revision: u64,
+    #[serde(default)]
+    pub show_on: Option<Vec<ScreenKind>>,
+    #[serde(default = "default_opacity_percent")]
+    pub opacity_percent: u8,
+    #[serde(default)]
+    pub z: u32,
     pub widgets: Vec<WidgetLayout>,
+}
+
+const fn default_opacity_percent() -> u8 {
+    100
 }
 
 fn mode_label(mode: &str) -> &str {
@@ -419,8 +456,8 @@ fn time_ratio(time: i64, start: i64, end: i64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        GraphPlay, WidgetKind, WidgetLayout, WidgetSettings, default_widget_size, graph_points,
-        next_widget_id, time_ratio,
+        GraphPlay, ScreenKind, ScreenView, WidgetKind, WidgetLayout, WidgetSettings,
+        canvas_visible, default_widget_size, graph_points, next_widget_id, time_ratio,
     };
 
     #[test]
@@ -478,5 +515,20 @@ mod tests {
     fn graph_positions_retain_millisecond_differences() {
         assert!((time_ratio(1, 0, 1_000) - 0.001).abs() < f64::EPSILON);
         assert!((time_ratio(999, 0, 1_000) - 0.999).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn canvas_screen_filter_treats_omission_as_always_visible() {
+        let screen = ScreenView {
+            kind: Some(ScreenKind::Play),
+            ..ScreenView::default()
+        };
+        assert!(canvas_visible(None, screen));
+        assert!(canvas_visible(Some(&[ScreenKind::Play]), screen));
+        assert!(!canvas_visible(Some(&[ScreenKind::Result]), screen));
+        assert!(!canvas_visible(
+            Some(&[ScreenKind::Play]),
+            ScreenView::default()
+        ));
     }
 }

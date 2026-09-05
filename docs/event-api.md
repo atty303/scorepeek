@@ -40,6 +40,7 @@ A retained result carries its original session context even after that session e
 | `music_select_best_observed` | `snapshot`: existing `scorepeek-music-select-best-snapshot-v1` payload, or `null` to clear the current best observation. Supplemental game record, not a play. |
 | `status_changed` | `status`: current operational state described below. |
 | `result_ingest_changed` | `ingest`: nullable RESULT persistence lifecycle. An ingest has an opaque `id`, `processing|persisted|failed` state, optional `result_event_id`, and an optional bounded reason. It is status, not another play. |
+| `screen_state_changed` | `state`: nullable semantic screen episode. A state has `screen_episode_id`, `music_select|mode_select|decide_transition|play|result` screen, and `suspended`. This is presentation context, not recognition evidence. |
 
 SELECT missing evidence and suspension retain the last publication without adopting new values.
 Contrary identity evidence or SELECT exit clears it. A clear is sent only when a best publication
@@ -57,8 +58,9 @@ diagnostics, not free-form public status strings.
 
 ## Snapshot and consumer state
 
-The first record contains `schema`, `invocation_id`, `next_sequence`, `status`, and five nullable
-slots: `latest_result`, `provisional_result`, `music_selection`, `music_select_best`, and `result_ingest`.
+The first record contains `schema`, `invocation_id`, `next_sequence`, `status`, and six nullable
+slots: `latest_result`, `provisional_result`, `music_selection`, `music_select_best`, `result_ingest`,
+and `screen_state`.
 Non-null slots contain the complete original public event, including its event ID and provenance.
 Only the most recent confirmed RESULT is retained; there is no history array.
 
@@ -71,8 +73,11 @@ To maintain the same state as the server:
    `provisional_result`; a null best snapshot clears `music_select_best`. Confirmed RESULT also
    clears `provisional_result`.
 4. Replace `result_ingest` on `result_ingest_changed`. Processing starts at a RESULT semantic episode when scores are enabled. Confirmed RESULT attaches its event ID; committed/duplicate DB success becomes `persisted`; write failure or a five-second timeout becomes `failed` with `persistence_failed`; recognition failure uses `recognition_failed`; interruption uses `interrupted`. A later success cannot overwrite failure. DECIDE or PLAY clears the slot.
-5. Replace `status` on `status_changed`. A `session_active`, `session_finished`, or `stopped` status
-   clears selection, provisional result, and best slots, while retaining `latest_result`.
+5. Replace `screen_state` on `screen_state_changed`. Started/resumed semantic episodes publish an
+   unsuspended state, UNKNOWN suspension publishes the retained screen with `suspended: true`,
+   finalization publishes `null`, and closing publishes no visibility change.
+6. Replace `status` on `status_changed`. A `session_active`, `session_finished`, or `stopped` status
+   clears selection, provisional result, best, and screen slots, while retaining `latest_result`.
 
 The server obtains snapshot and sequence boundary under the same lock as publication. It filters
 queued records older than that boundary for each new client. Reconnect to obtain fresh current

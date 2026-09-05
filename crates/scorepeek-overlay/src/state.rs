@@ -1,5 +1,5 @@
 //! Public snapshot/live fold. Recognition and score-writing authority remain upstream.
-use scorepeek_overlay_ui::{Chart, History, LampState, OverlayState};
+use scorepeek_overlay_ui::{Chart, History, LampState, OverlayState, ScreenKind};
 use serde_json::Value;
 
 #[derive(Default)]
@@ -29,10 +29,15 @@ impl Consumer {
                 };
                 let active = record["status"]["watcher"] == "session_active";
                 replacement.apply_status(&record["status"]);
-                let mut slots: Vec<_> = ["music_selection", "music_select_best", "result_ingest"]
-                    .into_iter()
-                    .filter_map(|key| record.get(key).filter(|v| !v.is_null()))
-                    .collect();
+                let mut slots: Vec<_> = [
+                    "screen_state",
+                    "music_selection",
+                    "music_select_best",
+                    "result_ingest",
+                ]
+                .into_iter()
+                .filter_map(|key| record.get(key).filter(|v| !v.is_null()))
+                .collect();
                 slots.sort_by_key(|v| v["sequence"].as_u64());
                 for slot in slots {
                     replacement.event(slot)?;
@@ -71,6 +76,20 @@ impl Consumer {
 
     fn event(&mut self, record: &Value) -> Result<(), String> {
         match text(record, "event")? {
+            "screen_state_changed" => {
+                self.view.screen.revision = self.view.screen.revision.saturating_add(1);
+                let Some(state) = record.get("state").filter(|value| !value.is_null()) else {
+                    self.view.screen.kind = None;
+                    self.view.screen.suspended_since_unix_ms = None;
+                    return Ok(());
+                };
+                self.view.screen.kind = Some(screen_kind(text(state, "screen")?)?);
+                self.view.screen.suspended_since_unix_ms = state["suspended"]
+                    .as_bool()
+                    .ok_or("missing screen suspended flag")?
+                    .then(|| record["emitted_unix_ms"].as_i64())
+                    .flatten();
+            }
             "music_selection_changed" => {
                 self.selection_record = Some(record.clone());
                 let state = &record["state"];
@@ -113,6 +132,9 @@ impl Consumer {
                 ) {
                     self.view.chart = None;
                     self.view.history = History::default();
+                    self.view.screen.kind = None;
+                    self.view.screen.suspended_since_unix_ms = None;
+                    self.view.screen.revision = self.view.screen.revision.saturating_add(1);
                 }
             }
             // Additive v1 events are intentionally skippable after envelope validation.
@@ -134,6 +156,38 @@ impl Consumer {
             }
             _ => LampState::Error,
         };
+    }
+
+    pub fn disconnect(&mut self, now_unix_ms: i64) {
+        self.view.connected = false;
+        if self.view.screen.kind.is_some() && self.view.screen.suspended_since_unix_ms.is_none() {
+            self.view.screen.suspended_since_unix_ms = Some(now_unix_ms);
+            self.view.screen.revision = self.view.screen.revision.saturating_add(1);
+        }
+    }
+
+    pub fn expire_screen(&mut self, now_unix_ms: i64, grace_ms: u32) {
+        if self
+            .view
+            .screen
+            .suspended_since_unix_ms
+            .is_some_and(|started| now_unix_ms.saturating_sub(started) >= i64::from(grace_ms))
+        {
+            self.view.screen.kind = None;
+            self.view.screen.suspended_since_unix_ms = None;
+            self.view.screen.revision = self.view.screen.revision.saturating_add(1);
+        }
+    }
+}
+
+fn screen_kind(value: &str) -> Result<ScreenKind, String> {
+    match value {
+        "music_select" => Ok(ScreenKind::MusicSelect),
+        "mode_select" => Ok(ScreenKind::ModeSelect),
+        "decide_transition" => Ok(ScreenKind::DecideTransition),
+        "play" => Ok(ScreenKind::Play),
+        "result" => Ok(ScreenKind::Result),
+        _ => Err(format!("unsupported semantic screen: {value}")),
     }
 }
 fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -201,5 +255,31 @@ mod tests {
         c.event(&json!({"event":"result_ingest_changed","ingest":{"state":"persisted"}}))
             .unwrap();
         assert_eq!(c.query_revision, 2);
+    }
+
+    #[test]
+    fn suspended_and_disconnected_screens_expire_after_the_configured_grace() {
+        let mut c = Consumer::default();
+        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":100,"state":{"screen":"music_select","suspended":false}})).unwrap();
+        assert_eq!(c.view.screen.kind, Some(ScreenKind::MusicSelect));
+        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":200,"state":{"screen":"music_select","suspended":true}})).unwrap();
+        c.expire_screen(1_199, 1_000);
+        assert_eq!(c.view.screen.kind, Some(ScreenKind::MusicSelect));
+        c.expire_screen(1_200, 1_000);
+        assert_eq!(c.view.screen.kind, None);
+
+        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":300,"state":{"screen":"play","suspended":false}})).unwrap();
+        c.disconnect(400);
+        c.expire_screen(1_400, 1_000);
+        assert_eq!(c.view.screen.kind, None);
+    }
+
+    #[test]
+    fn a_new_known_screen_replaces_a_suspended_screen_without_waiting() {
+        let mut c = Consumer::default();
+        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":100,"state":{"screen":"music_select","suspended":true}})).unwrap();
+        c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":101,"state":{"screen":"result","suspended":false}})).unwrap();
+        assert_eq!(c.view.screen.kind, Some(ScreenKind::Result));
+        assert_eq!(c.view.screen.suspended_since_unix_ms, None);
     }
 }

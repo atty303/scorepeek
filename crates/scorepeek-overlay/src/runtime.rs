@@ -31,6 +31,8 @@ pub struct Config {
     pub invocation: String,
     pub scores_db: Option<PathBuf>,
     pub listen: SocketAddr,
+    pub unknown_grace_ms: u32,
+    pub settings_revision: u64,
 }
 
 pub struct Feed {
@@ -62,7 +64,15 @@ impl Feed {
                 let mut received = 0_u64;
                 let mut updates = 0_u64;
                 let mut history_checks = 0_u64;
+                let mut unknown_grace_ms = config.unknown_grace_ms;
+                let mut next_config_reload = Instant::now() + Duration::from_secs(1);
                 while !stopping.load(Ordering::Acquire) {
+                    if Instant::now() >= next_config_reload {
+                        if let Ok((loaded, _)) = crate::config::load_or_create(&config.config_path) {
+                            unknown_grace_ms = loaded.unknown_grace_ms;
+                        }
+                        next_config_reload = Instant::now() + Duration::from_secs(1);
+                    }
                     if stream.is_none() && Instant::now() >= next_connect {
                         stream = UnixStream::connect(&config.socket)
                             .ok()
@@ -101,8 +111,9 @@ impl Feed {
                     if disconnected {
                         stream = None;
                         pending.clear();
-                        consumer.view.connected = false;
+                        consumer.disconnect(unix_now_ms());
                     }
+                    consumer.expire_screen(unix_now_ms(), unknown_grace_ms);
                     if consumer.view.chart != queried
                         || consumer.query_revision != queried_revision
                         || Instant::now() >= next_query
@@ -143,6 +154,13 @@ impl Feed {
             stop,
             worker: Some(worker),
         })
+    }
+}
+
+fn unix_now_ms() -> i64 {
+    match std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH) {
+        Ok(duration) => i64::try_from(duration.as_millis()).unwrap_or(i64::MAX),
+        Err(error) => -i64::try_from(error.duration().as_millis()).unwrap_or(i64::MAX),
     }
 }
 

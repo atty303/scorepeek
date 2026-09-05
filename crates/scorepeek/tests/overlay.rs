@@ -36,7 +36,9 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
         canvases: {
             let mut canvas = scorepeek_overlay::config::OverlayConfig::initial()
                 .canvases
-                .remove(1);
+                .into_iter()
+                .find(|canvas| canvas.id == "obs-selection")
+                .unwrap();
             canvas.skin = scorepeek_overlay::Skin::ResultAurora;
             vec![canvas]
         },
@@ -46,6 +48,8 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
         invocation: "test".into(),
         scores_db: None,
         listen: address,
+        unknown_grace_ms: 1_000,
+        settings_revision: 0,
     };
     let executable = std::env::var_os("SCOREPEEK_TEST_BINARY").map_or_else(
         || Path::new(env!("CARGO_BIN_EXE_scorepeek")).to_path_buf(),
@@ -56,7 +60,7 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     let deadline = Instant::now() + Duration::from_secs(10);
     let page = loop {
         assert!(children.poll().is_empty(), "overlay exited before serving");
-        if let Ok(page) = get(address, "/canvas/obs-main") {
+        if let Ok(page) = get(address, "/canvas/obs-selection") {
             break page;
         }
         assert!(Instant::now() < deadline, "overlay never served index");
@@ -68,6 +72,11 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     assert!(page.contains(".js"));
     assert!(page.contains("result-aurora"));
     assert!(page.contains("scorepeek-canvas"));
+    let stage = String::from_utf8(get(address, "/overlay").unwrap()).unwrap();
+    assert!(stage.contains("width:100vw;height:100vh"));
+    assert!(stage.starts_with("HTTP/1.1 200"));
+    assert!(stage.contains("/ws/stage"));
+    assert!(stage.contains("obs-selection"));
     let font = get(address, "/fonts/oxanium.ttf").unwrap();
     assert!(font.starts_with(b"HTTP/1.1 200"));
     assert!(font.windows(8).any(|bytes| bytes == b"font/ttf"));

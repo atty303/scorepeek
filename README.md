@@ -209,15 +209,18 @@ scorepeek run --overlay-wayland --overlay-obs --overlay-config ./overlay.toml
 ```
 
 Without `--overlay-config`, the document is `$XDG_CONFIG_HOME/scorepeek/overlay.toml` (or the
-standard HOME fallback). The first run creates one enabled 560x1040 canvas for each backend with
-status, selection, score, history-list and history-graph widgets. OBS serves stable canvas URLs such
-as `http://127.0.0.1:3939/canvas/obs-main`; configure that URL once as a Browser Source. The listen
-address is `obs_listen` in TOML. Omit both enable flags for an overlay-free run.
+standard HOME fallback). The first run creates schema-v2 status, MUSIC SELECT, DECIDE/PLAY and
+RESULT canvases for each backend. Use `http://127.0.0.1:3939/overlay` for one full-screen OBS Browser
+Source, or a stable URL such as `http://127.0.0.1:3939/canvas/obs-selection` for one canvas. The
+listen address is `obs_listen` in TOML. Omit both enable flags for an overlay-free run.
 
 Right-click anywhere on the Wayland canvas or the OBS page in Browser Source Interaction to enter
 its editor; DONE is the only exit. Drag/resize widgets, add or remove them, switch among CYAN SYSTEM,
 RESULT AURORA and DJ BLACKBOX, and configure history rows or graph range. OBS also manages its canvas
-list there. Wayland normally uses left-drag to move a canvas, keeps at least 32 pixels visible on its
+list there. Each canvas can be always visible or restricted to MUSIC SELECT, MODE SELECT, DECIDE,
+PLAY and RESULT; UNKNOWN and socket loss retain the previous layout for the configured grace period.
+Wayland content opacity, canvas z-order and the grace period are also editable without a keyboard.
+Wayland normally uses left-drag to move a canvas, keeps at least 32 pixels visible on its
 selected output, and recreates a surface when its output selection changes. When `output` is absent,
 the initial native canvas uses the first named output in stable name order and a 20-pixel upper-right
 inset, so its editor is reachable on a multi-output desktop. An absent or disconnected configured
@@ -228,7 +231,7 @@ Selection shows title/artist plus a separate SP/DP, difficulty, level and notes 
 state, RESULT detail and history come only from committed SQLite readback. History dates use local
 notification time. The graph labels DJ LEVEL thresholds and uses a fixed 0-100% MISS RATE axis.
 `--no-scores` disables those DB-derived values. Overlay failure does not stop recognition or saving.
-See [the canvas contract](docs/decisions/0125-compose-overlay-canvases-from-widgets.md) and
+See [the screen-aware canvas contract](docs/decisions/0127-switch-overlay-canvases-by-semantic-screen.md) and
 [RESULT ingest lifecycle](docs/decisions/0126-publish-result-ingest-lifecycle.md).
 
 Development: `mise run overlay:web:check` needs no bundle; `mise run overlay:web:test` builds and

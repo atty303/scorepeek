@@ -16,13 +16,21 @@ checkpoint; implementation history belongs in Git.
 
 ## Implemented authority
 
-- ADR 0125 replaces the fixed overlay cards/layout flags with strict schema-v1 TOML canvases and
-  independently positioned status, selection, score, history-list and history-graph widgets.
+- ADR 0125 replaces the fixed overlay cards/layout flags with independently positioned status,
+  selection, score, history-list and history-graph widgets. ADR 0127 advances the strict overlay
+  TOML to schema v2 and adds screen-aware canvases.
   `--overlay-wayland` and `--overlay-obs` enable the backends; `--overlay-config` selects the document.
-  Missing configuration creates one 560x1040 five-widget canvas per backend. The parent is the sole
-  atomic writer; per-canvas leases/revisions and backend-list revisions reject stale concurrent edits.
-  Wayland owns one interactive surface per enabled native canvas. OBS exposes stable `/canvas/<id>`
-  URLs and uses Browser Source Interaction to edit that same page. Right-click enters; DONE exits.
+  Missing configuration creates status, MUSIC SELECT, DECIDE/PLAY and RESULT canvases per backend.
+  Each canvas has optional semantic-screen filters and z-order; Wayland also has 1–100% content
+  opacity. UNKNOWN and socket loss retain the previous screen for the configured global grace. The
+  parent is the sole atomic writer; per-canvas leases/revisions and backend-list revisions reject
+  stale concurrent edits.
+  Wayland owns one interactive surface per enabled native canvas and shares one feed/visibility
+  clock across them. Hidden surfaces are transparent, idle and have an empty input region. OBS
+  exposes stable `/canvas/<id>` URLs plus the full-screen `/overlay` multi-canvas Browser Source.
+  Browser Source Interaction edits the same canvas page. Right-click enters; DONE exits. Editing a
+  compact native canvas temporarily expands and repositions its surface inside the selected output;
+  `/overlay` likewise promotes the edited iframe to the full stage. DONE restores saved geometry.
 - CYAN SYSTEM, RESULT AURORA and DJ BLACKBOX are canvas-level skins using the approved embedded frame
   artwork through CSS backgrounds. Oxanium and OFL 1.1 are embedded alongside Japanese system-font
   fallbacks. Runtime values remain text/SVG; result emphasis is finite and the settled DOM is idle.
@@ -118,6 +126,12 @@ checkpoint; implementation history belongs in Git.
 
 ## Verification
 
+- Schema-v2 defaults/rejection, screen filters, semantic-screen snapshot/live folding,
+  suspension/disconnect grace and immediate known-screen replacement have focused development-host
+  tests. Workspace compilation covers the Wayland cursor-shape and generated fallback cursor,
+  empty input regions, shared feed, content opacity, preview lease transfer and OBS stage routes.
+  Target visual/interaction checks for these additions remain outstanding.
+
 - Overlay development-host verification covers all three skin DOMs, embedded PNG decode, fixed
   widget bounds and settled animation. A production native headless render confirms Japanese/Latin
   text, selection rail, DB-derived BEST/DETAIL, DJ LEVEL history and graph dots/thresholds. Strict
@@ -126,10 +140,11 @@ checkpoint; implementation history belongs in Git.
   The browser WASM type-checks and the real dx bundle contains served JS/WASM/font/artwork with correct
   MIME types; embedded-asset and child-EOF tests pass. `wasm-opt` still reports unsupported DWARF and
   the bundle proceeds without that optional optimization.
-- Workspace/all-target Clippy passes. The complete workspace suite passes on repeat: 505 library,
-  322 binary, 128 corpus library, 5 corpus binary, 18 overlay, 3 handle, 3 overlay-UI, 3 overlay-web
-  and 13 score tests, plus doctests. The embedded-web overlay suite has 19 tests. The 99 offline OCR tests and
-  repository checks also pass.
+- Workspace/all-target Clippy passes. The complete workspace suite passes: 506 library,
+  322 binary, 128 corpus library, 5 corpus binary, 25 overlay, 3 handle, 4 overlay-UI, 3 overlay-web
+  and 13 score tests, plus doctests. The embedded-web overlay suite has 26 tests. The 99 offline OCR tests and
+  repository checks also pass. A subsequent focused rerun passes all 5 public API tests, including
+  the added semantic-screen phase contract, plus the overlay and embedded-web suites.
 - Target investigation found two connected outputs while the initial Wayland canvas omitted
   `output`; the previous child rejected that multi-output state before creating a surface. The
   native child now selects the first named connected output in stable name order when `output` is
@@ -224,7 +239,9 @@ checkpoint; implementation history belongs in Git.
 
 ## Unverified and next execution boundary
 
-- Target-live validation is still required for compositor output selection/bounds, initial
+- Target-live validation is still required for screen-driven surface visibility, configured
+  opacity, forced cursor shapes/fallback, peer-surface z behavior, OBS `/overlay` empty-space menu
+  and hidden-canvas preview, compositor output selection/bounds, initial
   upper-right placement, cross-output drag prevention and native canvas-list/output hot reconciliation,
   integer/fractional visual equality, Gamescope foreground behavior, OBS Interaction, readability,
   CPU/GPU/OBS lag and idle render cost. Development-host DOM/headless/browser tests do not certify

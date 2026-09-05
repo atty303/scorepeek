@@ -108,6 +108,9 @@ pub(super) struct PublicRecord {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 enum EventKind {
+    ScreenStateChanged {
+        state: Option<ScreenState>,
+    },
     ResultDetected {
         source_sequence: u64,
         song: Option<SongPresentation>,
@@ -134,6 +137,13 @@ enum EventKind {
     ResultIngestChanged {
         ingest: Option<ResultIngest>,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct ScreenState {
+    screen_episode_id: u64,
+    screen: String,
+    suspended: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -165,6 +175,7 @@ pub(super) struct PublicState {
     music_selection: Option<PublicRecord>,
     music_select_best: Option<PublicRecord>,
     result_ingest: Option<PublicRecord>,
+    screen_state: Option<PublicRecord>,
     #[serde(skip)]
     started: Instant,
     #[serde(skip)]
@@ -195,6 +206,7 @@ impl PublicState {
             music_selection: None,
             music_select_best: None,
             result_ingest: None,
+            screen_state: None,
             started: Instant::now(),
             pending_binding: None,
             scores_enabled: false,
@@ -338,14 +350,39 @@ impl PublicState {
         }
         if let RunEventKind::SemanticScreenEpisodeChanged {
             screen,
-            phase: super::SemanticEpisodePhase::Started,
+            phase,
             screen_episode_id,
             capture_generation,
             session_id,
             ..
         } = &event.kind
         {
-            if screen == "result" && self.scores_enabled {
+            let state = match phase {
+                super::SemanticEpisodePhase::Started | super::SemanticEpisodePhase::Resumed => {
+                    Some(ScreenState {
+                        screen_episode_id: *screen_episode_id,
+                        screen: screen.clone(),
+                        suspended: false,
+                    })
+                }
+                super::SemanticEpisodePhase::Suspended => Some(ScreenState {
+                    screen_episode_id: *screen_episode_id,
+                    screen: screen.clone(),
+                    suspended: true,
+                }),
+                super::SemanticEpisodePhase::Finalized => None,
+                super::SemanticEpisodePhase::Closing => return records,
+            };
+            let screen_record = self.event(
+                EventKind::ScreenStateChanged { state },
+                self.capture(session_id.as_ref(), *capture_generation),
+            );
+            self.retain(&screen_record);
+            records.push(screen_record);
+            if screen == "result"
+                && *phase == super::SemanticEpisodePhase::Started
+                && self.scores_enabled
+            {
                 self.ingest_started = Some(Instant::now());
                 let ingest = ResultIngest {
                     id: format!("{}:result:{screen_episode_id}", self.invocation_id),
@@ -360,9 +397,10 @@ impl PublicState {
                     self.capture(session_id.as_ref(), *capture_generation),
                 );
                 self.retain(&record);
-                return vec![record];
+                records.push(record);
             }
             if matches!(screen.as_str(), "decide_transition" | "play")
+                && *phase == super::SemanticEpisodePhase::Started
                 && self.result_ingest.is_some()
             {
                 let record = self.event(
@@ -370,8 +408,9 @@ impl PublicState {
                     self.capture(session_id.as_ref(), *capture_generation),
                 );
                 self.retain(&record);
-                return vec![record];
+                records.push(record);
             }
+            return records;
         }
         if let RunEventKind::PlayAttemptChanged {
             state,
@@ -596,6 +635,9 @@ impl PublicState {
 
     fn retain(&mut self, record: &PublicRecord) {
         match &record.kind {
+            EventKind::ScreenStateChanged { state } => {
+                self.screen_state = state.as_ref().map(|_| record.clone());
+            }
             EventKind::ResultDetected { .. } => {
                 self.latest_result = Some(record.clone());
                 self.provisional_result = None;
@@ -729,6 +771,7 @@ impl PublicState {
         self.provisional_result = None;
         self.music_selection = None;
         self.music_select_best = None;
+        self.screen_state = None;
     }
 }
 
@@ -795,7 +838,12 @@ pub(super) mod tests {
                 if ["session_active", "session_finished", "stopped"]
                     .contains(&event["status"]["watcher"].as_str().unwrap())
                 {
-                    for slot in ["provisional_result", "music_selection", "music_select_best"] {
+                    for slot in [
+                        "provisional_result",
+                        "music_selection",
+                        "music_select_best",
+                        "screen_state",
+                    ] {
                         snapshot[slot] = Value::Null;
                     }
                 }
@@ -821,6 +869,13 @@ pub(super) mod tests {
             }
             "result_ingest_changed" => {
                 snapshot["result_ingest"] = if event["ingest"].is_null() {
+                    Value::Null
+                } else {
+                    event.clone()
+                }
+            }
+            "screen_state_changed" => {
+                snapshot["screen_state"] = if event["state"].is_null() {
                     Value::Null
                 } else {
                     event.clone()
@@ -920,8 +975,10 @@ pub(super) mod tests {
             phase: super::super::SemanticEpisodePhase::Started,
         });
         let processing = state.project(&result_started);
-        assert_eq!(processing.len(), 1);
-        let processing = serde_json::to_value(&processing[0]).unwrap();
+        assert_eq!(processing.len(), 2);
+        let screen = serde_json::to_value(&processing[0]).unwrap();
+        assert_eq!(screen["state"]["screen"], "result");
+        let processing = serde_json::to_value(&processing[1]).unwrap();
         assert_eq!(processing["ingest"]["state"], "processing");
         let failed = state.fail_result("persistence_failed").unwrap();
         let failed = serde_json::to_value(failed).unwrap();
@@ -943,7 +1000,42 @@ pub(super) mod tests {
             phase: super::super::SemanticEpisodePhase::Started,
         });
         let cleared = state.project(&play_started);
-        assert_eq!(cleared.len(), 1);
-        assert!(serde_json::to_value(&cleared[0]).unwrap()["ingest"].is_null());
+        assert_eq!(cleared.len(), 2);
+        assert!(serde_json::to_value(&cleared[1]).unwrap()["ingest"].is_null());
+    }
+
+    #[test]
+    fn semantic_episode_phases_publish_only_the_screen_visibility_contract() {
+        let mut state = PublicState::new("run".into());
+        let event = |phase| {
+            run(RunEventKind::SemanticScreenEpisodeChanged {
+                session_id: Some("session".into()),
+                capture_generation: Some(7),
+                screen_episode_id: 4,
+                sequence: 40,
+                monotonic_end_ms: 4_000,
+                screen: "music_select".into(),
+                phase,
+            })
+        };
+        for (phase, suspended) in [
+            (super::super::SemanticEpisodePhase::Started, false),
+            (super::super::SemanticEpisodePhase::Suspended, true),
+            (super::super::SemanticEpisodePhase::Resumed, false),
+        ] {
+            let records = state.project(&event(phase));
+            assert_eq!(records.len(), 1);
+            let wire = serde_json::to_value(&records[0]).unwrap();
+            assert_eq!(wire["event"], "screen_state_changed");
+            assert_eq!(wire["state"]["suspended"], suspended);
+        }
+        assert!(
+            state
+                .project(&event(super::super::SemanticEpisodePhase::Closing))
+                .is_empty()
+        );
+        let finalized = state.project(&event(super::super::SemanticEpisodePhase::Finalized));
+        assert_eq!(finalized.len(), 1);
+        assert!(serde_json::to_value(&finalized[0]).unwrap()["state"].is_null());
     }
 }
