@@ -130,6 +130,11 @@ checkpoint; implementation history belongs in Git.
   322 binary, 128 corpus library, 5 corpus binary, 18 overlay, 2 handle, 3 overlay-UI, 3 overlay-web
   and 13 score tests, plus doctests. The embedded-web overlay suite has 19 tests. The 99 offline OCR tests and
   repository checks also pass.
+- Commit `38485ff2f03a0c9cff928210fb12c0d1a69399cb` was built with `mise run dist:test` and
+  installed on `infinitas.lan` as `/home/atty/.local/bin/scorepeek`. The installed binary SHA-256
+  is `c775d74ddbecbd8afa16168ba6e1e2bbba2f107ada70340575ece2bdfbe36dd8`; target readback confirms
+  the overlay CLI flags and the existing numeric model remains active. No scorepeek process was
+  running, and the same-directory staging and rollback files were removed after atomic replacement.
 
 - Recorded-input reducer replay of the complete session with digest
   `193550c1c3337905122585fb868c1c8831be3fab835c5ec9e5c03ef70c419594` confirms four results,
@@ -217,15 +222,16 @@ checkpoint; implementation history belongs in Git.
   upper-right placement, cross-output drag prevention and native canvas-list/output hot reconciliation,
   integer/fractional visual equality, Gamescope foreground behavior, OBS Interaction, readability,
   CPU/GPU/OBS lag and idle render cost. Development-host DOM/headless/browser tests do not certify
-  those target behaviors. No target deployment, autostart, push or release is included.
+  those target behaviors. Target binary installation is complete; no live run, autostart, push or
+  release is included.
 - Pinned dx produces a browser bundle, but its optional wasm-opt step reports unsupported DWARF
   and skips optimization. Asset MIME/type tests pass on the emitted bundle; it is not claimed to
   be wasm-opt optimized. Browser visual verification remains separate.
 
-- Validate layout v4 in a fresh target-live run after a separately requested target install.
+- Validate layout v4 in a fresh target-live run with the installed binary.
   Retained-frame inspection does not recover unrecorded PLAY spans or backfill missing RESULTs.
 
-- Confirm the new marker on target-live sessions; target install is a separate operation.
+- Confirm the new marker on target-live sessions.
 - The previously observed diagnostic store root-lease test flake remains outside this change;
   the separately reproduced binding-mismatch test supervisor conflict is corrected.
 - Additional capture coverage is needed for four-digit MISS, all remaining clear labels,
@@ -240,5 +246,5 @@ checkpoint; implementation history belongs in Git.
   same final runtime; all four sessions passed. Developer-host replay is not target-live verification.
 - Public API developer-host verification and independent review are complete. The versioned wire
   contract is ready for consumer integration. Target-live API performance and capture gates remain
-  unverified. Score persistence is developer-host verified only; target-live cost, deployment, release
-  and push are not included.
+  unverified. Score persistence is developer-host verified only; target-live cost, release and push
+  are not included.
