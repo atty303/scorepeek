@@ -43,12 +43,8 @@ pub const FONT_ASSETS: &[(&str, &[u8])] = &[
         "rajdhani.ttf",
         include_bytes!("../assets/fonts/Rajdhani-SemiBold.ttf"),
     ),
-    (
-        "noto-sans-jp.ttf",
-        include_bytes!("../assets/fonts/NotoSansJP.ttf"),
-    ),
 ];
-pub const FONT_CSS: &str = "@font-face{font-family:Orbitron;src:url('/fonts/orbitron.ttf');font-weight:400 900}@font-face{font-family:Rajdhani;src:url('/fonts/rajdhani.ttf');font-weight:600}@font-face{font-family:'Noto Sans JP';src:url('/fonts/noto-sans-jp.ttf');font-weight:100 900}";
+pub const FONT_CSS: &str = "@font-face{font-family:Orbitron;src:url('/fonts/orbitron.ttf');font-weight:400 900}@font-face{font-family:Rajdhani;src:url('/fonts/rajdhani.ttf');font-weight:600}";
 
 /// Redistributed font licenses, including attribution and reserved-name terms.
 pub const FONT_LICENSES: &[(&str, &str)] = &[
@@ -59,9 +55,5 @@ pub const FONT_LICENSES: &[(&str, &str)] = &[
     (
         "rajdhani-OFL.txt",
         include_str!("../assets/fonts/rajdhani-OFL.txt"),
-    ),
-    (
-        "notosansjp-OFL.txt",
-        include_str!("../assets/fonts/notosansjp-OFL.txt"),
     ),
 ];

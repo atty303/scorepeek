@@ -4,11 +4,10 @@
 .overlay-canvas .widget{background:transparent;border:0}
 .overlay-canvas .skin-frame{z-index:0;overflow:visible}
 .overlay-canvas .skin-surface{inset:4px;background:var(--surface);border:1px solid var(--metal);box-shadow:inset 0 0 24px #000,0 0 12px #000b}
-.overlay-canvas .skin-light{inset:0;opacity:1;background-size:100% 100%}
-.overlay-canvas .skin-corners{inset:2px;border:2px solid var(--metal);clip-path:none;box-shadow:inset 0 0 2px #fff,0 0 7px var(--dim)}
-.overlay-canvas .skin-hardware{inset:9px;border-top:1px solid var(--accent);border-bottom:1px solid var(--accent);opacity:.7}
+.overlay-canvas .skin-corners{opacity:.45;inset:2px;border:1px solid var(--metal);clip-path:none;box-shadow:none}
+.overlay-canvas .skin-hardware{inset:9px;border-top:1px solid var(--accent);border-bottom:1px solid var(--accent);opacity:.25}
 .overlay-canvas .skin-energy{inset:-6px;opacity:.5;pointer-events:none;background:var(--energy-image) center/100% 100% no-repeat}
-.overlay-canvas .skin-glint{top:1px;bottom:auto;width:18%;height:3px;background:linear-gradient(90deg,transparent,var(--accent),#fff,transparent);box-shadow:0 0 12px var(--accent)}
+.overlay-canvas .skin-glint{top:1px;bottom:auto;width:12%;height:2px;background:linear-gradient(90deg,transparent,var(--accent),#fff,transparent);box-shadow:0 0 5px var(--accent)}
 .overlay-canvas .skin-trace{inset:auto 18px 1px;height:2px;background:var(--accent);box-shadow:0 0 9px var(--accent)}
 .overlay-canvas .fx-particle{position:absolute;inset:auto;width:2px;height:3px;background:var(--accent);box-shadow:0 0 5px var(--accent);opacity:.5;pointer-events:none}
 .overlay-canvas .widget-content{z-index:1;overflow:hidden;padding:16px 20px}
@@ -52,33 +51,29 @@
 .overlay-canvas .history-row:nth-child(even){background:#8aa9c512}
 .overlay-canvas .history-head{height:27px;font-family:Orbitron,sans-serif;font-size:8px;color:var(--metal)}
 .overlay-canvas .history-row b{font-family:Oxanium,sans-serif;letter-spacing:.07em}
-.overlay-canvas .plot{height:calc(100% - 72px);margin-top:31px}
+.overlay-canvas .graph-content{padding:var(--graph-padding-y) var(--graph-padding-x)}
+.overlay-canvas .plot{grid-template-columns:var(--score-axis) var(--plot-width) var(--miss-axis);height:var(--plot-height);margin-top:31px}
 .overlay-canvas .graph-legend{top:49px;left:155px;font-size:11px}
 .overlay-canvas .level-axis,.overlay-canvas .miss-axis{font-family:Rajdhani,sans-serif;font-size:11px}
-.overlay-canvas .score-line,.overlay-canvas .miss-line{stroke-width:2.5}
-.overlay-canvas[data-skin=cyan-system]{--energy-image:url('/skins/cyan-system-frame.png');--surface:linear-gradient(115deg,#061829,#030813 55%,#103a48);--metal:#a5c7d8;--dim:#1e8fa877}
+.overlay-canvas[data-skin=cyan-system]{--surface:linear-gradient(115deg,#061829,#030813 55%,#103a48);--metal:#a5c7d8;--dim:#1e8fa877}
 .overlay-canvas[data-skin=result-aurora]{--energy-image:url('/skins/aurora-energy.png');--surface:linear-gradient(115deg,#180e26,#05050e 55%,#321943);--metal:#ded1ee;--dim:#a364c077}
 .overlay-canvas[data-skin=result-aurora] .skin-surface:after{display:none}
-.overlay-canvas[data-skin=dj-blackbox]{--energy-image:url('/skins/dj-blackbox-frame.png');--surface:linear-gradient(110deg,#272b28,#090c0a 60%,#262c18);--metal:#b2b8a7;--dim:#8b9d4177}
-.overlay-canvas[data-skin=dj-blackbox] .skin-corners{border:3px solid #5d655b;box-shadow:inset 0 0 2px #dde3d5,0 2px 4px #000}
-.overlay-canvas[data-skin=dj-blackbox] .skin-hardware{inset:11px;border-top:2px solid #b0b6a0;border-bottom:2px solid #363d30}
+.overlay-canvas[data-skin=dj-blackbox]{--surface:linear-gradient(110deg,#272b28,#090c0a 60%,#262c18);--metal:#b2b8a7;--dim:#8b9d4177}
+.overlay-canvas[data-skin=dj-blackbox] .skin-corners{border-color:#5d655b}
+.overlay-canvas[data-skin=dj-blackbox] .skin-hardware{border-color:#7a826b}
 .overlay-canvas[data-skin=dj-blackbox] .wordmark{font-family:Oxanium,sans-serif;letter-spacing:.02em}
 
 .overlay-canvas[data-skin] .widget{clip-path:none}
-.overlay-canvas[data-skin=cyan-system]{--energy-image:url("/skins/cyan-circuit.png")}
-.overlay-canvas[data-skin=cyan-system] .skin-energy{inset:-3px;left:-3px!important;opacity:.85!important}
 .overlay-canvas .score-main strong{position:relative}
 .overlay-canvas .number-depth{position:absolute;left:0;top:2px;color:#738898;z-index:-1}
 .overlay-canvas .number-face{position:relative}
 
 .overlay-canvas .material-frame{display:none}
-.overlay-canvas[data-skin=cyan-system] .material-frame{display:block;inset:0;pointer-events:none}
+.overlay-canvas[data-skin=cyan-system] .material-frame{display:block;opacity:.32;inset:0;pointer-events:none}
 .overlay-canvas[data-skin=cyan-system] .skin-energy{display:none}
 .material-edge{position:absolute;display:block;background-image:url('/skins/cyan-circuit.png');background-repeat:no-repeat}
 .material-edge.nw,.material-edge.ne,.material-edge.sw,.material-edge.se{width:16px;height:16px;background-size:290px 97px}
 .material-edge.nw{left:0;top:0;background-position:left top}.material-edge.ne{right:0;top:0;background-position:right top}
 .material-edge.sw{left:0;bottom:0;background-position:left bottom}.material-edge.se{right:0;bottom:0;background-position:right bottom}
-.material-edge.n,.material-edge.s{left:16px;right:16px;height:16px;background-size:100% 97px}
-.material-edge.n{top:0;background-position:center top}.material-edge.s{bottom:0;background-position:center bottom}
-.material-edge.e,.material-edge.w{top:16px;bottom:16px;width:16px;background-size:290px 100%}
-.material-edge.e{right:0;background-position:right center}.material-edge.w{left:0;background-position:left center}
+
+.overlay-canvas[data-skin=dj-blackbox] .skin-energy{display:none}

@@ -253,7 +253,7 @@ fn lamp(state: LampState, label: Option<&str>, class: &str) -> Element {
     rsx! { div { class: "lamp-group {class}", if let Some(label) = label { span { class: "lamp-label", "{label}" } } span { class: "lamp", "data-state": state, aria_hidden: "true" } } }
 }
 fn chrome() -> Element {
-    rsx! { div { class: "skin-frame", aria_hidden: "true", div { class: "skin-surface" } div { class: "skin-corners" } div { class: "skin-light" } div { class: "skin-hardware" } div { class:"material-frame", for edge in ["nw","n","ne","e","se","s","sw","w"] { i { class:"material-edge {edge}" } } } div { class: "skin-energy" } div { class: "skin-glint" } div { class: "skin-trace" } for index in 0..12 { i { class: "fx-particle fx-particle-{index}" } } } }
+    rsx! { div { class: "skin-frame", aria_hidden: "true", div { class: "skin-surface" } div { class: "skin-corners" } div { class: "skin-hardware" } div { class:"material-frame", for edge in ["nw","ne","se","sw"] { i { class:"material-edge {edge}" } } } div { class: "skin-energy" } div { class: "skin-glint" } div { class: "skin-trace" } for index in 0..12 { i { class: "fx-particle fx-particle-{index}" } } } }
 }
 
 /// Renders the approved five-widget master composition.
@@ -274,6 +274,7 @@ pub fn overlay_canvas(
     selected: Option<&str>,
 ) -> Element {
     let skin = appearance.skin.name();
+    let graph_colors = appearance.skin.graph_colors();
     let chart = state.chart.as_ref();
     let title = chart.map_or("", |v| v.title.as_str());
     let artist = chart.map_or("", |v| v.artist.as_str());
@@ -289,14 +290,14 @@ pub fn overlay_canvas(
         .map_or_else(String::new, |v| v.to_string());
     rsx! {
         style { "{BASE_CSS}{SKIN_CSS}{EDITOR_CSS}" }
-        main { class: if editing { "overlay-canvas editing" } else { "overlay-canvas" }, "data-skin": skin,
+        main { class: if editing { "overlay-canvas editing" } else { "overlay-canvas" }, "data-skin": skin, style: format!("--graph-score:{};--graph-miss:{}", graph_colors.score, graph_colors.miss),
             for widget in widgets {
                 div {
                     key: "{widget.id}",
                     class: if selected == Some(widget.id.as_str()) { "widget-slot selected" } else { "widget-slot" },
                     "data-widget-id": "{widget.id}",
                     style: format!("left:{}px;top:{}px;width:{}px;height:{}px", widget.x, widget.y, widget.width, widget.height),
-                    {render_widget(widget, state, title, artist, play_type, &difficulty, &level, &notes)}
+                    {render_widget(widget, state, title, artist, play_type, &difficulty, &level, &notes, graph_colors)}
                     if editing {
                         for corner in ["nw", "ne", "sw", "se"] {
                             i { class: "resize-handle {corner}", aria_hidden: "true" }
@@ -318,6 +319,7 @@ fn render_widget(
     difficulty: &str,
     level: &str,
     notes: &str,
+    graph_colors: appearance::GraphColors,
 ) -> Element {
     match widget.kind {
         WidgetKind::Status => {
@@ -332,7 +334,7 @@ fn render_widget(
         }
         WidgetKind::Score => score_widget(state),
         WidgetKind::HistoryList => history_list(&state.history, widget.settings.history_count),
-        WidgetKind::HistoryGraph => history_graph(&state.history, widget.settings.graph_months),
+        WidgetKind::HistoryGraph => history_graph(&state.history, widget, graph_colors),
     }
 }
 
@@ -446,8 +448,30 @@ fn score_widget(state: &OverlayState) -> Element {
 fn history_list(history: &History, count: u32) -> Element {
     rsx! { section { class: "widget history-list-widget", {chrome()} div { class: "widget-content history-content", h2 { "HISTORY" } div { class: "history-row history-head", span { "DATE" } span { "EX SCORE" } span { "DJ LEVEL" } span { "MISS" } span { "CLEAR" } } for play in history.plays.iter().take(count as usize) { div { class: "history-row", time { "{play.notified_at}" } b { "{play.score}" } span { "data-rank": &play.dj_level, "{play.dj_level}" } span { "{play.miss}" } span { "data-clear": motion::clear_role(&play.clear), "{play.clear}" } } } } } }
 }
-fn history_graph(history: &History, months: u32) -> Element {
-    let start = match months {
+fn history_graph(
+    history: &History,
+    widget: &WidgetLayout,
+    colors: appearance::GraphColors,
+) -> Element {
+    // Blitz paints inline SVG as a contained image. Share the plot viewport with CSS
+    // so its image aspect ratio also follows widget resizing.
+    let padding_x = 18;
+    let padding_y = 16;
+    let score_axis = 36;
+    let miss_axis = 39;
+    let header_space = 72;
+    let plot_width = widget
+        .width
+        .saturating_sub(2 * padding_x + score_axis + miss_axis)
+        .max(1);
+    let plot_height = widget
+        .height
+        .saturating_sub(2 * padding_y + header_space)
+        .max(1);
+    let geometry = format!(
+        "--graph-padding-x:{padding_x}px;--graph-padding-y:{padding_y}px;--score-axis:{score_axis}px;--miss-axis:{miss_axis}px;--plot-width:{plot_width}px;--plot-height:{plot_height}px"
+    );
+    let start = match widget.settings.graph_months {
         1 => history.graph_start_unix_ms[0],
         3 => history.graph_start_unix_ms[1],
         12 => history.graph_start_unix_ms[3],
@@ -493,7 +517,7 @@ fn history_graph(history: &History, months: u32) -> Element {
         ("D", 33.333),
         ("E", 22.222),
     ];
-    rsx! { section { class: "widget history-graph-widget", {chrome()} div { class: "widget-content graph-content", h2 { "HISTORY GRAPH" } div { class: "graph-legend", span { class: "score-key", "DJ LEVEL" } span { class: "miss-key", "MISS RATE" } } div { class: "plot", div { class: "level-axis", for (level,threshold) in levels { span { style: format!("top:{:.3}%",100.0-threshold), "{level}" } } } div { class: "plot-area", for (level,threshold) in levels { i { class: "threshold", "data-level": level, style: format!("top:{:.3}%",100.0-threshold) } } for style in score_dots { i { class:"graph-dot score-dot",style } } for style in miss_dots { i { class:"graph-dot miss-dot",style } } svg { view_box: "0 0 1000 100", preserve_aspect_ratio: "none", polyline { class: "score-line", points: "{points.0}" } for segment in points.1 { polyline { class: "miss-line", points: "{segment}" } } } } div { class: "miss-axis", for value in ["100%","75%","50%","25%","0%"] { span { "{value}" } } } } } } }
+    rsx! { section { class: "widget history-graph-widget", style: geometry, {chrome()} div { class: "widget-content graph-content", h2 { "HISTORY GRAPH" } div { class: "graph-legend", span { class: "score-key", "DJ LEVEL" } span { class: "miss-key", "MISS RATE" } } div { class: "plot", div { class: "level-axis", for (level,threshold) in levels { span { style: format!("top:{:.3}%",100.0-threshold), "{level}" } } } div { class: "plot-area", for (level,threshold) in levels { i { class: "threshold", "data-level": level, style: format!("top:{:.3}%",100.0-threshold) } } for style in score_dots { i { class:"graph-dot score-dot",style } } for style in miss_dots { i { class:"graph-dot miss-dot",style } } svg { width: "{plot_width}", height: "{plot_height}", view_box: "0 0 1000 100", preserve_aspect_ratio: "none", polyline { class: "score-line", fill: "none", stroke: colors.score, stroke_width: "1.25", vector_effect: "non-scaling-stroke", points: "{points.0}" } for segment in points.1 { polyline { class: "miss-line", fill: "none", stroke: colors.miss, stroke_width: "1.25", vector_effect: "non-scaling-stroke", points: "{segment}" } } } } div { class: "miss-axis", for value in ["100%","75%","50%","25%","0%"] { span { "{value}" } } } } } } }
 }
 fn dot_style(time: i64, ratio: f64, start: i64, end: i64) -> String {
     let x = (time_ratio(time, start, end) * 100.0).clamp(0.0, 100.0);

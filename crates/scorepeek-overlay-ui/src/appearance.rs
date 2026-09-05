@@ -11,6 +11,24 @@ pub enum Skin {
 
 impl Skin {
     #[must_use]
+    pub const fn graph_colors(self) -> GraphColors {
+        match self {
+            Self::CyanSystem => GraphColors {
+                score: "#10dff4",
+                miss: "#ffc719",
+            },
+            Self::ResultAurora => GraphColors {
+                score: "#d368f2",
+                miss: "#ffd334",
+            },
+            Self::DjBlackbox => GraphColors {
+                score: "#b9e92b",
+                miss: "#ffad00",
+            },
+        }
+    }
+
+    #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::CyanSystem => "cyan-system",
@@ -18,6 +36,12 @@ impl Skin {
             Self::DjBlackbox => "dj-blackbox",
         }
     }
+}
+
+#[derive(Clone, Copy)]
+pub struct GraphColors {
+    pub score: &'static str,
+    pub miss: &'static str,
 }
 
 impl std::str::FromStr for Skin {

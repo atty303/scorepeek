@@ -3000,6 +3000,30 @@ mod skin_tests {
         }
     }
 
+    fn assert_native_graph_viewport(inner: &blitz_dom::BaseDocument) {
+        let svg_id = inner.query_selector(".plot-area svg").unwrap().unwrap();
+        let plot_id = inner.query_selector(".plot-area").unwrap().unwrap();
+        let plot = inner.get_client_bounding_rect(plot_id).unwrap();
+        let data = &inner
+            .get_node(svg_id)
+            .unwrap()
+            .element_data()
+            .unwrap()
+            .special_data;
+        let blitz_dom::node::SpecialElementData::Image(image) = data else {
+            panic!("SVG must become a native image")
+        };
+        let blitz_dom::node::ImageData::Svg(svg) = image.as_ref() else {
+            panic!("SVG feature must be enabled")
+        };
+        assert!(
+            !svg.tree.root().children().is_empty(),
+            "graph strokes must survive standalone SVG parsing"
+        );
+        assert!((f64::from(svg.tree.size().width()) - plot.width).abs() < 1.0);
+        assert!((f64::from(svg.tree.size().height()) - plot.height).abs() < 1.0);
+    }
+
     #[test]
     fn every_skin_keeps_widget_geometry_while_motion_advances() {
         for skin in [Skin::CyanSystem, Skin::ResultAurora, Skin::DjBlackbox] {
@@ -3023,7 +3047,16 @@ mod skin_tests {
                         pending_delete: Rc::new(RefCell::new(None)),
                         managed: Rc::new(RefCell::new(Vec::new())),
                         outputs: Rc::new(RefCell::new(Vec::new())),
-                        state: Rc::new(RefCell::new(OverlayState::default())),
+                        state: Rc::new(RefCell::new(
+                            serde_json::from_value(
+                                serde_json::from_str::<serde_json::Value>(include_str!(
+                                    "../tests/fixtures/skin-preview.json"
+                                ))
+                                .unwrap()["state"]
+                                    .clone(),
+                            )
+                            .unwrap(),
+                        )),
                         visible: Rc::new(Cell::new(true)),
                         settings: Rc::new(RefCell::new(NativeCanvasSettings {
                             id: "test".into(),
@@ -3047,6 +3080,7 @@ mod skin_tests {
             inner.set_viewport(Viewport::new(560, 1040, 1.25, ColorScheme::Dark));
             inner.resolve(0.0);
             inner.resolve(1.0);
+            assert_native_graph_viewport(&inner);
             let glint = inner.query_selector(".skin-glint").unwrap().unwrap();
             let widget = inner.query_selector(".score-widget").unwrap().unwrap();
             let before = inner.get_client_bounding_rect(widget).unwrap();

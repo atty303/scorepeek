@@ -2,8 +2,8 @@
   {
     "selector": ".skin-energy",
     "property": "opacity",
-    "from": 0.25,
-    "to": 0.7,
+    "from": 0.06,
+    "to": 0.16,
     "period": 7,
     "phase": 0,
     "unit": "",
@@ -20,20 +20,60 @@
     "wave": "sine"
   },
   {
-    "selector": ".skin-glint",
+    "selector": ".status-widget .skin-glint",
     "property": "left",
     "from": -20,
     "to": 100,
-    "period": 4,
-    "phase": 0,
+    "period": 6,
+    "phase": 0.0,
+    "unit": "%",
+    "wave": "ramp"
+  },
+  {
+    "selector": ".selection-widget .skin-glint",
+    "property": "left",
+    "from": -20,
+    "to": 100,
+    "period": 6,
+    "phase": 0.14,
+    "unit": "%",
+    "wave": "ramp"
+  },
+  {
+    "selector": ".score-widget .skin-glint",
+    "property": "left",
+    "from": -20,
+    "to": 100,
+    "period": 6,
+    "phase": 0.28,
+    "unit": "%",
+    "wave": "ramp"
+  },
+  {
+    "selector": ".history-list-widget .skin-glint",
+    "property": "left",
+    "from": -20,
+    "to": 100,
+    "period": 6,
+    "phase": 0.42000000000000004,
+    "unit": "%",
+    "wave": "ramp"
+  },
+  {
+    "selector": ".history-graph-widget .skin-glint",
+    "property": "left",
+    "from": -20,
+    "to": 100,
+    "period": 6,
+    "phase": 0.56,
     "unit": "%",
     "wave": "ramp"
   },
   {
     "selector": ".skin-trace",
     "property": "opacity",
-    "from": 0.35,
-    "to": 1,
+    "from": 0.15,
+    "to": 0.45,
     "period": 2.8,
     "phase": 0,
     "unit": "",

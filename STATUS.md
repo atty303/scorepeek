@@ -45,10 +45,12 @@ checkpoint; implementation history belongs in Git.
   visible until the next RESULT or session end. Persistence state no longer drives the lamp.
 - CYAN SYSTEM, RESULT AURORA and DJ BLACKBOX are canvas-level skins using the approved embedded frame
   artwork through CSS backgrounds. Oxanium and OFL 1.1 are embedded alongside Japanese system-font
-  fallbacks. ADR 0131 adds embedded Orbitron/Rajdhani and one Noto Sans JP family, new transparent
+  fallbacks. ADR 0131 adds embedded Orbitron/Rajdhani, new transparent
   energy/circuit artwork and semantic clear/difficulty/rank treatments. Shared motion tracks drive
   native Blitz styles and browser JS continuously while visible, without changing actual values.
   Decorations overflow widgets and are cropped by the canvas; hidden native surfaces remain idle.
+  ADR 0132 prioritizes restrained frames and moving accents; Japanese uses system fonts without an
+  embedded Noto bundle.
 - Score/history widgets read only committed SQLite state. BEST integrates RESULT and SELECT sources;
   representative RESULT ordering is highest EX score, known/lower miss, then latest receipt time.
   History rows include DJ LEVEL. The graph uses exact timestamps, labeled DJ LEVEL thresholds and a
@@ -180,9 +182,10 @@ checkpoint; implementation history belongs in Git.
 - ADR 0131's three rich skins have native PNG/layout/manifest inspection and 1920x1080 Codex Browser
   inspection through the production editor and canvas iframes. Native samples at 2.25 and 3.75 seconds
   keep widget/value geometry fixed while light and particles move; inactive/active/error lamp paint
-  remains distinct. Native graph SVG polylines are still absent with the currently disabled Blitz
-  SVG feature; enabling that feature and its transitive dependencies awaits approval. Browser graph
-  polylines render. These checks do not establish live Wayland or OBS composition.
+  remains distinct. Blitz SVG support renders graph polylines using explicit paint attributes and
+  a viewport shared with plot geometry; colors are shared with CSS axes and legends. Frames use
+  restrained lines/corner accents, with staggered moving highlights carrying the ambient motion.
+  These checks do not establish live Wayland or OBS composition.
 - Repository checks and the complete workspace suite pass: 508 library,
   325 binary, 128 corpus library, 5 corpus binary, 31 overlay, 3 handle, 4 overlay-UI, 0 overlay-web
   and 13 score tests, plus doctests. The embedded-web overlay suite has 32 tests. The 99 offline OCR tests and
