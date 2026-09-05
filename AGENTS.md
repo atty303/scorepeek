@@ -112,6 +112,21 @@
 - `mise run check` is non-mutating, `mise run fix` applies supported fixes, and
   `mise run test` is the complete reproducible validation entry point.
 - Define fast checks once in `hk.pkl`; hooks and mise tasks must reuse them.
+- When a change affects rendered overlay UI or CSS, run the checked-in native scenario
+  into a new temporary directory with `mise run overlay:visual:native -- crates/scorepeek-overlay/tests/fixtures/visual-debug.json <new-output-dir>`. Inspect every PNG,
+  the corresponding selector-layout JSON and `manifest.json`; positive DOM rectangles alone do not
+  establish correct native paint, clipping or CSS support. This path exercises the production
+  Dioxus native DOM, Blitz and Vello renderer without connecting to Wayland.
+- Verify the browser/OBS route with `mise run overlay:visual:obs -- <new-config-path> 127.0.0.1:<unused-port>`. The config path must not exist. Open `/overlay` in Codex Browser at the
+  task-specific logical output size, or 1920x1080 when none is specified. Inspect both the top-level
+  and canvas iframe DOM, use right-click
+  and editor controls to exercise stateful interaction, and capture the composed image. Stop the
+  server and remove agent-owned temporary artifacts after inspection. See
+  `docs/overlay-visual-debugging.md` for scenario actions and artifact semantics.
+- Compare native and browser images manually to find unsupported native CSS or paint differences;
+  pixel equality is not an acceptance condition. Treat these as development-host evidence only.
+  Actual Wayland composition and input delivery, and rendering inside OBS, remain separate explicit
+  live verification boundaries.
 - Keep live Bazzite/Portal/OBS/Gamescope/GPU tests as explicit tasks. Never
   represent development-host or synthetic success as target-machine
   validation.
