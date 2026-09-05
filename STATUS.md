@@ -177,6 +177,11 @@ checkpoint; implementation history belongs in Git.
   the hash and version, and same-directory staging and rollback files were removed after atomic
   replacement. No scorepeek run or overlay child remained at post-install inspection, so the next
   run will load this binary. Target visual confirmation of the repaired widgets remains outstanding.
+- Commit `00a04b17a7f615310866c7eec47efb5421b7c583` was built with `mise run dist:test` and
+  installed on `infinitas.lan` as `/home/atty/.local/bin/scorepeek`. The installed binary SHA-256
+  is `1379f95d2a5cba9b2fc262c01c226e8ef9759643a51806366c02c9b00528b1a8`; target readback verified
+  the hash, version, mode `0755`, and removal of the same-directory staging and rollback files after
+  atomic replacement. No scorepeek process remained at post-install inspection.
 
 - Recorded-input reducer replay of the complete session with digest
   `193550c1c3337905122585fb868c1c8831be3fab835c5ec9e5c03ef70c419594` confirms four results,
@@ -266,8 +271,8 @@ checkpoint; implementation history belongs in Git.
   upper-right placement, output switching and native canvas-list/output hot reconciliation,
   gesture behavior across integer/fractional outputs, Gamescope foreground behavior, real OBS
   Interaction, readability, CPU/GPU/OBS lag and idle render cost. Current screenshots certify layout
-  only, not interaction or performance. The previously installed target binary predates ADR 0129;
-  this editor revision has not been installed. No autostart, push or release is included.
+  only, not interaction or performance. The installed target binary includes ADR 0129 at commit
+  `00a04b17a7f615310866c7eec47efb5421b7c583`. No autostart, push or release is included.
 - Pinned dx produces a browser bundle, but its optional wasm-opt step reports unsupported DWARF
   and skips optimization. Asset MIME/type tests pass on the emitted bundle; it is not claimed to
   be wasm-opt optimized. Browser visual verification remains separate.
