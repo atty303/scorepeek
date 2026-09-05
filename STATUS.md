@@ -151,11 +151,14 @@ checkpoint; implementation history belongs in Git.
   absent or stale, persists the resolved name through the parent, retries transient save conflicts,
   and releases an active editor lease when its surface exits. Focused fallback tests, workspace
   all-target Clippy and the complete suite pass on the development host.
-- Commit `a90541c2c4d9cc93327dcaa2332ba16183bafc56` was built with `mise run dist:test` and
+- Commit `2e3396137a4e1afd1a17148f3ccab90c085b4b7d` was built with `mise run dist:test` and
   installed on `infinitas.lan` as `/home/atty/.local/bin/scorepeek`. The installed binary SHA-256
-  is `967e735c0de182a2869d14f66ea15f5291cde196b7fd629fd3817b09aa42d7be`; target readback confirms
-  the overlay CLI flags and the existing numeric model remains active. No scorepeek process was
-  running, and the same-directory staging and rollback files were removed after atomic replacement.
+  is `f150eab84766edb6315d29d8abdd103a6be9384ff653b4e48c68f6a847f307cf`; target readback confirms
+  the new overlay CLI flags and the existing numeric model remains active. The pre-install process
+  remains live on the replaced binary inode and was not restarted. The target overlay TOML remains
+  schema v1, so a subsequent schema-v2 run will reject it until the operator resets or manually
+  rewrites that file. No config migration was attempted, and the same-directory staging and rollback
+  files were removed after atomic replacement.
 
 - Recorded-input reducer replay of the complete session with digest
   `193550c1c3337905122585fb868c1c8831be3fab835c5ec9e5c03ef70c419594` confirms four results,
