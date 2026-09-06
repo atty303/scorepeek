@@ -255,7 +255,7 @@ fn shown(value: &str) -> &str {
 fn lamp(state: LampState, label: Option<&str>, class: &str, skin: Skin) -> Element {
     let artwork = frame::lamp(state, label.is_none(), skin, class);
     let state = format!("{state:?}").to_ascii_lowercase();
-    rsx! { div { class: "lamp-group {class}", span { class: "lamp", "data-state": state, aria_hidden: "true", {artwork} } if let Some(label) = label { span { class: "lamp-label", "{label}" } } } }
+    rsx! { div { class: "lamp-group {class}", span { class: "lamp", "data-state": state, aria_hidden: "true", {artwork} } if let Some(label) = label { span { class: "lamp-label", {typography::label(label, skin, 15)} } } } }
 }
 fn chrome(widget: &WidgetLayout, skin: Skin) -> Element {
     rsx! { div { class: "skin-frame", aria_hidden: "true",
@@ -338,7 +338,7 @@ fn render_widget(
             rsx! { section { class: "widget selection-widget", {chrome(widget, skin)} div { class: "widget-content selection-content",
                 {lamp(if state.history.recorded { LampState::Active } else { LampState::Inactive }, None, "recorded-lamp", skin)}
                 div { class: "song-copy", h1 { title: title, "{title}" } p { title: artist, "{artist}" } }
-                div { class: "chart-rail", {frame::chart_rail(widget.width.saturating_sub(56), skin)} span { class: "play-type", "{play_type}" } span { class: "difficulty", "data-difficulty": difficulty, "{difficulty}" } span { span { class: "field-label", "LV " } "{level}" } span { span { class: "field-label", "NOTES " } "{notes}" } }
+                div { class: "chart-rail", {frame::chart_rail(widget.width.saturating_sub(56), skin)} span { class: "play-type", {typography::label(play_type, skin, 24)} } span { class: "difficulty", "data-difficulty": difficulty, {typography::label(difficulty, skin, 20)} } span { span { class: "field-label", {typography::label("LV", skin, 18)} } "{level}" } span { span { class: "field-label", {typography::label("NOTES", skin, 18)} } "{notes}" } }
             } } }
         }
         WidgetKind::Score => score_widget(state, widget, skin),
@@ -461,18 +461,6 @@ pub fn editor_sample_state() -> OverlayState {
     }
 }
 
-fn clear_tint(clear: &str, skin: Skin) -> [u8; 3] {
-    match motion::clear_role(clear) {
-        "full-combo" | "ex-hard" => [255, 236, 151],
-        "failed" => [255, 125, 132],
-        "easy" => [181, 255, 155],
-        _ => match skin {
-            Skin::CyanSystem => [137, 242, 255],
-            Skin::ResultAurora => [255, 228, 153],
-            Skin::DjBlackbox => [218, 244, 116],
-        },
-    }
-}
 fn score_widget(state: &OverlayState, widget: &WidgetLayout, skin: Skin) -> Element {
     let fields = [
         ("PGREAT", &state.detail.pgreat, "pgreat"),
@@ -486,13 +474,13 @@ fn score_widget(state: &OverlayState, widget: &WidgetLayout, skin: Skin) -> Elem
         ("PLAY OPTIONS", &state.detail.play_options, "options"),
     ];
     rsx! { section { class: "widget score-widget", {chrome(widget, skin)} div { class: "widget-content score-content",
-        div { class: "best-section", h2 { "BEST" } div { class: "best-grid", div { class: "score-main", label { "EX SCORE" } strong { {typography::metallic(shown(&state.best.score), skin == Skin::ResultAurora, 66)} } span { class: "clear-value", "data-clear": motion::clear_role(&state.best.clear), {typography::sheen(shown(&state.best.clear), 20, clear_tint(&state.best.clear, skin))} } } div { class: "best-side", label { "DJ LEVEL" } strong { class: "dj-level", "data-rank": shown(&state.best.dj_level), {typography::metallic(shown(&state.best.dj_level), true, 48)} } label { "MISS COUNT" } b { "{shown(&state.best.miss)}" } } } }
-        div { class: "detail-section", h2 { "RESULT DETAIL" } for (label, value, class) in fields { div { class: "detail-row {class}", span { "{label}" } b { "{shown(value)}" } } } }
+        div { class: "best-section", h2 { {typography::label("BEST", skin, 18)} } div { class: "best-grid", div { class: "score-main", label { {typography::label("EX SCORE", skin, 15)} } strong { {typography::metallic(shown(&state.best.score), skin, 66, false)} } span { class: "clear-value", "data-clear": motion::clear_role(&state.best.clear), {typography::label(shown(&state.best.clear), skin, 20)} } } div { class: "best-side", label { {typography::label("DJ LEVEL", skin, 15)} } strong { class: "dj-level", "data-rank": shown(&state.best.dj_level), {typography::metallic(shown(&state.best.dj_level), skin, 48, true)} } label { {typography::label("MISS COUNT", skin, 15)} } b { "{shown(&state.best.miss)}" } } } }
+        div { class: "detail-section", h2 { {typography::label("RESULT DETAIL", skin, 18)} } for (label, value, class) in fields { div { class: "detail-row {class}", span { {typography::label(label, skin, 15)} } b { "{shown(value)}" } } } }
     } } }
 }
 fn history_list(history: &History, widget: &WidgetLayout, skin: Skin) -> Element {
     let count = widget.settings.history_count;
-    rsx! { section { class: "widget history-list-widget", {chrome(widget, skin)} div { class: "widget-content history-content", h2 { "HISTORY" } div { class: "history-row history-head", span { "DATE" } span { "EX SCORE" } span { "DJ LEVEL" } span { "MISS" } span { "CLEAR" } } for play in history.plays.iter().take(count as usize) { div { class: "history-row", time { "{play.notified_at}" } b { "{play.score}" } span { "data-rank": &play.dj_level, "{play.dj_level}" } span { "{play.miss}" } span { "data-clear": motion::clear_role(&play.clear), "{play.clear}" } } } } } }
+    rsx! { section { class: "widget history-list-widget", {chrome(widget, skin)} div { class: "widget-content history-content", h2 { {typography::label("HISTORY", skin, 18)} } div { class: "history-row history-head", span { {typography::label("DATE", skin, 12)} } span { {typography::label("EX SCORE", skin, 12)} } span { {typography::label("DJ LEVEL", skin, 12)} } span { {typography::label("MISS", skin, 12)} } span { {typography::label("CLEAR", skin, 12)} } } for play in history.plays.iter().take(count as usize) { div { class: "history-row", time { "{play.notified_at}" } b { "{play.score}" } span { "data-rank": &play.dj_level, "{play.dj_level}" } span { "{play.miss}" } span { "data-clear": motion::clear_role(&play.clear), {typography::label(&play.clear, skin, 16)} } } } } } }
 }
 fn history_graph(history: &History, widget: &WidgetLayout, skin: Skin) -> Element {
     let colors = skin.graph_colors();
@@ -570,7 +558,7 @@ fn history_graph(history: &History, widget: &WidgetLayout, skin: Skin) -> Elemen
         ("D", 33.333),
         ("E", 22.222),
     ];
-    rsx! { section { class: "widget history-graph-widget", style: geometry, {chrome(widget, skin)} div { class: "widget-content graph-content", h2 { "HISTORY GRAPH" } div { class: "graph-legend", span { class: "score-key", "DJ LEVEL" } span { class: "miss-key", "MISS RATE" } } div { class: "plot", div { class: "level-axis", for (level,threshold) in levels { span { style: format!("top:{:.3}%",100.0-threshold), "{level}" } } } div { class: "plot-area", for (level,threshold) in levels { i { class: "threshold", "data-level": level, style: format!("top:{:.3}%",100.0-threshold) } } for style in score_dots { i { class:"graph-dot score-dot",style } } for style in miss_dots { i { class:"graph-dot miss-dot",style } } svg { width: "{plot_width}", height: "{plot_height}", view_box: "0 0 1000 100", preserve_aspect_ratio: "none", polyline { class: "score-line", fill: "none", stroke: colors.score, stroke_width: "1.25", vector_effect: "non-scaling-stroke", points: "{points.0}" } for segment in points.1 { polyline { class: "miss-line", fill: "none", stroke: colors.miss, stroke_width: "1.25", vector_effect: "non-scaling-stroke", points: "{segment}" } } } } div { class: "miss-axis", for value in ["100%","75%","50%","25%","0%"] { span { "{value}" } } } } div { class: "time-axis", for (position,label) in time_ticks { span { style: format!("left:{position:.3}%"), "{label}" } } } } } }
+    rsx! { section { class: "widget history-graph-widget", style: geometry, {chrome(widget, skin)} div { class: "widget-content graph-content", h2 { {typography::label("HISTORY GRAPH", skin, 18)} } div { class: "graph-legend", span { class: "score-key", {typography::label("DJ LEVEL", skin, 14)} } span { class: "miss-key", {typography::label("MISS RATE", skin, 14)} } } div { class: "plot", div { class: "level-axis", for (level,threshold) in levels { span { style: format!("top:{:.3}%",100.0-threshold), {typography::label(level, skin, 14)} } } } div { class: "plot-area", for (level,threshold) in levels { i { class: "threshold", "data-level": level, style: format!("top:{:.3}%",100.0-threshold) } } for style in score_dots { i { class:"graph-dot score-dot",style } } for style in miss_dots { i { class:"graph-dot miss-dot",style } } svg { width: "{plot_width}", height: "{plot_height}", view_box: "0 0 1000 100", preserve_aspect_ratio: "none", polyline { class: "score-line", fill: "none", stroke: colors.score, stroke_width: "1.25", vector_effect: "non-scaling-stroke", points: "{points.0}" } for segment in points.1 { polyline { class: "miss-line", fill: "none", stroke: colors.miss, stroke_width: "1.25", vector_effect: "non-scaling-stroke", points: "{segment}" } } } } div { class: "miss-axis", for value in ["100%","75%","50%","25%","0%"] { span { {typography::label(value, skin, 14)} } } } } div { class: "time-axis", for (position,label) in time_ticks { span { style: format!("left:{position:.3}%"), "{label}" } } } } } }
 }
 fn dot_style(time: i64, ratio: f64, start: i64, end: i64) -> String {
     let x = (time_ratio(time, start, end) * 100.0).clamp(0.0, 100.0);

@@ -22,7 +22,7 @@
 .overlay-canvas .song-copy p{font-size:20px;line-height:24px;letter-spacing:.1em;color:var(--text)}
 .overlay-canvas .chart-rail{position:relative;background:none;border:0;clip-path:none;margin-top:2px;grid-template-columns:104px 1.05fr .95fr 1.5fr}
 .overlay-canvas .chart-rail .rail-frame{position:absolute;inset:0;pointer-events:none}
-.overlay-canvas .chart-rail span{position:relative;font-size:17px;border-left:1px dashed var(--dim);line-height:26px}
+.overlay-canvas .chart-rail>span{position:relative;font-size:17px;border-left:1px dashed var(--dim);line-height:26px}
 .overlay-canvas .chart-rail .play-type{font-family:Orbitron,sans-serif;font-size:20px;border:0;margin:0 15px;line-height:26px;font-weight:600}
 .overlay-canvas .chart-rail .field-label{border:0;color:var(--accent);font-size:15px;margin-right:6px;padding-right:6px}
 .overlay-canvas [data-difficulty=ANOTHER]{color:#ff718e}.overlay-canvas [data-difficulty=HYPER]{color:#ffde31}.overlay-canvas [data-difficulty=NORMAL]{color:#75c9ff}.overlay-canvas [data-difficulty=LEGGENDARIA]{color:#e399ff}
@@ -95,7 +95,8 @@
 .overlay-canvas .metal-type{display:inline-flex;position:relative;vertical-align:top;max-width:100%;text-shadow:none}
 .overlay-canvas .metal-glyph{display:block;flex-shrink:0;background-repeat:no-repeat}
 .overlay-canvas[data-skin=result-aurora] .metal-type{transform:skewX(-9deg);transform-origin:center}
-.overlay-canvas .sheen-type{display:block;position:relative;white-space:nowrap;overflow:hidden;text-shadow:none}
-.overlay-canvas .type-value{position:absolute;opacity:0;pointer-events:none}
-.overlay-canvas .sheen-band{display:block;position:absolute;left:0;width:100%;height:1px;overflow:hidden;pointer-events:none}
-.overlay-canvas .sheen-band>span{display:block;position:absolute;left:0;width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .overlay-canvas .type-value{position:absolute;opacity:0;pointer-events:none}
+.overlay-canvas .material-label{display:inline-block;position:relative;vertical-align:middle;max-width:100%;overflow:hidden;white-space:nowrap;font-weight:600;letter-spacing:.04em;text-shadow:none;font-style:normal;padding-right:2px}
+.overlay-canvas .label-value{opacity:0;position:relative;white-space:nowrap}
+.overlay-canvas .label-art{display:block;position:absolute;left:0;top:0;background-repeat:no-repeat;pointer-events:none}
+.overlay-canvas .detail-row .material-label{color:inherit}

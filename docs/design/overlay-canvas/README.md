@@ -37,24 +37,25 @@ this composition; neither uses CSS border-image or replaces the material with ou
 
 ## Typography material
 
-Large EX SCORE and DJ LEVEL use the shared `type-silver.png` / `type-gold.png` glyph atlases.
-They retain the value as accessible DOM text; decorative glyphs are hidden from accessibility.
-Unknown or unsupported strings remain ordinary text. The source is bundled OFL Oxanium, rendered
-at 3× resolution with the pinned native stack, with a reflected gradient and a thin directional bevel.
-These small reviewed material assets are checked in alongside the frame artwork so normal builds
-do not require a GPU to generate typography. No font or game-image download is involved.
+Large EX SCORE and DJ LEVEL use skin-specific `type-*.png` glyph atlases. Cyan System uses
+luminous Orbitron silver, Result Aurora uses reflected Oxanium gold with an outlined bevel,
+and DJ Blackbox uses matte Rajdhani silver. Cyan's rank retains the design sheet's gold accent.
+Static headings, chart metadata, judgment names, clear types, history columns and graph legends/axes
+use proportional whole-word `labels-*.png` atlases with semantic role colors. Small labels have a
+thinner material edge to preserve readability. Actual text remains in the DOM for accessibility
+and layout; decorative layers are hidden from accessibility. Unsupported strings remain ordinary text.
+Mixed-language song titles and dynamic detail/history values use ordinary text with Japanese
+system-font fallback. Clear-state opacity motion remains semantic; numeric values never count up.
 
-Regenerate into a new directory, inspect the result, then replace the two files under
-`crates/scorepeek-overlay-ui/assets/skins/`:
+All six atlases are generated at 3× resolution from bundled OFL fonts through the pinned native
+renderer. They are checked in alongside the frame artwork; normal builds require no generation,
+font download or game images. Regenerate into a new directory, inspect at actual display sizes,
+then replace the six matching files under `crates/scorepeek-overlay-ui/assets/skins/`:
 
 ```text
 mise run overlay:type:generate -- /tmp/scorepeek-type-atlas
 ```
 
-`examples/generate_type_atlas.rs` owns font styling, gradient stops and bevel lighting;
-`scorepeek-overlay-ui/src/typography.rs` owns glyph order, cell geometry and runtime composition.
-Clear labels retain normal font shaping and use identically positioned text clipped into one-pixel
-color bands in native and browser without CSS background-clip:text. Mixed-language song titles use
-ordinary text with Japanese system-font fallback. Small detail and history text stays untextured
-for readability.
-Clear-state colors and existing opacity motion remain semantic; numeric values never count up.
+`examples/generate_type_atlas.rs` owns font styling, face reflection, groove and bevel lighting;
+`scorepeek-overlay-ui/src/typography.rs` owns semantic label roles, glyph order, geometry and shared
+native/browser composition. Preserve proportional label shaping when changing the generation font.

@@ -62,8 +62,9 @@ checkpoint; implementation history belongs in Git.
   proportions, chamfered contours and restrained semantic motion. The chart rail, badge and lamps
   have explicit shared geometry; history graphs show parent-generated local-calendar month labels.
   Saved geometry is not rearranged.
-  EX SCORE and DJ LEVEL use embedded metallic glyph atlases regenerated from bundled Oxanium;
-  clear labels use shared clipped text gradients, while mixed-language song titles use ordinary text.
+  EX SCORE and DJ LEVEL use skin-specific embedded material glyph atlases from bundled fonts.
+  Headings, chart labels, judgments, clear types, history columns and graph labels share proportional
+  material label atlases; mixed-language song titles and dynamic small values use ordinary text.
   Actual values remain accessible DOM text.
   Japanese uses system fonts without an embedded Noto bundle (ADR 0132).
 - Score/history widgets read only committed SQLite state. BEST integrates RESULT and SELECT sources;
@@ -222,6 +223,10 @@ checkpoint; implementation history belongs in Git.
   The browser WASM type-checks and the real dx bundle contains served JS/WASM/font/artwork with correct
   MIME types; embedded-asset and child-EOF tests pass. `wasm-opt` still reports unsupported DWARF and
   the bundle proceeds without that optional optimization.
+- The skin-specific typography and proportional label atlases have all-three-skin native image
+  inspection and a complete 22-frame native PNG/layout/manifest scenario, including hidden-screen
+  transitions and editor resize/scroll/drag. The latest typography has not been visually verified in
+  the browser: Codex Browser initialization failed on a missing plugin service module.
 - ADR 0131's three rich skins have native PNG/layout/manifest inspection and 1920x1080 Codex Browser
   inspection through the production editor and canvas iframes. Native samples at 2.25 and 3.75 seconds
   keep widget/value geometry fixed while light and particles move; inactive/active/error lamp paint

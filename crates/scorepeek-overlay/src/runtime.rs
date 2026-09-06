@@ -380,6 +380,19 @@ fn notification_time(unix_ms: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stored_clear_states_have_material_labels() {
+        for state in 0..=7 {
+            let text = super::clear(Some(state));
+            assert!(
+                scorepeek_overlay_ui::typography::LABELS
+                    .iter()
+                    .any(|(label, _)| *label == text),
+                "missing material for stored clear state {text}"
+            );
+        }
+    }
+
     use super::*;
     #[test]
     fn notification_dates_use_local_time_and_not_play_start_times() {

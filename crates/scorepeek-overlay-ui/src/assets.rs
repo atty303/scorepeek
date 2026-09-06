@@ -1,12 +1,28 @@
 //! Fixed, embedded artwork shared by both renderers.
 pub const SKIN_ASSETS: &[(&str, &[u8])] = &[
     (
-        "/skins/type-gold.png",
-        include_bytes!("../assets/skins/type-gold.png"),
+        "/skins/type-cyan-system.png",
+        include_bytes!("../assets/skins/type-cyan-system.png"),
     ),
     (
-        "/skins/type-silver.png",
-        include_bytes!("../assets/skins/type-silver.png"),
+        "/skins/type-result-aurora.png",
+        include_bytes!("../assets/skins/type-result-aurora.png"),
+    ),
+    (
+        "/skins/type-dj-blackbox.png",
+        include_bytes!("../assets/skins/type-dj-blackbox.png"),
+    ),
+    (
+        "/skins/labels-cyan-system.png",
+        include_bytes!("../assets/skins/labels-cyan-system.png"),
+    ),
+    (
+        "/skins/labels-result-aurora.png",
+        include_bytes!("../assets/skins/labels-result-aurora.png"),
+    ),
+    (
+        "/skins/labels-dj-blackbox.png",
+        include_bytes!("../assets/skins/labels-dj-blackbox.png"),
     ),
     (
         "/skins/cyan-circuit.png",
