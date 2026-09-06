@@ -783,6 +783,7 @@ Waylandの保存outputが消失した場合、収まるnamed output、なけれ�
 cyan-system（既定）、result-aurora、dj-blackboxをcanvas単位で選ぶ。同じ意味DOMと状態logicを共有しつつ、
 ADR 0133により原典design masterの比率・輪郭・配色・文字階層へ忠実に合わせる。
 ADR 0134により、初期imagegenの素材感を保つため全skinのframeを同梱PNGの角・辺・中央へ分けて描画する。角の縦横比と縁の厚みを保ち、譜面rail・lampは意味を持つ共有SVGとする。AURORAの光は曲名headerへ限定し、scoreを金色にする。
+EX SCOREとDJ LEVELは同梱Oxaniumから再生成できる金属グラデーションatlasを使う。曲名・clear表示は通常の文字組みを保った色帯clipで描画し、小さい内訳・履歴は通常文字とする。実値はaccessible DOM textとして維持する。
 新規widgetは原典のコンパクトな比率とし、保存済み配置は自動変更しない。runtime値は即時に正しい値を表示し、count-upはしない。
 Oxanium/Orbitron/Rajdhaniをlicense付きで同梱する。日本語はシステムのNoto Sans JP等を使い、同梱しない（ADR 0132）。
 DOM/CSS・素材・意味に対応したmotion設定は共通とし、native RustとOBS JavaScriptで駆動する。

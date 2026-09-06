@@ -6,6 +6,7 @@ mod appearance;
 mod assets;
 mod frame;
 pub mod motion;
+pub mod typography;
 pub use appearance::{Appearance, Skin};
 pub use assets::{FONT_ASSETS, FONT_CSS, FONT_LICENSES, SKIN_ASSETS, skin_asset};
 pub const OXANIUM: &[u8] = include_bytes!("../assets/fonts/Oxanium.ttf");
@@ -341,7 +342,7 @@ fn render_widget(
         WidgetKind::Selection => {
             rsx! { section { class: "widget selection-widget", {chrome(widget, skin)} div { class: "widget-content selection-content",
                 {lamp(if state.history.recorded { LampState::Active } else { LampState::Inactive }, None, "recorded-lamp", skin)}
-                div { class: "song-copy", h1 { title: title, "{title}" } p { title: artist, "{artist}" } }
+                div { class: "song-copy", h1 { title: title, {typography::sheen(title, 35, [245, 249, 255])} } p { title: artist, "{artist}" } }
                 div { class: "chart-rail", {frame::chart_rail(widget.width.saturating_sub(56), skin)} span { class: "play-type", "{play_type}" } span { class: "difficulty", "data-difficulty": difficulty, "{difficulty}" } span { span { class: "field-label", "LV " } "{level}" } span { span { class: "field-label", "NOTES " } "{notes}" } }
             } } }
         }
@@ -465,6 +466,18 @@ pub fn editor_sample_state() -> OverlayState {
     }
 }
 
+fn clear_tint(clear: &str, skin: Skin) -> [u8; 3] {
+    match motion::clear_role(clear) {
+        "full-combo" | "ex-hard" => [255, 236, 151],
+        "failed" => [255, 125, 132],
+        "easy" => [181, 255, 155],
+        _ => match skin {
+            Skin::CyanSystem => [137, 242, 255],
+            Skin::ResultAurora => [255, 228, 153],
+            Skin::DjBlackbox => [218, 244, 116],
+        },
+    }
+}
 fn score_widget(state: &OverlayState, widget: &WidgetLayout, skin: Skin) -> Element {
     let fields = [
         ("PGREAT", &state.detail.pgreat, "pgreat"),
@@ -478,7 +491,7 @@ fn score_widget(state: &OverlayState, widget: &WidgetLayout, skin: Skin) -> Elem
         ("PLAY OPTIONS", &state.detail.play_options, "options"),
     ];
     rsx! { section { class: "widget score-widget", {chrome(widget, skin)} div { class: "widget-content score-content",
-        div { class: "best-section", h2 { "BEST" } div { class: "best-grid", div { class: "score-main", label { "EX SCORE" } strong { span { class:"number-depth", aria_hidden:"true", "{shown(&state.best.score)}" } span { class:"number-face", "{shown(&state.best.score)}" } } span { class: "clear-value", "data-clear": motion::clear_role(&state.best.clear), "{shown(&state.best.clear)}" } } div { class: "best-side", label { "DJ LEVEL" } strong { class: "dj-level", "data-rank": shown(&state.best.dj_level), "{shown(&state.best.dj_level)}" } label { "MISS COUNT" } b { "{shown(&state.best.miss)}" } } } }
+        div { class: "best-section", h2 { "BEST" } div { class: "best-grid", div { class: "score-main", label { "EX SCORE" } strong { {typography::metallic(shown(&state.best.score), skin == Skin::ResultAurora, 66)} } span { class: "clear-value", "data-clear": motion::clear_role(&state.best.clear), {typography::sheen(shown(&state.best.clear), 20, clear_tint(&state.best.clear, skin))} } } div { class: "best-side", label { "DJ LEVEL" } strong { class: "dj-level", "data-rank": shown(&state.best.dj_level), {typography::metallic(shown(&state.best.dj_level), true, 48)} } label { "MISS COUNT" } b { "{shown(&state.best.miss)}" } } } }
         div { class: "detail-section", h2 { "RESULT DETAIL" } for (label, value, class) in fields { div { class: "detail-row {class}", span { "{label}" } b { "{shown(value)}" } } } }
     } } }
 }

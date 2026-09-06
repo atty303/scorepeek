@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -62,8 +62,6 @@ impl BackendRevisions {
 pub struct Canvas {
     pub id: String,
     pub backend: Backend,
-    #[serde(default = "enabled")]
-    pub enabled: bool,
     #[serde(default)]
     pub skin: Skin,
     #[serde(default)]
@@ -172,7 +170,7 @@ impl OverlayConfig {
 
     /// Validates global invariants and returns individually valid canvases.
     /// # Errors
-    /// Returns an unsupported schema or a backend without an enabled valid canvas.
+    /// Returns an unsupported schema or a backend without a valid canvas.
     pub fn validated(&self) -> Result<(Vec<Canvas>, Vec<ConfigIssue>), String> {
         if self.schema_version != SCHEMA_VERSION {
             return Err(format!("overlay schema_version must be {SCHEMA_VERSION}"));
@@ -205,14 +203,6 @@ impl OverlayConfig {
                     "overlay {backend:?} must retain at least one valid canvas"
                 ));
             }
-            if !valid
-                .iter()
-                .any(|canvas| canvas.backend == backend && canvas.enabled)
-            {
-                return Err(format!(
-                    "overlay {backend:?} must retain at least one enabled canvas"
-                ));
-            }
         }
         Ok((valid, issues))
     }
@@ -223,7 +213,6 @@ impl Canvas {
     pub fn presentation(&self) -> scorepeek_overlay_ui::CanvasPresentation {
         scorepeek_overlay_ui::CanvasPresentation {
             id: self.id.clone(),
-            enabled: self.enabled,
             skin: self.skin,
             revision: self.revision,
             show_on: self.show_on.clone(),
@@ -259,7 +248,6 @@ impl Canvas {
     }
 
     pub fn apply_presentation(&mut self, presentation: &scorepeek_overlay_ui::CanvasPresentation) {
-        self.enabled = presentation.enabled;
         self.skin = presentation.skin;
         self.revision = presentation.revision;
         self.show_on.clone_from(&presentation.show_on);
@@ -326,9 +314,12 @@ pub fn load_or_create(path: &Path) -> Result<(OverlayConfig, Vec<ConfigIssue>), 
         .get("schema_version")
         .and_then(toml::Value::as_integer)
         .ok_or("overlay schema_version is required")?;
-    let migrated = schema == 2;
-    if migrated {
+    let migrated = matches!(schema, 2 | 3);
+    if schema == 2 {
         migrate_v2_document(&mut document)?;
+        migrate_v3_document(&mut document)?;
+    } else if schema == 3 {
+        migrate_v3_document(&mut document)?;
     } else if schema != i64::from(SCHEMA_VERSION) {
         return Err(format!("overlay schema_version must be {SCHEMA_VERSION}"));
     }
@@ -350,10 +341,7 @@ fn migrate_v2_document(document: &mut toml::Value) -> Result<(), String> {
     let root = document
         .as_table_mut()
         .ok_or("overlay TOML root must be a table")?;
-    root.insert(
-        "schema_version".into(),
-        toml::Value::Integer(i64::from(SCHEMA_VERSION)),
-    );
+    root.insert("schema_version".into(), toml::Value::Integer(3));
     let canvases = root
         .get_mut("canvases")
         .and_then(toml::Value::as_array_mut)
@@ -370,6 +358,33 @@ fn migrate_v2_document(document: &mut toml::Value) -> Result<(), String> {
                     .ok_or("overlay widget must be a table")?
                     .remove("z");
             }
+        }
+    }
+    Ok(())
+}
+
+fn migrate_v3_document(document: &mut toml::Value) -> Result<(), String> {
+    let root = document
+        .as_table_mut()
+        .ok_or("overlay TOML root must be a table")?;
+    root.insert(
+        "schema_version".into(),
+        toml::Value::Integer(i64::from(SCHEMA_VERSION)),
+    );
+    let canvases = root
+        .get_mut("canvases")
+        .and_then(toml::Value::as_array_mut)
+        .ok_or("overlay canvases must be an array")?;
+    for canvas in canvases {
+        let table = canvas
+            .as_table_mut()
+            .ok_or("overlay canvas must be a table")?;
+        match table.remove("enabled") {
+            Some(toml::Value::Boolean(false)) => {
+                table.insert("show_on".into(), toml::Value::Array(Vec::new()));
+            }
+            Some(toml::Value::Boolean(true)) | None => {}
+            Some(_) => return Err("overlay canvas enabled must be a boolean".into()),
         }
     }
     Ok(())
@@ -429,9 +444,6 @@ fn validate_canvas(canvas: &Canvas, canvas_ids: &mut BTreeSet<String>) -> Result
     }
     if canvas.width < 32 || canvas.height < 32 {
         return Err("canvas dimensions must be at least 32x32".into());
-    }
-    if canvas.show_on.as_ref().is_some_and(Vec::is_empty) {
-        return Err("canvas show_on must be omitted or non-empty".into());
     }
     if canvas.opacity_percent == 0 || canvas.opacity_percent > 100 {
         return Err("canvas opacity_percent must be between 1 and 100".into());
@@ -563,7 +575,6 @@ fn initial_canvas(
     Canvas {
         id,
         backend,
-        enabled: true,
         skin: Skin::CyanSystem,
         show_on,
         opacity_percent: 100,
@@ -595,9 +606,8 @@ pub fn empty_canvas(id: String, backend: Backend) -> Canvas {
     Canvas {
         id,
         backend,
-        enabled: true,
         skin: Skin::CyanSystem,
-        show_on: None,
+        show_on: Some(Vec::new()),
         opacity_percent: 100,
         output: None,
         initial_placement: None,
@@ -610,9 +620,6 @@ pub fn empty_canvas(id: String, backend: Backend) -> Canvas {
     }
 }
 
-const fn enabled() -> bool {
-    true
-}
 const fn default_width() -> u32 {
     560
 }
@@ -732,12 +739,12 @@ mod tests {
         config.schema_version = 1;
         assert_eq!(
             config.validated().unwrap_err(),
-            "overlay schema_version must be 3"
+            "overlay schema_version must be 4"
         );
     }
 
     #[test]
-    fn schema_v2_is_migrated_atomically_by_removing_z_only() {
+    fn schema_v2_is_migrated_atomically_through_v4() {
         let root = temporary("migrate-v2");
         let path = root.join("overlay.toml");
         std::fs::create_dir_all(&root).unwrap();
@@ -756,14 +763,78 @@ mod tests {
 
         let (loaded, issues) = load_or_create(&path).unwrap();
         assert!(issues.is_empty());
-        assert_eq!(loaded.schema_version, 3);
+        assert_eq!(loaded.schema_version, 4);
         let persisted = std::fs::read_to_string(&path).unwrap();
         assert!(
             !persisted
                 .lines()
                 .any(|line| line.trim_start().starts_with("z ="))
         );
-        assert!(persisted.contains("schema_version = 3"));
+        assert!(persisted.contains("schema_version = 4"));
+        assert!(
+            !persisted
+                .lines()
+                .any(|line| line.trim_start().starts_with("enabled ="))
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn schema_v3_disabled_canvas_migrates_to_empty_show_on() {
+        let root = temporary("migrate-v3-disabled");
+        let path = root.join("overlay.toml");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut value = toml::Value::try_from(OverlayConfig::initial()).unwrap();
+        value["schema_version"] = toml::Value::Integer(3);
+        value["canvases"].as_array_mut().unwrap()[0]
+            .as_table_mut()
+            .unwrap()
+            .insert("enabled".into(), false.into());
+        std::fs::write(&path, toml::to_string_pretty(&value).unwrap()).unwrap();
+
+        let (loaded, issues) = load_or_create(&path).unwrap();
+        assert!(issues.is_empty());
+        assert_eq!(loaded.schema_version, 4);
+        assert_eq!(loaded.canvases[0].show_on, Some(Vec::new()));
+        let persisted = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !persisted
+                .lines()
+                .any(|line| line.trim_start().starts_with("enabled ="))
+        );
+        assert!(persisted.contains("show_on = []"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn schema_v3_enabled_canvas_preserves_show_on() {
+        let root = temporary("migrate-v3-enabled");
+        let path = root.join("overlay.toml");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut value = toml::Value::try_from(OverlayConfig::initial()).unwrap();
+        value["schema_version"] = toml::Value::Integer(3);
+        let canvas = value["canvases"]
+            .as_array_mut()
+            .unwrap()
+            .first_mut()
+            .unwrap();
+        let canvas = canvas.as_table_mut().unwrap();
+        canvas.insert("enabled".into(), toml::Value::Boolean(true));
+        canvas.insert(
+            "show_on".into(),
+            toml::Value::Array(vec![toml::Value::String("result".into())]),
+        );
+        std::fs::write(&path, toml::to_string_pretty(&value).unwrap()).unwrap();
+
+        let (loaded, issues) = load_or_create(&path).unwrap();
+        assert!(issues.is_empty());
+        assert_eq!(
+            loaded.canvases[0].show_on,
+            Some(vec![scorepeek_overlay_ui::ScreenKind::Result])
+        );
+        let persisted = std::fs::read_to_string(&path).unwrap();
+        assert!(!persisted.contains("enabled ="));
+        assert!(persisted.contains("show_on = [\"result\"]"));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -794,7 +865,7 @@ mod tests {
     fn visibility_and_opacity_are_strict() {
         let mut empty = OverlayConfig::initial();
         empty.canvases[0].show_on = Some(Vec::new());
-        assert!(empty.validated().unwrap().1[0].message.contains("show_on"));
+        assert!(empty.validated().unwrap().1.is_empty());
 
         let mut transparent = OverlayConfig::initial();
         transparent.canvases[0].opacity_percent = 0;

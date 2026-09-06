@@ -33,7 +33,8 @@ fn app() -> Element {
         state()
     };
     let visible = available()
-        && scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), shown_state.screen);
+        && (sample
+            || scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), shown_state.screen));
     let guidance = move |event: Event<MouseData>| {
         event.prevent_default();
         if let Some(window) = web_sys::window() {

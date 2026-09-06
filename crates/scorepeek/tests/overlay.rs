@@ -85,7 +85,10 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     assert!(stage_script.contains("acquire_backend"));
     assert!(stage_script.contains("SCOREPEEK OVERLAY"));
     assert!(stage_script.contains("event.button === 2"));
-    assert!(stage_script.contains("ALL SCREENS"));
+    assert!(stage_script.contains("GAME SCREEN"));
+    assert!(stage_script.contains("screen-toggle"));
+    assert!(!stage_script.contains("ALL SCREENS"));
+    assert!(!stage_script.contains("PREVIEW ACTUAL"));
     assert!(stage_script.contains("request_id"));
     assert!(stage_script.contains("presentationGeneration"));
     assert!(!stage_script.contains("innerWidth - 320"));

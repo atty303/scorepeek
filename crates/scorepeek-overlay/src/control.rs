@@ -450,9 +450,6 @@ fn build_replacements(
     if presentations.is_empty() {
         return Err("backend must retain at least one canvas".into());
     }
-    if !presentations.iter().any(|canvas| canvas.enabled) {
-        return Err("backend must retain at least one enabled canvas".into());
-    }
     let other_ids = config
         .canvases
         .iter()

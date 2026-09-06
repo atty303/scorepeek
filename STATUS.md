@@ -53,6 +53,8 @@ checkpoint; implementation history belongs in Git.
   proportions, chamfered contours and restrained semantic motion. The chart rail, badge and lamps
   have explicit shared geometry; history graphs show parent-generated local-calendar month labels.
   Saved geometry is not rearranged.
+  EX SCORE and DJ LEVEL use embedded metallic glyph atlases regenerated from bundled Oxanium;
+  song titles and clear labels use shared clipped text gradients. Actual values remain accessible DOM text.
   Japanese uses system fonts without an embedded Noto bundle (ADR 0132).
 - Score/history widgets read only committed SQLite state. BEST integrates RESULT and SELECT sources;
   representative RESULT ordering is highest EX score, known/lower miss, then latest receipt time.

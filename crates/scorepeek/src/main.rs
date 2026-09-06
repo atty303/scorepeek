@@ -733,7 +733,7 @@ fn run_routine_live_session(
             .validated()?
             .0
             .into_iter()
-            .filter(|canvas| canvas.backend == backend && canvas.enabled)
+            .filter(|canvas| canvas.backend == backend)
             .collect::<Vec<_>>();
         let started = output
             .event_socket_path()

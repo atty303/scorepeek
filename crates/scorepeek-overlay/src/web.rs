@@ -164,7 +164,7 @@ mod server {
         };
         let canvases = canvases.replace('<', "\\u003c");
         let html = format!(
-            r#"<!doctype html><html><head><meta charset="utf-8"><title>scorepeek OBS overlay</title><style>{}{}</style></head><body><div id="stage"></div><button id="panel-toggle" aria-label="Hide editor panel">‹<i></i></button><aside id="editor"></aside><button id="return">RETURN TO EDITOR</button><div id="notice"></div><script id="initial" type="application/json">{canvases}</script><script src="/stage.js"></script></body></html>"#,
+            r#"<!doctype html><html><head><meta charset="utf-8"><title>scorepeek OBS overlay</title><style>{}{}</style></head><body><div id="stage"></div><button id="panel-toggle" aria-label="Hide editor panel">‹<i></i></button><aside id="editor"></aside><div id="notice"></div><script id="initial" type="application/json">{canvases}</script><script src="/stage.js"></script></body></html>"#,
             scorepeek_overlay_ui::EDITOR_CSS,
             include_str!("../../scorepeek-overlay-ui/styles/stage.css")
         );

@@ -763,3 +763,7 @@ run = '''
 set -euo pipefail
 exec cargo run --locked --quiet -p scorepeek --example select_difficulty_probe -- "$@"
 '''
+
+[tasks."overlay:type:generate"]
+description = "Generate metallic glyph PNGs in a new directory using embedded fonts and the pinned native renderer"
+run = 'cargo run --locked -p scorepeek-overlay --example generate_type_atlas -- "$@"'
