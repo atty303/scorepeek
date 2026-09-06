@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-sdk_root="$(mise where 'http:libpipewire-sdk@1.6.8-1')"
+case " $* " in
+  *" xkbcommon "*) sdk_root="$(mise where 'http:libxkbcommon-sdk@1.7.0-2')" ;;
+  *) sdk_root="$(mise where 'http:libpipewire-sdk@1.6.8-1')" ;;
+esac
 pkgconf_root="$(mise where 'http:pkgconf@3.0.1.post0')"
 
 export PKG_CONFIG_DIR=

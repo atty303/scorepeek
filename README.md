@@ -234,6 +234,14 @@ notification time. The graph labels DJ LEVEL thresholds and uses a fixed 0-100% 
 See [the screen-aware canvas contract](docs/decisions/0127-switch-overlay-canvases-by-semantic-screen.md) and
 [RESULT ingest lifecycle](docs/decisions/0126-publish-result-ingest-lifecycle.md).
 
+Canvas composition supports skin backgrounds (none/static/animated), transparent empty frames with
+optional titles, interior opacity and aspect locks, and S/M/L frame widths for every widget.
+Native title editing uses Enter/APPLY to confirm and Esc/CANCEL to cancel; navigating away cancels
+an unfinished title. Confirmed edits join the normal backend draft and its UNDO/SAVE/DISCARD flow.
+Japanese conversion uses the compositor's text-input-v3 IME. The native runtime requires
+`libxkbcommon.so.0`; mise supplies fixed XKB build metadata and libraries without host development
+packages. Keyboard focus is requested only during an explicit title edit.
+
 Development: `mise run overlay:web:check` needs no bundle; `mise run overlay:web:test` builds and
 checks real assets and owned-child cleanup. `mise run dist:build` includes Oxanium, its OFL license,
 three skin frames and the browser bundle in the single binary. `mise run overlay:test:live

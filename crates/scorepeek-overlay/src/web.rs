@@ -256,6 +256,9 @@ mod server {
         embedded(&path)
     }
     fn embedded(path: &str) -> Response {
+        if let Some(svg) = scorepeek_overlay_ui::composition::aperture_asset(&format!("/{path}")) {
+            return ([(header::CONTENT_TYPE, "image/svg+xml")], svg).into_response();
+        }
         if let Some(bytes) = scorepeek_overlay_ui::skin_asset(&format!("/{path}")) {
             return ([(header::CONTENT_TYPE, "image/png")], bytes).into_response();
         }

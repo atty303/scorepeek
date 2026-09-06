@@ -1,4 +1,5 @@
 [
+  {"selector":".canvas-background[data-motion=animated] .canvas-background-light","property":"opacity","from":0.3,"to":0.85,"period":16,"phase":0,"unit":"","wave":"sine"},
   {
     "selector": ".skin-energy",
     "property": "opacity",

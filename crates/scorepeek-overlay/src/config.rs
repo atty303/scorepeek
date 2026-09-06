@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -60,6 +60,8 @@ impl BackendRevisions {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Canvas {
+    #[serde(default)]
+    pub background: scorepeek_overlay_ui::Background,
     pub id: String,
     pub backend: Backend,
     #[serde(default)]
@@ -105,46 +107,7 @@ pub struct Widget {
     pub settings: WidgetSettings,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum WidgetKind {
-    Status,
-    Selection,
-    Score,
-    HistoryList,
-    HistoryGraph,
-}
-
-impl WidgetKind {
-    #[must_use]
-    pub const fn class(self) -> &'static str {
-        match self {
-            Self::Status => "status-widget",
-            Self::Selection => "selection-widget",
-            Self::Score => "score-widget",
-            Self::HistoryList => "history-list-widget",
-            Self::HistoryGraph => "history-graph-widget",
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct WidgetSettings {
-    #[serde(default = "default_history_count")]
-    pub history_count: u32,
-    #[serde(default = "default_graph_months")]
-    pub graph_months: u32,
-}
-
-impl Default for WidgetSettings {
-    fn default() -> Self {
-        Self {
-            history_count: default_history_count(),
-            graph_months: default_graph_months(),
-        }
-    }
-}
+pub use scorepeek_overlay_ui::{WidgetKind, WidgetSettings};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConfigIssue {
@@ -212,6 +175,7 @@ impl Canvas {
     #[must_use]
     pub fn presentation(&self) -> scorepeek_overlay_ui::CanvasPresentation {
         scorepeek_overlay_ui::CanvasPresentation {
+            background: self.background,
             id: self.id.clone(),
             skin: self.skin,
             revision: self.revision,
@@ -227,27 +191,19 @@ impl Canvas {
                 .iter()
                 .map(|widget| scorepeek_overlay_ui::WidgetLayout {
                     id: widget.id.clone(),
-                    kind: match widget.kind {
-                        WidgetKind::Status => scorepeek_overlay_ui::WidgetKind::Status,
-                        WidgetKind::Selection => scorepeek_overlay_ui::WidgetKind::Selection,
-                        WidgetKind::Score => scorepeek_overlay_ui::WidgetKind::Score,
-                        WidgetKind::HistoryList => scorepeek_overlay_ui::WidgetKind::HistoryList,
-                        WidgetKind::HistoryGraph => scorepeek_overlay_ui::WidgetKind::HistoryGraph,
-                    },
+                    kind: widget.kind,
                     x: widget.x,
                     y: widget.y,
                     width: widget.width,
                     height: widget.height,
-                    settings: scorepeek_overlay_ui::WidgetSettings {
-                        history_count: widget.settings.history_count,
-                        graph_months: widget.settings.graph_months,
-                    },
+                    settings: widget.settings.clone(),
                 })
                 .collect(),
         }
     }
 
     pub fn apply_presentation(&mut self, presentation: &scorepeek_overlay_ui::CanvasPresentation) {
+        self.background = presentation.background;
         self.skin = presentation.skin;
         self.revision = presentation.revision;
         self.show_on.clone_from(&presentation.show_on);
@@ -263,21 +219,12 @@ impl Canvas {
             .iter()
             .map(|widget| Widget {
                 id: widget.id.clone(),
-                kind: match widget.kind {
-                    scorepeek_overlay_ui::WidgetKind::Status => WidgetKind::Status,
-                    scorepeek_overlay_ui::WidgetKind::Selection => WidgetKind::Selection,
-                    scorepeek_overlay_ui::WidgetKind::Score => WidgetKind::Score,
-                    scorepeek_overlay_ui::WidgetKind::HistoryList => WidgetKind::HistoryList,
-                    scorepeek_overlay_ui::WidgetKind::HistoryGraph => WidgetKind::HistoryGraph,
-                },
+                kind: widget.kind,
                 x: widget.x,
                 y: widget.y,
                 width: widget.width,
                 height: widget.height,
-                settings: WidgetSettings {
-                    history_count: widget.settings.history_count,
-                    graph_months: widget.settings.graph_months,
-                },
+                settings: widget.settings.clone(),
             })
             .collect();
     }
@@ -314,14 +261,17 @@ pub fn load_or_create(path: &Path) -> Result<(OverlayConfig, Vec<ConfigIssue>), 
         .get("schema_version")
         .and_then(toml::Value::as_integer)
         .ok_or("overlay schema_version is required")?;
-    let migrated = matches!(schema, 2 | 3);
+    let migrated = matches!(schema, 2..=4);
     if schema == 2 {
         migrate_v2_document(&mut document)?;
         migrate_v3_document(&mut document)?;
     } else if schema == 3 {
         migrate_v3_document(&mut document)?;
-    } else if schema != i64::from(SCHEMA_VERSION) {
+    } else if schema != 4 && schema != i64::from(SCHEMA_VERSION) {
         return Err(format!("overlay schema_version must be {SCHEMA_VERSION}"));
+    }
+    if migrated {
+        migrate_v4_document(&mut document)?;
     }
     let mut config: OverlayConfig = document
         .clone()
@@ -335,6 +285,34 @@ pub fn load_or_create(path: &Path) -> Result<(OverlayConfig, Vec<ConfigIssue>), 
     }
     config.canvases = valid;
     Ok((config, issues))
+}
+
+fn migrate_v4_document(document: &mut toml::Value) -> Result<(), String> {
+    let canvases = document
+        .get_mut("canvases")
+        .and_then(toml::Value::as_array_mut)
+        .ok_or("overlay canvases must be an array")?;
+    for canvas in canvases {
+        if let Some(widgets) = canvas
+            .get_mut("widgets")
+            .and_then(toml::Value::as_array_mut)
+        {
+            for widget in widgets {
+                for (field, delta) in [("x", 8), ("y", 8), ("width", -16), ("height", -16)] {
+                    if let Some(value) = widget.get_mut(field) {
+                        let old = value
+                            .as_integer()
+                            .ok_or("widget geometry must be an integer")?;
+                        *value = toml::Value::Integer(
+                            old.checked_add(delta).ok_or("widget geometry overflow")?,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    document["schema_version"] = toml::Value::Integer(i64::from(SCHEMA_VERSION));
+    Ok(())
 }
 
 fn migrate_v2_document(document: &mut toml::Value) -> Result<(), String> {
@@ -367,10 +345,7 @@ fn migrate_v3_document(document: &mut toml::Value) -> Result<(), String> {
     let root = document
         .as_table_mut()
         .ok_or("overlay TOML root must be a table")?;
-    root.insert(
-        "schema_version".into(),
-        toml::Value::Integer(i64::from(SCHEMA_VERSION)),
-    );
+    root.insert("schema_version".into(), toml::Value::Integer(4));
     let canvases = root
         .get_mut("canvases")
         .and_then(toml::Value::as_array_mut)
@@ -463,8 +438,20 @@ fn validate_canvas(canvas: &Canvas, canvas_ids: &mut BTreeSet<String>) -> Result
         if widget.id.is_empty() || !widget_ids.insert(widget.id.clone()) {
             return Err("widget ids must be non-empty and unique per canvas".into());
         }
-        if widget.width < 32 || widget.height < 32 {
-            return Err(format!("widget {} must be at least 32x32", widget.id));
+        if let scorepeek_overlay_ui::AspectRatio::Current([width, height]) =
+            widget.settings.aspect_ratio
+            && (width == 0 || height == 0)
+        {
+            return Err(format!(
+                "widget {} locked aspect ratio dimensions must be positive",
+                widget.id
+            ));
+        }
+        if widget.settings.fill_opacity_percent > 100 {
+            return Err(format!("widget {} fill opacity must be 0..100", widget.id));
+        }
+        if widget.width < 16 || widget.height < 16 {
+            return Err(format!("widget {} must be at least 16x16", widget.id));
         }
         if widget.x % 4 != 0
             || widget.y % 4 != 0
@@ -575,6 +562,7 @@ fn initial_canvas(
     Canvas {
         id,
         backend,
+        background: scorepeek_overlay_ui::Background::None,
         skin: Skin::CyanSystem,
         show_on,
         opacity_percent: 100,
@@ -588,14 +576,8 @@ fn initial_canvas(
         widgets: widgets
             .into_iter()
             .map(|(id, kind, x, y)| {
-                let (width, height) = scorepeek_overlay_ui::default_widget_size(match kind {
-                    WidgetKind::Status => scorepeek_overlay_ui::WidgetKind::Status,
-                    WidgetKind::Selection => scorepeek_overlay_ui::WidgetKind::Selection,
-                    WidgetKind::Score => scorepeek_overlay_ui::WidgetKind::Score,
-                    WidgetKind::HistoryList => scorepeek_overlay_ui::WidgetKind::HistoryList,
-                    WidgetKind::HistoryGraph => scorepeek_overlay_ui::WidgetKind::HistoryGraph,
-                });
-                widget(id, kind, x, y, width, height)
+                let (width, height) = scorepeek_overlay_ui::default_widget_size(kind);
+                widget(id, kind, x + 8, y + 8, width, height)
             })
             .collect(),
     }
@@ -606,6 +588,7 @@ pub fn empty_canvas(id: String, backend: Backend) -> Canvas {
     Canvas {
         id,
         backend,
+        background: scorepeek_overlay_ui::Background::None,
         skin: Skin::CyanSystem,
         show_on: Some(Vec::new()),
         opacity_percent: 100,
@@ -631,12 +614,6 @@ const fn default_unknown_grace_ms() -> u32 {
 }
 const fn default_opacity_percent() -> u8 {
     100
-}
-const fn default_history_count() -> u32 {
-    5
-}
-const fn default_graph_months() -> u32 {
-    6
 }
 fn default_listen() -> String {
     "127.0.0.1:3939".into()
@@ -739,12 +716,12 @@ mod tests {
         config.schema_version = 1;
         assert_eq!(
             config.validated().unwrap_err(),
-            "overlay schema_version must be 4"
+            "overlay schema_version must be 5"
         );
     }
 
     #[test]
-    fn schema_v2_is_migrated_atomically_through_v4() {
+    fn schema_v2_is_migrated_atomically_through_v5() {
         let root = temporary("migrate-v2");
         let path = root.join("overlay.toml");
         std::fs::create_dir_all(&root).unwrap();
@@ -763,14 +740,14 @@ mod tests {
 
         let (loaded, issues) = load_or_create(&path).unwrap();
         assert!(issues.is_empty());
-        assert_eq!(loaded.schema_version, 4);
+        assert_eq!(loaded.schema_version, SCHEMA_VERSION);
         let persisted = std::fs::read_to_string(&path).unwrap();
         assert!(
             !persisted
                 .lines()
                 .any(|line| line.trim_start().starts_with("z ="))
         );
-        assert!(persisted.contains("schema_version = 4"));
+        assert!(persisted.contains("schema_version = 5"));
         assert!(
             !persisted
                 .lines()
@@ -794,7 +771,7 @@ mod tests {
 
         let (loaded, issues) = load_or_create(&path).unwrap();
         assert!(issues.is_empty());
-        assert_eq!(loaded.schema_version, 4);
+        assert_eq!(loaded.schema_version, SCHEMA_VERSION);
         assert_eq!(loaded.canvases[0].show_on, Some(Vec::new()));
         let persisted = std::fs::read_to_string(&path).unwrap();
         assert!(
@@ -883,5 +860,54 @@ mod tests {
             .unwrap();
         canvas.opacity_percent = 50;
         assert!(obs.validated().unwrap().1[0].message.contains("OBS"));
+    }
+    #[test]
+    fn schema_v4_migration_preserves_outer_geometry_and_round_trips_once() {
+        let root = temporary("migrate-inner");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("overlay.toml");
+        let expected = OverlayConfig::initial();
+        let mut old = expected.clone();
+        old.schema_version = 4;
+        for canvas in &mut old.canvases {
+            for widget in &mut canvas.widgets {
+                widget.x -= 8;
+                widget.y -= 8;
+                widget.width += 16;
+                widget.height += 16;
+            }
+        }
+        std::fs::write(&path, toml::to_string_pretty(&old).unwrap()).unwrap();
+        let (loaded, issues) = load_or_create(&path).unwrap();
+        assert!(issues.is_empty());
+        assert_eq!(loaded, expected);
+        let (reloaded, issues) = load_or_create(&path).unwrap();
+        assert!(issues.is_empty());
+        assert_eq!(reloaded, expected);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn composition_settings_survive_presentation_and_storage() {
+        let root = temporary("composition");
+        let path = root.join("overlay.toml");
+        let mut config = OverlayConfig::initial();
+        for canvas in &mut config.canvases {
+            let mut view = canvas.presentation();
+            view.background = scorepeek_overlay_ui::Background::Animated;
+            view.widgets[0].kind = WidgetKind::Empty;
+            view.widgets[0].settings.title = "手元 CAMERA / DP".into();
+            view.widgets[0].settings.frame_width = scorepeek_overlay_ui::FrameWidth::L;
+            view.widgets[0].settings.fill_opacity_percent = 37;
+            view.widgets[0].settings.aspect_ratio =
+                scorepeek_overlay_ui::AspectRatio::Current([640, 360]);
+            canvas.apply_presentation(&view);
+            assert_eq!(canvas.presentation(), view);
+        }
+        save_atomic(&path, &config).unwrap();
+        let (loaded, issues) = load_or_create(&path).unwrap();
+        assert!(issues.is_empty());
+        assert_eq!(loaded, config);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

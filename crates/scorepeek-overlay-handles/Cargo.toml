@@ -8,8 +8,8 @@ publish = false
 [dependencies]
 raw-window-handle = "0.6.2"
 wayland-client = { version = "0.31.11", features = ["system", "dlopen"] }
-smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop"] }
-wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
+smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop", "xkbcommon"] }
+wayland-protocols = { version = "0.32.13", features = ["client", "staging", "unstable"] }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

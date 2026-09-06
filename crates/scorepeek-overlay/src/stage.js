@@ -23,6 +23,7 @@ let placingPoint = {x:0, y:0};
 let nextRequestId = 1;
 let presentationGeneration = 0;
 let discardPending = false;
+let titleEdit = null;
 const pendingControls = new Map();
 let socket;
 
@@ -33,11 +34,11 @@ const screenOptions = [
 const screenValues = screenOptions.map(([, value]) => value);
 const widgetOptions = [
   ['STATUS', 'status'], ['SELECTION', 'selection'], ['SCORE', 'score'],
-  ['HISTORY LIST', 'history-list'], ['HISTORY GRAPH', 'history-graph'],
+  ['HISTORY LIST', 'history-list'], ['HISTORY GRAPH', 'history-graph'], ['EMPTY', 'empty'],
 ];
 const sizes = {
-  status: [560, 72], selection: [560, 120], score: [560, 300],
-  'history-list': [560, 236], 'history-graph': [560, 280],
+  status: [544, 44], selection: [544, 124], score: [544, 200],
+  'history-list': [544, 156], 'history-graph': [544, 208], empty: [640, 360],
 };
 const snap = value => Math.round(value / 4) * 4;
 const gridFloor = value => Math.max(0, Math.floor(value / 4) * 4);
@@ -342,10 +343,26 @@ addEventListener('pointermove', event => {
     let top = north ? snap(drag.original.y + dy) : drag.original.y;
     let right = west ? drag.original.x + drag.original.width : snap(drag.original.x + drag.original.width + dx);
     let bottom = north ? drag.original.y + drag.original.height : snap(drag.original.y + drag.original.height + dy);
-    left = Math.max(0, Math.min(left, right - 32));
-    top = Math.max(0, Math.min(top, bottom - 32));
-    right = Math.min(drag.canvas.width, Math.max(right, left + 32));
-    bottom = Math.min(drag.canvas.height, Math.max(bottom, top + 32));
+    left = Math.max(0, Math.min(left, right - 16));
+    top = Math.max(0, Math.min(top, bottom - 16));
+    right = Math.min(drag.canvas.width, Math.max(right, left + 16));
+    bottom = Math.min(drag.canvas.height, Math.max(bottom, top + 16));
+    const ratioMode = drag.original.settings.aspect_ratio;
+    if (drag.widget.kind === 'empty' && ratioMode && ratioMode !== 'free') {
+      const ratio = ratioMode === 'wide' ? 16/9 : ratioMode === 'standard' ? 4/3 : ratioMode.current[0]/ratioMode.current[1];
+      let width = right-left; let height = bottom-top;
+      if (Math.abs(dx) >= Math.abs(dy) * ratio) height = width/ratio; else width = height*ratio;
+      const anchorX = west ? drag.original.x+drag.original.width : drag.original.x;
+      const anchorY = north ? drag.original.y+drag.original.height : drag.original.y;
+      const maxWidth = gridFloor(west ? anchorX : drag.canvas.width-anchorX);
+      const maxHeight = Math.min(gridFloor(north ? anchorY : drag.canvas.height-anchorY),maxWidth/ratio);
+      const minHeight = Math.max(16,16/ratio);
+      if (maxHeight < minHeight) return;
+      height = Math.max(minHeight,Math.min(maxHeight,height));
+      width = Math.min(maxWidth,snap(height*ratio)); height = Math.min(snap(maxHeight),snap(height));
+      left = west ? anchorX-width : anchorX; right = left+width;
+      top = north ? anchorY-height : anchorY; bottom = top+height;
+    }
     Object.assign(drag.widget, {x:left, y:top, width:right-left, height:bottom-top});
   }
   updateStageGeometry();
@@ -363,7 +380,7 @@ stage.addEventListener('click', event => {
   const x = Math.max(0, Math.min(canvas.width - width, snap(event.clientX / scale - canvas.x)));
   const y = Math.max(0, Math.min(canvas.height - height, snap(event.clientY / scale - canvas.y)));
   const id = nextId(placingKind, canvas.widgets);
-  canvas.widgets.push({id, kind:placingKind, x, y, width, height, settings:{history_count:5, graph_months:6}});
+  canvas.widgets.push({id, kind:placingKind, x, y, width, height, settings:{history_count:5, graph_months:6, frame_width:'m', title:'', fill_opacity_percent:0, aspect_ratio:'free'}});
   selectedWidget = id; placingKind = null; draftChanged();
 });
 
@@ -395,6 +412,7 @@ function undoGeometry() {
 }
 
 function renderPanel() {
+  if (titleEdit && (!editing || readonly || selectedCanvas !== titleEdit.canvasId || selectedWidget !== titleEdit.widgetId)) titleEdit.dialog.close();
   panel.replaceChildren();
   if (!editing || !panelOpen) { panel.style.display = 'none'; return; }
   panel.style.display = 'flex';
@@ -465,6 +483,36 @@ function renderPanel() {
   panel.append(footer);
 }
 
+function editTitle(canvasId, widgetId) {
+  if (readonly || titleEdit) return;
+  const widget = draft.find(canvas => canvas.id === canvasId)?.widgets.find(item => item.id === widgetId);
+  if (!widget) return;
+  const dialog = document.createElement('dialog'); dialog.className = 'title-dialog';
+  const form = document.createElement('form');
+  const label = document.createElement('label'); label.textContent = 'WIDGET TITLE';
+  const input = document.createElement('input'); input.type = 'text'; input.value = widget.settings.title;
+  input.setAttribute('aria-label','Widget title'); label.append(input); form.append(label);
+  const apply = document.createElement('button'); apply.type = 'submit'; apply.textContent = 'APPLY TITLE';
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'CANCEL';
+  cancel.onclick = () => dialog.close(); form.append(apply,cancel); dialog.append(form);
+  let composing = false;
+  input.oncompositionstart = () => { composing = true; apply.disabled = true; };
+  input.oncompositionend = () => { composing = false; apply.disabled = false; };
+  input.onkeydown = event => { if (event.isComposing && event.key === 'Enter') event.preventDefault(); };
+  form.onsubmit = event => {
+    event.preventDefault(); if (composing || readonly) return;
+    const selected = draft.find(canvas => canvas.id === canvasId)?.widgets.find(item => item.id === widgetId);
+    const value = input.value;
+    dialog.close();
+    if (selected && selected.settings.title !== value) {
+      undo = {canvas:canvasId,widget:widgetId,value:structuredClone(selected)};
+      selected.settings.title = value; draftChanged();
+    }
+  };
+  dialog.onclose = () => { titleEdit = null; dialog.remove(); };
+  titleEdit = {dialog,canvasId,widgetId}; document.body.append(dialog); dialog.showModal(); input.focus();
+}
+
 function widgetDetail(canvas) {
   const section = document.createElement('section');
   const widgets = document.createElement('div'); widgets.className = 'widget-list';
@@ -490,6 +538,30 @@ function widgetDetail(canvas) {
       button.setAttribute('aria-pressed', selected.settings[key] === value);
       button.onclick = () => { selected.settings[key] = value; draftChanged(); };
       controls.append(button);
+    }
+    const settings = selected.settings;
+    const choices = (label, key, values) => {
+      const group = document.createElement('div');
+      const heading = document.createElement('h3'); heading.textContent = label; group.append(heading);
+      for (const [text,value] of values) {
+        const button = document.createElement('button'); button.textContent = text;
+        button.className = JSON.stringify(settings[key]) === JSON.stringify(value) ? 'selected' : '';
+        button.onclick = () => { settings[key] = value; draftChanged(); }; group.append(button);
+      }
+      controls.append(group);
+    };
+    choices('FRAME WIDTH','frame_width',[['S','s'],['M','m'],['L','l']]);
+    if (selected.kind === 'empty') {
+      const title = document.createElement('button'); title.textContent = settings.title || 'TITLE (optional)';
+      title.setAttribute('aria-label','Edit widget title');
+      title.onclick = () => editTitle(canvas.id, selected.id); controls.append(title);
+      const fill = document.createElement('input'); fill.type = 'range'; fill.min = '0'; fill.max = '100'; fill.value = settings.fill_opacity_percent;
+      fill.setAttribute('aria-label','Interior opacity');
+      const label = document.createElement('label'); label.textContent = `INTERIOR OPACITY ${settings.fill_opacity_percent}%`;
+      fill.oninput = () => { label.textContent = `INTERIOR OPACITY ${fill.value}%`; };
+      fill.onchange = () => { settings.fill_opacity_percent = Number(fill.value); draftChanged(); };
+      controls.append(label,fill);
+      choices('ASPECT RATIO','aspect_ratio',[['FREE','free'],['16:9','wide'],['4:3','standard'],['CURRENT',{current:[selected.width,selected.height]}]]);
     }
     const deleteKey = `${canvas.id}/${selected.id}`;
     const remove = document.createElement('button');
@@ -524,7 +596,7 @@ function canvasSettings(canvas) {
   const section = document.createElement('section');
   section.innerHTML = `<h2>CANVAS SETTINGS · ${canvas.id}</h2>`;
   const undoButton = document.createElement('button'); undoButton.className = 'undo-action';
-  undoButton.textContent = 'UNDO GEOMETRY'; undoButton.disabled = !undo; undoButton.onclick = undoGeometry;
+  undoButton.textContent = 'UNDO'; undoButton.disabled = !undo; undoButton.onclick = undoGeometry;
   section.append(undoButton);
   const skins = document.createElement('div'); skins.innerHTML = '<h2>APPEARANCE</h2>'; skins.className = 'skin-settings';
   for (const [label, value] of [['CYAN','cyan-system'],['AURORA','result-aurora'],['BLACKBOX','dj-blackbox']]) {
@@ -533,7 +605,13 @@ function canvasSettings(canvas) {
     button.onclick = () => { canvas.skin = value; draftChanged(); };
     skins.append(button);
   }
-  section.append(skins);
+  const background = document.createElement('div'); background.innerHTML = '<h3>BACKGROUND</h3>';
+  for (const [label,value] of [['NONE','none'],['STATIC','static'],['ANIMATED','animated']]) {
+    const button = document.createElement('button'); button.textContent = label;
+    button.className = (canvas.background ?? 'none') === value ? 'selected' : '';
+    button.onclick = () => { canvas.background = value; draftChanged(); }; background.append(button);
+  }
+  section.append(skins,background);
   const manage = document.createElement('details'); manage.innerHTML = '<summary>MANAGE CANVAS</summary>';
   manage.open = manageOpen;
   manage.ontoggle = () => { manageOpen = manage.open; };
@@ -545,7 +623,7 @@ function canvasSettings(canvas) {
   }; manage.append(remove);
   const create = document.createElement('button'); create.textContent = 'ADD CANVAS'; create.onclick = () => {
     const id = nextId('obs-canvas', draft);
-    draft.push({id, skin:'cyan-system', revision:0, show_on:[previewScreen], opacity_percent:100, output:null, x:0, y:0, width:gridFloor(Math.min(560, innerWidth)), height:gridFloor(Math.min(1040, innerHeight)), widgets:[]});
+    draft.push({id, skin:'cyan-system', background:'none', revision:0, show_on:[previewScreen], opacity_percent:100, output:null, x:0, y:0, width:gridFloor(Math.min(560, innerWidth)), height:gridFloor(Math.min(1040, innerHeight)), widgets:[]});
     selectedCanvas = id; draftChanged();
   }; manage.append(create);
   section.append(manage);

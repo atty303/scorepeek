@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 
 mod appearance;
 mod assets;
+pub mod composition;
 mod frame;
+pub use composition::{AspectRatio, Background, FrameWidth};
 pub mod motion;
 pub mod typography;
 pub use appearance::{Appearance, Skin};
@@ -21,7 +23,8 @@ pub const SKIN_CSS: &str = concat!(
     include_str!("../styles/cyan-system.css"),
     include_str!("../styles/result-aurora.css"),
     include_str!("../styles/dj-blackbox.css"),
-    include_str!("../styles/rich.css")
+    include_str!("../styles/rich.css"),
+    include_str!("../styles/composition.css")
 );
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -145,16 +148,18 @@ pub enum WidgetKind {
     Score,
     HistoryList,
     HistoryGraph,
+    Empty,
 }
 
 #[must_use]
 pub const fn default_widget_size(kind: WidgetKind) -> (u32, u32) {
     match kind {
-        WidgetKind::Status => (560, 60),
-        WidgetKind::Selection => (560, 140),
-        WidgetKind::Score => (560, 216),
-        WidgetKind::HistoryList => (560, 172),
-        WidgetKind::HistoryGraph => (560, 224),
+        WidgetKind::Status => (544, 44),
+        WidgetKind::Selection => (544, 124),
+        WidgetKind::Score => (544, 200),
+        WidgetKind::HistoryList => (544, 156),
+        WidgetKind::HistoryGraph => (544, 208),
+        WidgetKind::Empty => (640, 360),
     }
 }
 
@@ -166,6 +171,7 @@ pub fn next_widget_id(kind: WidgetKind, widgets: &[WidgetLayout]) -> String {
         WidgetKind::Score => "score",
         WidgetKind::HistoryList => "history-list",
         WidgetKind::HistoryGraph => "history-graph",
+        WidgetKind::Empty => "empty",
     };
     (1..=widgets.len().saturating_add(1))
         .map(|number| format!("{stem}-{number}"))
@@ -176,6 +182,14 @@ pub fn next_widget_id(kind: WidgetKind, widgets: &[WidgetLayout]) -> String {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WidgetSettings {
+    #[serde(default)]
+    pub frame_width: FrameWidth,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub fill_opacity_percent: u8,
+    #[serde(default)]
+    pub aspect_ratio: AspectRatio,
     #[serde(default = "default_history_count")]
     pub history_count: u32,
     #[serde(default = "default_graph_months")]
@@ -184,6 +198,10 @@ pub struct WidgetSettings {
 impl Default for WidgetSettings {
     fn default() -> Self {
         Self {
+            frame_width: FrameWidth::default(),
+            title: String::new(),
+            fill_opacity_percent: 0,
+            aspect_ratio: AspectRatio::default(),
             history_count: 5,
             graph_months: 6,
         }
@@ -212,6 +230,8 @@ pub struct WidgetLayout {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CanvasPresentation {
+    #[serde(default)]
+    pub background: Background,
     pub id: String,
     pub skin: Skin,
     pub revision: u64,
@@ -269,7 +289,14 @@ fn chrome(widget: &WidgetLayout, skin: Skin) -> Element {
 /// # Errors
 /// Returns a Dioxus render error if element construction fails.
 pub fn overlay_panel(state: &OverlayState, appearance: Appearance) -> Element {
-    overlay_canvas(state, appearance, &default_widgets(), false, None)
+    overlay_canvas(
+        state,
+        appearance,
+        &default_widgets(),
+        false,
+        None,
+        Background::None,
+    )
 }
 
 /// Renders independently positioned widgets inside one canvas.
@@ -281,6 +308,7 @@ pub fn overlay_canvas(
     widgets: &[WidgetLayout],
     editing: bool,
     selected: Option<&str>,
+    background: Background,
 ) -> Element {
     let skin = appearance.skin.name();
     let graph_colors = appearance.skin.graph_colors();
@@ -300,13 +328,14 @@ pub fn overlay_canvas(
     rsx! {
         style { "{BASE_CSS}{SKIN_CSS}{EDITOR_CSS}" }
         main { class: if editing { "overlay-canvas editing" } else { "overlay-canvas" }, "data-skin": skin, style: format!("--graph-score:{};--graph-miss:{}", graph_colors.score, graph_colors.miss),
+            {composition::background(background, widgets, appearance.skin)}
             for widget in widgets {
                 div {
                     key: "{widget.id}",
                     class: if selected == Some(widget.id.as_str()) { "widget-slot selected" } else { "widget-slot" },
                     "data-widget-id": "{widget.id}",
                     style: format!("left:{}px;top:{}px;width:{}px;height:{}px", widget.x, widget.y, widget.width, widget.height),
-                    {render_widget(widget, state, title, artist, play_type, &difficulty, &level, &notes, appearance.skin)}
+                    {render_inner_widget(widget, state, title, artist, play_type, &difficulty, &level, &notes, appearance.skin)}
                     if editing {
                         for corner in ["nw", "ne", "sw", "se"] {
                             i { class: "resize-handle {corner}", aria_hidden: "true" }
@@ -316,6 +345,29 @@ pub fn overlay_canvas(
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_inner_widget(
+    widget: &WidgetLayout,
+    state: &OverlayState,
+    title: &str,
+    artist: &str,
+    play_type: &str,
+    difficulty: &str,
+    level: &str,
+    notes: &str,
+    skin: Skin,
+) -> Element {
+    if widget.kind == WidgetKind::Empty {
+        return composition::empty_widget(widget, skin);
+    }
+    let mut legacy = widget.clone();
+    legacy.width += 16;
+    legacy.height += 16;
+    rsx! { div { class: "widget-content-origin", style:format!("position:absolute;left:-8px;top:-8px;width:{}px;height:{}px",legacy.width,legacy.height),
+        {render_widget(&legacy,state,title,artist,play_type,difficulty,level,notes,skin)}
+    } }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -344,18 +396,19 @@ fn render_widget(
         WidgetKind::Score => score_widget(state, widget, skin),
         WidgetKind::HistoryList => history_list(&state.history, widget, skin),
         WidgetKind::HistoryGraph => history_graph(&state.history, widget, skin),
+        WidgetKind::Empty => composition::empty_widget(widget, skin),
     }
 }
 
 #[must_use]
 pub fn default_widgets() -> Vec<WidgetLayout> {
-    let widget = |id: &str, kind, y, height| WidgetLayout {
+    let widget = |id: &str, kind, y: i32, height: u32| WidgetLayout {
         id: id.into(),
         kind,
-        x: 0,
-        y,
-        width: 560,
-        height,
+        x: 8,
+        y: y + 8,
+        width: 544,
+        height: height - 16,
         settings: WidgetSettings::default(),
     };
     vec![

@@ -46,7 +46,7 @@ fn app() -> Element {
     rsx! {
         div { class:"overlay-root", oncontextmenu:guidance,
             div { class:"canvas-content", style:if visible{"display:block"}else{"display:none"},
-                {overlay_canvas(&shown_state, Appearance { skin:canvas.skin }, &canvas.widgets, false, None)}
+                {overlay_canvas(&shown_state, Appearance { skin:canvas.skin }, &canvas.widgets, false, None, canvas.background)}
             }
         }
     }

@@ -46,6 +46,13 @@ checkpoint; implementation history belongs in Git.
   Wayland missing-output recovery opens the same unsaved draft on a deterministic fitting or largest
   output and shrinks only the canvas boundary when required. SAVE adopts it; DISCARD leaves TOML
   untouched and suppresses that canvas for the run. `--overlay-wayland-edit` opens this recovery editor.
+- ADR 0138 advances overlay configuration to schema v5 with inner widget geometry and migrates
+  schemas v2–v4 atomically. Every skin has none/static/animated canvas backgrounds, empty widgets
+  with chamfered transparent apertures, optional titles, interior opacity and aspect locks, and
+  S/M/L outward frames for all widgets. Native title editing uses XKB keyboard/repeat and
+  text-input-v3 IME; title confirmation becomes one undoable backend-draft change. Normal overlays
+  do not request keyboard focus. Fixed mise XKB build inputs replace host development metadata;
+  `libxkbcommon.so.0` is a native runtime prerequisite.
 - ADR 0130 makes the status widget RESULT lamp a provisional-readiness signal. A new RESULT is
   unlit, resolved is green, withdrawn or exit without resolution is red, and the outcome remains
   visible until the next RESULT or session end. Persistence state no longer drives the lamp.
@@ -237,7 +244,7 @@ checkpoint; implementation history belongs in Git.
   restrained lines/corner accents, with staggered moving highlights carrying the ambient motion.
   These checks do not establish live Wayland or OBS composition.
 - Repository checks and the complete workspace suite pass: 508 library,
-  325 binary, 128 corpus library, 5 corpus binary, 49 overlay, 4 handle, 4 overlay-UI, 0 overlay-web
+  325 binary, 128 corpus library, 5 corpus binary, 57 overlay, 7 handle, 4 overlay-UI, 0 overlay-web
   and 13 score tests, plus doctests. The embedded-web overlay integration test also passes. The 99 offline OCR tests and
   repository checks also pass. Public API and overlay state tests include score-store invalidation,
   RESULT readiness across withdrawal/re-resolution, fresh and same-session reconnect restoration,
@@ -348,6 +355,13 @@ checkpoint; implementation history belongs in Git.
   retained privately under `select-stability-evaluation-v1` in the scorepeek XDG data directory.
 
 ## Unverified and next execution boundary
+
+- Stream composition has all-three-skin development-host native PNG/layout/manifest inspection,
+  alpha checks for overlapping apertures and frame-width content-geometry checks. Synthetic native
+  title conversion/editing is separate from live Wayland keyboard focus, keymap and IME candidate
+  delivery, which still need target validation. Composition assets respond through the OBS HTTP
+  path; this change's browser interaction could not be checked because Codex Browser failed during
+  its plugin bootstrap. No normal configuration, live deployment or remote publication was changed.
 
 - The score-store invalidation, RESULT readiness lamp, and parent-controller TUI isolation are
   development-host verified but not installed or exercised in a target-live game session.

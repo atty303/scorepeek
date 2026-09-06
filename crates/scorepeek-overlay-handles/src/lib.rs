@@ -1,4 +1,6 @@
 //! Wayland ownership boundary: no destroy-capable surface proxies escape this crate.
+mod input;
+pub use input::{TextCommand, TextInputState, TextUpdate};
 use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
     RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle, WindowHandle,
@@ -83,7 +85,7 @@ impl HasWindowHandle for SurfaceHandle {
         })
     }
 }
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum Event {
     Configure {
         logical: [u32; 2],
@@ -108,6 +110,9 @@ pub enum Event {
         x: f64,
         y: f64,
     },
+    Text(TextCommand),
+    Ime(TextUpdate),
+    KeyboardFocus(bool),
     Closed,
 }
 pub struct Shell {
@@ -149,6 +154,7 @@ impl Shell {
         let compositor = CompositorState::bind(&globals, &qh).map_err(|e| e.to_string())?;
         let layer_shell = LayerShell::bind(&globals, &qh).map_err(|e| e.to_string())?;
 
+        let event_loop: EventLoop<Platform> = EventLoop::try_new().map_err(|e| e.to_string())?;
         let mut app = Platform {
             qh: qh.clone(),
             registry_state: RegistryState::new(&globals),
@@ -167,7 +173,7 @@ impl Shell {
             fallback: [width, height],
             events: Vec::new(),
             failure: None,
-            seat: None,
+            input: input::Input::new(&globals, &qh, event_loop.handle()),
             pointer: None,
             pointer_position: [0.0, 0.0],
             cursor_manager: globals
@@ -193,9 +199,6 @@ impl Shell {
         }
 
         event_queue.roundtrip(&mut app).map_err(|e| e.to_string())?;
-        app.seat = globals
-            .bind::<wayland_client::protocol::wl_seat::WlSeat, _, _>(&qh, 1..=9, ())
-            .ok();
         let selection = select_output(&app.output_state, output, [width, height])?;
         let available_outputs = app
             .output_state
@@ -265,7 +268,6 @@ impl Shell {
             connection: conn.clone(),
         }));
 
-        let event_loop: EventLoop<Platform> = EventLoop::try_new().map_err(|e| e.to_string())?;
         WaylandSource::new(conn, event_queue)
             .insert(event_loop.handle())
             .map_err(|e| e.to_string())?;
@@ -444,7 +446,7 @@ struct Platform {
     fallback: [u32; 2],
     events: Vec<Event>,
     failure: Option<String>,
-    seat: Option<wayland_client::protocol::wl_seat::WlSeat>,
+    input: input::Input,
     pointer: Option<wayland_client::protocol::wl_pointer::WlPointer>,
     pointer_position: [f64; 2],
     cursor_manager: Option<WpCursorShapeManagerV1>,
@@ -455,31 +457,6 @@ struct Platform {
     cursor_buffer: Option<wl_buffer::WlBuffer>,
     cursor_pool: Option<wl_shm_pool::WlShmPool>,
     cursor_file: Option<std::fs::File>,
-}
-
-impl wayland_client::Dispatch<wayland_client::protocol::wl_seat::WlSeat, ()> for Platform {
-    fn event(
-        state: &mut Self,
-        seat: &wayland_client::protocol::wl_seat::WlSeat,
-        event: wayland_client::protocol::wl_seat::Event,
-        (): &(),
-        _: &Connection,
-        qh: &QueueHandle<Self>,
-    ) {
-        if let wayland_client::protocol::wl_seat::Event::Capabilities { capabilities } = event
-            && capabilities.into_result().is_ok_and(|caps| {
-                caps.contains(wayland_client::protocol::wl_seat::Capability::Pointer)
-            })
-            && state.pointer.is_none()
-        {
-            let pointer = seat.get_pointer(qh, ());
-            state.cursor_device = state
-                .cursor_manager
-                .as_ref()
-                .map(|manager| manager.get_pointer(&pointer, qh, ()));
-            state.pointer = Some(pointer);
-        }
-    }
 }
 
 impl wayland_client::Dispatch<wayland_client::protocol::wl_pointer::WlPointer, ()> for Platform {
@@ -801,7 +778,7 @@ impl ProvidesRegistryState for Platform {
         &mut self.registry_state
     }
 
-    registry_handlers![OutputState];
+    registry_handlers![OutputState, smithay_client_toolkit::seat::SeatState];
 }
 
 smithay_client_toolkit::delegate_dispatch2!(Platform);

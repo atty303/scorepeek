@@ -49,26 +49,28 @@ impl FrameMaterial {
 
 pub fn render(widget: &WidgetLayout, skin: Skin) -> Element {
     let material = FrameMaterial::for_skin(skin);
-    let width = f64::from(widget.width);
-    let height = f64::from(widget.height);
-    let scale = material
-        .scale
+    let edge = f64::from(widget.settings.frame_width.pixels());
+    let offset = 8.0 - edge;
+    let width = f64::from(widget.width) - 16.0 + edge * 2.0;
+    let height = f64::from(widget.height) - 16.0 + edge * 2.0;
+    let aperture_scale = if widget.kind == WidgetKind::Empty {
+        0.55
+    } else {
+        1.0
+    };
+    let scale = (material.scale * aperture_scale)
         .min(width / (2.0 * material.corner_x))
         .min(height / (2.0 * material.corner_y));
     let source_x = [0.0, material.corner_x, 1254.0 - material.corner_x, 1254.0];
     let source_y = [0.0, material.corner_y, 1254.0 - material.corner_y, 1254.0];
-    let target_x = [
-        0.0,
-        material.corner_x * scale,
-        width - material.corner_x * scale,
-        width,
-    ];
-    let target_y = [
-        0.0,
-        material.corner_y * scale,
-        height - material.corner_y * scale,
-        height,
-    ];
+    let corner_x = (material.corner_x * scale + edge - 8.0)
+        .max(1.0)
+        .min(width / 2.0);
+    let corner_y = (material.corner_y * scale + edge - 8.0)
+        .max(1.0)
+        .min(height / 2.0);
+    let target_x = [0.0, corner_x, width - corner_x, width];
+    let target_y = [0.0, corner_y, height - corner_y, height];
     let mut pieces = Vec::with_capacity(9);
     for row in 0..3 {
         for column in 0..3 {
@@ -97,7 +99,7 @@ pub fn render(widget: &WidgetLayout, skin: Skin) -> Element {
         Skin::ResultAurora => "#c2a660",
         Skin::DjBlackbox => "#687067",
     };
-    rsx! { div { class: "material-frame", {pieces.into_iter()} }
+    rsx! { div { class: "material-frame", style:format!("left:{offset}px;top:{offset}px;width:{width}px;height:{height}px"), {pieces.into_iter()} }
         if skin == Skin::ResultAurora && widget.kind == WidgetKind::Selection {
             div { class: "material-illumination" }
         }

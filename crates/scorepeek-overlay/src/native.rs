@@ -1,3 +1,4 @@
+mod text;
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -5,6 +6,7 @@ use std::{
     task::{Context as TaskContext, Wake, Waker},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use text::TitleEdit;
 
 use crate::runtime::{Config, Feed};
 use anyrender::{CompositeAlphaMode, ImageRenderer, PaintScene, WindowRenderer};
@@ -137,6 +139,7 @@ struct NativeCanvasSettings {
     has_selection: bool,
     output: Option<String>,
     show_on: Option<Vec<scorepeek_overlay_ui::ScreenKind>>,
+    background: scorepeek_overlay_ui::Background,
     opacity_percent: u8,
     x: i32,
     y: i32,
@@ -155,6 +158,18 @@ struct CanvasGeometry {
 }
 
 impl NativeCanvasSettings {
+    fn apply_presentation(&mut self, presentation: &scorepeek_overlay_ui::CanvasPresentation) {
+        self.id.clone_from(&presentation.id);
+        self.output.clone_from(&presentation.output);
+        self.show_on.clone_from(&presentation.show_on);
+        self.background = presentation.background;
+        self.opacity_percent = presentation.opacity_percent;
+        self.x = presentation.x;
+        self.y = presentation.y;
+        self.width = presentation.width;
+        self.height = presentation.height;
+    }
+
     fn set_geometry(&mut self, geometry: CanvasGeometry) {
         self.x = geometry.x;
         self.y = geometry.y;
@@ -341,6 +356,7 @@ struct NativeReactiveState {
     visible: Reactive<bool>,
     settings: Reactive<NativeCanvasSettings>,
     surface_canvas_ids: Reactive<std::collections::BTreeSet<String>>,
+    title_edit: Reactive<Option<TitleEdit>>,
 }
 
 fn delete_canvas_button(disabled: bool) -> Element {
@@ -381,6 +397,7 @@ fn use_native_reactive_state(
     }: NativeOverlayProps,
 ) -> NativeReactiveState {
     let reactive_state = NativeReactiveState {
+        title_edit: Reactive(use_signal(|| None)),
         appearance: Reactive(use_signal(move || appearance.get())),
         widgets: Reactive(use_signal(move || widgets.borrow().clone())),
         editing: Reactive(use_signal(move || editing.get())),
@@ -446,13 +463,14 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
                 &widgets.borrow(),
                 editing.get(),
                 selected.borrow().as_deref(),
+                current_settings.background,
             )}
             if editing.get() && selected_visible { for corner in ["nw","ne","sw","se"] { i { class:"native-canvas-handle {corner}" } } }
         }
         if editing.get() {
             for canvas in managed.borrow().iter().filter(|canvas| canvas.id != current_settings.id && reactive.surface_canvas_ids.borrow().contains(&canvas.id) && scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), scorepeek_overlay_ui::ScreenView { kind:Some(current_settings.preview_screen), suspended_since_unix_ms:None, revision:0 })) {
                 div { class:"canvas-content editor-preview-canvas preview-only", style:format!("left:{}px;top:{}px;width:{}px;height:{}px;opacity:{}",canvas.x,canvas.y,canvas.width,canvas.height,f32::from(canvas.opacity_percent)/100.0),
-                    {overlay_canvas(&shown, Appearance { skin: canvas.skin }, &canvas.widgets, false, None)}
+                    {overlay_canvas(&shown, Appearance { skin: canvas.skin }, &canvas.widgets, false, None, canvas.background)}
                 }
             }
         }
@@ -478,24 +496,17 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
                 div { class:"editor-tab-body",
                 if current_settings.has_selection { section { class:"appearance-pane", h2 { "APPEARANCE" } h3 { "SKIN" }
                     div { class:"native-skin-options button-grid three", for (index,(label,skin)) in [("CYAN",scorepeek_overlay_ui::Skin::CyanSystem),("AURORA",scorepeek_overlay_ui::Skin::ResultAurora),("BLACKBOX",scorepeek_overlay_ui::Skin::DjBlackbox)].into_iter().enumerate() { button { class:if appearance.get().skin==skin{"skin-option selected"}else{"skin-option"}, "aria-pressed":appearance.get().skin==skin, "data-index":index, if appearance.get().skin==skin{"✓ "} "{label}" } } }
+                    h3 { "BACKGROUND" }
+                    div { class:"button-grid three", for (index,(label,mode)) in [("NONE",scorepeek_overlay_ui::Background::None),("STATIC",scorepeek_overlay_ui::Background::Static),("ANIMATED",scorepeek_overlay_ui::Background::Animated)].into_iter().enumerate() { button { class:if current_settings.background == mode {"background-option selected"}else{"background-option"}, "data-index":index, "{label}" } } }
                     h3 { "OPACITY" }
                     div { class:"native-opacity button-grid four", for value in [25,50,75,100] { button { class:if current_settings.opacity_percent==value{"opacity-option selected"}else{"opacity-option"}, "aria-pressed":current_settings.opacity_percent==value, "data-value":value, if current_settings.opacity_percent==value{"✓ "} "{value}" } } }
                 }
                 section { class:"output-pane", h2 { "OUTPUT" } div { class:"output-list", for output in reactive.outputs.borrow().iter() { button { class:if current_settings.output.as_deref()==Some(output.name.as_str()){"output-option selected"}else{"output-option"}, "aria-selected":current_settings.output.as_deref()==Some(output.name.as_str()), "data-output":"{output.name}", strong { if current_settings.output.as_deref()==Some(output.name.as_str()){"✓ "} "{output.name}" } small { "{output.model}" if let Some([width,height])=output.logical_size { " · {width}×{height}" } } } } } }
                 if selected_visible { section { class:"widgets-pane", h2 { "WIDGETS" }
                     for widget in widgets.borrow().iter() { button { class:if selected.borrow().as_deref()==Some(widget.id.as_str()){"widget-row selected"}else{"widget-row"}, "aria-selected":selected.borrow().as_deref()==Some(widget.id.as_str()), "data-widget-id":"{widget.id}", "{widget.id}" } }
-                    details { class:"widget-add", open:reactive.widget_add_open.get(), summary { class:"widget-add-summary", "+ ADD WIDGET" } if reactive.widget_add_open.get() { div { class:"button-grid", for (index,label) in ["STATUS","SELECTION","SCORE","HISTORY LIST","HISTORY GRAPH"].into_iter().enumerate() { button { class:"add-widget", "data-index":index, "+ {label}" } } } } }
+                    details { class:"widget-add", open:reactive.widget_add_open.get(), summary { class:"widget-add-summary", "+ ADD WIDGET" } if reactive.widget_add_open.get() { div { class:"button-grid", for (index,label) in ["STATUS","SELECTION","SCORE","HISTORY LIST","HISTORY GRAPH","EMPTY"].into_iter().enumerate() { button { class:"add-widget", "data-index":index, "+ {label}" } } } } }
                     if let Some(widget) = selected_widget {
-                        div { class:"native-widget-settings",
-                            strong { "{widget.id}" }
-                            if widget.kind == scorepeek_overlay_ui::WidgetKind::HistoryList {
-                                for value in [5,10,20,50] { button { class:if widget.settings.history_count==value{"history-count selected"}else{"history-count"}, "aria-pressed":widget.settings.history_count==value, "data-value":value, if widget.settings.history_count==value{"✓ "} "{value}" } }
-                            }
-                            if widget.kind == scorepeek_overlay_ui::WidgetKind::HistoryGraph {
-                                for value in [1,3,6,12] { button { class:if widget.settings.graph_months==value{"graph-months selected"}else{"graph-months"}, "aria-pressed":widget.settings.graph_months==value, "data-value":value, if widget.settings.graph_months==value{"✓ "} "{value}M" } }
-                            }
-                            button { class:"delete-widget danger", "DELETE WIDGET" }
-                        }
+                        {native_widget_settings(&widget, reactive.title_edit.borrow().as_ref())}
                     }
                 } } else { div { class:"canvas-hidden-state", strong { "HIDDEN ON THIS GAME SCREEN" } span { "Turn this canvas ON in the list to edit its widgets." } } } } else { div { class:"canvas-hidden-state", strong { "NO CANVAS ON THIS GAME SCREEN" } span { "Turn a canvas ON or add one for this game screen." } } }
                 }
@@ -506,28 +517,65 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
     }
 }
 
+fn title_input_content(edit: &TitleEdit) -> Element {
+    rsx! {
+        span { {edit.text[..edit.range().start].to_owned()} }
+        if edit.preedit.is_empty() {
+            if edit.cursor == edit.range().start { span { "│" } }
+            span { style:"background:#355a83", {edit.text[edit.range()].to_owned()} }
+            if edit.cursor != edit.range().start { span { "│" } }
+        } else if let Some(cursor) = &edit.preedit_cursor {
+            span { style:"text-decoration:underline", {edit.preedit[..cursor.start].to_owned()} }
+            span { style:"background:#355a83", {edit.preedit[cursor.clone()].to_owned()} }
+            if cursor.is_empty() { span { "│" } }
+            span { style:"text-decoration:underline", {edit.preedit[cursor.end..].to_owned()} }
+        } else { span { style:"text-decoration:underline", "{edit.preedit}" } }
+        span { {edit.text[edit.range().end..].to_owned()} }
+    }
+}
+
+fn native_widget_settings(widget: &WidgetLayout, title_edit: Option<&TitleEdit>) -> Element {
+    rsx! {
+                        div { class:"native-widget-settings",
+                            strong { "{widget.id}" }
+                            h3 { "FRAME WIDTH" }
+                            for (index,value) in [scorepeek_overlay_ui::FrameWidth::S,scorepeek_overlay_ui::FrameWidth::M,scorepeek_overlay_ui::FrameWidth::L].into_iter().enumerate() { button { class:if widget.settings.frame_width==value {"frame-width selected"}else{"frame-width"}, "data-index":index, "{value:?}" } }
+                            if widget.kind == scorepeek_overlay_ui::WidgetKind::Empty {
+                                h3 { "TITLE" }
+                                if let Some(edit) = title_edit.filter(|edit| edit.widget == widget.id) {
+                                    div { class:"empty-title-edit", style:"min-height:36px;padding:8px;border:1px solid #78a9cf;background:#101a29;color:#f0f5ff;overflow-wrap:anywhere", role:"textbox", "aria-label":"Widget title", "aria-multiline":"false",
+                                        {title_input_content(edit)}
+                                    }
+                                    div { class:"button-grid", button { class:"title-accept", disabled:!edit.preedit.is_empty(), "APPLY TITLE" } button { class:"title-cancel", "CANCEL" } }
+                                } else { button { class:"empty-title-input", if widget.settings.title.is_empty(){"Enter title…"}else{"{widget.settings.title}"} } }
+                                h3 { "INTERIOR OPACITY · {widget.settings.fill_opacity_percent}%" }
+                                button { class:"fill-decrease", "−1" } button { class:"fill-increase", "+1" }
+                                for value in [0,25,50,75,100] { button { class:if widget.settings.fill_opacity_percent==value {"fill-opacity selected"}else{"fill-opacity"}, "data-value":value, "{value}%" } }
+                                h3 { "ASPECT RATIO" }
+                                for (index,label) in ["FREE","16:9","4:3","CURRENT"].into_iter().enumerate() { button { class:"aspect-ratio", "data-index":index, "{label}" } }
+                            }
+                            if widget.kind == scorepeek_overlay_ui::WidgetKind::HistoryList {
+                                for value in [5,10,20,50] { button { class:if widget.settings.history_count==value{"history-count selected"}else{"history-count"}, "aria-pressed":widget.settings.history_count==value, "data-value":value, if widget.settings.history_count==value{"✓ "} "{value}" } }
+                            }
+                            if widget.kind == scorepeek_overlay_ui::WidgetKind::HistoryGraph {
+                                for value in [1,3,6,12] { button { class:if widget.settings.graph_months==value{"graph-months selected"}else{"graph-months"}, "aria-pressed":widget.settings.graph_months==value, "data-value":value, if widget.settings.graph_months==value{"✓ "} "{value}M" } }
+                            }
+                            button { class:"delete-widget danger", "DELETE WIDGET" }
+                        }
+    }
+}
+
 struct CalloopWaker(Ping);
 
 fn widget_layout(widget: &crate::config::Widget) -> WidgetLayout {
     WidgetLayout {
         id: widget.id.clone(),
-        kind: match widget.kind {
-            crate::config::WidgetKind::Status => scorepeek_overlay_ui::WidgetKind::Status,
-            crate::config::WidgetKind::Selection => scorepeek_overlay_ui::WidgetKind::Selection,
-            crate::config::WidgetKind::Score => scorepeek_overlay_ui::WidgetKind::Score,
-            crate::config::WidgetKind::HistoryList => scorepeek_overlay_ui::WidgetKind::HistoryList,
-            crate::config::WidgetKind::HistoryGraph => {
-                scorepeek_overlay_ui::WidgetKind::HistoryGraph
-            }
-        },
+        kind: widget.kind,
         x: widget.x,
         y: widget.y,
         width: widget.width,
         height: widget.height,
-        settings: scorepeek_overlay_ui::WidgetSettings {
-            history_count: widget.settings.history_count,
-            graph_months: widget.settings.graph_months,
-        },
+        settings: widget.settings.clone(),
     }
 }
 #[allow(clippy::cast_possible_truncation)]
@@ -609,23 +657,81 @@ fn resize_widget(
         left = original
             .x
             .saturating_add(dx)
-            .clamp(0, right.saturating_sub(32));
+            .clamp(0.min(right.saturating_sub(16)), right.saturating_sub(16));
     } else {
         right = right.saturating_add(dx).clamp(
-            left.saturating_add(32),
-            i32::try_from(canvas[0]).unwrap_or(i32::MAX),
+            left.saturating_add(16),
+            i32::try_from(canvas[0])
+                .unwrap_or(i32::MAX)
+                .max(left.saturating_add(16)),
         );
     }
     if matches!(corner, ResizeCorner::NorthWest | ResizeCorner::NorthEast) {
         top = original
             .y
             .saturating_add(dy)
-            .clamp(0, bottom.saturating_sub(32));
+            .clamp(0.min(bottom.saturating_sub(16)), bottom.saturating_sub(16));
     } else {
         bottom = bottom.saturating_add(dy).clamp(
-            top.saturating_add(32),
-            i32::try_from(canvas[1]).unwrap_or(i32::MAX),
+            top.saturating_add(16),
+            i32::try_from(canvas[1])
+                .unwrap_or(i32::MAX)
+                .max(top.saturating_add(16)),
         );
+    }
+    if original.kind == scorepeek_overlay_ui::WidgetKind::Empty
+        && original.settings.aspect_ratio != scorepeek_overlay_ui::AspectRatio::Free
+    {
+        let ratio = match original.settings.aspect_ratio {
+            scorepeek_overlay_ui::AspectRatio::Wide => 16.0 / 9.0,
+            scorepeek_overlay_ui::AspectRatio::Standard => 4.0 / 3.0,
+            scorepeek_overlay_ui::AspectRatio::Current([width, height]) => {
+                f64::from(width) / f64::from(height)
+            }
+            scorepeek_overlay_ui::AspectRatio::Free => 1.0,
+        };
+        let width = f64::from(right - left);
+        let mut height = f64::from(bottom - top);
+        if f64::from(dx).abs() >= f64::from(dy).abs() * ratio {
+            height = width / ratio;
+        }
+        let west = matches!(corner, ResizeCorner::NorthWest | ResizeCorner::SouthWest);
+        let north = matches!(corner, ResizeCorner::NorthWest | ResizeCorner::NorthEast);
+        let anchor_x = if west {
+            original.x + i32::try_from(original.width).unwrap_or(i32::MAX)
+        } else {
+            original.x
+        };
+        let anchor_y = if north {
+            original.y + i32::try_from(original.height).unwrap_or(i32::MAX)
+        } else {
+            original.y
+        };
+        let max_width = if west {
+            f64::from(anchor_x)
+        } else {
+            f64::from(canvas[0]) - f64::from(anchor_x)
+        };
+        let max_height = if north {
+            f64::from(anchor_y)
+        } else {
+            f64::from(canvas[1]) - f64::from(anchor_y)
+        };
+        let minimum_height = 16.0_f64.max(16.0 / ratio);
+        let maximum_height = (max_height / 4.0).floor() * 4.0;
+        let maximum_width = (max_width / 4.0).floor() * 4.0;
+        let maximum_height = maximum_height.min(maximum_width / ratio);
+        if maximum_height < minimum_height {
+            return;
+        }
+        height = height.clamp(minimum_height, maximum_height);
+        let width = height * ratio;
+        let width = snap_i32(width).min(snap_i32(maximum_width));
+        let height = snap_i32(height).min(snap_i32(maximum_height));
+        left = if west { anchor_x - width } else { anchor_x };
+        right = left + width;
+        top = if north { anchor_y - height } else { anchor_y };
+        bottom = top + height;
     }
     widget.x = left;
     widget.y = top;
@@ -1162,6 +1268,7 @@ struct App {
     suppressed: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     settings: Reactive<NativeCanvasSettings>,
     surface_logical: [u32; 2],
+    title_edit: Reactive<Option<TitleEdit>>,
 }
 
 enum NativeInteraction {
@@ -1252,6 +1359,7 @@ impl App {
             has_selection: true,
             output: canvas.output.clone(),
             show_on: canvas.show_on.clone(),
+            background: canvas.background,
             opacity_percent: canvas.opacity_percent,
             x: canvas.x,
             y: canvas.y,
@@ -1366,6 +1474,7 @@ impl App {
             suppressed,
             settings: reactive.settings,
             surface_logical,
+            title_edit: reactive.title_edit,
         }
     }
     #[allow(clippy::too_many_lines)]
@@ -1450,6 +1559,27 @@ impl App {
                                 [dx, dy],
                             )
                         {
+                            wake = true;
+                        }
+                    }
+                    Event::Text(command) => {
+                        self.title_command(&command);
+                        wake = true;
+                    }
+                    Event::Ime(update) => {
+                        if let Some(edit) = self.title_edit.borrow_mut().as_mut() {
+                            edit.ime(update);
+                        }
+                        self.update_title_input(true);
+                        wake = true;
+                    }
+                    Event::KeyboardFocus(focused) => {
+                        crate::diagnostics::emit(
+                            "title_input_focus",
+                            &serde_json::json!({"focused":focused}),
+                        );
+                        if !focused {
+                            self.finish_title_edit(false);
                             wake = true;
                         }
                     }
@@ -1595,15 +1725,7 @@ impl App {
         self.shared_widgets
             .borrow_mut()
             .clone_from(&presentation.widgets);
-        let mut settings = self.settings.borrow_mut();
-        settings.id.clone_from(&presentation.id);
-        settings.output.clone_from(&presentation.output);
-        settings.show_on.clone_from(&presentation.show_on);
-        settings.opacity_percent = presentation.opacity_percent;
-        settings.x = presentation.x;
-        settings.y = presentation.y;
-        settings.width = presentation.width;
-        settings.height = presentation.height;
+        self.settings.borrow_mut().apply_presentation(presentation);
     }
 
     fn is_editor_host(&self) -> bool {
@@ -1673,6 +1795,7 @@ impl App {
         self.dirty.set_if_changed(dirty);
         self.undo_available.set_if_changed(undo_available);
         if *self.selected.borrow() != selected_widget {
+            self.finish_title_edit(false);
             *self.selected.borrow_mut() = selected_widget;
         }
         self.pending_widget.set_if_changed(pending_widget);
@@ -1695,6 +1818,9 @@ impl App {
             if let Some(presentation) = presentation
                 && self.canvas.presentation() != presentation
             {
+                if self.canvas.id != presentation.id {
+                    self.finish_title_edit(false);
+                }
                 self.apply_selected_presentation(&presentation);
             }
         }
@@ -1720,6 +1846,7 @@ impl App {
             });
         }
         if !value {
+            self.finish_title_edit(false);
             self.editing.set(false);
             self.dirty.set(false);
             self.canvas = self.surface_canvas.clone();
@@ -1761,6 +1888,9 @@ impl App {
         clippy::too_many_lines
     )]
     fn pointer_button(&mut self, button: u32, pressed: bool, x: f64, y: f64) {
+        if pressed && button != 0x110 {
+            self.finish_title_edit(false);
+        }
         if button == 0x111 {
             if pressed {
                 if !self.editing.get() {
@@ -1831,6 +1961,9 @@ impl App {
                 return;
             }
             if self.readonly {
+                return;
+            }
+            if self.title_pointer(x, y) {
                 return;
             }
             if self.hit_selector(".native-panel-toggle", x, y) {
@@ -2001,6 +2134,7 @@ impl App {
                     scorepeek_overlay_ui::WidgetKind::Score,
                     scorepeek_overlay_ui::WidgetKind::HistoryList,
                     scorepeek_overlay_ui::WidgetKind::HistoryGraph,
+                    scorepeek_overlay_ui::WidgetKind::Empty,
                 ]
                 .into_iter()
                 .enumerate()
@@ -2100,6 +2234,86 @@ impl App {
                         self.canvas.skin = skin;
                         self.persist_canvas_change(before);
                         return;
+                    }
+                }
+                for (index, mode) in [
+                    scorepeek_overlay_ui::Background::None,
+                    scorepeek_overlay_ui::Background::Static,
+                    scorepeek_overlay_ui::Background::Animated,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    if self.hit_selector(&format!(".background-option[data-index='{index}']"), x, y)
+                    {
+                        let before = self.draft_snapshot();
+                        self.settings.borrow_mut().background = mode;
+                        self.persist_canvas_change(before);
+                        return;
+                    }
+                }
+                for (selector, delta) in [(".fill-decrease", -1_i16), (".fill-increase", 1)] {
+                    if self.hit_selector(selector, x, y) {
+                        let before = self.draft_snapshot();
+                        if let Some(widget) = self
+                            .shared_widgets
+                            .borrow_mut()
+                            .iter_mut()
+                            .find(|w| Some(w.id.as_str()) == self.selected.borrow().as_deref())
+                        {
+                            widget.settings.fill_opacity_percent = u8::try_from(
+                                (i16::from(widget.settings.fill_opacity_percent) + delta)
+                                    .clamp(0, 100),
+                            )
+                            .unwrap_or(0);
+                        }
+                        self.persist_canvas_change(before);
+                        return;
+                    }
+                }
+                for (class, count) in [("frame-width", 3), ("aspect-ratio", 4), ("fill-opacity", 5)]
+                {
+                    for index in 0..count {
+                        let selector = if class == "fill-opacity" {
+                            format!(".{class}[data-value='{}']", index * 25)
+                        } else {
+                            format!(".{class}[data-index='{index}']")
+                        };
+                        if self.hit_selector(&selector, x, y) {
+                            let before = self.draft_snapshot();
+                            if let Some(widget) =
+                                self.shared_widgets.borrow_mut().iter_mut().find(|w| {
+                                    Some(w.id.as_str()) == self.selected.borrow().as_deref()
+                                })
+                            {
+                                match class {
+                                    "frame-width" => {
+                                        widget.settings.frame_width = [
+                                            scorepeek_overlay_ui::FrameWidth::S,
+                                            scorepeek_overlay_ui::FrameWidth::M,
+                                            scorepeek_overlay_ui::FrameWidth::L,
+                                        ][index];
+                                    }
+                                    "aspect-ratio" => {
+                                        widget.settings.aspect_ratio = [
+                                            scorepeek_overlay_ui::AspectRatio::Free,
+                                            scorepeek_overlay_ui::AspectRatio::Wide,
+                                            scorepeek_overlay_ui::AspectRatio::Standard,
+                                            scorepeek_overlay_ui::AspectRatio::Current([
+                                                widget.width,
+                                                widget.height,
+                                            ]),
+                                        ][index];
+                                    }
+                                    _ => {
+                                        widget.settings.fill_opacity_percent =
+                                            u8::try_from(index * 25).unwrap_or(0);
+                                    }
+                                }
+                            }
+                            self.persist_canvas_change(before);
+                            return;
+                        }
                     }
                 }
                 for value in [25_u8, 50, 75, 100] {
@@ -2361,6 +2575,7 @@ impl App {
         {
             let settings = self.settings.borrow();
             self.canvas.show_on.clone_from(&settings.show_on);
+            self.canvas.background = settings.background;
             self.canvas.opacity_percent = settings.opacity_percent;
         }
         let mut presentation = self.canvas.presentation();
@@ -2783,6 +2998,10 @@ impl blitz_traits::net::NetProvider for EmbeddedSkinAssets {
         request: blitz_traits::net::Request,
         handler: Box<dyn blitz_traits::net::NetHandler>,
     ) {
+        if let Some(svg) = scorepeek_overlay_ui::composition::aperture_asset(request.url.path()) {
+            handler.bytes(request.url.to_string(), blitz_traits::net::Bytes::from(svg));
+            return;
+        }
         let bytes = scorepeek_overlay_ui::skin_asset(request.url.path()).unwrap_or_default();
         handler.bytes(
             request.url.to_string(),
@@ -2873,6 +3092,8 @@ pub fn document_config() -> DocumentConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VisualDebugScenario {
+    #[serde(default)]
+    pub canvases: Option<Vec<scorepeek_overlay_ui::CanvasPresentation>>,
     pub skin: Option<scorepeek_overlay_ui::Skin>,
     #[serde(default = "visual_debug_default_size")]
     pub logical_size: [u32; 2],
@@ -2902,6 +3123,11 @@ const fn visual_debug_default_editing() -> bool {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VisualDebugAction {
+    TitleText {
+        text: String,
+        #[serde(default)]
+        composing: bool,
+    },
     Motion {
         seconds: f64,
     },
@@ -3003,6 +3229,7 @@ struct VisualDebugSession {
     state: Reactive<OverlayState>,
     visible: Reactive<bool>,
     settings: Reactive<NativeCanvasSettings>,
+    title_edit: Reactive<Option<TitleEdit>>,
 }
 
 impl VisualDebugSession {
@@ -3015,6 +3242,9 @@ impl VisualDebugSession {
             .filter(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
             .map(|canvas| canvas.presentation())
             .collect::<Vec<_>>();
+        if let Some(canvases) = &scenario.canvases {
+            managed.clone_from(canvases);
+        }
         if let Some(skin) = scenario.skin {
             for canvas in &mut managed {
                 canvas.skin = skin;
@@ -3047,6 +3277,7 @@ impl VisualDebugSession {
             has_selection: true,
             output: canvas.output,
             show_on: canvas.show_on,
+            background: canvas.background,
             opacity_percent: canvas.opacity_percent,
             x: canvas.x,
             y: canvas.y,
@@ -3103,6 +3334,7 @@ impl VisualDebugSession {
             state: reactive.state,
             visible: reactive.visible,
             settings: reactive.settings,
+            title_edit: reactive.title_edit,
         };
         session.resolve();
         Ok(session)
@@ -3151,6 +3383,7 @@ impl VisualDebugSession {
             has_selection: true,
             output: canvas.output,
             show_on: canvas.show_on,
+            background: canvas.background,
             opacity_percent: canvas.opacity_percent,
             x: canvas.x,
             y: canvas.y,
@@ -3173,6 +3406,9 @@ impl VisualDebugSession {
             return Err(format!("selector did not match: {selector}"));
         }
         match selector {
+            ".empty-title-input" | ".title-accept" | ".title-cancel" => {
+                self.title_click(selector)?;
+            }
             ".native-panel-toggle" => self.panel_open.set(!self.panel_open.get()),
             ".widget-add-summary" => self.widget_add_open.set(!self.widget_add_open.get()),
             _ if selector.contains("preview-screen") => {
@@ -3198,17 +3434,11 @@ impl VisualDebugSession {
                     self.load_canvas(canvas);
                 }
             }
-            _ if selector.contains("skin-option") => {
-                let skins = [
-                    scorepeek_overlay_ui::Skin::CyanSystem,
-                    scorepeek_overlay_ui::Skin::ResultAurora,
-                    scorepeek_overlay_ui::Skin::DjBlackbox,
-                ];
-                let skin = *skins
-                    .get(selector_index(selector)?)
-                    .ok_or_else(|| "skin index is out of range".to_owned())?;
-                self.appearance.set(Appearance { skin });
-                self.sync_selected_canvas();
+            _ if ["background-option", "frame-width", "skin-option"]
+                .iter()
+                .any(|class| selector.contains(class)) =>
+            {
+                self.appearance_click(selector)?;
             }
             _ if selector.contains("screen-toggle") => {
                 let id = selector_attribute(selector, "data-canvas-id")?;
@@ -3250,6 +3480,84 @@ impl VisualDebugSession {
             }
         }
         self.resolve();
+        Ok(())
+    }
+
+    fn title_click(&mut self, selector: &str) -> Result<(), String> {
+        match selector {
+            ".empty-title-input" => {
+                let widget = self
+                    .widgets
+                    .borrow()
+                    .iter()
+                    .find(|widget| Some(widget.id.as_str()) == self.selected.borrow().as_deref())
+                    .cloned()
+                    .ok_or("no title widget selected")?;
+                self.title_edit
+                    .set(Some(TitleEdit::new(widget.id, widget.settings.title)));
+            }
+            ".title-accept" | ".title-cancel" => {
+                let edit = self.title_edit.take().ok_or("no title edit")?;
+                if selector == ".title-accept"
+                    && let Some(widget) = self
+                        .widgets
+                        .borrow_mut()
+                        .iter_mut()
+                        .find(|widget| widget.id == edit.widget)
+                {
+                    widget.settings.title = edit.text;
+                }
+            }
+            _ => return Err("unknown title action".into()),
+        }
+        self.sync_selected_canvas();
+        Ok(())
+    }
+
+    fn appearance_click(&mut self, selector: &str) -> Result<(), String> {
+        match selector {
+            _ if selector.contains("background-option") => {
+                self.settings.borrow_mut().background = *[
+                    scorepeek_overlay_ui::Background::None,
+                    scorepeek_overlay_ui::Background::Static,
+                    scorepeek_overlay_ui::Background::Animated,
+                ]
+                .get(selector_index(selector)?)
+                .ok_or("invalid background index")?;
+                self.sync_selected_canvas();
+            }
+            _ if selector.contains("frame-width") => {
+                let value = *[
+                    scorepeek_overlay_ui::FrameWidth::S,
+                    scorepeek_overlay_ui::FrameWidth::M,
+                    scorepeek_overlay_ui::FrameWidth::L,
+                ]
+                .get(selector_index(selector)?)
+                .ok_or("invalid frame width")?;
+                if let Some(widget) = self
+                    .widgets
+                    .borrow_mut()
+                    .iter_mut()
+                    .find(|w| Some(w.id.as_str()) == self.selected.borrow().as_deref())
+                {
+                    widget.settings.frame_width = value;
+                }
+                self.sync_selected_canvas();
+            }
+            _ if selector.contains("skin-option") => {
+                let skins = [
+                    scorepeek_overlay_ui::Skin::CyanSystem,
+                    scorepeek_overlay_ui::Skin::ResultAurora,
+                    scorepeek_overlay_ui::Skin::DjBlackbox,
+                ];
+                let skin = *skins
+                    .get(selector_index(selector)?)
+                    .ok_or_else(|| "skin index is out of range".to_owned())?;
+                self.appearance.set(Appearance { skin });
+                self.sync_selected_canvas();
+            }
+            _ => return Err("unknown appearance control".into()),
+        }
         Ok(())
     }
 
@@ -3396,6 +3704,7 @@ impl VisualDebugSession {
             .iter_mut()
             .find(|canvas| canvas.id == settings.id)
         {
+            canvas.background = settings.background;
             canvas.skin = self.appearance.get().skin;
             canvas.widgets.clone_from(&widgets);
             canvas.x = settings.x;
@@ -3586,6 +3895,31 @@ pub fn run_visual_debug(
         )?;
         for (index, action) in scenario.actions.iter().enumerate() {
             let name = match action {
+                VisualDebugAction::TitleText { text, composing } => {
+                    {
+                        let mut editing = session.title_edit.borrow_mut();
+                        let edit = editing.as_mut().ok_or("title input is not active")?;
+                        edit.ime(if *composing {
+                            scorepeek_overlay_handles::TextUpdate {
+                                preedit: text.clone(),
+                                ..Default::default()
+                            }
+                        } else {
+                            scorepeek_overlay_handles::TextUpdate {
+                                commit: Some(text.clone()),
+                                ..Default::default()
+                            }
+                        });
+                    }
+                    session.resolve();
+                    if *composing {
+                        "title-preedit"
+                    } else {
+                        "title-commit"
+                    }
+                    .into()
+                }
+
                 VisualDebugAction::Motion { seconds } => {
                     if !seconds.is_finite() || *seconds < 0.0 {
                         return Err("motion seconds must be finite and nonnegative".into());
@@ -3873,6 +4207,7 @@ mod skin_tests {
     #[test]
     fn visual_debug_surface_contains_every_headless_canvas() {
         let scenario = VisualDebugScenario {
+            canvases: None,
             skin: None,
             logical_size: [1920, 1080],
             scale: 1.0,
@@ -3909,6 +4244,7 @@ mod skin_tests {
     #[test]
     fn visual_debug_north_west_canvas_resize_updates_position_and_size_together() {
         let scenario = VisualDebugScenario {
+            canvases: None,
             skin: None,
             logical_size: [1920, 1080],
             scale: 1.0,
@@ -3949,6 +4285,7 @@ mod skin_tests {
     #[test]
     fn reactive_widget_selection_rebuilds_the_native_dom() {
         let scenario = VisualDebugScenario {
+            canvases: None,
             skin: None,
             logical_size: [1920, 1080],
             scale: 1.0,
@@ -4005,6 +4342,7 @@ mod skin_tests {
     #[test]
     fn managed_canvas_move_clears_a_reused_widget_selection() {
         let scenario = VisualDebugScenario {
+            canvases: None,
             skin: None,
             logical_size: [1920, 1080],
             scale: 1.0,
@@ -4198,6 +4536,7 @@ mod skin_tests {
                             has_selection: true,
                             output: None,
                             show_on: None,
+                            background: scorepeek_overlay_ui::Background::None,
                             opacity_percent: 100,
                             x: 0,
                             y: 0,
@@ -4255,6 +4594,7 @@ mod skin_tests {
     #[test]
     fn selected_widget_handle_center_starts_widget_resize() {
         let scenario = VisualDebugScenario {
+            canvases: None,
             skin: None,
             logical_size: [1920, 1080],
             scale: 1.0,
@@ -4373,6 +4713,7 @@ mod skin_tests {
                         has_selection: true,
                         output: None,
                         show_on: None,
+                        background: scorepeek_overlay_ui::Background::None,
                         opacity_percent: 100,
                         x: 0,
                         y: 0,
@@ -4446,6 +4787,7 @@ mod skin_tests {
             id: "wayland-selection".into(),
             skin: Skin::CyanSystem,
             show_on: None,
+            background: scorepeek_overlay_ui::Background::None,
             opacity_percent: 100,
             output: Some("DP-1".into()),
             revision: 0,
@@ -4493,6 +4835,7 @@ mod skin_tests {
                         has_selection: true,
                         output: Some("DP-1".into()),
                         show_on: None,
+                        background: scorepeek_overlay_ui::Background::None,
                         opacity_percent: 100,
                         x: 120,
                         y: 80,
@@ -4608,5 +4951,108 @@ mod skin_tests {
                 .into_iter()
                 .all(|screen| shown_on(&canvas, screen))
         );
+    }
+    #[test]
+    fn migrated_minimum_widget_resizes_from_every_corner() {
+        for (x, y) in [(8, 8), (-24, -24), (40, 40)] {
+            let original = WidgetLayout {
+                id: "minimum".into(),
+                kind: scorepeek_overlay_ui::WidgetKind::Empty,
+                x,
+                y,
+                width: 16,
+                height: 16,
+                settings: scorepeek_overlay_ui::WidgetSettings::default(),
+            };
+            for corner in [
+                ResizeCorner::NorthWest,
+                ResizeCorner::NorthEast,
+                ResizeCorner::SouthWest,
+                ResizeCorner::SouthEast,
+            ] {
+                let mut widget = original.clone();
+                resize_widget(
+                    &mut widget,
+                    &original,
+                    [0.0, 0.0],
+                    corner,
+                    4.0,
+                    4.0,
+                    [32, 32],
+                );
+                assert!(widget.width >= 16 && widget.height >= 16);
+                assert!(widget.width <= 64 && widget.height <= 64);
+            }
+        }
+    }
+    #[test]
+    fn locked_empty_resize_keeps_ratio_at_minimum_and_canvas_bounds() {
+        for (mode, ratio) in [
+            (scorepeek_overlay_ui::AspectRatio::Wide, 16.0 / 9.0),
+            (scorepeek_overlay_ui::AspectRatio::Standard, 4.0 / 3.0),
+            (scorepeek_overlay_ui::AspectRatio::Current([1, 8]), 0.125),
+            (scorepeek_overlay_ui::AspectRatio::Current([8, 1]), 8.0),
+        ] {
+            let mut original = scorepeek_overlay_ui::default_widgets().remove(0);
+            original.kind = scorepeek_overlay_ui::WidgetKind::Empty;
+            original.x = 40;
+            original.y = 40;
+            original.width = 640;
+            original.height = 360;
+            original.settings.aspect_ratio = mode;
+            for corner in [
+                ResizeCorner::NorthWest,
+                ResizeCorner::NorthEast,
+                ResizeCorner::SouthWest,
+                ResizeCorner::SouthEast,
+            ] {
+                for delta in [-4000.0, 4000.0] {
+                    let mut widget = original.clone();
+                    resize_widget(
+                        &mut widget,
+                        &original,
+                        [0.0, 0.0],
+                        corner,
+                        delta,
+                        delta,
+                        [1920, 1080],
+                    );
+                    assert!(widget.width >= 16 && widget.height >= 16);
+                    assert!(widget.x >= 0 && widget.y >= 0);
+                    assert!(i64::from(widget.x) + i64::from(widget.width) <= 1920);
+                    assert!(i64::from(widget.y) + i64::from(widget.height) <= 1080);
+                    let error = if ratio >= 1.0 {
+                        (f64::from(widget.width) / ratio - f64::from(widget.height)).abs()
+                    } else {
+                        (f64::from(widget.height) * ratio - f64::from(widget.width)).abs()
+                    };
+                    assert!(error <= 4.0, "{mode:?}: {}x{}", widget.width, widget.height);
+                }
+            }
+        }
+    }
+    #[test]
+    fn presentation_switch_and_undo_restore_background_before_another_edit() {
+        let scenario: VisualDebugScenario =
+            serde_json::from_str(include_str!("../tests/fixtures/visual-composition.json"))
+                .unwrap();
+        let session = VisualDebugSession::new(&scenario, [1920, 1080]).unwrap();
+        let mut saved = session.managed.borrow()[0].clone();
+        saved.background = scorepeek_overlay_ui::Background::None;
+        let mut changed = saved.clone();
+        changed.background = scorepeek_overlay_ui::Background::Animated;
+        for presentation in [&changed, &saved, &changed, &saved] {
+            let mut settings = session.settings.borrow_mut();
+            settings.apply_presentation(presentation);
+            settings.width += 4;
+            let mut canvas = crate::config::empty_canvas(
+                presentation.id.clone(),
+                crate::runtime::Backend::Wayland,
+            );
+            canvas.apply_presentation(presentation);
+            canvas.background = settings.background;
+            canvas.width = settings.width;
+            assert_eq!(canvas.presentation().background, presentation.background);
+        }
     }
 }

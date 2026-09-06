@@ -42,3 +42,24 @@ A scenario may set `skin` to `cyan-system`, `result-aurora`, or `dj-blackbox`.
 `{"action":"motion","seconds":2.25}` samples the production native motion driver at an explicit
 nonnegative timestamp and records another PNG/layout pair. Use multiple timestamps to inspect
 changing paint as well as stable text. The action is a development capture clock, not a runtime setting.
+
+## Stream composition scenario
+
+`tests/fixtures/visual-composition.json` supplies synthetic `canvases` (the shared presentation
+schema) rather than the normal first-run canvases. This optional scenario field does not change the
+runtime defaults. It exercises background motion, S/M/L changes and a switch back to static:
+
+```text
+mise run overlay:visual:native -- crates/scorepeek-overlay/tests/fixtures/visual-composition.json /tmp/scorepeek-composition-visual
+```
+
+Inspect PNG alpha in game/camera/comment interiors, the chamfered opaque corners, background in
+narrow gaps, labels, fixed content rectangles across frame changes, and the manifest/layout pairs.
+Repeat with each `skin` override. OBS uses the same aperture asset route and background composition.
+In the OBS editor, add EMPTY, enter or clear TITLE, change INTERIOR OPACITY, select FRAME WIDTH and
+ASPECT RATIO, then save/reopen and discard another change. Place an OBS source under the browser
+source to confirm that the aperture and fill expose/dim it.
+
+The composition fixture also exercises the native title editor with a synthetic IME preedit and
+commit batch via `title_text` (`composing: true` previews conversion). It uses the production title
+buffer and UI; it does not establish compositor keyboard focus or real IME candidate placement.

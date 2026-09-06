@@ -406,3 +406,6 @@ requirements after their named superseding decisions.
 
 - [ADR 0134: Preserve overlay frame materials](0134-preserve-overlay-frame-materials.md)
   restores initial imagegen material detail with shared image-backed frames while retaining the five-widget information architecture.
+
+- [ADR 0138: Compose stream backgrounds and empty widgets](0138-compose-stream-backgrounds-and-empty-widgets.md)
+  adds skin backgrounds, transparent media apertures, optional titles and inner-geometry S/M/L frames in both backends.

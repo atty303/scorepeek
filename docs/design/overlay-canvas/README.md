@@ -8,7 +8,7 @@ materials, typography hierarchy and information density. Runtime values remain s
 - `result-aurora.png`: black-violet glass, silver, gold and aurora light
 - `dj-blackbox.png`: charcoal hardware, engraved divisions, lime and amber lamps
 
-The normal canvas is transparent outside individual widgets. The enlarged selection panel in each
+With background disabled, the canvas is transparent outside individual widgets. The enlarged selection panel in each
 sheet demonstrates edit-only grid and resize chrome; it is not a second display layout.
 
 The shared editor sample uses NEON CIRCUIT, SP HYPER and the sheet's BEST/DETAIL values so visual
@@ -63,3 +63,21 @@ native/browser composition. Preserve proportional label shaping when changing th
 Label boxes expose the atlas font baseline through their bottom margin, including the transparent
 area below the glyphs. Detail and history rows align text baselines; history headings remain centered.
 Keep the below-baseline metrics in `typography.rs` synchronized when changing the atlas fonts.
+
+## Stream composition materials
+
+ADR 0138 adds optional `*-background.png` assets for canvas gaps. The built-in image generation tool
+created these independent textures from the existing generated design references on 2026-09-07.
+They contain no game imagery or baked-in widgets. The generation prompts requested:
+
+- Result Aurora: full-canvas violet/indigo faceted glass and diagonal light ribbons, with occasional
+  gold sparks; extend the approved stream mockup's gap texture, removing all frames and text.
+- Cyan System: angular navy machined planes, cyan light conduits and fine precision circuitry,
+  distributed across the canvas so narrow gaps expose recognizable texture.
+- DJ Blackbox: overlapping graphite and brushed gunmetal planes, perforated metal, restrained lime
+  and amber seams, preserving the original hardware world.
+
+All three requested a 16:9 landscape texture, no text, logos, border, foreground object or UI,
+and visible medium-scale material variation rather than a mostly black surface. Runtime composition
+uses the unchanged generated PNGs in `crates/scorepeek-overlay-ui/assets/skins/`, with a separate
+slow light layer for optional motion. Aperture geometry and frame width remain semantic code.

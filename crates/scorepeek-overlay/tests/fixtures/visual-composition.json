@@ -1,0 +1,171 @@
+{
+  "canvases": [
+    {
+      "id": "design",
+      "skin": "result-aurora",
+      "revision": 0,
+      "x": 0,
+      "y": 0,
+      "width": 1920,
+      "height": 1080,
+      "background": "animated",
+      "widgets": [
+        {
+          "id": "game",
+          "kind": "empty",
+          "x": 40,
+          "y": 40,
+          "width": 1200,
+          "height": 680,
+          "settings": {
+            "title": "GAME"
+          }
+        },
+        {
+          "id": "cam",
+          "kind": "empty",
+          "x": 40,
+          "y": 752,
+          "width": 760,
+          "height": 280,
+          "settings": {
+            "title": "HAND CAM / DP",
+            "frame_width": "l"
+          }
+        },
+        {
+          "id": "status",
+          "kind": "status",
+          "x": 1280,
+          "y": 40,
+          "width": 600,
+          "height": 44
+        },
+        {
+          "id": "selection",
+          "kind": "selection",
+          "x": 1280,
+          "y": 112,
+          "width": 600,
+          "height": 124
+        },
+        {
+          "id": "score",
+          "kind": "score",
+          "x": 1280,
+          "y": 264,
+          "width": 600,
+          "height": 200
+        },
+        {
+          "id": "history",
+          "kind": "history-list",
+          "x": 1280,
+          "y": 492,
+          "width": 600,
+          "height": 156
+        },
+        {
+          "id": "graph",
+          "kind": "history-graph",
+          "x": 1280,
+          "y": 676,
+          "width": 600,
+          "height": 208
+        },
+        {
+          "id": "face",
+          "kind": "empty",
+          "x": 840,
+          "y": 752,
+          "width": 400,
+          "height": 280,
+          "settings": {
+            "title": "FACE CAM",
+            "frame_width": "s"
+          }
+        },
+        {
+          "id": "comments",
+          "kind": "empty",
+          "x": 1280,
+          "y": 916,
+          "width": 600,
+          "height": 140,
+          "settings": {
+            "title": "COMMENTS"
+          }
+        }
+      ]
+    }
+  ],
+  "editing": false,
+  "selectors": [
+    ".canvas-background",
+    ".empty-frame",
+    ".widget-slot",
+    ".widget-content",
+    ".empty-title",
+    ".material-frame",
+    ".canvas-background-light",
+    ".empty-title-edit",
+    ".title-accept"
+  ],
+  "actions": [
+    {
+      "action": "motion",
+      "seconds": 5
+    },
+    {
+      "action": "set_editing",
+      "value": true
+    },
+    {
+      "action": "click",
+      "selector": ".widget-row[data-widget-id='score']"
+    },
+    {
+      "action": "click",
+      "selector": ".frame-width[data-index='0']"
+    },
+    {
+      "action": "click",
+      "selector": ".frame-width[data-index='2']"
+    },
+    {
+      "action": "click",
+      "selector": ".background-option[data-index='1']"
+    },
+    {
+      "action": "click",
+      "selector": ".widget-row[data-widget-id='cam']"
+    },
+    {
+      "action": "scroll",
+      "selector": ".editor-tab-body",
+      "dx": 0,
+      "dy": -950
+    },
+    {
+      "action": "click",
+      "selector": ".empty-title-input"
+    },
+    {
+      "action": "title_text",
+      "text": " 上面カメラ",
+      "composing": true
+    },
+    {
+      "action": "title_text",
+      "text": " 上面カメラ"
+    },
+    {
+      "action": "click",
+      "selector": ".title-accept"
+    },
+    {
+      "action": "set_editing",
+      "value": false
+    }
+  ]
+}

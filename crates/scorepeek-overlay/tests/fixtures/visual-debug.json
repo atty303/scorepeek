@@ -31,7 +31,7 @@
     { "action": "click", "selector": ".screen-toggle[data-canvas-id='wayland-status']" },
     { "action": "click", "selector": ".canvas-select[data-canvas-id='wayland-result']" },
     { "action": "click", "selector": ".widget-row[data-widget-id='selection']" },
-    { "action": "drag", "from": [575, 235], "to": [535, 215], "button": "left" },
+    { "action": "drag", "from": [567, 227], "to": [527, 207], "button": "left" },
     { "action": "scroll", "selector": ".editor-tab-body", "dx": 0, "dy": -320 },
     { "action": "click", "selector": ".native-panel-toggle" },
     { "action": "drag", "from": [19, 99], "to": [3, 83], "button": "left" },
