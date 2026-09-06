@@ -1970,6 +1970,7 @@ impl App {
                     None
                 };
                 *self.selected.borrow_mut() = Some(original.id.clone());
+                self.sync_workspace_ui();
                 self.interaction_snapshot = Some(self.draft_snapshot());
                 self.interaction = Some(NativeInteraction::Widget {
                     id: original.id.clone(),
