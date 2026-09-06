@@ -14,9 +14,10 @@
   "actions": [
     { "action": "click", "selector": ".native-panel-toggle" },
     { "action": "click", "selector": ".native-panel-toggle" },
-    { "action": "click", "selector": ".editor-tab[data-tab='canvas']" },
+    { "action": "click", "selector": ".preview-screen[data-index='4']" },
+    { "action": "click", "selector": ".canvas-select[data-canvas-id='wayland-result']" },
     { "action": "scroll", "selector": ".editor-tab-body", "dx": 0, "dy": -320 },
-    { "action": "drag", "from": [500, 50], "to": [600, 150], "button": "right" },
+    { "action": "drag", "from": [500, 150], "to": [600, 250], "button": "right" },
     { "action": "capture", "name": "final-editor" }
   ]
 }

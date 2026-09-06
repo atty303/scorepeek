@@ -11,8 +11,6 @@
 .native-canvas-manager button:hover,#editor button:hover{border-color:#5c7183;background:#1b2934}
 .native-canvas-manager button.selected,#editor button.selected,.native-canvas-manager button[aria-selected=true],#editor button[aria-selected=true],.native-canvas-manager button[aria-pressed=true],#editor button[aria-pressed=true]{border-color:#38d7f2;border-left:4px solid #38d7f2;background:#12313d;color:#fff;box-shadow:inset 10px 0 18px rgba(26,217,245,.08)}
 .native-canvas-manager button:disabled,#editor button:disabled{opacity:.35}
-.canvas-enabled-lamp{display:block;width:10px;height:10px;border:1px solid #73808d;border-radius:50%;background:#252b31}
-.canvas-enabled-lamp.on{border-color:#a4ffb0;background:#54e56b;box-shadow:0 0 8px rgba(84,229,107,.75)}
 .dirty-dot,.unsaved-dot{display:none;width:7px;height:7px;border-radius:50%;background:#ffd041;box-shadow:0 0 7px rgba(255,208,65,.85)}
 .dirty .dirty-dot,.unsaved-dot{display:block}
 .danger{border-color:#66343a!important;color:#ff9aa3!important}

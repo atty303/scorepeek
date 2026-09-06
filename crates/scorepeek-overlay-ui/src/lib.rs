@@ -213,8 +213,6 @@ pub struct WidgetLayout {
 #[serde(deny_unknown_fields)]
 pub struct CanvasPresentation {
     pub id: String,
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
     pub skin: Skin,
     pub revision: u64,
     #[serde(default)]
@@ -234,9 +232,6 @@ pub struct CanvasPresentation {
     pub widgets: Vec<WidgetLayout>,
 }
 
-const fn default_enabled() -> bool {
-    true
-}
 const fn default_opacity_percent() -> u8 {
     100
 }

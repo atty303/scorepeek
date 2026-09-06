@@ -83,6 +83,7 @@ fn set_shown_on(
 #[derive(Clone)]
 struct NativeCanvasSettings {
     id: String,
+    has_selection: bool,
     output: Option<String>,
     show_on: Option<Vec<scorepeek_overlay_ui::ScreenKind>>,
     opacity_percent: u8,
@@ -153,7 +154,6 @@ struct NativeOverlayProps {
     state: Rc<RefCell<OverlayState>>,
     visible: Rc<Cell<bool>>,
     settings: Rc<RefCell<NativeCanvasSettings>>,
-    surface_output: Option<String>,
     surface_canvas_ids: Rc<RefCell<std::collections::BTreeSet<String>>>,
     update: NativeUpdate,
 }
@@ -164,7 +164,6 @@ fn native_overlay(
         state,
         visible,
         settings,
-        surface_output,
         surface_canvas_ids,
         update,
         appearance,
@@ -199,14 +198,15 @@ fn native_overlay(
             .find(|widget| &widget.id == id)
             .cloned()
     });
-    let selected_visible = scorepeek_overlay_ui::canvas_visible(
-        current_settings.show_on.as_deref(),
-        scorepeek_overlay_ui::ScreenView {
-            kind: Some(current_settings.preview_screen),
-            suspended_since_unix_ms: None,
-            revision: 0,
-        },
-    );
+    let selected_visible = current_settings.has_selection
+        && scorepeek_overlay_ui::canvas_visible(
+            current_settings.show_on.as_deref(),
+            scorepeek_overlay_ui::ScreenView {
+                kind: Some(current_settings.preview_screen),
+                suspended_since_unix_ms: None,
+                revision: 0,
+            },
+        );
     rsx! {
         div { class: if editing.get() { "canvas-content editor-preview-canvas selected" } else { "canvas-content" },style:format!("display:{};opacity:{};{}",if visible.get() && (!editing.get() || (selected_visible && surface_canvas_ids.borrow().contains(&current_settings.id))){"block"}else{"none"},f32::from(current_settings.opacity_percent)/100.0,if editing.get(){format!("left:{}px;top:{}px;width:{}px;height:{}px",current_settings.x,current_settings.y,current_settings.width,current_settings.height)}else{String::new()}),
             {overlay_canvas(
@@ -236,12 +236,12 @@ fn native_overlay(
                 } }
                 nav { class:"canvas-list", for canvas in managed.borrow().iter() {
                     div { class:"canvas-row",
-                        button { class:if canvas.id==current_settings.id{"canvas-select selected"}else{"canvas-select"}, "aria-selected":canvas.id==current_settings.id, "data-canvas-id":"{canvas.id}", "{canvas.id}" }
+                        button { class:if current_settings.has_selection && canvas.id==current_settings.id{"canvas-select selected"}else{"canvas-select"}, "aria-selected":current_settings.has_selection && canvas.id==current_settings.id, "data-canvas-id":"{canvas.id}", "{canvas.id}" }
                         button { class:if scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), scorepeek_overlay_ui::ScreenView { kind:Some(current_settings.preview_screen), suspended_since_unix_ms:None, revision:0 }){"screen-toggle selected"}else{"screen-toggle"}, "aria-pressed":scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), scorepeek_overlay_ui::ScreenView { kind:Some(current_settings.preview_screen), suspended_since_unix_ms:None, revision:0 }), "data-canvas-id":"{canvas.id}", if scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), scorepeek_overlay_ui::ScreenView { kind:Some(current_settings.preview_screen), suspended_since_unix_ms:None, revision:0 }){"ON"}else{"OFF"} }
                     }
                 } }
                 div { class:"editor-tab-body",
-                section { class:"canvas-pane", h2 { "CANVAS SETTINGS · {current_settings.id}" } button { class:"undo-action", "UNDO GEOMETRY" }
+                if current_settings.has_selection { section { class:"canvas-pane", h2 { "CANVAS SETTINGS · {current_settings.id}" } button { class:"undo-action", "UNDO GEOMETRY" }
                     h2 { "APPEARANCE" }
                     div { class:"native-skin-options button-grid three", for (index,(label,skin)) in [("CYAN",scorepeek_overlay_ui::Skin::CyanSystem),("AURORA",scorepeek_overlay_ui::Skin::ResultAurora),("BLACKBOX",scorepeek_overlay_ui::Skin::DjBlackbox)].into_iter().enumerate() { button { class:if appearance.get().skin==skin{"skin-option selected"}else{"skin-option"}, "aria-pressed":appearance.get().skin==skin, "data-index":index, if appearance.get().skin==skin{"✓ "} "{label}" } } }
                     h2 { "OPACITY {current_settings.opacity_percent}%" }
@@ -264,7 +264,7 @@ fn native_overlay(
                             button { class:"delete-widget danger", if pending_delete.borrow().as_deref()==Some(widget.id.as_str()) { "CONFIRM DELETE" } else { "DELETE WIDGET" } }
                         }
                     }
-                } } else { div { class:"canvas-hidden-state", strong { "HIDDEN ON THIS GAME SCREEN" } span { "Turn this canvas ON in the list to edit its widgets." } } }
+                } } else { div { class:"canvas-hidden-state", strong { "HIDDEN ON THIS GAME SCREEN" } span { "Turn this canvas ON in the list to edit its widgets." } } } } else { div { class:"canvas-hidden-state", strong { "NO CANVAS ON THIS GAME SCREEN" } span { "Turn a canvas ON or add one for this game screen." } } }
                 }
                 footer { if dirty.get() { button { class:"discard-action", "DISCARD CHANGES" } button { class:"primary save-action", "SAVE ALL CHANGES AND CLOSE" } } else { button { class:"close-action", "CLOSE EDITOR" } } }
             } }
@@ -871,6 +871,7 @@ impl App {
         let panel_width = editor_panel_width(shell.output_logical_size.map(|[width, _]| width));
         let settings = Rc::new(RefCell::new(NativeCanvasSettings {
             id: canvas.id.clone(),
+            has_selection: true,
             output: canvas.output.clone(),
             show_on: canvas.show_on.clone(),
             opacity_percent: canvas.opacity_percent,
@@ -884,9 +885,9 @@ impl App {
         let initially_visible = canvas.show_on.is_none();
         shell.set_input_enabled(initially_visible);
         let visible = Rc::new(Cell::new(initially_visible));
-        let surface_canvas_ids = Rc::new(RefCell::new(std::collections::BTreeSet::from([
-            canvas.id.clone(),
-        ])));
+        let surface_canvas_ids = Rc::new(RefCell::new(std::collections::BTreeSet::from([canvas
+            .id
+            .clone()])));
         let vdom = VirtualDom::new_with_props(
             native_overlay,
             NativeOverlayProps {
@@ -907,7 +908,6 @@ impl App {
                 state: Rc::clone(&shared_state),
                 visible: Rc::clone(&visible),
                 settings: Rc::clone(&settings),
-                surface_output: shell.output_name.clone(),
                 surface_canvas_ids: Rc::clone(&surface_canvas_ids),
                 update: Rc::clone(&native_update),
             },
@@ -1078,11 +1078,6 @@ impl App {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
-            let preview_target = self
-                .preview
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
             let workspace_peer = self
                 .workspace_open
                 .load(std::sync::atomic::Ordering::Acquire)
@@ -1238,30 +1233,23 @@ impl App {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let surfaces = workspace.surfaces.get(&key);
-        let selected_is_local = workspace
-            .draft
-            .iter()
-            .find(|canvas| Some(canvas.id.as_str()) == selected)
-            .is_some_and(|canvas| {
-                canvas.output == self.surface_output
-                    || (canvas.output.is_none()
-                        && selected == Some(self.surface_canvas.id.as_str()))
-            });
-        let host =
-            if selected_is_local && surfaces.is_some_and(|surfaces| selected.is_some_and(|selected| surfaces.contains(selected))) {
-                selected
-            } else {
-                surfaces.and_then(|surfaces| surfaces.first().map(String::as_str))
-            };
+        let selected_is_local = surfaces
+            .is_some_and(|surfaces| selected.is_some_and(|selected| surfaces.contains(selected)));
+        let host = if selected_is_local {
+            selected
+        } else {
+            surfaces.and_then(|surfaces| surfaces.first().map(String::as_str))
+        };
         host == Some(self.surface_canvas.id.as_str())
     }
 
     fn sync_workspace_projection(&mut self) {
-        let (ui, draft, dirty, selected_widget, pending_widget, pending_delete) = {
+        let (ui, draft, dirty, selected_widget, pending_widget, pending_delete, surface_canvas_ids) = {
             let workspace = self
                 .workspace_ui
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let key = self.surface_output.clone().unwrap_or_default();
             (
                 workspace.ui,
                 workspace.draft.clone(),
@@ -1269,13 +1257,23 @@ impl App {
                 workspace.selected_widget.clone(),
                 workspace.pending_widget,
                 workspace.pending_delete.clone(),
+                workspace.surfaces.get(&key).cloned().unwrap_or_default(),
             )
         };
+        *self.surface_canvas_ids.borrow_mut() = surface_canvas_ids;
         self.panel_open.set(ui.panel_open);
         self.output_open.set(ui.output_open);
         self.manage_open.set(ui.manage_open);
         self.widget_add_open.set(ui.widget_add_open);
-        self.settings.borrow_mut().preview_screen = ui.preview_screen;
+        {
+            let mut settings = self.settings.borrow_mut();
+            settings.preview_screen = ui.preview_screen;
+            settings.has_selection = self
+                .preview
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_some();
+        }
         self.dirty.set(dirty);
         *self.selected.borrow_mut() = selected_widget;
         self.pending_widget.set(pending_widget);
@@ -1314,8 +1312,6 @@ impl App {
     }
     fn set_editing(&mut self, value: bool) {
         if value {
-            self.workspace_open
-                .store(true, std::sync::atomic::Ordering::Release);
             self.editing.set(true);
             self.acquire();
             self.next_keepalive = Instant::now() + Duration::from_secs(5);
@@ -1376,6 +1372,8 @@ impl App {
         if button == 0x111 {
             if pressed {
                 if !self.editing.get() {
+                    self.workspace_open
+                        .store(true, std::sync::atomic::Ordering::Release);
                     if let Some(screen) = self.shared_state.borrow().screen.kind {
                         self.settings.borrow_mut().preview_screen = screen;
                         self.sync_workspace_ui();
@@ -1398,7 +1396,7 @@ impl App {
                     .borrow()
                     .iter()
                     .rfind(|canvas| {
-                        (canvas.output == self.surface_output || canvas.output.is_none())
+                        self.surface_canvas_ids.borrow().contains(&canvas.id)
                             && scorepeek_overlay_ui::canvas_visible(
                                 canvas.show_on.as_deref(),
                                 scorepeek_overlay_ui::ScreenView {
@@ -1477,6 +1475,8 @@ impl App {
                     return;
                 }
                 if self.hit_selector(".close-action", x, y) {
+                    self.workspace_open
+                        .store(false, std::sync::atomic::Ordering::Release);
                     self.preview
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1499,6 +1499,8 @@ impl App {
                     workspace.undo = None;
                     workspace.reload_saved = true;
                     drop(workspace);
+                    self.workspace_open
+                        .store(false, std::sync::atomic::Ordering::Release);
                     self.preview
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2242,6 +2244,8 @@ impl App {
             workspace.undo = None;
             workspace.reload_saved = true;
             drop(workspace);
+            self.workspace_open
+                .store(false, std::sync::atomic::Ordering::Release);
             self.preview
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2359,12 +2363,10 @@ impl Drop for App {
                 }
             }
         }
-        let workspace_target = self
-            .preview
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        if release_backend_on_drop(self.editing.get(), workspace_target.as_deref()) {
+        let workspace_open = self
+            .workspace_open
+            .load(std::sync::atomic::Ordering::Acquire);
+        if release_backend_on_drop(self.editing.get(), workspace_open) {
             let _ = crate::control::request(
                 &self.control_socket,
                 &crate::control::Request::ReleaseBackend {
@@ -2376,8 +2378,8 @@ impl Drop for App {
     }
 }
 
-const fn release_backend_on_drop(editing: bool, workspace_target: Option<&str>) -> bool {
-    editing && workspace_target.is_none()
+const fn release_backend_on_drop(editing: bool, workspace_open: bool) -> bool {
+    editing && !workspace_open
 }
 const fn control_updates_readonly(request: &crate::control::Request) -> bool {
     matches!(
@@ -2665,6 +2667,7 @@ impl VisualDebugSession {
         let managed = Rc::new(RefCell::new(managed));
         let settings = Rc::new(RefCell::new(NativeCanvasSettings {
             id: canvas.id,
+            has_selection: true,
             output: canvas.output,
             show_on: canvas.show_on,
             opacity_percent: canvas.opacity_percent,
@@ -2698,7 +2701,10 @@ impl VisualDebugSession {
             state: Rc::new(RefCell::new(scorepeek_overlay_ui::editor_sample_state())),
             visible: Rc::new(Cell::new(true)),
             settings: Rc::clone(&settings),
-            surface_output: Some("HEADLESS-1".into()),
+            surface_canvas_ids: Rc::new(RefCell::new(std::collections::BTreeSet::from([settings
+                .borrow()
+                .id
+                .clone()]))),
             update: Rc::clone(&update),
         };
         let mut document = DioxusDocument::new(
@@ -2754,6 +2760,7 @@ impl VisualDebugSession {
         let preview_screen = self.settings.borrow().preview_screen;
         *self.settings.borrow_mut() = NativeCanvasSettings {
             id: canvas.id,
+            has_selection: true,
             output: canvas.output,
             show_on: canvas.show_on,
             opacity_percent: canvas.opacity_percent,
@@ -3256,9 +3263,9 @@ mod skin_tests {
 
     #[test]
     fn surface_handoff_keeps_the_backend_workspace_lease() {
-        assert!(!release_backend_on_drop(true, Some("wayland-result")));
-        assert!(release_backend_on_drop(true, None));
-        assert!(!release_backend_on_drop(false, None));
+        assert!(!release_backend_on_drop(true, true));
+        assert!(release_backend_on_drop(true, false));
+        assert!(!release_backend_on_drop(false, false));
     }
     use scorepeek_overlay_ui::Skin;
 
@@ -3328,6 +3335,7 @@ mod skin_tests {
                         visible: Rc::new(Cell::new(true)),
                         settings: Rc::new(RefCell::new(NativeCanvasSettings {
                             id: "test".into(),
+                            has_selection: true,
                             output: None,
                             show_on: None,
                             opacity_percent: 100,
@@ -3338,7 +3346,9 @@ mod skin_tests {
                             preview_screen: scorepeek_overlay_ui::ScreenKind::MusicSelect,
                             panel_width: 400,
                         })),
-                        surface_output: None,
+                        surface_canvas_ids: Rc::new(RefCell::new(
+                            std::collections::BTreeSet::from(["test".into()]),
+                        )),
                         update: Rc::new(RefCell::new(None)),
                     },
                 ),
@@ -3416,6 +3426,7 @@ mod skin_tests {
                     visible: Rc::new(Cell::new(true)),
                     settings: Rc::new(RefCell::new(NativeCanvasSettings {
                         id: "test".into(),
+                        has_selection: true,
                         output: None,
                         show_on: None,
                         opacity_percent: 100,
@@ -3426,7 +3437,9 @@ mod skin_tests {
                         preview_screen: scorepeek_overlay_ui::ScreenKind::MusicSelect,
                         panel_width: 400,
                     })),
-                    surface_output: None,
+                    surface_canvas_ids: Rc::new(RefCell::new(std::collections::BTreeSet::from([
+                        "test".into(),
+                    ]))),
                     update: Rc::new(RefCell::new(None)),
                 },
             ),
@@ -3526,6 +3539,7 @@ mod skin_tests {
                     visible: Rc::new(Cell::new(true)),
                     settings: Rc::new(RefCell::new(NativeCanvasSettings {
                         id: "wayland-selection".into(),
+                        has_selection: true,
                         output: Some("DP-1".into()),
                         show_on: None,
                         opacity_percent: 100,
@@ -3536,7 +3550,9 @@ mod skin_tests {
                         preview_screen: scorepeek_overlay_ui::ScreenKind::MusicSelect,
                         panel_width: 384,
                     })),
-                    surface_output: Some("DP-1".into()),
+                    surface_canvas_ids: Rc::new(RefCell::new(std::collections::BTreeSet::from([
+                        "wayland-selection".into(),
+                    ]))),
                     update: Rc::new(RefCell::new(None)),
                 },
             ),

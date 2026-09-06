@@ -18,25 +18,27 @@ checkpoint; implementation history belongs in Git.
 
 - ADR 0125 replaces the fixed overlay cards/layout flags with independently positioned status,
   selection, score, history-list and history-graph widgets. ADR 0127 advances the strict overlay
-  TOML with screen-aware canvases. ADR 0128 advances it to schema v3, removes canvas/widget z-order,
-  and automatically migrates schema v2 by deleting only `z`. ADR 0129 overlays a responsive editor
-  panel on a one-to-one output preview and assigns canvas movement to edit-only right-drag.
+  TOML with screen-aware canvases. ADR 0128 removes canvas/widget z-order. ADR 0135 advances it to
+  schema v4, removes canvas enablement, treats an empty `show_on` as hidden on every screen, and
+  automatically migrates schema v2 and v3. ADR 0129 overlays a responsive editor panel on a
+  one-to-one output preview and assigns canvas movement to edit-only right-drag.
   `--overlay-wayland` and `--overlay-obs` enable the backends; `--overlay-config` selects the document.
   Missing configuration creates status, MUSIC SELECT, DECIDE/PLAY and RESULT canvases per backend.
   Each canvas has optional semantic-screen filters; Wayland also has 1–100% content
   opacity. UNKNOWN and socket loss retain the previous screen for the configured global grace. The
   parent is the sole atomic writer. One backend lease owns the complete in-memory draft; SAVE checks
   the backend revision and atomically replaces it once, while a failed save retains draft and lease.
-  Wayland owns one interactive surface per enabled native canvas and shares one feed/visibility
+  Wayland owns one interactive surface per native canvas and shares one feed/visibility
   clock across them. Hidden surfaces are transparent, idle and have an empty input region. OBS
   exposes stable `/canvas/<id>` URLs plus the full-screen `/overlay` multi-canvas Browser Source.
   Browser Source Interaction edits the same `/overlay` page; `/canvas/<id>` is display-only.
   Right-click opens an opaque 360–480px panel over the output-coordinate preview. The workspace shows
-  every canvas, offers an independent semantic-screen preview and fixed inactive sample data, and
-  supports one geometry undo. WIDGETS/CANVAS tabs and expandable low-frequency sections keep controls
-  inside the panel; selected buttons and canvas enablement expose visible and ARIA state. Wayland lists
-  connector, model and logical output size in the CANVAS tab. PREVIEW ACTUAL hides the editor except
-  for its return control. During editing, right-drag moves canvases and left-drag moves widgets.
+  every canvas, makes GAME SCREEN the current editing context, offers fixed inactive sample data, and
+  supports one geometry undo. Each canvas row toggles membership in only the current screen; the panel
+  then presents CANVAS SETTINGS and visible WIDGETS vertically. Clean drafts show only CLOSE EDITOR;
+  dirty drafts show DISCARD CHANGES and SAVE ALL CHANGES AND CLOSE. Wayland lists connector, model and
+  logical output size under MOVE TO OUTPUT. While editing, synchronized peer panels appear on every
+  connected output, right-drag moves canvases and left-drag moves widgets.
   Wayland missing-output recovery opens the same unsaved draft on a deterministic fitting or largest
   output and shrinks only the canvas boundary when required. SAVE adopts it; DISCARD leaves TOML
   untouched and suppresses that canvas for the run. `--overlay-wayland-edit` opens this recovery editor.

@@ -747,20 +747,20 @@ SELECTは譜面・項目別の現在補完値として保持し、revision履歴
 `--scores-db PATH`でrun単位の保存先を選び、`--no-scores`で無効化する。保存失敗は認識と配信へ干渉させない。
 日時、schema、出典、transaction、queueと終了上限はADR 0120を原典とする。過去記録importと照会CLIは含めない。
 
-### Live Overlay canvas（ADR 0122 / 0125 / 0127 / 0128 / 0129 / 0130）
+### Live Overlay canvas（ADR 0122 / 0125 / 0127 / 0128 / 0129 / 0130 / 0135）
 
 配布binaryは`scorepeek`だけとし、`run --overlay-wayland`と`run --overlay-obs`で独立consumerを有効化する。
-`--overlay-config PATH`はschema v3のTOMLを選び、未指定時は`$XDG_CONFIG_HOME/scorepeek/overlay.toml`を使う。schema v2は`z`だけを除去して自動migrationし、schema v1は拒否する。`--overlay-wayland-edit`はWaylandを有効化して起動時に編集workspaceを開く。
+`--overlay-config PATH`はschema v4のTOMLを選び、未指定時は`$XDG_CONFIG_HOME/scorepeek/overlay.toml`を使う。schema v2は`z`を除去し、schema v3はcanvasの`enabled`を除去して自動migrationする。旧`enabled = false`は`show_on = []`へ変換し、それ以外の`show_on`は保持する。schema v1は拒否する。`--overlay-wayland-edit`はWaylandを有効化して起動時に編集workspaceを開く。
 未作成ならWayland/OBSそれぞれに常時status、MUSIC SELECT dashboard、DECIDE/PLAY compact selection、RESULT dashboardの4 canvasをatomicに作成する。Wayland初期canvasは選択outputの右上から20px内側に置く。backendはcanvas作成後に変更しない。
-global/schema errorは全体を拒否し、個別canvas errorはそのcanvasだけを隔離する。各backendはvalidかつenabledなcanvasを1枚以上保持する。
+global/schema errorは全体を拒否し、個別canvas errorはそのcanvasだけを隔離する。各backendはvalidなcanvasを1枚以上保持するが、全canvasを非表示にしてよい。
 
-Waylandは有効canvasごとのlayer surfaceを1 child内で所有し、TOMLのoutput、論理座標とsizeを適用する。
+Waylandはcanvasごとのlayer surfaceを1 child内で所有し、TOMLのoutput、論理座標とsizeを適用する。
 OBSは1 HTTP childがdisplay専用`/canvas/<id>`と、複数canvasを論理pixel座標で配置する全画面`/overlay`を配信する。順序は保証せずviewport外はclipする。編集はOBS Browser Source Interactionで同じ`/overlay`を右clickして開始する。
 通常表示はwidget外を透明にする。Waylandは入力を常時受け、右clickでeditorを開くが通常表示中のdragはgeometryを変更しない。
 OBSの通常dragは永続座標を変更せず、OBS Transformに任せる。editor panelはoutput左端へ重ね、論理幅の1/5を360–480pxへ制限する。previewは常にoutput座標と1:1で、panel左上の小さいbuttonから全体を開閉する。
-editorはbackend全canvasを1 draftとして扱い、screen preview、canvas追加・削除・有効化・output移動、widget追加・削除・移動・4隅resize、skin、履歴件数、graph期間を編集する。位置とsizeは4px gridだけへ揃え、geometry undoは全体で1回とする。編集中はcanvasの右drag、widgetの左dragで直接移動する。inactive時は固定sample dataをeditor内だけに表示する。
-panelは上部のpreviewとcanvas選択、WIDGETS/CANVAS tab、下部の保存操作を固定し、中間だけをscrollする。低頻度操作は展開sectionへ収め、選択buttonは見た目とARIAの両方でstateを示す。Wayland output選択はCANVAS tab内にconnector・model・論理sizeを表示し、surface切替後もtabと展開状態を保つ。
-canvasの`show_on`はmusic-select/mode-select/decide-transition/play/resultを複数選択でき、省略時は常時表示する。UNKNOWNとsocket切断は既定1000msのglobal grace後に非表示とし、既知screenは即時切替、session終了は即時非表示にする。Waylandは1 feed/clockを共有し、非表示surfaceを透明commit・空input region・idleにする。Wayland contentの`opacity_percent`は1–100、OBSは100固定とする。cursor-shape protocolと24px fallback cursorをeditor状態に応じて表示する。
+editorはbackend全canvasを1 draftとして扱い、current GAME SCREENへのcanvas表示、canvas追加・削除・output移動、widget追加・削除・移動・4隅resize、skin、履歴件数、graph期間を編集する。位置とsizeは4px gridだけへ揃え、geometry undoは全体で1回とする。編集中はcanvasの右drag、widgetの左dragで直接移動する。inactive時は固定sample dataをeditor内だけに表示する。
+panelはGAME SCREEN、固定順の全canvas一覧、CANVAS SETTINGS、表示中canvasのWIDGETSを縦に並べ、下部に保存操作を固定する。WIDGETS/CANVAS tabとPREVIEW ACTUALは持たない。低頻度操作は展開sectionへ収め、選択buttonは見た目とARIAの両方でstateを示す。Wayland output選択はCANVAS SETTINGS内にconnector・model・論理sizeを表示する。clean時はCLOSE EDITORだけ、dirty時はDISCARD CHANGESとSAVE ALL CHANGES AND CLOSEを表示する。
+canvasの`show_on`はmusic-select/mode-select/decide-transition/play/resultを複数選択でき、省略時は全screen、空配列は全screen非表示とする。canvas一覧の各toggleはcurrent GAME SCREENだけの所属を変更する。UNKNOWNとsocket切断は既定1000msのglobal grace後に非表示とし、既知screenは即時切替、session終了は即時非表示にする。Waylandは1 feed/clockを共有し、非表示surfaceを透明commit・空input region・idleにする。編集workspaceは全接続outputへ表示し、各panelのscreen、選択、draftとdirty stateを同期する。Wayland contentの`opacity_percent`は1–100、OBSは100固定とする。cursor-shape protocolと24px fallback cursorをeditor状態に応じて表示する。
 font sizeと内部layoutは固定し、狭いcanvasでは余白を減らした後にclipする。backend leaseとbackend revisionで競合を拒否する。
 parentだけがtyped controlを受け、draft更新はTOMLへ書かない。SAVEはbackend全体を検証して1回だけatomic replaceし、失敗時はdraftとleaseを保持する。
 

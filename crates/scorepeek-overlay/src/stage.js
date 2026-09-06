@@ -1,7 +1,6 @@
 const stage = document.querySelector('#stage');
 const panel = document.querySelector('#editor');
 const notice = document.querySelector('#notice');
-const returnButton = document.querySelector('#return');
 const panelToggle = document.querySelector('#panel-toggle');
 let saved = JSON.parse(document.querySelector('#initial').textContent);
 let draft = structuredClone(saved);
@@ -13,9 +12,7 @@ let selectedCanvas = draft[0]?.id ?? null;
 let selectedWidget = null;
 let editing = false;
 let readonly = true;
-let actualPreview = false;
 let panelOpen = true;
-let editorTab = 'widgets';
 let widgetAddOpen = false;
 let manageOpen = false;
 let undo = null;
@@ -30,9 +27,10 @@ const pendingControls = new Map();
 let socket;
 
 const screenOptions = [
-  ['SELECT', 'music-select'], ['MODE', 'mode-select'],
+  ['MUSIC SELECT', 'music-select'], ['MODE SELECT', 'mode-select'],
   ['DECIDE', 'decide-transition'], ['PLAY', 'play'], ['RESULT', 'result'],
 ];
+const screenValues = screenOptions.map(([, value]) => value);
 const widgetOptions = [
   ['STATUS', 'status'], ['SELECTION', 'selection'], ['SCORE', 'score'],
   ['HISTORY LIST', 'history-list'], ['HISTORY GRAPH', 'history-graph'],
@@ -45,7 +43,23 @@ const snap = value => Math.round(value / 4) * 4;
 const gridFloor = value => Math.max(0, Math.floor(value / 4) * 4);
 const current = () => draft.find(canvas => canvas.id === selectedCanvas);
 const isDirty = () => JSON.stringify(draft) !== JSON.stringify(saved);
-const visible = canvas => !canvas.show_on || canvas.show_on.includes(editing ? previewScreen : screen);
+const visibleOn = (canvas, value) => !canvas.show_on || canvas.show_on.includes(value);
+const visible = canvas => visibleOn(canvas, editing ? previewScreen : screen);
+const setVisibleOn = (canvas, value, shown) => {
+  if (shown) {
+    if (!canvas.show_on) return;
+    canvas.show_on = [...new Set([...canvas.show_on, value])];
+    if (screenValues.every(screenValue => canvas.show_on.includes(screenValue))) canvas.show_on = null;
+    return;
+  }
+  canvas.show_on = (canvas.show_on ?? screenValues).filter(screenValue => screenValue !== value);
+};
+const firstVisibleScreen = canvas => screenValues.find(value => visibleOn(canvas, value));
+const selectFirstVisibleCanvas = () => {
+  selectedCanvas = draft.find(canvas => visibleOn(canvas, previewScreen))?.id ?? null;
+  selectedWidget = null;
+  pendingDelete = null;
+};
 const nextId = (stem, values) => {
   for (let index = 1; ; index += 1) {
     const id = `${stem}-${index}`;
@@ -121,7 +135,9 @@ function enterEditor(event) {
   if (editing) return;
   editing = true;
   panelOpen = true;
-  actualPreview = false;
+  previewScreen = screenOptions.some(([, value]) => value === screen) ? screen : 'music-select';
+  selectedCanvas = event.target.closest?.('.stage-canvas')?.dataset.canvas
+    ?? draft.find(canvas => visibleOn(canvas, previewScreen))?.id ?? null;
   readonly = true;
   send({command: 'acquire_backend', backend: 'obs', editor_id: editorId});
   render();
@@ -180,7 +196,6 @@ function closeEditor() {
 function finishClose() {
   editing = false;
   discardPending = false;
-  actualPreview = false;
   selectedWidget = null;
   undo = null;
   render();
@@ -192,7 +207,7 @@ function renderStage() {
   stage.style.transform = 'none';
   const seen = new Set();
   for (const canvas of draft) {
-    if (!canvas.enabled || !visible(canvas)) continue;
+    if (!visible(canvas)) continue;
     seen.add(canvas.id);
     let frame = stage.querySelector(`.stage-canvas[data-canvas="${CSS.escape(canvas.id)}"]`);
     if (!frame) {
@@ -212,10 +227,10 @@ function renderStage() {
     const source = `/canvas/${encodeURIComponent(canvas.id)}?${query}`;
     if (iframe.getAttribute('src') !== source) iframe.src = source;
     frame.onpointerdown = event => {
-      if (editing && !actualPreview && event.button === 2) startCanvasDrag(event, canvas);
+      if (editing && event.button === 2) startCanvasDrag(event, canvas);
     };
     frame.querySelectorAll('.stage-widget-hit,.canvas-resize').forEach(element => element.remove());
-    if (editing && !actualPreview && canvas.id === selectedCanvas) {
+    if (editing && canvas.id === selectedCanvas) {
       addWidgetHandles(frame, canvas, scale);
       for (const corner of ['nw', 'ne', 'sw', 'se']) {
         const handle = document.createElement('i');
@@ -239,8 +254,7 @@ function renderStage() {
     ghost.style.cssText = `position:fixed;left:${placingPoint.x}px;top:${placingPoint.y}px;width:${width * scale}px;height:${height * scale}px;border:1px dashed #5ee7ff;background:#0bd4ee22;pointer-events:none;z-index:2147483641`;
     document.body.append(ghost);
   }
-  returnButton.style.display = actualPreview ? 'block' : 'none';
-  panelToggle.style.display = editing && !actualPreview ? 'block' : 'none';
+  panelToggle.style.display = editing ? 'block' : 'none';
   panelToggle.className = isDirty() ? 'dirty' : '';
   panelToggle.innerHTML = `${panelOpen ? '‹' : '›'}<i></i>`;
   panelToggle.setAttribute('aria-label', panelOpen ? 'Hide editor panel' : 'Show editor panel');
@@ -382,49 +396,70 @@ function undoGeometry() {
 
 function renderPanel() {
   panel.replaceChildren();
-  if (!editing || actualPreview || !panelOpen) { panel.style.display = 'none'; return; }
+  if (!editing || !panelOpen) { panel.style.display = 'none'; return; }
   panel.style.display = 'flex';
   panel.style.width = `${Math.max(360, Math.min(480, Math.round(innerWidth / 5)))}px`;
   const canvas = current();
-  panel.innerHTML = `<header><strong>SCOREPEEK OVERLAY</strong><small>OBS EDITOR</small>${inactive ? '<b>SAMPLE DATA</b>' : ''}${isDirty() ? '<i class="unsaved-dot"></i>' : ''}</header><p class="section-label">PREVIEW DATA</p>`;
+  panel.innerHTML = `<header><strong>SCOREPEEK OVERLAY</strong><small>OBS EDITOR</small>${inactive ? '<b>SAMPLE DATA</b>' : ''}${isDirty() ? '<i class="unsaved-dot"></i>' : ''}</header><p class="section-label">GAME SCREEN</p>`;
   const tabs = document.createElement('div'); tabs.className = 'preview-tabs';
   for (const [label, value] of screenOptions) {
     const button = document.createElement('button'); button.textContent = label;
     button.className = previewScreen === value ? 'selected' : '';
     button.setAttribute('aria-selected', previewScreen === value);
-    button.onclick = () => { previewScreen = value; render(); };
+    button.onclick = () => { previewScreen = value; selectFirstVisibleCanvas(); render(); };
     tabs.append(button);
   }
   panel.append(tabs);
   const nav = document.createElement('nav');
   for (const item of draft) {
-    const button = document.createElement('button');
-    button.className = `canvas-row ${item.id === selectedCanvas ? 'selected' : ''} ${item.enabled ? '' : 'disabled'}`;
+    const row = document.createElement('div'); row.className = 'canvas-row';
+    const button = document.createElement('button'); button.className = `canvas-select ${item.id === selectedCanvas ? 'selected' : ''}`;
     button.setAttribute('aria-selected', item.id === selectedCanvas);
-    button.innerHTML = `<span>${item.id}</span><i class="canvas-enabled-lamp ${item.enabled ? 'on' : 'off'}"></i>`;
-    button.onclick = () => { selectedCanvas = item.id; selectedWidget = null; pendingDelete = null; render(); };
-    nav.append(button);
+    button.textContent = item.id;
+    const selectCanvas = () => {
+      const targetScreen = firstVisibleScreen(item);
+      if (!visibleOn(item, previewScreen) && targetScreen) previewScreen = targetScreen;
+      selectedCanvas = item.id; selectedWidget = null; pendingDelete = null; render();
+    };
+    button.onpointerdown = selectCanvas;
+    button.onclick = selectCanvas;
+    const toggle = document.createElement('button');
+    const shown = visibleOn(item, previewScreen);
+    toggle.className = `screen-toggle ${shown ? 'selected' : ''}`;
+    toggle.textContent = shown ? 'ON' : 'OFF';
+    toggle.setAttribute('aria-pressed', shown);
+    toggle.setAttribute('aria-label', `${item.id} on ${previewScreen}`);
+    toggle.onclick = () => {
+      setVisibleOn(item, previewScreen, !shown);
+      if (item.id === selectedCanvas && shown) selectFirstVisibleCanvas();
+      draftChanged();
+    };
+    row.append(button, toggle); nav.append(row);
   }
   panel.append(nav);
-  const workTabs = document.createElement('div'); workTabs.className = 'editor-tabs';
-  for (const [label, value] of [['WIDGETS','widgets'],['CANVAS','canvas']]) {
-    const button = document.createElement('button'); button.textContent = label;
-    button.className = editorTab === value ? 'selected' : '';
-    button.setAttribute('aria-selected', editorTab === value);
-    button.onclick = () => { editorTab = value; renderPanel(); };
-    workTabs.append(button);
-  }
-  panel.append(workTabs);
   const body = document.createElement('div'); body.className = 'editor-tab-body';
-  if (canvas) body.append(editorTab === 'widgets' ? widgetDetail(canvas) : canvasSettings(canvas));
+  if (canvas) {
+    body.append(canvasSettings(canvas));
+    if (visibleOn(canvas, previewScreen)) {
+      const heading = document.createElement('h2'); heading.textContent = 'WIDGETS'; body.append(heading, widgetDetail(canvas));
+    } else {
+      const hidden = document.createElement('div'); hidden.className = 'canvas-hidden-state';
+      hidden.innerHTML = `<strong>HIDDEN ON ${screenOptions.find(([, value]) => value === previewScreen)?.[0]}</strong><span>Turn this canvas ON in the list to edit its widgets.</span>`;
+      body.append(hidden);
+    }
+  } else {
+    const empty = document.createElement('div'); empty.className = 'canvas-hidden-state';
+    empty.innerHTML = `<strong>NO CANVAS ON ${screenOptions.find(([, value]) => value === previewScreen)?.[0]}</strong><span>Turn a canvas ON or add one for this game screen.</span>`;
+    body.append(empty);
+  }
   panel.append(body);
   const footer = document.createElement('footer');
-  for (const [label, action, primary] of [
-    ['UNDO GEOMETRY', undoGeometry], ['PREVIEW ACTUAL', () => { actualPreview = true; render(); }],
-    ['DISCARD', discard], ['SAVE AND CLOSE', save, true],
-  ]) {
+  const actions = isDirty()
+    ? [['DISCARD CHANGES', discard, false], ['SAVE ALL CHANGES AND CLOSE', save, true]]
+    : [['CLOSE EDITOR', closeEditor, false]];
+  for (const [label, action, primary] of actions) {
     const button = document.createElement('button'); button.textContent = label; button.onclick = action;
-    button.disabled = readonly || discardPending || (label === 'UNDO GEOMETRY' && !undo) || ((label === 'DISCARD' || primary) && !isDirty());
+    button.disabled = readonly || discardPending;
     if (primary && isDirty()) button.className = 'primary'; footer.append(button);
   }
   panel.append(footer);
@@ -487,31 +522,10 @@ function widgetDetail(canvas) {
 
 function canvasSettings(canvas) {
   const section = document.createElement('section');
-  section.innerHTML = '<h2>VISIBILITY</h2>';
-  const modes = document.createElement('div'); modes.className = 'visibility-mode';
-  for (const [label, specific] of [['ALL SCREENS', false], ['SPECIFIC SCREENS', true]]) {
-    const selected = specific ? !!canvas.show_on : !canvas.show_on;
-    const button = document.createElement('button'); button.textContent = label;
-    button.className = selected ? 'selected' : ''; button.setAttribute('aria-pressed', selected);
-    button.onclick = () => { canvas.show_on = specific ? [previewScreen] : null; draftChanged(); };
-    modes.append(button);
-  }
-  section.append(modes);
-  if (canvas.show_on) {
-    const screens = document.createElement('div'); screens.className = 'screen-filter';
-    for (const [label, value] of screenOptions) {
-      const selected = canvas.show_on.includes(value);
-      const button = document.createElement('button'); button.textContent = `${selected ? '✓ ' : ''}${label}`;
-      button.className = selected ? 'selected' : ''; button.setAttribute('aria-pressed', selected);
-      button.onclick = () => {
-        const values = [...canvas.show_on]; const index = values.indexOf(value);
-        index >= 0 ? values.splice(index, 1) : values.push(value);
-        canvas.show_on = values.length ? values : null; draftChanged();
-      };
-      screens.append(button);
-    }
-    section.append(screens);
-  }
+  section.innerHTML = `<h2>CANVAS SETTINGS · ${canvas.id}</h2>`;
+  const undoButton = document.createElement('button'); undoButton.className = 'undo-action';
+  undoButton.textContent = 'UNDO GEOMETRY'; undoButton.disabled = !undo; undoButton.onclick = undoGeometry;
+  section.append(undoButton);
   const skins = document.createElement('div'); skins.innerHTML = '<h2>APPEARANCE</h2>'; skins.className = 'skin-settings';
   for (const [label, value] of [['CYAN','cyan-system'],['AURORA','result-aurora'],['BLACKBOX','dj-blackbox']]) {
     const button = document.createElement('button'); button.textContent = label;
@@ -523,18 +537,15 @@ function canvasSettings(canvas) {
   const manage = document.createElement('details'); manage.innerHTML = '<summary>MANAGE CANVAS</summary>';
   manage.open = manageOpen;
   manage.ontoggle = () => { manageOpen = manage.open; };
-  const enabled = document.createElement('button'); enabled.innerHTML = `<span>CANVAS ENABLED</span><i>${canvas.enabled ? '✓' : ''}</i>`;
-  enabled.className = `canvas-switch ${canvas.enabled ? 'selected' : ''}`; enabled.setAttribute('aria-pressed', canvas.enabled);
-  enabled.onclick = () => { canvas.enabled = !canvas.enabled; draftChanged(); }; manage.append(enabled);
   const remove = document.createElement('button'); remove.textContent = pendingDelete === canvas.id ? 'CONFIRM DELETE' : 'DELETE CANVAS';
   remove.className = 'danger';
   remove.disabled = draft.length <= 1; remove.onclick = () => {
     if (pendingDelete !== canvas.id) { pendingDelete = canvas.id; renderPanel(); return; }
-    draft = draft.filter(item => item.id !== canvas.id); selectedCanvas = draft[0]?.id ?? null; pendingDelete = null; draftChanged();
+    draft = draft.filter(item => item.id !== canvas.id); selectFirstVisibleCanvas(); draftChanged();
   }; manage.append(remove);
-  const create = document.createElement('button'); create.textContent = 'ADD EMPTY CANVAS'; create.onclick = () => {
+  const create = document.createElement('button'); create.textContent = 'ADD CANVAS'; create.onclick = () => {
     const id = nextId('obs-canvas', draft);
-    draft.push({id, enabled:true, skin:'cyan-system', revision:0, show_on:null, opacity_percent:100, output:null, x:0, y:0, width:gridFloor(Math.min(560, innerWidth)), height:gridFloor(Math.min(1040, innerHeight)), widgets:[]});
+    draft.push({id, skin:'cyan-system', revision:0, show_on:[previewScreen], opacity_percent:100, output:null, x:0, y:0, width:gridFloor(Math.min(560, innerWidth)), height:gridFloor(Math.min(1040, innerHeight)), widgets:[]});
     selectedCanvas = id; draftChanged();
   }; manage.append(create);
   section.append(manage);
@@ -542,7 +553,6 @@ function canvasSettings(canvas) {
 }
 
 function render() { renderStage(); renderPanel(); }
-returnButton.onclick = () => { actualPreview = false; render(); };
 panelToggle.onclick = () => { panelOpen = !panelOpen; render(); };
 addEventListener('resize', render);
 connect();
