@@ -51,8 +51,14 @@ fn editor_panel_width(output_width: Option<u32>) -> u32 {
     }
 }
 
-fn editor_surface_host(surfaces: &std::collections::BTreeSet<String>) -> Option<&str> {
-    surfaces.first().map(String::as_str)
+fn editor_surface_host(
+    surfaces: &std::collections::BTreeSet<String>,
+    pinned: Option<&str>,
+) -> Option<String> {
+    pinned
+        .filter(|id| surfaces.contains(*id))
+        .map(str::to_owned)
+        .or_else(|| surfaces.first().cloned())
 }
 
 fn unselected_canvas_at(
@@ -244,6 +250,7 @@ struct NativeWorkspace {
     pending_widget: Option<scorepeek_overlay_ui::WidgetKind>,
     outputs: std::collections::BTreeMap<String, OutputDescription>,
     surfaces: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    editor_hosts: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -1391,6 +1398,7 @@ impl App {
             let events = self.shell.dispatch(Duration::from_millis(500))?;
             let mut wake = false;
             let mut frame = false;
+            let mut configured = false;
             if *self.outputs.borrow() != self.shell.output_descriptions {
                 self.outputs
                     .borrow_mut()
@@ -1414,7 +1422,11 @@ impl App {
                         logical,
                         physical,
                         scale_120,
-                    } => self.configure(logical, physical, scale_120)?,
+                    } => {
+                        self.configure(logical, physical, scale_120)?;
+                        configured = true;
+                        wake = true;
+                    }
                     Event::Wake => wake = true,
                     Event::PointerMotion { x, y } => {
                         self.pointer_motion(x, y);
@@ -1479,7 +1491,7 @@ impl App {
                 wake = true;
             }
             let changed = wake && self.poll_dioxus();
-            if self.renderer.is_active() && (changed || (frame && self.animating)) {
+            if self.renderer.is_active() && (configured || changed || (frame && self.animating)) {
                 self.paint()?;
                 if changed {
                     crate::diagnostics::emit(
@@ -1591,12 +1603,30 @@ impl App {
 
     fn is_editor_host(&self) -> bool {
         let key = self.surface_output.clone().unwrap_or_default();
-        let workspace = self
+        let mut workspace = self
             .workspace_ui
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let host = workspace.surfaces.get(&key).and_then(editor_surface_host);
-        host == Some(self.surface_canvas.id.as_str())
+        let pinned = workspace.editor_hosts.get(&key).map(String::as_str);
+        let host = workspace
+            .surfaces
+            .get(&key)
+            .and_then(|surfaces| editor_surface_host(surfaces, pinned));
+        if let Some(host) = &host {
+            workspace.editor_hosts.insert(key, host.clone());
+        }
+        host.as_deref() == Some(self.surface_canvas.id.as_str())
+    }
+
+    fn pin_editor_host(&self) {
+        self.workspace_ui
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .editor_hosts
+            .insert(
+                self.surface_output.clone().unwrap_or_default(),
+                self.surface_canvas.id.clone(),
+            );
     }
 
     fn sync_workspace_projection(&mut self) {
@@ -1729,6 +1759,7 @@ impl App {
         if button == 0x111 {
             if pressed {
                 if !self.editing.get() {
+                    self.pin_editor_host();
                     self.workspace_open
                         .store(true, std::sync::atomic::Ordering::Release);
                     if let Some(screen) = self.shared_state.borrow().screen.kind {
@@ -2593,7 +2624,7 @@ impl App {
             report.operations.push("system_fonts_enabled");
         }
         crate::diagnostics::emit("surface_configured", &*self.report.borrow());
-        self.paint()
+        Ok(())
     }
     fn paint(&mut self) -> Result<(), String> {
         let renderer_coordinator = Arc::clone(&self.renderer_init);
@@ -2643,6 +2674,18 @@ impl Drop for App {
                 surfaces.remove(&self.surface_canvas.id);
                 if surfaces.is_empty() {
                     workspace.surfaces.remove(&key);
+                }
+            }
+            if workspace.editor_hosts.get(&key) == Some(&self.surface_canvas.id) {
+                let next = workspace
+                    .surfaces
+                    .get(&key)
+                    .and_then(|surfaces| surfaces.first())
+                    .cloned();
+                if let Some(next) = next {
+                    workspace.editor_hosts.insert(key, next);
+                } else {
+                    workspace.editor_hosts.remove(&key);
                 }
             }
         }
@@ -3634,11 +3677,22 @@ mod skin_tests {
     }
 
     #[test]
-    fn canvas_selection_keeps_a_stable_editor_surface() {
-        let surfaces =
+    fn added_surface_does_not_replace_the_pinned_editor_host() {
+        let mut surfaces =
             std::collections::BTreeSet::from(["canvas-b".to_owned(), "canvas-a".to_owned()]);
 
-        assert_eq!(editor_surface_host(&surfaces), Some("canvas-a"));
+        let pinned = editor_surface_host(&surfaces, None).unwrap();
+        assert_eq!(pinned, "canvas-a");
+
+        surfaces.insert("canvas-0-added".to_owned());
+        assert_eq!(
+            editor_surface_host(&surfaces, Some(&pinned)).as_deref(),
+            Some("canvas-a")
+        );
+        assert_eq!(
+            editor_surface_host(&surfaces, Some("removed-canvas")).as_deref(),
+            Some("canvas-0-added")
+        );
     }
 
     #[test]
