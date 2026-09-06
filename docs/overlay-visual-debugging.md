@@ -12,11 +12,12 @@ Run the checked-in representative scenario into a new output directory:
 mise run overlay:visual:native -- crates/scorepeek-overlay/tests/fixtures/visual-debug.json /tmp/scorepeek-native-visual
 ```
 
-The output directory must not already exist. Scenario actions are `set_editing`, `click`, `scroll`,
-`drag`, and `capture`. Clicks use CSS selectors. Left drag moves the widget under its starting point;
-right drag moves the selected canvas. Coordinates and layout rectangles are logical CSS pixels. PNG
-dimensions are the logical output size multiplied by `scale` and rounded up; the manifest records
-both sizes.
+The output directory must not already exist. A scenario retains one image renderer for its complete
+action sequence. Scenario actions are `set_editing`, `set_screen`, `click`, `scroll`, `drag`, and
+`capture`. `set_screen` accepts a screen kind or `null` and exercises normal runtime canvas
+visibility. Clicks use CSS selectors. Left drag moves the widget under its starting point; right drag
+moves the selected canvas. Coordinates and layout rectangles are logical CSS pixels. PNG dimensions
+are the logical output size multiplied by `scale` and rounded up; the manifest records both sizes.
 This path is intended for visual diagnosis and does not save overlay configuration.
 
 For the OBS route, give the server a new dedicated configuration path and optionally a loopback

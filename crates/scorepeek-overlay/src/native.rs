@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::runtime::{Config, Feed};
-use anyrender::{CompositeAlphaMode, WindowRenderer};
+use anyrender::{CompositeAlphaMode, ImageRenderer, PaintScene, WindowRenderer};
 use anyrender_vello::{VelloRendererOptions, VelloWindowRenderer};
 use blitz_dom::{BaseDocument, Document, DocumentConfig};
 use blitz_paint::paint_scene;
@@ -1472,7 +1472,8 @@ impl App {
                         self.surface_canvas.show_on.as_deref(),
                         latest.screen,
                     ));
-            if self.visible.get() != visible {
+            let visibility_changed = self.visible.get() != visible;
+            if visibility_changed {
                 self.visible.set(visible);
                 self.shell.set_input_enabled(visible);
                 crate::diagnostics::emit(
@@ -1491,7 +1492,11 @@ impl App {
                 wake = true;
             }
             let changed = wake && self.poll_dioxus();
-            if self.renderer.is_active() && (configured || changed || (frame && self.animating)) {
+            if self.renderer.is_active()
+                && (configured
+                    || visibility_changed
+                    || (visible && (changed || (frame && self.animating))))
+            {
                 self.paint()?;
                 if changed {
                     crate::diagnostics::emit(
@@ -2648,7 +2653,7 @@ impl App {
         let (width, height) = inner.viewport().window_size;
         let scale = inner.viewport().scale_f64();
         self.renderer.render(|scene| {
-            paint_scene(scene, &mut inner, scale, width, height, 0, 0);
+            paint_native_scene(scene, &mut inner, scale, width, height);
         });
         self.paint_count += 1;
         self.render_calls += 1;
@@ -2803,6 +2808,40 @@ pub fn apply_motion(document: &mut blitz_dom::BaseDocument, seconds: f64) {
     }
 }
 
+fn paint_native_scene(
+    scene: &mut impl PaintScene,
+    document: &mut blitz_dom::BaseDocument,
+    scale: f64,
+    width: u32,
+    height: u32,
+) {
+    paint_scene(scene, document, scale, width, height, 0, 0);
+    retain_native_image_atlas(scene);
+}
+
+fn retain_native_image_atlas(scene: &mut impl PaintScene) {
+    // Vello keeps image residency metadata separately from its persistent atlas.
+    // A frame without image patches otherwise replaces the atlas with a 1x1 texture
+    // without invalidating that metadata, so later raster images are not uploaded.
+    static ATLAS_KEEPALIVE: std::sync::LazyLock<peniko::ImageBrush> =
+        std::sync::LazyLock::new(|| {
+            peniko::ImageBrush::new(peniko::ImageData {
+                data: peniko::Blob::new(Arc::new(vec![0_u8; 4])),
+                format: peniko::ImageFormat::Rgba8,
+                alpha_type: peniko::ImageAlphaType::Alpha,
+                width: 1,
+                height: 1,
+            })
+        });
+    scene.fill(
+        peniko::Fill::NonZero,
+        peniko::kurbo::Affine::IDENTITY,
+        ATLAS_KEEPALIVE.as_ref(),
+        None,
+        &peniko::kurbo::Rect::new(0.0, 0.0, 1.0, 1.0),
+    );
+}
+
 fn resolve_with_loaded_resources(document: &mut blitz_dom::BaseDocument, seconds: f64) {
     document.resolve(seconds);
     // Embedded images complete synchronously during resolve. Ingest their messages, then
@@ -2868,6 +2907,9 @@ pub enum VisualDebugAction {
     },
     SetEditing {
         value: bool,
+    },
+    SetScreen {
+        screen: Option<scorepeek_overlay_ui::ScreenKind>,
     },
     Click {
         selector: String,
@@ -2958,6 +3000,8 @@ struct VisualDebugSession {
     widget_add_open: Reactive<bool>,
     selected: Reactive<Option<String>>,
     managed: Reactive<Vec<scorepeek_overlay_ui::CanvasPresentation>>,
+    state: Reactive<OverlayState>,
+    visible: Reactive<bool>,
     settings: Reactive<NativeCanvasSettings>,
 }
 
@@ -3056,6 +3100,8 @@ impl VisualDebugSession {
             widget_add_open: reactive.widget_add_open,
             selected: reactive.selected,
             managed: reactive.managed,
+            state: reactive.state,
+            visible: reactive.visible,
             settings: reactive.settings,
         };
         session.resolve();
@@ -3077,6 +3123,23 @@ impl VisualDebugSession {
         inner.resolve(0.0);
         apply_motion(&mut inner, 1.0);
         resolve_with_loaded_resources(&mut inner, 1.0);
+    }
+
+    fn set_screen(&mut self, screen: Option<scorepeek_overlay_ui::ScreenKind>) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.screen.kind = screen;
+            state.screen.suspended_since_unix_ms = None;
+            state.screen.revision = state.screen.revision.saturating_add(1);
+            self.visible.set(
+                self.editing.get()
+                    || scorepeek_overlay_ui::canvas_visible(
+                        self.settings.borrow().show_on.as_deref(),
+                        state.screen,
+                    ),
+            );
+        }
+        self.resolve();
     }
 
     fn load_canvas(&self, canvas: scorepeek_overlay_ui::CanvasPresentation) {
@@ -3342,22 +3405,21 @@ impl VisualDebugSession {
         }
     }
 
-    fn render(&mut self, path: &std::path::Path) -> Result<(), String> {
-        use anyrender::ImageRenderer as _;
-        let mut renderer =
-            anyrender_vello::VelloImageRenderer::new(self.physical_size[0], self.physical_size[1]);
+    fn render(
+        &mut self,
+        renderer: &mut anyrender_vello::VelloImageRenderer,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
         let mut pixels = Vec::new();
         let mut inner = self.document.inner.borrow_mut();
         renderer.render_to_vec(
             |scene| {
-                paint_scene(
+                paint_native_scene(
                     scene,
                     &mut inner,
                     f64::from(self.scale),
                     self.physical_size[0],
                     self.physical_size[1],
-                    0,
-                    0,
                 );
             },
             &mut pixels,
@@ -3494,6 +3556,10 @@ pub fn run_visual_debug(
     let result: Result<(), String> = (|| {
         let validated_physical_size = physical_size.as_ref().map_err(Clone::clone)?;
         let mut session = VisualDebugSession::new(scenario, *validated_physical_size)?;
+        let mut renderer = anyrender_vello::VelloImageRenderer::new(
+            validated_physical_size[0],
+            validated_physical_size[1],
+        );
         let selectors = if scenario.selectors.is_empty() {
             [
                 ".canvas-content",
@@ -3511,6 +3577,7 @@ pub fn run_visual_debug(
         };
         capture_visual_debug(
             &mut session,
+            &mut renderer,
             output,
             &selectors,
             &mut manifest,
@@ -3533,6 +3600,13 @@ pub fn run_visual_debug(
                     session.resolve();
                     format!("set-editing-{value}")
                 }
+                VisualDebugAction::SetScreen { screen } => {
+                    session.set_screen(*screen);
+                    screen.map_or_else(
+                        || "set-screen-none".to_owned(),
+                        |screen| format!("set-screen-{screen:?}"),
+                    )
+                }
                 VisualDebugAction::Click { selector } => {
                     session.click(selector)?;
                     "click".into()
@@ -3549,6 +3623,7 @@ pub fn run_visual_debug(
             };
             capture_visual_debug(
                 &mut session,
+                &mut renderer,
                 output,
                 &selectors,
                 &mut manifest,
@@ -3586,6 +3661,7 @@ pub fn run_visual_debug(
 
 fn capture_visual_debug(
     session: &mut VisualDebugSession,
+    renderer: &mut anyrender_vello::VelloImageRenderer,
     output: &std::path::Path,
     selectors: &[String],
     manifest: &mut VisualDebugManifest,
@@ -3595,7 +3671,7 @@ fn capture_visual_debug(
     let stem = format!("{sequence:03}-{}", sanitize_artifact_name(name));
     let image_name = format!("{stem}.png");
     let layout_name = format!("{stem}.layout.json");
-    session.render(&output.join(&image_name))?;
+    session.render(renderer, &output.join(&image_name))?;
     let layout = session.layout(selectors)?;
     std::fs::write(
         output.join(&layout_name),
@@ -4050,6 +4126,17 @@ mod skin_tests {
             let image = image::load_from_memory(bytes).expect(path);
             assert!(image.width() > 0 && image.height() > 0, "{path}");
         }
+    }
+
+    #[test]
+    fn every_native_scene_retains_an_image_atlas_generation() {
+        let mut scene = anyrender::Scene::new();
+        retain_native_image_atlas(&mut scene);
+        assert!(matches!(
+            scene.commands.as_slice(),
+            [anyrender::recording::RenderCommand::Fill(command)]
+                if matches!(command.brush, anyrender::Paint::Image(_))
+        ));
     }
 
     fn assert_native_graph_viewport(inner: &blitz_dom::BaseDocument) {

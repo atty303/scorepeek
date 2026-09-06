@@ -171,7 +171,8 @@ checkpoint; implementation history belongs in Git.
 
 - Overlay visual debugging now has two reproducible development-host entries. The native scenario
   runner keeps one Dioxus editor workspace across selector clicks, Blitz scrolls and logical-pixel
-  drags, renders every step through native DOM/Blitz/Vello without a Wayland connection, and writes
+  drags plus runtime screen changes, retains one image renderer for the complete scenario, renders
+  every step through native DOM/Blitz/Vello without a Wayland connection, and writes
   correlated PNG, selector-layout JSON and a complete/partial typed manifest. The OBS runner serves
   the production `/overlay`, canvas iframe, WebSocket and editor from a create-only dedicated config
   on loopback without capture, recognition, Wayland or a score DB. The checked-in 1920x1080 scenario completes through
@@ -181,6 +182,9 @@ checkpoint; implementation history belongs in Git.
   equality is intentionally not an acceptance gate; actual Wayland composition/input delivery and
   rendering inside OBS remain live boundaries. A 1.25-scale headless run records 800x600 logical
   geometry and emits 1000x750 PNGs; invalid scenario dimensions are retained as `scenario_invalid`.
+  The checked-in native scenario also switches a RESULT canvas through three hidden screens and
+  back to RESULT on that same renderer, so image-resource loss across normal canvas visibility is
+  represented instead of being hidden by a fresh renderer per capture.
 
 - Schema-v2 defaults/rejection, screen filters, semantic-screen snapshot/live folding,
   suspension/disconnect grace and immediate known-screen replacement have focused development-host
@@ -201,6 +205,14 @@ checkpoint; implementation history belongs in Git.
   coredump. A live right-drag and confirmation on this host produced neither compositor animation
   nor missing canvas background; this is one target-host confirmation, not a general compositor
   compatibility claim.
+  A later target play session reproduced missing PNG widget backgrounds after semantic-screen canvas
+  switching. The same image-present, image-absent, image-present sequence now reproduces headlessly:
+  Vello 0.10 replaces its persistent image atlas on the image-free frame while retaining stale image
+  residency metadata, so the returning PNGs are not uploaded. Native paint now keeps an invisible
+  image patch in every frame to keep the atlas generation and residency metadata synchronized, while
+  hidden surfaces still stop repainting after their one transparent transition. The persistent-renderer
+  scenario retains all PNG backgrounds after the three hidden screens. Target installation and live
+  confirmation of this repair remain outstanding.
 
 - Overlay development-host verification covers all three skin DOMs, embedded PNG decode, fixed
   widget bounds and explicit motion time samples. A production native headless render confirms Japanese/Latin
@@ -218,8 +230,8 @@ checkpoint; implementation history belongs in Git.
   restrained lines/corner accents, with staggered moving highlights carrying the ambient motion.
   These checks do not establish live Wayland or OBS composition.
 - Repository checks and the complete workspace suite pass: 508 library,
-  325 binary, 128 corpus library, 5 corpus binary, 41 overlay, 4 handle, 4 overlay-UI, 0 overlay-web
-  and 13 score tests, plus doctests. The embedded-web overlay suite has 42 tests. The 99 offline OCR tests and
+  325 binary, 128 corpus library, 5 corpus binary, 49 overlay, 4 handle, 4 overlay-UI, 0 overlay-web
+  and 13 score tests, plus doctests. The embedded-web overlay integration test also passes. The 99 offline OCR tests and
   repository checks also pass. Public API and overlay state tests include score-store invalidation,
   RESULT readiness across withdrawal/re-resolution, fresh and same-session reconnect restoration,
   and completion publication after shutdown drain.

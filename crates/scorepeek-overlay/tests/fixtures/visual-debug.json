@@ -37,6 +37,13 @@
     { "action": "drag", "from": [19, 99], "to": [3, 83], "button": "left" },
     { "action": "click", "selector": ".native-panel-toggle" },
     { "action": "drag", "from": [500, 150], "to": [600, 250], "button": "right" },
-    { "action": "capture", "name": "final-editor" }
+    { "action": "capture", "name": "final-editor" },
+    { "action": "set_editing", "value": false },
+    { "action": "set_screen", "screen": "result" },
+    { "action": "set_screen", "screen": "play" },
+    { "action": "set_screen", "screen": "decide-transition" },
+    { "action": "set_screen", "screen": "music-select" },
+    { "action": "set_screen", "screen": "result" },
+    { "action": "capture", "name": "reshown-after-screen-cycle" }
   ]
 }
