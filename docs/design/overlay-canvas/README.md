@@ -59,3 +59,7 @@ mise run overlay:type:generate -- /tmp/scorepeek-type-atlas
 `examples/generate_type_atlas.rs` owns font styling, face reflection, groove and bevel lighting;
 `scorepeek-overlay-ui/src/typography.rs` owns semantic label roles, glyph order, geometry and shared
 native/browser composition. Preserve proportional label shaping when changing the generation font.
+
+Label boxes expose the atlas font baseline through their bottom margin, including the transparent
+area below the glyphs. Detail and history rows align text baselines; history headings remain centered.
+Keep the below-baseline metrics in `typography.rs` synchronized when changing the atlas fonts.

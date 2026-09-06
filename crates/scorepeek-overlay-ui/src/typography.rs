@@ -118,9 +118,12 @@ pub(crate) fn label(value: &str, skin: Skin, height: u32) -> Element {
     let width = f64::from(LABEL_WIDTH) * scale;
     let sheet_height = f64::from(LABELS.iter().map(|_| LABEL_HEIGHT).sum::<u32>()) * scale;
     let font = label_font(skin);
+    // Atlas line box below its baseline: (24 - 20 * (ascent - descent) / units_per_em) / 2.
+    // A clipped inline block uses its bottom margin edge as the baseline in both renderers.
+    let descent = scale * if skin == Skin::DjBlackbox { 6.16 } else { 6.2 };
     let material = skin.name();
-    rsx! { span { class: "material-label", style: "font-family:{font};font-size:{scale * 20.0}px;line-height:{height}px;height:{height}px",
+    rsx! { span { class: "material-label", style: "margin-bottom:-{descent}px;font-family:{font};font-size:{scale * 20.0}px;line-height:{height}px;height:{height}px",
         span { class: "label-value", "{value}" }
-        span { class: "label-art", aria_hidden: "true", style: "width:{width}px;height:{height}px;background-image:url('/skins/labels-{material}.png');background-size:{width}px {sheet_height}px;background-position:0 -{index * height}px" }
+        span { class: "label-art", aria_hidden: "true", style: "width:100%;height:{height}px;background-image:url('/skins/labels-{material}.png');background-size:{width}px {sheet_height}px;background-position:0 -{index * height}px" }
     } }
 }

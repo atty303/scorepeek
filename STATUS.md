@@ -225,7 +225,9 @@ checkpoint; implementation history belongs in Git.
   the bundle proceeds without that optional optimization.
 - The skin-specific typography and proportional label atlases have all-three-skin native image
   inspection and a complete 22-frame native PNG/layout/manifest scenario, including hidden-screen
-  transitions and editor resize/scroll/drag. The latest typography has not been visually verified in
+  transitions and editor resize/scroll/drag. Atlas labels align with adjacent ordinary text using
+  font baseline metrics; chart rails, detail rows and history rows have all-three-skin native inspection.
+  The latest typography has not been visually verified in
   the browser: Codex Browser initialization failed on a missing plugin service module.
 - ADR 0131's three rich skins have native PNG/layout/manifest inspection and 1920x1080 Codex Browser
   inspection through the production editor and canvas iframes. Native samples at 2.25 and 3.75 seconds

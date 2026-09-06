@@ -38,16 +38,16 @@
 .overlay-canvas [data-clear=full-combo]{color:#fff3a4;text-shadow:0 0 8px #ffcf4c,0 0 14px #bf76ff}
 .overlay-canvas [data-clear=ex-hard]{color:#fff2a0;text-shadow:0 0 8px #ffcb49}
 .overlay-canvas [data-clear=easy]{color:#b5ff9b}.overlay-canvas [data-clear=failed]{color:#ff7373}
-.overlay-canvas .detail-row{height:17px;line-height:17px;font-family:Oxanium,"Noto Sans JP",sans-serif;font-size:13px}
+.overlay-canvas .detail-row{align-items:baseline;height:17px;line-height:17px;font-family:Oxanium,"Noto Sans JP",sans-serif;font-size:13px}
 .overlay-canvas .detail-row b{font-weight:500;font-size:14px;letter-spacing:.16em}
 .overlay-canvas .detail-row.pgreat span{color:#eec6ec}.overlay-canvas .detail-row.great span{color:#58e6ff}.overlay-canvas .detail-row.good span{color:#b9ed35}.overlay-canvas .detail-row.bad span{color:#ffc94b}.overlay-canvas .detail-row.poor span{color:#ff624c}
 .overlay-canvas .detail-row.fast,.overlay-canvas .detail-row.options{height:22px;line-height:17px;padding-top:4px;margin-top:3px}
 .overlay-canvas .detail-row.options{font-size:11px}.overlay-canvas .detail-row.options b{font-size:12px}
 .overlay-canvas .history-content{padding:11px 18px}
-.overlay-canvas .history-row{height:22px;font-family:Oxanium,"Noto Sans JP",sans-serif;font-size:13px;grid-template-columns:1.7fr .85fr .8fr .6fr 1.2fr}
+.overlay-canvas .history-row{align-items:baseline;height:22px;line-height:22px;font-family:Oxanium,"Noto Sans JP",sans-serif;font-size:13px;grid-template-columns:1.7fr .85fr .8fr .6fr 1.2fr}
 .overlay-canvas .history-row>*+*{border-left:1px dashed var(--dim)}
 .overlay-canvas .history-row b{font-weight:500}
-.overlay-canvas .history-head{height:20px;font-size:10px}
+.overlay-canvas .history-head{align-items:center;height:20px;line-height:20px;font-size:10px}
 .overlay-canvas .history-row [data-clear]{color:var(--accent)}
 .overlay-canvas .graph-content{padding:var(--graph-padding-y) var(--graph-padding-x)}
 .overlay-canvas .plot{grid-template-columns:var(--score-axis) var(--plot-width) var(--miss-axis);height:var(--plot-height);margin-top:20px}
@@ -80,7 +80,7 @@
 .overlay-canvas[data-skin=dj-blackbox] .score-content{padding:18px 28px 14px}
 .overlay-canvas[data-skin=dj-blackbox] h2{height:21px}
 .overlay-canvas[data-skin=dj-blackbox] .history-content{padding:18px 28px 14px}
-.overlay-canvas[data-skin=dj-blackbox] .history-row{height:20px}
+.overlay-canvas[data-skin=dj-blackbox] .history-row{height:20px;line-height:20px}
 .overlay-canvas[data-skin=dj-blackbox] .history-head{height:17px}
 .overlay-canvas[data-skin=dj-blackbox] .graph-content{padding:18px var(--graph-padding-x) 14px}
 .overlay-canvas[data-skin=dj-blackbox] .plot{margin-top:18px}
@@ -96,7 +96,7 @@
 .overlay-canvas .metal-glyph{display:block;flex-shrink:0;background-repeat:no-repeat}
 .overlay-canvas[data-skin=result-aurora] .metal-type{transform:skewX(-9deg);transform-origin:center}
  .overlay-canvas .type-value{position:absolute;opacity:0;pointer-events:none}
-.overlay-canvas .material-label{display:inline-block;position:relative;vertical-align:middle;max-width:100%;overflow:hidden;white-space:nowrap;font-weight:600;letter-spacing:.04em;text-shadow:none;font-style:normal;padding-right:2px}
+.overlay-canvas .material-label{display:inline-block;position:relative;vertical-align:baseline;max-width:100%;overflow:hidden;white-space:nowrap;font-weight:600;letter-spacing:.04em;text-shadow:none;font-style:normal;padding-right:2px}
 .overlay-canvas .label-value{opacity:0;position:relative;white-space:nowrap}
 .overlay-canvas .label-art{display:block;position:absolute;left:0;top:0;background-repeat:no-repeat;pointer-events:none}
 .overlay-canvas .detail-row .material-label{color:inherit}
