@@ -1,4 +1,4 @@
-//! Chamfered panel geometry measured against the original design sheets.
+//! Image-backed panel materials and semantic chart/status fittings.
 use crate::{Skin, WidgetKind, WidgetLayout};
 use dioxus::prelude::*;
 
@@ -13,66 +13,100 @@ fn contour(width: f64, height: f64, inset: f64, cut: f64) -> String {
     )
 }
 
-pub fn render(widget: &WidgetLayout, skin: Skin) -> Element {
-    if skin == Skin::DjBlackbox {
-        return rsx! { div { class: "hardware-frame",
-            for edge in ["top", "bottom", "left", "right"] { div { class: "hardware-edge hardware-{edge}" } }
-            for corner in ["nw", "ne", "sw", "se"] { div { class: "hardware-corner hardware-{corner}" } }
-        } };
+// The artwork is a square source. Only the middle strips stretch: corners retain
+// their aspect ratio, and metal thickness is independent of the widget size.
+struct FrameMaterial {
+    image: &'static str,
+    corner_x: f64,
+    corner_y: f64,
+    scale: f64,
+}
+
+impl FrameMaterial {
+    fn for_skin(skin: Skin) -> Self {
+        match skin {
+            Skin::CyanSystem => Self {
+                image: "cyan-system-frame.png",
+                corner_x: 340.0,
+                corner_y: 200.0,
+                scale: 0.16,
+            },
+            Skin::ResultAurora => Self {
+                image: "result-aurora-frame.png",
+                corner_x: 160.0,
+                corner_y: 160.0,
+                scale: 0.24,
+            },
+            Skin::DjBlackbox => Self {
+                image: "dj-blackbox-frame.png",
+                corner_x: 260.0,
+                corner_y: 120.0,
+                scale: 0.22,
+            },
+        }
     }
+}
+
+pub fn render(widget: &WidgetLayout, skin: Skin) -> Element {
+    let material = FrameMaterial::for_skin(skin);
     let width = f64::from(widget.width);
     let height = f64::from(widget.height);
-    let outer = contour(width, height, 1.5, 10.0);
-    let inner = contour(width, height, 10.0, 9.0);
-    let band = format!("{outer} {inner}");
-    let fine = contour(width, height, 5.0, 10.0);
-    let (edge, trim, material) = match skin {
-        Skin::CyanSystem => ("#0de0f6", "#117b8e", "#04141c"),
-        Skin::ResultAurora => ("#d2cadb", "#bc78e5", "#393440"),
-        Skin::DjBlackbox => ("#898d88", "#171b18", "#303430"),
-    };
-    let gradient_id = format!("panel-metal-{}", widget.id);
-    let fill = if skin == Skin::CyanSystem {
-        material.to_owned()
-    } else {
-        format!("url(#{gradient_id})")
-    };
-    let divider = format!("M{} 8l-40 {}", width * 0.45, height - 16.0);
-    let accents = format!(
-        "M3 18V12L13 2H28 M{} 2h21l10 10v6 M3 {}v6l10 10h15 M{} {}h21l10 -10v-6",
-        width - 34.0,
-        height - 19.0,
-        width - 34.0,
-        height - 3.0
-    );
-    // Explicit attributes also paint in Blitz's standalone SVG image renderer.
-    rsx! { svg { class: "panel-frame", width: "{width}", height: "{height}", view_box: "0 0 {width} {height}",
-        defs { linearGradient { id: "{gradient_id}", x1: "0", y1: "0", x2: "0", y2: "1",
-            stop { offset: "0", stop_color: "#e0dce2" }
-            stop { offset: "0.04", stop_color: material }
-            stop { offset: "0.96", stop_color: "#181b1b" }
-            stop { offset: "1", stop_color: "#767a77" }
-        } }
-        path { d: band, fill: fill, fill_rule: "evenodd", stroke: edge, stroke_width: "1" }
-        path { d: fine, fill: "none", stroke: trim, stroke_width: "0.75" }
-        if skin != Skin::CyanSystem {
-            path { d: contour(width,height,3.0,10.0), fill: "none", stroke: "#111318", stroke_width: "1" }
-            path { d: contour(width,height,7.5,9.0), fill: "none", stroke: "#85828a", stroke_width: "0.7" }
+    let scale = material
+        .scale
+        .min(width / (2.0 * material.corner_x))
+        .min(height / (2.0 * material.corner_y));
+    let source_x = [0.0, material.corner_x, 1254.0 - material.corner_x, 1254.0];
+    let source_y = [0.0, material.corner_y, 1254.0 - material.corner_y, 1254.0];
+    let target_x = [
+        0.0,
+        material.corner_x * scale,
+        width - material.corner_x * scale,
+        width,
+    ];
+    let target_y = [
+        0.0,
+        material.corner_y * scale,
+        height - material.corner_y * scale,
+        height,
+    ];
+    let mut pieces = Vec::with_capacity(9);
+    for row in 0..3 {
+        for column in 0..3 {
+            let w = target_x[column + 1] - target_x[column];
+            let h = target_y[row + 1] - target_y[row];
+            if w <= 0.0 || h <= 0.0 {
+                continue;
+            }
+            let sx = w / (source_x[column + 1] - source_x[column]);
+            let sy = h / (source_y[row + 1] - source_y[row]);
+            let style = format!(
+                "left:{}px;top:{}px;width:{w}px;height:{h}px;background-image:url('/skins/{}');background-size:{}px {}px;background-position:{}px {}px;",
+                target_x[column],
+                target_y[row],
+                material.image,
+                1254.0 * sx,
+                1254.0 * sy,
+                -source_x[column] * sx,
+                -source_y[row] * sy
+            );
+            pieces.push(rsx! { div { class: "material-slice", style } });
         }
-        if widget.kind == WidgetKind::Score {
-            path { d: format!("M{} 10l-5 5v{}l5 5",20.0+(width-40.0)*0.54,height-30.0), fill: "none", stroke: edge, stroke_width: "0.7" }
-        }
-        if skin != Skin::DjBlackbox {
-            path { d: accents, fill: "none", stroke: edge, stroke_width: "2.5" }
+    }
+    let edge = match skin {
+        Skin::CyanSystem => "#13dcef",
+        Skin::ResultAurora => "#c2a660",
+        Skin::DjBlackbox => "#687067",
+    };
+    rsx! { div { class: "material-frame", {pieces.into_iter()} }
+        if skin == Skin::ResultAurora && widget.kind == WidgetKind::Selection {
+            div { class: "material-illumination" }
         }
         if widget.kind == WidgetKind::Status {
-            path { d: divider, fill: "none", stroke: edge, stroke_width: "1" }
+            svg { class: "panel-frame", width: "{width}", height: "{height}", view_box: "0 0 {width} {height}",
+                path { d: format!("M{} 12l-30 {}h-6l30 -{}",width * 0.43,height-24.0,height-24.0), fill: "none", stroke: edge, stroke_width: "0.7" }
+            }
         }
-        if skin == Skin::ResultAurora {
-            path { d: contour(width, height, 9.5, 7.0), fill: "none", stroke: "#b69b60", stroke_width: "0.6" }
-        }
-
-    } }
+    }
 }
 
 pub fn chart_rail(width: u32, skin: Skin) -> Element {

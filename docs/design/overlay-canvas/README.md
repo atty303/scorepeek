@@ -15,3 +15,22 @@ The shared editor sample uses NEON CIRCUIT, SP HYPER and the sheet's BEST/DETAIL
 comparison does not depend on different text lengths. History dates and graph values remain synthetic.
 Compare panels at the same width against these sheets; verify typography, badge/rail/lamp shape,
 material edges and graph axes in addition to the five-widget arrangement.
+
+## Material reference
+
+The initial imagegen concepts in Codex task `01a06cdb-d1c0-7621-8759-0cf6b8ed9e18`
+are the reference for material detail. The five-widget sheets above retain authority over
+information structure; their flatter rendering does not replace the initial material treatment.
+
+- CYAN SYSTEM: layered luminous rails, dark geometric glass at edges, silver-white type.
+- RESULT AURORA: crystalline silver bevels, purple corner joints, a fine gold inner rim,
+  gold score, and purple/blue ribbons behind the song header only.
+- DJ BLACKBOX: charcoal anodized metal, recessed faceplates, engraved grooves,
+  corner fasteners and lime indicator bars.
+
+The existing original PNGs under `crates/scorepeek-overlay-ui/assets/skins/` retain these
+materials. `frame.rs` maps each into nine regions: fixed-aspect corners, independently
+stretched edge middles and a central surface. It preserves edge thickness when widgets resize;
+very small widgets scale the corners together. Raster art owns material detail, while shared
+DOM/SVG retains live text, chart badges and signal semantics. Both native and browser use
+this composition; neither uses CSS border-image or replaces the material with outline paths.

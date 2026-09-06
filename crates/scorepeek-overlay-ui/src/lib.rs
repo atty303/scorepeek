@@ -263,7 +263,6 @@ fn lamp(state: LampState, label: Option<&str>, class: &str, skin: Skin) -> Eleme
 }
 fn chrome(widget: &WidgetLayout, skin: Skin) -> Element {
     rsx! { div { class: "skin-frame", aria_hidden: "true",
-        div { class: "skin-surface" }
         {frame::render(widget, skin)}
         div { class: "skin-energy" }
         div { class: "skin-glint" }

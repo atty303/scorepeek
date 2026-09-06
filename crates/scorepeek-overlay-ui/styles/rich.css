@@ -1,10 +1,8 @@
-/* Original design proportions: dark panels, fine engraved rules and chamfered frames. */
+/* Material detail follows the imagegen concepts; content follows the widget design sheets. */
 .overlay-canvas{font-family:Oxanium,"Noto Sans JP",sans-serif}
 .overlay-canvas .widget-slot,.overlay-canvas[data-skin] .widget{overflow:visible;clip-path:none;filter:none}
 .overlay-canvas .widget{background:transparent;border:0}
 .overlay-canvas .skin-frame{z-index:0;overflow:visible}
-.overlay-canvas .skin-surface{inset:8px;background:var(--surface);border:0}
-.overlay-canvas .skin-corners,.overlay-canvas .skin-hardware{display:none}
 .overlay-canvas .panel-frame{position:absolute;inset:0;width:100%;height:100%}
 .overlay-canvas .skin-energy{inset:8px;background:var(--energy-image) center/cover no-repeat;pointer-events:none}
 .overlay-canvas .skin-glint{top:3px;bottom:auto;width:8%;height:1px;background:linear-gradient(90deg,transparent,var(--accent),#fff,transparent);opacity:.65}
@@ -59,11 +57,9 @@
 .overlay-canvas .graph-dot{width:6px;height:6px;margin:-3px;box-shadow:none}
 .overlay-canvas[data-skin=cyan-system]{--surface:linear-gradient(110deg,#02070c,#000306);--dim:#087489aa}
 .overlay-canvas[data-skin=result-aurora]{--surface:linear-gradient(120deg,#10091b,#030208 65%,#160828);--dim:#8c699899}
-.overlay-canvas[data-skin=result-aurora] .skin-surface:after{display:block;inset:0;background:url("/skins/result-aurora-header.png") right top/900px 450px no-repeat;opacity:.4;mix-blend-mode:normal}
 .overlay-canvas[data-skin=result-aurora] .song-copy p{font-style:italic}
 .overlay-canvas[data-skin=dj-blackbox]{--surface:linear-gradient(115deg,#191b19,#101210 65%,#1b1d1b);--dim:#686e6699}
 
-.overlay-canvas[data-skin=dj-blackbox] .skin-surface{background:#151715 url("/skins/dj-blackbox-frame.png") center/1200px 1200px}
 
 .overlay-canvas .detail-section h2{margin-left:-16px;padding-left:16px}
 .overlay-canvas .detail-row{padding-right:24px}
@@ -76,24 +72,12 @@
 .overlay-canvas .graph-legend .score-key,.overlay-canvas .graph-legend .miss-key{color:var(--text)}
 .overlay-canvas .graph-legend .score-key:before{color:var(--graph-score)}
 .overlay-canvas .graph-legend .miss-key:before{color:var(--graph-miss)}
-.overlay-canvas[data-skin=result-aurora] .skin-energy{background:none}
+.overlay-canvas[data-skin=result-aurora] .skin-energy{display:none}
+
 .overlay-canvas[data-skin=dj-blackbox] .song-copy h1{color:#dddeda;text-shadow:0 1px #fff,0 3px #050605}
 
-.overlay-canvas .hardware-corner{position:absolute;width:28px;height:28px;background-image:url('/skins/dj-blackbox-frame.png');background-size:280px 280px;z-index:1}
-.overlay-canvas .hardware-nw{left:0;top:0;background-position:left top}
-.overlay-canvas .hardware-ne{left:auto;right:0;top:0;background-position:right top}
-.overlay-canvas .hardware-sw{left:0;top:auto;bottom:0;background-position:left bottom}
-.overlay-canvas .hardware-se{left:auto;right:0;top:auto;bottom:0;background-position:right bottom}
-
-.overlay-canvas .hardware-frame{position:absolute;inset:0}
-.overlay-canvas .hardware-edge{position:absolute;background-image:url('/skins/dj-blackbox-frame.png');background-repeat:no-repeat}
-.overlay-canvas .hardware-top,.overlay-canvas .hardware-bottom{left:0;right:0;height:17px;background-size:100% 280px}
-.overlay-canvas .hardware-top{top:0;background-position:center top}
-.overlay-canvas .hardware-bottom{bottom:0;background-position:center bottom}
-.overlay-canvas .hardware-left,.overlay-canvas .hardware-right{top:0;bottom:0;width:17px;background-size:280px 100%}
-.overlay-canvas .hardware-left{left:0;background-position:left center}
-.overlay-canvas .hardware-right{right:0;background-position:right center}
-
+.overlay-canvas .material-frame{position:absolute;inset:0;pointer-events:none}
+.overlay-canvas .material-slice{position:absolute;background-repeat:no-repeat}
 .overlay-canvas[data-skin=dj-blackbox] .score-content{padding:18px 28px 14px}
 .overlay-canvas[data-skin=dj-blackbox] h2{height:21px}
 .overlay-canvas[data-skin=dj-blackbox] .history-content{padding:18px 28px 14px}
@@ -103,3 +87,10 @@
 .overlay-canvas[data-skin=dj-blackbox] .plot{margin-top:18px}
 .overlay-canvas[data-skin=dj-blackbox] .graph-legend{top:41px}
 .overlay-canvas[data-skin=dj-blackbox] .time-axis{height:18px;line-height:18px}
+.overlay-canvas .material-illumination{position:absolute;inset:12px;background:url("/skins/result-aurora-header.png") center/100% 100% no-repeat;opacity:.7}
+.overlay-canvas[data-skin=result-aurora] .score-main strong{color:#f4d174;text-shadow:-1px -1px #fff3c5,1px 1px #80521d}
+.overlay-canvas[data-skin=result-aurora] .number-depth{color:#80521d}
+.overlay-canvas[data-skin=result-aurora] .best-side .dj-level{color:#f4d174;font-style:italic;text-shadow:0 1px #82521c}
+.overlay-canvas[data-skin=result-aurora] .clear-value{color:#f5d785;font-style:italic;letter-spacing:.08em}
+.overlay-canvas[data-skin=dj-blackbox] .detail-row{height:16px;line-height:16px}
+.overlay-canvas[data-skin=dj-blackbox] .detail-row.fast,.overlay-canvas[data-skin=dj-blackbox] .detail-row.options{height:21px}

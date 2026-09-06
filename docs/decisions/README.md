@@ -400,3 +400,6 @@ requirements after their named superseding decisions.
 
 - [ADR 0133: Restore overlay design fidelity](0133-restore-overlay-design-fidelity.md)
   restores the original design sheets as the visual reference while preserving semantic motion.
+
+- [ADR 0134: Preserve overlay frame materials](0134-preserve-overlay-frame-materials.md)
+  restores initial imagegen material detail with shared image-backed frames while retaining the five-widget information architecture.

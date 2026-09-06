@@ -43,8 +43,8 @@ checkpoint; implementation history belongs in Git.
 - ADR 0130 makes the status widget RESULT lamp a provisional-readiness signal. A new RESULT is
   unlit, resolved is green, withdrawn or exit without resolution is red, and the outcome remains
   visible until the next RESULT or session end. Persistence state no longer drives the lamp.
-- CYAN SYSTEM, RESULT AURORA and DJ BLACKBOX are canvas-level skins using shared SVG contours, Blackbox material-image borders
-  and embedded surface artwork. Oxanium and OFL 1.1 are embedded alongside Japanese system-font
+- CYAN SYSTEM, RESULT AURORA and DJ BLACKBOX are canvas-level skins using shared image-backed frames
+  with fixed-aspect corners (ADR 0134), SVG chart/status fittings and embedded surface artwork. Oxanium and OFL 1.1 are embedded alongside Japanese system-font
   fallbacks. ADR 0131 adds embedded Orbitron/Rajdhani, new transparent
   energy/circuit artwork and semantic clear/difficulty/rank treatments. Shared motion tracks drive
   native Blitz styles and browser JS continuously while visible, without changing actual values.
