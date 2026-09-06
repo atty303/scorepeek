@@ -337,7 +337,7 @@ fn render_widget(
         WidgetKind::Selection => {
             rsx! { section { class: "widget selection-widget", {chrome(widget, skin)} div { class: "widget-content selection-content",
                 {lamp(if state.history.recorded { LampState::Active } else { LampState::Inactive }, None, "recorded-lamp", skin)}
-                div { class: "song-copy", h1 { title: title, {typography::sheen(title, 35, [245, 249, 255])} } p { title: artist, "{artist}" } }
+                div { class: "song-copy", h1 { title: title, "{title}" } p { title: artist, "{artist}" } }
                 div { class: "chart-rail", {frame::chart_rail(widget.width.saturating_sub(56), skin)} span { class: "play-type", "{play_type}" } span { class: "difficulty", "data-difficulty": difficulty, "{difficulty}" } span { span { class: "field-label", "LV " } "{level}" } span { span { class: "field-label", "NOTES " } "{notes}" } }
             } } }
         }

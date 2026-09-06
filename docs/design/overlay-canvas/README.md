@@ -53,7 +53,8 @@ mise run overlay:type:generate -- /tmp/scorepeek-type-atlas
 
 `examples/generate_type_atlas.rs` owns font styling, gradient stops and bevel lighting;
 `scorepeek-overlay-ui/src/typography.rs` owns glyph order, cell geometry and runtime composition.
-Song titles and clear labels retain normal font shaping and use identically positioned text clipped
-into one-pixel color bands. This supports arbitrary Japanese system-font text in native and browser
-without CSS background-clip:text. Small detail and history text stays untextured for readability.
+Clear labels retain normal font shaping and use identically positioned text clipped into one-pixel
+color bands in native and browser without CSS background-clip:text. Mixed-language song titles use
+ordinary text with Japanese system-font fallback. Small detail and history text stays untextured
+for readability.
 Clear-state colors and existing opacity motion remain semantic; numeric values never count up.
