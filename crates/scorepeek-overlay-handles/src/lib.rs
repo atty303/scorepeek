@@ -372,12 +372,16 @@ impl Shell {
         }
     }
     pub fn set_geometry(&mut self, x: i32, y: i32, width: u32, height: u32) {
-        self.state.width = width.max(32);
-        self.state.height = height.max(32);
+        let width = width.max(32);
+        let height = height.max(32);
+        if self.position == [x, y] && self.state.width == width && self.state.height == height {
+            return;
+        }
+        self.position = [x, y];
+        self.state.width = width;
+        self.state.height = height;
         self.owner.layer.set_margin(y, 0, 0, x);
-        self.owner
-            .layer
-            .set_size(self.state.width, self.state.height);
+        self.owner.layer.set_size(width, height);
         self.owner.layer.commit();
     }
 

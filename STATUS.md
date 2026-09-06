@@ -189,9 +189,14 @@ checkpoint; implementation history belongs in Git.
   native output handoff, compositor cursor behavior and real OBS Interaction remain unverified.
   On the current three-output Wayland host, editor startup with four configured canvases and
   editor-only peer surfaces now keeps Vulkan context, adapter, device and surface initialization
-  serialized inside the single backend child process. The child remained live with all surface
-  workers present, stopped cleanly, and produced no new coredump; editor interactions remain a
-  separate live boundary.
+  serialized inside the single backend child process. Renderer resume, resize, paint, suspend and
+  destruction are serialized across those surface workers. Each output keeps one deterministic
+  editor host surface for the lifetime of the workspace instead of transferring the editor when
+  canvas selection changes, and unchanged geometry does not issue another layer-surface commit.
+  The child remained live with all surface workers present, stopped cleanly, and produced no new
+  coredump. A live right-drag and confirmation on this host produced neither compositor animation
+  nor missing canvas background; this is one target-host confirmation, not a general compositor
+  compatibility claim.
 
 - Overlay development-host verification covers all three skin DOMs, embedded PNG decode, fixed
   widget bounds and explicit motion time samples. A production native headless render confirms Japanese/Latin
@@ -209,8 +214,8 @@ checkpoint; implementation history belongs in Git.
   restrained lines/corner accents, with staggered moving highlights carrying the ambient motion.
   These checks do not establish live Wayland or OBS composition.
 - Repository checks and the complete workspace suite pass: 508 library,
-  325 binary, 128 corpus library, 5 corpus binary, 31 overlay, 3 handle, 4 overlay-UI, 0 overlay-web
-  and 13 score tests, plus doctests. The embedded-web overlay suite has 32 tests. The 99 offline OCR tests and
+  325 binary, 128 corpus library, 5 corpus binary, 37 overlay, 3 handle, 4 overlay-UI, 0 overlay-web
+  and 13 score tests, plus doctests. The embedded-web overlay suite has 38 tests. The 99 offline OCR tests and
   repository checks also pass. Public API and overlay state tests include score-store invalidation,
   RESULT readiness across withdrawal/re-resolution, fresh and same-session reconnect restoration,
   and completion publication after shutdown drain.

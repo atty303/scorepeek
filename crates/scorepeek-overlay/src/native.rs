@@ -26,12 +26,12 @@ type NativeUpdate = Rc<RefCell<Option<Arc<dyn Fn() + Send + Sync>>>>;
 struct RendererInitCoordinator(std::sync::Mutex<()>);
 
 impl RendererInitCoordinator {
-    fn initialize<T>(&self, initialize: impl FnOnce() -> T) -> T {
+    fn exclusive<T>(&self, operation: impl FnOnce() -> T) -> T {
         let _guard = self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        initialize()
+        operation()
     }
 }
 
@@ -51,6 +51,10 @@ fn editor_panel_width(output_width: Option<u32>) -> u32 {
         Some(width) => (width / 5).clamp(360, 480),
         None => 400,
     }
+}
+
+fn editor_surface_host(surfaces: &std::collections::BTreeSet<String>) -> Option<&str> {
+    surfaces.first().map(String::as_str)
 }
 
 const EDITOR_SCREENS: [scorepeek_overlay_ui::ScreenKind; 5] = [
@@ -728,7 +732,7 @@ fn run_canvas(
         } else {
             "integer_scale_fallback"
         });
-    let renderer = renderer_init.initialize(|| {
+    let renderer = renderer_init.exclusive(|| {
         VelloWindowRenderer::with_options(
             VelloRendererOptions::default()
                 .base_color(peniko::Color::TRANSPARENT)
@@ -763,14 +767,18 @@ fn run_canvas(
         suppressed,
     );
     let result = app.run();
-    app.renderer.suspend();
-    let mut report = report.borrow_mut();
-    report.paint_count = app.paint_count;
-    report.render_calls = app.render_calls;
-    report.status = if result.is_ok() { "complete" } else { "failed" };
-    report.failure = result.as_ref().err().cloned();
-    report.operations.push("shutdown");
-    crate::diagnostics::emit("native_summary", &*report);
+    let renderer_coordinator = Arc::clone(&app.renderer_init);
+    renderer_coordinator.exclusive(|| app.renderer.suspend());
+    {
+        let mut report = report.borrow_mut();
+        report.paint_count = app.paint_count;
+        report.render_calls = app.render_calls;
+        report.status = if result.is_ok() { "complete" } else { "failed" };
+        report.failure = result.as_ref().err().cloned();
+        report.operations.push("shutdown");
+        crate::diagnostics::emit("native_summary", &*report);
+    }
+    renderer_coordinator.exclusive(|| drop(app));
     result
 }
 
@@ -1033,15 +1041,10 @@ impl App {
                 .load(std::sync::atomic::Ordering::Acquire)
         {
             self.sync_workspace_projection();
-            let preview_target = self
-                .preview
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
             let should_edit = self
                 .workspace_open
                 .load(std::sync::atomic::Ordering::Acquire)
-                && self.is_editor_host(preview_target.as_deref());
+                && self.is_editor_host();
             if should_edit && !self.editing.get() {
                 self.set_editing(true);
                 self.sync_workspace_projection();
@@ -1257,20 +1260,13 @@ impl App {
         settings.height = presentation.height;
     }
 
-    fn is_editor_host(&self, selected: Option<&str>) -> bool {
+    fn is_editor_host(&self) -> bool {
         let key = self.surface_output.clone().unwrap_or_default();
         let workspace = self
             .workspace_ui
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let surfaces = workspace.surfaces.get(&key);
-        let selected_is_local = surfaces
-            .is_some_and(|surfaces| selected.is_some_and(|selected| surfaces.contains(selected)));
-        let host = if selected_is_local {
-            selected
-        } else {
-            surfaces.and_then(|surfaces| surfaces.first().map(String::as_str))
-        };
+        let host = workspace.surfaces.get(&key).and_then(editor_surface_host);
         host == Some(self.surface_canvas.id.as_str())
     }
 
@@ -2339,12 +2335,14 @@ impl App {
     ) -> Result<(), String> {
         let [width, height] = physical;
         self.surface_logical = logical;
-        {
+        let physical_changed = {
             let mut report = self.report.borrow_mut();
+            let changed = report.physical_size != Some(physical);
             report.logical_size = Some(logical);
             report.physical_size = Some(physical);
             report.scale_120 = scale_120;
-        }
+            changed
+        };
         self.document.inner.borrow_mut().set_viewport(Viewport::new(
             width,
             height,
@@ -2352,20 +2350,23 @@ impl App {
             ColorScheme::Dark,
         ));
         if self.renderer.is_active() {
-            self.renderer.set_size(width, height);
+            if physical_changed {
+                let renderer_coordinator = Arc::clone(&self.renderer_init);
+                renderer_coordinator.exclusive(|| self.renderer.set_size(width, height));
+            }
         } else {
-            let renderer_init = Arc::clone(&self.renderer_init);
-            renderer_init.initialize(|| {
+            let renderer_coordinator = Arc::clone(&self.renderer_init);
+            let info = renderer_coordinator.exclusive(|| {
                 self.renderer
                     .resume(self.shell.handles(), width, height, || {});
-                if self.renderer.complete_resume() {
-                    Ok(())
-                } else {
-                    Err("gpu_adapter".to_owned())
+                if !self.renderer.complete_resume() {
+                    return Err("gpu_adapter".to_owned());
                 }
+                self.renderer
+                    .current_device_handle()
+                    .map(|device| device.adapter.get_info())
+                    .ok_or_else(|| "gpu_adapter".to_owned())
             })?;
-            let device = self.renderer.current_device_handle().ok_or("gpu_adapter")?;
-            let info = device.adapter.get_info();
             let mut report = self.report.borrow_mut();
             report.gpu_backend = Some(format!("{:?}", info.backend));
             report.gpu_adapter = Some(info.name);
@@ -2379,6 +2380,11 @@ impl App {
         self.paint()
     }
     fn paint(&mut self) -> Result<(), String> {
+        let renderer_coordinator = Arc::clone(&self.renderer_init);
+        renderer_coordinator.exclusive(|| self.paint_exclusive())
+    }
+
+    fn paint_exclusive(&mut self) -> Result<(), String> {
         if !self.renderer.is_active() {
             return Err("native renderer inactive".into());
         }
@@ -2387,9 +2393,7 @@ impl App {
         if self.visible.get() {
             apply_motion(&mut inner, seconds);
         }
-        inner.resolve(seconds);
-        // Embedded images complete synchronously during resolve; ingest them before painting.
-        inner.handle_messages();
+        resolve_with_loaded_resources(&mut inner, seconds);
         self.animating = self.visible.get();
         if self.animating {
             self.shell.request_frame();
@@ -2538,6 +2542,14 @@ pub fn apply_motion(document: &mut blitz_dom::BaseDocument, seconds: f64) {
             }
         }
     }
+}
+
+fn resolve_with_loaded_resources(document: &mut blitz_dom::BaseDocument, seconds: f64) {
+    document.resolve(seconds);
+    // Embedded images complete synchronously during resolve. Ingest their messages, then
+    // resolve again so their layers are available to the current paint.
+    document.handle_messages();
+    document.resolve(seconds);
 }
 
 /// Registers embedded artwork and the Latin font, preserving Japanese system fallbacks.
@@ -2814,8 +2826,7 @@ impl VisualDebugSession {
         ));
         inner.resolve(0.0);
         apply_motion(&mut inner, 1.0);
-        inner.resolve(1.0);
-        inner.handle_messages();
+        resolve_with_loaded_resources(&mut inner, 1.0);
     }
 
     fn load_canvas(&self, canvas: scorepeek_overlay_ui::CanvasPresentation) {
@@ -3215,8 +3226,7 @@ pub fn run_visual_debug(
                     }
                     let mut inner = session.document.inner.borrow_mut();
                     apply_motion(&mut inner, *seconds);
-                    inner.resolve(*seconds);
-                    inner.handle_messages();
+                    resolve_with_loaded_resources(&mut inner, *seconds);
                     format!("motion-{seconds}")
                 }
                 VisualDebugAction::SetEditing { value } => {
@@ -3326,7 +3336,7 @@ mod skin_tests {
     use super::*;
 
     #[test]
-    fn renderer_context_initialization_is_serialized_across_surfaces() {
+    fn renderer_operations_are_serialized_across_surfaces() {
         use std::sync::{
             Barrier,
             atomic::{AtomicUsize, Ordering},
@@ -3344,7 +3354,7 @@ mod skin_tests {
             let maximum = Arc::clone(&maximum);
             workers.push(std::thread::spawn(move || {
                 barrier.wait();
-                coordinator.initialize(|| {
+                coordinator.exclusive(|| {
                     let current = active.fetch_add(1, Ordering::SeqCst) + 1;
                     maximum.fetch_max(current, Ordering::SeqCst);
                     std::thread::sleep(Duration::from_millis(25));
@@ -3365,6 +3375,14 @@ mod skin_tests {
         assert!(!release_backend_on_drop(true, true));
         assert!(release_backend_on_drop(true, false));
         assert!(!release_backend_on_drop(false, false));
+    }
+
+    #[test]
+    fn canvas_selection_keeps_a_stable_editor_surface() {
+        let surfaces =
+            std::collections::BTreeSet::from(["canvas-b".to_owned(), "canvas-a".to_owned()]);
+
+        assert_eq!(editor_surface_host(&surfaces), Some("canvas-a"));
     }
 
     #[test]
@@ -3586,8 +3604,7 @@ mod skin_tests {
         inner.set_viewport(Viewport::new(560, 72, 1.0, ColorScheme::Dark));
         inner.resolve(0.0);
         apply_motion(&mut inner, 1.0);
-        inner.resolve(1.0);
-        inner.handle_messages();
+        resolve_with_loaded_resources(&mut inner, 1.0);
 
         for selector in [".canvas-content", ".overlay-canvas", ".status-widget"] {
             let id = inner.query_selector(selector).unwrap().unwrap();
@@ -3699,8 +3716,7 @@ mod skin_tests {
         inner.set_viewport(Viewport::new(1920, 1080, 1.0, ColorScheme::Dark));
         inner.resolve(0.0);
         apply_motion(&mut inner, 1.0);
-        inner.resolve(1.0);
-        inner.handle_messages();
+        resolve_with_loaded_resources(&mut inner, 1.0);
 
         let panel = inner
             .get_client_bounding_rect(
