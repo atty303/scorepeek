@@ -45,6 +45,9 @@ checkpoint; implementation history belongs in Git.
 - ADR 0130 makes the status widget RESULT lamp a provisional-readiness signal. A new RESULT is
   unlit, resolved is green, withdrawn or exit without resolution is red, and the outcome remains
   visible until the next RESULT or session end. Persistence state no longer drives the lamp.
+- ADR 0136 makes the native Wayland shell select the C client backend and dynamic loading
+  explicitly. Building no longer requires host Wayland pkg-config metadata, development headers or
+  an unversioned linker name; `libwayland-client.so.0` remains a live-runtime host boundary.
 - CYAN SYSTEM, RESULT AURORA and DJ BLACKBOX are canvas-level skins using shared image-backed frames
   with fixed-aspect corners (ADR 0134), SVG chart/status fittings and embedded surface artwork. Oxanium and OFL 1.1 are embedded alongside Japanese system-font
   fallbacks. ADR 0131 adds embedded Orbitron/Rajdhani, new transparent
@@ -155,6 +158,12 @@ checkpoint; implementation history belongs in Git.
   code/model/layout binding and non-interfering recording failure status.
 
 ## Verification
+
+- The Wayland shell passes its standalone locked build, link and test gate through the repository pkg-config
+  boundary, which exposes only the pinned PipeWire SDK. The same check passes from an empty Cargo
+  target directory and a clean `cargo check --locked -p scorepeek` combines it with the pinned
+  PipeWire/native build inputs. Neither check uses feature unification from another workspace member
+  or a host `wayland-client.pc`.
 
 - Overlay visual debugging now has two reproducible development-host entries. The native scenario
   runner keeps one Dioxus editor workspace across selector clicks, Blitz scrolls and logical-pixel

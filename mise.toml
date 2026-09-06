@@ -92,6 +92,10 @@ cargo test --locked -p scorepeek-overlay --features embedded-web --lib
 exec cargo test --locked -p scorepeek --features embedded-web --test overlay
 '''
 
+[tasks."overlay:wayland:build:check"]
+description = "Build and test the standalone Wayland shell without host development metadata"
+run = "cargo test --locked -p scorepeek-overlay-handles --lib"
+
 [tasks."overlay:skin:render"]
 description = "Render a skin preview JSON to a create-only PAM using native DOM/Vello (no Wayland or DB)"
 run = 'cargo run --locked -p scorepeek-overlay --example render_skin -- "$@"'
@@ -140,6 +144,7 @@ run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 mise run native:verify
+mise run overlay:wayland:build:check
 mise run overlay:web:check
 mise run check README.md
 mise run check
