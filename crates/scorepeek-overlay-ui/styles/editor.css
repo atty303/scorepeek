@@ -3,7 +3,7 @@
 .editing .widget-slot.selected{outline:2px solid #fff;box-shadow:none}
 .resize-handle{display:none}
 .editing .widget-slot:hover .resize-handle,.editing .widget-slot.selected .resize-handle{display:block;position:absolute;width:10px;height:10px;border:1px solid #fff;background:#101722;box-shadow:none;z-index:4}
-.resize-handle.nw{left:-6px;top:-6px}.resize-handle.ne{right:-6px;top:-6px}.resize-handle.sw{left:-6px;bottom:-6px}.resize-handle.se{right:-6px;bottom:-6px}
+.resize-handle.nw{left:0;top:0}.resize-handle.ne{right:0;top:0}.resize-handle.sw{left:0;bottom:0}.resize-handle.se{right:0;bottom:0}
 .editor-preview-canvas{position:absolute!important;overflow:hidden;outline:1px solid rgba(93,232,255,.38);background:rgba(2,7,14,.18)}
 .editor-preview-canvas.preview-only{outline-color:rgba(120,142,160,.3)}
 .editor-preview-canvas.selected{outline:2px solid #fff;box-shadow:none}

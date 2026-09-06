@@ -612,12 +612,22 @@ fn direct_manipulation_at(
     selected_widget: Option<&str>,
     point: [f64; 2],
 ) -> Option<DirectManipulationHit> {
-    let widget_hit = widget_interaction_at(widgets, point);
-    if let Some((widget, Some(corner))) = &widget_hit
-        && selected_widget == Some(widget.id.as_str())
+    if let Some(selected) = selected_widget
+        && let Some(widget) = widgets.iter().find(|widget| widget.id == selected)
+        && point[0] >= f64::from(widget.x)
+        && point[1] >= f64::from(widget.y)
+        && point[0] < f64::from(widget.x) + f64::from(widget.width)
+        && point[1] < f64::from(widget.y) + f64::from(widget.height)
+        && let Some(corner) = resize_corner_at(
+            widget.width,
+            widget.height,
+            point[0] - f64::from(widget.x),
+            point[1] - f64::from(widget.y),
+        )
     {
-        return Some(DirectManipulationHit::Widget(widget.clone(), Some(*corner)));
+        return Some(DirectManipulationHit::Widget(widget.clone(), Some(corner)));
     }
+    let widget_hit = widget_interaction_at(widgets, point);
     if let Some(corner) = resize_corner_at(canvas[0], canvas[1], point[0], point[1]) {
         return Some(DirectManipulationHit::Canvas(corner));
     }
@@ -3133,36 +3143,47 @@ impl VisualDebugSession {
                 );
             }
             VisualDebugButton::Left => {
-                let settings = self.settings.borrow();
+                let settings = self.settings.borrow().clone();
                 let local = [
                     from[0] - f64::from(settings.x),
                     from[1] - f64::from(settings.y),
                 ];
+                let hit = direct_manipulation_at(
+                    [settings.width, settings.height],
+                    &self.widgets.borrow(),
+                    self.selected.borrow().as_deref(),
+                    local,
+                );
+                let Some(DirectManipulationHit::Widget(original, corner)) = hit else {
+                    return Err("left drag did not start on a widget".to_owned());
+                };
                 let mut widgets = self.widgets.borrow_mut();
                 let widget = widgets
                     .iter_mut()
-                    .rfind(|widget| {
-                        local[0] >= f64::from(widget.x)
-                            && local[1] >= f64::from(widget.y)
-                            && local[0]
-                                < f64::from(
-                                    widget.x + i32::try_from(widget.width).unwrap_or(i32::MAX),
-                                )
-                            && local[1]
-                                < f64::from(
-                                    widget.y + i32::try_from(widget.height).unwrap_or(i32::MAX),
-                                )
-                    })
-                    .ok_or_else(|| "left drag did not start on a widget".to_owned())?;
-                widget.x = widget.x.saturating_add(dx).clamp(
-                    0,
-                    i32::try_from(settings.width.saturating_sub(widget.width)).unwrap_or(i32::MAX),
-                );
-                widget.y = widget.y.saturating_add(dy).clamp(
-                    0,
-                    i32::try_from(settings.height.saturating_sub(widget.height))
-                        .unwrap_or(i32::MAX),
-                );
+                    .find(|widget| widget.id == original.id)
+                    .ok_or_else(|| "left drag widget disappeared".to_owned())?;
+                if let Some(corner) = corner {
+                    resize_widget(
+                        widget,
+                        &original,
+                        local,
+                        corner,
+                        local[0] + f64::from(dx),
+                        local[1] + f64::from(dy),
+                        [settings.width, settings.height],
+                    );
+                } else {
+                    widget.x = original.x.saturating_add(dx).clamp(
+                        0,
+                        i32::try_from(settings.width.saturating_sub(widget.width))
+                            .unwrap_or(i32::MAX),
+                    );
+                    widget.y = original.y.saturating_add(dy).clamp(
+                        0,
+                        i32::try_from(settings.height.saturating_sub(widget.height))
+                            .unwrap_or(i32::MAX),
+                    );
+                }
                 *self.selected.borrow_mut() = Some(widget.id.clone());
             }
         }
@@ -3810,6 +3831,34 @@ mod skin_tests {
         }
     }
 
+    #[test]
+    fn selected_widget_does_not_capture_another_widgets_corner() {
+        let mut widgets = scorepeek_overlay_ui::default_widgets();
+        let selected = &mut widgets[0];
+        selected.x = 0;
+        selected.y = 0;
+        selected.width = 100;
+        selected.height = 100;
+        let selected_id = selected.id.clone();
+        let other = &mut widgets[1];
+        other.x = 200;
+        other.y = 200;
+        other.width = 100;
+        other.height = 100;
+        let other_id = other.id.clone();
+
+        let Some(DirectManipulationHit::Widget(actual, corner)) = direct_manipulation_at(
+            [500, 500],
+            &widgets[..2],
+            Some(&selected_id),
+            [299.0, 299.0],
+        ) else {
+            panic!("another widget's visible corner must keep its own interaction");
+        };
+        assert_eq!(actual.id, other_id);
+        assert_eq!(corner, Some(ResizeCorner::SouthEast));
+    }
+
     use scorepeek_overlay_ui::Skin;
 
     #[test]
@@ -3931,6 +3980,92 @@ mod skin_tests {
                 assert!(rect.width > 0.0 && rect.height > 0.0, "{skin:?} {selector}");
             }
         }
+    }
+
+    #[test]
+    fn selected_widget_handle_center_starts_widget_resize() {
+        let scenario = VisualDebugScenario {
+            skin: None,
+            logical_size: [1920, 1080],
+            scale: 1.0,
+            canvas_id: Some("wayland-result".into()),
+            editing: true,
+            selectors: Vec::new(),
+            actions: Vec::new(),
+        };
+        let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        session.click(".preview-screen[data-index='4']").unwrap();
+        session
+            .click(".canvas-select[data-canvas-id='wayland-result']")
+            .unwrap();
+        *session.selected.borrow_mut() = Some("selection".to_owned());
+        session.resolve();
+
+        let (canvas_rect, handle_rect) = {
+            let inner = session.document.inner.borrow();
+            let canvas = inner
+                .query_selector(".canvas-content.selected")
+                .unwrap()
+                .unwrap();
+            let handle = inner.query_selector(".resize-handle.se").unwrap().unwrap();
+            (
+                inner.get_client_bounding_rect(canvas).unwrap(),
+                inner.get_client_bounding_rect(handle).unwrap(),
+            )
+        };
+        let visible_left = handle_rect.x.max(canvas_rect.x);
+        let visible_top = handle_rect.y.max(canvas_rect.y);
+        let visible_right =
+            (handle_rect.x + handle_rect.width).min(canvas_rect.x + canvas_rect.width);
+        let visible_bottom =
+            (handle_rect.y + handle_rect.height).min(canvas_rect.y + canvas_rect.height);
+        assert!(visible_left < visible_right && visible_top < visible_bottom);
+        let visible_center = [
+            visible_left.midpoint(visible_right),
+            visible_top.midpoint(visible_bottom),
+        ];
+        assert!(
+            visible_center[0] >= handle_rect.x
+                && visible_center[0] < handle_rect.x + handle_rect.width
+                && visible_center[1] >= handle_rect.y
+                && visible_center[1] < handle_rect.y + handle_rect.height
+                && visible_center[0] >= canvas_rect.x
+                && visible_center[0] < canvas_rect.x + canvas_rect.width
+                && visible_center[1] >= canvas_rect.y
+                && visible_center[1] < canvas_rect.y + canvas_rect.height
+        );
+        let point = [
+            visible_center[0] - canvas_rect.x,
+            visible_center[1] - canvas_rect.y,
+        ];
+        let hit = direct_manipulation_at(
+            [
+                session.settings.borrow().width,
+                session.settings.borrow().height,
+            ],
+            &session.widgets.borrow(),
+            session.selected.borrow().as_deref(),
+            point,
+        );
+        let Some(DirectManipulationHit::Widget(original, Some(corner))) = hit else {
+            panic!("the visible selected-widget handle must start widget resize");
+        };
+        assert_eq!(corner, ResizeCorner::SouthEast);
+        let mut resized = original.clone();
+        resize_widget(
+            &mut resized,
+            &original,
+            point,
+            corner,
+            point[0] - 20.0,
+            point[1] - 20.0,
+            [
+                session.settings.borrow().width,
+                session.settings.borrow().height,
+            ],
+        );
+        assert_eq!(resized.width, original.width - 20);
+        assert_eq!(resized.height, original.height - 20);
     }
 
     #[test]
