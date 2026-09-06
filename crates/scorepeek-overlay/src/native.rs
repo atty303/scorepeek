@@ -1291,26 +1291,55 @@ impl App {
                 workspace.surfaces.get(&key).cloned().unwrap_or_default(),
             )
         };
-        *self.surface_canvas_ids.borrow_mut() = surface_canvas_ids;
-        self.panel_open.set(ui.panel_open);
-        self.output_open.set(ui.output_open);
-        self.manage_open.set(ui.manage_open);
-        self.widget_add_open.set(ui.widget_add_open);
+        let mut changed = false;
+        {
+            let mut current = self.surface_canvas_ids.borrow_mut();
+            if *current != surface_canvas_ids {
+                *current = surface_canvas_ids;
+                changed = true;
+            }
+        }
+        changed |= self.panel_open.replace(ui.panel_open) != ui.panel_open;
+        changed |= self.output_open.replace(ui.output_open) != ui.output_open;
+        changed |= self.manage_open.replace(ui.manage_open) != ui.manage_open;
+        changed |= self.widget_add_open.replace(ui.widget_add_open) != ui.widget_add_open;
         {
             let mut settings = self.settings.borrow_mut();
-            settings.preview_screen = ui.preview_screen;
-            settings.has_selection = self
+            let has_selection = self
                 .preview
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .is_some();
+            if settings.preview_screen != ui.preview_screen
+                || settings.has_selection != has_selection
+            {
+                settings.preview_screen = ui.preview_screen;
+                settings.has_selection = has_selection;
+                changed = true;
+            }
         }
-        self.dirty.set(dirty);
-        *self.selected.borrow_mut() = selected_widget;
-        self.pending_widget.set(pending_widget);
-        *self.pending_delete.borrow_mut() = pending_delete;
+        changed |= self.dirty.replace(dirty) != dirty;
+        {
+            let mut current = self.selected.borrow_mut();
+            if *current != selected_widget {
+                *current = selected_widget;
+                changed = true;
+            }
+        }
+        changed |= self.pending_widget.replace(pending_widget) != pending_widget;
+        {
+            let mut current = self.pending_delete.borrow_mut();
+            if *current != pending_delete {
+                *current = pending_delete;
+                changed = true;
+            }
+        }
         if self.interaction.is_none() && !draft.is_empty() {
-            self.managed.borrow_mut().clone_from(&draft);
+            let mut current = self.managed.borrow_mut();
+            if *current != draft {
+                current.clone_from(&draft);
+                changed = true;
+            }
         }
         if self.editing.get() && self.interaction.is_none() {
             let selected = self
@@ -1329,10 +1358,11 @@ impl App {
                 && self.canvas.presentation() != presentation
             {
                 self.apply_selected_presentation(&presentation);
-                if let Some(update) = self.native_update.borrow().as_ref() {
-                    update();
-                }
+                changed = true;
             }
+        }
+        if changed && let Some(update) = self.native_update.borrow().as_ref() {
+            update();
         }
     }
     fn acquire(&mut self) {
@@ -2089,9 +2119,6 @@ impl App {
             *existing = presentation;
         }
         self.update_draft();
-        if let Some(update) = self.native_update.borrow().as_ref() {
-            update();
-        }
     }
     fn remember_geometry(&mut self) {
         let mut presentation = self.canvas.presentation();
@@ -2158,9 +2185,6 @@ impl App {
             self.set_editor_geometry(true);
         }
         self.update_draft();
-        if let Some(update) = self.native_update.borrow().as_ref() {
-            update();
-        }
     }
 
     fn sync_workspace_ui(&self) {
@@ -2256,6 +2280,9 @@ impl App {
             editor_id: self.editor_id.clone(),
             canvases,
         });
+        if let Some(update) = self.native_update.borrow().as_ref() {
+            update();
+        }
     }
     fn save_and_close(&mut self) {
         self.persist_canvas();

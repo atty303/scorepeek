@@ -9,12 +9,15 @@
     ".widget-slot",
     ".native-panel-toggle",
     ".native-canvas-manager",
+    ".screen-toggle",
     ".editor-tab-body"
   ],
   "actions": [
     { "action": "click", "selector": ".native-panel-toggle" },
     { "action": "click", "selector": ".native-panel-toggle" },
     { "action": "click", "selector": ".preview-screen[data-index='4']" },
+    { "action": "click", "selector": ".screen-toggle[data-canvas-id='wayland-status']" },
+    { "action": "click", "selector": ".screen-toggle[data-canvas-id='wayland-status']" },
     { "action": "click", "selector": ".canvas-select[data-canvas-id='wayland-result']" },
     { "action": "scroll", "selector": ".editor-tab-body", "dx": 0, "dy": -320 },
     { "action": "drag", "from": [500, 150], "to": [600, 250], "button": "right" },
