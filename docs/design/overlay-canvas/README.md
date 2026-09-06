@@ -10,3 +10,8 @@ materials, typography hierarchy and information density. Runtime values remain s
 
 The normal canvas is transparent outside individual widgets. The enlarged selection panel in each
 sheet demonstrates edit-only grid and resize chrome; it is not a second display layout.
+
+The shared editor sample uses NEON CIRCUIT, SP HYPER and the sheet's BEST/DETAIL values so visual
+comparison does not depend on different text lengths. History dates and graph values remain synthetic.
+Compare panels at the same width against these sheets; verify typography, badge/rail/lamp shape,
+material edges and graph axes in addition to the five-widget arrangement.

@@ -76,11 +76,18 @@ pub struct HistoryPlay {
     pub miss: String,
     pub clear: String,
 }
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct GraphTick {
+    pub unix_ms: i64,
+    pub label: String,
+}
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct History {
     pub recorded: bool,
     pub plays: Vec<HistoryPlay>,
     pub graph: Vec<GraphPlay>,
+    #[serde(default)]
+    pub graph_ticks: Vec<GraphTick>,
     #[serde(default)]
     pub graph_start_unix_ms: [i64; 4],
     #[serde(default)]
@@ -249,9 +256,10 @@ fn mode_label(mode: &str) -> &str {
 fn shown(value: &str) -> &str {
     if value.is_empty() { "—" } else { value }
 }
-fn lamp(state: LampState, label: Option<&str>, class: &str) -> Element {
+fn lamp(state: LampState, label: Option<&str>, class: &str, skin: Skin) -> Element {
+    let artwork = frame::lamp(state, label.is_none(), skin, class);
     let state = format!("{state:?}").to_ascii_lowercase();
-    rsx! { div { class: "lamp-group {class}", span { class: "lamp", "data-state": state, aria_hidden: "true" } if let Some(label) = label { span { class: "lamp-label", "{label}" } } } }
+    rsx! { div { class: "lamp-group {class}", span { class: "lamp", "data-state": state, aria_hidden: "true", {artwork} } if let Some(label) = label { span { class: "lamp-label", "{label}" } } } }
 }
 fn chrome(widget: &WidgetLayout, skin: Skin) -> Element {
     rsx! { div { class: "skin-frame", aria_hidden: "true",
@@ -329,13 +337,13 @@ fn render_widget(
 ) -> Element {
     match widget.kind {
         WidgetKind::Status => {
-            rsx! { section { class: "widget status-widget", {chrome(widget, skin)} div { class: "widget-content status-content", span { class: "wordmark", "score" span { "peek" } } div { class: "status-lamps", {lamp(state.system, Some("SYSTEM"), "system-lamp")} {lamp(state.result_signal, Some("RESULT"), "result-lamp")} } } } }
+            rsx! { section { class: "widget status-widget", {chrome(widget, skin)} div { class: "widget-content status-content", span { class: "wordmark", "score" span { "peek" } } div { class: "status-lamps", {lamp(state.system, Some("SYSTEM"), "system-lamp", skin)} {lamp(state.result_signal, Some("RESULT"), "result-lamp", skin)} } } } }
         }
         WidgetKind::Selection => {
             rsx! { section { class: "widget selection-widget", {chrome(widget, skin)} div { class: "widget-content selection-content",
-                {lamp(if state.history.recorded { LampState::Active } else { LampState::Inactive }, None, "recorded-lamp")}
+                {lamp(if state.history.recorded { LampState::Active } else { LampState::Inactive }, None, "recorded-lamp", skin)}
                 div { class: "song-copy", h1 { title: title, "{title}" } p { title: artist, "{artist}" } }
-                div { class: "chart-rail", span { class: "play-type", "{play_type}" } span { class: "difficulty", "data-difficulty": difficulty, "{difficulty}" } span { "LV {level}" } span { "NOTES {notes}" } }
+                div { class: "chart-rail", {frame::chart_rail(widget.width.saturating_sub(56), skin)} span { class: "play-type", "{play_type}" } span { class: "difficulty", "data-difficulty": difficulty, "{difficulty}" } span { span { class: "field-label", "LV " } "{level}" } span { span { class: "field-label", "NOTES " } "{notes}" } }
             } } }
         }
         WidgetKind::Score => score_widget(state, widget, skin),
@@ -369,55 +377,79 @@ pub fn default_widgets() -> Vec<WidgetLayout> {
 pub fn editor_sample_state() -> OverlayState {
     let day = 86_400_000_i64;
     let end = 1_788_134_400_000_i64;
-    let graph = (0..18)
-        .map(|index| GraphPlay {
-            received_unix_ms: end - day * i64::from(178 - index * 10),
-            score_ratio: 0.64 + f64::from(index) * 0.014,
-            miss_ratio: Some((0.31 - f64::from(index) * 0.012).max(0.025)),
+    let scores = [
+        0.57, 0.72, 0.67, 0.79, 0.69, 0.61, 0.65, 0.88, 0.80, 0.84, 0.86, 0.64, 0.68, 0.62, 0.83,
+        0.70, 0.66, 0.74,
+    ];
+    let misses = [
+        0.12, 0.15, 0.09, 0.22, 0.30, 0.14, 0.18, 0.24, 0.46, 0.34, 0.39, 0.58, 0.21, 0.18, 0.16,
+        0.22, 0.24, 0.18,
+    ];
+    let graph = scores
+        .into_iter()
+        .zip(misses)
+        .zip(0_i64..)
+        .map(|((score_ratio, miss_ratio), index)| GraphPlay {
+            received_unix_ms: end - day * (178 - index * 10),
+            score_ratio,
+            miss_ratio: Some(miss_ratio),
         })
         .collect();
     OverlayState {
         connected: false,
         chart: Some(Chart {
             song_id: "editor-sample".into(),
-            play_type: "double".into(),
-            difficulty: "another".into(),
-            title: "超長い日本語楽曲名・オーバーレイ表示確認用".into(),
-            artist: "SAMPLE ARTIST / LONG CREDIT".into(),
+            play_type: "single".into(),
+            difficulty: "hyper".into(),
+            title: "NEON CIRCUIT".into(),
+            artist: "SAMPLE ARTIST".into(),
             level: Some(12),
-            notes: Some(1987),
+            notes: Some(1877),
         }),
         system: LampState::Inactive,
         result_signal: LampState::Active,
         best: BestView {
-            score: "3842".into(),
-            dj_level: "AAA".into(),
-            miss: "17".into(),
-            clear: "EX HARD CLEAR".into(),
+            score: "2846".into(),
+            dj_level: "AA".into(),
+            miss: "12".into(),
+            clear: "HARD CLEAR".into(),
         },
         detail: ResultDetail {
-            pgreat: "1524".into(),
-            great: "794".into(),
-            good: "28".into(),
+            pgreat: "1324".into(),
+            great: "198".into(),
+            good: "21".into(),
             bad: "6".into(),
-            poor: "19".into(),
-            fast: "61".into(),
-            slow: "54".into(),
-            combo_break: "21".into(),
-            play_options: "RANDOM / HARD".into(),
+            poor: "12".into(),
+            fast: "143".into(),
+            slow: "137".into(),
+            combo_break: "9".into(),
+            play_options: "RANDOM".into(),
         },
         history: History {
             recorded: true,
             plays: (0..20)
                 .map(|index| HistoryPlay {
                     notified_at: format!("2026.08.{:02} 21:{:02}", 28 - index, 10 + index),
-                    score: (3842 - index * 13).to_string(),
-                    dj_level: if index < 4 { "AAA" } else { "AA" }.into(),
-                    miss: (17 + index).to_string(),
-                    clear: if index % 3 == 0 { "EXH" } else { "HARD" }.into(),
+                    score: (2846 - index * 13).to_string(),
+                    dj_level: if index == 1 { "AAA" } else { "AA" }.into(),
+                    miss: (12 + index).to_string(),
+                    clear: if index % 5 == 4 {
+                        "CLEAR"
+                    } else {
+                        "HARD CLEAR"
+                    }
+                    .into(),
                 })
                 .collect(),
             graph,
+            graph_ticks: ["MAR", "APR", "MAY", "JUN", "JUL", "AUG"]
+                .into_iter()
+                .zip(0_i64..)
+                .map(|(label, index)| GraphTick {
+                    unix_ms: end - day * (178 - index * 30),
+                    label: label.into(),
+                })
+                .collect(),
             graph_start_unix_ms: [
                 end - day * 30,
                 end - day * 90,
@@ -463,7 +495,7 @@ fn history_graph(history: &History, widget: &WidgetLayout, skin: Skin) -> Elemen
     let padding_y = 12;
     let score_axis = 36;
     let miss_axis = 39;
-    let header_space = 52;
+    let header_space = 68;
     let plot_width = widget
         .width
         .saturating_sub(2 * padding_x + score_axis + miss_axis)
@@ -512,6 +544,16 @@ fn history_graph(history: &History, widget: &WidgetLayout, skin: Skin) -> Elemen
             })
         })
         .collect();
+    let time_ticks = history
+        .graph_ticks
+        .iter()
+        .filter(|tick| tick.unix_ms >= start && tick.unix_ms <= history.graph_end_unix_ms)
+        .map(|tick| {
+            (
+                time_ratio(tick.unix_ms, start, history.graph_end_unix_ms) * 100.0,
+                &tick.label,
+            )
+        });
     let levels = [
         ("AAA", 88.889),
         ("AA", 77.778),
@@ -521,7 +563,7 @@ fn history_graph(history: &History, widget: &WidgetLayout, skin: Skin) -> Elemen
         ("D", 33.333),
         ("E", 22.222),
     ];
-    rsx! { section { class: "widget history-graph-widget", style: geometry, {chrome(widget, skin)} div { class: "widget-content graph-content", h2 { "HISTORY GRAPH" } div { class: "graph-legend", span { class: "score-key", "DJ LEVEL" } span { class: "miss-key", "MISS RATE" } } div { class: "plot", div { class: "level-axis", for (level,threshold) in levels { span { style: format!("top:{:.3}%",100.0-threshold), "{level}" } } } div { class: "plot-area", for (level,threshold) in levels { i { class: "threshold", "data-level": level, style: format!("top:{:.3}%",100.0-threshold) } } for style in score_dots { i { class:"graph-dot score-dot",style } } for style in miss_dots { i { class:"graph-dot miss-dot",style } } svg { width: "{plot_width}", height: "{plot_height}", view_box: "0 0 1000 100", preserve_aspect_ratio: "none", polyline { class: "score-line", fill: "none", stroke: colors.score, stroke_width: "1.25", vector_effect: "non-scaling-stroke", points: "{points.0}" } for segment in points.1 { polyline { class: "miss-line", fill: "none", stroke: colors.miss, stroke_width: "1.25", vector_effect: "non-scaling-stroke", points: "{segment}" } } } } div { class: "miss-axis", for value in ["100%","75%","50%","25%","0%"] { span { "{value}" } } } } } } }
+    rsx! { section { class: "widget history-graph-widget", style: geometry, {chrome(widget, skin)} div { class: "widget-content graph-content", h2 { "HISTORY GRAPH" } div { class: "graph-legend", span { class: "score-key", "DJ LEVEL" } span { class: "miss-key", "MISS RATE" } } div { class: "plot", div { class: "level-axis", for (level,threshold) in levels { span { style: format!("top:{:.3}%",100.0-threshold), "{level}" } } } div { class: "plot-area", for (level,threshold) in levels { i { class: "threshold", "data-level": level, style: format!("top:{:.3}%",100.0-threshold) } } for style in score_dots { i { class:"graph-dot score-dot",style } } for style in miss_dots { i { class:"graph-dot miss-dot",style } } svg { width: "{plot_width}", height: "{plot_height}", view_box: "0 0 1000 100", preserve_aspect_ratio: "none", polyline { class: "score-line", fill: "none", stroke: colors.score, stroke_width: "1.25", vector_effect: "non-scaling-stroke", points: "{points.0}" } for segment in points.1 { polyline { class: "miss-line", fill: "none", stroke: colors.miss, stroke_width: "1.25", vector_effect: "non-scaling-stroke", points: "{segment}" } } } } div { class: "miss-axis", for value in ["100%","75%","50%","25%","0%"] { span { "{value}" } } } } div { class: "time-axis", for (position,label) in time_ticks { span { style: format!("left:{position:.3}%"), "{label}" } } } } } }
 }
 fn dot_style(time: i64, ratio: f64, start: i64, end: i64) -> String {
     let x = (time_ratio(time, start, end) * 100.0).clamp(0.0, 100.0);

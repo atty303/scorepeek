@@ -238,6 +238,16 @@ fn refresh_history(view: &mut OverlayState, path: Option<&std::path::Path>, hist
                     .collect(),
                 graph_start_unix_ms: graph_starts,
                 graph_end_unix_ms: now,
+                graph_ticks: (0..=12)
+                    .rev()
+                    .filter_map(|months| {
+                        let date = local_now.checked_sub_months(chrono::Months::new(months))?;
+                        Some(scorepeek_overlay_ui::GraphTick {
+                            unix_ms: date.timestamp_millis(),
+                            label: date.format("%b").to_string().to_ascii_uppercase(),
+                        })
+                    })
+                    .collect(),
             };
         }
         Err(_) => {

@@ -772,7 +772,7 @@ Waylandの保存outputが消失した場合、収まるnamed output、なけれ�
 - selection: title/artist左側の無label縦長recorded lampと、別railのSP/DP・difficulty・level・notes。score値は表示しない。recordedはSQLiteにSELECT由来のno-recordを含むcommit済み知識があることを示す。
 - score: 曲名を繰り返さず、SQLite由来の統合BESTとRESULT DETAILを表示する。代表RESULTはEX score最大、既知MISS優先かつ最小、received時刻最新の辞書順で1件選ぶ。PGREAT/GREAT/GOOD/BAD/POOR/FAST/SLOW/COMBO BREAK/PLAY OPTIONSを保持する。
 - history list: local通知日時、EX SCORE、DJ LEVEL、MISS、CLEAR。件数は5/10/20/50、既定5。
-- history graph: 1/3/6/12か月、既定6のlocal calendarによる固定時間範囲へexact timestampで配置する。scoreは%凡例を出さずDJ LEVEL閾値を示す。MISS RATE軸は常に0–100%、100%超をclipし、unknownは線を切る。最大範囲内の新しい4096 playを上限とし、時刻順へ戻して描画する。
+- history graph: 1/3/6/12か月、既定6のlocal calendarによる固定時間範囲へexact timestampで配置する。横軸は同じlocal calendarで親consumerが生成した月名を時刻位置へ表示する。scoreは%凡例を出さずDJ LEVEL閾値を示す。MISS RATE軸は常に0–100%、100%超をclipし、unknownは線を切る。最大範囲内の新しい4096 playを上限とし、時刻順へ戻して描画する。
 
 選曲変化と、SELECT/RESULT transaction成功後の公開`score_store_changed`でreadonly SQLiteを再照会する。通知は譜面identityとinvocation内revisionだけを持ち、表示値は持たない。5秒pollは外部writer・通知欠落・再接続だけのrecoveryとする。
 表示するBEST、RESULT DETAIL、recorded、historyは常にcommit済みDB stateから作り、最新公開RESULTを直接score widgetへ流用しない。
@@ -782,7 +782,7 @@ Waylandの保存outputが消失した場合、収まるnamed output、なけれ�
 
 cyan-system（既定）、result-aurora、dj-blackboxをcanvas単位で選ぶ。同じ意味DOMと状態logicを共有しつつ、
 ADR 0133により原典design masterの比率・輪郭・配色・文字階層へ忠実に合わせる。
-frameは共有SVGで角と線幅を保ち、素材面は同梱PNGとCSSで表現する。
+CYAN/AURORAのframeと譜面rail・lampは共有SVGで形状を保ち、BLACKBOXのframeは同梱金属PNGを角・縁へ分けて描画する。素材面は同梱PNGとCSSで表現する。
 新規widgetは原典のコンパクトな比率とし、保存済み配置は自動変更しない。runtime値は即時に正しい値を表示し、count-upはしない。
 Oxanium/Orbitron/Rajdhaniをlicense付きで同梱する。日本語はシステムのNoto Sans JP等を使い、同梱しない（ADR 0132）。
 DOM/CSS・素材・意味に対応したmotion設定は共通とし、native RustとOBS JavaScriptで駆動する。
