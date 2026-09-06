@@ -243,6 +243,22 @@ struct NativeOverlayProps {
     update: NativeUpdate,
 }
 
+fn delete_canvas_button(disabled: bool) -> Element {
+    if disabled {
+        rsx! { button { class:"delete-canvas danger", disabled:true, "DELETE SELECTED" } }
+    } else {
+        rsx! { button { class:"delete-canvas danger", "DELETE SELECTED" } }
+    }
+}
+
+fn undo_button(available: bool) -> Element {
+    if available {
+        rsx! { button { class:"undo-action", "UNDO" } }
+    } else {
+        rsx! { button { class:"undo-action", disabled:true, "UNDO" } }
+    }
+}
+
 #[allow(clippy::cast_precision_loss)]
 fn native_overlay(
     NativeOverlayProps {
@@ -324,13 +340,13 @@ fn native_overlay(
                             button { class:if scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), scorepeek_overlay_ui::ScreenView { kind:Some(current_settings.preview_screen), suspended_since_unix_ms:None, revision:0 }){"screen-toggle selected"}else{"screen-toggle"}, "aria-pressed":scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), scorepeek_overlay_ui::ScreenView { kind:Some(current_settings.preview_screen), suspended_since_unix_ms:None, revision:0 }), "data-canvas-id":"{canvas.id}", if scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), scorepeek_overlay_ui::ScreenView { kind:Some(current_settings.preview_screen), suspended_since_unix_ms:None, revision:0 }){"ON"}else{"OFF"} }
                         }
                     } }
-                    div { class:"canvas-actions", button { class:"add-canvas", "+ ADD CANVAS" } button { class:"delete-canvas danger", disabled:managed.borrow().len()<=1 || !current_settings.has_selection, "DELETE SELECTED" } }
+                    div { class:"canvas-actions", button { class:"add-canvas", "+ ADD CANVAS" } {delete_canvas_button(managed.borrow().len()<=1 || !current_settings.has_selection)} }
                 }
                 }
                 div { class:"editor-tab-body",
                 if current_settings.has_selection { section { class:"appearance-pane", h2 { "APPEARANCE" } h3 { "SKIN" }
                     div { class:"native-skin-options button-grid three", for (index,(label,skin)) in [("CYAN",scorepeek_overlay_ui::Skin::CyanSystem),("AURORA",scorepeek_overlay_ui::Skin::ResultAurora),("BLACKBOX",scorepeek_overlay_ui::Skin::DjBlackbox)].into_iter().enumerate() { button { class:if appearance.get().skin==skin{"skin-option selected"}else{"skin-option"}, "aria-pressed":appearance.get().skin==skin, "data-index":index, if appearance.get().skin==skin{"✓ "} "{label}" } } }
-                    h3 { "OPACITY · {current_settings.opacity_percent}%" }
+                    h3 { "OPACITY" }
                     div { class:"native-opacity button-grid four", for value in [25,50,75,100] { button { class:if current_settings.opacity_percent==value{"opacity-option selected"}else{"opacity-option"}, "aria-pressed":current_settings.opacity_percent==value, "data-value":value, if current_settings.opacity_percent==value{"✓ "} "{value}" } } }
                 }
                 section { class:"output-pane", h2 { "OUTPUT" } div { class:"output-list", for output in outputs.borrow().iter() { button { class:if current_settings.output.as_deref()==Some(output.name.as_str()){"output-option selected"}else{"output-option"}, "aria-selected":current_settings.output.as_deref()==Some(output.name.as_str()), "data-output":"{output.name}", strong { if current_settings.output.as_deref()==Some(output.name.as_str()){"✓ "} "{output.name}" } small { "{output.model}" if let Some([width,height])=output.logical_size { " · {width}×{height}" } } } } } }
@@ -351,7 +367,7 @@ fn native_overlay(
                     }
                 } } else { div { class:"canvas-hidden-state", strong { "HIDDEN ON THIS GAME SCREEN" } span { "Turn this canvas ON in the list to edit its widgets." } } } } else { div { class:"canvas-hidden-state", strong { "NO CANVAS ON THIS GAME SCREEN" } span { "Turn a canvas ON or add one for this game screen." } } }
                 }
-                footer { button { class:"undo-action", disabled:!undo_available.get(), "UNDO" } div { class:"footer-actions", if dirty.get() { button { class:"discard-action", "DISCARD CHANGES" } button { class:"primary save-action", "SAVE ALL CHANGES AND CLOSE" } } else { button { class:"close-action", "CLOSE EDITOR" } } } }
+                footer { {undo_button(undo_available.get())} div { class:"footer-actions", if dirty.get() { button { class:"discard-action", "DISCARD CHANGES" } button { class:"primary save-action", "SAVE ALL CHANGES AND CLOSE" } } else { button { class:"close-action", "CLOSE EDITOR" } } } }
             } }
             if surface_canvas_ids.borrow().contains(&current_settings.id) { if let Some(kind) = pending_widget.get() { div { class:"native-placement-ghost", style:format!("left:{}px;top:{}px",pending_point.get()[0],pending_point.get()[1]), "PLACE {kind:?}" } } }
         }
@@ -3900,8 +3916,12 @@ mod skin_tests {
         let appearance = rect(".appearance-pane");
         let output_section = rect(".output-pane");
         let undo = rect(".undo-action");
+        let delete = rect(".delete-canvas");
         let preview = rect(".canvas-content");
         let canvas_list = rect(".canvas-list");
+        let cyan = rect(".skin-option[data-index='0']");
+        let aurora = rect(".skin-option[data-index='1']");
+        let blackbox = rect(".skin-option[data-index='2']");
         let last_before = rect(".canvas-select[data-canvas-id='wayland-extra-5']");
         assert!((panel.width - 384.0).abs() < 1.0, "{panel:?}");
         assert!(
@@ -3914,6 +3934,24 @@ mod skin_tests {
         );
         assert!(output.x >= panel.x && output.x + output.width <= panel.x + panel.width);
         assert!(undo.x >= panel.x && undo.y > canvas_section.y, "{undo:?}");
+        assert!(delete.width > 0.0, "{delete:?}");
+        assert!(
+            inner
+                .query_selector(".delete-canvas[disabled]")
+                .unwrap()
+                .is_none()
+        );
+        assert!((cyan.y - aurora.y).abs() < 1.0, "{cyan:?} {aurora:?}");
+        assert!(
+            (aurora.y - blackbox.y).abs() < 1.0,
+            "{aurora:?} {blackbox:?}"
+        );
+        assert!(cyan.x + cyan.width <= aurora.x, "{cyan:?} {aurora:?}");
+        assert!(
+            aurora.x + aurora.width <= blackbox.x,
+            "{aurora:?} {blackbox:?}"
+        );
+        assert!(blackbox.y + blackbox.height <= output_section.y);
         assert!(inner.query_selector(".manage-canvas").unwrap().is_none());
         assert!(inner.query_selector(".output-settings").unwrap().is_none());
         assert!((preview.x - 120.0).abs() < 1.0, "{preview:?}");
