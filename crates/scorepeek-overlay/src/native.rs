@@ -9,7 +9,7 @@ use std::{
 use crate::runtime::{Config, Feed};
 use anyrender::{CompositeAlphaMode, WindowRenderer};
 use anyrender_vello::{VelloRendererOptions, VelloWindowRenderer};
-use blitz_dom::{Document, DocumentConfig};
+use blitz_dom::{BaseDocument, Document, DocumentConfig};
 use blitz_paint::paint_scene;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use dioxus::prelude::*;
@@ -55,6 +55,35 @@ fn editor_panel_width(output_width: Option<u32>) -> u32 {
 
 fn editor_surface_host(surfaces: &std::collections::BTreeSet<String>) -> Option<&str> {
     surfaces.first().map(String::as_str)
+}
+
+fn unselected_canvas_at(
+    canvases: &[scorepeek_overlay_ui::CanvasPresentation],
+    surface_canvas_ids: &std::collections::BTreeSet<String>,
+    selected: &scorepeek_overlay_ui::CanvasPresentation,
+    screen: scorepeek_overlay_ui::ScreenKind,
+    point: [f64; 2],
+) -> Option<String> {
+    let [x, y] = point;
+    let contains = |canvas: &scorepeek_overlay_ui::CanvasPresentation| {
+        x >= f64::from(canvas.x)
+            && y >= f64::from(canvas.y)
+            && x < f64::from(canvas.x) + f64::from(canvas.width)
+            && y < f64::from(canvas.y) + f64::from(canvas.height)
+    };
+    if surface_canvas_ids.contains(&selected.id) && shown_on(selected, screen) && contains(selected)
+    {
+        return None;
+    }
+    canvases
+        .iter()
+        .find(|canvas| {
+            canvas.id != selected.id
+                && surface_canvas_ids.contains(&canvas.id)
+                && shown_on(canvas, screen)
+                && contains(canvas)
+        })
+        .map(|canvas| canvas.id.clone())
 }
 
 const EDITOR_SCREENS: [scorepeek_overlay_ui::ScreenKind; 5] = [
@@ -118,8 +147,6 @@ struct NativeCanvasSettings {
 struct EditorWorkspaceUi {
     panel_open: bool,
     preview_screen: scorepeek_overlay_ui::ScreenKind,
-    output_open: bool,
-    manage_open: bool,
     widget_add_open: bool,
 }
 
@@ -128,27 +155,69 @@ impl Default for EditorWorkspaceUi {
         Self {
             panel_open: true,
             preview_screen: scorepeek_overlay_ui::ScreenKind::MusicSelect,
-            output_open: false,
-            manage_open: false,
             widget_add_open: false,
         }
     }
 }
 
 #[derive(Clone)]
-struct GeometryUndo(scorepeek_overlay_ui::CanvasPresentation);
+struct DraftUndo(Vec<scorepeek_overlay_ui::CanvasPresentation>);
+
+fn remember_draft_change(
+    undo: &mut Option<DraftUndo>,
+    before: Vec<scorepeek_overlay_ui::CanvasPresentation>,
+    after: &[scorepeek_overlay_ui::CanvasPresentation],
+) -> bool {
+    if before == after {
+        return false;
+    }
+    *undo = Some(DraftUndo(before));
+    true
+}
+
+fn selected_canvas_for_delete(
+    canvases: &[scorepeek_overlay_ui::CanvasPresentation],
+    selected: Option<&str>,
+) -> Option<String> {
+    if canvases.len() <= 1 {
+        return None;
+    }
+    selected
+        .filter(|id| canvases.iter().any(|canvas| canvas.id == *id))
+        .map(str::to_owned)
+}
+
+fn discard_undo(workspace: &mut NativeWorkspace) {
+    workspace.undo = None;
+}
+
+fn scroll_editor_at(document: &mut BaseDocument, point: [f64; 2], delta: [f64; 2]) -> bool {
+    let [x, y] = point;
+    for selector in [".canvas-list", ".editor-tab-body"] {
+        let Ok(Some(node)) = document.query_selector(selector) else {
+            continue;
+        };
+        let Some(rect) = document.get_client_bounding_rect(node) else {
+            continue;
+        };
+        if x >= rect.x && y >= rect.y && x < rect.x + rect.width && y < rect.y + rect.height {
+            document.scroll_node_by(node, delta[0], delta[1], |_| {});
+            return true;
+        }
+    }
+    false
+}
 
 #[derive(Default)]
 struct NativeWorkspace {
     ui: EditorWorkspaceUi,
-    undo: Option<GeometryUndo>,
+    undo: Option<DraftUndo>,
     fallback: std::collections::BTreeSet<String>,
     reload_saved: bool,
     draft: Vec<scorepeek_overlay_ui::CanvasPresentation>,
     dirty: bool,
     selected_widget: Option<String>,
     pending_widget: Option<scorepeek_overlay_ui::WidgetKind>,
-    pending_delete: Option<String>,
     outputs: std::collections::BTreeMap<String, OutputDescription>,
     surfaces: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
 }
@@ -159,14 +228,12 @@ struct NativeOverlayProps {
     widgets: Rc<RefCell<Vec<WidgetLayout>>>,
     editing: Rc<Cell<bool>>,
     panel_open: Rc<Cell<bool>>,
-    output_open: Rc<Cell<bool>>,
-    manage_open: Rc<Cell<bool>>,
     widget_add_open: Rc<Cell<bool>>,
     dirty: Rc<Cell<bool>>,
+    undo_available: Rc<Cell<bool>>,
     selected: Rc<RefCell<Option<String>>>,
     pending_widget: Rc<Cell<Option<scorepeek_overlay_ui::WidgetKind>>>,
     pending_point: Rc<Cell<[f64; 2]>>,
-    pending_delete: Rc<RefCell<Option<String>>>,
     managed: Rc<RefCell<Vec<scorepeek_overlay_ui::CanvasPresentation>>>,
     outputs: Rc<RefCell<Vec<OutputDescription>>>,
     state: Rc<RefCell<OverlayState>>,
@@ -188,14 +255,12 @@ fn native_overlay(
         widgets,
         editing,
         panel_open,
-        output_open,
-        manage_open,
         widget_add_open,
         dirty,
+        undo_available,
         selected,
         pending_widget,
         pending_point,
-        pending_delete,
         managed,
         outputs,
     }: NativeOverlayProps,
@@ -251,22 +316,24 @@ fn native_overlay(
                     for (index,(label,kind)) in [("MUSIC SELECT",scorepeek_overlay_ui::ScreenKind::MusicSelect),("MODE SELECT",scorepeek_overlay_ui::ScreenKind::ModeSelect),("DECIDE",scorepeek_overlay_ui::ScreenKind::DecideTransition),("PLAY",scorepeek_overlay_ui::ScreenKind::Play),("RESULT",scorepeek_overlay_ui::ScreenKind::Result)].into_iter().enumerate() {
                         button { class:if current_settings.preview_screen==kind{"selected preview-screen"}else{"preview-screen"}, "aria-selected":current_settings.preview_screen==kind, "data-index":index, "{label}" }
                     }
-                } }
-                nav { class:"canvas-list", for canvas in managed.borrow().iter() {
-                    div { class:"canvas-row",
-                        button { class:if current_settings.has_selection && canvas.id==current_settings.id{"canvas-select selected"}else{"canvas-select"}, "aria-selected":current_settings.has_selection && canvas.id==current_settings.id, "data-canvas-id":"{canvas.id}", "{canvas.id}" }
-                        button { class:if scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), scorepeek_overlay_ui::ScreenView { kind:Some(current_settings.preview_screen), suspended_since_unix_ms:None, revision:0 }){"screen-toggle selected"}else{"screen-toggle"}, "aria-pressed":scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), scorepeek_overlay_ui::ScreenView { kind:Some(current_settings.preview_screen), suspended_since_unix_ms:None, revision:0 }), "data-canvas-id":"{canvas.id}", if scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), scorepeek_overlay_ui::ScreenView { kind:Some(current_settings.preview_screen), suspended_since_unix_ms:None, revision:0 }){"ON"}else{"OFF"} }
-                    }
-                } }
-                div { class:"editor-tab-body",
-                if current_settings.has_selection { section { class:"canvas-pane", h2 { "CANVAS SETTINGS · {current_settings.id}" } button { class:"undo-action", "UNDO GEOMETRY" }
-                    h2 { "APPEARANCE" }
-                    div { class:"native-skin-options button-grid three", for (index,(label,skin)) in [("CYAN",scorepeek_overlay_ui::Skin::CyanSystem),("AURORA",scorepeek_overlay_ui::Skin::ResultAurora),("BLACKBOX",scorepeek_overlay_ui::Skin::DjBlackbox)].into_iter().enumerate() { button { class:if appearance.get().skin==skin{"skin-option selected"}else{"skin-option"}, "aria-pressed":appearance.get().skin==skin, "data-index":index, if appearance.get().skin==skin{"✓ "} "{label}" } } }
-                    h2 { "OPACITY {current_settings.opacity_percent}%" }
-                    div { class:"native-opacity button-grid four", for value in [25,50,75,100] { button { class:if current_settings.opacity_percent==value{"opacity-option selected"}else{"opacity-option"}, "aria-pressed":current_settings.opacity_percent==value, "data-value":value, if current_settings.opacity_percent==value{"✓ "} "{value}" } } }
-                    details { class:"output-settings", open:output_open.get(), summary { class:"output-summary", "MOVE TO OUTPUT" } if output_open.get() { div { class:"output-list", for output in outputs.borrow().iter() { button { class:if current_settings.output.as_deref()==Some(output.name.as_str()){"output-option selected"}else{"output-option"}, "aria-selected":current_settings.output.as_deref()==Some(output.name.as_str()), "data-output":"{output.name}", strong { if current_settings.output.as_deref()==Some(output.name.as_str()){"✓ "} "{output.name}" } small { "{output.model}" if let Some([width,height])=output.logical_size { " · {width}×{height}" } } } } } } }
-                    details { class:"manage-canvas", open:manage_open.get(), summary { class:"manage-summary", "MANAGE CANVAS" } if manage_open.get() { button { class:"add-canvas", "ADD CANVAS" } button { class:"delete-canvas danger", disabled:managed.borrow().len()<=1, if pending_delete.borrow().as_deref()==Some(current_settings.id.as_str()) { "CONFIRM DELETE" } else { "DELETE CANVAS" } } } }
                 }
+                section { class:"canvas-section", h2 { "CANVASES" }
+                    nav { class:"canvas-list", for canvas in managed.borrow().iter() {
+                        div { class:"canvas-row",
+                            button { class:if current_settings.has_selection && canvas.id==current_settings.id{"canvas-select selected"}else{"canvas-select"}, "aria-selected":current_settings.has_selection && canvas.id==current_settings.id, "data-canvas-id":"{canvas.id}", "{canvas.id}" }
+                            button { class:if scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), scorepeek_overlay_ui::ScreenView { kind:Some(current_settings.preview_screen), suspended_since_unix_ms:None, revision:0 }){"screen-toggle selected"}else{"screen-toggle"}, "aria-pressed":scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), scorepeek_overlay_ui::ScreenView { kind:Some(current_settings.preview_screen), suspended_since_unix_ms:None, revision:0 }), "data-canvas-id":"{canvas.id}", if scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), scorepeek_overlay_ui::ScreenView { kind:Some(current_settings.preview_screen), suspended_since_unix_ms:None, revision:0 }){"ON"}else{"OFF"} }
+                        }
+                    } }
+                    div { class:"canvas-actions", button { class:"add-canvas", "+ ADD CANVAS" } button { class:"delete-canvas danger", disabled:managed.borrow().len()<=1 || !current_settings.has_selection, "DELETE SELECTED" } }
+                }
+                }
+                div { class:"editor-tab-body",
+                if current_settings.has_selection { section { class:"appearance-pane", h2 { "APPEARANCE" } h3 { "SKIN" }
+                    div { class:"native-skin-options button-grid three", for (index,(label,skin)) in [("CYAN",scorepeek_overlay_ui::Skin::CyanSystem),("AURORA",scorepeek_overlay_ui::Skin::ResultAurora),("BLACKBOX",scorepeek_overlay_ui::Skin::DjBlackbox)].into_iter().enumerate() { button { class:if appearance.get().skin==skin{"skin-option selected"}else{"skin-option"}, "aria-pressed":appearance.get().skin==skin, "data-index":index, if appearance.get().skin==skin{"✓ "} "{label}" } } }
+                    h3 { "OPACITY · {current_settings.opacity_percent}%" }
+                    div { class:"native-opacity button-grid four", for value in [25,50,75,100] { button { class:if current_settings.opacity_percent==value{"opacity-option selected"}else{"opacity-option"}, "aria-pressed":current_settings.opacity_percent==value, "data-value":value, if current_settings.opacity_percent==value{"✓ "} "{value}" } } }
+                }
+                section { class:"output-pane", h2 { "OUTPUT" } div { class:"output-list", for output in outputs.borrow().iter() { button { class:if current_settings.output.as_deref()==Some(output.name.as_str()){"output-option selected"}else{"output-option"}, "aria-selected":current_settings.output.as_deref()==Some(output.name.as_str()), "data-output":"{output.name}", strong { if current_settings.output.as_deref()==Some(output.name.as_str()){"✓ "} "{output.name}" } small { "{output.model}" if let Some([width,height])=output.logical_size { " · {width}×{height}" } } } } } }
                 if selected_visible { section { class:"widgets-pane", h2 { "WIDGETS" }
                     for widget in widgets.borrow().iter() { button { class:if selected.borrow().as_deref()==Some(widget.id.as_str()){"widget-row selected"}else{"widget-row"}, "aria-selected":selected.borrow().as_deref()==Some(widget.id.as_str()), "data-widget-id":"{widget.id}", "{widget.id}" } }
                     details { class:"widget-add", open:widget_add_open.get(), summary { class:"widget-add-summary", "+ ADD WIDGET" } if widget_add_open.get() { div { class:"button-grid", for (index,label) in ["STATUS","SELECTION","SCORE","HISTORY LIST","HISTORY GRAPH"].into_iter().enumerate() { button { class:"add-widget", "data-index":index, "+ {label}" } } } } }
@@ -279,12 +346,12 @@ fn native_overlay(
                             if widget.kind == scorepeek_overlay_ui::WidgetKind::HistoryGraph {
                                 for value in [1,3,6,12] { button { class:if widget.settings.graph_months==value{"graph-months selected"}else{"graph-months"}, "aria-pressed":widget.settings.graph_months==value, "data-value":value, if widget.settings.graph_months==value{"✓ "} "{value}M" } }
                             }
-                            button { class:"delete-widget danger", if pending_delete.borrow().as_deref()==Some(widget.id.as_str()) { "CONFIRM DELETE" } else { "DELETE WIDGET" } }
+                            button { class:"delete-widget danger", "DELETE WIDGET" }
                         }
                     }
                 } } else { div { class:"canvas-hidden-state", strong { "HIDDEN ON THIS GAME SCREEN" } span { "Turn this canvas ON in the list to edit its widgets." } } } } else { div { class:"canvas-hidden-state", strong { "NO CANVAS ON THIS GAME SCREEN" } span { "Turn a canvas ON or add one for this game screen." } } }
                 }
-                footer { if dirty.get() { button { class:"discard-action", "DISCARD CHANGES" } button { class:"primary save-action", "SAVE ALL CHANGES AND CLOSE" } } else { button { class:"close-action", "CLOSE EDITOR" } } }
+                footer { button { class:"undo-action", disabled:!undo_available.get(), "UNDO" } div { class:"footer-actions", if dirty.get() { button { class:"discard-action", "DISCARD CHANGES" } button { class:"primary save-action", "SAVE ALL CHANGES AND CLOSE" } } else { button { class:"close-action", "CLOSE EDITOR" } } } }
             } }
             if surface_canvas_ids.borrow().contains(&current_settings.id) { if let Some(kind) = pending_widget.get() { div { class:"native-placement-ghost", style:format!("left:{}px;top:{}px",pending_point.get()[0],pending_point.get()[1]), "PLACE {kind:?}" } } }
         }
@@ -807,17 +874,16 @@ struct App {
     editor_id: String,
     editing: Rc<Cell<bool>>,
     panel_open: Rc<Cell<bool>>,
-    output_open: Rc<Cell<bool>>,
-    manage_open: Rc<Cell<bool>>,
     widget_add_open: Rc<Cell<bool>>,
     dirty: Rc<Cell<bool>>,
+    undo_available: Rc<Cell<bool>>,
     readonly: bool,
     selected: Rc<RefCell<Option<String>>>,
     pending_widget: Rc<Cell<Option<scorepeek_overlay_ui::WidgetKind>>>,
     pending_point: Rc<Cell<[f64; 2]>>,
-    pending_delete: Rc<RefCell<Option<String>>>,
     shared_widgets: Rc<RefCell<Vec<WidgetLayout>>>,
     interaction: Option<NativeInteraction>,
+    interaction_snapshot: Option<Vec<scorepeek_overlay_ui::CanvasPresentation>>,
     next_keepalive: Instant,
     managed: Rc<RefCell<Vec<scorepeek_overlay_ui::CanvasPresentation>>>,
     backend_revision: u64,
@@ -899,14 +965,12 @@ impl App {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .ui;
         let panel_open = Rc::new(Cell::new(ui.panel_open));
-        let output_open = Rc::new(Cell::new(ui.output_open));
-        let manage_open = Rc::new(Cell::new(ui.manage_open));
         let widget_add_open = Rc::new(Cell::new(ui.widget_add_open));
         let dirty = Rc::new(Cell::new(false));
+        let undo_available = Rc::new(Cell::new(false));
         let selected = Rc::new(RefCell::new(None));
         let pending_widget = Rc::new(Cell::new(None));
         let pending_point = Rc::new(Cell::new([340.0, 24.0]));
-        let pending_delete = Rc::new(RefCell::new(None));
         let managed = Rc::new(RefCell::new(Vec::new()));
         let outputs = Rc::new(RefCell::new(outputs));
         let appearance = Rc::new(Cell::new(appearance));
@@ -937,14 +1001,12 @@ impl App {
                 widgets: Rc::clone(&shared_widgets),
                 editing: Rc::clone(&editing),
                 panel_open: Rc::clone(&panel_open),
-                output_open: Rc::clone(&output_open),
-                manage_open: Rc::clone(&manage_open),
                 widget_add_open: Rc::clone(&widget_add_open),
                 dirty: Rc::clone(&dirty),
+                undo_available: Rc::clone(&undo_available),
                 selected: Rc::clone(&selected),
                 pending_widget: Rc::clone(&pending_widget),
                 pending_point: Rc::clone(&pending_point),
-                pending_delete: Rc::clone(&pending_delete),
                 managed: Rc::clone(&managed),
                 outputs: Rc::clone(&outputs),
                 state: Rc::clone(&shared_state),
@@ -1005,17 +1067,16 @@ impl App {
             editor_id: format!("wayland-{}", std::process::id()),
             editing,
             panel_open,
-            output_open,
-            manage_open,
             widget_add_open,
             dirty,
+            undo_available,
             readonly: true,
             selected,
             pending_widget,
             pending_point,
-            pending_delete,
             shared_widgets,
             interaction: None,
+            interaction_snapshot: None,
             next_keepalive: Instant::now(),
             managed,
             backend_revision: 0,
@@ -1102,6 +1163,18 @@ impl App {
                     } => {
                         self.pointer_button(button, pressed, x, y);
                         wake = true;
+                    }
+                    Event::PointerScroll { dx, dy, x, y } => {
+                        if self.editing.get()
+                            && self.panel_open.get()
+                            && scroll_editor_at(
+                                &mut self.document.inner.borrow_mut(),
+                                [x, y],
+                                [dx, dy],
+                            )
+                        {
+                            wake = true;
+                        }
                     }
                     Event::Frame => frame = true,
                     Event::Closed => return Ok(()),
@@ -1271,7 +1344,7 @@ impl App {
     }
 
     fn sync_workspace_projection(&mut self) {
-        let (ui, draft, dirty, selected_widget, pending_widget, pending_delete, surface_canvas_ids) = {
+        let (ui, draft, dirty, undo_available, selected_widget, pending_widget, surface_canvas_ids) = {
             let workspace = self
                 .workspace_ui
                 .lock()
@@ -1281,9 +1354,9 @@ impl App {
                 workspace.ui,
                 workspace.draft.clone(),
                 workspace.dirty,
+                workspace.undo.is_some(),
                 workspace.selected_widget.clone(),
                 workspace.pending_widget,
-                workspace.pending_delete.clone(),
                 workspace.surfaces.get(&key).cloned().unwrap_or_default(),
             )
         };
@@ -1296,8 +1369,6 @@ impl App {
             }
         }
         changed |= self.panel_open.replace(ui.panel_open) != ui.panel_open;
-        changed |= self.output_open.replace(ui.output_open) != ui.output_open;
-        changed |= self.manage_open.replace(ui.manage_open) != ui.manage_open;
         changed |= self.widget_add_open.replace(ui.widget_add_open) != ui.widget_add_open;
         {
             let mut settings = self.settings.borrow_mut();
@@ -1315,6 +1386,7 @@ impl App {
             }
         }
         changed |= self.dirty.replace(dirty) != dirty;
+        changed |= self.undo_available.replace(undo_available) != undo_available;
         {
             let mut current = self.selected.borrow_mut();
             if *current != selected_widget {
@@ -1323,13 +1395,6 @@ impl App {
             }
         }
         changed |= self.pending_widget.replace(pending_widget) != pending_widget;
-        {
-            let mut current = self.pending_delete.borrow_mut();
-            if *current != pending_delete {
-                *current = pending_delete;
-                changed = true;
-            }
-        }
         if self.interaction.is_none() && !draft.is_empty() {
             let mut current = self.managed.borrow_mut();
             if *current != draft {
@@ -1393,10 +1458,10 @@ impl App {
             self.shell.set_input_enabled(true);
         }
         self.interaction = None;
+        self.interaction_snapshot = None;
         if !value {
             self.selected.borrow_mut().take();
             self.pending_widget.set(None);
-            self.pending_delete.borrow_mut().take();
         }
         self.sync_workspace_ui();
         if let Some(update) = self.native_update.borrow().as_ref() {
@@ -1469,17 +1534,13 @@ impl App {
                     })
                     .cloned();
                 if let Some(target) = target {
+                    self.interaction_snapshot = Some(self.draft_snapshot());
                     if target.id == self.canvas.id {
-                        self.remember_geometry();
                         self.interaction = Some(NativeInteraction::CanvasMove {
                             start: [x, y],
                             origin: [target.x, target.y],
                         });
                     } else {
-                        self.workspace_ui
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .undo = Some(GeometryUndo(target.clone()));
                         self.interaction = Some(NativeInteraction::ManagedCanvasMove {
                             id: target.id,
                             start: [x, y],
@@ -1520,18 +1581,29 @@ impl App {
                     x,
                     y,
                 ) {
+                    if self.settings.borrow().output.as_deref() == Some(output.name.as_str()) {
+                        return;
+                    }
+                    let before = self.draft_snapshot();
                     self.canvas.output = Some(output.name.clone());
                     self.settings.borrow_mut().output = Some(output.name);
-                    self.persist_canvas();
+                    self.persist_canvas_change(before);
                     return;
                 }
             }
             if self.panel_open.get() && x < f64::from(self.settings.borrow().panel_width) {
                 if self.hit_selector(".undo-action", x, y) {
-                    self.undo_last_geometry();
+                    self.undo_last_change();
                     return;
                 }
                 if self.hit_selector(".close-action", x, y) {
+                    let mut workspace = self
+                        .workspace_ui
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    discard_undo(&mut workspace);
+                    drop(workspace);
+                    self.undo_available.set(false);
                     self.workspace_open
                         .store(false, std::sync::atomic::Ordering::Release);
                     self.preview
@@ -1563,7 +1635,6 @@ impl App {
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .take();
                     self.pending_widget.set(None);
-                    self.pending_delete.borrow_mut().take();
                     self.set_editing(false);
                     return;
                 }
@@ -1575,22 +1646,6 @@ impl App {
                 }
                 if self.hit_selector(".widget-add-summary", x, y) {
                     self.widget_add_open.set(!self.widget_add_open.get());
-                    self.sync_workspace_ui();
-                    if let Some(update) = self.native_update.borrow().as_ref() {
-                        update();
-                    }
-                    return;
-                }
-                if self.hit_selector(".output-summary", x, y) {
-                    self.output_open.set(!self.output_open.get());
-                    self.sync_workspace_ui();
-                    if let Some(update) = self.native_update.borrow().as_ref() {
-                        update();
-                    }
-                    return;
-                }
-                if self.hit_selector(".manage-summary", x, y) {
-                    self.manage_open.set(!self.manage_open.get());
                     self.sync_workspace_ui();
                     if let Some(update) = self.native_update.borrow().as_ref() {
                         update();
@@ -1622,6 +1677,7 @@ impl App {
                     .collect::<Vec<_>>();
                 for id in canvas_ids {
                     if self.hit_selector(&format!(".screen-toggle[data-canvas-id='{id}']"), x, y) {
+                        let before = self.draft_snapshot();
                         let screen = self.settings.borrow().preview_screen;
                         let was_shown = self
                             .managed
@@ -1637,7 +1693,7 @@ impl App {
                         {
                             set_shown_on(canvas, screen, !was_shown);
                         }
-                        self.update_draft();
+                        self.finish_draft_change(before);
                         if was_shown && id == self.canvas.id {
                             self.select_first_canvas(screen);
                         }
@@ -1702,7 +1758,6 @@ impl App {
                 {
                     if self.hit_selector(&format!(".add-widget[data-index='{index}']"), x, y) {
                         self.pending_widget.set(Some(kind));
-                        self.pending_delete.borrow_mut().take();
                         self.sync_workspace_ui();
                         if let Some(update) = self.native_update.borrow().as_ref() {
                             update();
@@ -1713,21 +1768,13 @@ impl App {
                 if self.hit_selector(".delete-widget", x, y) {
                     let selected_id = self.selected.borrow().clone();
                     if let Some(id) = selected_id {
-                        if self.pending_delete.borrow().as_deref() == Some(id.as_str()) {
-                            self.shared_widgets
-                                .borrow_mut()
-                                .retain(|widget| widget.id != id);
-                            self.selected.borrow_mut().take();
-                            self.pending_delete.borrow_mut().take();
-                            self.sync_workspace_ui();
-                            self.persist_canvas();
-                        } else {
-                            *self.pending_delete.borrow_mut() = Some(id);
-                            self.sync_workspace_ui();
-                            if let Some(update) = self.native_update.borrow().as_ref() {
-                                update();
-                            }
-                        }
+                        let before = self.draft_snapshot();
+                        self.shared_widgets
+                            .borrow_mut()
+                            .retain(|widget| widget.id != id);
+                        self.selected.borrow_mut().take();
+                        self.sync_workspace_ui();
+                        self.persist_canvas_change(before);
                     }
                     return;
                 }
@@ -1744,6 +1791,7 @@ impl App {
                     }
                 }
                 if self.hit_selector(".add-canvas", x, y) {
+                    let before = self.draft_snapshot();
                     let suffix = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
@@ -1761,7 +1809,7 @@ impl App {
                     canvas.height = 1040.min(grid_floor(self.surface_logical[1]));
                     let id = canvas.id.clone();
                     self.managed.borrow_mut().push(canvas);
-                    self.update_draft();
+                    self.finish_draft_change(before);
                     *self
                         .preview
                         .lock()
@@ -1769,32 +1817,30 @@ impl App {
                     return;
                 }
                 if self.hit_selector(".delete-canvas", x, y) {
-                    if self.managed.borrow().len() <= 1 {
+                    let selected = self
+                        .preview
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    let Some(selected) =
+                        selected_canvas_for_delete(&self.managed.borrow(), selected.as_deref())
+                    else {
                         return;
-                    }
-                    if self.pending_delete.borrow().as_deref() == Some(self.canvas.id.as_str()) {
-                        self.managed
-                            .borrow_mut()
-                            .retain(|canvas| canvas.id != self.canvas.id);
-                        self.pending_delete.borrow_mut().take();
-                        self.sync_workspace_ui();
-                        self.update_draft();
-                        let next = self
-                            .managed
-                            .borrow()
-                            .first()
-                            .map(|canvas| canvas.id.clone());
-                        *self
-                            .preview
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
-                    } else {
-                        *self.pending_delete.borrow_mut() = Some(self.canvas.id.clone());
-                        self.sync_workspace_ui();
-                        if let Some(update) = self.native_update.borrow().as_ref() {
-                            update();
-                        }
-                    }
+                    };
+                    let before = self.draft_snapshot();
+                    self.managed
+                        .borrow_mut()
+                        .retain(|canvas| canvas.id != selected);
+                    self.finish_draft_change(before);
+                    let next = self
+                        .managed
+                        .borrow()
+                        .first()
+                        .map(|canvas| canvas.id.clone());
+                    *self
+                        .preview
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
                     return;
                 }
                 for (index, skin) in [
@@ -1806,18 +1852,45 @@ impl App {
                 .enumerate()
                 {
                     if self.hit_selector(&format!(".skin-option[data-index='{index}']"), x, y) {
+                        if self.appearance.get().skin == skin {
+                            return;
+                        }
+                        let before = self.draft_snapshot();
                         self.appearance.set(Appearance { skin });
                         self.canvas.skin = skin;
-                        self.persist_canvas();
+                        self.persist_canvas_change(before);
                         return;
                     }
                 }
                 for value in [25_u8, 50, 75, 100] {
                     if self.hit_selector(&format!(".opacity-option[data-value='{value}']"), x, y) {
+                        if self.settings.borrow().opacity_percent == value {
+                            return;
+                        }
+                        let before = self.draft_snapshot();
                         self.settings.borrow_mut().opacity_percent = value;
-                        self.persist_canvas();
+                        self.persist_canvas_change(before);
                         return;
                     }
+                }
+                return;
+            }
+            let target = unselected_canvas_at(
+                &self.managed.borrow(),
+                &self.surface_canvas_ids.borrow(),
+                &self.canvas.presentation(),
+                self.settings.borrow().preview_screen,
+                [x, y],
+            );
+            if let Some(id) = target {
+                *self
+                    .preview
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(id);
+                self.selected.borrow_mut().take();
+                self.sync_workspace_ui();
+                if let Some(update) = self.native_update.borrow().as_ref() {
+                    update();
                 }
                 return;
             }
@@ -1842,7 +1915,7 @@ impl App {
                 None
             };
             if let Some(corner) = corner {
-                self.remember_geometry();
+                self.interaction_snapshot = Some(self.draft_snapshot());
                 self.interaction = Some(NativeInteraction::CanvasResize {
                     start: output_point,
                     position: [self.canvas.x, self.canvas.y],
@@ -1881,7 +1954,7 @@ impl App {
                     None
                 };
                 *self.selected.borrow_mut() = Some(original.id.clone());
-                self.remember_geometry();
+                self.interaction_snapshot = Some(self.draft_snapshot());
                 self.interaction = Some(NativeInteraction::Widget {
                     id: original.id.clone(),
                     start: [x, y],
@@ -2079,14 +2152,17 @@ impl App {
         let Some(interaction) = self.interaction.take() else {
             return;
         };
+        let before = self.interaction_snapshot.take();
         if let NativeInteraction::ManagedCanvasMove { id, .. } = interaction {
-            self.update_draft();
             *self
                 .preview
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(id);
         } else {
-            self.persist_canvas();
+            self.sync_canvas_to_managed();
+        }
+        if let Some(before) = before {
+            self.finish_draft_change(before);
         }
         if !self.editing.get() {
             let _ = self.request(crate::control::Request::ReleaseBackend {
@@ -2096,6 +2172,14 @@ impl App {
         }
     }
     fn persist_canvas(&mut self) {
+        self.sync_canvas_to_managed();
+        self.update_draft();
+    }
+    fn persist_canvas_change(&mut self, before: Vec<scorepeek_overlay_ui::CanvasPresentation>) {
+        self.sync_canvas_to_managed();
+        self.finish_draft_change(before);
+    }
+    fn sync_canvas_to_managed(&mut self) {
         {
             let settings = self.settings.borrow();
             self.canvas.show_on.clone_from(&settings.show_on);
@@ -2114,20 +2198,29 @@ impl App {
         {
             *existing = presentation;
         }
+    }
+
+    fn draft_snapshot(&self) -> Vec<scorepeek_overlay_ui::CanvasPresentation> {
+        self.managed.borrow().clone()
+    }
+
+    fn finish_draft_change(&mut self, before: Vec<scorepeek_overlay_ui::CanvasPresentation>) {
+        let changed = {
+            let after = self.managed.borrow();
+            let mut workspace = self
+                .workspace_ui
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            remember_draft_change(&mut workspace.undo, before, &after)
+        };
+        if !changed {
+            return;
+        }
+        self.undo_available.set(true);
         self.update_draft();
     }
-    fn remember_geometry(&mut self) {
-        let mut presentation = self.canvas.presentation();
-        presentation.skin = self.appearance.get().skin;
-        presentation
-            .widgets
-            .clone_from(&self.shared_widgets.borrow());
-        self.workspace_ui
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .undo = Some(GeometryUndo(presentation));
-    }
-    fn undo_last_geometry(&mut self) {
+
+    fn undo_last_change(&mut self) {
         let Some(undo) = self
             .workspace_ui
             .lock()
@@ -2137,47 +2230,27 @@ impl App {
         else {
             return;
         };
-        let GeometryUndo(canvas) = undo;
-        let restored = self
-            .managed
-            .borrow_mut()
-            .iter_mut()
-            .find(|existing| existing.id == canvas.id)
-            .map(|existing| {
-                existing.x = canvas.x;
-                existing.y = canvas.y;
-                existing.width = canvas.width;
-                existing.height = canvas.height;
-                for snapshot in &canvas.widgets {
-                    if let Some(widget) = existing
-                        .widgets
-                        .iter_mut()
-                        .find(|widget| widget.id == snapshot.id)
-                    {
-                        widget.x = snapshot.x;
-                        widget.y = snapshot.y;
-                        widget.width = snapshot.width;
-                        widget.height = snapshot.height;
-                    }
-                }
-                existing.clone()
-            });
-        if canvas.id == self.canvas.id {
-            self.canvas.x = canvas.x;
-            self.canvas.y = canvas.y;
-            self.canvas.width = canvas.width;
-            self.canvas.height = canvas.height;
-            if let Some(restored) = restored {
-                self.shared_widgets
-                    .borrow_mut()
-                    .clone_from(&restored.widgets);
+        let DraftUndo(restored) = undo;
+        self.managed.borrow_mut().clone_from(&restored);
+        self.undo_available.set(false);
+        let selected = self
+            .preview
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let next = restored
+            .iter()
+            .find(|canvas| Some(canvas.id.as_str()) == selected.as_deref())
+            .or_else(|| restored.first())
+            .cloned();
+        if let Some(next) = next {
+            if selected.as_deref() != Some(next.id.as_str()) {
+                *self
+                    .preview
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(next.id.clone());
             }
-            let mut settings = self.settings.borrow_mut();
-            settings.x = canvas.x;
-            settings.y = canvas.y;
-            settings.width = canvas.width;
-            settings.height = canvas.height;
-            drop(settings);
+            self.apply_selected_presentation(&next);
             self.set_editor_geometry(true);
         }
         self.update_draft();
@@ -2190,8 +2263,6 @@ impl App {
             .ui = EditorWorkspaceUi {
             panel_open: self.panel_open.get(),
             preview_screen: self.settings.borrow().preview_screen,
-            output_open: self.output_open.get(),
-            manage_open: self.manage_open.get(),
             widget_add_open: self.widget_add_open.get(),
         };
         let mut workspace = self
@@ -2202,9 +2273,6 @@ impl App {
             .selected_widget
             .clone_from(&self.selected.borrow());
         workspace.pending_widget = self.pending_widget.get();
-        workspace
-            .pending_delete
-            .clone_from(&self.pending_delete.borrow());
     }
 
     fn select_first_canvas(&mut self, screen: scorepeek_overlay_ui::ScreenKind) {
@@ -2219,12 +2287,12 @@ impl App {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
         self.selected.borrow_mut().take();
-        self.pending_delete.borrow_mut().take();
         if let Some(update) = self.native_update.borrow().as_ref() {
             update();
         }
     }
     fn place_widget(&mut self, kind: scorepeek_overlay_ui::WidgetKind, x: f64, y: f64) {
+        let before = self.draft_snapshot();
         let id = scorepeek_overlay_ui::next_widget_id(kind, &self.shared_widgets.borrow());
         let (natural_width, natural_height) = scorepeek_overlay_ui::default_widget_size(kind);
         let width = natural_width.min(self.canvas.width);
@@ -2246,13 +2314,15 @@ impl App {
         });
         *self.selected.borrow_mut() = Some(id);
         self.sync_workspace_ui();
-        self.persist_canvas();
+        self.persist_canvas_change(before);
     }
     fn update_selected_widget_setting(
         &mut self,
         history_count: Option<u32>,
         graph_months: Option<u32>,
     ) {
+        let before = self.draft_snapshot();
+        let mut changed = false;
         let selected = self.selected.borrow().clone();
         if let Some(widget) = self
             .shared_widgets
@@ -2260,14 +2330,22 @@ impl App {
             .iter_mut()
             .find(|widget| Some(&widget.id) == selected.as_ref())
         {
-            if let Some(value) = history_count {
+            if let Some(value) = history_count
+                && widget.settings.history_count != value
+            {
                 widget.settings.history_count = value;
+                changed = true;
             }
-            if let Some(value) = graph_months {
+            if let Some(value) = graph_months
+                && widget.settings.graph_months != value
+            {
                 widget.settings.graph_months = value;
+                changed = true;
             }
         }
-        self.persist_canvas();
+        if changed {
+            self.persist_canvas_change(before);
+        }
     }
     fn update_draft(&mut self) {
         let canvases = self.managed.borrow().clone();
@@ -2696,8 +2774,6 @@ struct VisualDebugSession {
     widgets: Rc<RefCell<Vec<WidgetLayout>>>,
     editing: Rc<Cell<bool>>,
     panel_open: Rc<Cell<bool>>,
-    output_open: Rc<Cell<bool>>,
-    manage_open: Rc<Cell<bool>>,
     widget_add_open: Rc<Cell<bool>>,
     selected: Rc<RefCell<Option<String>>>,
     managed: Rc<RefCell<Vec<scorepeek_overlay_ui::CanvasPresentation>>>,
@@ -2735,8 +2811,6 @@ impl VisualDebugSession {
         let widgets = Rc::new(RefCell::new(canvas.widgets.clone()));
         let editing = Rc::new(Cell::new(scenario.editing));
         let panel_open = Rc::new(Cell::new(true));
-        let output_open = Rc::new(Cell::new(false));
-        let manage_open = Rc::new(Cell::new(false));
         let widget_add_open = Rc::new(Cell::new(false));
         let selected = Rc::new(RefCell::new(None));
         let surface_canvas_ids = managed
@@ -2763,14 +2837,12 @@ impl VisualDebugSession {
             widgets: Rc::clone(&widgets),
             editing: Rc::clone(&editing),
             panel_open: Rc::clone(&panel_open),
-            output_open: Rc::clone(&output_open),
-            manage_open: Rc::clone(&manage_open),
             widget_add_open: Rc::clone(&widget_add_open),
             dirty: Rc::new(Cell::new(false)),
+            undo_available: Rc::new(Cell::new(false)),
             selected: Rc::clone(&selected),
             pending_widget: Rc::new(Cell::new(None)),
             pending_point: Rc::new(Cell::new([0.0, 0.0])),
-            pending_delete: Rc::new(RefCell::new(None)),
             managed: Rc::clone(&managed),
             outputs: Rc::new(RefCell::new(vec![OutputDescription {
                 name: "HEADLESS-1".into(),
@@ -2797,8 +2869,6 @@ impl VisualDebugSession {
             widgets,
             editing,
             panel_open,
-            output_open,
-            manage_open,
             widget_add_open,
             selected,
             managed,
@@ -2862,8 +2932,6 @@ impl VisualDebugSession {
         match selector {
             ".native-panel-toggle" => self.panel_open.set(!self.panel_open.get()),
             ".widget-add-summary" => self.widget_add_open.set(!self.widget_add_open.get()),
-            ".output-summary" => self.output_open.set(!self.output_open.get()),
-            ".manage-summary" => self.manage_open.set(!self.manage_open.get()),
             _ if selector.contains("preview-screen") => {
                 let index = selector_index(selector)?;
                 let screens = [
@@ -3386,6 +3454,105 @@ mod skin_tests {
     }
 
     #[test]
+    fn left_click_selects_an_unselected_visible_canvas_only_outside_the_current_canvas() {
+        let mut selected = crate::config::OverlayConfig::initial().canvases[0].presentation();
+        selected.id = "selected".into();
+        selected.x = 0;
+        selected.y = 0;
+        selected.width = 100;
+        selected.height = 100;
+        let mut preview = selected.clone();
+        preview.id = "preview".into();
+        preview.x = 120;
+        let surfaces = std::collections::BTreeSet::from([selected.id.clone(), preview.id.clone()]);
+        let canvases = vec![selected.clone(), preview];
+
+        assert_eq!(
+            unselected_canvas_at(
+                &canvases,
+                &surfaces,
+                &selected,
+                scorepeek_overlay_ui::ScreenKind::MusicSelect,
+                [140.0, 20.0],
+            ),
+            Some("preview".into())
+        );
+        assert_eq!(
+            unselected_canvas_at(
+                &canvases,
+                &surfaces,
+                &selected,
+                scorepeek_overlay_ui::ScreenKind::MusicSelect,
+                [20.0, 20.0],
+            ),
+            None
+        );
+
+        let mut local_preview = canvases[1].clone();
+        local_preview.x = 0;
+        let local_canvases = vec![selected.clone(), local_preview];
+        let local_surfaces = std::collections::BTreeSet::from(["preview".into()]);
+        assert_eq!(
+            unselected_canvas_at(
+                &local_canvases,
+                &local_surfaces,
+                &selected,
+                scorepeek_overlay_ui::ScreenKind::MusicSelect,
+                [20.0, 20.0],
+            ),
+            Some("preview".into()),
+            "a selected canvas on another output must not block the local preview"
+        );
+    }
+
+    #[test]
+    fn one_draft_snapshot_undoes_every_field_and_is_not_replaced_by_a_no_op() {
+        let before = crate::config::OverlayConfig::initial()
+            .canvases
+            .into_iter()
+            .filter(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
+            .map(|canvas| canvas.presentation())
+            .collect::<Vec<_>>();
+        let mut after = before.clone();
+        after[0].skin = Skin::DjBlackbox;
+        after[0].opacity_percent = 25;
+        after[0].show_on = Some(Vec::new());
+        after[0].output = Some("DP-2".into());
+        after[0].x += 20;
+        after[0].widgets.clear();
+        after.pop();
+
+        let mut undo = None;
+        assert!(remember_draft_change(&mut undo, before.clone(), &after));
+        assert!(!remember_draft_change(&mut undo, after.clone(), &after));
+        let DraftUndo(restored) = undo.take().unwrap();
+        assert_eq!(restored, before);
+        assert!(undo.is_none());
+    }
+
+    #[test]
+    fn canvas_delete_requires_a_current_selection_and_clean_close_discards_undo() {
+        let canvases = crate::config::OverlayConfig::initial()
+            .canvases
+            .into_iter()
+            .filter(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
+            .map(|canvas| canvas.presentation())
+            .collect::<Vec<_>>();
+        assert_eq!(selected_canvas_for_delete(&canvases, None), None);
+        assert_eq!(
+            selected_canvas_for_delete(&canvases, Some(&canvases[1].id)),
+            Some(canvases[1].id.clone())
+        );
+
+        let mut workspace = NativeWorkspace {
+            undo: Some(DraftUndo(canvases)),
+            ..NativeWorkspace::default()
+        };
+        discard_undo(&mut workspace);
+        assert!(workspace.undo.is_none());
+    }
+
+    #[test]
     fn visual_debug_surface_contains_every_headless_canvas() {
         let scenario = VisualDebugScenario {
             skin: None,
@@ -3466,14 +3633,12 @@ mod skin_tests {
                         widgets: Rc::new(RefCell::new(scorepeek_overlay_ui::default_widgets())),
                         editing: Rc::new(Cell::new(false)),
                         panel_open: Rc::new(Cell::new(true)),
-                        output_open: Rc::new(Cell::new(false)),
-                        manage_open: Rc::new(Cell::new(false)),
                         widget_add_open: Rc::new(Cell::new(false)),
                         dirty: Rc::new(Cell::new(false)),
+                        undo_available: Rc::new(Cell::new(false)),
                         selected: Rc::new(RefCell::new(None)),
                         pending_widget: Rc::new(Cell::new(None)),
                         pending_point: Rc::new(Cell::new([0.0, 0.0])),
-                        pending_delete: Rc::new(RefCell::new(None)),
                         managed: Rc::new(RefCell::new(Vec::new())),
                         outputs: Rc::new(RefCell::new(Vec::new())),
                         state: Rc::new(RefCell::new(
@@ -3566,14 +3731,12 @@ mod skin_tests {
                     }])),
                     editing: Rc::new(Cell::new(false)),
                     panel_open: Rc::new(Cell::new(true)),
-                    output_open: Rc::new(Cell::new(false)),
-                    manage_open: Rc::new(Cell::new(false)),
                     widget_add_open: Rc::new(Cell::new(false)),
                     dirty: Rc::new(Cell::new(false)),
+                    undo_available: Rc::new(Cell::new(true)),
                     selected: Rc::new(RefCell::new(None)),
                     pending_widget: Rc::new(Cell::new(None)),
                     pending_point: Rc::new(Cell::new([0.0, 0.0])),
-                    pending_delete: Rc::new(RefCell::new(None)),
                     managed: Rc::new(RefCell::new(Vec::new())),
                     outputs: Rc::new(RefCell::new(Vec::new())),
                     state: Rc::new(RefCell::new(OverlayState::default())),
@@ -3650,6 +3813,7 @@ mod skin_tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn output_picker_stays_inside_the_overlay_panel_at_actual_canvas_coordinates() {
         let canvas = scorepeek_overlay_ui::CanvasPresentation {
             id: "wayland-selection".into(),
@@ -3664,6 +3828,15 @@ mod skin_tests {
             height: 120,
             widgets: Vec::new(),
         };
+        let managed = (0..6)
+            .map(|index| {
+                let mut item = canvas.clone();
+                if index > 0 {
+                    item.id = format!("wayland-extra-{index}");
+                }
+                item
+            })
+            .collect::<Vec<_>>();
         let mut document = DioxusDocument::new(
             VirtualDom::new_with_props(
                 native_overlay,
@@ -3674,15 +3847,13 @@ mod skin_tests {
                     widgets: Rc::new(RefCell::new(Vec::new())),
                     editing: Rc::new(Cell::new(true)),
                     panel_open: Rc::new(Cell::new(true)),
-                    output_open: Rc::new(Cell::new(true)),
-                    manage_open: Rc::new(Cell::new(false)),
                     widget_add_open: Rc::new(Cell::new(false)),
                     dirty: Rc::new(Cell::new(false)),
+                    undo_available: Rc::new(Cell::new(true)),
                     selected: Rc::new(RefCell::new(None)),
                     pending_widget: Rc::new(Cell::new(None)),
                     pending_point: Rc::new(Cell::new([0.0, 0.0])),
-                    pending_delete: Rc::new(RefCell::new(None)),
-                    managed: Rc::new(RefCell::new(vec![canvas])),
+                    managed: Rc::new(RefCell::new(managed)),
                     outputs: Rc::new(RefCell::new(vec![OutputDescription {
                         name: "DP-1".into(),
                         model: "Odyssey G9".into(),
@@ -3718,23 +3889,52 @@ mod skin_tests {
         apply_motion(&mut inner, 1.0);
         resolve_with_loaded_resources(&mut inner, 1.0);
 
-        let panel = inner
+        let rect = |selector| {
+            inner
+                .get_client_bounding_rect(inner.query_selector(selector).unwrap().unwrap())
+                .unwrap()
+        };
+        let panel = rect(".native-canvas-manager");
+        let output = rect(".output-option");
+        let canvas_section = rect(".canvas-section");
+        let appearance = rect(".appearance-pane");
+        let output_section = rect(".output-pane");
+        let undo = rect(".undo-action");
+        let preview = rect(".canvas-content");
+        let canvas_list = rect(".canvas-list");
+        let last_before = rect(".canvas-select[data-canvas-id='wayland-extra-5']");
+        assert!((panel.width - 384.0).abs() < 1.0, "{panel:?}");
+        assert!(
+            canvas_section.y < appearance.y,
+            "{canvas_section:?} {appearance:?}"
+        );
+        assert!(
+            appearance.y < output_section.y,
+            "{appearance:?} {output_section:?}"
+        );
+        assert!(output.x >= panel.x && output.x + output.width <= panel.x + panel.width);
+        assert!(undo.x >= panel.x && undo.y > canvas_section.y, "{undo:?}");
+        assert!(inner.query_selector(".manage-canvas").unwrap().is_none());
+        assert!(inner.query_selector(".output-settings").unwrap().is_none());
+        assert!((preview.x - 120.0).abs() < 1.0, "{preview:?}");
+        assert!(scroll_editor_at(
+            &mut inner,
+            [canvas_list.x + 8.0, canvas_list.y + 8.0],
+            [0.0, -120.0]
+        ));
+        inner.resolve(1.0);
+        let last_after = inner
             .get_client_bounding_rect(
                 inner
-                    .query_selector(".native-canvas-manager")
+                    .query_selector(".canvas-select[data-canvas-id='wayland-extra-5']")
                     .unwrap()
                     .unwrap(),
             )
             .unwrap();
-        let output = inner
-            .get_client_bounding_rect(inner.query_selector(".output-option").unwrap().unwrap())
-            .unwrap();
-        let preview = inner
-            .get_client_bounding_rect(inner.query_selector(".canvas-content").unwrap().unwrap())
-            .unwrap();
-        assert!((panel.width - 384.0).abs() < 1.0, "{panel:?}");
-        assert!(output.x >= panel.x && output.x + output.width <= panel.x + panel.width);
-        assert!((preview.x - 120.0).abs() < 1.0, "{preview:?}");
+        assert!(
+            last_after.y < last_before.y,
+            "{last_before:?} {last_after:?}"
+        );
     }
 
     #[test]

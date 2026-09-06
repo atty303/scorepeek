@@ -669,6 +669,50 @@ mod tests {
     }
 
     #[test]
+    fn restoring_the_saved_backend_document_clears_dirty() {
+        let (path, shared) = fixture("restore-dirty");
+        let acquired = apply(
+            Request::AcquireBackend {
+                backend: Backend::Wayland,
+                editor_id: "editor".into(),
+            },
+            &path,
+            &shared,
+        )
+        .unwrap();
+        let saved = acquired.canvases.clone();
+        let mut changed = acquired.canvases;
+        changed[0].opacity_percent = 25;
+        assert!(
+            apply(
+                Request::UpdateBackendDraft {
+                    backend: Backend::Wayland,
+                    editor_id: "editor".into(),
+                    canvases: changed,
+                },
+                &path,
+                &shared,
+            )
+            .unwrap()
+            .dirty
+        );
+        assert!(
+            !apply(
+                Request::UpdateBackendDraft {
+                    backend: Backend::Wayland,
+                    editor_id: "editor".into(),
+                    canvases: saved,
+                },
+                &path,
+                &shared,
+            )
+            .unwrap()
+            .dirty
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn failed_commit_keeps_lease_and_previous_document() {
         let (path, shared) = fixture("failure");
         let acquired = apply(

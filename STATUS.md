@@ -33,12 +33,16 @@ checkpoint; implementation history belongs in Git.
   exposes stable `/canvas/<id>` URLs plus the full-screen `/overlay` multi-canvas Browser Source.
   Browser Source Interaction edits the same `/overlay` page; `/canvas/<id>` is display-only.
   Right-click opens an opaque 360–480px panel over the output-coordinate preview. The workspace shows
-  every canvas, makes GAME SCREEN the current editing context, offers fixed inactive sample data, and
-  supports one geometry undo. Each canvas row toggles membership in only the current screen; the panel
-  then presents CANVAS SETTINGS and visible WIDGETS vertically. Clean drafts show only CLOSE EDITOR;
-  dirty drafts show DISCARD CHANGES and SAVE ALL CHANGES AND CLOSE. Wayland lists connector, model and
-  logical output size under MOVE TO OUTPUT. While editing, synchronized peer panels appear on every
-  connected output, right-drag moves canvases and left-drag moves widgets.
+  every canvas, makes GAME SCREEN the current editing context and offers fixed inactive sample data.
+  A fixed CANVASES section owns the bounded list, current-screen ON/OFF controls and immediate add or
+  selected-delete actions; at least one canvas remains. The settings scroller separates APPEARANCE
+  (SKIN and OPACITY), always-expanded OUTPUT candidates and visible WIDGETS. The fixed footer provides
+  one complete-backend-draft UNDO plus clean CLOSE or dirty DISCARD/SAVE controls. One gesture or
+  command replaces the single undo snapshot only when it changes the draft; navigation does not.
+  Wayland lists connector, model and logical output size for every output candidate. While editing,
+  synchronized peer panels appear on every connected output, right-drag moves canvases, left-drag
+  moves widgets, a first left click on an unselected visible preview selects only that canvas, and
+  Wayland pointer-axis input scrolls the bounded canvas list or settings under the pointer.
   Wayland missing-output recovery opens the same unsaved draft on a deterministic fitting or largest
   output and shrinks only the canvas boundary when required. SAVE adopts it; DISCARD leaves TOML
   untouched and suppresses that canvas for the run. `--overlay-wayland-edit` opens this recovery editor.
@@ -214,8 +218,8 @@ checkpoint; implementation history belongs in Git.
   restrained lines/corner accents, with staggered moving highlights carrying the ambient motion.
   These checks do not establish live Wayland or OBS composition.
 - Repository checks and the complete workspace suite pass: 508 library,
-  325 binary, 128 corpus library, 5 corpus binary, 37 overlay, 3 handle, 4 overlay-UI, 0 overlay-web
-  and 13 score tests, plus doctests. The embedded-web overlay suite has 38 tests. The 99 offline OCR tests and
+  325 binary, 128 corpus library, 5 corpus binary, 41 overlay, 4 handle, 4 overlay-UI, 0 overlay-web
+  and 13 score tests, plus doctests. The embedded-web overlay suite has 42 tests. The 99 offline OCR tests and
   repository checks also pass. Public API and overlay state tests include score-store invalidation,
   RESULT readiness across withdrawal/re-resolution, fresh and same-session reconnect restoration,
   and completion publication after shutdown drain.

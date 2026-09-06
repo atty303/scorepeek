@@ -102,6 +102,12 @@ pub enum Event {
         x: f64,
         y: f64,
     },
+    PointerScroll {
+        dx: f64,
+        dy: f64,
+        x: f64,
+        y: f64,
+    },
     Closed,
 }
 pub struct Shell {
@@ -531,8 +537,33 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_pointer::WlPointer, (
                     });
                 }
             }
+            wl_pointer::Event::Axis { axis, value, .. } => {
+                if let Ok(axis) = axis.into_result() {
+                    let Some([dx, dy]) = pointer_scroll_delta(axis, value) else {
+                        return;
+                    };
+                    state.events.push(Event::PointerScroll {
+                        dx,
+                        dy,
+                        x: state.pointer_position[0],
+                        y: state.pointer_position[1],
+                    });
+                }
+            }
             _ => {}
         }
+    }
+}
+
+fn pointer_scroll_delta(
+    axis: wayland_client::protocol::wl_pointer::Axis,
+    value: f64,
+) -> Option<[f64; 2]> {
+    use wayland_client::protocol::wl_pointer::Axis;
+    match axis {
+        Axis::HorizontalScroll => Some([-value, 0.0]),
+        Axis::VerticalScroll => Some([0.0, -value]),
+        _ => None,
     }
 }
 
@@ -877,7 +908,7 @@ fn choose_output_index<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{choose_output_index, scaled_size, upper_right_x};
+    use super::{choose_output_index, pointer_scroll_delta, scaled_size, upper_right_x};
     #[test]
     fn integer_and_fractional_buffers_round_up() {
         assert_eq!(scaled_size(1920, 120), 1920);
@@ -890,6 +921,19 @@ mod tests {
         assert_eq!(upper_right_x(1920, 560, 20), Some(1340));
         assert_eq!(upper_right_x(1920, 560, -20), Some(1360));
         assert_eq!(upper_right_x(100, 560, 20), Some(-480));
+    }
+
+    #[test]
+    fn wayland_axis_uses_the_native_dom_scroll_direction() {
+        use wayland_client::protocol::wl_pointer::Axis;
+        assert_eq!(
+            pointer_scroll_delta(Axis::VerticalScroll, 15.0),
+            Some([0.0, -15.0])
+        );
+        assert_eq!(
+            pointer_scroll_delta(Axis::HorizontalScroll, -5.0),
+            Some([5.0, 0.0])
+        );
     }
 
     #[test]

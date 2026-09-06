@@ -9,6 +9,11 @@
     ".widget-slot",
     ".native-panel-toggle",
     ".native-canvas-manager",
+    ".canvas-section",
+    ".canvas-actions",
+    ".appearance-pane",
+    ".output-pane",
+    ".undo-action",
     ".screen-toggle",
     ".editor-tab-body"
   ],

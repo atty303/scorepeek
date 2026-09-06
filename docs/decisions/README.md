@@ -6,6 +6,7 @@ authoritative.
 
 ## Current
 
+- [ADR 0137: Group canvas controls and undo drafts](0137-group-canvas-controls-and-undo-drafts.md) groups canvas management with the canvas list, separates setting sections, generalizes one-step undo to the complete backend draft, and selects unselected previews by left click.
 - [ADR 0136: Dynamically load the Wayland client](0136-dynamically-load-the-wayland-client.md) removes undeclared Wayland development packages from the build and independently links and tests the shell crate.
 - [ADR 0135: Game-screen-first overlay editing](0135-make-game-screen-the-overlay-editor-context.md) removes canvas enablement, makes current-screen membership the row toggle, and synchronizes the Wayland editor across all outputs.
 - [ADR 0130: RESULT readiness and score-store invalidation](0130-separate-result-readiness-and-score-store-invalidation.md) separates the RESULT readiness lamp from persistence, adds committed-store invalidation, and routes parent controller diagnostics away from terminal output.
