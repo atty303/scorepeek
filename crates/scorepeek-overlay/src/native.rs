@@ -140,6 +140,23 @@ struct NativeCanvasSettings {
     panel_width: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CanvasGeometry {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+impl NativeCanvasSettings {
+    fn set_geometry(&mut self, geometry: CanvasGeometry) {
+        self.x = geometry.x;
+        self.y = geometry.y;
+        self.width = geometry.width;
+        self.height = geometry.height;
+    }
+}
+
 #[derive(Clone, Copy)]
 #[allow(clippy::struct_excessive_bools)]
 struct EditorWorkspaceUi {
@@ -516,6 +533,52 @@ const fn grid_floor(value: u32) -> u32 {
 fn maximum_grid_position(output: u32, extent: u32) -> i32 {
     i32::try_from(grid_floor(output.saturating_sub(extent))).unwrap_or(i32::MAX)
 }
+
+fn resized_canvas_geometry(
+    position: [i32; 2],
+    origin: [u32; 2],
+    minimum: [u32; 2],
+    corner: ResizeCorner,
+    delta: [i32; 2],
+    output: Option<[u32; 2]>,
+) -> CanvasGeometry {
+    let mut geometry = CanvasGeometry {
+        x: position[0],
+        y: position[1],
+        width: origin[0],
+        height: origin[1],
+    };
+    let west = matches!(corner, ResizeCorner::NorthWest | ResizeCorner::SouthWest);
+    let north = matches!(corner, ResizeCorner::NorthWest | ResizeCorner::NorthEast);
+    let east = matches!(corner, ResizeCorner::NorthEast | ResizeCorner::SouthEast);
+    let south = matches!(corner, ResizeCorner::SouthWest | ResizeCorner::SouthEast);
+    if west {
+        let maximum = i32::try_from(origin[0].saturating_sub(minimum[0])).unwrap_or(i32::MAX);
+        let applied = delta[0].clamp(-position[0], maximum);
+        geometry.x = position[0].saturating_add(applied);
+        geometry.width = origin[0].saturating_sub_signed(applied);
+    } else if east {
+        geometry.width = origin[0].saturating_add_signed(delta[0]).max(minimum[0]);
+    }
+    if north {
+        let maximum = i32::try_from(origin[1].saturating_sub(minimum[1])).unwrap_or(i32::MAX);
+        let applied = delta[1].clamp(-position[1], maximum);
+        geometry.y = position[1].saturating_add(applied);
+        geometry.height = origin[1].saturating_sub_signed(applied);
+    } else if south {
+        geometry.height = origin[1].saturating_add_signed(delta[1]).max(minimum[1]);
+    }
+    if let Some([output_width, output_height]) = output {
+        geometry.width = geometry.width.min(grid_floor(
+            output_width.saturating_sub(geometry.x.cast_unsigned()),
+        ));
+        geometry.height = geometry.height.min(grid_floor(
+            output_height.saturating_sub(geometry.y.cast_unsigned()),
+        ));
+    }
+    geometry
+}
+
 fn resize_widget(
     widget: &mut WidgetLayout,
     original: &WidgetLayout,
@@ -2179,8 +2242,12 @@ impl App {
                 .y
                 .clamp(0, maximum_grid_position(output_height, self.canvas.height));
         }
-        self.settings.borrow_mut().x = self.canvas.x;
-        self.settings.borrow_mut().y = self.canvas.y;
+        self.settings.borrow_mut().set_geometry(CanvasGeometry {
+            x: self.canvas.x,
+            y: self.canvas.y,
+            width: self.canvas.width,
+            height: self.canvas.height,
+        });
         self.set_editor_geometry(self.editing.get());
     }
 
@@ -2211,36 +2278,19 @@ impl App {
             .max()
             .unwrap_or(32)
             .max(32);
-        let west = matches!(corner, ResizeCorner::NorthWest | ResizeCorner::SouthWest);
-        let north = matches!(corner, ResizeCorner::NorthWest | ResizeCorner::NorthEast);
-        let east = matches!(corner, ResizeCorner::NorthEast | ResizeCorner::SouthEast);
-        let south = matches!(corner, ResizeCorner::SouthWest | ResizeCorner::SouthEast);
-        if west {
-            let maximum = i32::try_from(origin[0].saturating_sub(min_width)).unwrap_or(i32::MAX);
-            let applied = dx.clamp(-position[0], maximum);
-            self.canvas.x = position[0].saturating_add(applied);
-            self.canvas.width = origin[0].saturating_sub_signed(applied);
-        } else if east {
-            self.canvas.width = origin[0].saturating_add_signed(dx).max(min_width);
-        }
-        if north {
-            let maximum = i32::try_from(origin[1].saturating_sub(min_height)).unwrap_or(i32::MAX);
-            let applied = dy.clamp(-position[1], maximum);
-            self.canvas.y = position[1].saturating_add(applied);
-            self.canvas.height = origin[1].saturating_sub_signed(applied);
-        } else if south {
-            self.canvas.height = origin[1].saturating_add_signed(dy).max(min_height);
-        }
-        if let Some([output_width, output_height]) = self.shell.output_logical_size {
-            self.canvas.width = self.canvas.width.min(grid_floor(
-                output_width.saturating_sub(self.canvas.x.cast_unsigned()),
-            ));
-            self.canvas.height = self.canvas.height.min(grid_floor(
-                output_height.saturating_sub(self.canvas.y.cast_unsigned()),
-            ));
-        }
-        self.settings.borrow_mut().width = self.canvas.width;
-        self.settings.borrow_mut().height = self.canvas.height;
+        let geometry = resized_canvas_geometry(
+            position,
+            origin,
+            [min_width, min_height],
+            corner,
+            [dx, dy],
+            self.shell.output_logical_size,
+        );
+        self.canvas.x = geometry.x;
+        self.canvas.y = geometry.y;
+        self.canvas.width = geometry.width;
+        self.canvas.height = geometry.height;
+        self.settings.borrow_mut().set_geometry(geometry);
         self.set_editor_geometry(self.editing.get());
     }
     fn persist_interaction(&mut self) {
@@ -3118,77 +3168,116 @@ impl VisualDebugSession {
             return Err("drag requires the editable preview".into());
         }
         let panel_width = f64::from(self.settings.borrow().panel_width);
-        if from[0] < panel_width {
+        if self.panel_open.get() && from[0] < panel_width {
             return Err("drag start is inside the editor panel".into());
         }
         let dx = snap_i32(to[0] - from[0]);
         let dy = snap_i32(to[1] - from[1]);
         match button {
-            VisualDebugButton::Right => {
-                let mut settings = self.settings.borrow_mut();
-                let inside = from[0] >= f64::from(settings.x)
-                    && from[1] >= f64::from(settings.y)
-                    && from[0] < f64::from(settings.x) + f64::from(settings.width)
-                    && from[1] < f64::from(settings.y) + f64::from(settings.height);
-                if !inside {
-                    return Err("right drag did not start on the selected canvas".into());
-                }
-                settings.x = settings.x.saturating_add(dx).clamp(
-                    0,
-                    maximum_grid_position(self.logical_size[0], settings.width),
-                );
-                settings.y = settings.y.saturating_add(dy).clamp(
-                    0,
-                    maximum_grid_position(self.logical_size[1], settings.height),
-                );
-            }
-            VisualDebugButton::Left => {
-                let settings = self.settings.borrow().clone();
-                let local = [
-                    from[0] - f64::from(settings.x),
-                    from[1] - f64::from(settings.y),
-                ];
-                let hit = direct_manipulation_at(
-                    [settings.width, settings.height],
-                    &self.widgets.borrow(),
-                    self.selected.borrow().as_deref(),
-                    local,
-                );
-                let Some(DirectManipulationHit::Widget(original, corner)) = hit else {
-                    return Err("left drag did not start on a widget".to_owned());
-                };
-                let mut widgets = self.widgets.borrow_mut();
-                let widget = widgets
-                    .iter_mut()
-                    .find(|widget| widget.id == original.id)
-                    .ok_or_else(|| "left drag widget disappeared".to_owned())?;
-                if let Some(corner) = corner {
-                    resize_widget(
-                        widget,
-                        &original,
-                        local,
-                        corner,
-                        local[0] + f64::from(dx),
-                        local[1] + f64::from(dy),
-                        [settings.width, settings.height],
-                    );
-                } else {
-                    widget.x = original.x.saturating_add(dx).clamp(
-                        0,
-                        i32::try_from(settings.width.saturating_sub(widget.width))
-                            .unwrap_or(i32::MAX),
-                    );
-                    widget.y = original.y.saturating_add(dy).clamp(
-                        0,
-                        i32::try_from(settings.height.saturating_sub(widget.height))
-                            .unwrap_or(i32::MAX),
-                    );
-                }
-                *self.selected.borrow_mut() = Some(widget.id.clone());
-            }
+            VisualDebugButton::Right => self.drag_canvas(from, [dx, dy])?,
+            VisualDebugButton::Left => self.drag_widget_or_canvas(from, [dx, dy])?,
         }
         self.sync_selected_canvas();
         self.resolve();
+        Ok(())
+    }
+
+    fn drag_canvas(&self, from: [f64; 2], [dx, dy]: [i32; 2]) -> Result<(), String> {
+        let mut settings = self.settings.borrow_mut();
+        let inside = from[0] >= f64::from(settings.x)
+            && from[1] >= f64::from(settings.y)
+            && from[0] < f64::from(settings.x) + f64::from(settings.width)
+            && from[1] < f64::from(settings.y) + f64::from(settings.height);
+        if !inside {
+            return Err("right drag did not start on the selected canvas".into());
+        }
+        settings.x = settings.x.saturating_add(dx).clamp(
+            0,
+            maximum_grid_position(self.logical_size[0], settings.width),
+        );
+        settings.y = settings.y.saturating_add(dy).clamp(
+            0,
+            maximum_grid_position(self.logical_size[1], settings.height),
+        );
+        Ok(())
+    }
+
+    fn drag_widget_or_canvas(&self, from: [f64; 2], delta: [i32; 2]) -> Result<(), String> {
+        let settings = self.settings.borrow().clone();
+        let local = [
+            from[0] - f64::from(settings.x),
+            from[1] - f64::from(settings.y),
+        ];
+        let hit = direct_manipulation_at(
+            [settings.width, settings.height],
+            &self.widgets.borrow(),
+            self.selected.borrow().as_deref(),
+            local,
+        );
+        match hit {
+            Some(DirectManipulationHit::Canvas(corner)) => {
+                let minimum =
+                    self.widgets
+                        .borrow()
+                        .iter()
+                        .fold([32, 32], |[width, height], widget| {
+                            [
+                                width.max(widget.x.cast_unsigned().saturating_add(widget.width)),
+                                height.max(widget.y.cast_unsigned().saturating_add(widget.height)),
+                            ]
+                        });
+                let geometry = resized_canvas_geometry(
+                    [settings.x, settings.y],
+                    [settings.width, settings.height],
+                    minimum,
+                    corner,
+                    delta,
+                    Some(self.logical_size),
+                );
+                self.settings.borrow_mut().set_geometry(geometry);
+            }
+            Some(DirectManipulationHit::Widget(original, corner)) => {
+                self.drag_widget(&settings, local, delta, &original, corner)?;
+            }
+            None => return Err("left drag did not start on a canvas or widget".to_owned()),
+        }
+        Ok(())
+    }
+
+    fn drag_widget(
+        &self,
+        settings: &NativeCanvasSettings,
+        local: [f64; 2],
+        [dx, dy]: [i32; 2],
+        original: &WidgetLayout,
+        corner: Option<ResizeCorner>,
+    ) -> Result<(), String> {
+        let mut widgets = self.widgets.borrow_mut();
+        let widget = widgets
+            .iter_mut()
+            .find(|widget| widget.id == original.id)
+            .ok_or_else(|| "left drag widget disappeared".to_owned())?;
+        if let Some(corner) = corner {
+            resize_widget(
+                widget,
+                original,
+                local,
+                corner,
+                local[0] + f64::from(dx),
+                local[1] + f64::from(dy),
+                [settings.width, settings.height],
+            );
+        } else {
+            widget.x = original.x.saturating_add(dx).clamp(
+                0,
+                i32::try_from(settings.width.saturating_sub(widget.width)).unwrap_or(i32::MAX),
+            );
+            widget.y = original.y.saturating_add(dy).clamp(
+                0,
+                i32::try_from(settings.height.saturating_sub(widget.height)).unwrap_or(i32::MAX),
+            );
+        }
+        *self.selected.borrow_mut() = Some(widget.id.clone());
         Ok(())
     }
 
@@ -3685,6 +3774,46 @@ mod skin_tests {
             .count();
         assert_eq!(canvas_rects, 2);
         assert_eq!(widget_rects, 5);
+    }
+
+    #[test]
+    fn visual_debug_north_west_canvas_resize_updates_position_and_size_together() {
+        let scenario = VisualDebugScenario {
+            skin: None,
+            logical_size: [1920, 1080],
+            scale: 1.0,
+            canvas_id: Some("wayland-result".into()),
+            editing: true,
+            selectors: Vec::new(),
+            actions: Vec::new(),
+        };
+        let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        session.click(".preview-screen[data-index='4']").unwrap();
+        session
+            .click(".canvas-select[data-canvas-id='wayland-result']")
+            .unwrap();
+        session.click(".native-panel-toggle").unwrap();
+
+        session
+            .drag([19.0, 99.0], [3.0, 83.0], VisualDebugButton::Left)
+            .unwrap();
+
+        let settings = session.settings.borrow();
+        assert_eq!(
+            (settings.x, settings.y, settings.width, settings.height),
+            (4, 84, 576, 976)
+        );
+        drop(settings);
+        let inner = session.document.inner.borrow();
+        let canvas = inner
+            .query_selector(".canvas-content.selected")
+            .unwrap()
+            .unwrap();
+        let rect = inner.get_client_bounding_rect(canvas).unwrap();
+        assert_eq!(
+            (rect.x, rect.y, rect.width, rect.height),
+            (4.0, 84.0, 576.0, 976.0)
+        );
     }
 
     #[test]

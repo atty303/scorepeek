@@ -8,6 +8,7 @@
     ".overlay-canvas",
     ".widget-slot",
     ".resize-handle",
+    ".native-canvas-handle",
     ".native-panel-toggle",
     ".native-canvas-manager",
     ".canvas-section",
@@ -32,6 +33,9 @@
     { "action": "click", "selector": ".widget-row[data-widget-id='selection']" },
     { "action": "drag", "from": [575, 235], "to": [535, 215], "button": "left" },
     { "action": "scroll", "selector": ".editor-tab-body", "dx": 0, "dy": -320 },
+    { "action": "click", "selector": ".native-panel-toggle" },
+    { "action": "drag", "from": [19, 99], "to": [3, 83], "button": "left" },
+    { "action": "click", "selector": ".native-panel-toggle" },
     { "action": "drag", "from": [500, 150], "to": [600, 250], "button": "right" },
     { "action": "capture", "name": "final-editor" }
   ]
