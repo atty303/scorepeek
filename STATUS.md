@@ -178,6 +178,11 @@ checkpoint; implementation history belongs in Git.
   1920x1080 Chromium screenshot confirms the same `/overlay` editor composition and clean initial
   draft state. Each overlay process was stopped immediately after its screenshot. Pointer gestures,
   native output handoff, compositor cursor behavior and real OBS Interaction remain unverified.
+  On the current three-output Wayland host, editor startup with four configured canvases and
+  editor-only peer surfaces now keeps Vulkan context, adapter, device and surface initialization
+  serialized inside the single backend child process. The child remained live with all surface
+  workers present, stopped cleanly, and produced no new coredump; editor interactions remain a
+  separate live boundary.
 
 - Overlay development-host verification covers all three skin DOMs, embedded PNG decode, fixed
   widget bounds and explicit motion time samples. A production native headless render confirms Japanese/Latin

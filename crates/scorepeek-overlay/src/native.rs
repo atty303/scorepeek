@@ -21,6 +21,20 @@ use serde::{Deserialize, Serialize};
 use smithay_client_toolkit::reexports::calloop::ping::{Ping, make_ping};
 
 type NativeUpdate = Rc<RefCell<Option<Arc<dyn Fn() + Send + Sync>>>>;
+
+#[derive(Default)]
+struct RendererInitCoordinator(std::sync::Mutex<()>);
+
+impl RendererInitCoordinator {
+    fn initialize<T>(&self, initialize: impl FnOnce() -> T) -> T {
+        let _guard = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        initialize()
+    }
+}
+
 fn editor_geometry(
     position: [i32; 2],
     canvas_size: [u32; 2],
@@ -424,6 +438,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
     let preview = Arc::new(std::sync::Mutex::new(None::<String>));
     let workspace_open = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let workspace_ui = Arc::new(std::sync::Mutex::new(NativeWorkspace::default()));
+    let renderer_init = Arc::new(RendererInitCoordinator::default());
     let suppressed = Arc::new(std::sync::Mutex::new(
         std::collections::BTreeSet::<String>::new(),
     ));
@@ -589,6 +604,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             let workspace_open = Arc::clone(&workspace_open);
             let workspace_ui = Arc::clone(&workspace_ui);
             let suppressed = Arc::clone(&suppressed);
+            let renderer_init = Arc::clone(&renderer_init);
             let wakes = Arc::clone(&canvas_wakes);
             let join = std::thread::Builder::new()
                 .name(format!("overlay-wayland-{}", canvas.id))
@@ -602,6 +618,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                         workspace_open,
                         workspace_ui,
                         suppressed,
+                        renderer_init,
                         &wakes,
                     )
                 })
@@ -636,6 +653,7 @@ fn run_canvas(
     workspace_open: Arc<std::sync::atomic::AtomicBool>,
     workspace_ui: Arc<std::sync::Mutex<NativeWorkspace>>,
     suppressed: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    renderer_init: Arc<RendererInitCoordinator>,
     wakes: &std::sync::Mutex<std::collections::BTreeMap<String, Ping>>,
 ) -> Result<(), String> {
     let report = Rc::new(RefCell::new(RunReport::new()));
@@ -710,12 +728,25 @@ fn run_canvas(
         } else {
             "integer_scale_fallback"
         });
+    let renderer = renderer_init.initialize(|| {
+        VelloWindowRenderer::with_options(
+            VelloRendererOptions::default()
+                .base_color(peniko::Color::TRANSPARENT)
+                .composite_alpha_mode(CompositeAlphaMode::Transparent),
+        )
+    });
+    report
+        .borrow_mut()
+        .operations
+        .push("renderer_context_initialized");
     let appearance = Appearance { skin: canvas.skin };
     let widgets = canvas.widgets.iter().map(widget_layout).collect();
     let control_socket = config.control_socket.clone();
     let mut app = App::new(
         appearance,
         widgets,
+        renderer,
+        renderer_init,
         shell,
         Waker::from(Arc::new(CalloopWaker(ping.0))),
         feed_state,
@@ -746,6 +777,7 @@ fn run_canvas(
 struct App {
     // Renderer is dropped before the shell; its own Arc handle also retains ownership.
     renderer: VelloWindowRenderer,
+    renderer_init: Arc<RendererInitCoordinator>,
     shell: Shell,
     document: DioxusDocument,
     shared_state: Rc<RefCell<OverlayState>>,
@@ -833,6 +865,8 @@ impl App {
     fn new(
         appearance: Appearance,
         widgets: Vec<WidgetLayout>,
+        renderer: VelloWindowRenderer,
+        renderer_init: Arc<RendererInitCoordinator>,
         mut shell: Shell,
         waker: Waker,
         feed_state: Arc<std::sync::Mutex<OverlayState>>,
@@ -940,11 +974,8 @@ impl App {
                 .insert(canvas.id.clone());
         }
         Self {
-            renderer: VelloWindowRenderer::with_options(
-                VelloRendererOptions::default()
-                    .base_color(peniko::Color::TRANSPARENT)
-                    .composite_alpha_mode(CompositeAlphaMode::Transparent),
-            ),
+            renderer,
+            renderer_init,
             shell,
             document,
             shared_state,
@@ -2296,11 +2327,16 @@ impl App {
         if self.renderer.is_active() {
             self.renderer.set_size(width, height);
         } else {
-            self.renderer
-                .resume(self.shell.handles(), width, height, || {});
-            if !self.renderer.complete_resume() {
-                return Err("gpu_adapter".into());
-            }
+            let renderer_init = Arc::clone(&self.renderer_init);
+            renderer_init.initialize(|| {
+                self.renderer
+                    .resume(self.shell.handles(), width, height, || {});
+                if self.renderer.complete_resume() {
+                    Ok(())
+                } else {
+                    Err("gpu_adapter".to_owned())
+                }
+            })?;
             let device = self.renderer.current_device_handle().ok_or("gpu_adapter")?;
             let info = device.adapter.get_info();
             let mut report = self.report.borrow_mut();
@@ -3261,6 +3297,41 @@ fn sanitize_artifact_name(name: &str) -> String {
 #[cfg(test)]
 mod skin_tests {
     use super::*;
+
+    #[test]
+    fn renderer_context_initialization_is_serialized_across_surfaces() {
+        use std::sync::{
+            Barrier,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let coordinator = Arc::new(RendererInitCoordinator::default());
+        let barrier = Arc::new(Barrier::new(3));
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let coordinator = Arc::clone(&coordinator);
+            let barrier = Arc::clone(&barrier);
+            let active = Arc::clone(&active);
+            let maximum = Arc::clone(&maximum);
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                coordinator.initialize(|| {
+                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    maximum.fetch_max(current, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(25));
+                    active.fetch_sub(1, Ordering::SeqCst);
+                });
+            }));
+        }
+        barrier.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        assert_eq!(maximum.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn surface_handoff_keeps_the_backend_workspace_lease() {
