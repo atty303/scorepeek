@@ -2664,6 +2664,10 @@ impl VisualDebugSession {
         let manage_open = Rc::new(Cell::new(false));
         let widget_add_open = Rc::new(Cell::new(false));
         let selected = Rc::new(RefCell::new(None));
+        let surface_canvas_ids = managed
+            .iter()
+            .map(|canvas| canvas.id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
         let managed = Rc::new(RefCell::new(managed));
         let settings = Rc::new(RefCell::new(NativeCanvasSettings {
             id: canvas.id,
@@ -2701,10 +2705,7 @@ impl VisualDebugSession {
             state: Rc::new(RefCell::new(scorepeek_overlay_ui::editor_sample_state())),
             visible: Rc::new(Cell::new(true)),
             settings: Rc::clone(&settings),
-            surface_canvas_ids: Rc::new(RefCell::new(std::collections::BTreeSet::from([settings
-                .borrow()
-                .id
-                .clone()]))),
+            surface_canvas_ids: Rc::new(RefCell::new(surface_canvas_ids)),
             update: Rc::clone(&update),
         };
         let mut document = DioxusDocument::new(
@@ -3267,6 +3268,43 @@ mod skin_tests {
         assert!(release_backend_on_drop(true, false));
         assert!(!release_backend_on_drop(false, false));
     }
+
+    #[test]
+    fn visual_debug_surface_contains_every_headless_canvas() {
+        let scenario = VisualDebugScenario {
+            skin: None,
+            logical_size: [1920, 1080],
+            scale: 1.0,
+            canvas_id: Some("wayland-status".into()),
+            editing: true,
+            selectors: Vec::new(),
+            actions: Vec::new(),
+        };
+        let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        session.click(".preview-screen[data-index='4']").unwrap();
+        session
+            .click(".canvas-select[data-canvas-id='wayland-result']")
+            .unwrap();
+
+        let inner = session.document.inner.borrow();
+        let canvas_rects = inner
+            .query_selector_all(".canvas-content")
+            .unwrap()
+            .into_iter()
+            .filter_map(|id| inner.get_client_bounding_rect(id))
+            .filter(|rect| rect.width > 0.0 && rect.height > 0.0)
+            .count();
+        let widget_rects = inner
+            .query_selector_all(".widget-slot")
+            .unwrap()
+            .into_iter()
+            .filter_map(|id| inner.get_client_bounding_rect(id))
+            .filter(|rect| rect.width > 0.0 && rect.height > 0.0)
+            .count();
+        assert_eq!(canvas_rects, 2);
+        assert_eq!(widget_rects, 5);
+    }
+
     use scorepeek_overlay_ui::Skin;
 
     #[test]
