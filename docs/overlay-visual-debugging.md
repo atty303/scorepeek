@@ -72,7 +72,8 @@ Native and OBS render the shared Dioxus `EditorPanel`, `EditorSurface`, `EditorC
 four-corner resize, aspect ratios and canvas bounds. `EditorButton` owns text alignment,
 sizing, selected/disabled state and tone; parent CSS owns placement and spacing.
 
-The native adapter translates Wayland pointer input to Blitz `UiEvent` and lets Dioxus
+The native adapter retains pressed buttons across motion/release, translates Wayland
+pointer input to Blitz `UiEvent` and lets Dioxus
 hit testing, bubbling and component callbacks produce the same typed actions as the web
 renderer. The native visual scenario also sends these events; it does not interpret
 selector names as setting commands. Native IME buffers and browser input elements adapt
@@ -81,7 +82,10 @@ existing save/lease transports remain host responsibilities.
 
 OBS `/overlay` boots the canvas WASM bundle and places display-only canvas iframes inside
 the shared editor canvas. Native supplies rendered canvas content in the same component
-slot. Widget artwork and content use the same `overlay_canvas` renderer in both routes.
+slot. This content layer is noninteractive and isolated below the shared hit regions.
+Selected widget handles take precedence when they coincide with canvas corners; selecting
+the canvas in the panel clears widget selection and exposes canvas handles. Widget artwork
+and content use the same `overlay_canvas` renderer in both routes.
 Browser capture and actual Wayland composition/input remain separate verification gates.
 
 `tests/fixtures/visual-empty-editor.json` starts with no visible canvas and toggles the

@@ -93,7 +93,7 @@ pub fn EditorCanvas(
         oncontextmenu:move |event| {event.prevent_default();event.stop_propagation();onaction.call(SurfaceAction::Enter(Some(context_id.clone())));},
         onpointerdown:move |event| {if editing {start.call((event,id.clone(),None,None));}},
         onclick:move |event| {if selecting.replace(false){return;}let point=event.client_coordinates().to_i32();onaction.call(SurfaceAction::Place([point.x,point.y]));},
-        {children}
+        div {class:"editor-canvas-content", {children}}
         if editing {
             for widget in &canvas.widgets {
                 div {key:"{widget.id}",class:if selected&&selected_widget.as_deref()==Some(widget.id.as_str()){"editor-widget-hit selected"}else{"editor-widget-hit"},

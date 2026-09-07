@@ -43,55 +43,62 @@ impl RendererInitCoordinator {
     }
 }
 
-fn dispatch_pointer(
-    document: &mut DioxusDocument,
-    point: [f64; 2],
-    button: u32,
-    pressed: Option<bool>,
-) {
-    use blitz_traits::events::{
-        BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, Point,
-        PointerCoords, PointerDetails, UiEvent,
-    };
-    let point = dioxus::html::geometry::ClientPoint::new(point[0], point[1]).to_f32();
-    let (x, y) = (point.x, point.y);
-    let button = if button == 0x111 {
-        MouseEventButton::Secondary
-    } else {
-        MouseEventButton::Main
-    };
-    let event = BlitzPointerEvent {
-        id: BlitzPointerId::Mouse,
-        is_primary: true,
-        coords: PointerCoords {
-            page_x: x,
-            page_y: y,
-            screen_x: x,
-            screen_y: y,
-            client_x: x,
-            client_y: y,
-        },
-        button,
-        buttons: if pressed == Some(false) {
-            MouseEventButtons::default()
-        } else {
-            button.into()
-        },
-        mods: dioxus::html::Modifiers::default(),
-        details: PointerDetails::default(),
-        element: Point::default(),
-        active_pointers: Arc::default(),
-    };
-    document.handle_ui_event(match pressed {
-        Some(true) => UiEvent::PointerDown(event),
-        Some(false) => UiEvent::PointerUp(event),
-        None => UiEvent::PointerMove(event),
-    });
+#[derive(Default)]
+struct PointerInput {
+    buttons: blitz_traits::events::MouseEventButtons,
 }
-fn dispatch_click(document: &mut DioxusDocument, point: [f64; 2]) {
-    dispatch_pointer(document, point, 0x110, None);
-    dispatch_pointer(document, point, 0x110, Some(true));
-    dispatch_pointer(document, point, 0x110, Some(false));
+
+impl PointerInput {
+    fn dispatch(
+        &mut self,
+        document: &mut DioxusDocument,
+        point: [f64; 2],
+        button: u32,
+        pressed: Option<bool>,
+    ) {
+        use blitz_traits::events::{
+            BlitzPointerEvent, BlitzPointerId, MouseEventButton, Point, PointerCoords,
+            PointerDetails, UiEvent,
+        };
+        let point = dioxus::html::geometry::ClientPoint::new(point[0], point[1]).to_f32();
+        let (x, y) = (point.x, point.y);
+        let button = if button == 0x111 {
+            MouseEventButton::Secondary
+        } else {
+            MouseEventButton::Main
+        };
+        if let Some(pressed) = pressed {
+            self.buttons.set(button.into(), pressed);
+        }
+        let event = BlitzPointerEvent {
+            id: BlitzPointerId::Mouse,
+            is_primary: true,
+            coords: PointerCoords {
+                page_x: x,
+                page_y: y,
+                screen_x: x,
+                screen_y: y,
+                client_x: x,
+                client_y: y,
+            },
+            button,
+            buttons: self.buttons,
+            mods: dioxus::html::Modifiers::default(),
+            details: PointerDetails::default(),
+            element: Point::default(),
+            active_pointers: Arc::default(),
+        };
+        document.handle_ui_event(match pressed {
+            Some(true) => UiEvent::PointerDown(event),
+            Some(false) => UiEvent::PointerUp(event),
+            None => UiEvent::PointerMove(event),
+        });
+    }
+    fn click(&mut self, document: &mut DioxusDocument, point: [f64; 2]) {
+        self.dispatch(document, point, 0x110, None);
+        self.dispatch(document, point, 0x110, Some(true));
+        self.dispatch(document, point, 0x110, Some(false));
+    }
 }
 
 fn editor_geometry(
@@ -907,6 +914,7 @@ struct App {
     renderer_init: Arc<RendererInitCoordinator>,
     shell: Shell,
     document: DioxusDocument,
+    pointer: PointerInput,
     actions: Rc<RefCell<Vec<EditorAction>>>,
     surface_actions: Rc<RefCell<Vec<SurfaceAction>>>,
     shared_state: Reactive<OverlayState>,
@@ -1080,6 +1088,7 @@ impl App {
             renderer_init,
             shell,
             document,
+            pointer: PointerInput::default(),
             actions,
             surface_actions,
             shared_state: reactive.state,
@@ -1557,7 +1566,8 @@ impl App {
         if self.readonly.get() {
             return;
         }
-        dispatch_pointer(&mut self.document, [x, y], button, Some(pressed));
+        self.pointer
+            .dispatch(&mut self.document, [x, y], button, Some(pressed));
         self.drain_editor_events();
     }
     fn drain_editor_events(&mut self) {
@@ -1691,7 +1701,8 @@ impl App {
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
-        dispatch_pointer(&mut self.document, [x, y], 0x110, None);
+        self.pointer
+            .dispatch(&mut self.document, [x, y], 0x110, None);
         self.drain_editor_events();
         self.shell.set_cursor(
             if self
@@ -2268,6 +2279,7 @@ struct VisualDebugElement {
 
 struct VisualDebugSession {
     document: DioxusDocument,
+    pointer: PointerInput,
     actions: Rc<RefCell<Vec<EditorAction>>>,
     surface_actions: Rc<RefCell<Vec<SurfaceAction>>>,
     logical_size: [u32; 2],
@@ -2379,6 +2391,7 @@ impl VisualDebugSession {
             .ok_or_else(|| "native overlay did not publish its reactive state".to_owned())?;
         let mut session = Self {
             document,
+            pointer: PointerInput::default(),
             actions,
             surface_actions,
             logical_size: scenario.logical_size,
@@ -2519,7 +2532,7 @@ impl VisualDebugSession {
             [rect.x + rect.width / 2.0, rect.y + rect.height / 2.0]
         };
         let mut model = self.editor_model();
-        dispatch_click(&mut self.document, point);
+        self.pointer.click(&mut self.document, point);
         self.drain_editor_events(&mut model);
         self.resolve();
         Ok(())
@@ -2550,15 +2563,18 @@ impl VisualDebugSession {
             VisualDebugButton::Left => 0x110,
         };
         let mut model = self.editor_model();
-        dispatch_pointer(&mut self.document, from, button, None);
-        dispatch_pointer(&mut self.document, from, button, Some(true));
+        self.pointer
+            .dispatch(&mut self.document, from, button, None);
+        self.pointer
+            .dispatch(&mut self.document, from, button, Some(true));
         self.drain_editor_events(&mut model);
         if model.drag.is_none() {
             return Err("drag did not reach a Dioxus canvas handler".into());
         }
-        dispatch_pointer(&mut self.document, to, button, None);
+        self.pointer.dispatch(&mut self.document, to, button, None);
         self.drain_editor_events(&mut model);
-        dispatch_pointer(&mut self.document, to, button, Some(false));
+        self.pointer
+            .dispatch(&mut self.document, to, button, Some(false));
         self.drain_editor_events(&mut model);
         self.resolve();
         Ok(())
@@ -2925,6 +2941,52 @@ mod skin_tests {
     }
 
     #[test]
+    fn pointer_motion_delivers_actual_button_state() {
+        use dioxus::html::input_data::MouseButton;
+        type Moves = Rc<RefCell<Vec<bool>>>;
+        fn probe(moves: Moves) -> Element {
+            rsx! { div { style: "position:absolute;inset:0", onpointermove: move |event| moves.borrow_mut().push(event.held_buttons().contains(MouseButton::Primary)), "selectable text" } }
+        }
+        let moves = Moves::default();
+        let mut document = DioxusDocument::new(
+            VirtualDom::new_with_props(probe, moves.clone()),
+            document_config(),
+        );
+        document.initial_build();
+        document.inner.borrow_mut().resolve(1.0);
+        let mut pointer = PointerInput::default();
+        pointer.dispatch(&mut document, [10.0, 10.0], 0x110, None);
+        pointer.dispatch(&mut document, [10.0, 10.0], 0x110, Some(true));
+        pointer.dispatch(&mut document, [11.0, 10.0], 0x110, None);
+        pointer.dispatch(&mut document, [11.0, 10.0], 0x110, Some(false));
+        pointer.dispatch(&mut document, [12.0, 10.0], 0x110, None);
+        assert_eq!(*moves.borrow(), [false, true, false]);
+    }
+
+    #[test]
+    fn widget_body_click_selects_over_rendered_content() {
+        let scenario: VisualDebugScenario =
+            serde_json::from_str(include_str!("../tests/fixtures/visual-debug.json")).unwrap();
+        let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        session.click(".preview-screen[data-index='4']").unwrap();
+        session
+            .click(".canvas-select[data-canvas-id='wayland-result']")
+            .unwrap();
+        session.panel_open.set(false);
+        session.resolve();
+        for id in ["selection", "score", "history-list", "history-graph"] {
+            session
+                .click(&format!(".editor-widget-hit[data-widget='{id}']"))
+                .unwrap();
+            assert_eq!(
+                session.selected.borrow().as_deref(),
+                Some(id),
+                "body click should select {id}"
+            );
+        }
+    }
+
+    #[test]
     fn editor_styles_survive_zero_visible_canvases_and_last_canvas_off() {
         let scenario: VisualDebugScenario =
             serde_json::from_str(include_str!("../tests/fixtures/visual-empty-editor.json"))
@@ -2999,15 +3061,23 @@ mod skin_tests {
             let to = [point[0] - 20.0, point[1] - 20.0];
             let mut model = session.editor_model();
             let before = model.draft.clone();
-            dispatch_pointer(&mut session.document, point, 0x110, None);
+            session
+                .pointer
+                .dispatch(&mut session.document, point, 0x110, None);
             session.resolve();
-            dispatch_pointer(&mut session.document, point, 0x110, Some(true));
+            session
+                .pointer
+                .dispatch(&mut session.document, point, 0x110, Some(true));
             session.drain_editor_events(&mut model);
             assert!(model.drag.is_none());
             assert_eq!(model.selected_canvas.as_deref(), Some("other"));
             session.resolve();
-            dispatch_pointer(&mut session.document, to, 0x110, None);
-            dispatch_pointer(&mut session.document, to, 0x110, Some(false));
+            session
+                .pointer
+                .dispatch(&mut session.document, to, 0x110, None);
+            session
+                .pointer
+                .dispatch(&mut session.document, to, 0x110, Some(false));
             session.drain_editor_events(&mut model);
             session.resolve();
             assert_eq!(
@@ -3024,9 +3094,19 @@ mod skin_tests {
     }
     #[test]
     fn shared_dioxus_handles_resize_from_all_four_corners() {
-        let scenario: VisualDebugScenario =
+        let mut scenario: VisualDebugScenario =
             serde_json::from_str(include_str!("../tests/fixtures/visual-composition.json"))
                 .unwrap();
+        let canvas = &mut scenario.canvases.as_mut().unwrap()[0];
+        let cam = canvas
+            .widgets
+            .iter_mut()
+            .find(|widget| widget.id == "cam")
+            .unwrap();
+        cam.x = 0;
+        cam.y = 0;
+        cam.width = canvas.width;
+        cam.height = canvas.height;
         for corner in ["nw", "ne", "sw", "se"] {
             let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
             session.editing.set(true);

@@ -239,8 +239,8 @@ checkpoint; implementation history belongs in Git.
   inspection and a complete 22-frame native PNG/layout/manifest scenario, including hidden-screen
   transitions and editor resize/scroll/drag. Atlas labels align with adjacent ordinary text using
   font baseline metrics; chart rails, detail rows and history rows have all-three-skin native inspection.
-  The latest typography has not been visually verified in
-  the browser: Codex Browser initialization failed on a missing plugin service module.
+  The current typography also has development-host Codex Browser inspection through the editor
+  and canvas iframe; live OBS composition remains separate.
 - ADR 0131's three rich skins have native PNG/layout/manifest inspection and 1920x1080 Codex Browser
   inspection through the production editor and canvas iframes. Native samples at 2.25 and 3.75 seconds
   keep widget/value geometry fixed while light and particles move; inactive/active/error lamp paint
@@ -249,7 +249,7 @@ checkpoint; implementation history belongs in Git.
   restrained lines/corner accents, with staggered moving highlights carrying the ambient motion.
   These checks do not establish live Wayland or OBS composition.
 - Repository checks and the complete workspace suite pass: 508 library,
-  325 binary, 128 corpus library, 5 corpus binary, 55 overlay, 7 handle, 4 overlay-UI, 7 overlay-web
+  325 binary, 128 corpus library, 5 corpus binary, 57 overlay, 7 handle, 4 overlay-UI, 7 overlay-web
   and 13 score tests, plus doctests. The embedded-web overlay integration test also passes. The 99 offline OCR tests and
   repository checks also pass. Public API and overlay state tests include score-store invalidation,
   RESULT readiness across withdrawal/re-resolution, fresh and same-session reconnect restoration,
@@ -365,8 +365,10 @@ checkpoint; implementation history belongs in Git.
   alpha checks for overlapping apertures and frame-width content-geometry checks. Synthetic native
   title conversion/editing is separate from live Wayland keyboard focus, keymap and IME candidate
   delivery, which still need target validation. Composition assets respond through the OBS HTTP
-  path; this change's browser interaction could not be checked because Codex Browser failed during
-  its plugin bootstrap. No normal configuration, live deployment or remote publication was changed.
+  path. Development-host Codex Browser verification covers widget selection, double-click, move,
+  four-corner resize, canvas/widget add-delete-undo, mixed-language title apply/cancel, frame/opacity/
+  aspect controls, all-visible-canvases OFF, save/reload and discard/reopen. No normal configuration,
+  live deployment or remote publication was changed.
 
 - The score-store invalidation, RESULT readiness lamp, and parent-controller TUI isolation are
   development-host verified but not installed or exercised in a target-live game session.
@@ -379,9 +381,11 @@ checkpoint; implementation history belongs in Git.
   only, not interaction or performance. The installed target binary includes ADR 0129 at commit
   `00a04b17a7f615310866c7eec47efb5421b7c583`. No autostart, push or release is included.
 - The release browser bundle disables DWARF debug symbols and completes without the prior
-  wasm-opt DWARF failure. Browser visual and input verification of the shared reactive editor
-  remains blocked by the Codex Browser plugin bootstrap; native render evidence is not a browser
-  interaction result.
+  wasm-opt DWARF failure. Shared editor hit regions sit above noninteractive rendered content,
+  selected widget handles take precedence at canvas edges, and native pointer moves retain the
+  actual pressed-button state. Regression tests exercise body selection and edge-aligned resizing
+  through Dioxus, plus delivered button state. Native render evidence remains distinct from live
+  Wayland input and OBS composition.
 
 - Validate layout v4 in a fresh target-live run with the installed binary.
   Retained-frame inspection does not recover unrecorded PLAY spans or backfill missing RESULTs.
