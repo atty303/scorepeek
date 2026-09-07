@@ -127,46 +127,12 @@ fn single_line(text: &str) -> String {
 }
 
 impl super::App {
-    pub(super) fn title_pointer(&mut self, x: f64, y: f64) -> bool {
-        if self.hit_selector(".empty-title-input", x, y) {
-            let widget = self
-                .shared_widgets
-                .borrow()
-                .iter()
-                .find(|widget| Some(widget.id.as_str()) == self.selected.borrow().as_deref())
-                .cloned();
-            if let Some(widget) = widget {
-                self.title_edit
-                    .set(Some(TitleEdit::new(widget.id, widget.settings.title)));
-                crate::diagnostics::emit(
-                    "title_edit_started",
-                    &serde_json::json!({"canvas_id":self.canvas.id}),
-                );
-                self.update_title_input(false);
-            }
-            return true;
-        }
-        if self.title_edit.borrow().is_none() {
-            return false;
-        }
-        if self.hit_selector(".title-cancel", x, y) {
-            self.finish_title_edit(false);
-            return true;
-        }
-        if self.hit_selector(".title-accept", x, y) {
-            self.finish_title_edit(true);
-            return true;
-        }
-        if self.hit_selector(".empty-title-edit", x, y) {
-            return true;
-        }
-        // Navigation cancels an unconfirmed title. APPLY/Enter commits one undoable command.
-        self.finish_title_edit(false);
-        false
-    }
     pub(super) fn title_command(&mut self, command: &TextCommand) {
         match command {
-            TextCommand::Cancel => self.finish_title_edit(false),
+            TextCommand::Cancel => {
+                self.finish_title_edit(false);
+                self.surface_action(scorepeek_overlay_ui::editor_surface::SurfaceAction::Cancel);
+            }
             TextCommand::Accept => {
                 if self
                     .title_edit
@@ -207,15 +173,16 @@ impl super::App {
         self.shell.set_text_input(None);
         if accept {
             let before = self.draft_snapshot();
-            if let Some(widget) = self
-                .shared_widgets
-                .borrow_mut()
-                .iter_mut()
-                .find(|widget| widget.id == edit.widget)
-            {
-                widget.settings.title = edit.text;
-            }
-            self.persist_canvas_change(before);
+            let mut model = self.editor_model();
+            model.title = Some(scorepeek_overlay_ui::editor_model::TitleDraft {
+                canvas: self.canvas.id.clone(),
+                widget: edit.widget,
+                text: edit.text,
+                composing: false,
+            });
+            model.action(&scorepeek_overlay_ui::editor::EditorAction::AcceptTitle);
+            self.apply_editor_model(model);
+            self.finish_draft_change(before);
         }
         crate::diagnostics::emit(
             "title_edit_finished",

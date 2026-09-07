@@ -66,12 +66,24 @@ buffer and UI; it does not establish compositor keyboard focus or real IME candi
 
 ## Shared editor UI
 
-Native and OBS render `scorepeek_overlay_ui::editor::EditorPanel`. `EditorView`
-contains presentation state and typed `EditorAction` values describe user intent.
-`EditorButton` owns text alignment, sizing, selected/disabled state and action tone.
-Container CSS owns placement and spacing between controls; it does not restyle
-button labels. The native adapter retains Wayland hit testing and its IME text
-field; the web adapter uses Dioxus events, signals and a browser input field.
-The OBS `/overlay` endpoint boots the same WASM bundle as canvas display pages.
-The Rust web editor owns draft state, pointer gestures and the existing stage
-WebSocket connection; it does not reconstruct the editor DOM with JavaScript.
+Native and OBS render the shared Dioxus `EditorPanel`, `EditorSurface`, `EditorCanvas`,
+`ResizeHandles` and `PlacementPreview` components in `scorepeek-overlay-ui`. The shared
+`editor_model::Model` owns selection, settings, placement and gesture transitions, including
+four-corner resize, aspect ratios and canvas bounds. `EditorButton` owns text alignment,
+sizing, selected/disabled state and tone; parent CSS owns placement and spacing.
+
+The native adapter translates Wayland pointer input to Blitz `UiEvent` and lets Dioxus
+hit testing, bubbling and component callbacks produce the same typed actions as the web
+renderer. The native visual scenario also sends these events; it does not interpret
+selector names as setting commands. Native IME buffers and browser input elements adapt
+platform text entry. Output/surface ownership, keyboard focus, pointer capture and the
+existing save/lease transports remain host responsibilities.
+
+OBS `/overlay` boots the canvas WASM bundle and places display-only canvas iframes inside
+the shared editor canvas. Native supplies rendered canvas content in the same component
+slot. Widget artwork and content use the same `overlay_canvas` renderer in both routes.
+Browser capture and actual Wayland composition/input remain separate verification gates.
+
+`tests/fixtures/visual-empty-editor.json` starts with no visible canvas and toggles the
+last canvas on/off. Inspect the panel, scroll body and footer in every PNG/layout pair;
+the shared root stylesheet must remain present independently of canvas visibility.

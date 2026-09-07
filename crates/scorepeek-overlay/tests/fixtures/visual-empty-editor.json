@@ -1,0 +1,14 @@
+{
+  "logical_size": [1920, 1080],
+  "editing": true,
+  "canvases": [{
+    "id": "empty-output", "skin": "cyan-system", "revision": 0,
+    "x": 500, "y": 100, "width": 640, "height": 480,
+    "show_on": [], "widgets": []
+  }],
+  "selectors": [".editor-surface", ".editor-canvas", ".native-canvas-manager", ".editor-tab-body", "footer", ".close-action"],
+  "actions": [
+    {"action": "click", "selector": ".screen-toggle[data-canvas-id='empty-output']"},
+    {"action": "click", "selector": ".screen-toggle[data-canvas-id='empty-output']"}
+  ]
+}

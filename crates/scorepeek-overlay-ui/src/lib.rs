@@ -6,6 +6,8 @@ mod appearance;
 mod assets;
 pub mod composition;
 pub mod editor;
+pub mod editor_model;
+pub mod editor_surface;
 mod frame;
 pub use composition::{AspectRatio, Background, FrameWidth};
 pub mod motion;
@@ -284,18 +286,16 @@ fn chrome(widget: &WidgetLayout, skin: Skin) -> Element {
     } }
 }
 
+#[component]
+pub fn OverlayStyles() -> Element {
+    rsx! {style {"{BASE_CSS}{SKIN_CSS}{EDITOR_CSS}"}}
+}
+
 /// Renders the approved five-widget master composition.
 /// # Errors
 /// Returns a Dioxus render error if element construction fails.
 pub fn overlay_panel(state: &OverlayState, appearance: Appearance) -> Element {
-    overlay_canvas(
-        state,
-        appearance,
-        &default_widgets(),
-        false,
-        None,
-        Background::None,
-    )
+    overlay_canvas(state, appearance, &default_widgets(), Background::None)
 }
 
 /// Renders independently positioned widgets inside one canvas.
@@ -305,8 +305,6 @@ pub fn overlay_canvas(
     state: &OverlayState,
     appearance: Appearance,
     widgets: &[WidgetLayout],
-    editing: bool,
-    selected: Option<&str>,
     background: Background,
 ) -> Element {
     let skin = appearance.skin.name();
@@ -325,21 +323,16 @@ pub fn overlay_canvas(
         .and_then(|v| v.notes)
         .map_or_else(String::new, |v| v.to_string());
     rsx! {
-        style { "{BASE_CSS}{SKIN_CSS}{EDITOR_CSS}" }
-        main { class: if editing { "overlay-canvas editing" } else { "overlay-canvas" }, "data-skin": skin, style: format!("--graph-score:{};--graph-miss:{}", graph_colors.score, graph_colors.miss),
+        OverlayStyles {}
+        main { class: "overlay-canvas", "data-skin": skin, style: format!("--graph-score:{};--graph-miss:{}", graph_colors.score, graph_colors.miss),
             {composition::background(background, widgets, appearance.skin)}
             for widget in widgets {
                 div {
                     key: "{widget.id}",
-                    class: if selected == Some(widget.id.as_str()) { "widget-slot selected" } else { "widget-slot" },
+                    class: "widget-slot",
                     "data-widget-id": "{widget.id}",
                     style: format!("left:{}px;top:{}px;width:{}px;height:{}px", widget.x, widget.y, widget.width, widget.height),
                     {render_inner_widget(widget, state, title, artist, play_type, &difficulty, &level, &notes, appearance.skin)}
-                    if editing {
-                        for corner in ["nw", "ne", "sw", "se"] {
-                            i { class: "resize-handle {corner}", aria_hidden: "true" }
-                        }
-                    }
                 }
             }
         }

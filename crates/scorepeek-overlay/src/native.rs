@@ -1,4 +1,8 @@
 mod text;
+use scorepeek_overlay_ui::editor_model::{Drag, Model as EditorModel};
+use scorepeek_overlay_ui::editor_surface::{
+    EditorCanvas, EditorSurface, PlacementPreview, SurfaceAction,
+};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -19,7 +23,8 @@ use dioxus_core::VirtualDom;
 use dioxus_native_dom::DioxusDocument;
 use scorepeek_overlay_handles::{CursorStyle, Event, OutputDescription, Shell};
 use scorepeek_overlay_ui::editor::{
-    EditorAccess, EditorChrome, EditorOutput, EditorPanel, EditorTitleState, EditorView,
+    EditorAccess, EditorAction, EditorChrome, EditorOutput, EditorPanel, EditorTitleState,
+    EditorView,
 };
 use scorepeek_overlay_ui::{Appearance, OXANIUM, OverlayState, WidgetLayout, overlay_canvas};
 use serde::{Deserialize, Serialize};
@@ -36,6 +41,57 @@ impl RendererInitCoordinator {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         operation()
     }
+}
+
+fn dispatch_pointer(
+    document: &mut DioxusDocument,
+    point: [f64; 2],
+    button: u32,
+    pressed: Option<bool>,
+) {
+    use blitz_traits::events::{
+        BlitzPointerEvent, BlitzPointerId, MouseEventButton, MouseEventButtons, Point,
+        PointerCoords, PointerDetails, UiEvent,
+    };
+    let point = dioxus::html::geometry::ClientPoint::new(point[0], point[1]).to_f32();
+    let (x, y) = (point.x, point.y);
+    let button = if button == 0x111 {
+        MouseEventButton::Secondary
+    } else {
+        MouseEventButton::Main
+    };
+    let event = BlitzPointerEvent {
+        id: BlitzPointerId::Mouse,
+        is_primary: true,
+        coords: PointerCoords {
+            page_x: x,
+            page_y: y,
+            screen_x: x,
+            screen_y: y,
+            client_x: x,
+            client_y: y,
+        },
+        button,
+        buttons: if pressed == Some(false) {
+            MouseEventButtons::default()
+        } else {
+            button.into()
+        },
+        mods: dioxus::html::Modifiers::default(),
+        details: PointerDetails::default(),
+        element: Point::default(),
+        active_pointers: Arc::default(),
+    };
+    document.handle_ui_event(match pressed {
+        Some(true) => UiEvent::PointerDown(event),
+        Some(false) => UiEvent::PointerUp(event),
+        None => UiEvent::PointerMove(event),
+    });
+}
+fn dispatch_click(document: &mut DioxusDocument, point: [f64; 2]) {
+    dispatch_pointer(document, point, 0x110, None);
+    dispatch_pointer(document, point, 0x110, Some(true));
+    dispatch_pointer(document, point, 0x110, Some(false));
 }
 
 fn editor_geometry(
@@ -66,43 +122,6 @@ fn editor_surface_host(
         .or_else(|| surfaces.first().cloned())
 }
 
-fn unselected_canvas_at(
-    canvases: &[scorepeek_overlay_ui::CanvasPresentation],
-    surface_canvas_ids: &std::collections::BTreeSet<String>,
-    selected: &scorepeek_overlay_ui::CanvasPresentation,
-    screen: scorepeek_overlay_ui::ScreenKind,
-    point: [f64; 2],
-) -> Option<String> {
-    let [x, y] = point;
-    let contains = |canvas: &scorepeek_overlay_ui::CanvasPresentation| {
-        x >= f64::from(canvas.x)
-            && y >= f64::from(canvas.y)
-            && x < f64::from(canvas.x) + f64::from(canvas.width)
-            && y < f64::from(canvas.y) + f64::from(canvas.height)
-    };
-    if surface_canvas_ids.contains(&selected.id) && shown_on(selected, screen) && contains(selected)
-    {
-        return None;
-    }
-    canvases
-        .iter()
-        .find(|canvas| {
-            canvas.id != selected.id
-                && surface_canvas_ids.contains(&canvas.id)
-                && shown_on(canvas, screen)
-                && contains(canvas)
-        })
-        .map(|canvas| canvas.id.clone())
-}
-
-const EDITOR_SCREENS: [scorepeek_overlay_ui::ScreenKind; 5] = [
-    scorepeek_overlay_ui::ScreenKind::MusicSelect,
-    scorepeek_overlay_ui::ScreenKind::ModeSelect,
-    scorepeek_overlay_ui::ScreenKind::DecideTransition,
-    scorepeek_overlay_ui::ScreenKind::Play,
-    scorepeek_overlay_ui::ScreenKind::Result,
-];
-
 fn shown_on(
     canvas: &scorepeek_overlay_ui::CanvasPresentation,
     screen: scorepeek_overlay_ui::ScreenKind,
@@ -111,29 +130,6 @@ fn shown_on(
         .show_on
         .as_ref()
         .is_none_or(|screens| screens.contains(&screen))
-}
-
-fn set_shown_on(
-    canvas: &mut scorepeek_overlay_ui::CanvasPresentation,
-    screen: scorepeek_overlay_ui::ScreenKind,
-    shown: bool,
-) {
-    if shown {
-        let Some(screens) = canvas.show_on.as_mut() else {
-            return;
-        };
-        if !screens.contains(&screen) {
-            screens.push(screen);
-        }
-        if EDITOR_SCREENS.iter().all(|screen| screens.contains(screen)) {
-            canvas.show_on = None;
-        }
-    } else {
-        let screens = canvas
-            .show_on
-            .get_or_insert_with(|| EDITOR_SCREENS.to_vec());
-        screens.retain(|candidate| *candidate != screen);
-    }
 }
 
 #[derive(Clone)]
@@ -152,14 +148,6 @@ struct NativeCanvasSettings {
     panel_width: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CanvasGeometry {
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-}
-
 impl NativeCanvasSettings {
     fn apply_presentation(&mut self, presentation: &scorepeek_overlay_ui::CanvasPresentation) {
         self.id.clone_from(&presentation.id);
@@ -171,13 +159,6 @@ impl NativeCanvasSettings {
         self.y = presentation.y;
         self.width = presentation.width;
         self.height = presentation.height;
-    }
-
-    fn set_geometry(&mut self, geometry: CanvasGeometry) {
-        self.x = geometry.x;
-        self.y = geometry.y;
-        self.width = geometry.width;
-        self.height = geometry.height;
     }
 }
 
@@ -214,18 +195,6 @@ fn remember_draft_change(
     true
 }
 
-fn selected_canvas_for_delete(
-    canvases: &[scorepeek_overlay_ui::CanvasPresentation],
-    selected: Option<&str>,
-) -> Option<String> {
-    if canvases.len() <= 1 {
-        return None;
-    }
-    selected
-        .filter(|id| canvases.iter().any(|canvas| canvas.id == *id))
-        .map(str::to_owned)
-}
-
 fn replace_canvas_selection(
     selected_canvas: &mut Option<String>,
     selected_widget: &mut Option<String>,
@@ -233,10 +202,6 @@ fn replace_canvas_selection(
 ) {
     *selected_canvas = next;
     selected_widget.take();
-}
-
-fn discard_undo(workspace: &mut NativeWorkspace) {
-    workspace.undo = None;
 }
 
 fn scroll_editor_at(document: &mut BaseDocument, point: [f64; 2], delta: [f64; 2]) -> bool {
@@ -290,6 +255,8 @@ struct NativeOverlayProps {
     settings: Rc<RefCell<NativeCanvasSettings>>,
     surface_canvas_ids: Rc<RefCell<std::collections::BTreeSet<String>>>,
     reactive: Rc<RefCell<Option<NativeReactiveState>>>,
+    actions: Rc<RefCell<Vec<EditorAction>>>,
+    surface_actions: Rc<RefCell<Vec<SurfaceAction>>>,
 }
 
 struct Reactive<T: 'static>(Signal<T>);
@@ -360,6 +327,7 @@ struct NativeReactiveState {
     settings: Reactive<NativeCanvasSettings>,
     surface_canvas_ids: Reactive<std::collections::BTreeSet<String>>,
     title_edit: Reactive<Option<TitleEdit>>,
+    readonly: Reactive<bool>,
 }
 
 fn use_native_reactive_state(
@@ -381,9 +349,11 @@ fn use_native_reactive_state(
         pending_point,
         managed,
         outputs,
+        ..
     }: NativeOverlayProps,
 ) -> NativeReactiveState {
     let reactive_state = NativeReactiveState {
+        readonly: Reactive(use_signal(|| false)),
         title_edit: Reactive(use_signal(|| None)),
         appearance: Reactive(use_signal(move || appearance.get())),
         widgets: Reactive(use_signal(move || widgets.borrow().clone())),
@@ -408,6 +378,9 @@ fn use_native_reactive_state(
 
 #[allow(clippy::cast_precision_loss)]
 fn native_overlay(props: NativeOverlayProps) -> Element {
+    let actions = props.actions.clone();
+    let surface_actions = props.surface_actions.clone();
+    let onsurface = Callback::new(move |action| surface_actions.borrow_mut().push(action));
     let reactive = use_native_reactive_state(props);
     let NativeReactiveState {
         appearance,
@@ -436,22 +409,18 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
             },
         );
     rsx! {
-        div { class: if editing.get() { "canvas-content editor-preview-canvas selected" } else { "canvas-content" },style:format!("display:{};opacity:{};{}",if reactive.visible.get() && (!editing.get() || (selected_visible && reactive.surface_canvas_ids.borrow().contains(&current_settings.id))){"block"}else{"none"},f32::from(current_settings.opacity_percent)/100.0,if editing.get(){format!("left:{}px;top:{}px;width:{}px;height:{}px",current_settings.x,current_settings.y,current_settings.width,current_settings.height)}else{String::new()}),
-            {overlay_canvas(
-                &shown,
-                appearance.get(),
-                &widgets.borrow(),
-                editing.get(),
-                selected.borrow().as_deref(),
-                current_settings.background,
-            )}
-            if editing.get() && selected_visible { for corner in ["nw","ne","sw","se"] { i { class:"native-canvas-handle {corner}" } } }
-        }
+      EditorSurface { onaction:onsurface,
         if editing.get() {
-            for canvas in managed.borrow().iter().filter(|canvas| canvas.id != current_settings.id && reactive.surface_canvas_ids.borrow().contains(&canvas.id) && scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), scorepeek_overlay_ui::ScreenView { kind:Some(current_settings.preview_screen), suspended_since_unix_ms:None, revision:0 })) {
-                div { class:"canvas-content editor-preview-canvas preview-only", style:format!("left:{}px;top:{}px;width:{}px;height:{}px;opacity:{}",canvas.x,canvas.y,canvas.width,canvas.height,f32::from(canvas.opacity_percent)/100.0),
-                    {overlay_canvas(&shown, Appearance { skin: canvas.skin }, &canvas.widgets, false, None, canvas.background)}
+            for canvas in managed.borrow().iter().filter(|canvas| reactive.surface_canvas_ids.borrow().contains(&canvas.id) && shown_on(canvas,current_settings.preview_screen)) {
+                EditorCanvas {key:"{canvas.id}",canvas:canvas.clone(),editing:true,selected:canvas.id==current_settings.id&&selected_visible,selected_widget:selected.borrow().clone(),onaction:onsurface,
+                    div { class:"canvas-content",style:format!("opacity:{}",f32::from(canvas.opacity_percent)/100.0),
+                        {overlay_canvas(&shown,Appearance{skin:canvas.skin},&canvas.widgets,canvas.background)}
+                    }
                 }
+            }
+        } else {
+            div { class:"canvas-content",style:format!("display:{};opacity:{}",if reactive.visible.get(){"block"}else{"none"},f32::from(current_settings.opacity_percent)/100.0),
+                {overlay_canvas(&shown,appearance.get(),&widgets.borrow(),current_settings.background)}
             }
         }
         if editing.get() {
@@ -466,17 +435,18 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
                     panel_width:current_settings.panel_width,
                     chrome:EditorChrome {panel_open:reactive.panel_open.get(),
                     widget_add_open:reactive.widget_add_open.get(),sample},
-                    access:EditorAccess {dirty:reactive.dirty.get(),readonly:false,
+                    access:EditorAccess {dirty:reactive.dirty.get(),readonly:reactive.readonly.get(),
                     undo_available:reactive.undo_available.get()},
                     title:reactive.title_edit.borrow().as_ref().map_or(EditorTitleState::Closed,|edit|if edit.preedit.is_empty(){EditorTitleState::Editing}else{EditorTitleState::Composing}),
                 },
                 title_input:rsx! { if let Some(edit)=reactive.title_edit.borrow().as_ref() {
                     div { class:"empty-title-edit", role:"textbox", "aria-label":"Widget title", "aria-multiline":"false", {title_input_content(edit)} }
                 } },
-                onaction: |_| {},
+                onaction: move |action| actions.borrow_mut().push(action),
             }
-            if reactive.surface_canvas_ids.borrow().contains(&current_settings.id) { if let Some(kind) = reactive.pending_widget.get() { div { class:"native-placement-ghost", style:format!("left:{}px;top:{}px",reactive.pending_point.get()[0],reactive.pending_point.get()[1]), "PLACE {kind:?}" } } }
+            if reactive.surface_canvas_ids.borrow().contains(&current_settings.id) { if let Some(kind) = reactive.pending_widget.get() { PlacementPreview {kind,point:reactive.pending_point.get()} } }
         }
+    }
     }
 }
 
@@ -495,16 +465,6 @@ fn title_input_content(edit: &TitleEdit) -> Element {
         } else { span { style:"text-decoration:underline", "{edit.preedit}" } }
         span { {edit.text[edit.range().end..].to_owned()} }
     }
-}
-
-fn set_aspect_ratio(widget: &mut WidgetLayout, index: usize) {
-    use scorepeek_overlay_ui::AspectRatio;
-    widget.settings.aspect_ratio = [
-        AspectRatio::Free,
-        AspectRatio::Wide,
-        AspectRatio::Standard,
-        AspectRatio::Current([widget.width, widget.height]),
-    ][index];
 }
 
 struct CalloopWaker(Ping);
@@ -529,227 +489,6 @@ const fn grid_floor(value: u32) -> u32 {
 }
 fn maximum_grid_position(output: u32, extent: u32) -> i32 {
     i32::try_from(grid_floor(output.saturating_sub(extent))).unwrap_or(i32::MAX)
-}
-
-fn resized_canvas_geometry(
-    position: [i32; 2],
-    origin: [u32; 2],
-    minimum: [u32; 2],
-    corner: ResizeCorner,
-    delta: [i32; 2],
-    output: Option<[u32; 2]>,
-) -> CanvasGeometry {
-    let mut geometry = CanvasGeometry {
-        x: position[0],
-        y: position[1],
-        width: origin[0],
-        height: origin[1],
-    };
-    let west = matches!(corner, ResizeCorner::NorthWest | ResizeCorner::SouthWest);
-    let north = matches!(corner, ResizeCorner::NorthWest | ResizeCorner::NorthEast);
-    let east = matches!(corner, ResizeCorner::NorthEast | ResizeCorner::SouthEast);
-    let south = matches!(corner, ResizeCorner::SouthWest | ResizeCorner::SouthEast);
-    if west {
-        let maximum = i32::try_from(origin[0].saturating_sub(minimum[0])).unwrap_or(i32::MAX);
-        let applied = delta[0].clamp(-position[0], maximum);
-        geometry.x = position[0].saturating_add(applied);
-        geometry.width = origin[0].saturating_sub_signed(applied);
-    } else if east {
-        geometry.width = origin[0].saturating_add_signed(delta[0]).max(minimum[0]);
-    }
-    if north {
-        let maximum = i32::try_from(origin[1].saturating_sub(minimum[1])).unwrap_or(i32::MAX);
-        let applied = delta[1].clamp(-position[1], maximum);
-        geometry.y = position[1].saturating_add(applied);
-        geometry.height = origin[1].saturating_sub_signed(applied);
-    } else if south {
-        geometry.height = origin[1].saturating_add_signed(delta[1]).max(minimum[1]);
-    }
-    if let Some([output_width, output_height]) = output {
-        geometry.width = geometry.width.min(grid_floor(
-            output_width.saturating_sub(geometry.x.cast_unsigned()),
-        ));
-        geometry.height = geometry.height.min(grid_floor(
-            output_height.saturating_sub(geometry.y.cast_unsigned()),
-        ));
-    }
-    geometry
-}
-
-fn resize_widget(
-    widget: &mut WidgetLayout,
-    original: &WidgetLayout,
-    start: [f64; 2],
-    corner: ResizeCorner,
-    x: f64,
-    y: f64,
-    canvas: [u32; 2],
-) {
-    let dx = snap_i32(x - start[0]);
-    let dy = snap_i32(y - start[1]);
-    let mut left = original.x;
-    let mut top = original.y;
-    let mut right = original
-        .x
-        .saturating_add(i32::try_from(original.width).unwrap_or(i32::MAX));
-    let mut bottom = original
-        .y
-        .saturating_add(i32::try_from(original.height).unwrap_or(i32::MAX));
-    if matches!(corner, ResizeCorner::NorthWest | ResizeCorner::SouthWest) {
-        left = original
-            .x
-            .saturating_add(dx)
-            .clamp(0.min(right.saturating_sub(16)), right.saturating_sub(16));
-    } else {
-        right = right.saturating_add(dx).clamp(
-            left.saturating_add(16),
-            i32::try_from(canvas[0])
-                .unwrap_or(i32::MAX)
-                .max(left.saturating_add(16)),
-        );
-    }
-    if matches!(corner, ResizeCorner::NorthWest | ResizeCorner::NorthEast) {
-        top = original
-            .y
-            .saturating_add(dy)
-            .clamp(0.min(bottom.saturating_sub(16)), bottom.saturating_sub(16));
-    } else {
-        bottom = bottom.saturating_add(dy).clamp(
-            top.saturating_add(16),
-            i32::try_from(canvas[1])
-                .unwrap_or(i32::MAX)
-                .max(top.saturating_add(16)),
-        );
-    }
-    if original.kind == scorepeek_overlay_ui::WidgetKind::Empty
-        && original.settings.aspect_ratio != scorepeek_overlay_ui::AspectRatio::Free
-    {
-        let ratio = match original.settings.aspect_ratio {
-            scorepeek_overlay_ui::AspectRatio::Wide => 16.0 / 9.0,
-            scorepeek_overlay_ui::AspectRatio::Standard => 4.0 / 3.0,
-            scorepeek_overlay_ui::AspectRatio::Current([width, height]) => {
-                f64::from(width) / f64::from(height)
-            }
-            scorepeek_overlay_ui::AspectRatio::Free => 1.0,
-        };
-        let width = f64::from(right - left);
-        let mut height = f64::from(bottom - top);
-        if f64::from(dx).abs() >= f64::from(dy).abs() * ratio {
-            height = width / ratio;
-        }
-        let west = matches!(corner, ResizeCorner::NorthWest | ResizeCorner::SouthWest);
-        let north = matches!(corner, ResizeCorner::NorthWest | ResizeCorner::NorthEast);
-        let anchor_x = if west {
-            original.x + i32::try_from(original.width).unwrap_or(i32::MAX)
-        } else {
-            original.x
-        };
-        let anchor_y = if north {
-            original.y + i32::try_from(original.height).unwrap_or(i32::MAX)
-        } else {
-            original.y
-        };
-        let max_width = if west {
-            f64::from(anchor_x)
-        } else {
-            f64::from(canvas[0]) - f64::from(anchor_x)
-        };
-        let max_height = if north {
-            f64::from(anchor_y)
-        } else {
-            f64::from(canvas[1]) - f64::from(anchor_y)
-        };
-        let minimum_height = 16.0_f64.max(16.0 / ratio);
-        let maximum_height = (max_height / 4.0).floor() * 4.0;
-        let maximum_width = (max_width / 4.0).floor() * 4.0;
-        let maximum_height = maximum_height.min(maximum_width / ratio);
-        if maximum_height < minimum_height {
-            return;
-        }
-        height = height.clamp(minimum_height, maximum_height);
-        let width = height * ratio;
-        let width = snap_i32(width).min(snap_i32(maximum_width));
-        let height = snap_i32(height).min(snap_i32(maximum_height));
-        left = if west { anchor_x - width } else { anchor_x };
-        right = left + width;
-        top = if north { anchor_y - height } else { anchor_y };
-        bottom = top + height;
-    }
-    widget.x = left;
-    widget.y = top;
-    widget.width = right.saturating_sub(left).cast_unsigned();
-    widget.height = bottom.saturating_sub(top).cast_unsigned();
-}
-
-fn resize_corner_at(width: u32, height: u32, x: f64, y: f64) -> Option<ResizeCorner> {
-    if x < 18.0 && y < 18.0 {
-        Some(ResizeCorner::NorthWest)
-    } else if x >= f64::from(width.saturating_sub(18)) && y < 18.0 {
-        Some(ResizeCorner::NorthEast)
-    } else if x < 18.0 && y >= f64::from(height.saturating_sub(18)) {
-        Some(ResizeCorner::SouthWest)
-    } else if x >= f64::from(width.saturating_sub(18)) && y >= f64::from(height.saturating_sub(18))
-    {
-        Some(ResizeCorner::SouthEast)
-    } else {
-        None
-    }
-}
-
-fn widget_interaction_at(
-    widgets: &[WidgetLayout],
-    point: [f64; 2],
-) -> Option<(WidgetLayout, Option<ResizeCorner>)> {
-    let [x, y] = point;
-    let widget = widgets
-        .iter()
-        .rfind(|widget| {
-            x >= f64::from(widget.x)
-                && y >= f64::from(widget.y)
-                && x < f64::from(widget.x) + f64::from(widget.width)
-                && y < f64::from(widget.y) + f64::from(widget.height)
-        })?
-        .clone();
-    let corner = resize_corner_at(
-        widget.width,
-        widget.height,
-        x - f64::from(widget.x),
-        y - f64::from(widget.y),
-    );
-    Some((widget, corner))
-}
-
-enum DirectManipulationHit {
-    Canvas(ResizeCorner),
-    Widget(WidgetLayout, Option<ResizeCorner>),
-}
-
-fn direct_manipulation_at(
-    canvas: [u32; 2],
-    widgets: &[WidgetLayout],
-    selected_widget: Option<&str>,
-    point: [f64; 2],
-) -> Option<DirectManipulationHit> {
-    if let Some(selected) = selected_widget
-        && let Some(widget) = widgets.iter().find(|widget| widget.id == selected)
-        && point[0] >= f64::from(widget.x)
-        && point[1] >= f64::from(widget.y)
-        && point[0] < f64::from(widget.x) + f64::from(widget.width)
-        && point[1] < f64::from(widget.y) + f64::from(widget.height)
-        && let Some(corner) = resize_corner_at(
-            widget.width,
-            widget.height,
-            point[0] - f64::from(widget.x),
-            point[1] - f64::from(widget.y),
-        )
-    {
-        return Some(DirectManipulationHit::Widget(widget.clone(), Some(corner)));
-    }
-    let widget_hit = widget_interaction_at(widgets, point);
-    if let Some(corner) = resize_corner_at(canvas[0], canvas[1], point[0], point[1]) {
-        return Some(DirectManipulationHit::Canvas(corner));
-    }
-    widget_hit.map(|(widget, corner)| DirectManipulationHit::Widget(widget, corner))
 }
 
 impl Wake for CalloopWaker {
@@ -1168,6 +907,8 @@ struct App {
     renderer_init: Arc<RendererInitCoordinator>,
     shell: Shell,
     document: DioxusDocument,
+    actions: Rc<RefCell<Vec<EditorAction>>>,
+    surface_actions: Rc<RefCell<Vec<SurfaceAction>>>,
     shared_state: Reactive<OverlayState>,
     waker: Waker,
     started: Instant,
@@ -1189,13 +930,12 @@ struct App {
     widget_add_open: Reactive<bool>,
     dirty: Reactive<bool>,
     undo_available: Reactive<bool>,
-    readonly: bool,
+    readonly: Reactive<bool>,
     selected: Reactive<Option<String>>,
     pending_widget: Reactive<Option<scorepeek_overlay_ui::WidgetKind>>,
     pending_point: Reactive<[f64; 2]>,
     shared_widgets: Reactive<Vec<WidgetLayout>>,
-    interaction: Option<NativeInteraction>,
-    interaction_snapshot: Option<Vec<scorepeek_overlay_ui::CanvasPresentation>>,
+    interaction: Option<Drag>,
     next_keepalive: Instant,
     managed: Reactive<Vec<scorepeek_overlay_ui::CanvasPresentation>>,
     backend_revision: u64,
@@ -1213,44 +953,6 @@ struct App {
     title_edit: Reactive<Option<TitleEdit>>,
 }
 
-enum NativeInteraction {
-    CanvasMove {
-        start: [f64; 2],
-        origin: [i32; 2],
-    },
-    ManagedCanvasMove {
-        id: String,
-        start: [f64; 2],
-        origin: [i32; 2],
-    },
-    CanvasResize {
-        start: [f64; 2],
-        position: [i32; 2],
-        origin: [u32; 2],
-        corner: ResizeCorner,
-    },
-    Widget {
-        id: String,
-        start: [f64; 2],
-        original: WidgetLayout,
-        corner: Option<ResizeCorner>,
-    },
-}
-
-fn managed_canvas_move_target(interaction: &NativeInteraction) -> Option<&str> {
-    let NativeInteraction::ManagedCanvasMove { id, .. } = interaction else {
-        return None;
-    };
-    Some(id)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ResizeCorner {
-    NorthWest,
-    NorthEast,
-    SouthWest,
-    SouthEast,
-}
 impl App {
     #[allow(
         clippy::cast_precision_loss,
@@ -1316,6 +1018,8 @@ impl App {
         let surface_canvas_ids = Rc::new(RefCell::new(std::collections::BTreeSet::from([canvas
             .id
             .clone()])));
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let surface_actions = Rc::new(RefCell::new(Vec::new()));
         let vdom = VirtualDom::new_with_props(
             native_overlay,
             NativeOverlayProps {
@@ -1336,6 +1040,8 @@ impl App {
                 settings: Rc::clone(&settings),
                 surface_canvas_ids: Rc::clone(&surface_canvas_ids),
                 reactive: Rc::clone(&reactive),
+                actions: actions.clone(),
+                surface_actions: surface_actions.clone(),
             },
         );
         let mut document = DioxusDocument::new(vdom, document_config());
@@ -1374,6 +1080,8 @@ impl App {
             renderer_init,
             shell,
             document,
+            actions,
+            surface_actions,
             shared_state: reactive.state,
             waker,
             started: Instant::now(),
@@ -1395,13 +1103,13 @@ impl App {
             widget_add_open: reactive.widget_add_open,
             dirty: reactive.dirty,
             undo_available: reactive.undo_available,
-            readonly: true,
+            readonly: reactive.readonly,
             selected: reactive.selected,
             pending_widget: reactive.pending_widget,
             pending_point: reactive.pending_point,
             shared_widgets: reactive.widgets,
             interaction: None,
-            interaction_snapshot: None,
+
             next_keepalive: Instant::now(),
             managed: reactive.managed,
             backend_revision: 0,
@@ -1621,7 +1329,7 @@ impl App {
         let updates_readonly = control_updates_readonly(&request);
         let response = crate::control::request(&self.control_socket, &request).ok()?;
         if updates_readonly {
-            self.readonly = response.readonly;
+            self.readonly.set(response.readonly);
         }
         if let Some(revision) = response.backend_revision {
             self.backend_revision = revision;
@@ -1800,7 +1508,7 @@ impl App {
             self.shell.set_input_enabled(true);
         }
         self.interaction = None;
-        self.interaction_snapshot = None;
+
         if !value {
             self.selected.borrow_mut().take();
             self.pending_widget.set(None);
@@ -1830,680 +1538,178 @@ impl App {
         clippy::too_many_lines
     )]
     fn pointer_button(&mut self, button: u32, pressed: bool, x: f64, y: f64) {
-        if pressed && button != 0x110 {
+        if button != 0x110 && button != 0x111 {
+            return;
+        }
+        if !self.editing.get() {
+            if button == 0x111 && pressed {
+                self.pin_editor_host();
+                self.workspace_open
+                    .store(true, std::sync::atomic::Ordering::Release);
+                if let Some(screen) = self.shared_state.borrow().screen.kind {
+                    self.settings.borrow_mut().preview_screen = screen;
+                }
+                self.select_canvas(Some(self.canvas.id.clone()));
+                self.set_editing(true);
+            }
+            return;
+        }
+        if self.readonly.get() {
+            return;
+        }
+        dispatch_pointer(&mut self.document, [x, y], button, Some(pressed));
+        self.drain_editor_events();
+    }
+    fn drain_editor_events(&mut self) {
+        let actions = std::mem::take(&mut *self.actions.borrow_mut());
+        for action in actions {
+            self.editor_action(&action);
+        }
+        let actions = std::mem::take(&mut *self.surface_actions.borrow_mut());
+        for action in actions {
+            self.surface_action(action);
+        }
+    }
+    fn editor_model(&self) -> EditorModel {
+        let mut model = EditorModel::new(self.draft_snapshot(), self.surface_logical, "wayland");
+        model.readonly = self.readonly.get();
+        model.editing = self.editing.get();
+        model.preview = self.settings.borrow().preview_screen;
+        model.selected_canvas = self
+            .settings
+            .borrow()
+            .has_selection
+            .then(|| self.canvas.id.clone());
+        model.selected_widget.clone_from(&self.selected.borrow());
+        model.chrome.panel_open = self.panel_open.get();
+        model.chrome.widget_add_open = self.widget_add_open.get();
+        model.placing = self.pending_widget.get();
+        model.drag.clone_from(&self.interaction);
+        model
+    }
+    fn apply_editor_model(&mut self, model: EditorModel) {
+        if let Some(canvas) = model.current() {
+            self.apply_selected_presentation(canvas);
+        }
+        self.managed.set(model.draft);
+        self.settings.borrow_mut().preview_screen = model.preview;
+        self.panel_open.set(model.chrome.panel_open);
+        self.widget_add_open.set(model.chrome.widget_add_open);
+        self.pending_widget.set(model.placing);
+        self.select_canvas(model.selected_canvas);
+        self.selected.set(model.selected_widget);
+        self.interaction = model.drag;
+        self.sync_workspace_ui();
+    }
+    fn surface_action(&mut self, action: SurfaceAction) {
+        if !self.editing.get() || self.readonly.get() {
+            return;
+        }
+        if matches!(action, SurfaceAction::Enter(_)) {
+            return;
+        }
+        if matches!(
+            action,
+            SurfaceAction::Start { .. } | SurfaceAction::Select(_)
+        ) {
             self.finish_title_edit(false);
         }
-        if button == 0x111 {
-            if pressed {
-                if !self.editing.get() {
-                    self.pin_editor_host();
-                    self.workspace_open
-                        .store(true, std::sync::atomic::Ordering::Release);
-                    if let Some(screen) = self.shared_state.borrow().screen.kind {
-                        self.settings.borrow_mut().preview_screen = screen;
-                        self.sync_workspace_ui();
-                    }
-                    self.select_canvas(Some(self.canvas.id.clone()));
-                    self.set_editing(true);
-                    return;
-                }
-                if self.readonly
-                    || (self.panel_open.get() && x < f64::from(self.settings.borrow().panel_width))
-                {
-                    return;
-                }
-                let target = self
-                    .managed
-                    .borrow()
-                    .iter()
-                    .rfind(|canvas| {
-                        self.surface_canvas_ids.borrow().contains(&canvas.id)
-                            && scorepeek_overlay_ui::canvas_visible(
-                                canvas.show_on.as_deref(),
-                                scorepeek_overlay_ui::ScreenView {
-                                    kind: Some(self.settings.borrow().preview_screen),
-                                    suspended_since_unix_ms: None,
-                                    revision: 0,
-                                },
-                            )
-                            && x >= f64::from(canvas.x)
-                            && y >= f64::from(canvas.y)
-                            && x < f64::from(canvas.x) + f64::from(canvas.width)
-                            && y < f64::from(canvas.y) + f64::from(canvas.height)
-                    })
-                    .cloned();
-                if let Some(target) = target {
-                    self.interaction_snapshot = Some(self.draft_snapshot());
-                    if target.id == self.canvas.id {
-                        self.interaction = Some(NativeInteraction::CanvasMove {
-                            start: [x, y],
-                            origin: [target.x, target.y],
-                        });
-                    } else {
-                        self.interaction = Some(NativeInteraction::ManagedCanvasMove {
-                            id: target.id,
-                            start: [x, y],
-                            origin: [target.x, target.y],
-                        });
-                    }
-                } else {
-                    let screen = self.settings.borrow().preview_screen;
-                    self.select_first_canvas(screen);
-                }
-            } else {
-                self.persist_interaction();
-            }
-            return;
+        let mut model = self.editor_model();
+        let changed = model.surface(action);
+        let undo = model.undo.take();
+        self.pending_point
+            .set([f64::from(model.point[0]), f64::from(model.point[1])]);
+        self.apply_editor_model(model);
+        if changed && let Some(before) = undo {
+            self.finish_draft_change(before);
         }
-        if button != 0x110 {
-            return;
+    }
+    fn editor_action(&mut self, action: &EditorAction) {
+        if !matches!(action, EditorAction::AcceptTitle | EditorAction::EditTitle) {
+            self.finish_title_edit(false);
         }
-        if pressed {
-            if !self.editing.get() {
+        match action {
+            EditorAction::Save => {
+                self.save_and_close();
                 return;
             }
-            if self.readonly {
-                return;
-            }
-            if self.title_pointer(x, y) {
-                return;
-            }
-            if self.hit_selector(".native-panel-toggle", x, y) {
-                self.panel_open.set(!self.panel_open.get());
-                self.sync_workspace_ui();
-                return;
-            }
-            let outputs = self.outputs.borrow().clone();
-            for output in outputs {
-                if self.hit_selector(
-                    &format!(".output-option[data-output='{}']", output.name),
-                    x,
-                    y,
-                ) {
-                    if self.settings.borrow().output.as_deref() == Some(output.name.as_str()) {
-                        return;
-                    }
-                    let before = self.draft_snapshot();
-                    self.canvas.output = Some(output.name.clone());
-                    self.settings.borrow_mut().output = Some(output.name);
-                    self.persist_canvas_change(before);
-                    return;
-                }
-            }
-            if self.panel_open.get() && x < f64::from(self.settings.borrow().panel_width) {
-                if self.hit_selector(".undo-action", x, y) {
-                    self.undo_last_change();
-                    return;
-                }
-                if self.hit_selector(".close-action", x, y) {
-                    let mut workspace = self
-                        .workspace_ui
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    discard_undo(&mut workspace);
-                    drop(workspace);
-                    self.undo_available.set(false);
-                    self.workspace_open
-                        .store(false, std::sync::atomic::Ordering::Release);
-                    self.select_canvas(None);
-                    self.set_editing(false);
-                    return;
-                }
-                if self.hit_selector(".discard-action", x, y) {
-                    if !self.dirty.get() {
-                        return;
-                    }
-                    let mut workspace = self
-                        .workspace_ui
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+            EditorAction::Close | EditorAction::Discard => {
+                let mut workspace = self
+                    .workspace_ui
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if *action == EditorAction::Discard {
                     self.suppressed
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .extend(std::mem::take(&mut workspace.fallback));
-                    workspace.undo = None;
                     workspace.reload_saved = true;
-                    drop(workspace);
-                    self.workspace_open
-                        .store(false, std::sync::atomic::Ordering::Release);
-                    self.select_canvas(None);
-                    self.pending_widget.set(None);
-                    self.set_editing(false);
-                    return;
                 }
-                if self.hit_selector(".save-action", x, y) {
-                    if self.dirty.get() {
-                        self.save_and_close();
-                    }
-                    return;
-                }
-                if self.hit_selector(".widget-add-summary", x, y) {
-                    self.widget_add_open.set(!self.widget_add_open.get());
-                    self.sync_workspace_ui();
-                    return;
-                }
-                for (index, kind) in [
-                    scorepeek_overlay_ui::ScreenKind::MusicSelect,
-                    scorepeek_overlay_ui::ScreenKind::ModeSelect,
-                    scorepeek_overlay_ui::ScreenKind::DecideTransition,
-                    scorepeek_overlay_ui::ScreenKind::Play,
-                    scorepeek_overlay_ui::ScreenKind::Result,
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    if self.hit_selector(&format!(".preview-screen[data-index='{index}']"), x, y) {
-                        self.settings.borrow_mut().preview_screen = kind;
-                        self.sync_workspace_ui();
-                        self.select_first_canvas(kind);
-                        return;
-                    }
-                }
-                let canvas_ids = self
-                    .managed
-                    .borrow()
-                    .iter()
-                    .map(|item| item.id.clone())
-                    .collect::<Vec<_>>();
-                for id in canvas_ids {
-                    if self.hit_selector(&format!(".screen-toggle[data-canvas-id='{id}']"), x, y) {
-                        let before = self.draft_snapshot();
-                        let screen = self.settings.borrow().preview_screen;
-                        let was_shown = self
-                            .managed
-                            .borrow()
-                            .iter()
-                            .find(|canvas| canvas.id == id)
-                            .is_some_and(|canvas| shown_on(canvas, screen));
-                        if let Some(canvas) = self
-                            .managed
-                            .borrow_mut()
-                            .iter_mut()
-                            .find(|canvas| canvas.id == id)
-                        {
-                            set_shown_on(canvas, screen, !was_shown);
-                        }
-                        self.finish_draft_change(before);
-                        if was_shown && id == self.canvas.id {
-                            self.select_first_canvas(screen);
-                        }
-                        return;
-                    }
-                    if self.hit_selector(&format!(".canvas-select[data-canvas-id='{id}']"), x, y) {
-                        let target_screen = self
-                            .managed
-                            .borrow()
-                            .iter()
-                            .find(|canvas| canvas.id == id)
-                            .and_then(|canvas| {
-                                EDITOR_SCREENS
-                                    .into_iter()
-                                    .find(|screen| shown_on(canvas, *screen))
-                            });
-                        if !self
-                            .managed
-                            .borrow()
-                            .iter()
-                            .find(|canvas| canvas.id == id)
-                            .is_some_and(|canvas| {
-                                shown_on(canvas, self.settings.borrow().preview_screen)
-                            })
-                            && let Some(screen) = target_screen
-                        {
-                            self.settings.borrow_mut().preview_screen = screen;
-                            self.sync_workspace_ui();
-                        }
-                        self.select_canvas(Some(id));
-                        return;
-                    }
-                }
-                let widget_ids = self
-                    .shared_widgets
-                    .borrow()
-                    .iter()
-                    .map(|item| item.id.clone())
-                    .collect::<Vec<_>>();
-                for id in widget_ids {
-                    if self.hit_selector(&format!(".widget-row[data-widget-id='{id}']"), x, y) {
-                        *self.selected.borrow_mut() = Some(id);
-                        self.sync_workspace_ui();
-                        return;
-                    }
-                }
-                for (index, kind) in [
-                    scorepeek_overlay_ui::WidgetKind::Status,
-                    scorepeek_overlay_ui::WidgetKind::Selection,
-                    scorepeek_overlay_ui::WidgetKind::Score,
-                    scorepeek_overlay_ui::WidgetKind::HistoryList,
-                    scorepeek_overlay_ui::WidgetKind::HistoryGraph,
-                    scorepeek_overlay_ui::WidgetKind::Empty,
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    if self.hit_selector(&format!(".add-widget[data-index='{index}']"), x, y) {
-                        self.pending_widget.set(Some(kind));
-                        self.sync_workspace_ui();
-                        return;
-                    }
-                }
-                if self.hit_selector(".delete-widget", x, y) {
-                    let selected_id = self.selected.borrow().clone();
-                    if let Some(id) = selected_id {
-                        let before = self.draft_snapshot();
-                        self.shared_widgets
-                            .borrow_mut()
-                            .retain(|widget| widget.id != id);
-                        self.selected.borrow_mut().take();
-                        self.sync_workspace_ui();
-                        self.persist_canvas_change(before);
-                    }
-                    return;
-                }
-                for value in [5_u32, 10, 20, 50] {
-                    if self.hit_selector(&format!(".history-count[data-value='{value}']"), x, y) {
-                        self.update_selected_widget_setting(Some(value), None);
-                        return;
-                    }
-                }
-                for value in [1_u32, 3, 6, 12] {
-                    if self.hit_selector(&format!(".graph-months[data-value='{value}']"), x, y) {
-                        self.update_selected_widget_setting(None, Some(value));
-                        return;
-                    }
-                }
-                if self.hit_selector(".add-canvas", x, y) {
-                    let before = self.draft_snapshot();
-                    let suffix = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis();
-                    let mut canvas = crate::config::empty_canvas(
-                        format!("wayland-{suffix}"),
-                        crate::runtime::Backend::Wayland,
-                    )
-                    .presentation();
-                    canvas.output.clone_from(&self.surface_output);
-                    canvas.show_on = Some(vec![self.settings.borrow().preview_screen]);
-                    canvas.x = 0;
-                    canvas.y = 0;
-                    canvas.width = 560.min(grid_floor(self.surface_logical[0]));
-                    canvas.height = 1040.min(grid_floor(self.surface_logical[1]));
-                    let id = canvas.id.clone();
-                    self.managed.borrow_mut().push(canvas);
-                    self.finish_draft_change(before);
-                    self.select_canvas(Some(id));
-                    return;
-                }
-                if self.hit_selector(".delete-canvas", x, y) {
-                    let selected = self
-                        .preview
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .clone();
-                    let Some(selected) =
-                        selected_canvas_for_delete(&self.managed.borrow(), selected.as_deref())
-                    else {
-                        return;
-                    };
-                    let before = self.draft_snapshot();
-                    self.managed
-                        .borrow_mut()
-                        .retain(|canvas| canvas.id != selected);
-                    self.finish_draft_change(before);
-                    let next = self
-                        .managed
-                        .borrow()
-                        .first()
-                        .map(|canvas| canvas.id.clone());
-                    self.select_canvas(next);
-                    return;
-                }
-                for (index, skin) in [
-                    scorepeek_overlay_ui::Skin::CyanSystem,
-                    scorepeek_overlay_ui::Skin::ResultAurora,
-                    scorepeek_overlay_ui::Skin::DjBlackbox,
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    if self.hit_selector(&format!(".skin-option[data-index='{index}']"), x, y) {
-                        if self.appearance.get().skin == skin {
-                            return;
-                        }
-                        let before = self.draft_snapshot();
-                        self.appearance.set(Appearance { skin });
-                        self.canvas.skin = skin;
-                        self.persist_canvas_change(before);
-                        return;
-                    }
-                }
-                for (index, mode) in [
-                    scorepeek_overlay_ui::Background::None,
-                    scorepeek_overlay_ui::Background::Static,
-                    scorepeek_overlay_ui::Background::Animated,
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    if self.hit_selector(&format!(".background-option[data-index='{index}']"), x, y)
-                    {
-                        let before = self.draft_snapshot();
-                        self.settings.borrow_mut().background = mode;
-                        self.persist_canvas_change(before);
-                        return;
-                    }
-                }
-                for (selector, delta) in [(".fill-decrease", -1_i16), (".fill-increase", 1)] {
-                    if self.hit_selector(selector, x, y) {
-                        let before = self.draft_snapshot();
-                        if let Some(widget) = self
-                            .shared_widgets
-                            .borrow_mut()
-                            .iter_mut()
-                            .find(|w| Some(w.id.as_str()) == self.selected.borrow().as_deref())
-                        {
-                            widget.settings.fill_opacity_percent = u8::try_from(
-                                (i16::from(widget.settings.fill_opacity_percent) + delta)
-                                    .clamp(0, 100),
-                            )
-                            .unwrap_or(0);
-                        }
-                        self.persist_canvas_change(before);
-                        return;
-                    }
-                }
-                for (class, count) in [("frame-width", 3), ("aspect-ratio", 4), ("fill-opacity", 5)]
-                {
-                    for index in 0..count {
-                        let selector = if class == "fill-opacity" {
-                            format!(".{class}[data-value='{}']", index * 25)
-                        } else {
-                            format!(".{class}[data-index='{index}']")
-                        };
-                        if self.hit_selector(&selector, x, y) {
-                            let before = self.draft_snapshot();
-                            if let Some(widget) =
-                                self.shared_widgets.borrow_mut().iter_mut().find(|w| {
-                                    Some(w.id.as_str()) == self.selected.borrow().as_deref()
-                                })
-                            {
-                                match class {
-                                    "frame-width" => {
-                                        widget.settings.frame_width = [
-                                            scorepeek_overlay_ui::FrameWidth::S,
-                                            scorepeek_overlay_ui::FrameWidth::M,
-                                            scorepeek_overlay_ui::FrameWidth::L,
-                                        ][index];
-                                    }
-                                    "aspect-ratio" => {
-                                        set_aspect_ratio(widget, index);
-                                    }
-                                    _ => {
-                                        widget.settings.fill_opacity_percent =
-                                            u8::try_from(index * 25).unwrap_or(0);
-                                    }
-                                }
-                            }
-                            self.persist_canvas_change(before);
-                            return;
-                        }
-                    }
-                }
-                for value in [25_u8, 50, 75, 100] {
-                    if self.hit_selector(&format!(".opacity-option[data-value='{value}']"), x, y) {
-                        if self.settings.borrow().opacity_percent == value {
-                            return;
-                        }
-                        let before = self.draft_snapshot();
-                        self.settings.borrow_mut().opacity_percent = value;
-                        self.persist_canvas_change(before);
-                        return;
-                    }
-                }
+                workspace.undo = None;
+                drop(workspace);
+                self.workspace_open
+                    .store(false, std::sync::atomic::Ordering::Release);
+                self.select_canvas(None);
+                self.pending_widget.set(None);
+                self.set_editing(false);
                 return;
             }
-            let target = unselected_canvas_at(
-                &self.managed.borrow(),
-                &self.surface_canvas_ids.borrow(),
-                &self.canvas.presentation(),
-                self.settings.borrow().preview_screen,
-                [x, y],
-            );
-            if let Some(id) = target {
-                self.select_canvas(Some(id));
+            EditorAction::Undo => {
+                self.undo_last_change();
                 return;
             }
-            let output_point = [x, y];
-            let x = x - f64::from(self.canvas.x);
-            let y = y - f64::from(self.canvas.y);
-            if let Some(kind) = self.pending_widget.take() {
-                self.place_widget(kind, x, y);
-                return;
-            }
-            let hit = direct_manipulation_at(
-                [self.canvas.width, self.canvas.height],
-                &self.shared_widgets.borrow(),
-                self.selected.borrow().as_deref(),
-                [x, y],
-            );
-            match hit {
-                Some(DirectManipulationHit::Canvas(corner)) => {
-                    self.interaction_snapshot = Some(self.draft_snapshot());
-                    self.interaction = Some(NativeInteraction::CanvasResize {
-                        start: output_point,
-                        position: [self.canvas.x, self.canvas.y],
-                        origin: [self.canvas.width, self.canvas.height],
-                        corner,
-                    });
-                }
-                Some(DirectManipulationHit::Widget(original, corner)) => {
-                    *self.selected.borrow_mut() = Some(original.id.clone());
-                    self.sync_workspace_ui();
-                    self.interaction_snapshot = Some(self.draft_snapshot());
-                    self.interaction = Some(NativeInteraction::Widget {
-                        id: original.id.clone(),
-                        start: [x, y],
-                        original,
-                        corner,
-                    });
-                }
-                None => {}
-            }
-        } else {
-            self.persist_interaction();
+            _ => {}
         }
+        if *action == EditorAction::AcceptTitle {
+            self.finish_title_edit(true);
+            return;
+        }
+        if *action == EditorAction::CancelTitle {
+            self.finish_title_edit(false);
+            return;
+        }
+        let before = self.draft_snapshot();
+        let mut model = self.editor_model();
+        model.action(action);
+        if *action == EditorAction::AddCanvas
+            && let Some(canvas) = model.draft.last_mut()
+        {
+            canvas.output.clone_from(&self.surface_output);
+        }
+        let title = model.title.clone();
+        self.apply_editor_model(model);
+        if let Some(title) = title {
+            crate::diagnostics::emit(
+                "title_edit_started",
+                &serde_json::json!({"canvas_id":self.canvas.id}),
+            );
+            self.title_edit
+                .set(Some(TitleEdit::new(title.widget, title.text)));
+            self.update_title_input(false);
+        }
+        self.finish_draft_change(before);
     }
-    #[allow(clippy::too_many_lines)]
+
     fn pointer_motion(&mut self, x: f64, y: f64) {
-        if self.pending_widget.get().is_some() {
-            self.pending_point.set([x, y]);
-        }
-        self.shell.set_cursor(match &self.interaction {
-            Some(
-                NativeInteraction::CanvasMove { .. } | NativeInteraction::ManagedCanvasMove { .. },
-            ) => CursorStyle::Move,
-            Some(
-                NativeInteraction::CanvasResize { .. }
-                | NativeInteraction::Widget {
-                    corner: Some(_), ..
-                },
-            ) => CursorStyle::Resize,
-            Some(NativeInteraction::Widget { corner: None, .. }) => CursorStyle::Grabbing,
-            None if self.editing.get() => CursorStyle::Grab,
-            None => CursorStyle::Default,
-        });
-        let Some(interaction) = &self.interaction else {
-            return;
-        };
-        match interaction {
-            NativeInteraction::CanvasMove { start, origin } => {
-                self.move_canvas(*start, *origin, x, y);
-            }
-            NativeInteraction::ManagedCanvasMove { id, start, origin } => {
-                let dx = snap_i32(x - start[0]);
-                let dy = snap_i32(y - start[1]);
-                if let Some(canvas) = self
-                    .managed
-                    .borrow_mut()
-                    .iter_mut()
-                    .find(|canvas| &canvas.id == id)
-                {
-                    canvas.x = origin[0].saturating_add(dx);
-                    canvas.y = origin[1].saturating_add(dy);
-                    if let Some([output_width, output_height]) = self.shell.output_logical_size {
-                        canvas.x = canvas
-                            .x
-                            .clamp(0, maximum_grid_position(output_width, canvas.width));
-                        canvas.y = canvas
-                            .y
-                            .clamp(0, maximum_grid_position(output_height, canvas.height));
-                    }
-                }
-            }
-            NativeInteraction::CanvasResize {
-                start,
-                position,
-                origin,
-                corner,
-            } => {
-                self.resize_canvas(*start, *position, *origin, *corner, x, y);
-            }
-            NativeInteraction::Widget {
-                id,
-                start,
-                original,
-                corner,
-            } => {
-                let [x, y] = self.editor_local_point(x, y);
-                if let Some(widget) = self
-                    .shared_widgets
-                    .borrow_mut()
-                    .iter_mut()
-                    .find(|widget| &widget.id == id)
-                {
-                    if let Some(corner) = corner {
-                        resize_widget(
-                            widget,
-                            original,
-                            *start,
-                            *corner,
-                            x,
-                            y,
-                            [self.canvas.width, self.canvas.height],
-                        );
-                    } else {
-                        widget.x = snap_i32(f64::from(original.x) + x - start[0]).clamp(
-                            0,
-                            i32::try_from(self.canvas.width.saturating_sub(widget.width))
-                                .unwrap_or(i32::MAX),
-                        );
-                        widget.y = snap_i32(f64::from(original.y) + y - start[1]).clamp(
-                            0,
-                            i32::try_from(self.canvas.height.saturating_sub(widget.height))
-                                .unwrap_or(i32::MAX),
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    fn editor_local_point(&self, x: f64, y: f64) -> [f64; 2] {
-        [x - f64::from(self.canvas.x), y - f64::from(self.canvas.y)]
-    }
-
-    fn move_canvas(&mut self, start: [f64; 2], origin: [i32; 2], x: f64, y: f64) {
-        self.canvas.x = snap_i32(f64::from(origin[0]) + x - start[0]);
-        self.canvas.y = snap_i32(f64::from(origin[1]) + y - start[1]);
-        if let Some([output_width, output_height]) = self.shell.output_logical_size {
-            self.canvas.x = self
-                .canvas
-                .x
-                .clamp(0, maximum_grid_position(output_width, self.canvas.width));
-            self.canvas.y = self
-                .canvas
-                .y
-                .clamp(0, maximum_grid_position(output_height, self.canvas.height));
-        }
-        self.settings.borrow_mut().set_geometry(CanvasGeometry {
-            x: self.canvas.x,
-            y: self.canvas.y,
-            width: self.canvas.width,
-            height: self.canvas.height,
-        });
-        self.set_editor_geometry(self.editing.get());
-    }
-
-    fn resize_canvas(
-        &mut self,
-        start: [f64; 2],
-        position: [i32; 2],
-        origin: [u32; 2],
-        corner: ResizeCorner,
-        x: f64,
-        y: f64,
-    ) {
-        let dx = snap_i32(x - start[0]);
-        let dy = snap_i32(y - start[1]);
-        let min_width = self
-            .shared_widgets
-            .borrow()
-            .iter()
-            .map(|widget| widget.x.cast_unsigned().saturating_add(widget.width))
-            .max()
-            .unwrap_or(32)
-            .max(32);
-        let min_height = self
-            .shared_widgets
-            .borrow()
-            .iter()
-            .map(|widget| widget.y.cast_unsigned().saturating_add(widget.height))
-            .max()
-            .unwrap_or(32)
-            .max(32);
-        let geometry = resized_canvas_geometry(
-            position,
-            origin,
-            [min_width, min_height],
-            corner,
-            [dx, dy],
-            self.shell.output_logical_size,
+        dispatch_pointer(&mut self.document, [x, y], 0x110, None);
+        self.drain_editor_events();
+        self.shell.set_cursor(
+            if self
+                .interaction
+                .as_ref()
+                .is_some_and(|drag| drag.corner.is_some())
+            {
+                CursorStyle::Resize
+            } else if self.interaction.is_some() {
+                CursorStyle::Grabbing
+            } else {
+                CursorStyle::Default
+            },
         );
-        self.canvas.x = geometry.x;
-        self.canvas.y = geometry.y;
-        self.canvas.width = geometry.width;
-        self.canvas.height = geometry.height;
-        self.settings.borrow_mut().set_geometry(geometry);
-        self.set_editor_geometry(self.editing.get());
-    }
-    fn persist_interaction(&mut self) {
-        let Some(interaction) = self.interaction.take() else {
-            return;
-        };
-        let before = self.interaction_snapshot.take();
-        if let Some(id) = managed_canvas_move_target(&interaction) {
-            self.select_canvas(Some(id.to_owned()));
-        } else {
-            self.sync_canvas_to_managed();
-        }
-        if let Some(before) = before {
-            self.finish_draft_change(before);
-        }
-        if !self.editing.get() {
-            let _ = self.request(crate::control::Request::ReleaseBackend {
-                backend: crate::runtime::Backend::Wayland,
-                editor_id: self.editor_id.clone(),
-            });
-        }
     }
     fn persist_canvas(&mut self) {
         self.sync_canvas_to_managed();
         self.update_draft();
-    }
-    fn persist_canvas_change(&mut self, before: Vec<scorepeek_overlay_ui::CanvasPresentation>) {
-        self.sync_canvas_to_managed();
-        self.finish_draft_change(before);
     }
     fn sync_canvas_to_managed(&mut self) {
         {
@@ -2558,25 +1764,12 @@ impl App {
             return;
         };
         let DraftUndo(restored) = undo;
-        self.managed.borrow_mut().clone_from(&restored);
+        let mut model = self.editor_model();
+        model.undo = Some(restored);
+        model.action(&EditorAction::Undo);
+        self.apply_editor_model(model);
         self.undo_available.set(false);
-        let selected = self
-            .preview
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let next = restored
-            .iter()
-            .find(|canvas| Some(canvas.id.as_str()) == selected.as_deref())
-            .or_else(|| restored.first())
-            .cloned();
-        if let Some(next) = next {
-            if selected.as_deref() != Some(next.id.as_str()) {
-                self.select_canvas(Some(next.id.clone()));
-            }
-            self.apply_selected_presentation(&next);
-            self.set_editor_geometry(true);
-        }
+        self.set_editor_geometry(true);
         self.update_draft();
     }
 
@@ -2599,16 +1792,6 @@ impl App {
         workspace.pending_widget = self.pending_widget.get();
     }
 
-    fn select_first_canvas(&mut self, screen: scorepeek_overlay_ui::ScreenKind) {
-        let next = self
-            .managed
-            .borrow()
-            .iter()
-            .find(|canvas| shown_on(canvas, screen))
-            .map(|canvas| canvas.id.clone());
-        self.select_canvas(next);
-    }
-
     fn select_canvas(&self, next: Option<String>) {
         replace_canvas_selection(
             &mut self
@@ -2619,62 +1802,6 @@ impl App {
             next,
         );
         self.sync_workspace_ui();
-    }
-    fn place_widget(&mut self, kind: scorepeek_overlay_ui::WidgetKind, x: f64, y: f64) {
-        let before = self.draft_snapshot();
-        let id = scorepeek_overlay_ui::next_widget_id(kind, &self.shared_widgets.borrow());
-        let (natural_width, natural_height) = scorepeek_overlay_ui::default_widget_size(kind);
-        let width = natural_width.min(self.canvas.width);
-        let height = natural_height.min(self.canvas.height);
-        self.shared_widgets.borrow_mut().push(WidgetLayout {
-            id: id.clone(),
-            kind,
-            x: snap_i32(x).clamp(
-                0,
-                i32::try_from(self.canvas.width.saturating_sub(width)).unwrap_or(i32::MAX),
-            ),
-            y: snap_i32(y).clamp(
-                0,
-                i32::try_from(self.canvas.height.saturating_sub(height)).unwrap_or(i32::MAX),
-            ),
-            width,
-            height,
-            settings: scorepeek_overlay_ui::WidgetSettings::default(),
-        });
-        *self.selected.borrow_mut() = Some(id);
-        self.sync_workspace_ui();
-        self.persist_canvas_change(before);
-    }
-    fn update_selected_widget_setting(
-        &mut self,
-        history_count: Option<u32>,
-        graph_months: Option<u32>,
-    ) {
-        let before = self.draft_snapshot();
-        let mut changed = false;
-        let selected = self.selected.borrow().clone();
-        if let Some(widget) = self
-            .shared_widgets
-            .borrow_mut()
-            .iter_mut()
-            .find(|widget| Some(&widget.id) == selected.as_ref())
-        {
-            if let Some(value) = history_count
-                && widget.settings.history_count != value
-            {
-                widget.settings.history_count = value;
-                changed = true;
-            }
-            if let Some(value) = graph_months
-                && widget.settings.graph_months != value
-            {
-                widget.settings.graph_months = value;
-                changed = true;
-            }
-        }
-        if changed {
-            self.persist_canvas_change(before);
-        }
     }
     fn update_draft(&mut self) {
         let canvases = self.managed.borrow().clone();
@@ -2708,16 +1835,7 @@ impl App {
             self.set_editing(false);
         }
     }
-    fn hit_selector(&self, selector: &str, x: f64, y: f64) -> bool {
-        let inner = self.document.inner.borrow();
-        let Ok(Some(node)) = inner.query_selector(selector) else {
-            return false;
-        };
-        let Some(rect) = inner.get_client_bounding_rect(node) else {
-            return false;
-        };
-        x >= rect.x && y >= rect.y && x < rect.x + rect.width && y < rect.y + rect.height
-    }
+
     fn poll_dioxus(&mut self) -> bool {
         let mut changed = false;
         while self
@@ -3150,6 +2268,8 @@ struct VisualDebugElement {
 
 struct VisualDebugSession {
     document: DioxusDocument,
+    actions: Rc<RefCell<Vec<EditorAction>>>,
+    surface_actions: Rc<RefCell<Vec<SurfaceAction>>>,
     logical_size: [u32; 2],
     physical_size: [u32; 2],
     scale: f32,
@@ -3221,6 +2341,8 @@ impl VisualDebugSession {
             panel_width: editor_panel_width(Some(scenario.logical_size[0])),
         }));
         let reactive = Rc::new(RefCell::new(None));
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let surface_actions = Rc::new(RefCell::new(Vec::new()));
         let props = NativeOverlayProps {
             appearance: Rc::clone(&appearance),
             widgets: Rc::clone(&widgets),
@@ -3243,6 +2365,8 @@ impl VisualDebugSession {
             settings: Rc::clone(&settings),
             surface_canvas_ids: Rc::new(RefCell::new(surface_canvas_ids)),
             reactive: Rc::clone(&reactive),
+            actions: actions.clone(),
+            surface_actions: surface_actions.clone(),
         };
         let mut document = DioxusDocument::new(
             VirtualDom::new_with_props(native_overlay, props),
@@ -3255,6 +2379,8 @@ impl VisualDebugSession {
             .ok_or_else(|| "native overlay did not publish its reactive state".to_owned())?;
         let mut session = Self {
             document,
+            actions,
+            surface_actions,
             logical_size: scenario.logical_size,
             physical_size,
             scale: scenario.scale,
@@ -3328,190 +2454,74 @@ impl VisualDebugSession {
         };
     }
 
+    fn editor_model(&self) -> EditorModel {
+        let mut model =
+            EditorModel::new(self.managed.borrow().clone(), self.logical_size, "wayland");
+        model.readonly = false;
+        model.editing = self.editing.get();
+        model.preview = self.settings.borrow().preview_screen;
+        model.selected_canvas = self
+            .settings
+            .borrow()
+            .has_selection
+            .then(|| self.settings.borrow().id.clone());
+        model.selected_widget.clone_from(&self.selected.borrow());
+        model.chrome.panel_open = self.panel_open.get();
+        model.chrome.widget_add_open = self.widget_add_open.get();
+        model
+    }
+    fn apply_editor_model(&self, model: &EditorModel) {
+        self.managed.set(model.draft.clone());
+        self.settings.borrow_mut().preview_screen = model.preview;
+        if let Some(canvas) = model.current() {
+            self.load_canvas(canvas.clone());
+        }
+        self.settings.borrow_mut().has_selection = model.selected_canvas.is_some();
+        self.selected.set(model.selected_widget.clone());
+        self.panel_open.set(model.chrome.panel_open);
+        self.widget_add_open.set(model.chrome.widget_add_open);
+    }
+    fn drain_editor_events(&mut self, model: &mut EditorModel) {
+        let actions = std::mem::take(&mut *self.actions.borrow_mut());
+        for action in actions {
+            if let Some(edit) = self.title_edit.borrow().as_ref() {
+                model.title = Some(scorepeek_overlay_ui::editor_model::TitleDraft {
+                    canvas: self.settings.borrow().id.clone(),
+                    widget: edit.widget.clone(),
+                    text: edit.text.clone(),
+                    composing: !edit.preedit.is_empty(),
+                });
+            }
+            model.action(&action);
+            self.title_edit.set(
+                model
+                    .title
+                    .as_ref()
+                    .map(|title| TitleEdit::new(title.widget.clone(), title.text.clone())),
+            );
+        }
+        let actions = std::mem::take(&mut *self.surface_actions.borrow_mut());
+        for action in actions {
+            model.surface(action);
+        }
+        self.apply_editor_model(model);
+    }
     fn click(&mut self, selector: &str) -> Result<(), String> {
-        let matched = {
+        let point = {
             let inner = self.document.inner.borrow();
-            inner
+            let node = inner
                 .query_selector(selector)
-                .map_err(|_| "invalid selector".to_owned())?
-                .is_some()
+                .map_err(|_| "invalid selector")?
+                .ok_or_else(|| format!("selector did not match: {selector}"))?;
+            let rect = inner
+                .get_client_bounding_rect(node)
+                .ok_or("selector has no layout")?;
+            [rect.x + rect.width / 2.0, rect.y + rect.height / 2.0]
         };
-        if !matched {
-            return Err(format!("selector did not match: {selector}"));
-        }
-        match selector {
-            ".empty-title-input" | ".title-accept" | ".title-cancel" => {
-                self.title_click(selector)?;
-            }
-            ".native-panel-toggle" => self.panel_open.set(!self.panel_open.get()),
-            ".widget-add-summary" => self.widget_add_open.set(!self.widget_add_open.get()),
-            _ if selector.contains("preview-screen") => {
-                let index = selector_index(selector)?;
-                let screens = [
-                    scorepeek_overlay_ui::ScreenKind::MusicSelect,
-                    scorepeek_overlay_ui::ScreenKind::ModeSelect,
-                    scorepeek_overlay_ui::ScreenKind::DecideTransition,
-                    scorepeek_overlay_ui::ScreenKind::Play,
-                    scorepeek_overlay_ui::ScreenKind::Result,
-                ];
-                let screen = *screens
-                    .get(index)
-                    .ok_or_else(|| "preview screen index is out of range".to_owned())?;
-                self.settings.borrow_mut().preview_screen = screen;
-                let first = self
-                    .managed
-                    .borrow()
-                    .iter()
-                    .find(|canvas| shown_on(canvas, screen))
-                    .cloned();
-                if let Some(canvas) = first {
-                    self.load_canvas(canvas);
-                }
-            }
-            _ if [
-                "background-option",
-                "frame-width",
-                "skin-option",
-                "aspect-ratio",
-            ]
-            .iter()
-            .any(|class| selector.contains(class)) =>
-            {
-                self.appearance_click(selector)?;
-            }
-            _ if selector.contains("screen-toggle") => {
-                let id = selector_attribute(selector, "data-canvas-id")?;
-                let screen = self.settings.borrow().preview_screen;
-                let mut managed = self.managed.borrow_mut();
-                let canvas = managed
-                    .iter_mut()
-                    .find(|canvas| canvas.id == id)
-                    .ok_or_else(|| "canvas row is not in the workspace".to_owned())?;
-                let shown = shown_on(canvas, screen);
-                set_shown_on(canvas, screen, !shown);
-            }
-            _ if selector.contains("canvas-select") => {
-                let id = selector_attribute(selector, "data-canvas-id")?;
-                let canvas = self
-                    .managed
-                    .borrow()
-                    .iter()
-                    .find(|canvas| canvas.id == id)
-                    .cloned()
-                    .ok_or_else(|| "canvas row is not in the workspace".to_owned())?;
-                if !shown_on(&canvas, self.settings.borrow().preview_screen)
-                    && let Some(screen) = EDITOR_SCREENS
-                        .into_iter()
-                        .find(|screen| shown_on(&canvas, *screen))
-                {
-                    self.settings.borrow_mut().preview_screen = screen;
-                }
-                self.load_canvas(canvas);
-                self.selected.borrow_mut().take();
-            }
-            _ if selector.contains("widget-row") => {
-                *self.selected.borrow_mut() = Some(selector_attribute(selector, "data-widget-id")?);
-            }
-            _ => {
-                return Err(format!(
-                    "visual debugger does not implement click for: {selector}"
-                ));
-            }
-        }
+        let mut model = self.editor_model();
+        dispatch_click(&mut self.document, point);
+        self.drain_editor_events(&mut model);
         self.resolve();
-        Ok(())
-    }
-
-    fn title_click(&mut self, selector: &str) -> Result<(), String> {
-        match selector {
-            ".empty-title-input" => {
-                let widget = self
-                    .widgets
-                    .borrow()
-                    .iter()
-                    .find(|widget| Some(widget.id.as_str()) == self.selected.borrow().as_deref())
-                    .cloned()
-                    .ok_or("no title widget selected")?;
-                self.title_edit
-                    .set(Some(TitleEdit::new(widget.id, widget.settings.title)));
-            }
-            ".title-accept" | ".title-cancel" => {
-                let edit = self.title_edit.take().ok_or("no title edit")?;
-                if selector == ".title-accept"
-                    && let Some(widget) = self
-                        .widgets
-                        .borrow_mut()
-                        .iter_mut()
-                        .find(|widget| widget.id == edit.widget)
-                {
-                    widget.settings.title = edit.text;
-                }
-            }
-            _ => return Err("unknown title action".into()),
-        }
-        self.sync_selected_canvas();
-        Ok(())
-    }
-
-    fn appearance_click(&mut self, selector: &str) -> Result<(), String> {
-        match selector {
-            _ if selector.contains("background-option") => {
-                self.settings.borrow_mut().background = *[
-                    scorepeek_overlay_ui::Background::None,
-                    scorepeek_overlay_ui::Background::Static,
-                    scorepeek_overlay_ui::Background::Animated,
-                ]
-                .get(selector_index(selector)?)
-                .ok_or("invalid background index")?;
-                self.sync_selected_canvas();
-            }
-            _ if selector.contains("frame-width") => {
-                let value = *[
-                    scorepeek_overlay_ui::FrameWidth::S,
-                    scorepeek_overlay_ui::FrameWidth::M,
-                    scorepeek_overlay_ui::FrameWidth::L,
-                ]
-                .get(selector_index(selector)?)
-                .ok_or("invalid frame width")?;
-                if let Some(widget) = self
-                    .widgets
-                    .borrow_mut()
-                    .iter_mut()
-                    .find(|w| Some(w.id.as_str()) == self.selected.borrow().as_deref())
-                {
-                    widget.settings.frame_width = value;
-                }
-                self.sync_selected_canvas();
-            }
-            _ if selector.contains("aspect-ratio") => {
-                let index = selector_index(selector)?;
-                if index > 3 {
-                    return Err("invalid aspect ratio".into());
-                }
-                if let Some(widget) = self
-                    .widgets
-                    .borrow_mut()
-                    .iter_mut()
-                    .find(|w| Some(w.id.as_str()) == self.selected.borrow().as_deref())
-                {
-                    set_aspect_ratio(widget, index);
-                }
-                self.sync_selected_canvas();
-            }
-            _ if selector.contains("skin-option") => {
-                let skins = [
-                    scorepeek_overlay_ui::Skin::CyanSystem,
-                    scorepeek_overlay_ui::Skin::ResultAurora,
-                    scorepeek_overlay_ui::Skin::DjBlackbox,
-                ];
-                let skin = *skins
-                    .get(selector_index(selector)?)
-                    .ok_or_else(|| "skin index is out of range".to_owned())?;
-                self.appearance.set(Appearance { skin });
-                self.sync_selected_canvas();
-            }
-            _ => return Err("unknown appearance control".into()),
-        }
         Ok(())
     }
 
@@ -3533,139 +2543,25 @@ impl VisualDebugSession {
         button: VisualDebugButton,
     ) -> Result<(), String> {
         if !self.editing.get() {
-            return Err("drag requires the editable preview".into());
+            return Err("drag requires editing".into());
         }
-        let panel_width = f64::from(self.settings.borrow().panel_width);
-        if self.panel_open.get() && from[0] < panel_width {
-            return Err("drag start is inside the editor panel".into());
+        let button = match button {
+            VisualDebugButton::Right => 0x111,
+            VisualDebugButton::Left => 0x110,
+        };
+        let mut model = self.editor_model();
+        dispatch_pointer(&mut self.document, from, button, None);
+        dispatch_pointer(&mut self.document, from, button, Some(true));
+        self.drain_editor_events(&mut model);
+        if model.drag.is_none() {
+            return Err("drag did not reach a Dioxus canvas handler".into());
         }
-        let dx = snap_i32(to[0] - from[0]);
-        let dy = snap_i32(to[1] - from[1]);
-        match button {
-            VisualDebugButton::Right => self.drag_canvas(from, [dx, dy])?,
-            VisualDebugButton::Left => self.drag_widget_or_canvas(from, [dx, dy])?,
-        }
-        self.sync_selected_canvas();
+        dispatch_pointer(&mut self.document, to, button, None);
+        self.drain_editor_events(&mut model);
+        dispatch_pointer(&mut self.document, to, button, Some(false));
+        self.drain_editor_events(&mut model);
         self.resolve();
         Ok(())
-    }
-
-    fn drag_canvas(&self, from: [f64; 2], [dx, dy]: [i32; 2]) -> Result<(), String> {
-        let mut settings = self.settings.borrow_mut();
-        let inside = from[0] >= f64::from(settings.x)
-            && from[1] >= f64::from(settings.y)
-            && from[0] < f64::from(settings.x) + f64::from(settings.width)
-            && from[1] < f64::from(settings.y) + f64::from(settings.height);
-        if !inside {
-            return Err("right drag did not start on the selected canvas".into());
-        }
-        settings.x = settings.x.saturating_add(dx).clamp(
-            0,
-            maximum_grid_position(self.logical_size[0], settings.width),
-        );
-        settings.y = settings.y.saturating_add(dy).clamp(
-            0,
-            maximum_grid_position(self.logical_size[1], settings.height),
-        );
-        Ok(())
-    }
-
-    fn drag_widget_or_canvas(&self, from: [f64; 2], delta: [i32; 2]) -> Result<(), String> {
-        let settings = self.settings.borrow().clone();
-        let local = [
-            from[0] - f64::from(settings.x),
-            from[1] - f64::from(settings.y),
-        ];
-        let hit = direct_manipulation_at(
-            [settings.width, settings.height],
-            &self.widgets.borrow(),
-            self.selected.borrow().as_deref(),
-            local,
-        );
-        match hit {
-            Some(DirectManipulationHit::Canvas(corner)) => {
-                let minimum =
-                    self.widgets
-                        .borrow()
-                        .iter()
-                        .fold([32, 32], |[width, height], widget| {
-                            [
-                                width.max(widget.x.cast_unsigned().saturating_add(widget.width)),
-                                height.max(widget.y.cast_unsigned().saturating_add(widget.height)),
-                            ]
-                        });
-                let geometry = resized_canvas_geometry(
-                    [settings.x, settings.y],
-                    [settings.width, settings.height],
-                    minimum,
-                    corner,
-                    delta,
-                    Some(self.logical_size),
-                );
-                self.settings.borrow_mut().set_geometry(geometry);
-            }
-            Some(DirectManipulationHit::Widget(original, corner)) => {
-                self.drag_widget(&settings, local, delta, &original, corner)?;
-            }
-            None => return Err("left drag did not start on a canvas or widget".to_owned()),
-        }
-        Ok(())
-    }
-
-    fn drag_widget(
-        &self,
-        settings: &NativeCanvasSettings,
-        local: [f64; 2],
-        [dx, dy]: [i32; 2],
-        original: &WidgetLayout,
-        corner: Option<ResizeCorner>,
-    ) -> Result<(), String> {
-        let mut widgets = self.widgets.borrow_mut();
-        let widget = widgets
-            .iter_mut()
-            .find(|widget| widget.id == original.id)
-            .ok_or_else(|| "left drag widget disappeared".to_owned())?;
-        if let Some(corner) = corner {
-            resize_widget(
-                widget,
-                original,
-                local,
-                corner,
-                local[0] + f64::from(dx),
-                local[1] + f64::from(dy),
-                [settings.width, settings.height],
-            );
-        } else {
-            widget.x = original.x.saturating_add(dx).clamp(
-                0,
-                i32::try_from(settings.width.saturating_sub(widget.width)).unwrap_or(i32::MAX),
-            );
-            widget.y = original.y.saturating_add(dy).clamp(
-                0,
-                i32::try_from(settings.height.saturating_sub(widget.height)).unwrap_or(i32::MAX),
-            );
-        }
-        *self.selected.borrow_mut() = Some(widget.id.clone());
-        Ok(())
-    }
-
-    fn sync_selected_canvas(&self) {
-        let settings = self.settings.borrow();
-        let widgets = self.widgets.borrow();
-        if let Some(canvas) = self
-            .managed
-            .borrow_mut()
-            .iter_mut()
-            .find(|canvas| canvas.id == settings.id)
-        {
-            canvas.background = settings.background;
-            canvas.skin = self.appearance.get().skin;
-            canvas.widgets.clone_from(&widgets);
-            canvas.x = settings.x;
-            canvas.y = settings.y;
-            canvas.width = settings.width;
-            canvas.height = settings.height;
-        }
     }
 
     fn render(
@@ -3759,25 +2655,6 @@ fn validate_visual_debug_scenario(scenario: &VisualDebugScenario) -> Result<[u32
         return Err("canvas_id does not select a Wayland canvas".into());
     }
     Ok(physical_size)
-}
-
-fn selector_index(selector: &str) -> Result<usize, String> {
-    selector_attribute(selector, "data-index")?
-        .parse()
-        .map_err(|_| "selector data-index must be an integer".to_owned())
-}
-
-fn selector_attribute(selector: &str, name: &str) -> Result<String, String> {
-    let prefix = format!("{name}='");
-    let start = selector
-        .find(&prefix)
-        .map(|position| position + prefix.len())
-        .ok_or_else(|| format!("selector must include {name}='…'"))?;
-    let end = selector[start..]
-        .find('\'')
-        .map(|position| start + position)
-        .ok_or_else(|| format!("selector must close {name}"))?;
-    Ok(selector[start..end].to_owned())
 }
 
 /// Runs the deterministic native visual debugger without connecting to Wayland.
@@ -3998,6 +2875,204 @@ fn sanitize_artifact_name(name: &str) -> String {
 mod skin_tests {
     use super::*;
 
+    fn resize_widget(
+        widget: &mut WidgetLayout,
+        original: &WidgetLayout,
+        start: [f64; 2],
+        corner: ResizeCorner,
+        x: f64,
+        y: f64,
+        canvas: [u32; 2],
+    ) {
+        let rect = scorepeek_overlay_ui::editor_model::resize(
+            [
+                original.x,
+                original.y,
+                i32::try_from(original.width).unwrap_or(i32::MAX),
+                i32::try_from(original.height).unwrap_or(i32::MAX),
+            ],
+            [snap_i32(x - start[0]), snap_i32(y - start[1])],
+            Some(corner.name()),
+            canvas,
+            [16, 16],
+            if original.kind == scorepeek_overlay_ui::WidgetKind::Empty {
+                original.settings.aspect_ratio
+            } else {
+                scorepeek_overlay_ui::AspectRatio::Free
+            },
+        );
+        widget.x = rect[0];
+        widget.y = rect[1];
+        widget.width = rect[2].unsigned_abs();
+        widget.height = rect[3].unsigned_abs();
+    }
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum ResizeCorner {
+        NorthWest,
+        NorthEast,
+        SouthWest,
+        SouthEast,
+    }
+    impl ResizeCorner {
+        fn name(self) -> &'static str {
+            match self {
+                Self::NorthWest => "nw",
+                Self::NorthEast => "ne",
+                Self::SouthWest => "sw",
+                Self::SouthEast => "se",
+            }
+        }
+    }
+
+    #[test]
+    fn editor_styles_survive_zero_visible_canvases_and_last_canvas_off() {
+        let scenario: VisualDebugScenario =
+            serde_json::from_str(include_str!("../tests/fixtures/visual-empty-editor.json"))
+                .unwrap();
+        let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        for expected in [0, 1, 0] {
+            if expected != 0
+                || session
+                    .document
+                    .inner
+                    .borrow()
+                    .query_selector_all(".editor-canvas")
+                    .unwrap()
+                    .len()
+                    == 1
+            {
+                session
+                    .click(".screen-toggle[data-canvas-id='empty-output']")
+                    .unwrap();
+            }
+            let inner = session.document.inner.borrow();
+            assert_eq!(
+                inner.query_selector_all(".editor-canvas").unwrap().len(),
+                expected
+            );
+            let panel = inner
+                .query_selector(".native-canvas-manager")
+                .unwrap()
+                .unwrap();
+            let panel = inner.get_client_bounding_rect(panel).unwrap();
+            assert_eq!((panel.width, panel.height), (384.0, 1080.0));
+            let footer = inner.query_selector("footer").unwrap().unwrap();
+            let footer = inner.get_client_bounding_rect(footer).unwrap();
+            assert!(footer.width > 250.0 && footer.y > 900.0 && footer.y + footer.height <= 1080.0);
+            let body = inner.query_selector(".editor-tab-body").unwrap().unwrap();
+            assert!(inner.get_client_bounding_rect(body).unwrap().height > 100.0);
+        }
+    }
+    #[test]
+    fn unselected_canvas_consumes_first_widget_body_and_corner_gesture() {
+        for corner in [false, true] {
+            let mut scenario: VisualDebugScenario =
+                serde_json::from_str(include_str!("../tests/fixtures/visual-composition.json"))
+                    .unwrap();
+            let mut other = scenario.canvases.as_ref().unwrap()[0].clone();
+            other.id = "other".into();
+            other.x = 800;
+            other.y = 400;
+            other.width = 256;
+            other.height = 256;
+            let mut widget = other
+                .widgets
+                .iter()
+                .find(|w| w.id == "cam")
+                .unwrap()
+                .clone();
+            widget.x = 24;
+            widget.y = 24;
+            widget.width = 100;
+            widget.height = 100;
+            other.widgets = vec![widget];
+            scenario.canvases.as_mut().unwrap().push(other);
+            let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+            session.editing.set(true);
+            session.panel_open.set(false);
+            session.resolve();
+            let point = if corner {
+                [919.0, 519.0]
+            } else {
+                [850.0, 450.0]
+            };
+            let to = [point[0] - 20.0, point[1] - 20.0];
+            let mut model = session.editor_model();
+            let before = model.draft.clone();
+            dispatch_pointer(&mut session.document, point, 0x110, None);
+            session.resolve();
+            dispatch_pointer(&mut session.document, point, 0x110, Some(true));
+            session.drain_editor_events(&mut model);
+            assert!(model.drag.is_none());
+            assert_eq!(model.selected_canvas.as_deref(), Some("other"));
+            session.resolve();
+            dispatch_pointer(&mut session.document, to, 0x110, None);
+            dispatch_pointer(&mut session.document, to, 0x110, Some(false));
+            session.drain_editor_events(&mut model);
+            session.resolve();
+            assert_eq!(
+                model.draft, before,
+                "first gesture only selects; corner={corner}"
+            );
+            session.drag(point, to, VisualDebugButton::Left).unwrap();
+            assert_ne!(
+                *session.managed.borrow(),
+                before,
+                "second gesture edits; corner={corner}"
+            );
+        }
+    }
+    #[test]
+    fn shared_dioxus_handles_resize_from_all_four_corners() {
+        let scenario: VisualDebugScenario =
+            serde_json::from_str(include_str!("../tests/fixtures/visual-composition.json"))
+                .unwrap();
+        for corner in ["nw", "ne", "sw", "se"] {
+            let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+            session.editing.set(true);
+            session.panel_open.set(false);
+            session.selected.set(Some("cam".into()));
+            session.resolve();
+            let original = session
+                .widgets
+                .borrow()
+                .iter()
+                .find(|w| w.id == "cam")
+                .unwrap()
+                .clone();
+            let point = {
+                let inner = session.document.inner.borrow();
+                let node = inner
+                    .query_selector(&format!(
+                        ".editor-widget-hit[data-widget='cam'] .resize-handle.{corner}"
+                    ))
+                    .unwrap()
+                    .unwrap();
+                let rect = inner.get_client_bounding_rect(node).unwrap();
+                assert!(rect.width >= 10.0 && rect.height >= 10.0);
+                [rect.x + rect.width / 2.0, rect.y + rect.height / 2.0]
+            };
+            let dx = if corner.contains('w') { 20.0 } else { -20.0 };
+            let dy = if corner.contains('n') { 20.0 } else { -20.0 };
+            session
+                .drag(
+                    point,
+                    [point[0] + dx, point[1] + dy],
+                    VisualDebugButton::Left,
+                )
+                .unwrap();
+            let resized = session
+                .widgets
+                .borrow()
+                .iter()
+                .find(|w| w.id == "cam")
+                .unwrap()
+                .clone();
+            assert_eq!(resized.width, original.width - 20, "{corner}");
+            assert_eq!(resized.height, original.height - 20, "{corner}");
+        }
+    }
+
     #[test]
     fn renderer_operations_are_serialized_across_surfaces() {
         use std::sync::{
@@ -4060,58 +3135,6 @@ mod skin_tests {
     }
 
     #[test]
-    fn left_click_selects_an_unselected_visible_canvas_only_outside_the_current_canvas() {
-        let mut selected = crate::config::OverlayConfig::initial().canvases[0].presentation();
-        selected.id = "selected".into();
-        selected.x = 0;
-        selected.y = 0;
-        selected.width = 100;
-        selected.height = 100;
-        let mut preview = selected.clone();
-        preview.id = "preview".into();
-        preview.x = 120;
-        let surfaces = std::collections::BTreeSet::from([selected.id.clone(), preview.id.clone()]);
-        let canvases = vec![selected.clone(), preview];
-
-        assert_eq!(
-            unselected_canvas_at(
-                &canvases,
-                &surfaces,
-                &selected,
-                scorepeek_overlay_ui::ScreenKind::MusicSelect,
-                [140.0, 20.0],
-            ),
-            Some("preview".into())
-        );
-        assert_eq!(
-            unselected_canvas_at(
-                &canvases,
-                &surfaces,
-                &selected,
-                scorepeek_overlay_ui::ScreenKind::MusicSelect,
-                [20.0, 20.0],
-            ),
-            None
-        );
-
-        let mut local_preview = canvases[1].clone();
-        local_preview.x = 0;
-        let local_canvases = vec![selected.clone(), local_preview];
-        let local_surfaces = std::collections::BTreeSet::from(["preview".into()]);
-        assert_eq!(
-            unselected_canvas_at(
-                &local_canvases,
-                &local_surfaces,
-                &selected,
-                scorepeek_overlay_ui::ScreenKind::MusicSelect,
-                [20.0, 20.0],
-            ),
-            Some("preview".into()),
-            "a selected canvas on another output must not block the local preview"
-        );
-    }
-
-    #[test]
     fn one_draft_snapshot_undoes_every_field_and_is_not_replaced_by_a_no_op() {
         let before = crate::config::OverlayConfig::initial()
             .canvases
@@ -4134,28 +3157,6 @@ mod skin_tests {
         let DraftUndo(restored) = undo.take().unwrap();
         assert_eq!(restored, before);
         assert!(undo.is_none());
-    }
-
-    #[test]
-    fn canvas_delete_requires_a_current_selection_and_clean_close_discards_undo() {
-        let canvases = crate::config::OverlayConfig::initial()
-            .canvases
-            .into_iter()
-            .filter(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
-            .map(|canvas| canvas.presentation())
-            .collect::<Vec<_>>();
-        assert_eq!(selected_canvas_for_delete(&canvases, None), None);
-        assert_eq!(
-            selected_canvas_for_delete(&canvases, Some(&canvases[1].id)),
-            Some(canvases[1].id.clone())
-        );
-
-        let mut workspace = NativeWorkspace {
-            undo: Some(DraftUndo(canvases)),
-            ..NativeWorkspace::default()
-        };
-        discard_undo(&mut workspace);
-        assert!(workspace.undo.is_none());
     }
 
     #[test]
@@ -4215,7 +3216,7 @@ mod skin_tests {
         session.click(".native-panel-toggle").unwrap();
 
         session
-            .drag([19.0, 99.0], [3.0, 83.0], VisualDebugButton::Left)
+            .drag([25.0, 105.0], [9.0, 89.0], VisualDebugButton::Left)
             .unwrap();
 
         let settings = session.settings.borrow();
@@ -4226,7 +3227,7 @@ mod skin_tests {
         drop(settings);
         let inner = session.document.inner.borrow();
         let canvas = inner
-            .query_selector(".canvas-content.selected")
+            .query_selector(".editor-canvas.selected")
             .unwrap()
             .unwrap();
         let rect = inner.get_client_bounding_rect(canvas).unwrap();
@@ -4250,6 +3251,10 @@ mod skin_tests {
         };
         let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
 
+        session.click(".preview-screen[data-index='4']").unwrap();
+        session
+            .click(".canvas-select[data-canvas-id='wayland-result']")
+            .unwrap();
         *session.selected.borrow_mut() = Some("selection".into());
         session.resolve();
         assert!(
@@ -4257,7 +3262,7 @@ mod skin_tests {
                 .document
                 .inner
                 .borrow()
-                .query_selector(".widget-slot.selected[data-widget-id='selection']")
+                .query_selector(".editor-widget-hit.selected[data-widget='selection']")
                 .unwrap()
                 .is_some()
         );
@@ -4267,13 +3272,13 @@ mod skin_tests {
         let inner = session.document.inner.borrow();
         assert!(
             inner
-                .query_selector(".widget-slot.selected[data-widget-id='selection']")
+                .query_selector(".editor-widget-hit.selected[data-widget='selection']")
                 .unwrap()
                 .is_none()
         );
         assert!(
             inner
-                .query_selector(".widget-slot.selected[data-widget-id='history-graph']")
+                .query_selector(".editor-widget-hit.selected[data-widget='history-graph']")
                 .unwrap()
                 .is_some()
         );
@@ -4291,123 +3296,6 @@ mod skin_tests {
                 .unwrap()
                 .is_none()
         );
-    }
-
-    #[test]
-    fn managed_canvas_move_clears_a_reused_widget_selection() {
-        let scenario = VisualDebugScenario {
-            canvases: None,
-            skin: None,
-            logical_size: [1920, 1080],
-            scale: 1.0,
-            canvas_id: Some("wayland-result".into()),
-            editing: true,
-            selectors: Vec::new(),
-            actions: Vec::new(),
-        };
-        let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
-        *session.selected.borrow_mut() = Some("selection".into());
-        session.resolve();
-
-        let interaction = NativeInteraction::ManagedCanvasMove {
-            id: "wayland-selection".to_owned(),
-            start: [0.0, 0.0],
-            origin: [0, 0],
-        };
-        let mut selected_canvas = Some("wayland-result".to_owned());
-        replace_canvas_selection(
-            &mut selected_canvas,
-            &mut session.selected.borrow_mut(),
-            managed_canvas_move_target(&interaction).map(str::to_owned),
-        );
-        session.resolve();
-
-        assert_eq!(selected_canvas.as_deref(), Some("wayland-selection"));
-        assert!(session.selected.borrow().is_none());
-        assert!(
-            session
-                .document
-                .inner
-                .borrow()
-                .query_selector(".widget-slot.selected")
-                .unwrap()
-                .is_none()
-        );
-        let widget = scorepeek_overlay_ui::default_widgets()
-            .into_iter()
-            .find(|widget| widget.id == "selection")
-            .unwrap();
-        assert!(matches!(
-            direct_manipulation_at(
-                [widget.width, widget.height],
-                std::slice::from_ref(&widget),
-                session.selected.borrow().as_deref(),
-                [f64::from(widget.width - 1), f64::from(widget.height - 1)],
-            ),
-            Some(DirectManipulationHit::Canvas(ResizeCorner::SouthEast))
-        ));
-    }
-
-    #[test]
-    fn selected_widget_corners_win_over_canvas_corners_for_every_kind() {
-        for mut widget in scorepeek_overlay_ui::default_widgets() {
-            widget.x = 0;
-            widget.y = 0;
-            widget.width = 560;
-            widget.height = 140;
-            let selected = widget.id.clone();
-            let point = [559.0, 139.0];
-            let hit = direct_manipulation_at(
-                [widget.width, widget.height],
-                std::slice::from_ref(&widget),
-                Some(&selected),
-                point,
-            )
-            .unwrap();
-            let DirectManipulationHit::Widget(actual, corner) = hit else {
-                panic!("selected {selected} widget corner was routed to the canvas");
-            };
-            assert_eq!(actual.id, selected);
-            assert_eq!(corner, Some(ResizeCorner::SouthEast));
-
-            assert!(matches!(
-                direct_manipulation_at(
-                    [widget.width, widget.height],
-                    std::slice::from_ref(&widget),
-                    None,
-                    point,
-                ),
-                Some(DirectManipulationHit::Canvas(ResizeCorner::SouthEast))
-            ));
-        }
-    }
-
-    #[test]
-    fn selected_widget_does_not_capture_another_widgets_corner() {
-        let mut widgets = scorepeek_overlay_ui::default_widgets();
-        let selected = &mut widgets[0];
-        selected.x = 0;
-        selected.y = 0;
-        selected.width = 100;
-        selected.height = 100;
-        let selected_id = selected.id.clone();
-        let other = &mut widgets[1];
-        other.x = 200;
-        other.y = 200;
-        other.width = 100;
-        other.height = 100;
-        let other_id = other.id.clone();
-
-        let Some(DirectManipulationHit::Widget(actual, corner)) = direct_manipulation_at(
-            [500, 500],
-            &widgets[..2],
-            Some(&selected_id),
-            [299.0, 299.0],
-        ) else {
-            panic!("another widget's visible corner must keep its own interaction");
-        };
-        assert_eq!(actual.id, other_id);
-        assert_eq!(corner, Some(ResizeCorner::SouthEast));
     }
 
     use scorepeek_overlay_ui::Skin;
@@ -4462,6 +3350,8 @@ mod skin_tests {
                 VirtualDom::new_with_props(
                     native_overlay,
                     NativeOverlayProps {
+                        actions: Rc::default(),
+                        surface_actions: Rc::default(),
                         appearance: Rc::new(Cell::new(Appearance { skin })),
                         widgets: Rc::new(RefCell::new(scorepeek_overlay_ui::default_widgets())),
                         editing: Rc::new(Cell::new(false)),
@@ -4546,98 +3436,13 @@ mod skin_tests {
     }
 
     #[test]
-    fn selected_widget_handle_center_starts_widget_resize() {
-        let scenario = VisualDebugScenario {
-            canvases: None,
-            skin: None,
-            logical_size: [1920, 1080],
-            scale: 1.0,
-            canvas_id: Some("wayland-result".into()),
-            editing: true,
-            selectors: Vec::new(),
-            actions: Vec::new(),
-        };
-        let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
-        session.click(".preview-screen[data-index='4']").unwrap();
-        session
-            .click(".canvas-select[data-canvas-id='wayland-result']")
-            .unwrap();
-        *session.selected.borrow_mut() = Some("selection".to_owned());
-        session.resolve();
-
-        let (canvas_rect, handle_rect) = {
-            let inner = session.document.inner.borrow();
-            let canvas = inner
-                .query_selector(".canvas-content.selected")
-                .unwrap()
-                .unwrap();
-            let handle = inner.query_selector(".resize-handle.se").unwrap().unwrap();
-            (
-                inner.get_client_bounding_rect(canvas).unwrap(),
-                inner.get_client_bounding_rect(handle).unwrap(),
-            )
-        };
-        let visible_left = handle_rect.x.max(canvas_rect.x);
-        let visible_top = handle_rect.y.max(canvas_rect.y);
-        let visible_right =
-            (handle_rect.x + handle_rect.width).min(canvas_rect.x + canvas_rect.width);
-        let visible_bottom =
-            (handle_rect.y + handle_rect.height).min(canvas_rect.y + canvas_rect.height);
-        assert!(visible_left < visible_right && visible_top < visible_bottom);
-        let visible_center = [
-            visible_left.midpoint(visible_right),
-            visible_top.midpoint(visible_bottom),
-        ];
-        assert!(
-            visible_center[0] >= handle_rect.x
-                && visible_center[0] < handle_rect.x + handle_rect.width
-                && visible_center[1] >= handle_rect.y
-                && visible_center[1] < handle_rect.y + handle_rect.height
-                && visible_center[0] >= canvas_rect.x
-                && visible_center[0] < canvas_rect.x + canvas_rect.width
-                && visible_center[1] >= canvas_rect.y
-                && visible_center[1] < canvas_rect.y + canvas_rect.height
-        );
-        let point = [
-            visible_center[0] - canvas_rect.x,
-            visible_center[1] - canvas_rect.y,
-        ];
-        let hit = direct_manipulation_at(
-            [
-                session.settings.borrow().width,
-                session.settings.borrow().height,
-            ],
-            &session.widgets.borrow(),
-            session.selected.borrow().as_deref(),
-            point,
-        );
-        let Some(DirectManipulationHit::Widget(original, Some(corner))) = hit else {
-            panic!("the visible selected-widget handle must start widget resize");
-        };
-        assert_eq!(corner, ResizeCorner::SouthEast);
-        let mut resized = original.clone();
-        resize_widget(
-            &mut resized,
-            &original,
-            point,
-            corner,
-            point[0] - 20.0,
-            point[1] - 20.0,
-            [
-                session.settings.borrow().width,
-                session.settings.borrow().height,
-            ],
-        );
-        assert_eq!(resized.width, original.width - 20);
-        assert_eq!(resized.height, original.height - 20);
-    }
-
-    #[test]
     fn compact_canvas_content_fills_the_viewport_and_does_not_clip_widgets() {
         let mut document = DioxusDocument::new(
             VirtualDom::new_with_props(
                 native_overlay,
                 NativeOverlayProps {
+                    actions: Rc::default(),
+                    surface_actions: Rc::default(),
                     appearance: Rc::new(Cell::new(Appearance {
                         skin: Skin::CyanSystem,
                     })),
@@ -4764,6 +3569,8 @@ mod skin_tests {
             VirtualDom::new_with_props(
                 native_overlay,
                 NativeOverlayProps {
+                    actions: Rc::default(),
+                    surface_actions: Rc::default(),
                     appearance: Rc::new(Cell::new(Appearance {
                         skin: Skin::CyanSystem,
                     })),
@@ -4885,27 +3692,23 @@ mod skin_tests {
 
     #[test]
     fn screen_switch_is_the_only_canvas_visibility_state() {
+        use scorepeek_overlay_ui::editor_model::SCREENS;
         let mut canvas = crate::config::OverlayConfig::initial().canvases[0].presentation();
-        for screen in EDITOR_SCREENS {
-            set_shown_on(&mut canvas, screen, false);
+        canvas.show_on = None;
+        let mut model = EditorModel::new(vec![canvas.clone()], [1920, 1080], "wayland");
+        model.readonly = false;
+        for screen in SCREENS {
+            model.preview = screen;
+            model.action(&EditorAction::ToggleCanvas(canvas.id.clone()));
         }
-        assert_eq!(canvas.show_on, Some(Vec::new()));
-        assert!(
-            EDITOR_SCREENS
-                .into_iter()
-                .all(|screen| !shown_on(&canvas, screen))
-        );
-
-        for screen in EDITOR_SCREENS {
-            set_shown_on(&mut canvas, screen, true);
+        assert_eq!(model.draft[0].show_on, Some(Vec::new()));
+        for screen in SCREENS {
+            model.preview = screen;
+            model.action(&EditorAction::ToggleCanvas(canvas.id.clone()));
         }
-        assert_eq!(canvas.show_on, None);
-        assert!(
-            EDITOR_SCREENS
-                .into_iter()
-                .all(|screen| shown_on(&canvas, screen))
-        );
+        assert_eq!(model.draft[0].show_on, None);
     }
+
     #[test]
     fn migrated_minimum_widget_resizes_from_every_corner() {
         for (x, y) in [(8, 8), (-24, -24), (40, 40)] {

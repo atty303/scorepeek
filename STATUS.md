@@ -51,8 +51,11 @@ checkpoint; implementation history belongs in Git.
   with chamfered transparent apertures, optional titles, interior opacity and aspect locks, and
   S/M/L outward frames for all widgets. Native title editing uses XKB keyboard/repeat and
   text-input-v3 IME; title confirmation becomes one undoable backend-draft change. Normal overlays
-  do not request keyboard focus. Both backends render the same Dioxus `EditorPanel` and `EditorButton` components,
-  with shared choice/action styles and a separate delete row. OBS owns reactive Rust editor state
+  do not request keyboard focus. Both backends render shared Dioxus panel, buttons, canvas interaction surface, resize handles
+  and placement previews,
+  with shared choice/action styles and a separate delete row. A shared Rust editor model owns
+  settings, selection, placement and move/resize transitions. Native forwards pointer input into
+  Blitz/Dioxus event dispatch; the visual harness exercises those callbacks. OBS owns reactive state
   and uses the existing backend lease API; its imperative JavaScript editor has been removed. Fixed mise XKB build inputs replace host development metadata;
   `libxkbcommon.so.0` is a native runtime prerequisite.
 - ADR 0130 makes the status widget RESULT lamp a provisional-readiness signal. A new RESULT is
@@ -246,7 +249,7 @@ checkpoint; implementation history belongs in Git.
   restrained lines/corner accents, with staggered moving highlights carrying the ambient motion.
   These checks do not establish live Wayland or OBS composition.
 - Repository checks and the complete workspace suite pass: 508 library,
-  325 binary, 128 corpus library, 5 corpus binary, 58 overlay, 7 handle, 4 overlay-UI, 6 overlay-web
+  325 binary, 128 corpus library, 5 corpus binary, 55 overlay, 7 handle, 4 overlay-UI, 7 overlay-web
   and 13 score tests, plus doctests. The embedded-web overlay integration test also passes. The 99 offline OCR tests and
   repository checks also pass. Public API and overlay state tests include score-store invalidation,
   RESULT readiness across withdrawal/re-resolution, fresh and same-session reconnect restoration,

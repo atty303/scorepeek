@@ -263,3 +263,14 @@ pub fn aspect_ratio_index(ratio: AspectRatio) -> usize {
         AspectRatio::Current(_) => 3,
     }
 }
+
+#[component]
+pub fn ResizeHandles(
+    #[props(default)] class: String,
+    onstart: EventHandler<(PointerEvent, String)>,
+) -> Element {
+    rsx! { for corner in ["nw", "ne", "sw", "se"] {
+        i { class: "resize-handle {class} {corner}", aria_hidden: "true",
+            onpointerdown: move |event| onstart.call((event, corner.into())) }
+    } }
+}
