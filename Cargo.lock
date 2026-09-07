@@ -4249,6 +4249,7 @@ dependencies = [
  "scorepeek-scores",
  "serde",
  "serde_json",
+ "sha2",
  "smithay-client-toolkit",
  "tokio",
  "toml",
@@ -4281,6 +4282,7 @@ dependencies = [
  "scorepeek-overlay-ui",
  "serde",
  "serde_json",
+ "sha2",
  "wasm-bindgen",
  "web-sys",
 ]

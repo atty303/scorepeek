@@ -10,6 +10,15 @@ use std::{
 };
 use wasm_bindgen::{JsCast as _, closure::Closure};
 
+pub const ASSET_VERSION: &str = env!("SCOREPEEK_OVERLAY_BUILD_ID");
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Compatibility {
+    Checking,
+    Ready,
+    Mismatch,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum Command {
     Acquire,
@@ -44,7 +53,10 @@ struct Reply {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Message {
+    VersionMismatch,
     Stage {
+        #[serde(default)]
+        asset_version: String,
         state: Box<OverlayState>,
         canvases: Vec<CanvasPresentation>,
     },
@@ -69,6 +81,7 @@ impl Drop for SocketBinding {
 }
 pub struct Connection {
     pub model: Signal<Model>,
+    pub compatibility: Signal<Compatibility>,
     socket: RefCell<Option<SocketBinding>>,
     pending: RefCell<BTreeMap<u64, Command>>,
     next: Cell<u64>,
@@ -78,7 +91,7 @@ pub struct Connection {
     tick: RefCell<Option<Closure<dyn FnMut()>>>,
 }
 impl Connection {
-    pub fn new(model: Signal<Model>) -> Rc<Self> {
+    pub fn new(model: Signal<Model>, compatibility: Signal<Compatibility>) -> Rc<Self> {
         let editor_id = format!(
             "obs-{}",
             web_sys::window()
@@ -88,6 +101,7 @@ impl Connection {
         );
         let this = Rc::new(Self {
             model,
+            compatibility,
             socket: RefCell::new(None),
             pending: RefCell::new(BTreeMap::new()),
             next: Cell::new(1),
@@ -100,6 +114,9 @@ impl Connection {
         let weak = Rc::downgrade(&this);
         let tick = Closure::wrap(Box::new(move || {
             if let Some(this) = weak.upgrade() {
+                if *this.compatibility.read() == Compatibility::Mismatch {
+                    return;
+                }
                 let ready = this
                     .socket
                     .borrow()
@@ -107,8 +124,14 @@ impl Connection {
                     .map(|socket| socket.socket.ready_state());
                 if ready.is_none_or(|state| state == web_sys::WebSocket::CLOSED) {
                     this.connect();
-                } else if this.model.read().editing && !this.model.read().readonly {
-                    this.send(Command::KeepAlive);
+                } else if this.model.read().editing
+                    && *this.compatibility.read() == Compatibility::Ready
+                {
+                    this.send(if this.model.read().readonly {
+                        Command::Acquire
+                    } else {
+                        Command::KeepAlive
+                    });
                 }
             }
         }) as Box<dyn FnMut()>);
@@ -126,6 +149,7 @@ impl Connection {
         this
     }
     fn connect(self: &Rc<Self>) {
+        *self.compatibility.write_unchecked() = Compatibility::Checking;
         let Some(window) = web_sys::window() else {
             return;
         };
@@ -138,23 +162,26 @@ impl Connection {
         } else {
             "ws"
         };
-        let Ok(socket) = web_sys::WebSocket::new(&format!("{scheme}://{host}/ws/stage")) else {
+        let Ok(socket) = web_sys::WebSocket::new(&format!(
+            "{scheme}://{host}/ws/stage?asset_version={ASSET_VERSION}"
+        )) else {
             return;
         };
-        let weak = Rc::downgrade(self);
-        let open = Closure::wrap(Box::new(move |_: web_sys::Event| {
-            if let Some(this) = weak.upgrade()
-                && this.model.read().editing
-            {
-                this.send(Command::Acquire);
-            }
-        }) as Box<dyn FnMut(_)>);
+        let open = Closure::wrap(Box::new(move |_: web_sys::Event| {}) as Box<dyn FnMut(_)>);
         let weak = Rc::downgrade(self);
         let message = Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
             if let Some(this) = weak.upgrade()
                 && let Some(text) = event.data().as_string()
             {
-                match serde_json::from_str::<Message>(&text) {
+                let decoded = serde_json::from_str::<serde_json::Value>(&text);
+                if let Ok(value) = &decoded
+                    && value["type"] == "stage"
+                    && value["asset_version"].as_str() != Some(ASSET_VERSION)
+                {
+                    this.mismatch();
+                    return;
+                }
+                match decoded.and_then(serde_json::from_value::<Message>) {
                     Ok(message) => this.receive(message),
                     Err(error) => {
                         this.model.write_unchecked().notice =
@@ -182,6 +209,9 @@ impl Connection {
         });
     }
     pub fn send(&self, command: Command) {
+        if *self.compatibility.read() != Compatibility::Ready {
+            return;
+        }
         let model = self.model.read();
         let mut request =
             json!({"command":command.name(),"backend":"obs","editor_id":self.editor_id});
@@ -198,7 +228,10 @@ impl Connection {
             socket.socket.ready_state() == web_sys::WebSocket::OPEN
                 && socket
                     .socket
-                    .send_with_str(&json!({"request_id":id,"request":request}).to_string())
+                    .send_with_str(
+                        &json!({"request_id":id,"asset_version":ASSET_VERSION,"request":request})
+                            .to_string(),
+                    )
                     .is_ok()
         });
         if sent {
@@ -212,13 +245,45 @@ impl Connection {
             model.notice = Some("Editor connection lost; reconnecting.".into());
         }
     }
+    fn mismatch(&self) {
+        *self.compatibility.write_unchecked() = Compatibility::Mismatch;
+        self.pending.borrow_mut().clear();
+        let mut model = self.model.write_unchecked();
+        let saved = model.saved.clone();
+        let viewport = model.viewport;
+        *model = Model::new(saved, viewport, "obs");
+        model.selected_canvas = None;
+        drop(model);
+        if let Some(socket) = self.socket.borrow().as_ref() {
+            let _ = socket.socket.close();
+        }
+    }
     fn receive(&self, message: Message) {
+        if *self.compatibility.read() == Compatibility::Mismatch {
+            return;
+        }
         match message {
-            Message::Stage { state, canvases } => {
+            Message::VersionMismatch => self.mismatch(),
+            Message::Stage {
+                asset_version,
+                state,
+                canvases,
+            } => {
+                if asset_version != ASSET_VERSION {
+                    self.mismatch();
+                    return;
+                }
+                let first = *self.compatibility.read() == Compatibility::Checking;
+                *self.compatibility.write_unchecked() = Compatibility::Ready;
                 let mut model = self.model.write_unchecked();
                 model.screen = state.screen.kind;
                 model.chrome.sample = state.system == LampState::Inactive;
                 model.receive_stage(canvases);
+                let acquire = first && model.editing;
+                drop(model);
+                if acquire {
+                    self.send(Command::Acquire);
+                }
             }
             Message::Control {
                 request_id,

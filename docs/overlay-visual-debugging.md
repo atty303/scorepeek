@@ -91,3 +91,29 @@ Browser capture and actual Wayland composition/input remain separate verificatio
 `tests/fixtures/visual-empty-editor.json` starts with no visible canvas and toggles the
 last canvas on/off. Inspect the panel, scroll body and footer in every PNG/layout pair;
 the shared root stylesheet must remain present independently of canvas visibility.
+
+## Browser build compatibility
+
+The overlay backend and browser WASM compile the same SHA-256 build identity from
+`scripts/overlay-build.rs`. Its inputs cover overlay sources, shared assets/styles,
+workspace dependencies and build configuration; this is a build identity, not the
+configuration revision. Rebuild the web bundle before building the embedded backend.
+
+Each stage connection and editing request must match the backend build identity.
+Until the first matching stage arrives, editing is disabled. A mismatch discards the
+local draft, selection, gestures, title editing and undo history and displays a
+reload button. It does not save, restore or automatically reload the draft. Reload
+starts from persisted settings. Display-only canvas URLs are not editor sessions.
+
+The server owns each WebSocket's editor identity and releases that connection's
+lease on disconnect, including mismatch rejection. Reconnecting cannot release
+another connection's lease. A waiting editor retries acquisition periodically.
+The private child diagnostics report `overlay_editor_version` (success or
+`version_mismatch`) and `overlay_editor_connection` release outcomes; the existing
+controller records lease and commit outcomes.
+
+For upgrade verification, keep a page open while replacing the isolated test
+server with another build. Confirm the mismatch notice, absence of editor handles
+and absence of configuration writes, then reload against matching assets and edit
+again. Versions predating this guard cannot render the new reload notice, but their
+unversioned editor requests are rejected by the new backend.

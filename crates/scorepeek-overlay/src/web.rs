@@ -52,7 +52,7 @@ mod server {
     use crate::runtime::{Config, Feed};
     use axum::{
         Router,
-        extract::{Path, State, WebSocketUpgrade, ws::Message},
+        extract::{Path, RawQuery, State, WebSocketUpgrade, ws::Message},
         http::{StatusCode, header},
         response::{IntoResponse, Response},
         routing::get,
@@ -74,7 +74,116 @@ mod server {
     #[derive(serde::Deserialize)]
     struct StageControlEnvelope {
         request_id: u64,
-        request: crate::control::Request,
+        #[serde(default)]
+        asset_version: String,
+        request: serde_json::Value,
+    }
+
+    const ASSET_VERSION: &str = env!("SCOREPEEK_OVERLAY_BUILD_ID");
+
+    struct EditorSession {
+        shared: Arc<Shared>,
+        id: String,
+        owns_lease: std::cell::Cell<bool>,
+    }
+    impl EditorSession {
+        fn new(shared: Arc<Shared>) -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static NEXT: AtomicU64 = AtomicU64::new(1);
+            Self {
+                shared,
+                owns_lease: std::cell::Cell::new(false),
+                id: format!(
+                    "obs-socket-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ),
+            }
+        }
+        fn request(
+            &self,
+            mut request: crate::control::Request,
+        ) -> Result<crate::control::Response, String> {
+            use crate::control::Request;
+            let (backend, editor) = match &mut request {
+                Request::AcquireBackend { backend, editor_id }
+                | Request::KeepAliveBackend { backend, editor_id }
+                | Request::ReleaseBackend { backend, editor_id }
+                | Request::UpdateBackendDraft {
+                    backend, editor_id, ..
+                }
+                | Request::CommitBackend {
+                    backend, editor_id, ..
+                } => (backend, Some(editor_id)),
+                Request::GetBackend { backend } => (backend, None),
+            };
+            if *backend != crate::runtime::Backend::Obs {
+                return Err("stage control only accepts the OBS backend".into());
+            }
+            if let Some(editor) = editor {
+                editor.clone_from(&self.id);
+            }
+            let publishes =
+                !matches!(request, Request::ReleaseBackend { .. }) || self.owns_lease.get();
+            let response = crate::control::request(&self.shared.control_socket, &request)?;
+            if matches!(request, Request::AcquireBackend { .. })
+                && response.ok
+                && !response.readonly
+            {
+                self.owns_lease.set(true);
+            }
+            if response.readonly || matches!(request, Request::ReleaseBackend { .. }) && response.ok
+            {
+                self.owns_lease.set(false);
+            }
+            if publishes && response.ok && !response.readonly && response.backend_revision.is_some()
+            {
+                let mut canvases = self
+                    .shared
+                    .canvases
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                for presentation in &response.canvases {
+                    if let Some(canvas) = canvases
+                        .iter_mut()
+                        .find(|canvas| canvas.id == presentation.id)
+                    {
+                        canvas.apply_presentation(presentation);
+                    } else {
+                        let mut canvas = crate::config::empty_canvas(
+                            presentation.id.clone(),
+                            crate::runtime::Backend::Obs,
+                        );
+                        canvas.apply_presentation(presentation);
+                        canvases.push(canvas);
+                    }
+                }
+                canvases.retain(|canvas| response.canvases.iter().any(|item| item.id == canvas.id));
+            }
+            self.shared.changed.notify_waiters();
+            Ok(response)
+        }
+    }
+    impl Drop for EditorSession {
+        fn drop(&mut self) {
+            if !self.owns_lease.get() {
+                return;
+            }
+            let result = self.request(crate::control::Request::ReleaseBackend {
+                backend: crate::runtime::Backend::Obs,
+                editor_id: self.id.clone(),
+            });
+            crate::diagnostics::emit(
+                "overlay_editor_connection",
+                &serde_json::json!({
+                    "status": if result.as_ref().is_ok_and(|response| response.ok) { "released" } else { "release_failed" },
+                }),
+            );
+        }
+    }
+
+    fn version_mismatch() -> String {
+        serde_json::json!({"type":"version_mismatch", "asset_version":ASSET_VERSION}).to_string()
     }
 
     pub(super) async fn serve(
@@ -359,8 +468,19 @@ mod server {
         })
     }
 
-    async fn stage_socket(ws: WebSocketUpgrade, State(shared): State<Arc<Shared>>) -> Response {
+    async fn stage_socket(
+        ws: WebSocketUpgrade,
+        RawQuery(version): RawQuery,
+        State(shared): State<Arc<Shared>>,
+    ) -> Response {
         ws.on_upgrade(move |mut socket| async move {
+            let session = EditorSession::new(Arc::clone(&shared));
+            if version.as_deref() != Some(format!("asset_version={ASSET_VERSION}").as_str()) {
+                crate::diagnostics::emit("overlay_editor_version", &serde_json::json!({"status":"error", "error_type":"version_mismatch"}));
+                let _ = socket.send(Message::Text(version_mismatch().into())).await;
+                return;
+            }
+            crate::diagnostics::emit("overlay_editor_version", &serde_json::json!({"status":"success"}));
             let mut sent = String::new();
             loop {
                 let notified = shared.changed.notified();
@@ -378,7 +498,7 @@ mod server {
                     .map(crate::config::Canvas::presentation)
                     .collect::<Vec<_>>();
                 let message =
-                    serde_json::json!({"type":"stage", "state":state, "canvases":canvases})
+                    serde_json::json!({"type":"stage", "asset_version":ASSET_VERSION, "state":state, "canvases":canvases})
                         .to_string();
                 if message != sent {
                     if socket
@@ -400,45 +520,19 @@ mod server {
                             Some(Ok(Message::Text(text))) => {
                                 let envelope = serde_json::from_str::<StageControlEnvelope>(&text);
                                 let request_id = envelope.as_ref().map_or(0, |value| value.request_id);
+                                if envelope.as_ref().is_ok_and(|value| value.asset_version != ASSET_VERSION) {
+                                    crate::diagnostics::emit("overlay_editor_version", &serde_json::json!({"status":"error", "error_type":"version_mismatch"}));
+                                    let _ = socket.send(Message::Text(version_mismatch().into())).await;
+                                    break;
+                                }
                                 let response = envelope
                                     .map_err(|error| error.to_string())
-                                    .and_then(|envelope| {
-                                        let request = envelope.request;
-                                        let obs = match &request {
-                                            crate::control::Request::AcquireBackend { backend, .. }
-                                            | crate::control::Request::KeepAliveBackend { backend, .. }
-                                            | crate::control::Request::ReleaseBackend { backend, .. }
-                                            | crate::control::Request::GetBackend { backend }
-                                            | crate::control::Request::UpdateBackendDraft { backend, .. }
-                                            | crate::control::Request::CommitBackend { backend, .. } => {
-                                                *backend == crate::runtime::Backend::Obs
-                                            }
-                                        };
-                                        if !obs { return Err("stage control only accepts the OBS backend".into()); }
-                                        crate::control::request(&shared.control_socket, &request)
-                                    })
+                                    .and_then(|envelope| serde_json::from_value(envelope.request).map_err(|error| error.to_string()))
+                                    .and_then(|request| session.request(request))
                                     .unwrap_or_else(|error| crate::control::Response {
-                                        ok:false,
-                                        readonly:true,
-                                        error:Some(error),
-                                        canvases:Vec::new(),
-                                        backend_revision:None,
-                                        dirty:false,
+                                        ok:false, readonly:true, error:Some(error),
+                                        canvases:Vec::new(), backend_revision:None, dirty:false,
                                     });
-                                if !response.canvases.is_empty() {
-                                    let mut canvases = shared.canvases.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                                    for presentation in &response.canvases {
-                                        if let Some(canvas) = canvases.iter_mut().find(|canvas| canvas.id == presentation.id) {
-                                            canvas.apply_presentation(presentation);
-                                        } else {
-                                            let mut canvas = crate::config::empty_canvas(presentation.id.clone(), crate::runtime::Backend::Obs);
-                                            canvas.apply_presentation(presentation);
-                                            canvases.push(canvas);
-                                        }
-                                    }
-                                    canvases.retain(|canvas| response.canvases.iter().any(|item| item.id == canvas.id));
-                                }
-                                shared.changed.notify_waiters();
                                 let reply = serde_json::json!({"type":"control", "request_id":request_id, "response":response}).to_string();
                                 if socket.send(Message::Text(reply.into())).await.is_err() { break; }
                             }
@@ -450,4 +544,7 @@ mod server {
             }
         })
     }
+
+    #[cfg(test)]
+    mod tests;
 }

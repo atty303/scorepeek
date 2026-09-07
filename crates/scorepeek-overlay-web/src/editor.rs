@@ -1,6 +1,6 @@
 mod connection;
 mod model;
-use connection::{Command, Connection};
+use connection::{Command, Compatibility, Connection};
 use dioxus::prelude::*;
 use dioxus_web::WebEventExt;
 use model::Model;
@@ -14,25 +14,34 @@ use wasm_bindgen::{JsCast as _, closure::Closure};
 
 pub fn app() -> Element {
     let mut model = use_signal(|| Model::new(read_initial(), viewport(), "obs"));
-    let connection = use_hook(move || Connection::new(model));
+    let compatibility = use_signal(|| Compatibility::Checking);
+    let connection = use_hook(move || Connection::new(model, compatibility));
     let _resize = use_hook(move || Rc::new(ResizeListener::new(model)));
     let transport = connection.clone();
-    let action = Callback::new(move |action: EditorAction| match action {
-        EditorAction::Save if !model.read().readonly => transport.send(Command::Save),
-        EditorAction::Discard if !model.read().readonly && !model.read().discard_pending => {
-            model.write().discard_pending = true;
-            transport.send(Command::Discard);
+    let action = Callback::new(move |action: EditorAction| {
+        if compatibility() != Compatibility::Ready {
+            return;
         }
-        EditorAction::Close => transport.send(Command::Close),
-        other => {
-            let changed = model.write().action(&other);
-            if changed {
-                transport.send(Command::Update);
+        match action {
+            EditorAction::Save if !model.read().readonly => transport.send(Command::Save),
+            EditorAction::Discard if !model.read().readonly && !model.read().discard_pending => {
+                model.write().discard_pending = true;
+                transport.send(Command::Discard);
+            }
+            EditorAction::Close => transport.send(Command::Close),
+            other => {
+                let changed = model.write().action(&other);
+                if changed {
+                    transport.send(Command::Update);
+                }
             }
         }
     });
     let transport = connection.clone();
     let surface = Callback::new(move |action: SurfaceAction| {
+        if compatibility() != Compatibility::Ready {
+            return;
+        }
         if let SurfaceAction::Enter(canvas) = action {
             if !model.read().editing {
                 model.write().enter(canvas);
@@ -66,6 +75,17 @@ pub fn app() -> Element {
             if let Some(kind)=state.placing {if state.editing {
                 PlacementPreview {kind,point:state.point.map(f64::from)}
             }}
+            if compatibility() == Compatibility::Mismatch {
+                div { class:"version-mismatch", role:"alert",
+                    h2 { "UIが更新されました" }
+                    p { "未保存の変更は破棄されました。再読み込みして、保存済み設定からやり直してください。" }
+                    scorepeek_overlay_ui::editor::EditorButton {
+                        tone:scorepeek_overlay_ui::editor::ButtonTone::Primary,
+                        onclick:move |_| {if let Some(window)=web_sys::window(){let _=window.location().reload();}},
+                        "再読み込み"
+                    }
+                }
+            }
             if let Some(notice)=state.notice {div {id:"notice",class:"show error","{notice}"}}
         }
     }

@@ -249,7 +249,7 @@ checkpoint; implementation history belongs in Git.
   restrained lines/corner accents, with staggered moving highlights carrying the ambient motion.
   These checks do not establish live Wayland or OBS composition.
 - Repository checks and the complete workspace suite pass: 508 library,
-  325 binary, 128 corpus library, 5 corpus binary, 57 overlay, 7 handle, 4 overlay-UI, 7 overlay-web
+  325 binary, 128 corpus library, 5 corpus binary, 58 overlay, 7 handle, 4 overlay-UI, 7 overlay-web
   and 13 score tests, plus doctests. The embedded-web overlay integration test also passes. The 99 offline OCR tests and
   repository checks also pass. Public API and overlay state tests include score-store invalidation,
   RESULT readiness across withdrawal/re-resolution, fresh and same-session reconnect restoration,
@@ -380,6 +380,16 @@ checkpoint; implementation history belongs in Git.
   Interaction, readability, CPU/GPU/OBS lag and idle render cost. Current screenshots certify layout
   only, not interaction or performance. The installed target binary includes ADR 0129 at commit
   `00a04b17a7f615310866c7eec47efb5421b7c583`. No autostart, push or release is included.
+- OBS editor build compatibility is checked at connection and request boundaries. A mismatch
+  discards the unsaved editor state, blocks edits and presents a reload button. The backend and
+  WASM share a deterministic source/asset build identity. Socket-owned editor leases are released
+  on disconnect; a readonly peer cannot discard another editor's draft. This does not retroactively
+  add the reload notice to browser assets predating the compatibility guard. Development-host
+  Codex Browser verification with two distinct builds confirms mismatch notice, removal of editing
+  handles, reload, saved-state restoration, widget resize and successful save. Real WebSocket tests
+  cover stale/missing identifiers, rejected saves and connection lease isolation; controller tests
+  cover a former owner releasing after expiry and replacement by another editor.
+
 - The release browser bundle disables DWARF debug symbols and completes without the prior
   wasm-opt DWARF failure. Shared editor hit regions sit above noninteractive rendered content,
   selected widget handles take precedence at canvas edges, and native pointer moves retain the

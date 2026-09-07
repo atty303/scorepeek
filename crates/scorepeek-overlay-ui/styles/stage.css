@@ -4,3 +4,4 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 #notice{position:fixed;right:18px;bottom:-80px;z-index:2147483647;padding:10px 14px;background:#14333b;border:1px solid #54e0f7;color:#fff;font:12px system-ui;transition:bottom .15s}#notice.show{bottom:18px}#notice.error{background:#3a171c;border-color:#ff6875}
 
 .obs-workspace{position:fixed;inset:0;overflow:hidden}
+.version-mismatch{position:fixed;inset:24px auto auto 24px;z-index:2147483647;width:min(520px,calc(100vw - 48px));box-sizing:border-box;padding:24px;border:2px solid #ffb454;background:#111923;color:#fff;font:16px/1.6 system-ui,sans-serif;box-shadow:0 8px 32px #0008}.version-mismatch h2{margin:0 0 12px;font-size:22px}.version-mismatch p{margin:0 0 20px}

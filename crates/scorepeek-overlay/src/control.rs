@@ -346,16 +346,18 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
             if state
                 .leases
                 .get(&backend)
-                .is_some_and(|lease| lease.editor_id == editor_id)
+                .is_some_and(|lease| lease.editor_id != editor_id)
             {
-                state.leases.remove(&backend);
+                return Ok(empty_response(false));
             }
-            state.observe(
-                "overlay_editor_lease",
-                serde_json::json!({
-                    "backend": backend, "status":"released"
-                }),
-            );
+            if state.leases.remove(&backend).is_some() {
+                state.observe(
+                    "overlay_editor_lease",
+                    serde_json::json!({
+                        "backend": backend, "status":"released"
+                    }),
+                );
+            }
             Ok(backend_response(&state.config, backend, false))
         }
         Request::GetBackend { backend } => Ok(backend_response(&state.config, backend, true)),
@@ -665,6 +667,91 @@ mod tests {
                 Some("overlay_editor_lease" | "overlay_editor_commit")
             )
         }));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn expired_editor_release_does_not_restore_over_the_new_owners_draft() {
+        let (path, shared) = fixture("expired-release");
+        let acquire = |editor: &str| {
+            apply(
+                Request::AcquireBackend {
+                    backend: Backend::Obs,
+                    editor_id: editor.into(),
+                },
+                &path,
+                &shared,
+            )
+            .unwrap()
+        };
+        let saved = acquire("expired").canvases;
+        shared
+            .lock()
+            .unwrap()
+            .leases
+            .get_mut(&Backend::Obs)
+            .unwrap()
+            .touched = Instant::now().checked_sub(LEASE_TIMEOUT).unwrap();
+        let mut draft = acquire("current").canvases;
+        draft[0].skin = scorepeek_overlay_ui::Skin::DjBlackbox;
+        let updated = apply(
+            Request::UpdateBackendDraft {
+                backend: Backend::Obs,
+                editor_id: "current".into(),
+                canvases: draft.clone(),
+            },
+            &path,
+            &shared,
+        )
+        .unwrap();
+        assert!(updated.dirty);
+        let release = |editor: &str| {
+            apply(
+                Request::ReleaseBackend {
+                    backend: Backend::Obs,
+                    editor_id: editor.into(),
+                },
+                &path,
+                &shared,
+            )
+            .unwrap()
+        };
+        let stale = release("expired");
+        assert!(stale.ok);
+        assert!(stale.canvases.is_empty());
+        assert_eq!(stale.backend_revision, None);
+        let current = acquire("current");
+        assert!(current.dirty);
+        assert_eq!(current.canvases, draft);
+        let restored = release("current");
+        assert_eq!(restored.canvases, saved);
+        assert_eq!(restored.backend_revision, Some(0));
+        assert!(!restored.dirty);
+        let repeated = release("current");
+        assert_eq!(repeated.canvases, saved);
+        assert_eq!(repeated.backend_revision, Some(0));
+        acquire("abandoned");
+        apply(
+            Request::UpdateBackendDraft {
+                backend: Backend::Obs,
+                editor_id: "abandoned".into(),
+                canvases: draft,
+            },
+            &path,
+            &shared,
+        )
+        .unwrap();
+        shared
+            .lock()
+            .unwrap()
+            .leases
+            .get_mut(&Backend::Obs)
+            .unwrap()
+            .touched = Instant::now().checked_sub(LEASE_TIMEOUT).unwrap();
+        let abandoned = release("abandoned");
+        assert_eq!(abandoned.canvases, saved);
+        assert_eq!(abandoned.backend_revision, Some(0));
+        assert!(!abandoned.dirty);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
