@@ -3,7 +3,7 @@
 ## 状態
 
 - 初回決定日: 2026-08-15
-- 最終更新日: 2026-08-28
+- 最終更新日: 2026-09-08
 - repository bootstrapとtarget inventory probe: 完了
 - M1.1 catalog contractとlocal federation core: 完了
 - M1.2 live acquisitionとsync orchestration: manual/scheduled syncまで完了
@@ -123,6 +123,11 @@
   順序付きlistとしてresult v2 eventへ保存する。認識不能はtyped unknownとしてevent acceptanceから分離する。result presenceは固定headerと2本のpanel境界で判定し、可変な背景色や
   背景絵を使わない。対象録画459 framesでは2 `FAILED`と1 `CLEAR`の3 episode、120 field observations、全song scoring、complete
   diagnosticを同じproduction worker経路で確認済み。これはaccepted result、他clear type、別背景variant、live supportまたは性能の根拠ではない。
+  ADR 0141により、上記のfull-output calibration evidenceは歴史的な検証として保持する一方、現在receiverは
+  Gamescope固有の`requested_size=1920x1080`を常に提示する。source aspectを保った最終contractだけを最初の
+  valid frameで確定し、全bufferを返しながらapplication-owned copyをfixed 10 Hzへ制限する。停止時はstreamを
+  pause/quiesceしてからdisconnectする。従来のfull-size profileは再解釈せず、次のtarget session前にsetupで
+  bounded capture domainを再測定する。
   OBS/obs-vkcapture並行、
   soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
@@ -470,8 +475,10 @@ profile IDを導出しない。providerはnormalization、recognitionまたは�
 
 ### Candidates
 
-- Gamescope direct PipeWire: default remote上のoutput-sized nodeを取得する最初の低copy spike。
-  ただしcapture repaintと通常表示のpixel equalityは仮定しない。
+- Gamescope direct PipeWire: default remote上のnodeへGamescope固有の`requested_size=1920x1080`
+  を提示し、source aspectを保ったbounded capture contractを取得する最初の低copy route。
+  negotiated framerateはproducerをpaceしないため、全bufferを即時返しつつapplication-owned copyを
+  fixed 10 Hz deadlineへ制限する。capture repaintと通常表示のpixel equalityは仮定しない。
 - Wayland ScreenCast Portal + PipeWire: session-scoped remote FDとnode IDを取得する後続provider。
 - registered custom PipeWire source: 明示したsourceを取得する後続provider。未知profileはprobe診断に限定する。
 - OBS/vkcapture: scorepeek sourceにはせず、OBS配信の独立した通常並行workloadとする。
@@ -507,12 +514,13 @@ create-onlyで発行する。padding、offset、fractional phase、X/Y別scale�
 外周1pxまたは全pixelの完全一致は合否に使わない。これはsetup時だけの測定であり、通常session中の
 自動測定、自動profile切替、threshold緩和またはfallbackではない。
 
-profileはdefault Gamescope source、observed BGRx width/height、signed left/topを含む1/2048 observed pixel単位のsource
+profileはdefault Gamescope source、`requested_size`適用後のobserved BGRx width/height、signed left/topを含む1/2048 observed pixel単位のsource
 rectangle、canonical RGB8 1920x1080 contractおよびnormalizer identityだけを保持する。calibrationを起動した
 Gamescope引数、version、backend、filter、scaler、refresh、stride、memory typeおよびframe digestは保持しない。
 runtime admissionはactual BGRx dimension、現在frameのreceiver byte-layout contractと保存geometry boundsだけを
 確認する。setupはtransformだけを証明し、実INFINITASのmusic-select/result scene detectionとOCRがsupportの
-権威である。
+権威である。physical output dimensionsとobserved capture dimensionsは独立であり、従来のfull-size profileは
+admissionで拒否するため`scorepeek setup gamescope`でbounded domainを再測定する。
 
 通常操作は`scorepeek run --profile NAME`とし、profile省略はlocal profileが一つだけの場合に限る。
 scorepeekはoperatorが起動したGamescopeへattachし、INFINITASまたは通常Gamescopeを起動、signal、終了、

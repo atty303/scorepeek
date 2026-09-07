@@ -27,6 +27,15 @@ const MAX_FRAME_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BUFFERS_PER_PROCESS: usize = 64;
 const REQUESTED_FRAMERATE_NUM: u32 = 10;
 const REQUESTED_FRAMERATE_DENOM: u32 = 1;
+// Gamescope-private SPA format key from src/pipewire.cpp. Gamescope preserves the source aspect
+// ratio and bounds the capture to this rectangle; PipeWire itself does not interpret this key.
+const GAMESCOPE_REQUESTED_SIZE_PROPERTY: u32 = 0x7_0000;
+const GAMESCOPE_REQUESTED_WIDTH: u32 = 1_920;
+const GAMESCOPE_REQUESTED_HEIGHT: u32 = 1_080;
+const FRAME_COPY_INTERVAL_NS: u64 =
+    1_000_000_000 * REQUESTED_FRAMERATE_DENOM as u64 / REQUESTED_FRAMERATE_NUM as u64;
+const RECEIVER_QUIESCE_TIMEOUT: Duration = Duration::from_millis(100);
+const RECEIVER_IN_FLIGHT_GRACE: Duration = Duration::from_millis(25);
 const WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 static RECEIVER_WORKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -170,6 +179,8 @@ struct ReceiverState {
     contract_received_ns: Option<u64>,
     first_received_ns: Option<u64>,
     active_seen: bool,
+    streaming: bool,
+    next_frame_copy_ns: Option<u64>,
     shutting_down: bool,
     terminal: Option<ReceiverTerminal>,
 }
@@ -190,6 +201,8 @@ impl ReceiverState {
             contract_received_ns: None,
             first_received_ns: None,
             active_seen: false,
+            streaming: false,
+            next_frame_copy_ns: None,
             shutting_down: false,
             terminal: None,
         }
@@ -284,14 +297,14 @@ impl ReceiverState {
             transfer_function: info.transfer_function(),
             color_primaries: info.color_primaries(),
         };
-        if self.contract.is_some_and(|existing| existing != contract) {
+        if self.received_frames > 0 && self.contract.is_some_and(|existing| existing != contract) {
             return Err(());
         }
         Ok(contract)
     }
 
     fn commit_contract(&mut self, contract: UncalibratedVideoContract) {
-        if self.terminal.is_none() && self.contract.is_none() {
+        if self.terminal.is_none() && self.received_frames == 0 {
             self.contract = Some(contract);
             self.contract_received_ns =
                 Some(u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX));
@@ -360,6 +373,10 @@ impl ReceiverState {
             return;
         }
 
+        if !self.frame_copy_is_due(received_ns) {
+            return;
+        }
+
         let required_bytes = required_bytes.expect("validated frame size");
         let previous = self.latest.take();
         let replaced_latest = previous.is_some();
@@ -399,6 +416,27 @@ impl ReceiverState {
             received_monotonic_ns: received_ns,
             bytes: owned,
         });
+    }
+
+    fn frame_copy_is_due(&mut self, received_ns: u64) -> bool {
+        // Gamescope 3.16 advertises an unspecified rate and captures on every output vblank. Keep
+        // returning every PipeWire buffer, but bound the application-owned full-frame copy to the
+        // recognition cadence without letting one late callback shift later deadlines.
+        let Some(next) = self.next_frame_copy_ns else {
+            self.next_frame_copy_ns = Some(received_ns.saturating_add(FRAME_COPY_INTERVAL_NS));
+            return true;
+        };
+        if received_ns < next {
+            return false;
+        }
+        let elapsed_intervals = received_ns
+            .saturating_sub(next)
+            .checked_div(FRAME_COPY_INTERVAL_NS)
+            .unwrap_or(0)
+            .saturating_add(1);
+        self.next_frame_copy_ns =
+            Some(next.saturating_add(FRAME_COPY_INTERVAL_NS.saturating_mul(elapsed_intervals)));
+        true
     }
 }
 
@@ -544,7 +582,7 @@ fn run_receiver_worker(
     loop {
         match commands.try_recv() {
             Ok(ReceiverCommand::Shutdown(response)) => {
-                let result = stream.disconnect().map_err(|_| ());
+                let result = quiesce_and_disconnect(&stream, &main_loop, state);
                 drop(listener);
                 drop(stream);
                 let _ = response.send(result);
@@ -560,6 +598,47 @@ fn run_receiver_worker(
         {
             return Err(pw::Error::CreationFailed);
         }
+    }
+}
+
+fn quiesce_and_disconnect(
+    stream: &pw::stream::Stream,
+    main_loop: &pw::main_loop::MainLoop,
+    state: &Arc<Mutex<ReceiverState>>,
+) -> Result<(), ()> {
+    let mut quiesce_failed = stream.set_active(false).is_err();
+    if !quiesce_failed {
+        let pause_started = Instant::now();
+        while state.borrow().streaming {
+            if pause_started.elapsed() >= RECEIVER_QUIESCE_TIMEOUT
+                || main_loop
+                    .loop_()
+                    .iterate(pw::loop_::Timeout::Finite(ITERATION_SLICE))
+                    < 0
+            {
+                quiesce_failed = true;
+                break;
+            }
+        }
+    }
+    if !quiesce_failed {
+        let grace_started = Instant::now();
+        while grace_started.elapsed() < RECEIVER_IN_FLIGHT_GRACE {
+            if main_loop
+                .loop_()
+                .iterate(pw::loop_::Timeout::Finite(ITERATION_SLICE))
+                < 0
+            {
+                quiesce_failed = true;
+                break;
+            }
+        }
+    }
+    let disconnect_failed = stream.disconnect().is_err();
+    if quiesce_failed || disconnect_failed {
+        Err(())
+    } else {
+        Ok(())
     }
 }
 
@@ -928,7 +1007,7 @@ impl UncalibratedPipeWireReceiver {
         self.state.borrow_mut().latest.take()
     }
 
-    /// Disconnects and drops the receiver before releasing its provider lease.
+    /// Quiesces, disconnects, and drops the receiver before releasing its provider lease.
     ///
     /// # Errors
     /// Returns `ReceiverFailed` if the explicit stream disconnect fails. Receiver and provider
@@ -1005,7 +1084,9 @@ impl UncalibratedPipeWireReceiver {
 
     fn flush_observations(&mut self, sink: &mut impl CaptureDiagnosticSink) {
         let state = self.state.borrow();
-        let negotiation = (!self.negotiation_recorded)
+        // Gamescope first announces its full output and then replaces it with the requested-size
+        // contract. Publish only the contract which actually produced the first valid frame.
+        let negotiation = (!self.negotiation_recorded && state.latest.is_some())
             .then_some(state.contract)
             .flatten();
         let first = if self.first_frame_recorded {
@@ -1298,7 +1379,9 @@ fn receiver_fact_bounds(
 /// Starts the common receiver and waits for negotiated `BGRx` plus its first bounded frame.
 ///
 /// The selected dimensions and rate are observations, not a profile identifier. Only `BGRx` is
-/// offered in this minimal slice; there is no conversion or automatic fallback.
+/// offered in this minimal slice; there is no conversion or automatic fallback. Every announced
+/// buffer is returned from its process callback, while full-frame copies are paced independently at
+/// the recognition cadence.
 ///
 /// # Errors
 /// Returns a typed timeout or the first provider/stream terminal error. Failure cleanup still
@@ -1436,6 +1519,24 @@ fn handle_process(stream: &pw::stream::Stream, state: &mut Arc<Mutex<ReceiverSta
         return;
     }
     let data = &mut datas[0];
+    if data.as_raw().chunk.is_null() {
+        fail_frame(state, CaptureErrorType::FrameMalformed);
+        return;
+    }
+    let chunk = data.chunk();
+    if chunk.flags().contains(ChunkFlags::CORRUPTED) {
+        // Gamescope marks the stale full-output buffer CORRUPTED while applying requested_size.
+        // It is safe to return that buffer before startup completes; corruption after an accepted
+        // frame remains a steady-reception failure.
+        if state.borrow().received_frames > 0 {
+            fail_frame(state, CaptureErrorType::FrameMalformed);
+        }
+        return;
+    }
+    if chunk.stride() <= 0 {
+        fail_frame(state, CaptureErrorType::FrameMalformed);
+        return;
+    }
     let memory_type = match data.type_() {
         DataType::MemPtr => UncalibratedMemoryType::MemoryPointer,
         DataType::MemFd => UncalibratedMemoryType::MemoryFileDescriptor,
@@ -1445,15 +1546,6 @@ fn handle_process(stream: &pw::stream::Stream, state: &mut Arc<Mutex<ReceiverSta
             return;
         }
     };
-    if data.as_raw().chunk.is_null() {
-        fail_frame(state, CaptureErrorType::FrameMalformed);
-        return;
-    }
-    let chunk = data.chunk();
-    if chunk.flags().contains(ChunkFlags::CORRUPTED) || chunk.stride() <= 0 {
-        fail_frame(state, CaptureErrorType::FrameMalformed);
-        return;
-    }
     let offset = chunk.offset() as usize;
     let size = chunk.size() as usize;
     let stride = chunk.stride().cast_unsigned();
@@ -1477,18 +1569,26 @@ fn handle_process(stream: &pw::stream::Stream, state: &mut Arc<Mutex<ReceiverSta
 fn handle_stream_state(state: &Arc<Mutex<ReceiverState>>, new: &pw::stream::StreamState) {
     let mut state = state.borrow_mut();
     match new {
-        pw::stream::StreamState::Connecting
-        | pw::stream::StreamState::Paused
-        | pw::stream::StreamState::Streaming => state.active_seen = true,
+        pw::stream::StreamState::Connecting => state.active_seen = true,
+        pw::stream::StreamState::Paused => {
+            state.active_seen = true;
+            state.streaming = false;
+        }
+        pw::stream::StreamState::Streaming => {
+            state.active_seen = true;
+            state.streaming = true;
+        }
         pw::stream::StreamState::Error(_) => {
+            state.streaming = false;
             let operation = state.reception_operation();
             state.fail(CaptureErrorType::ReceiverFailed, operation);
         }
         pw::stream::StreamState::Unconnected if state.active_seen && !state.shutting_down => {
+            state.streaming = false;
             let operation = state.reception_operation();
             state.fail(CaptureErrorType::StreamLost, operation);
         }
-        pw::stream::StreamState::Unconnected => {}
+        pw::stream::StreamState::Unconnected => state.streaming = false,
     }
 }
 
@@ -1639,7 +1739,7 @@ fn buffer_offer(width: u32, height: u32) -> Option<Vec<u8>> {
 }
 
 fn format_offer() -> Result<Vec<u8>, spa::pod::serialize::GenError> {
-    let object = spa::pod::object!(
+    let mut object = spa::pod::object!(
         spa::utils::SpaTypes::ObjectParamFormat,
         spa::param::ParamType::EnumFormat,
         spa::pod::property!(
@@ -1688,6 +1788,13 @@ fn format_offer() -> Result<Vec<u8>, spa::pod::serialize::GenError> {
             spa::utils::Fraction { num: 240, denom: 1 }
         ),
     );
+    object.properties.push(spa::pod::Property::new(
+        GAMESCOPE_REQUESTED_SIZE_PROPERTY,
+        Value::Rectangle(spa::utils::Rectangle {
+            width: GAMESCOPE_REQUESTED_WIDTH,
+            height: GAMESCOPE_REQUESTED_HEIGHT,
+        }),
+    ));
     Ok(spa::pod::serialize::PodSerializer::serialize(
         Cursor::new(Vec::new()),
         &Value::Object(object),
@@ -1799,9 +1906,21 @@ mod tests {
         let Value::Object(object) = value else {
             panic!("expected object");
         };
+        let requested_size = object
+            .properties
+            .iter()
+            .find(|property| property.key == GAMESCOPE_REQUESTED_SIZE_PROPERTY)
+            .expect("Gamescope requested size");
+        assert_eq!(
+            requested_size.value,
+            Value::Rectangle(spa::utils::Rectangle {
+                width: GAMESCOPE_REQUESTED_WIDTH,
+                height: GAMESCOPE_REQUESTED_HEIGHT,
+            })
+        );
         let framerate = object
             .properties
-            .into_iter()
+            .iter()
             .find(|property| {
                 property.key == spa::param::format::FormatProperties::VideoFramerate.as_raw()
             })
@@ -1809,19 +1928,55 @@ mod tests {
         let Value::Choice(spa::pod::ChoiceValue::Fraction(spa::utils::Choice(
             _,
             spa::utils::ChoiceEnum::Range { default, min, max },
-        ))) = framerate.value
+        ))) = &framerate.value
         else {
             panic!("expected framerate range");
         };
         assert_eq!(
-            default,
+            *default,
             spa::utils::Fraction {
                 num: REQUESTED_FRAMERATE_NUM,
                 denom: REQUESTED_FRAMERATE_DENOM,
             }
         );
-        assert_eq!(min, spa::utils::Fraction { num: 0, denom: 1 });
-        assert_eq!(max, spa::utils::Fraction { num: 240, denom: 1 });
+        assert_eq!(*min, spa::utils::Fraction { num: 0, denom: 1 });
+        assert_eq!(*max, spa::utils::Fraction { num: 240, denom: 1 });
+    }
+
+    #[test]
+    fn requested_size_can_replace_the_contract_before_the_first_frame() {
+        let mut state = ReceiverState::new(Instant::now());
+        let mut full_output = video_info();
+        full_output.set_size(spa::utils::Rectangle {
+            width: 5_120,
+            height: 1_440,
+        });
+        state.negotiate(full_output);
+        let mut requested = video_info();
+        requested.set_size(spa::utils::Rectangle {
+            width: 1_920,
+            height: 540,
+        });
+        state.negotiate(requested);
+
+        assert_eq!(state.terminal, None);
+        assert_eq!(state.contract.expect("contract").width, 1_920);
+        assert_eq!(state.contract.expect("contract").height, 540);
+
+        state.accept_frame(
+            UncalibratedMemoryType::MemoryFileDescriptor,
+            1_920 * 4,
+            &vec![0; 1_920 * 540 * 4],
+            1,
+        );
+        state.negotiate(full_output);
+        assert_eq!(
+            state.terminal,
+            Some(ReceiverTerminal {
+                error_type: CaptureErrorType::UnsupportedFormat,
+                operation: CaptureDiagnosticOperation::SteadyReception,
+            })
+        );
     }
 
     #[test]
@@ -2104,7 +2259,7 @@ mod tests {
             UncalibratedMemoryType::MemoryPointer,
             16,
             &[0; 32],
-            2,
+            100_000_001,
         );
         let observed = admitted.take_latest_observed_frame().unwrap();
         let fact_count = facts.0.len();
@@ -2174,15 +2329,49 @@ mod tests {
     fn latest_frame_is_bounded_and_receiver_sequence_is_monotonic() {
         let mut state = negotiated_state();
         state.accept_frame(UncalibratedMemoryType::MemoryPointer, 16, &[1; 32], 10);
-        state.accept_frame(UncalibratedMemoryType::MemoryPointer, 16, &[2; 32], 25);
+        state.accept_frame(
+            UncalibratedMemoryType::MemoryPointer,
+            16,
+            &[2; 32],
+            100_000_025,
+        );
 
         assert_eq!(state.received_frames, 2);
         assert_eq!(state.overwritten_frames, 1);
-        assert_eq!(state.maximum_gap_ns, 15);
+        assert_eq!(state.maximum_gap_ns, 100_000_015);
         let frame = state.latest.expect("latest frame");
         assert_eq!(frame.sequence(), 2);
-        assert_eq!(frame.received_monotonic_ns(), 25);
+        assert_eq!(frame.received_monotonic_ns(), 100_000_025);
         assert_eq!(frame.bytes(), &[2; 32]);
+    }
+
+    #[test]
+    fn frame_copy_cadence_uses_fixed_deadlines_without_drift() {
+        let mut state = ReceiverState::new(Instant::now());
+
+        assert!(state.frame_copy_is_due(10));
+        assert!(!state.frame_copy_is_due(99_999_999));
+        assert!(state.frame_copy_is_due(100_000_010));
+        assert!(!state.frame_copy_is_due(199_999_999));
+        assert!(state.frame_copy_is_due(450_000_010));
+        assert!(!state.frame_copy_is_due(499_999_999));
+        assert!(state.frame_copy_is_due(500_000_010));
+    }
+
+    #[test]
+    fn valid_frames_between_copy_deadlines_are_returned_without_copying() {
+        let mut state = negotiated_state();
+        state.accept_frame(UncalibratedMemoryType::MemoryPointer, 16, &[1; 32], 10);
+        state.accept_frame(
+            UncalibratedMemoryType::MemoryPointer,
+            16,
+            &[2; 32],
+            50_000_010,
+        );
+
+        assert_eq!(state.received_frames, 1);
+        assert_eq!(state.overwritten_frames, 0);
+        assert_eq!(state.latest.expect("latest frame").bytes(), &[1; 32]);
     }
 
     #[test]
@@ -2204,6 +2393,7 @@ mod tests {
         );
 
         let mut caps = negotiated_state();
+        caps.accept_frame(UncalibratedMemoryType::MemoryPointer, 16, &[0; 32], 1);
         let mut changed = VideoInfoRaw::new();
         changed.set_format(VideoFormat::BGRx);
         changed.set_size(spa::utils::Rectangle {

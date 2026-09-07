@@ -6,6 +6,7 @@ authoritative.
 
 ## Current
 
+- [ADR 0141: Bound Gamescope capture size and frame copies, then quiesce disconnect](0141-bound-gamescope-frame-copies-and-quiesce-disconnect.md) requests a 1920x1080-bounded source domain, limits application-owned copies to fixed 10 Hz deadlines, and quiesces the stream before disconnect.
 - [ADR 0140: Cap Wayland overlay rasterization](0140-cap-wayland-overlay-rasterization.md) adds a backend-wide AUTO or 1–1000 Hz Wayland paint cap, leaves OBS cadence to Browser Source, and shows viewport-relative empty aperture geometry during editing.
 - [ADR 0137: Group canvas controls and undo drafts](0137-group-canvas-controls-and-undo-drafts.md) groups canvas management with the canvas list, separates setting sections, generalizes one-step undo to the complete backend draft, and selects unselected previews by left click.
 - [ADR 0136: Dynamically load the Wayland client](0136-dynamically-load-the-wayland-client.md) removes undeclared Wayland development packages from the build and independently links and tests the shell crate.

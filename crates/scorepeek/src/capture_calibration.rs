@@ -422,7 +422,6 @@ enum CalibrationSampleErrorType {
     ReceiverShutdownFailed,
     ManifestEncodingFailed,
     PublicationFailed,
-    SessionContractMismatch,
 }
 
 #[derive(Debug, Serialize)]
@@ -858,8 +857,6 @@ fn validate_stored_session_manifest(
         || manifest.frame.filename != FRAME_FILENAME
         || !valid_sha256(&manifest.frame.sha256)
         || manifest.frame.byte_count != expected_bytes
-        || manifest.session_configuration.output_width != manifest.observed_video_contract.width
-        || manifest.session_configuration.output_height != manifest.observed_video_contract.height
         || manifest.receiver_sequence == 0
         || manifest.received_monotonic_ns == 0
         || manifest.diagnostic_facts.len() > MAX_DIAGNOSTIC_FACTS
@@ -1245,15 +1242,6 @@ pub fn capture_gamescope_calibration_session_sample(
     let Some(frame) = frame else {
         return error_report(CalibrationSampleErrorType::FrameUnavailable, None, sink);
     };
-    if frame.contract().width != session_configuration.output_width
-        || frame.contract().height != session_configuration.output_height
-    {
-        return error_report(
-            CalibrationSampleErrorType::SessionContractMismatch,
-            None,
-            sink,
-        );
-    }
     publish_session_sample(&output, session_configuration, &frame, sink)
 }
 
@@ -1883,8 +1871,8 @@ mod tests {
             OsStr::new("development-machine-v1"),
             OsStr::new("3.16.19-128-g7282613+"),
             OsStr::new("sdl"),
-            OsStr::new("2"),
-            OsStr::new("2"),
+            OsStr::new("3840"),
+            OsStr::new("2160"),
             OsStr::new("1920"),
             OsStr::new("1080"),
             OsStr::new("120"),
@@ -1937,8 +1925,8 @@ mod tests {
         let binding =
             scorepeek::capture::GamescopeProfileBinding::parse(&bytes, &binding_digest).unwrap();
         assert_eq!(binding.capture_profile_sha256(), profile_digest);
-        assert_eq!(binding.output_width(), 2);
-        assert_eq!(binding.output_height(), 2);
+        assert_eq!(binding.output_width(), 3_840);
+        assert_eq!(binding.output_height(), 2_160);
         assert_eq!(
             author_gamescope_profile_binding_inner(
                 &calibration,

@@ -648,11 +648,6 @@ impl CaptureProfileArtifact {
             return Err(GamescopeProfileBindingError::InvalidProfile);
         }
         self.observed.validate()?;
-        if self.provider.scaling_configuration.output_width != self.observed.video.width
-            || self.provider.scaling_configuration.output_height != self.observed.video.height
-        {
-            return Err(GamescopeProfileBindingError::InvalidProfile);
-        }
         Ok(())
     }
 }
@@ -1152,7 +1147,7 @@ mod tests {
     }
 
     #[test]
-    fn output_dimensions_must_match_the_observed_video_contract() {
+    fn output_dimensions_and_requested_capture_contract_are_independent() {
         let mut mismatched = artifact();
         mismatched
             .capture_profile
@@ -1163,10 +1158,9 @@ mod tests {
             sha256(&canonical_json(&mismatched.capture_profile).unwrap());
         let (bytes, digest) = encoded_artifact(&mismatched);
 
-        assert_eq!(
-            GamescopeProfileBinding::parse(&bytes, &digest).unwrap_err(),
-            GamescopeProfileBindingError::InvalidProfile
-        );
+        let binding = GamescopeProfileBinding::parse(&bytes, &digest).unwrap();
+        assert_eq!(binding.output_width(), 2_557);
+        assert_eq!(binding.observed_width(), 2_556);
     }
 
     #[test]

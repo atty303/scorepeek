@@ -67,6 +67,14 @@ checkpoint; implementation history belongs in Git.
   older v5 document. During either editor preview, visible empty apertures show compact logical
   `x,y · width×height` relative to the output or `/overlay` viewport; normal display omits it and OBS
   scene transforms remain outside scorepeek authority.
+- ADR 0141 makes the Gamescope receiver always request a 1920x1080-bounded capture domain. Gamescope
+  can preserve aspect ratio, so the negotiated observed dimensions remain authoritative. Its
+  startup full-output contract and corrupted transition buffer may be replaced only before the
+  first valid frame; later drift fails closed. Every producer buffer is still returned promptly,
+  while application-owned full-frame copies follow fixed 10 Hz deadlines. Shutdown deactivates and
+  quiesces the stream, services a bounded in-flight grace period, then disconnects. Physical output
+  and observed capture dimensions are independent calibration facts. Existing full-size profiles
+  therefore fail admission and require `scorepeek setup gamescope`; they are not rewritten.
 - ADR 0139 makes the status widget RESULT lamp follow the explicit result state: inactive is unlit,
   provisional/confirmed is green, and retracted is red. PLAY and capture-session start publish
   inactive; session finish retains the last result state.
@@ -185,6 +193,15 @@ checkpoint; implementation history belongs in Git.
   code/model/layout binding and non-interfering recording failure status.
 
 ## Verification
+
+- Gamescope `3.16.19-128-g7282613+` on the development host reproduces the original pressure at
+  5120x1440@120 Hz: before ADR 0141 it supplied about 120 full BGRx frames per second, and a bounded
+  vkcube consumer disconnect reproduced Gamescope's `destroy_buffer` assertion. With 10 Hz copy
+  admission, `requested_size` and quiesced shutdown, the final 10-second run negotiated 1920x540
+  BGRx MemFd with 7,680-byte stride from that ultrawide source and copied 101 frames. Ten subsequent
+  one-second lifecycle runs each copied 11 frames, completed receiver/provider shutdown, retained
+  bounded file descriptor/thread/RSS counts and left Gamescope live. Its observed log contained
+  streaming/paused transitions without `out of buffers` or a PipeWire assertion during this gate.
 
 - The Wayland shell passes its standalone locked build, link and test gate through the repository pkg-config
   boundary, which exposes only the pinned PipeWire SDK. The same check passes from an empty Cargo
@@ -383,6 +400,12 @@ checkpoint; implementation history belongs in Git.
   retained privately under `select-stability-evaluation-v1` in the scorepeek XDG data directory.
 
 ## Unverified and next execution boundary
+
+- Rerun `scorepeek setup gamescope` for the requested-size capture domain before the next target
+  INFINITAS run. Then verify 1920x1080 BGRx negotiation on the 16:9 target, absence or boundedness of
+  Gamescope `out of buffers` warnings, 100 attach/detach cycles, three 15-minute runs and one
+  30-minute soak. Development-host vkcube lifecycle evidence does not establish target INFINITAS
+  support or repair a remaining Gamescope producer defect.
 
 - Stream composition has all-three-skin development-host native PNG/layout/manifest inspection,
   alpha checks for overlapping apertures and frame-width content-geometry checks. Synthetic native
