@@ -24,7 +24,7 @@ use dioxus_native_dom::DioxusDocument;
 use scorepeek_overlay_handles::{CursorStyle, Event, OutputDescription, Shell};
 use scorepeek_overlay_ui::editor::{
     EditorAccess, EditorAction, EditorChrome, EditorOutput, EditorPanel, EditorTitleState,
-    EditorView,
+    EditorView, RefreshRateEditor,
 };
 use scorepeek_overlay_ui::{Appearance, OXANIUM, OverlayState, WidgetLayout, overlay_canvas};
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,59 @@ use smithay_client_toolkit::reexports::calloop::ping::{Ping, make_ping};
 
 #[derive(Default)]
 struct RendererInitCoordinator(std::sync::Mutex<()>);
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum PaintReason {
+    Steady,
+    InitialConfigure,
+    Reconfigure,
+    VisibilityClear,
+    Editor,
+}
+
+impl PaintReason {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Steady => "steady",
+            Self::InitialConfigure => "initial_configure",
+            Self::Reconfigure => "reconfigure",
+            Self::VisibilityClear => "visibility_clear",
+            Self::Editor => "editor",
+        }
+    }
+
+    const fn bypasses_cap(self) -> bool {
+        !matches!(self, Self::Steady)
+    }
+}
+
+#[derive(Default)]
+struct FrameCadence {
+    last_paint: Option<Duration>,
+}
+
+impl FrameCadence {
+    fn permits(
+        &self,
+        now: Duration,
+        rate: scorepeek_overlay_ui::WaylandRefreshRate,
+        reason: PaintReason,
+    ) -> bool {
+        if reason.bypasses_cap() {
+            return true;
+        }
+        let Some(hz) = rate.hz() else {
+            return true;
+        };
+        self.last_paint.is_none_or(|last| {
+            now.saturating_sub(last) >= Duration::from_secs_f64(1.0 / f64::from(hz))
+        })
+    }
+
+    fn record(&mut self, now: Duration) {
+        self.last_paint = Some(now);
+    }
+}
 
 impl RendererInitCoordinator {
     fn exclusive<T>(&self, operation: impl FnOnce() -> T) -> T {
@@ -188,17 +241,21 @@ impl Default for EditorWorkspaceUi {
 }
 
 #[derive(Clone)]
-struct DraftUndo(Vec<scorepeek_overlay_ui::CanvasPresentation>);
+struct DraftUndo {
+    canvases: Vec<scorepeek_overlay_ui::CanvasPresentation>,
+    wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
+}
 
 fn remember_draft_change(
     undo: &mut Option<DraftUndo>,
-    before: Vec<scorepeek_overlay_ui::CanvasPresentation>,
+    before: DraftUndo,
     after: &[scorepeek_overlay_ui::CanvasPresentation],
+    after_refresh: scorepeek_overlay_ui::WaylandRefreshRate,
 ) -> bool {
-    if before == after {
+    if before.canvases == after && before.wayland_refresh_hz == after_refresh {
         return false;
     }
-    *undo = Some(DraftUndo(before));
+    *undo = Some(before);
     true
 }
 
@@ -241,6 +298,7 @@ struct NativeWorkspace {
     outputs: std::collections::BTreeMap<String, OutputDescription>,
     surfaces: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     editor_hosts: std::collections::BTreeMap<String, String>,
+    wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
 }
 
 #[derive(Clone)]
@@ -264,6 +322,7 @@ struct NativeOverlayProps {
     reactive: Rc<RefCell<Option<NativeReactiveState>>>,
     actions: Rc<RefCell<Vec<EditorAction>>>,
     surface_actions: Rc<RefCell<Vec<SurfaceAction>>>,
+    refresh_rate: Rc<Cell<scorepeek_overlay_ui::WaylandRefreshRate>>,
 }
 
 struct Reactive<T: 'static>(Signal<T>);
@@ -334,6 +393,8 @@ struct NativeReactiveState {
     settings: Reactive<NativeCanvasSettings>,
     surface_canvas_ids: Reactive<std::collections::BTreeSet<String>>,
     title_edit: Reactive<Option<TitleEdit>>,
+    refresh_edit: Reactive<Option<TitleEdit>>,
+    refresh_rate: Reactive<scorepeek_overlay_ui::WaylandRefreshRate>,
     readonly: Reactive<bool>,
 }
 
@@ -356,12 +417,15 @@ fn use_native_reactive_state(
         pending_point,
         managed,
         outputs,
+        refresh_rate,
         ..
     }: NativeOverlayProps,
 ) -> NativeReactiveState {
     let reactive_state = NativeReactiveState {
         readonly: Reactive(use_signal(|| false)),
         title_edit: Reactive(use_signal(|| None)),
+        refresh_edit: Reactive(use_signal(|| None)),
+        refresh_rate: Reactive(use_signal(move || refresh_rate.get())),
         appearance: Reactive(use_signal(move || appearance.get())),
         widgets: Reactive(use_signal(move || widgets.borrow().clone())),
         editing: Reactive(use_signal(move || editing.get())),
@@ -406,6 +470,11 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
         current
     };
     let current_settings = settings.borrow().clone();
+    let refresh_error = reactive
+        .refresh_edit
+        .borrow()
+        .as_ref()
+        .and_then(|edit| parse_refresh_rate(&edit.text).err());
     let selected_visible = current_settings.has_selection
         && scorepeek_overlay_ui::canvas_visible(
             current_settings.show_on.as_deref(),
@@ -442,12 +511,16 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
                     panel_width:current_settings.panel_width,
                     chrome:EditorChrome {panel_open:reactive.panel_open.get(),
                     widget_add_open:reactive.widget_add_open.get(),sample},
-                    access:EditorAccess {dirty:reactive.dirty.get(),readonly:reactive.readonly.get(),
+                    access:EditorAccess {dirty:reactive.dirty.get() || reactive.refresh_edit.borrow().is_some(),readonly:reactive.readonly.get(),
                     undo_available:reactive.undo_available.get()},
                     title:reactive.title_edit.borrow().as_ref().map_or(EditorTitleState::Closed,|edit|if edit.preedit.is_empty(){EditorTitleState::Editing}else{EditorTitleState::Composing}),
+                    refresh_rate:Some(RefreshRateEditor {rate:reactive.refresh_rate.get(),editing:reactive.refresh_edit.borrow().is_some(),error:refresh_error}),
                 },
                 title_input:rsx! { if let Some(edit)=reactive.title_edit.borrow().as_ref() {
                     div { class:"empty-title-edit", role:"textbox", "aria-label":"Widget title", "aria-multiline":"false", {title_input_content(edit)} }
+                } },
+                refresh_rate_input:rsx! { if let Some(edit)=reactive.refresh_edit.borrow().as_ref() {
+                    div { class:"refresh-rate-edit", role:"textbox", "aria-label":"Wayland refresh rate in Hz", "aria-multiline":"false", {title_input_content(edit)} }
                 } },
                 onaction: move |action| actions.borrow_mut().push(action),
             }
@@ -472,6 +545,12 @@ fn title_input_content(edit: &TitleEdit) -> Element {
         } else { span { style:"text-decoration:underline", "{edit.preedit}" } }
         span { {edit.text[edit.range().end..].to_owned()} }
     }
+}
+
+fn parse_refresh_rate(text: &str) -> Result<scorepeek_overlay_ui::WaylandRefreshRate, String> {
+    text.parse::<u16>()
+        .map_err(|_| "Enter an integer from 1 through 1000 Hz".to_owned())
+        .and_then(|hz| scorepeek_overlay_ui::WaylandRefreshRate::capped(hz).map_err(str::to_owned))
 }
 
 struct CalloopWaker(Ping);
@@ -568,6 +647,11 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
     let preview = Arc::new(std::sync::Mutex::new(None::<String>));
     let workspace_open = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let workspace_ui = Arc::new(std::sync::Mutex::new(NativeWorkspace::default()));
+    workspace_ui
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .wayland_refresh_hz = config.wayland_refresh_hz;
+    let wayland_refresh_hz = Arc::new(std::sync::Mutex::new(config.wayland_refresh_hz));
     let renderer_init = Arc::new(RendererInitCoordinator::default());
     let suppressed = Arc::new(std::sync::Mutex::new(
         std::collections::BTreeSet::<String>::new(),
@@ -582,6 +666,9 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
     }
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
         if let Ok((loaded, _)) = crate::config::load_or_create(&config.config_path) {
+            *wayland_refresh_hz
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = loaded.wayland_refresh_hz;
             desired = loaded
                 .canvases
                 .into_iter()
@@ -599,6 +686,15 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             && !response.readonly
             && !response.canvases.is_empty()
         {
+            if let Some(refresh) = response.wayland_refresh_hz {
+                *wayland_refresh_hz
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = refresh;
+                workspace_ui
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .wayland_refresh_hz = refresh;
+            }
             desired = response
                 .canvases
                 .into_iter()
@@ -735,6 +831,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             let workspace_ui = Arc::clone(&workspace_ui);
             let suppressed = Arc::clone(&suppressed);
             let renderer_init = Arc::clone(&renderer_init);
+            let refresh_rate = Arc::clone(&wayland_refresh_hz);
             let wakes = Arc::clone(&canvas_wakes);
             let join = std::thread::Builder::new()
                 .name(format!("overlay-wayland-{}", canvas.id))
@@ -749,6 +846,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                         workspace_ui,
                         suppressed,
                         renderer_init,
+                        refresh_rate,
                         &wakes,
                     )
                 })
@@ -784,6 +882,7 @@ fn run_canvas(
     workspace_ui: Arc<std::sync::Mutex<NativeWorkspace>>,
     suppressed: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     renderer_init: Arc<RendererInitCoordinator>,
+    wayland_refresh_hz: Arc<std::sync::Mutex<scorepeek_overlay_ui::WaylandRefreshRate>>,
     wakes: &std::sync::Mutex<std::collections::BTreeMap<String, Ping>>,
 ) -> Result<(), String> {
     let report = Rc::new(RefCell::new(RunReport::new()));
@@ -891,6 +990,7 @@ fn run_canvas(
         workspace_open,
         workspace_ui,
         suppressed,
+        wayland_refresh_hz,
     );
     let result = app.run();
     let renderer_coordinator = Arc::clone(&app.renderer_init);
@@ -899,6 +999,15 @@ fn run_canvas(
         let mut report = report.borrow_mut();
         report.paint_count = app.paint_count;
         report.render_calls = app.render_calls;
+        report.elapsed_ms = u64::try_from(app.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        report.wayland_refresh_hz = *app
+            .wayland_refresh_hz
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let seconds = app.started.elapsed().as_secs_f64();
+        report.effective_paint_hz = (seconds > 0.0).then(|| f64::from(app.paint_count) / seconds);
+        report.effective_steady_paint_hz =
+            (seconds > 0.0).then(|| f64::from(app.steady_paint_count) / seconds);
         report.status = if result.is_ok() { "complete" } else { "failed" };
         report.failure = result.as_ref().err().cloned();
         report.operations.push("shutdown");
@@ -923,6 +1032,9 @@ struct App {
     animating: bool,
     paint_count: u32,
     render_calls: u32,
+    steady_paint_count: u32,
+    pending_paint: bool,
+    cadence: FrameCadence,
     report: Rc<RefCell<RunReport>>,
     feed_state: Arc<std::sync::Mutex<OverlayState>>,
     feed_stop: Arc<std::sync::atomic::AtomicBool>,
@@ -959,6 +1071,9 @@ struct App {
     settings: Reactive<NativeCanvasSettings>,
     surface_logical: [u32; 2],
     title_edit: Reactive<Option<TitleEdit>>,
+    refresh_edit: Reactive<Option<TitleEdit>>,
+    refresh_rate: Reactive<scorepeek_overlay_ui::WaylandRefreshRate>,
+    wayland_refresh_hz: Arc<std::sync::Mutex<scorepeek_overlay_ui::WaylandRefreshRate>>,
 }
 
 impl App {
@@ -986,6 +1101,7 @@ impl App {
         workspace_open: Arc<std::sync::atomic::AtomicBool>,
         workspace_ui: Arc<std::sync::Mutex<NativeWorkspace>>,
         suppressed: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+        wayland_refresh_hz: Arc<std::sync::Mutex<scorepeek_overlay_ui::WaylandRefreshRate>>,
     ) -> Self {
         let shared_state = Rc::new(RefCell::new(OverlayState::default()));
         let reactive = Rc::new(RefCell::new(None));
@@ -1005,6 +1121,11 @@ impl App {
         let managed = Rc::new(RefCell::new(Vec::new()));
         let outputs = Rc::new(RefCell::new(outputs));
         let appearance = Rc::new(Cell::new(appearance));
+        let refresh_rate = Rc::new(Cell::new(
+            *wayland_refresh_hz
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        ));
         let panel_width = editor_panel_width(shell.output_logical_size.map(|[width, _]| width));
         let settings = Rc::new(RefCell::new(NativeCanvasSettings {
             id: canvas.id.clone(),
@@ -1050,6 +1171,7 @@ impl App {
                 reactive: Rc::clone(&reactive),
                 actions: actions.clone(),
                 surface_actions: surface_actions.clone(),
+                refresh_rate: Rc::clone(&refresh_rate),
             },
         );
         let mut document = DioxusDocument::new(vdom, document_config());
@@ -1097,6 +1219,9 @@ impl App {
             animating: false,
             paint_count: 0,
             render_calls: 0,
+            steady_paint_count: 0,
+            pending_paint: false,
+            cadence: FrameCadence::default(),
             report,
             feed_state,
             feed_stop,
@@ -1134,6 +1259,9 @@ impl App {
             settings: reactive.settings,
             surface_logical,
             title_edit: reactive.title_edit,
+            refresh_edit: reactive.refresh_edit,
+            refresh_rate: reactive.refresh_rate,
+            wayland_refresh_hz,
         }
     }
     #[allow(clippy::too_many_lines)]
@@ -1222,14 +1350,17 @@ impl App {
                         }
                     }
                     Event::Text(command) => {
-                        self.title_command(&command);
+                        self.input_command(&command);
                         wake = true;
                     }
                     Event::Ime(update) => {
-                        if let Some(edit) = self.title_edit.borrow_mut().as_mut() {
+                        if let Some(edit) = self.refresh_edit.borrow_mut().as_mut() {
                             edit.ime(update);
+                            self.update_refresh_input(true);
+                        } else if let Some(edit) = self.title_edit.borrow_mut().as_mut() {
+                            edit.ime(update);
+                            self.update_title_input(true);
                         }
-                        self.update_title_input(true);
                         wake = true;
                     }
                     Event::KeyboardFocus(focused) => {
@@ -1239,6 +1370,7 @@ impl App {
                         );
                         if !focused {
                             self.finish_title_edit(false);
+                            self.finish_refresh_edit(false);
                             wake = true;
                         }
                     }
@@ -1281,17 +1413,43 @@ impl App {
                 wake = true;
             }
             let changed = wake && self.poll_dioxus();
-            if self.renderer.is_active()
-                && (configured
-                    || visibility_changed
-                    || (visible && (changed || (frame && self.animating))))
+            self.pending_paint |= changed || visibility_changed;
+            let reason = if configured {
+                Some(if self.paint_count == 0 {
+                    PaintReason::InitialConfigure
+                } else {
+                    PaintReason::Reconfigure
+                })
+            } else if visibility_changed && !visible {
+                Some(PaintReason::VisibilityClear)
+            } else if self.editing.get()
+                && visible
+                && (self.pending_paint || (frame && self.animating))
             {
-                self.paint()?;
-                if changed {
-                    crate::diagnostics::emit(
-                        "native_state_paint",
-                        &serde_json::json!({"paint_count":self.paint_count,"render_calls":self.render_calls}),
-                    );
+                Some(PaintReason::Editor)
+            } else if visible && (self.pending_paint || (frame && self.animating)) {
+                Some(PaintReason::Steady)
+            } else {
+                None
+            };
+            if self.renderer.is_active()
+                && let Some(reason) = reason
+            {
+                let now = self.started.elapsed();
+                let refresh = *self
+                    .wayland_refresh_hz
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if self.cadence.permits(now, refresh, reason) {
+                    self.paint(reason, now)?;
+                    if changed {
+                        crate::diagnostics::emit(
+                            "native_state_paint",
+                            &serde_json::json!({"paint_count":self.paint_count,"render_calls":self.render_calls}),
+                        );
+                    }
+                } else if visible {
+                    self.shell.request_frame_and_commit();
                 }
             }
         }
@@ -1368,6 +1526,9 @@ impl App {
                 self.apply_selected_presentation(presentation);
             }
         }
+        if let Some(refresh) = response.wayland_refresh_hz {
+            self.set_refresh_rate_draft(refresh);
+        }
         Some(response)
     }
 
@@ -1416,7 +1577,16 @@ impl App {
     }
 
     fn sync_workspace_projection(&mut self) {
-        let (ui, draft, dirty, undo_available, selected_widget, pending_widget, surface_canvas_ids) = {
+        let (
+            ui,
+            draft,
+            dirty,
+            undo_available,
+            selected_widget,
+            pending_widget,
+            surface_canvas_ids,
+            wayland_refresh_hz,
+        ) = {
             let workspace = self
                 .workspace_ui
                 .lock()
@@ -1430,8 +1600,10 @@ impl App {
                 workspace.selected_widget.clone(),
                 workspace.pending_widget,
                 workspace.surfaces.get(&key).cloned().unwrap_or_default(),
+                workspace.wayland_refresh_hz,
             )
         };
+        self.refresh_rate.set_if_changed(wayland_refresh_hz);
         if *self.surface_canvas_ids.borrow() != surface_canvas_ids {
             *self.surface_canvas_ids.borrow_mut() = surface_canvas_ids;
         }
@@ -1506,6 +1678,7 @@ impl App {
         }
         if !value {
             self.finish_title_edit(false);
+            self.finish_refresh_edit(false);
             self.editing.set(false);
             self.dirty.set(false);
             self.canvas = self.surface_canvas.clone();
@@ -1631,12 +1804,24 @@ impl App {
             .set([f64::from(model.point[0]), f64::from(model.point[1])]);
         self.apply_editor_model(model);
         if changed && let Some(before) = undo {
-            self.finish_draft_change(before);
+            self.finish_draft_change(DraftUndo {
+                canvases: before,
+                wayland_refresh_hz: self.refresh_rate.get(),
+            });
         }
     }
     fn editor_action(&mut self, action: &EditorAction) {
         if !matches!(action, EditorAction::AcceptTitle | EditorAction::EditTitle) {
             self.finish_title_edit(false);
+        }
+        if !matches!(
+            action,
+            EditorAction::EditRefreshRate
+                | EditorAction::AcceptRefreshRate
+                | EditorAction::CancelRefreshRate
+                | EditorAction::RefreshRateAuto
+        ) {
+            self.finish_refresh_edit(false);
         }
         match action {
             EditorAction::Save => {
@@ -1665,7 +1850,35 @@ impl App {
                 return;
             }
             EditorAction::Undo => {
+                self.finish_refresh_edit(false);
                 self.undo_last_change();
+                return;
+            }
+            EditorAction::RefreshRateAuto => {
+                self.finish_refresh_edit(false);
+                let before = self.undo_snapshot();
+                self.set_refresh_rate_draft(scorepeek_overlay_ui::WaylandRefreshRate::Auto);
+                self.finish_draft_change(before);
+                return;
+            }
+            EditorAction::EditRefreshRate => {
+                self.finish_refresh_edit(false);
+                let text = self
+                    .refresh_rate
+                    .get()
+                    .hz()
+                    .map_or_else(String::new, |hz| hz.to_string());
+                self.refresh_edit
+                    .set(Some(TitleEdit::new("refresh-rate".into(), text)));
+                self.update_refresh_input(false);
+                return;
+            }
+            EditorAction::AcceptRefreshRate => {
+                self.finish_refresh_edit(true);
+                return;
+            }
+            EditorAction::CancelRefreshRate => {
+                self.finish_refresh_edit(false);
                 return;
             }
             _ => {}
@@ -1678,7 +1891,7 @@ impl App {
             self.finish_title_edit(false);
             return;
         }
-        let before = self.draft_snapshot();
+        let before = self.undo_snapshot();
         let mut model = self.editor_model();
         model.action(action);
         if *action == EditorAction::AddCanvas
@@ -1748,14 +1961,21 @@ impl App {
         self.managed.borrow().clone()
     }
 
-    fn finish_draft_change(&mut self, before: Vec<scorepeek_overlay_ui::CanvasPresentation>) {
+    fn undo_snapshot(&self) -> DraftUndo {
+        DraftUndo {
+            canvases: self.draft_snapshot(),
+            wayland_refresh_hz: self.refresh_rate.get(),
+        }
+    }
+
+    fn finish_draft_change(&mut self, before: DraftUndo) {
         let changed = {
             let after = self.managed.borrow();
             let mut workspace = self
                 .workspace_ui
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            remember_draft_change(&mut workspace.undo, before, &after)
+            remember_draft_change(&mut workspace.undo, before, &after, self.refresh_rate.get())
         };
         if !changed {
             return;
@@ -1774,11 +1994,15 @@ impl App {
         else {
             return;
         };
-        let DraftUndo(restored) = undo;
+        let DraftUndo {
+            canvases: restored,
+            wayland_refresh_hz,
+        } = undo;
         let mut model = self.editor_model();
         model.undo = Some(restored);
         model.action(&EditorAction::Undo);
         self.apply_editor_model(model);
+        self.set_refresh_rate_draft(wayland_refresh_hz);
         self.undo_available.set(false);
         self.set_editor_geometry(true);
         self.update_draft();
@@ -1820,9 +2044,13 @@ impl App {
             backend: crate::runtime::Backend::Wayland,
             editor_id: self.editor_id.clone(),
             canvases,
+            wayland_refresh_hz: Some(self.refresh_rate.get()),
         });
     }
     fn save_and_close(&mut self) {
+        if self.refresh_edit.borrow().is_some() && !self.finish_refresh_edit(true) {
+            return;
+        }
         self.persist_canvas();
         let canvases = self.managed.borrow().clone();
         let response = self.request(crate::control::Request::CommitBackend {
@@ -1830,6 +2058,7 @@ impl App {
             editor_id: self.editor_id.clone(),
             expected_revision: self.backend_revision,
             canvases,
+            wayland_refresh_hz: Some(self.refresh_rate.get()),
         });
         if response.as_ref().is_some_and(|response| response.ok) {
             let mut workspace = self
@@ -1845,6 +2074,18 @@ impl App {
             self.select_canvas(None);
             self.set_editing(false);
         }
+    }
+
+    fn set_refresh_rate_draft(&self, refresh: scorepeek_overlay_ui::WaylandRefreshRate) {
+        self.refresh_rate.set_if_changed(refresh);
+        *self
+            .wayland_refresh_hz
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = refresh;
+        self.workspace_ui
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .wayland_refresh_hz = refresh;
     }
 
     fn poll_dioxus(&mut self) -> bool {
@@ -1909,9 +2150,21 @@ impl App {
         crate::diagnostics::emit("surface_configured", &*self.report.borrow());
         Ok(())
     }
-    fn paint(&mut self) -> Result<(), String> {
+    fn paint(&mut self, reason: PaintReason, now: Duration) -> Result<(), String> {
         let renderer_coordinator = Arc::clone(&self.renderer_init);
-        renderer_coordinator.exclusive(|| self.paint_exclusive())
+        renderer_coordinator.exclusive(|| self.paint_exclusive())?;
+        self.cadence.record(now);
+        self.pending_paint = false;
+        if reason == PaintReason::Steady {
+            self.steady_paint_count = self.steady_paint_count.saturating_add(1);
+        } else {
+            let mut report = self.report.borrow_mut();
+            *report
+                .cap_bypass_paints
+                .entry(reason.name().to_owned())
+                .or_default() += 1;
+        }
+        Ok(())
     }
 
     fn paint_exclusive(&mut self) -> Result<(), String> {
@@ -2013,6 +2266,11 @@ struct RunReport {
     gpu_adapter: Option<String>,
     paint_count: u32,
     render_calls: u32,
+    wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
+    elapsed_ms: u64,
+    effective_paint_hz: Option<f64>,
+    effective_steady_paint_hz: Option<f64>,
+    cap_bypass_paints: std::collections::BTreeMap<String, u64>,
     operations: Operations,
     status: &'static str,
     failure: Option<String>,
@@ -2035,6 +2293,11 @@ impl RunReport {
             gpu_adapter: None,
             paint_count: 0,
             render_calls: 0,
+            wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate::Auto,
+            elapsed_ms: 0,
+            effective_paint_hz: None,
+            effective_steady_paint_hz: None,
+            cap_bypass_paints: std::collections::BTreeMap::new(),
             operations: Operations::default(),
             status: "running",
             failure: None,
@@ -2379,6 +2642,7 @@ impl VisualDebugSession {
             reactive: Rc::clone(&reactive),
             actions: actions.clone(),
             surface_actions: surface_actions.clone(),
+            refresh_rate: Rc::new(Cell::new(scorepeek_overlay_ui::WaylandRefreshRate::Auto)),
         };
         let mut document = DioxusDocument::new(
             VirtualDom::new_with_props(native_overlay, props),
@@ -3232,11 +3496,110 @@ mod skin_tests {
         after.pop();
 
         let mut undo = None;
-        assert!(remember_draft_change(&mut undo, before.clone(), &after));
-        assert!(!remember_draft_change(&mut undo, after.clone(), &after));
-        let DraftUndo(restored) = undo.take().unwrap();
+        assert!(remember_draft_change(
+            &mut undo,
+            DraftUndo {
+                canvases: before.clone(),
+                wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate::Auto,
+            },
+            &after,
+            scorepeek_overlay_ui::WaylandRefreshRate::Capped(30),
+        ));
+        assert!(!remember_draft_change(
+            &mut undo,
+            DraftUndo {
+                canvases: after.clone(),
+                wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate::Capped(30),
+            },
+            &after,
+            scorepeek_overlay_ui::WaylandRefreshRate::Capped(30),
+        ));
+        let DraftUndo {
+            canvases: restored,
+            wayland_refresh_hz,
+        } = undo.take().unwrap();
         assert_eq!(restored, before);
+        assert_eq!(
+            wayland_refresh_hz,
+            scorepeek_overlay_ui::WaylandRefreshRate::Auto
+        );
         assert!(undo.is_none());
+    }
+
+    #[test]
+    fn frame_cadence_coalesces_steady_paints_and_bypasses_lifecycle_work() {
+        let capped = scorepeek_overlay_ui::WaylandRefreshRate::capped(30).unwrap();
+        let period = Duration::from_secs_f64(1.0 / 30.0);
+        let mut cadence = FrameCadence::default();
+
+        assert!(cadence.permits(Duration::ZERO, capped, PaintReason::Steady));
+        cadence.record(Duration::ZERO);
+        assert!(!cadence.permits(
+            period.checked_sub(Duration::from_nanos(1)).unwrap(),
+            capped,
+            PaintReason::Steady
+        ));
+        assert!(cadence.permits(period, capped, PaintReason::Steady));
+        assert!(cadence.permits(Duration::from_millis(1), capped, PaintReason::Reconfigure));
+        cadence.record(Duration::from_millis(1));
+        assert!(!cadence.permits(Duration::from_millis(2), capped, PaintReason::Steady));
+        assert!(cadence.permits(
+            Duration::from_millis(2),
+            scorepeek_overlay_ui::WaylandRefreshRate::Auto,
+            PaintReason::Steady,
+        ));
+    }
+
+    #[test]
+    fn early_compositor_callbacks_reach_later_permitted_motion_paints() {
+        let capped = scorepeek_overlay_ui::WaylandRefreshRate::capped(30).unwrap();
+        let mut cadence = FrameCadence::default();
+        let mut paints = Vec::new();
+        for now in [0, 16, 32, 48, 64, 80, 96].map(Duration::from_millis) {
+            if cadence.permits(now, capped, PaintReason::Steady) {
+                cadence.record(now);
+                paints.push(now);
+            }
+            // A denied production callback is published with request_frame_and_commit(), so the
+            // next compositor callback in this sequence remains reachable without a state event.
+        }
+        assert_eq!(
+            paints,
+            [
+                Duration::ZERO,
+                Duration::from_millis(48),
+                Duration::from_millis(96)
+            ]
+        );
+    }
+
+    #[test]
+    fn refresh_rate_parser_rejects_incomplete_and_out_of_range_drafts() {
+        assert_eq!(
+            parse_refresh_rate("30").unwrap(),
+            scorepeek_overlay_ui::WaylandRefreshRate::capped(30).unwrap()
+        );
+        for invalid in ["", "0", "1001", "auto", "29.97"] {
+            assert!(parse_refresh_rate(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn empty_geometry_uses_viewport_coordinates_for_every_visible_aperture() {
+        let mut scenario: VisualDebugScenario =
+            serde_json::from_str(include_str!("../tests/fixtures/visual-composition.json"))
+                .unwrap();
+        scenario.editing = true;
+        scenario.actions.clear();
+        let session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        let inner = session.document.inner.borrow();
+        let geometries = inner.query_selector_all(".empty-geometry").unwrap();
+        assert_eq!(geometries.len(), 4);
+        let first = inner.get_client_bounding_rect(geometries[0]).unwrap();
+        assert_eq!(
+            (first.x, first.y, first.width, first.height),
+            (40.0, 40.0, 1200.0, 680.0)
+        );
     }
 
     #[test]
@@ -3432,6 +3795,9 @@ mod skin_tests {
                     NativeOverlayProps {
                         actions: Rc::default(),
                         surface_actions: Rc::default(),
+                        refresh_rate: Rc::new(Cell::new(
+                            scorepeek_overlay_ui::WaylandRefreshRate::Auto,
+                        )),
                         appearance: Rc::new(Cell::new(Appearance { skin })),
                         widgets: Rc::new(RefCell::new(scorepeek_overlay_ui::default_widgets())),
                         editing: Rc::new(Cell::new(false)),
@@ -3523,6 +3889,9 @@ mod skin_tests {
                 NativeOverlayProps {
                     actions: Rc::default(),
                     surface_actions: Rc::default(),
+                    refresh_rate: Rc::new(Cell::new(
+                        scorepeek_overlay_ui::WaylandRefreshRate::Auto,
+                    )),
                     appearance: Rc::new(Cell::new(Appearance {
                         skin: Skin::CyanSystem,
                     })),
@@ -3651,6 +4020,9 @@ mod skin_tests {
                 NativeOverlayProps {
                     actions: Rc::default(),
                     surface_actions: Rc::default(),
+                    refresh_rate: Rc::new(Cell::new(
+                        scorepeek_overlay_ui::WaylandRefreshRate::Auto,
+                    )),
                     appearance: Rc::new(Cell::new(Appearance {
                         skin: Skin::CyanSystem,
                     })),

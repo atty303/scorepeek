@@ -34,6 +34,8 @@ pub struct Config {
     pub unknown_grace_ms: u32,
     pub settings_revision: u64,
     #[serde(default)]
+    pub wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
+    #[serde(default)]
     pub edit_on_start: bool,
 }
 

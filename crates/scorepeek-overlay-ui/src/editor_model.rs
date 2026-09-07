@@ -137,6 +137,7 @@ impl Model {
                         EditorTitleState::Editing
                     }
                 }),
+            refresh_rate: None,
         }
     }
     pub fn select_visible(&mut self) {

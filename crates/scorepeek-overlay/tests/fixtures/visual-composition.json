@@ -103,6 +103,7 @@
   "selectors": [
     ".canvas-background",
     ".empty-frame",
+    ".empty-geometry",
     ".widget-slot",
     ".widget-content",
     ".empty-title",
@@ -122,6 +123,12 @@
     {
       "action": "set_editing",
       "value": true
+    },
+    {
+      "action": "scroll",
+      "selector": ".editor-tab-body",
+      "dx": 0,
+      "dy": -720
     },
     {
       "action": "click",

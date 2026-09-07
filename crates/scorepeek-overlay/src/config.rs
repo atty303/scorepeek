@@ -1,5 +1,5 @@
 use crate::runtime::Backend;
-use scorepeek_overlay_ui::Skin;
+use scorepeek_overlay_ui::{Skin, WaylandRefreshRate};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
@@ -14,6 +14,8 @@ pub const SCHEMA_VERSION: u32 = 5;
 #[serde(deny_unknown_fields)]
 pub struct OverlayConfig {
     pub schema_version: u32,
+    #[serde(default)]
+    pub wayland_refresh_hz: WaylandRefreshRate,
     #[serde(default)]
     pub settings_revision: u64,
     #[serde(default = "default_unknown_grace_ms")]
@@ -120,6 +122,7 @@ impl OverlayConfig {
     pub fn initial() -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
+            wayland_refresh_hz: WaylandRefreshRate::Auto,
             settings_revision: 0,
             unknown_grace_ms: default_unknown_grace_ms(),
             backend_revisions: BackendRevisions::default(),
@@ -140,6 +143,11 @@ impl OverlayConfig {
         }
         if self.unknown_grace_ms > 10_000 {
             return Err("overlay unknown_grace_ms must be at most 10000".into());
+        }
+        if let WaylandRefreshRate::Capped(hz) = self.wayland_refresh_hz
+            && !(1..=WaylandRefreshRate::MAX_HZ).contains(&hz)
+        {
+            return Err("overlay wayland_refresh_hz must be auto or from 1 through 1000".into());
         }
         let listen = self
             .obs_listen
@@ -261,7 +269,7 @@ pub fn load_or_create(path: &Path) -> Result<(OverlayConfig, Vec<ConfigIssue>), 
         .get("schema_version")
         .and_then(toml::Value::as_integer)
         .ok_or("overlay schema_version is required")?;
-    let migrated = matches!(schema, 2..=4);
+    let mut migrated = matches!(schema, 2..=4);
     if schema == 2 {
         migrate_v2_document(&mut document)?;
         migrate_v3_document(&mut document)?;
@@ -272,6 +280,16 @@ pub fn load_or_create(path: &Path) -> Result<(OverlayConfig, Vec<ConfigIssue>), 
     }
     if migrated {
         migrate_v4_document(&mut document)?;
+    }
+    if document.get("wayland_refresh_hz").is_none() {
+        document
+            .as_table_mut()
+            .ok_or("overlay document must be a table")?
+            .insert(
+                "wayland_refresh_hz".into(),
+                toml::Value::String("auto".into()),
+            );
+        migrated = true;
     }
     let mut config: OverlayConfig = document
         .clone()
@@ -638,6 +656,48 @@ mod tests {
         let decoded: OverlayConfig = toml::from_str(&text).unwrap();
         assert_eq!(decoded, config);
         assert!(config.validated().unwrap().1.is_empty());
+        assert!(text.contains("wayland_refresh_hz = \"auto\""));
+    }
+
+    #[test]
+    fn wayland_refresh_rate_round_trips_as_auto_or_integer() {
+        let mut config = OverlayConfig::initial();
+        config.wayland_refresh_hz = WaylandRefreshRate::capped(30).unwrap();
+        let text = toml::to_string(&config).unwrap();
+        assert!(text.contains("wayland_refresh_hz = 30"));
+        assert_eq!(toml::from_str::<OverlayConfig>(&text).unwrap(), config);
+
+        for invalid in ["0", "1001", "\"AUTO\"", "\"30\""] {
+            let text = toml::to_string(&OverlayConfig::initial()).unwrap().replace(
+                "wayland_refresh_hz = \"auto\"",
+                &format!("wayland_refresh_hz = {invalid}"),
+            );
+            assert!(toml::from_str::<OverlayConfig>(&text).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn existing_v5_without_refresh_rate_is_rewritten_with_auto() {
+        let root = temporary("migrate-v5-refresh");
+        let path = root.join("overlay.toml");
+        std::fs::create_dir_all(&root).unwrap();
+        let text = toml::to_string_pretty(&OverlayConfig::initial())
+            .unwrap()
+            .lines()
+            .filter(|line| !line.starts_with("wayland_refresh_hz ="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, text).unwrap();
+
+        let (loaded, issues) = load_or_create(&path).unwrap();
+        assert!(issues.is_empty());
+        assert_eq!(loaded.wayland_refresh_hz, WaylandRefreshRate::Auto);
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("wayland_refresh_hz = \"auto\"")
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

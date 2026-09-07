@@ -453,6 +453,7 @@ mod server {
                                         canvases:Vec::new(),
                                         backend_revision:None,
                                         dirty:false,
+                                        wayland_refresh_hz:None,
                                     }
                                 });
                                 let Ok(reply) = serde_json::to_string(&reply) else { break; };
@@ -532,6 +533,7 @@ mod server {
                                     .unwrap_or_else(|error| crate::control::Response {
                                         ok:false, readonly:true, error:Some(error),
                                         canvases:Vec::new(), backend_revision:None, dirty:false,
+                                        wayland_refresh_hz:None,
                                     });
                                 let reply = serde_json::json!({"type":"control", "request_id":request_id, "response":response}).to_string();
                                 if socket.send(Message::Text(reply.into())).await.is_err() { break; }

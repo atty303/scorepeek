@@ -111,6 +111,10 @@ pub enum EditorAction {
     HistoryCount(u32),
     GraphMonths(u32),
     DeleteWidget,
+    RefreshRateAuto,
+    EditRefreshRate,
+    AcceptRefreshRate,
+    CancelRefreshRate,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -140,6 +144,13 @@ pub enum EditorTitleState {
 }
 
 #[derive(Clone, PartialEq)]
+pub struct RefreshRateEditor {
+    pub rate: crate::WaylandRefreshRate,
+    pub editing: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, PartialEq)]
 pub struct EditorView {
     pub backend_label: String,
     pub canvases: Vec<CanvasPresentation>,
@@ -151,12 +162,14 @@ pub struct EditorView {
     pub chrome: EditorChrome,
     pub access: EditorAccess,
     pub title: EditorTitleState,
+    pub refresh_rate: Option<RefreshRateEditor>,
 }
 
 #[component]
 pub fn EditorPanel(
     view: EditorView,
     title_input: Element,
+    refresh_rate_input: Element,
     onaction: EventHandler<EditorAction>,
 ) -> Element {
     let canvas = view
@@ -172,6 +185,10 @@ pub fn EditorPanel(
             },
         )
     });
+    let refresh_rate_valid = view
+        .refresh_rate
+        .as_ref()
+        .is_none_or(|refresh| refresh.error.is_none());
     rsx! {
             EditorButton { onclick:move |_| onaction.call(EditorAction::TogglePanel), layout:ButtonLayout::Icon, class:if view.access.dirty{"native-panel-toggle dirty"}else{"native-panel-toggle"}, "aria-label":if view.chrome.panel_open{"Hide editor panel"}else{"Show editor panel"}, "data-state":if view.chrome.panel_open{"open"}else{"closed"}, if view.chrome.panel_open{"‹"}else{"›"} span { class:"dirty-dot" } }
             if view.chrome.panel_open { div { class:"native-canvas-manager", style:format!("width:{}px",view.panel_width),
@@ -192,6 +209,19 @@ pub fn EditorPanel(
                 }
                 }
                 div { class:"editor-tab-body",
+                if let Some(refresh)=&view.refresh_rate { section { class:"rendering-pane", h2 { "RENDERING" } h3 { "REFRESH RATE" }
+                    div { class:"refresh-rate-controls",
+                        EditorButton { class:"refresh-rate-auto", disabled:view.access.readonly, onclick:move |_| onaction.call(EditorAction::RefreshRateAuto), selected:refresh.rate==crate::WaylandRefreshRate::Auto, "AUTO" }
+                        if refresh.editing {
+                            {refresh_rate_input}
+                            EditorButton { class:"refresh-rate-accept", disabled:view.access.readonly || refresh.error.is_some(), onclick:move |_| onaction.call(EditorAction::AcceptRefreshRate), "APPLY" }
+                            EditorButton { class:"refresh-rate-cancel", disabled:view.access.readonly, onclick:move |_| onaction.call(EditorAction::CancelRefreshRate), "CANCEL" }
+                        } else {
+                            EditorButton { class:"refresh-rate-input", disabled:view.access.readonly, onclick:move |_| onaction.call(EditorAction::EditRefreshRate), if let Some(hz)=refresh.rate.hz(){"{hz} HZ"}else{"SET HZ"} }
+                        }
+                    }
+                    if let Some(error)=&refresh.error { p { class:"refresh-rate-error", role:"alert", "{error}" } }
+                } }
                 if let Some(canvas) = canvas { section { class:"appearance-pane", h2 { "APPEARANCE" } h3 { "SKIN" }
                     div { class:"native-skin-options button-grid three", for (index,(label,skin)) in [("CYAN",Skin::CyanSystem),("AURORA",Skin::ResultAurora),("BLACKBOX",Skin::DjBlackbox)].into_iter().enumerate() { EditorButton { class:"skin-option", disabled:view.access.readonly, onclick:move |_| onaction.call(EditorAction::Skin(skin)), selected:canvas.skin==skin, "data-index":index, if canvas.skin==skin{"✓ "} "{label}" } } }
                     h3 { "BACKGROUND" }
@@ -211,7 +241,7 @@ pub fn EditorPanel(
                     }
                 } } else { div { class:"canvas-hidden-state", strong { "HIDDEN ON THIS GAME SCREEN" } span { "Turn this canvas ON in the list to edit its widgets." } } } } else { div { class:"canvas-hidden-state", strong { "NO CANVAS ON THIS GAME SCREEN" } span { "Turn a canvas ON or add one for this game screen." } } }
                 }
-                footer { EditorButton { class:"undo-action", onclick:move |_| onaction.call(EditorAction::Undo), disabled:view.access.readonly || !view.access.undo_available, "UNDO" } div { class:"footer-actions", if view.access.dirty { EditorButton { class:"discard-action", disabled:view.access.readonly, onclick:move |_| onaction.call(EditorAction::Discard), "DISCARD CHANGES" } EditorButton { class:"save-action", disabled:view.access.readonly, onclick:move |_| onaction.call(EditorAction::Save), tone:ButtonTone::Primary, "SAVE ALL CHANGES AND CLOSE" } } else { EditorButton { class:"close-action", onclick:move |_| onaction.call(EditorAction::Close), "CLOSE EDITOR" } } } }
+                footer { EditorButton { class:"undo-action", onclick:move |_| onaction.call(EditorAction::Undo), disabled:view.access.readonly || !view.access.undo_available, "UNDO" } div { class:"footer-actions", if view.access.dirty { EditorButton { class:"discard-action", disabled:view.access.readonly, onclick:move |_| onaction.call(EditorAction::Discard), "DISCARD CHANGES" } EditorButton { class:"save-action", disabled:view.access.readonly || !refresh_rate_valid, onclick:move |_| onaction.call(EditorAction::Save), tone:ButtonTone::Primary, "SAVE ALL CHANGES AND CLOSE" } } else { EditorButton { class:"close-action", onclick:move |_| onaction.call(EditorAction::Close), "CLOSE EDITOR" } } } }
             } }
 
     }

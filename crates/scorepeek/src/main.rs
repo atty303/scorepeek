@@ -760,6 +760,7 @@ fn run_routine_live_session(
                             .map_err(|error| format!("overlay obs_listen: {error}"))?,
                         unknown_grace_ms: overlay_config.unknown_grace_ms,
                         settings_revision: overlay_config.settings_revision,
+                        wayland_refresh_hz: overlay_config.wayland_refresh_hz,
                         edit_on_start: backend == scorepeek_overlay::runtime::Backend::Wayland
                             && overlays.wayland_edit,
                     },

@@ -71,7 +71,7 @@ pub fn app() -> Element {
                     }
                 }
             }
-            if state.editing {EditorPanel {view:state.view(),title_input,onaction:action}}
+            if state.editing {EditorPanel {view:state.view(),title_input,refresh_rate_input:rsx!{},onaction:action}}
             if let Some(kind)=state.placing {if state.editing {
                 PlacementPreview {kind,point:state.point.map(f64::from)}
             }}

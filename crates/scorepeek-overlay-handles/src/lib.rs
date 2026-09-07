@@ -379,6 +379,17 @@ impl Shell {
             self.state.frame_pending = true;
         }
     }
+
+    /// Requests a frame callback and publishes that request without attaching a new buffer.
+    ///
+    /// Use this when rendering is intentionally deferred; a renderer commit is otherwise what
+    /// normally publishes the callback request.
+    pub fn request_frame_and_commit(&mut self) {
+        if !self.state.frame_pending {
+            self.request_frame();
+            self.owner.layer.wl_surface().commit();
+        }
+    }
     pub fn set_geometry(&mut self, x: i32, y: i32, width: u32, height: u32) {
         let width = width.max(32);
         let height = height.max(32);

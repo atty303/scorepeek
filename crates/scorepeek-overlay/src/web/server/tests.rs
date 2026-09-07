@@ -113,6 +113,7 @@ impl Fixture {
             listen: address,
             unknown_grace_ms: document.unknown_grace_ms,
             settings_revision: document.settings_revision,
+            wayland_refresh_hz: document.wayland_refresh_hz,
             edit_on_start: false,
         };
         let shared = Arc::new(Shared {

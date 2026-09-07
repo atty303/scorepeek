@@ -47,11 +47,16 @@
 .widget-delete-actions{flex-basis:100%;width:100%;margin-top:10px;padding-top:10px;border-top:1px solid #303b48}
 .widget-delete-actions .editor-button{width:100%}
 .native-widget-settings h3,.native-widget-settings .button-grid,.native-widget-settings .empty-title-edit,.native-widget-settings .empty-title-input{flex-basis:100%;width:100%}
+.refresh-rate-controls{display:grid;grid-template-columns:auto 1fr auto auto;gap:4px}
+.refresh-rate-edit{min-width:0;padding:7px 8px;border:1px solid #78a9cf;background:#101a29;color:#f0f5ff;font:12px/18px ui-monospace,monospace}
+.refresh-rate-error{margin:5px 0 0;color:#ff8b91;font-size:10px}
 
 .editor-surface{position:absolute;inset:0;width:100%;height:100%;overflow:hidden}
 .editor-canvas{position:absolute;overflow:hidden;isolation:isolate;user-select:none}
 .editor-canvas-content{position:absolute;inset:0;pointer-events:none;z-index:0}
 .editor-widget-hit{position:absolute;z-index:1;box-sizing:border-box;border:1px solid transparent;cursor:move;touch-action:none}
+.empty-geometry{position:absolute;z-index:2;display:flex;align-items:center;justify-content:center;pointer-events:none}
+.empty-geometry span{max-width:calc(100% - 12px);padding:3px 6px;border:1px solid #9cecff80;border-radius:3px;background:#081019d9;color:#e9fbff;font:600 11px/1.2 ui-monospace,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 1px 6px #0008}
 .editor-widget-hit:hover{border-color:#57e7ffad}
 .editor-widget-hit.selected{z-index:21;border:2px solid #fff;box-shadow:0 0 0 1px #00e5ff}
 .editor-widget-hit:hover .resize-handle,.editor-widget-hit.selected .resize-handle{display:block}

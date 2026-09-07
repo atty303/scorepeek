@@ -56,6 +56,9 @@ mise run overlay:visual:native -- crates/scorepeek-overlay/tests/fixtures/visual
 Inspect PNG alpha in game/camera/comment interiors, the chamfered opaque corners, background in
 narrow gaps, labels, fixed content rectangles across frame changes, and the manifest/layout pairs.
 Repeat with each `skin` override. OBS uses the same aperture asset route and background composition.
+While editing, each visible EMPTY aperture also shows compact viewport-relative
+`x,y · width×height` geometry. Confirm that it follows move and resize. In OBS these logical values
+are relative to `/overlay`; Browser Source scene transforms remain OBS-owned and are not displayed.
 In the OBS editor, add EMPTY, enter or clear TITLE, change INTERIOR OPACITY, select FRAME WIDTH and
 ASPECT RATIO, then save/reopen and discard another change. Place an OBS source under the browser
 source to confirm that the aperture and fill expose/dim it.

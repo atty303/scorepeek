@@ -58,6 +58,15 @@ checkpoint; implementation history belongs in Git.
   Blitz/Dioxus event dispatch; the visual harness exercises those callbacks. OBS owns reactive state
   and uses the existing backend lease API; its imperative JavaScript editor has been removed. Fixed mise XKB build inputs replace host development metadata;
   `libxkbcommon.so.0` is a native runtime prerequisite.
+- ADR 0140 adds one backend-wide Wayland rasterization cap: `"auto"` retains compositor cadence and
+  1–1000 Hz values coalesce steady state and motion changes into the next permitted paint. Public
+  events and reactive state remain event-driven; motion samples elapsed monotonic time. Initial
+  configure, reconfigure, visibility clear and the editor bypass the cap. The setting joins the
+  Wayland draft, undo and atomic save while OBS remains owned by Browser Source custom frame rate.
+  Schema v5 is retained and always writes the new field, including atomic `"auto"` insertion into an
+  older v5 document. During either editor preview, visible empty apertures show compact logical
+  `x,y · width×height` relative to the output or `/overlay` viewport; normal display omits it and OBS
+  scene transforms remain outside scorepeek authority.
 - ADR 0139 makes the status widget RESULT lamp follow the explicit result state: inactive is unlit,
   provisional/confirmed is green, and retracted is red. PLAY and capture-session start publish
   inactive; session finish retains the last result state.
@@ -199,6 +208,13 @@ checkpoint; implementation history belongs in Git.
   The checked-in native scenario also switches a RESULT canvas through three hidden screens and
   back to RESULT on that same renderer, so image-resource loss across normal canvas visibility is
   represented instead of being hidden by a fresh renderer per capture.
+  The Wayland rate contract has deterministic AUTO/cap/bypass and strict schema-v5 migration tests.
+  The representative 22-frame native scenario and the 20-frame composition scenario complete with
+  selector layouts; the latter shows all four empty-aperture geometry overlays at their logical
+  rectangles. A 1920x1080 Codex Browser run against production `/overlay` confirms expanded iframe
+  DOM, two simultaneous empty geometry labels, live drag from `1340,700` to `1340,600`, resize from
+  `560x360` to `476x296`, label removal on discard/close, and no browser warnings or errors. Actual
+  OBS composition and Wayland target performance remain unverified.
 
 - Schema-v2 defaults/rejection, screen filters, semantic-screen snapshot/live folding,
   suspension/disconnect grace and immediate known-screen replacement have focused development-host

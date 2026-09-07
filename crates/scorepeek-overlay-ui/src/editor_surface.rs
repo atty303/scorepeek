@@ -1,4 +1,4 @@
-use crate::{CanvasPresentation, editor::ResizeHandles};
+use crate::{CanvasPresentation, WidgetKind, editor::ResizeHandles};
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
@@ -96,11 +96,19 @@ pub fn EditorCanvas(
         div {class:"editor-canvas-content", {children}}
         if editing {
             for widget in &canvas.widgets {
-                div {key:"{widget.id}",class:if selected&&selected_widget.as_deref()==Some(widget.id.as_str()){"editor-widget-hit selected"}else{"editor-widget-hit"},
-                    "data-widget":"{widget.id}",
-                    style:format!("left:{}px;top:{}px;width:{}px;height:{}px",widget.x,widget.y,widget.width,widget.height),
-                    onpointerdown:{let canvas=canvas.id.clone();let widget=widget.id.clone();move |event|start.call((event,canvas.clone(),Some(widget.clone()),None))},
-                    ResizeHandles {onstart:{let canvas=canvas.id.clone();let widget=widget.id.clone();move |(event,corner)|start.call((event,canvas.clone(),Some(widget.clone()),Some(corner)))}}
+                Fragment { key:"{widget.id}",
+                    if widget.kind == WidgetKind::Empty {
+                        div { class:"empty-geometry", aria_hidden:"true",
+                            style:format!("left:{}px;top:{}px;width:{}px;height:{}px",widget.x,widget.y,widget.width,widget.height),
+                            span { {format!("{},{} · {}×{}",canvas.x.saturating_add(widget.x),canvas.y.saturating_add(widget.y),widget.width,widget.height)} }
+                        }
+                    }
+                    div {class:if selected&&selected_widget.as_deref()==Some(widget.id.as_str()){"editor-widget-hit selected"}else{"editor-widget-hit"},
+                        "data-widget":"{widget.id}",
+                        style:format!("left:{}px;top:{}px;width:{}px;height:{}px",widget.x,widget.y,widget.width,widget.height),
+                        onpointerdown:{let canvas=canvas.id.clone();let widget=widget.id.clone();move |event|start.call((event,canvas.clone(),Some(widget.clone()),None))},
+                        ResizeHandles {onstart:{let canvas=canvas.id.clone();let widget=widget.id.clone();move |(event,corner)|start.call((event,canvas.clone(),Some(widget.clone()),Some(corner)))}}
+                    }
                 }
             }
             if selected { ResizeHandles {class:"canvas-resize",onstart:{let canvas=canvas.id.clone();move |(event,corner)|start.call((event,canvas.clone(),None,Some(corner)))}} }

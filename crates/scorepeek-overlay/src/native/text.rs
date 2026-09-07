@@ -127,6 +127,33 @@ fn single_line(text: &str) -> String {
 }
 
 impl super::App {
+    pub(super) fn input_command(&mut self, command: &TextCommand) {
+        if self.refresh_edit.borrow().is_some() {
+            match command {
+                TextCommand::Cancel => {
+                    self.finish_refresh_edit(false);
+                }
+                TextCommand::Accept => {
+                    self.finish_refresh_edit(true);
+                }
+                _ => {
+                    let changed = if let Some(edit) = self.refresh_edit.borrow_mut().as_mut() {
+                        let before = edit.clone();
+                        edit.command(command);
+                        *edit != before
+                    } else {
+                        false
+                    };
+                    if changed {
+                        self.update_refresh_input(false);
+                    }
+                }
+            }
+        } else {
+            self.title_command(command);
+        }
+    }
+
     pub(super) fn title_command(&mut self, command: &TextCommand) {
         match command {
             TextCommand::Cancel => {
@@ -172,7 +199,7 @@ impl super::App {
         };
         self.shell.set_text_input(None);
         if accept {
-            let before = self.draft_snapshot();
+            let before = self.undo_snapshot();
             let mut model = self.editor_model();
             model.title = Some(scorepeek_overlay_ui::editor_model::TitleDraft {
                 canvas: self.canvas.id.clone(),
@@ -199,6 +226,61 @@ impl super::App {
                 .ok()
                 .flatten()
                 .or_else(|| doc.query_selector(".empty-title-input").ok().flatten())
+                .and_then(|node| doc.get_client_bounding_rect(node))
+                .map_or([0, 0, 1, 1], |rect| {
+                    [
+                        super::snap_i32(rect.x),
+                        super::snap_i32(rect.y),
+                        super::snap_i32(rect.width).max(1),
+                        super::snap_i32(rect.height).max(1),
+                    ]
+                })
+        };
+        self.shell
+            .set_text_input(Some(scorepeek_overlay_handles::TextInputState {
+                from_ime,
+                text: edit.text,
+                cursor: i32::try_from(edit.cursor).unwrap_or(i32::MAX),
+                anchor: i32::try_from(edit.anchor).unwrap_or(i32::MAX),
+                rectangle,
+            }));
+    }
+
+    pub(super) fn finish_refresh_edit(&mut self, accept: bool) -> bool {
+        let refresh = if accept {
+            let edit = self.refresh_edit.borrow();
+            let Some(edit) = edit.as_ref() else {
+                return true;
+            };
+            match super::parse_refresh_rate(&edit.text) {
+                Ok(refresh) => Some(refresh),
+                Err(_) => return false,
+            }
+        } else {
+            None
+        };
+        if self.refresh_edit.take().is_none() {
+            return true;
+        }
+        self.shell.set_text_input(None);
+        if let Some(refresh) = refresh {
+            let before = self.undo_snapshot();
+            self.set_refresh_rate_draft(refresh);
+            self.finish_draft_change(before);
+        }
+        true
+    }
+
+    pub(super) fn update_refresh_input(&mut self, from_ime: bool) {
+        let Some(edit) = self.refresh_edit.borrow().clone() else {
+            return;
+        };
+        let rectangle = {
+            let doc = self.document.inner.borrow();
+            doc.query_selector(".refresh-rate-edit")
+                .ok()
+                .flatten()
+                .or_else(|| doc.query_selector(".refresh-rate-input").ok().flatten())
                 .and_then(|node| doc.get_client_bounding_rect(node))
                 .map_or([0, 0, 1, 1], |rect| {
                     [
