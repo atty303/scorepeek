@@ -534,6 +534,25 @@ fn title_input_content(edit: &TitleEdit) -> Element {
     }
 }
 
+fn aspect_ratio_index(ratio: scorepeek_overlay_ui::AspectRatio) -> usize {
+    use scorepeek_overlay_ui::AspectRatio;
+    match ratio {
+        AspectRatio::Free => 0,
+        AspectRatio::Wide => 1,
+        AspectRatio::Standard => 2,
+        AspectRatio::Current(_) => 3,
+    }
+}
+fn set_aspect_ratio(widget: &mut WidgetLayout, index: usize) {
+    use scorepeek_overlay_ui::AspectRatio;
+    widget.settings.aspect_ratio = [
+        AspectRatio::Free,
+        AspectRatio::Wide,
+        AspectRatio::Standard,
+        AspectRatio::Current([widget.width, widget.height]),
+    ][index];
+}
+
 fn native_widget_settings(widget: &WidgetLayout, title_edit: Option<&TitleEdit>) -> Element {
     rsx! {
                         div { class:"native-widget-settings",
@@ -552,7 +571,9 @@ fn native_widget_settings(widget: &WidgetLayout, title_edit: Option<&TitleEdit>)
                                 button { class:"fill-decrease", "−1" } button { class:"fill-increase", "+1" }
                                 for value in [0,25,50,75,100] { button { class:if widget.settings.fill_opacity_percent==value {"fill-opacity selected"}else{"fill-opacity"}, "data-value":value, "{value}%" } }
                                 h3 { "ASPECT RATIO" }
-                                for (index,label) in ["FREE","16:9","4:3","CURRENT"].into_iter().enumerate() { button { class:"aspect-ratio", "data-index":index, "{label}" } }
+                                div { class:"aspect-ratio-options button-grid four", role:"group", "aria-label":"Aspect ratio",
+                                    for (index,label) in ["FREE","16:9","4:3","CURRENT"].into_iter().enumerate() { button { class:if aspect_ratio_index(widget.settings.aspect_ratio)==index {"aspect-ratio selected"}else{"aspect-ratio"}, "aria-pressed":aspect_ratio_index(widget.settings.aspect_ratio)==index, "data-index":index, "{label}" } }
+                                }
                             }
                             if widget.kind == scorepeek_overlay_ui::WidgetKind::HistoryList {
                                 for value in [5,10,20,50] { button { class:if widget.settings.history_count==value{"history-count selected"}else{"history-count"}, "aria-pressed":widget.settings.history_count==value, "data-value":value, if widget.settings.history_count==value{"✓ "} "{value}" } }
@@ -560,7 +581,7 @@ fn native_widget_settings(widget: &WidgetLayout, title_edit: Option<&TitleEdit>)
                             if widget.kind == scorepeek_overlay_ui::WidgetKind::HistoryGraph {
                                 for value in [1,3,6,12] { button { class:if widget.settings.graph_months==value{"graph-months selected"}else{"graph-months"}, "aria-pressed":widget.settings.graph_months==value, "data-value":value, if widget.settings.graph_months==value{"✓ "} "{value}M" } }
                             }
-                            button { class:"delete-widget danger", "DELETE WIDGET" }
+                            div { class:"widget-delete-actions", button { class:"delete-widget danger", "DELETE WIDGET" } }
                         }
     }
 }
@@ -2295,15 +2316,7 @@ impl App {
                                         ][index];
                                     }
                                     "aspect-ratio" => {
-                                        widget.settings.aspect_ratio = [
-                                            scorepeek_overlay_ui::AspectRatio::Free,
-                                            scorepeek_overlay_ui::AspectRatio::Wide,
-                                            scorepeek_overlay_ui::AspectRatio::Standard,
-                                            scorepeek_overlay_ui::AspectRatio::Current([
-                                                widget.width,
-                                                widget.height,
-                                            ]),
-                                        ][index];
+                                        set_aspect_ratio(widget, index);
                                     }
                                     _ => {
                                         widget.settings.fill_opacity_percent =
@@ -3434,9 +3447,14 @@ impl VisualDebugSession {
                     self.load_canvas(canvas);
                 }
             }
-            _ if ["background-option", "frame-width", "skin-option"]
-                .iter()
-                .any(|class| selector.contains(class)) =>
+            _ if [
+                "background-option",
+                "frame-width",
+                "skin-option",
+                "aspect-ratio",
+            ]
+            .iter()
+            .any(|class| selector.contains(class)) =>
             {
                 self.appearance_click(selector)?;
             }
@@ -3541,6 +3559,21 @@ impl VisualDebugSession {
                     .find(|w| Some(w.id.as_str()) == self.selected.borrow().as_deref())
                 {
                     widget.settings.frame_width = value;
+                }
+                self.sync_selected_canvas();
+            }
+            _ if selector.contains("aspect-ratio") => {
+                let index = selector_index(selector)?;
+                if index > 3 {
+                    return Err("invalid aspect ratio".into());
+                }
+                if let Some(widget) = self
+                    .widgets
+                    .borrow_mut()
+                    .iter_mut()
+                    .find(|w| Some(w.id.as_str()) == self.selected.borrow().as_deref())
+                {
+                    set_aspect_ratio(widget, index);
                 }
                 self.sync_selected_canvas();
             }
@@ -5053,6 +5086,43 @@ mod skin_tests {
             canvas.background = settings.background;
             canvas.width = settings.width;
             assert_eq!(canvas.presentation().background, presentation.background);
+        }
+    }
+    #[test]
+    fn aspect_options_are_separate_from_delete_and_show_every_selection() {
+        for size in [[1280, 720], [1920, 1080]] {
+            let mut scenario: VisualDebugScenario =
+                serde_json::from_str(include_str!("../tests/fixtures/visual-composition.json"))
+                    .unwrap();
+            scenario.logical_size = size;
+            scenario.editing = true;
+            let mut session = VisualDebugSession::new(&scenario, size).unwrap();
+            session.click(".widget-row[data-widget-id='cam']").unwrap();
+            session.scroll(".editor-tab-body", 0.0, -2000.0).unwrap();
+            for index in [1, 2, 3, 0] {
+                let selector = format!(".aspect-ratio[data-index='{index}']");
+                session.click(&selector).unwrap();
+                let widgets = session.widgets.borrow();
+                let widget = widgets.iter().find(|widget| widget.id == "cam").unwrap();
+                assert_eq!(aspect_ratio_index(widget.settings.aspect_ratio), index);
+                if index == 3 {
+                    assert_eq!(
+                        widget.settings.aspect_ratio,
+                        scorepeek_overlay_ui::AspectRatio::Current([widget.width, widget.height])
+                    );
+                }
+                let doc = session.document.inner.borrow();
+                let button = doc
+                    .query_selector(&format!("{selector}.selected[aria-pressed='true']"))
+                    .unwrap()
+                    .unwrap();
+                let button = doc.get_client_bounding_rect(button).unwrap();
+                let delete = doc.query_selector(".delete-widget").unwrap().unwrap();
+                let delete = doc.get_client_bounding_rect(delete).unwrap();
+                assert!(button.width >= 40.0 && button.height >= 32.0);
+                assert!(button.y + button.height < delete.y);
+                assert!(button.y >= 0.0 && delete.y + delete.height <= f64::from(size[1]));
+            }
         }
     }
 }

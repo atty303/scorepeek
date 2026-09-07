@@ -109,7 +109,10 @@
     ".material-frame",
     ".canvas-background-light",
     ".empty-title-edit",
-    ".title-accept"
+    ".title-accept",
+    ".aspect-ratio",
+    ".aspect-ratio.selected",
+    ".delete-widget"
   ],
   "actions": [
     {
@@ -162,6 +165,28 @@
     {
       "action": "click",
       "selector": ".title-accept"
+    },
+    {
+      "action": "scroll",
+      "selector": ".editor-tab-body",
+      "dx": 0,
+      "dy": -2000
+    },
+    {
+      "action": "click",
+      "selector": ".aspect-ratio[data-index='1']"
+    },
+    {
+      "action": "click",
+      "selector": ".aspect-ratio[data-index='2']"
+    },
+    {
+      "action": "click",
+      "selector": ".aspect-ratio[data-index='3']"
+    },
+    {
+      "action": "click",
+      "selector": ".aspect-ratio[data-index='0']"
     },
     {
       "action": "set_editing",

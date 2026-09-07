@@ -51,7 +51,8 @@ checkpoint; implementation history belongs in Git.
   with chamfered transparent apertures, optional titles, interior opacity and aspect locks, and
   S/M/L outward frames for all widgets. Native title editing uses XKB keyboard/repeat and
   text-input-v3 IME; title confirmation becomes one undoable backend-draft change. Normal overlays
-  do not request keyboard focus. Fixed mise XKB build inputs replace host development metadata;
+  do not request keyboard focus. Native aspect controls have an explicit selected state and a
+  dedicated four-column row above the separate delete action. Fixed mise XKB build inputs replace host development metadata;
   `libxkbcommon.so.0` is a native runtime prerequisite.
 - ADR 0130 makes the status widget RESULT lamp a provisional-readiness signal. A new RESULT is
   unlit, resolved is green, withdrawn or exit without resolution is red, and the outcome remains
@@ -244,7 +245,7 @@ checkpoint; implementation history belongs in Git.
   restrained lines/corner accents, with staggered moving highlights carrying the ambient motion.
   These checks do not establish live Wayland or OBS composition.
 - Repository checks and the complete workspace suite pass: 508 library,
-  325 binary, 128 corpus library, 5 corpus binary, 57 overlay, 7 handle, 4 overlay-UI, 0 overlay-web
+  325 binary, 128 corpus library, 5 corpus binary, 58 overlay, 7 handle, 4 overlay-UI, 0 overlay-web
   and 13 score tests, plus doctests. The embedded-web overlay integration test also passes. The 99 offline OCR tests and
   repository checks also pass. Public API and overlay state tests include score-store invalidation,
   RESULT readiness across withdrawal/re-resolution, fresh and same-session reconnect restoration,
