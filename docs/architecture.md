@@ -218,12 +218,14 @@ select screen preserves linkage without accepted identity, allowing sufficient R
 finish an observed select/play/result path. Returning through MUSIC SELECT starts a fresh context;
 only direct RESULT-to-PLAY inherits its parent selection once without re-adding frame support.
 
-RESULT identity, clear type, and fixed-cell numeric performance remain provisional while the screen
-is displayed. After semantic RESULT close and admitted-field drain, finalization validates path,
-joint identity, clear type, score invariants, and required numeric tuple exactly once. It records a
-confirmed `play_attempt_changed` before the attempt's sole v2 domain event. Unresolved or conflicting
-final state completes the attempt with a typed reason and emits no domain result. OCR produces raw
-and typed observations; it never owns catalog acceptance or stability.
+RESULT identity, clear type, and fixed-cell numeric performance publish a provisional
+`result_changed` while the screen is displayed. Contradictory evidence publishes retracted with the
+same payload, and re-resolution publishes another provisional. After semantic RESULT close and
+admitted-field drain, finalization validates path, joint identity, clear type, score invariants, and
+required numeric tuple exactly once. It records a confirmed `play_attempt_changed` before the
+attempt's confirmed `result_changed`. An unresolved or conflicting final state completes the attempt
+with a typed reason and does not confirm. OCR produces raw and typed observations; it never owns
+catalog acceptance or stability.
 
 The active-suite video-replay path can produce an
 immutable operator-review draft. It reproduces 10 Hz packet-order sampling and measures the right
@@ -489,13 +491,13 @@ final identity check is outside the operator-trusted private-artifact boundary.
 
 ### Event API
 
-The ordinary runtime owns `$XDG_RUNTIME_DIR/scorepeek/v1.sock`. A typed projection converts
+The ordinary runtime owns `$XDG_RUNTIME_DIR/scorepeek/events.sock`. A typed projection converts
 ordered internal publications into a public snapshot and live domain/status events. Public state
 and sequence boundaries share one lock, while nonblocking bounded delivery isolates slow clients.
 Raw observations, resolver metrics and recording paths stay in internal events and opt-in diagnostic
 artifacts. The old observation socket is removed. TTY stdout renders internal state as a TUI;
-non-TTY stdout reports human-readable status. [Event API v1](event-api.md) is the wire and delivery
-contract; [ADR 0119](decisions/0119-promote-public-event-socket.md) records the transport decision.
+non-TTY stdout reports human-readable status. [Event API v2](event-api.md) is the wire and delivery
+contract; [ADR 0139](decisions/0139-unify-result-state-and-provisional-persistence.md) records the current transport and result lifecycle.
 
 `music_selection_changed` is a UI-only state projection with an episode-local revision. It emits
 the first selected chart, later song/chart replacements, a retreat to unresolved, and episode end.
@@ -503,11 +505,10 @@ It shares immutable SELECT evidence with the joint resolver but neither resolver
 other's state. The TUI and snapshot expose the current selection; it is not persistence or domain
 acceptance authority.
 
-`result_provisional_changed` carries the same `scorepeek-result-detected-v2` payload as the
-confirmed `result_detected` event. Its episode-local revision orders resolved, replacement, and
-withdrawn states. The outer event kind, never the nested payload contract, distinguishes UI-only
-provisional state from confirmed score/history authority. Both are retained in diagnostic
-run-event artifacts; only `result_detected` is a confirmed result.
+`result_changed` carries one `inactive|provisional|retracted|confirmed` lifecycle. Every non-inactive
+state carries the same `scorepeek-result-detected-v2` payload and uses capture session plus the
+existing attempt ID as identity. Provisional state enters SQLite immediately; retraction deletes it;
+RESULT finalization confirms the same row. Only confirmed increments the TUI count/history.
 
 Screen-local and attempt resolvers accumulate title and artist song factors independently from
 difficulty, notes, and advisory-level chart factors. Chart factors are retained across observations
@@ -532,9 +533,9 @@ song evidence; before any credible song they replace a single pending state. Sna
 composition select the newer source sequence instead of adding difficulty history.
 
 The TUI has one vertical layout: four rows for Watcher, eight for Latest result, seven for
-Music Select Resolver, and the remaining rows for RESULT/attempt Resolver. Latest result prefers
-an active `PROVISIONAL` v2 payload and restores the newest `CONFIRMED` result after withdrawal;
-only confirmed events enter count/history. Music Select Resolver shows activity/suspension,
+Music Select Resolver, and the remaining rows for RESULT/attempt Resolver. Latest result displays
+the explicit `INACTIVE`, `PROVISIONAL`, `RETRACTED`, or `CONFIRMED` state and never replaces inactive
+or retracted with an older confirmation; only confirmed events enter count/history. Music Select Resolver shows activity/suspension,
 selection interval, resolved chart or identity wait reason, per-field consecutive evidence, and
 snapshot output revision/gate. It never recognizes or combines values. Unknown, explicit no record,
 not displayed, and pending `1/2` are distinct. A chart change clears best values; UNKNOWN suspends
@@ -563,7 +564,7 @@ Raw best OCR, numeric classes/margins and inference errors remain diagnostics co
 [ADR 0114](decisions/0114-observe-music-select-best-snapshots.md) for the measured layout and gates.
 
 The public interface is a same-user Unix socket at
-`$XDG_RUNTIME_DIR/scorepeek/v1.sock`. It streams versioned NDJSON domain and operational-state events, never pixels, OCR candidate text, source snapshots, or stored
+`$XDG_RUNTIME_DIR/scorepeek/events.sock`. It streams versioned NDJSON domain and operational-state events, never pixels, OCR candidate text, source snapshots, or stored
 history. Future UI code must consume this API and must not import recognizer,
 catalog-adapter, or capture internals.
 

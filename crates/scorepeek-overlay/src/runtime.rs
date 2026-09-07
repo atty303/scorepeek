@@ -291,7 +291,11 @@ fn dj_level(score: Option<i64>, notes: Option<u32>) -> String {
     .into()
 }
 fn result_detail(raw: &serde_json::Value) -> ResultDetail {
-    let r = &raw["result"];
+    let r = if raw["schema"] == "scorepeek-event-v1" && raw["event"] == "result_detected" {
+        &raw["result"]
+    } else {
+        &raw["state"]["result"]
+    };
     let judgments = &r["judgments"];
     let value = |v: &serde_json::Value| display_value(v).unwrap_or_else(|| "—".into());
     ResultDetail {
@@ -425,5 +429,28 @@ mod tests {
                 .unwrap()
                 .timestamp_millis()
         );
+    }
+
+    #[test]
+    fn result_detail_reads_current_and_migrated_event_shapes() {
+        let result = serde_json::json!({
+            "judgments":{"pgreat":1,"great":2,"good":3,"bad":4,"poor":5},
+            "timing":{"fast":{"status":"known","value":6},"slow":{"status":"known","value":7}},
+            "combo_break":{"status":"known","value":8},
+            "play_options":{"status":"known","values":["RANDOM"]}
+        });
+        let current = result_detail(&serde_json::json!({
+            "schema":"scorepeek-event-v2",
+            "event":"result_changed",
+            "state":{"result":result.clone()}
+        }));
+        let migrated = result_detail(&serde_json::json!({
+            "schema":"scorepeek-event-v1",
+            "event":"result_detected",
+            "result":result
+        }));
+        assert_eq!(current, migrated);
+        assert_eq!(migrated.pgreat, "1");
+        assert_eq!(migrated.combo_break, "8");
     }
 }

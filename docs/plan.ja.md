@@ -112,7 +112,7 @@
   registered resourceとcandidate domainをcapture開始前にloadし、Gamescope capture loopからfield submit、inference、全song scoring、
   capture/worker/diagnosticの順序付き終了までを一つのbounded gateへ統合済み。private INFINITAS frameによる実submit、実行cost、
   queue behaviorとtarget上のfield性能は未検証。ADR 0078のprovisional result eventはADR 0083によりsupersedeされ、
-  public `/v1.sock` は ADR 0119 で実装する。1P/2P detector は未実装である。RESULTのSP/DPは
+  public `events.sock` は ADR 0139 のEvent API v2で実装する。1P/2P detector は未実装である。RESULTのSP/DPは
   measured slotのexact OCRとepisode内2観測で実装済みだが、DP実画像による検証は未完了である。
   さらにcorpus録画由来の全canonical frameをsource adapterから同じapplication sessionへ供給するrecording simulationを実装した。
   profileはrecording/recording manifest/source manifest/probe/coverage label/extraction/normalizer/layout/catalog/model/runtime、全frame span、source pacing、diagnostic
@@ -237,7 +237,7 @@ DJ level、option、graph等は各fieldの独立fixture gateを満たしたも�
 
 ### Event API
 
-ADR 0119 により `$XDG_RUNTIME_DIR/scorepeek/v1.sock` を正式な live API とする。
+ADR 0139 により `$XDG_RUNTIME_DIR/scorepeek/events.sock` を正式な live API とする。
 接続時の公開 snapshot に続いて UTF-8 NDJSON を送る。request/ACK は設けず、再接続で現在状態を再取得する。
 公開対象は確定・暫定 RESULT、現在の選曲、SELECT best と稼働状態であり、raw OCR、候補、resolver 評価値、
 保存先や履歴配列は流さない。公開 schema/sequence は内部 run-event と独立させる。
@@ -245,7 +245,7 @@ ADR 0119 により `$XDG_RUNTIME_DIR/scorepeek/v1.sock` を正式な live API �
 snapshot と連番境界を同時に取得し、queue overflow は既存接続を切断する。遅い client の切断はその接続に限定する。
 切断中の全 RESULT 回収・永続ログ・再送は保証しない。既存の `observations-v11.sock` は廃止する。
 filesystem permission、ownership、ACL は operator が管理し、Unix mode を受理条件または confidentiality 保証にしない。
-詳細な wire contract と consumer state 更新規則は [Event API v1](event-api.md) を原典とする。
+詳細な wire contract と consumer state 更新規則は [Event API v2](event-api.md) を原典とする。
 future UI はこの公開 API を利用する。
 
 ## Catalog federation
@@ -618,11 +618,10 @@ flush timeoutは`partial | dropped` evidenceとして残すが、play、capture 
     application-level暫定観測に限り、独立predicateで`decide_transition`と`play`を識別し、stableまたは
     held selectionをobserved resultへ接続する。result-to-playはparent link付きの新attemptとして表示するが、
     recognition core、accepted event、永続履歴、mode/course進行またはretry回数のauthorityにはしない。
-    ADR 0108ではjoint identity、2回一致したnumeric tuple、active attempt IDが揃った時点で
-    `result_provisional_changed`を発行し、semantic RESULT close後の`result_detected`と同じv2 payloadを
-    共用する。revision付きresolved/update/withdrawはdiagnostic artifactと現在TUIへ流すが、confirmed
-    count/historyと将来のscore保存は外側の`result_detected`だけをauthorityとする。debug observation
-    内部記録は versioned run-event を維持し、ADR 0119 の public `/v1.sock` を future UI の接続先とする。
+    ADR 0139ではjoint identity、2回一致したnumeric tuple、active attempt IDが揃った時点で
+    同一payloadの`result_changed(provisional)`を発行し、SQLiteへ即時保存する。矛盾はpayload付き
+    `retracted`で取り消し、再解決は同じattemptを更新し、semantic RESULT closeで`confirmed`にする。
+    public API v2は安定名`events.sock`を使い、inactive/provisional/retracted/confirmedの一状態だけをsnapshotにも保持する。
 11. **M8**: catalog update replay、full private holdout、Bazzite live flowをrelease gateへ統合する。
 
 M3/M4からM7へ進む間は、ADR 0049で通常のRust CLI配布へ置き換えたcross-machine delivery checkpointを縦に通す。event authorityや
@@ -768,7 +767,7 @@ Waylandの保存outputが消失した場合、収まるnamed output、なけれ�
 
 共通UIは次の独立widgetを持つ。
 
-- status: scorepeek logoとSYSTEM/RESULT lamp。SYSTEMはactive sessionに必要なcatalog/modelおよび有効なscore/recording経路がreadyのときだけactive。RESULTは新しいRESULTで消灯し、provisional resolvedで緑、withdrawnまたはresolvedなしのRESULT退出で赤とする。緑/赤は次のRESULTまで保持し、session終了で消灯する。DB commit待ちやamber表示には使わない。
+- status: scorepeek logoとSYSTEM/RESULT lamp。SYSTEMはactive sessionに必要なcatalog/modelおよび有効なscore/recording経路がreadyのときだけactive。RESULTはcapture session開始とPLAY開始の明示的inactiveで消灯し、provisional/confirmedで緑、retractedで赤とする。session終了では最後の状態を保持し、次のPLAYまたはcapture session開始まで変更しない。DB commit待ちやamber表示には使わない。
 - selection: title/artist左側の無label縦長recorded lampと、別railのSP/DP・difficulty・level・notes。score値は表示しない。recordedはSQLiteにSELECT由来のno-recordを含むcommit済み知識があることを示す。
 - score: 曲名を繰り返さず、SQLite由来の統合BESTとRESULT DETAILを表示する。代表RESULTはEX score最大、既知MISS優先かつ最小、received時刻最新の辞書順で1件選ぶ。PGREAT/GREAT/GOOD/BAD/POOR/FAST/SLOW/COMBO BREAK/PLAY OPTIONSを保持する。
 - history list: local通知日時、EX SCORE、DJ LEVEL、MISS、CLEAR。件数は5/10/20/50、既定5。

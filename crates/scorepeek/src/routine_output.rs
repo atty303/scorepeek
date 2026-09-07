@@ -49,8 +49,8 @@ fn duration_us(duration: Duration) -> u64 {
 const MAX_CLIENTS: usize = 8;
 const EVENT_QUEUE_CAPACITY: usize = 64;
 const RESULT_HISTORY_CAPACITY: usize = 32;
-const SOCKET_NAME: &str = "v1.sock";
-pub const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v11";
+const SOCKET_NAME: &str = "events.sock";
+pub const RUN_EVENT_SCHEMA: &str = "scorepeek-run-event-v12";
 const NUMERIC_REQUIRED_OBSERVATIONS: u8 = 2;
 const PLAY_OPTIONS_REQUIRED_OBSERVATIONS: u8 = 2;
 
@@ -186,21 +186,11 @@ pub enum RunEventKind {
         processing_timing: Value,
         song_resolution_presentation: Box<SongResolutionPresentation>,
     },
-    ResultDetected {
+    ResultChanged {
         session_id: String,
         capture_generation: u64,
         source_sequence: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        song: Option<SongPresentation>,
-        result: ResultDomainEvent,
-    },
-    ResultProvisionalChanged {
-        session_id: String,
-        capture_generation: u64,
-        screen_episode_id: u64,
-        source_sequence: u64,
-        revision: u64,
-        state: ResultProvisionalState,
+        state: ResultState,
     },
     MusicSelectionChanged {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -382,7 +372,7 @@ pub struct ResultDomainEvent {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ResultProvisionalWithdrawalReason {
+pub enum ResultRetractionReason {
     EvidenceUnresolved,
     AttemptRejected,
     SessionEnded,
@@ -390,14 +380,23 @@ pub enum ResultProvisionalWithdrawalReason {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
-pub enum ResultProvisionalState {
-    Resolved {
+pub enum ResultState {
+    Inactive,
+    Provisional {
         #[serde(skip_serializing_if = "Option::is_none")]
         song: Option<SongPresentation>,
         result: Box<ResultDomainEvent>,
     },
-    Withdrawn {
-        reason: ResultProvisionalWithdrawalReason,
+    Retracted {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        song: Option<SongPresentation>,
+        result: Box<ResultDomainEvent>,
+        reason: ResultRetractionReason,
+    },
+    Confirmed {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        song: Option<SongPresentation>,
+        result: Box<ResultDomainEvent>,
     },
 }
 
@@ -1797,6 +1796,7 @@ pub struct RunViewState {
     latest_numeric_result: Option<Value>,
     latest_result_detected: Option<Value>,
     latest_provisional_result: Option<ResultHistoryEntry>,
+    latest_result_label: Option<&'static str>,
     latest_music_selection: Option<MusicSelectionState>,
     music_select: MusicSelectResolverState,
     result_history: VecDeque<ResultHistoryEntry>,
@@ -1937,6 +1937,7 @@ impl RunViewState {
             latest_numeric_result: None,
             latest_result_detected: None,
             latest_provisional_result: None,
+            latest_result_label: None,
             latest_music_selection: None,
             music_select: MusicSelectResolverState::default(),
             result_history: VecDeque::with_capacity(RESULT_HISTORY_CAPACITY),
@@ -1983,6 +1984,7 @@ impl RunViewState {
                 self.latest_play_attempt = None;
                 self.latest_numeric_result = None;
                 self.latest_provisional_result = None;
+                self.latest_result_label = None;
                 self.latest_music_selection = None;
                 self.music_select = MusicSelectResolverState::default();
                 self.stable_result_song = None;
@@ -2060,40 +2062,18 @@ impl RunViewState {
             RunEventKind::PlayAttemptChanged { .. } => {
                 self.latest_play_attempt = Some(serialized.clone());
             }
-            RunEventKind::ResultDetected {
-                session_id,
-                capture_generation,
-                source_sequence,
-                song,
-                result,
-            } => {
-                self.latest_provisional_result = None;
-                self.latest_result_detected = Some(serialized.clone());
-                self.result_count = self.result_count.saturating_add(1);
-                let song = song
-                    .as_ref()
-                    .filter(|song| song.scorepeek_song_id == result.scorepeek_song_id)
-                    .cloned();
-                if self.result_history.len() == RESULT_HISTORY_CAPACITY {
-                    self.result_history.pop_front();
-                }
-                self.result_history.push_back(ResultHistoryEntry {
-                    ordinal: self.result_count,
-                    session_id: session_id.clone(),
-                    capture_generation: *capture_generation,
-                    source_sequence: *source_sequence,
-                    song,
-                    result: result.clone(),
-                });
-            }
-            RunEventKind::ResultProvisionalChanged {
+            RunEventKind::ResultChanged {
                 session_id,
                 capture_generation,
                 source_sequence,
                 state,
-                ..
             } => match state {
-                ResultProvisionalState::Resolved { song, result } => {
+                ResultState::Inactive => {
+                    self.latest_provisional_result = None;
+                    self.latest_result_label = Some("INACTIVE");
+                }
+                ResultState::Provisional { song, result } => {
+                    self.latest_result_label = Some("PROVISIONAL");
                     self.latest_provisional_result = Some(ResultHistoryEntry {
                         ordinal: self.result_count.saturating_add(1),
                         session_id: session_id.clone(),
@@ -2106,8 +2086,33 @@ impl RunViewState {
                         result: result.as_ref().clone(),
                     });
                 }
-                ResultProvisionalState::Withdrawn { .. } => {
+                ResultState::Retracted { song, result, .. } => {
+                    self.latest_result_label = Some("RETRACTED");
+                    self.latest_provisional_result = Some(ResultHistoryEntry {
+                        ordinal: self.result_count.saturating_add(1),
+                        session_id: session_id.clone(),
+                        capture_generation: *capture_generation,
+                        source_sequence: *source_sequence,
+                        song: song.clone(),
+                        result: result.as_ref().clone(),
+                    });
+                }
+                ResultState::Confirmed { song, result } => {
                     self.latest_provisional_result = None;
+                    self.latest_result_label = None;
+                    self.latest_result_detected = Some(serialized.clone());
+                    self.result_count = self.result_count.saturating_add(1);
+                    if self.result_history.len() == RESULT_HISTORY_CAPACITY {
+                        self.result_history.pop_front();
+                    }
+                    self.result_history.push_back(ResultHistoryEntry {
+                        ordinal: self.result_count,
+                        session_id: session_id.clone(),
+                        capture_generation: *capture_generation,
+                        source_sequence: *source_sequence,
+                        song: song.clone(),
+                        result: result.as_ref().clone(),
+                    });
                 }
             },
             RunEventKind::SessionFinished {
@@ -2137,7 +2142,6 @@ impl RunViewState {
                 self.latest_temporal_music_select = None;
                 self.latest_play_attempt = None;
                 self.latest_numeric_result = None;
-                self.latest_provisional_result = None;
                 self.stable_result_song = None;
                 "scorepeek stopped by signal".clone_into(&mut self.message);
             }
@@ -2577,7 +2581,6 @@ pub struct RoutineOutput {
     pending_numeric_result: Option<PendingNumericResult>,
     accepted_numeric_result: Option<NumericResultView>,
     active_provisional_result: Option<ActiveProvisionalResult>,
-    provisional_revision: u64,
     music_selection_revision: u64,
     music_select_resolver: MusicSelectResolver,
     active_music_selection: Option<MusicSelectionState>,
@@ -2776,7 +2779,6 @@ impl RoutineOutput {
             pending_numeric_result: None,
             accepted_numeric_result: None,
             active_provisional_result: None,
-            provisional_revision: 0,
             music_selection_revision: 0,
             music_select_resolver: MusicSelectResolver::default(),
             active_music_selection: None,
@@ -2827,7 +2829,6 @@ impl RoutineOutput {
             pending_numeric_result: None,
             accepted_numeric_result: None,
             active_provisional_result: None,
-            provisional_revision: 0,
             music_selection_revision: 0,
             music_select_resolver: MusicSelectResolver::default(),
             active_music_selection: None,
@@ -2876,10 +2877,7 @@ impl RoutineOutput {
                 .lock()
                 .map_err(|_| "run view state lock was poisoned".to_owned())?;
             let mut projected = state.public.clone();
-            let mut events = projected
-                .complete_result(&completion.event_id, persisted)
-                .into_iter()
-                .collect::<Vec<_>>();
+            let mut events = Vec::new();
             if persisted && let Some(chart) = completion.chart {
                 events.push(projected.score_store_changed(chart));
             }
@@ -2910,25 +2908,6 @@ impl RoutineOutput {
             self.channel.as_ref(),
             None,
         );
-        let reason = if persistence_failed || state.public.ingest_timed_out() {
-            Some("persistence_failed")
-        } else {
-            None
-        };
-        if let Some(reason) = reason {
-            let mut projected = state.public.clone();
-            let events = projected
-                .fail_result(reason)
-                .into_iter()
-                .collect::<Vec<_>>();
-            commit_public_projection(
-                &mut state.public,
-                projected,
-                &events,
-                self.channel.as_ref(),
-                None,
-            );
-        }
         drop(state);
         self.refresh()
     }
@@ -2989,11 +2968,14 @@ impl RoutineOutput {
 
     fn publish_internal(&mut self, event: &RunEvent) -> Result<(), String> {
         match &event.kind {
-            RunEventKind::SessionStarted { session_id, .. } => {
+            RunEventKind::SessionStarted {
+                session_id,
+                capture_generation,
+                ..
+            } => {
                 self.engine.play_attempt.reset_session();
                 self.reset_numeric_result();
                 self.active_provisional_result = None;
-                self.provisional_revision = 0;
                 self.music_selection_revision = 0;
                 self.music_select_resolver = MusicSelectResolver::default();
                 self.active_music_selection = None;
@@ -3025,7 +3007,16 @@ impl RoutineOutput {
                         )
                     },
                 );
-                self.publish_one(event)
+                self.publish_one(event)?;
+                if let Some(session_id) = session_id.clone() {
+                    self.publish_result_state(
+                        session_id,
+                        *capture_generation,
+                        0,
+                        ResultState::Inactive,
+                    )?;
+                }
+                Ok(())
             }
             RunEventKind::WatcherStopped { .. } => self.publish_watcher_stopped(event),
             RunEventKind::FieldObservation { .. } => self.publish_field_observation(event),
@@ -3060,8 +3051,7 @@ impl RoutineOutput {
             | RunEventKind::MusicSelectionChanged { .. }
             | RunEventKind::MusicSelectBestObserved { .. }
             | RunEventKind::MusicSelectResolverChanged { .. }
-            | RunEventKind::ResultProvisionalChanged { .. }
-            | RunEventKind::ResultDetected { .. }
+            | RunEventKind::ResultChanged { .. }
             | RunEventKind::OverlayObserved { .. } => self.publish_one(event),
         }
     }
@@ -3192,7 +3182,7 @@ impl RoutineOutput {
                 session_id,
                 capture_generation,
                 sequence,
-                ResultProvisionalWithdrawalReason::AttemptRejected,
+                ResultRetractionReason::AttemptRejected,
             )?;
         }
         Ok(())
@@ -3221,18 +3211,6 @@ impl RoutineOutput {
                 .map_err(|_| "run view state lock was poisoned".to_owned())?;
             (state.active_session_id.clone(), state.capture_generation)
         };
-        if let (Some(session_id), Some(capture_generation)) =
-            (session_id.as_ref(), capture_generation)
-        {
-            self.withdraw_result_provisional(
-                session_id.clone(),
-                capture_generation,
-                self.last_numeric_sequence
-                    .or(self.latest_screen_boundary_sequence)
-                    .unwrap_or_default(),
-                ResultProvisionalWithdrawalReason::SessionEnded,
-            )?;
-        }
         if let Some(state) = self.engine.play_attempt.finish_session() {
             self.publish_play_attempt_update(session_id.clone(), capture_generation, None, state)?;
         }
@@ -3604,16 +3582,27 @@ impl RoutineOutput {
             .provisional_joint
             .as_ref()
             .map(candidate_song_presentation);
-        self.publish_one(&RunEvent {
-            schema: RUN_EVENT_SCHEMA.to_owned(),
-            kind: RunEventKind::ResultDetected {
-                session_id,
+        let candidate = ActiveProvisionalResult { song, result };
+        if self.active_provisional_result.as_ref() != Some(&candidate) {
+            self.publish_result_state(
+                session_id.clone(),
                 capture_generation,
                 source_sequence,
-                song,
-                result,
+                ResultState::Provisional {
+                    song: candidate.song.clone(),
+                    result: Box::new(candidate.result.clone()),
+                },
+            )?;
+        }
+        self.publish_result_state(
+            session_id,
+            capture_generation,
+            source_sequence,
+            ResultState::Confirmed {
+                song: candidate.song.clone(),
+                result: Box::new(candidate.result.clone()),
             },
-        })?;
+        )?;
         self.active_provisional_result = None;
         self.emitted_attempt_ids.insert(emitted_attempt_id);
         Ok(())
@@ -3648,21 +3637,15 @@ impl RoutineOutput {
             Some((candidate, source_sequence))
                 if self.active_provisional_result.as_ref() != Some(&candidate) =>
             {
-                self.provisional_revision = self.provisional_revision.saturating_add(1);
-                self.publish_one(&RunEvent {
-                    schema: RUN_EVENT_SCHEMA.to_owned(),
-                    kind: RunEventKind::ResultProvisionalChanged {
-                        session_id,
-                        capture_generation,
-                        screen_episode_id: self.screen_episode_id,
-                        source_sequence,
-                        revision: self.provisional_revision,
-                        state: ResultProvisionalState::Resolved {
-                            song: candidate.song.clone(),
-                            result: Box::new(candidate.result.clone()),
-                        },
+                self.publish_result_state(
+                    session_id,
+                    capture_generation,
+                    source_sequence,
+                    ResultState::Provisional {
+                        song: candidate.song.clone(),
+                        result: Box::new(candidate.result.clone()),
                     },
-                })?;
+                )?;
                 self.active_provisional_result = Some(candidate);
             }
             None if self.active_provisional_result.is_some() => {
@@ -3670,7 +3653,7 @@ impl RoutineOutput {
                     session_id,
                     capture_generation,
                     fallback_sequence,
-                    ResultProvisionalWithdrawalReason::EvidenceUnresolved,
+                    ResultRetractionReason::EvidenceUnresolved,
                 )?;
             }
             _ => {}
@@ -3683,21 +3666,37 @@ impl RoutineOutput {
         session_id: String,
         capture_generation: u64,
         source_sequence: u64,
-        reason: ResultProvisionalWithdrawalReason,
+        reason: ResultRetractionReason,
     ) -> Result<(), String> {
-        if self.active_provisional_result.take().is_none() {
+        let Some(candidate) = self.active_provisional_result.take() else {
             return Ok(());
-        }
-        self.provisional_revision = self.provisional_revision.saturating_add(1);
+        };
+        self.publish_result_state(
+            session_id,
+            capture_generation,
+            source_sequence,
+            ResultState::Retracted {
+                song: candidate.song,
+                result: Box::new(candidate.result),
+                reason,
+            },
+        )
+    }
+
+    fn publish_result_state(
+        &mut self,
+        session_id: String,
+        capture_generation: u64,
+        source_sequence: u64,
+        state: ResultState,
+    ) -> Result<(), String> {
         self.publish_one(&RunEvent {
             schema: RUN_EVENT_SCHEMA.to_owned(),
-            kind: RunEventKind::ResultProvisionalChanged {
+            kind: RunEventKind::ResultChanged {
                 session_id,
                 capture_generation,
-                screen_episode_id: self.screen_episode_id,
                 source_sequence,
-                revision: self.provisional_revision,
-                state: ResultProvisionalState::Withdrawn { reason },
+                state,
             },
         })
     }
@@ -3935,7 +3934,6 @@ impl RoutineOutput {
         if screen == "result" {
             self.result_resolver_active = true;
             self.active_provisional_result = None;
-            self.provisional_revision = 0;
             self.engine.result_hypotheses = HypothesisAccumulator::default();
             self.engine.provisional_joint = None;
             self.resolver_transitions.remove(&ResolverScope::Result);
@@ -4037,6 +4035,18 @@ impl RoutineOutput {
                 state,
             )?;
         }
+        if screen == "play"
+            && let (Some(session_id), Some(capture_generation)) =
+                (session_id.clone(), *capture_generation)
+        {
+            self.active_provisional_result = None;
+            self.publish_result_state(
+                session_id,
+                capture_generation,
+                *sequence,
+                ResultState::Inactive,
+            )?;
+        }
         if let Some(state) = selection_screen_attempt_update {
             self.attempt_started_ms = None;
             self.attempt_phase_started_ms = None;
@@ -4085,14 +4095,6 @@ impl RoutineOutput {
             )?;
             self.music_selection_episode_active = false;
         }
-        self.withdraw_result_provisional(
-            session_id.clone(),
-            *capture_generation,
-            self.last_numeric_sequence
-                .or(self.latest_screen_boundary_sequence)
-                .unwrap_or_default(),
-            ResultProvisionalWithdrawalReason::SessionEnded,
-        )?;
         self.publish_one(event)?;
         if let Some(state) = self.engine.play_attempt.finish_session() {
             self.publish_play_attempt_update(
@@ -4232,7 +4234,7 @@ impl RoutineOutput {
             .accepted_result()
             .is_some_and(|attempt| self.emitted_attempt_ids.contains(&attempt.attempt_id))
         {
-            "accepted: result_detected emitted"
+            "accepted: result confirmed"
         } else if joint_summary.state != ResolverResolutionState::AcceptedJoint {
             "waiting: joint identity"
         } else if self.accepted_numeric_result.is_none() {
@@ -4998,15 +5000,13 @@ fn render(
         Paragraph::new(fixed_domain_lines(state, available_width)).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(
-                    Style::default().fg(if state.latest_provisional_result.is_some() {
-                        Color::Yellow
-                    } else if state.latest_result_detected.is_some() {
-                        Color::Green
-                    } else {
-                        Color::DarkGray
-                    }),
-                )
+                .border_style(Style::default().fg(match state.latest_result_label {
+                    Some("RETRACTED") => Color::Red,
+                    Some("PROVISIONAL") => Color::Yellow,
+                    Some("INACTIVE") => Color::DarkGray,
+                    _ if state.latest_result_detected.is_some() => Color::Green,
+                    _ => Color::DarkGray,
+                }))
                 .title("Latest result"),
         ),
         rows[1],
@@ -5163,8 +5163,18 @@ const fn gate_suffix(state: GateState) -> &'static str {
 }
 
 fn fixed_domain_lines(state: &RunViewState, available_width: usize) -> Vec<Line<'static>> {
+    if state.latest_result_label == Some("INACTIVE") {
+        return vec![Line::from(Span::styled(
+            "No active result",
+            Style::default().fg(Color::DarkGray),
+        ))];
+    }
     if let Some(entry) = state.latest_provisional_result.as_ref() {
-        let mut lines = expanded_result_history_entry_lines(entry, available_width, "PROVISIONAL");
+        let mut lines = expanded_result_history_entry_lines(
+            entry,
+            available_width,
+            state.latest_result_label.unwrap_or("PROVISIONAL"),
+        );
         lines.truncate(6);
         return lines;
     }
@@ -5678,7 +5688,7 @@ mod tests {
             ))
             .unwrap();
         let health = output.scores.as_mut().unwrap().finish();
-        assert_eq!(health.committed, 1);
+        assert_eq!(health.committed, 2);
         assert!(health.failure.is_none(), "{health:?}");
         assert!(output.state.lock().unwrap().channel_start_failure.is_some());
         output.refresh().unwrap();
@@ -5724,8 +5734,8 @@ mod tests {
                 ))
                 .unwrap();
             let snapshot = serde_json::to_value(&output.state.lock().unwrap().public).unwrap();
-            let result = &snapshot["latest_result"];
-            assert_eq!(result["result"]["current_score"], 1286);
+            let result = &snapshot["result"];
+            assert_eq!(result["state"]["result"]["current_score"], 1286);
             assert!(result["emitted_unix_ms"].as_i64().unwrap() > 0);
             assert!(
                 output
@@ -5741,7 +5751,7 @@ mod tests {
                 assert_eq!(health.failure.as_deref(), Some("database_open"));
             } else {
                 assert!(health.failure.is_none(), "{health:?}");
-                assert_eq!(health.committed, 1);
+                assert_eq!(health.committed, 2);
                 let database = rusqlite::Connection::open(&path).unwrap();
                 let json: String = database
                     .query_row("SELECT event_json FROM play_results", [], |row| row.get(0))
@@ -5886,7 +5896,6 @@ mod tests {
             pending_numeric_result: None,
             accepted_numeric_result: None,
             active_provisional_result: None,
-            provisional_revision: 0,
             music_selection_revision: 0,
             music_select_resolver: MusicSelectResolver::default(),
             active_music_selection: None,
@@ -6074,12 +6083,14 @@ mod tests {
     ) -> RunEvent {
         RunEvent {
             schema: "scorepeek-run-event-v3".to_owned(),
-            kind: RunEventKind::ResultDetected {
+            kind: RunEventKind::ResultChanged {
                 session_id: session_id.to_owned(),
                 capture_generation,
                 source_sequence,
-                song: None,
-                result,
+                state: ResultState::Confirmed {
+                    song: None,
+                    result: Box::new(result),
+                },
             },
         }
     }
@@ -6296,7 +6307,7 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         let snapshot: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(snapshot["schema"], "scorepeek-event-snapshot-v1");
+        assert_eq!(snapshot["schema"], "scorepeek-event-snapshot-v2");
         assert_eq!(snapshot["invocation_id"], "invocation-1");
         assert_eq!(snapshot["next_sequence"], 1);
         assert_eq!(snapshot["status"]["watcher"], "starting");
@@ -6346,23 +6357,25 @@ mod tests {
                 SemanticEpisodePhase::Finalized,
             ))
             .unwrap();
-        let completed = read_events_through(&mut reader, "result_detected", 20);
+        let mut completed = read_events_through(&mut reader, "result_changed", 20);
+        completed.extend(read_events_through(&mut reader, "result_changed", 20));
         let provisional = completed
             .iter()
             .position(|event| {
-                event["event"] == "result_provisional_changed"
-                    && event["state"]["status"] == "resolved"
+                event["event"] == "result_changed" && event["state"]["status"] == "provisional"
             })
             .unwrap();
         let result = completed
             .iter()
-            .position(|event| event["event"] == "result_detected")
+            .position(|event| {
+                event["event"] == "result_changed" && event["state"]["status"] == "confirmed"
+            })
             .unwrap();
         assert!(provisional < result);
         assert_eq!(completed[provisional]["schema"], event_api::EVENT_SCHEMA);
         assert_eq!(
             completed[provisional]["state"]["result"],
-            completed[result]["result"]
+            completed[result]["state"]["result"]
         );
         assert_eq!(completed[result]["source_sequence"], 4);
         assert!(
@@ -6387,11 +6400,15 @@ mod tests {
         let mut unlinked = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
         unlinked.publish(&accepted_result_event(1)).unwrap();
         unlinked.publish(&accepted_result_event(2)).unwrap();
-        assert!(
-            !unlinked.take_headless_events().iter().any(|event| {
-                matches!(event.kind, RunEventKind::ResultProvisionalChanged { .. })
-            })
-        );
+        assert!(!unlinked.take_headless_events().iter().any(|event| {
+            matches!(
+                event.kind,
+                RunEventKind::ResultChanged {
+                    state: ResultState::Provisional { .. },
+                    ..
+                }
+            )
+        }));
 
         let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
         prepare_accepted_attempt(&mut output);
@@ -6401,45 +6418,58 @@ mod tests {
         };
         fields["clear_type"] = Value::Null;
         output.publish(&identity_only).unwrap();
-        assert!(
-            !output.headless_events.iter().any(|event| {
-                matches!(event.kind, RunEventKind::ResultProvisionalChanged { .. })
-            })
-        );
+        assert!(!output.headless_events.iter().any(|event| {
+            matches!(
+                event.kind,
+                RunEventKind::ResultChanged {
+                    state: ResultState::Provisional { .. },
+                    ..
+                }
+            )
+        }));
         output.publish(&accepted_result_event(2)).unwrap();
-        assert!(
-            !output.headless_events.iter().any(|event| {
-                matches!(event.kind, RunEventKind::ResultProvisionalChanged { .. })
-            })
-        );
+        assert!(!output.headless_events.iter().any(|event| {
+            matches!(
+                event.kind,
+                RunEventKind::ResultChanged {
+                    state: ResultState::Provisional { .. },
+                    ..
+                }
+            )
+        }));
         output.publish(&accepted_result_event(3)).unwrap();
         let provisional = output
             .headless_events
             .iter()
             .find_map(|event| match &event.kind {
-                RunEventKind::ResultProvisionalChanged {
-                    revision,
-                    state: ResultProvisionalState::Resolved { result, .. },
+                RunEventKind::ResultChanged {
+                    state: ResultState::Provisional { result, .. },
                     ..
-                } => Some((*revision, result)),
+                } => Some(result),
                 _ => None,
             })
             .unwrap();
-        assert_eq!(provisional.0, 1);
-        assert_eq!(provisional.1.contract, "scorepeek-result-detected-v2");
+        assert_eq!(provisional.contract, "scorepeek-result-detected-v2");
         let encoded = output
             .headless_events
             .iter()
-            .find(|event| matches!(event.kind, RunEventKind::ResultProvisionalChanged { .. }))
+            .find(|event| {
+                matches!(
+                    event.kind,
+                    RunEventKind::ResultChanged {
+                        state: ResultState::Provisional { .. },
+                        ..
+                    }
+                )
+            })
             .unwrap()
             .to_value()
             .unwrap();
         assert_eq!(encoded["schema"], RUN_EVENT_SCHEMA);
         assert!(matches!(
             RunEvent::from_value(encoded).unwrap().kind,
-            RunEventKind::ResultProvisionalChanged {
-                revision: 1,
-                state: ResultProvisionalState::Resolved { .. },
+            RunEventKind::ResultChanged {
+                state: ResultState::Provisional { .. },
                 ..
             }
         ));
@@ -6479,7 +6509,10 @@ mod tests {
             .headless_events
             .iter()
             .filter_map(|event| match &event.kind {
-                RunEventKind::ResultDetected { result, .. } => Some(result),
+                RunEventKind::ResultChanged {
+                    state: ResultState::Confirmed { result, .. },
+                    ..
+                } => Some(result),
                 _ => None,
             })
             .collect();
@@ -6487,8 +6520,8 @@ mod tests {
         assert_eq!(results[0].miss_count, SupplementalResultValue::NotDisplayed);
         assert!(!output.headless_events.iter().any(|event| matches!(
             event.kind,
-            RunEventKind::ResultProvisionalChanged {
-                state: ResultProvisionalState::Withdrawn { .. },
+            RunEventKind::ResultChanged {
+                state: ResultState::Retracted { .. },
                 ..
             }
         )));
@@ -6525,8 +6558,8 @@ mod tests {
             .headless_events
             .iter()
             .filter_map(|event| match &event.kind {
-                RunEventKind::ResultProvisionalChanged {
-                    state: ResultProvisionalState::Resolved { result, .. },
+                RunEventKind::ResultChanged {
+                    state: ResultState::Provisional { result, .. },
                     ..
                 } => Some(result.miss_count.clone()),
                 _ => None,
@@ -6542,8 +6575,8 @@ mod tests {
         assert_eq!(output.state.lock().unwrap().result_count, 1);
         assert!(!output.headless_events.iter().any(|event| matches!(
             event.kind,
-            RunEventKind::ResultProvisionalChanged {
-                state: ResultProvisionalState::Withdrawn { .. },
+            RunEventKind::ResultChanged {
+                state: ResultState::Retracted { .. },
                 ..
             }
         )));
@@ -6575,15 +6608,15 @@ mod tests {
         assert_eq!(output.state.lock().unwrap().result_count, 0);
         assert!(output.headless_events.iter().any(|event| matches!(
             event.kind,
-            RunEventKind::ResultProvisionalChanged {
-                state: ResultProvisionalState::Withdrawn { .. },
+            RunEventKind::ResultChanged {
+                state: ResultState::Retracted { .. },
                 ..
             }
         )));
     }
 
     #[test]
-    fn provisional_result_withdraws_and_re_resolves_with_monotonic_revisions() {
+    fn provisional_result_retracts_and_re_resolves_as_one_state_stream() {
         let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
         prepare_accepted_attempt(&mut output);
         output.publish(&accepted_result_event(1)).unwrap();
@@ -6603,33 +6636,26 @@ mod tests {
             .headless_events
             .iter()
             .filter_map(|event| match &event.kind {
-                RunEventKind::ResultProvisionalChanged {
-                    revision, state, ..
-                } => Some((*revision, state)),
+                RunEventKind::ResultChanged { state, .. }
+                    if !matches!(state, ResultState::Inactive) =>
+                {
+                    Some(state)
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
         assert_eq!(lifecycle.len(), 3);
-        assert_eq!(
-            lifecycle
-                .iter()
-                .map(|(revision, _)| *revision)
-                .collect::<Vec<_>>(),
-            vec![1, 2, 3]
-        );
+        assert!(matches!(lifecycle[0], ResultState::Provisional { .. }));
         assert!(matches!(
-            lifecycle[0].1,
-            ResultProvisionalState::Resolved { .. }
-        ));
-        assert!(matches!(
-            lifecycle[1].1,
-            ResultProvisionalState::Withdrawn {
-                reason: ResultProvisionalWithdrawalReason::EvidenceUnresolved
+            lifecycle[1],
+            ResultState::Retracted {
+                reason: ResultRetractionReason::EvidenceUnresolved,
+                ..
             }
         ));
         assert!(matches!(
-            lifecycle[2].1,
-            ResultProvisionalState::Resolved { result, .. } if result.clear_type == "HARD CLEAR"
+            lifecycle[2],
+            ResultState::Provisional { result, .. } if result.clear_type == "HARD CLEAR"
         ));
     }
 
@@ -6663,19 +6689,21 @@ mod tests {
 
         assert!(output.headless_events.iter().any(|event| matches!(
             event.kind,
-            RunEventKind::ResultProvisionalChanged {
-                state: ResultProvisionalState::Withdrawn {
-                    reason: ResultProvisionalWithdrawalReason::EvidenceUnresolved
+            RunEventKind::ResultChanged {
+                state: ResultState::Retracted {
+                    reason: ResultRetractionReason::EvidenceUnresolved,
+                    ..
                 },
                 ..
             }
         )));
-        assert!(
-            !output
-                .headless_events
-                .iter()
-                .any(|event| matches!(event.kind, RunEventKind::ResultDetected { .. }))
-        );
+        assert!(!output.headless_events.iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::ResultChanged {
+                state: ResultState::Confirmed { .. },
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -6696,8 +6724,8 @@ mod tests {
         let provisional = events
             .iter()
             .find_map(|event| match &event.kind {
-                RunEventKind::ResultProvisionalChanged {
-                    state: ResultProvisionalState::Resolved { result, .. },
+                RunEventKind::ResultChanged {
+                    state: ResultState::Provisional { result, .. },
                     ..
                 } => Some(result),
                 _ => None,
@@ -6711,27 +6739,38 @@ mod tests {
         )).unwrap();
         let detected = events
             .iter()
-            .position(|event| matches!(event.kind, RunEventKind::ResultDetected { .. }))
+            .position(|event| {
+                matches!(
+                    event.kind,
+                    RunEventKind::ResultChanged {
+                        state: ResultState::Confirmed { .. },
+                        ..
+                    }
+                )
+            })
             .unwrap();
-        let RunEventKind::ResultDetected {
-            result: confirmed, ..
+        let RunEventKind::ResultChanged {
+            state: ResultState::Confirmed {
+                result: confirmed, ..
+            },
+            ..
         } = &events[detected].kind
         else {
             unreachable!();
         };
         assert!(confirmation < detected);
-        assert_eq!(provisional.as_ref(), confirmed);
+        assert_eq!(provisional.as_ref(), confirmed.as_ref());
         assert!(!events.iter().any(|event| matches!(
             event.kind,
-            RunEventKind::ResultProvisionalChanged {
-                state: ResultProvisionalState::Withdrawn { .. },
+            RunEventKind::ResultChanged {
+                state: ResultState::Retracted { .. },
                 ..
             }
         )));
     }
 
     #[test]
-    fn tui_prefers_provisional_and_withdrawal_restores_latest_confirmed() {
+    fn tui_shows_each_result_state_without_falling_back_after_retraction() {
         let mut output = RoutineOutput::start_headless("invocation-1".to_owned(), "a".repeat(64));
         prepare_accepted_attempt(&mut output);
         output.publish(&accepted_result_event(1)).unwrap();
@@ -6752,15 +6791,13 @@ mod tests {
 
         let resolved = RunEvent {
             schema: RUN_EVENT_SCHEMA.to_owned(),
-            kind: RunEventKind::ResultProvisionalChanged {
+            kind: RunEventKind::ResultChanged {
                 session_id: "invocation-1-session-1".to_owned(),
                 capture_generation: 1,
-                screen_episode_id: 2,
                 source_sequence: 4,
-                revision: 1,
-                state: ResultProvisionalState::Resolved {
-                    song: provisional.song,
-                    result: Box::new(provisional.result),
+                state: ResultState::Provisional {
+                    song: provisional.song.clone(),
+                    result: Box::new(provisional.result.clone()),
                 },
             },
         };
@@ -6773,14 +6810,14 @@ mod tests {
 
         let withdrawn = RunEvent {
             schema: RUN_EVENT_SCHEMA.to_owned(),
-            kind: RunEventKind::ResultProvisionalChanged {
+            kind: RunEventKind::ResultChanged {
                 session_id: "invocation-1-session-1".to_owned(),
                 capture_generation: 1,
-                screen_episode_id: 2,
                 source_sequence: 5,
-                revision: 2,
-                state: ResultProvisionalState::Withdrawn {
-                    reason: ResultProvisionalWithdrawalReason::EvidenceUnresolved,
+                state: ResultState::Retracted {
+                    song: provisional.song,
+                    result: Box::new(provisional.result),
+                    reason: ResultRetractionReason::EvidenceUnresolved,
                 },
             },
         };
@@ -6788,7 +6825,22 @@ mod tests {
         assert!(
             fixed_domain_lines(&output.state.lock().unwrap(), 160)[0]
                 .to_string()
-                .contains("CONFIRMED")
+                .contains("RETRACTED")
+        );
+        output
+            .publish(&RunEvent {
+                schema: RUN_EVENT_SCHEMA.to_owned(),
+                kind: RunEventKind::ResultChanged {
+                    session_id: "invocation-1-session-1".to_owned(),
+                    capture_generation: 1,
+                    source_sequence: 6,
+                    state: ResultState::Inactive,
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            fixed_domain_lines(&output.state.lock().unwrap(), 160)[0].to_string(),
+            "No active result"
         );
         assert_eq!(output.state.lock().unwrap().result_count, 1);
     }
@@ -6817,8 +6869,9 @@ mod tests {
         let outcome = output.take_completed_event_artifact().unwrap();
         assert!(outcome.complete);
         let records = fs::read_to_string(root.join("events.ndjson")).unwrap();
-        assert!(records.contains("\"event\":\"result_provisional_changed\""));
-        assert!(records.contains("\"event\":\"result_detected\""));
+        assert!(records.contains("\"event\":\"result_changed\""));
+        assert!(records.contains("\"status\":\"provisional\""));
+        assert!(records.contains("\"status\":\"confirmed\""));
     }
 
     #[test]
@@ -6872,25 +6925,31 @@ mod tests {
             .headless_events
             .iter()
             .filter_map(|event| match &event.kind {
-                RunEventKind::ResultProvisionalChanged { state, .. } => Some(state),
+                RunEventKind::ResultChanged { state, .. }
+                    if !matches!(state, ResultState::Inactive) =>
+                {
+                    Some(state)
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
         assert!(matches!(
             lifecycle.as_slice(),
             [
-                ResultProvisionalState::Resolved { .. },
-                ResultProvisionalState::Withdrawn {
-                    reason: ResultProvisionalWithdrawalReason::AttemptRejected
+                ResultState::Provisional { .. },
+                ResultState::Retracted {
+                    reason: ResultRetractionReason::AttemptRejected,
+                    ..
                 }
             ]
         ));
-        assert!(
-            !output
-                .headless_events
-                .iter()
-                .any(|event| matches!(event.kind, RunEventKind::ResultDetected { .. }))
-        );
+        assert!(!output.headless_events.iter().any(|event| matches!(
+            event.kind,
+            RunEventKind::ResultChanged {
+                state: ResultState::Confirmed { .. },
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -7189,7 +7248,7 @@ mod tests {
         for reader in &mut readers {
             let mut snapshot = String::new();
             reader.read_line(&mut snapshot).unwrap();
-            assert!(snapshot.contains("scorepeek-event-snapshot-v1"));
+            assert!(snapshot.contains("scorepeek-event-snapshot-v2"));
         }
         channel.publish(wire_event(1));
         for reader in &mut readers {
@@ -9229,11 +9288,13 @@ mod tests {
             })
             .collect();
         assert_eq!(snapshots.len(), 2); // Initial and updated score after two fresh resume observations.
-        assert!(
-            !events
-                .iter()
-                .any(|e| matches!(e.kind, RunEventKind::ResultDetected { .. }))
-        );
+        assert!(!events.iter().any(|e| matches!(
+            e.kind,
+            RunEventKind::ResultChanged {
+                state: ResultState::Confirmed { .. },
+                ..
+            }
+        )));
         assert_public_fold(events);
     }
 

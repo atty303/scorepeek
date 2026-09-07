@@ -59,10 +59,10 @@ be established, the field is `unknown`.
 A provisional result lifecycle value requires all mandatory result fields to be `known`, two
 matching numeric observations, joint catalog consistency, and an active RESULT attempt ID. It does
 not require selection linkage, observed gameplay, or final attempt confirmation. A confirmed
-`result_detected` additionally requires the accepted play attempt at semantic RESULT close.
-Missing gameplay, an unlinked result, song conflict, or an abandoned attempt suppresses confirmed
-emission. Supplemental and previous-best unknowns do not get guessed values and do not block the
-shared result payload.
+`result_changed` requires that same stable payload to remain accepted at semantic RESULT close;
+missing gameplay or selection linkage does not invalidate an otherwise complete attempt, while song
+conflict or an abandoned attempt suppresses confirmation. Supplemental and previous-best unknowns do
+not get guessed values and do not block the shared result payload.
 
 ## Music select
 
@@ -79,7 +79,7 @@ shared result payload.
 under title, artist, selected difficulty, and stable SELECT play type. The resolver emits no initial
 unknown, deduplicates equal states, emits unresolved after losing a previously selected chart, and
 emits episode-ended unresolved at SELECT finalization. This state cannot satisfy RESULT presence,
-attempt linkage, numeric stability, or `result_detected` acceptance.
+attempt linkage, numeric stability, or `result_changed` acceptance.
 
 A general-IIDX title whose INFINITAS status is `unknown` may be accepted only by
 the separately calibrated stricter title/context policy. The event preserves
@@ -90,8 +90,9 @@ the separately calibrated stricter title/context policy. The event preserves
 - Stability uses distinct, fresh observations from one capture generation and
   the versioned minimum dwell. A disconnected or stalled source cannot turn one
   old frame into temporal evidence.
-- Provisional result emits on resolved payload change or withdrawal with an episode-local monotonic
-  revision. Confirmed result emits once per result episode. Music select deduplicates a stable
+- `result_changed` emits an envelope event ID and sequence for provisional, retracted, re-resolved,
+  and confirmed transitions; there is no result-local revision. Confirmed emits once per attempt.
+  Music select deduplicates a stable
   `(song, play mode, selected difficulty)` identity until it changes or the
   screen episode ends.
 - A screen-local episode ends on screen exit. Separately, the last stable

@@ -409,3 +409,6 @@ requirements after their named superseding decisions.
 
 - [ADR 0138: Compose stream backgrounds and empty widgets](0138-compose-stream-backgrounds-and-empty-widgets.md)
   adds skin backgrounds, transparent media apertures, optional titles and inner-geometry S/M/L frames in both backends.
+- [ADR 0139: Unify RESULT state and persist provisional plays](0139-unify-result-state-and-provisional-persistence.md)
+  replaces separate provisional, confirmed and ingest lifecycles with one four-state event, Event API
+  v2 on a stable socket name, and immediate reversible SQLite persistence.

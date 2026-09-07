@@ -320,6 +320,12 @@ enum StoredRunEventPayload {
         revision: u64,
         state: Value,
     },
+    ResultChanged {
+        session_id: String,
+        capture_generation: u64,
+        source_sequence: u64,
+        state: Value,
+    },
     MusicSelectionChanged {
         session_id: Option<String>,
         capture_generation: Option<u64>,
@@ -5075,7 +5081,10 @@ fn finalize_replay_session(
     let emitted = events
         .into_iter()
         .filter_map(|event| match event.kind {
-            scorepeek::routine_output::RunEventKind::ResultDetected { result, .. } => Some(result),
+            scorepeek::routine_output::RunEventKind::ResultChanged {
+                state: scorepeek::routine_output::ResultState::Confirmed { result, .. },
+                ..
+            } => Some(*result),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -6518,6 +6527,7 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
                 | "scorepeek-run-event-v9"
                 | "scorepeek-run-event-v10"
                 | "scorepeek-run-event-v11"
+                | "scorepeek-run-event-v12"
         ) || event_schema
             .as_deref()
             .is_some_and(|expected| expected != schema)
@@ -6537,6 +6547,7 @@ fn verify_session_events(path: &Path, manifest: &DiagnosticManifest) -> Result<u
                 | "scorepeek-run-event-v9"
                 | "scorepeek-run-event-v10"
                 | "scorepeek-run-event-v11"
+                | "scorepeek-run-event-v12"
         ) {
             serde_json::from_value::<StoredRunEventPayload>(record.clone()).map_err(|_| {
                 CorpusError::InvalidRequest("diagnostic run event payload is invalid".to_owned())
@@ -7280,7 +7291,7 @@ mod tests {
         assert_eq!(verify_session_events(&path, &manifest).unwrap(), 3);
         let future = fs::read_to_string(&path)
             .unwrap()
-            .replace("scorepeek-run-event-v9", "scorepeek-run-event-v12");
+            .replace("scorepeek-run-event-v9", "scorepeek-run-event-v13");
         fs::write(&path, future).unwrap();
         assert!(verify_session_events(&path, &manifest).is_err());
     }

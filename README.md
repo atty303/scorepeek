@@ -167,8 +167,8 @@ authority for recognition support; scorepeek does not re-estimate geometry or sw
 runtime.
 
 On a terminal, `run` shows Watcher, Latest result, Music Select Resolver, and RESULT/attempt
-Resolver panes. Latest result prefers the current provisional payload and otherwise shows the last
-confirmed result; only confirmed results enter the count/history. The Music Select Resolver shows
+Resolver panes. Latest result explicitly shows inactive, provisional, retracted, or confirmed state;
+only confirmed results enter the count/history. The Music Select Resolver shows
 selected chart identity, self-best SCORE/MISS/clear values, per-field `1/2` stabilization, and the
 snapshot output gate/revision. Missing identity evidence retains the interval as `held`, blocks
 value adoption and restarts field stabilization. UNKNOWN suspends the retained interval. Contrary
@@ -176,17 +176,19 @@ song/mode/difficulty evidence clears values; SELECT exit returns it to inactive.
 identical values does not re-emit a snapshot. The 80x25 layout keeps existing attempt gates visible.
 DJ rank is calculated from EX SCORE and chart notes, not recognized from the screen.
 
-Machine consumers connect to `$XDG_RUNTIME_DIR/scorepeek/v1.sock` for an initial
-`scorepeek-event-snapshot-v1` followed by `scorepeek-event-v1` NDJSON. It publishes confirmed and
-provisional RESULTs, current selection, supplemental SELECT best, and operational status. Raw OCR
+Machine consumers connect to `$XDG_RUNTIME_DIR/scorepeek/events.sock` for an initial
+`scorepeek-event-snapshot-v2` followed by `scorepeek-event-v2` NDJSON. One `result_changed` event
+publishes inactive, provisional, retracted, and confirmed RESULT state, alongside current selection,
+supplemental SELECT best, and operational status. Raw OCR
 and resolver diagnostics stay internal and in opt-in recordings. The old observation socket is removed.
 Reconnection restores current state; this live API does not recover every missed play or implement
 history replay. An independent in-process consumer saves scores without requiring a socket connection.
 Redirected stdout remains deduplicated human-readable status.
-See [Event API v1](docs/event-api.md) for wire fields, consumer state and delivery limits, and
+See [Event API v2](docs/event-api.md) for wire fields, consumer state and delivery limits, and
 [the SELECT best decision](docs/decisions/0114-observe-music-select-best-snapshots.md).
 
-`run` saves confirmed plays and chart bests to `$XDG_DATA_HOME/scorepeek/scores.sqlite3`
+`run` saves provisional plays immediately and confirms or retracts the same attempt in
+`$XDG_DATA_HOME/scorepeek/scores.sqlite3`
 (defaulting to `$HOME/.local/share/scorepeek/scores.sqlite3`). Use `--scores-db PATH` to select another
 DB, including a guest DB, or `--no-scores` to disable saving. These options are independent of
 `--record`; switching DBs requires restarting run. A selected DB is never silently replaced by the default.
@@ -195,8 +197,9 @@ SELECT-only charts are saved without creating plays. SELECT retains only the lat
 per field, allowing later observations to correct it; unknown/not-displayed leave it unchanged.
 Explicit no-record clears that supplemental field. Combined bests use RESULT history, its previous-best
 values and current SELECT supplements. Guest DBs still receive the current game account's supplements.
-Save failure is shown as degraded while recognition continues; uncommitted data is not recoverable
-after a crash. See [the score database contract](docs/decisions/0120-persist-scores-as-event-consumer.md)
+Save failure is shown as degraded while recognition continues. An abnormal end promotes a remaining
+provisional play to confirmed on the next database open and records recovery provenance; a committed
+retraction is removed immediately. See [the current result lifecycle](docs/decisions/0139-unify-result-state-and-provisional-persistence.md)
 for schema, source attribution, failure limits and timestamp semantics. No history query CLI is included.
 
 ### Live overlays

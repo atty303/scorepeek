@@ -48,6 +48,7 @@ pub struct Health {
     pub failure: Option<String>,
     pub cause: Option<String>,
     pub flush: Option<String>,
+    pub recovered_provisional: u64,
 }
 impl Health {
     fn fail(&mut self, kind: &str, cause: &(impl ToString + ?Sized)) {
@@ -130,8 +131,9 @@ impl Worker {
         };
         if !matches!(
             header["event"].as_str(),
-            Some("result_detected" | "music_select_best_observed")
+            Some("result_changed" | "music_select_best_observed")
         ) || (header["event"] == "music_select_best_observed" && header["snapshot"].is_null())
+            || (header["event"] == "result_changed" && header["state"]["status"] == "inactive")
         {
             return;
         }
@@ -259,6 +261,10 @@ fn run(
             return;
         }
     };
+    health
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .recovered_provisional = store.recovered_provisional_count();
     while let Ok(message) = receiver.recv() {
         {
             let mut health = health
@@ -307,7 +313,7 @@ fn run(
 
 fn chart_identity(event: &serde_json::Value) -> Option<ChartIdentity> {
     let chart = match event["event"].as_str()? {
-        "result_detected" => &event["result"],
+        "result_changed" => &event["state"]["result"],
         "music_select_best_observed" => &event["snapshot"]["chart"],
         _ => return None,
     };
@@ -330,7 +336,7 @@ mod tests {
     use serde_json::json;
 
     fn event() -> Vec<u8> {
-        serde_json::to_vec(&json!({"event":"result_detected","event_id":"run:1"})).unwrap()
+        serde_json::to_vec(&json!({"event":"result_changed","event_id":"run:1","state":{"status":"provisional","result":{}}})).unwrap()
     }
     #[test]
     fn queue_limits_stop_admission_without_blocking() {

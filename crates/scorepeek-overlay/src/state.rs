@@ -1,6 +1,19 @@
 //! Public snapshot/live fold. Recognition and score-writing authority remain upstream.
 use scorepeek_overlay_ui::{Chart, History, LampState, OverlayState, ScreenKind};
+use serde::Deserialize;
 use serde_json::Value;
+
+#[derive(Deserialize)]
+struct PublicEnvelope {
+    schema: String,
+    invocation_id: String,
+    sequence: u64,
+    event_id: String,
+    emitted_monotonic_ms: u64,
+    emitted_unix_ms: i64,
+    capture: Value,
+    event: String,
+}
 
 #[derive(Default)]
 pub struct Consumer {
@@ -10,7 +23,6 @@ pub struct Consumer {
     next_sequence: Option<u64>,
     selection_record: Option<Value>,
     session_id: Option<String>,
-    result_episode_id: Option<u64>,
 }
 
 impl Consumer {
@@ -23,37 +35,49 @@ impl Consumer {
             return Err("overlay invocation mismatch".into());
         }
         match text(record, "schema")? {
-            "scorepeek-event-snapshot-v1" => {
+            "scorepeek-event-snapshot-v2" => {
+                validate_status(&record["status"])?;
+                if record.get("result").is_none_or(Value::is_null) {
+                    return Err("missing snapshot result state".into());
+                }
+                let snapshot_next_sequence = number(record, "next_sequence")?;
                 let mut replacement = Self {
                     invocation: invocation.into(),
-                    next_sequence: Some(number(record, "next_sequence")?),
+                    next_sequence: Some(snapshot_next_sequence),
                     ..Self::default()
                 };
                 let active = record["status"]["watcher"] == "session_active";
-                let previous_session = self.session_id.clone();
-                let previous_result = self.view.result_signal;
-                let previous_episode = self.result_episode_id;
                 replacement.apply_status(&record["status"]);
                 let mut slots: Vec<_> = [
-                    "latest_result",
-                    "provisional_result",
+                    "result",
                     "screen_state",
                     "music_selection",
                     "music_select_best",
-                    "result_ingest",
                 ]
                 .into_iter()
                 .filter_map(|key| record.get(key).filter(|v| !v.is_null()))
                 .collect();
                 slots.sort_by_key(|v| v["sequence"].as_u64());
+                for (key, expected_event) in [
+                    ("result", "result_changed"),
+                    ("screen_state", "screen_state_changed"),
+                    ("music_selection", "music_selection_changed"),
+                    ("music_select_best", "music_select_best_observed"),
+                ] {
+                    let Some(slot) = record.get(key).filter(|value| !value.is_null()) else {
+                        continue;
+                    };
+                    if slot["event"].as_str() != Some(expected_event)
+                        || slot["sequence"]
+                            .as_u64()
+                            .is_none_or(|sequence| sequence >= snapshot_next_sequence)
+                    {
+                        return Err("invalid snapshot retained slot".into());
+                    }
+                    validate_public_record(slot, expected_invocation)?;
+                }
                 for slot in slots {
                     replacement.event(slot)?;
-                }
-                if active
-                    && replacement.session_id == previous_session
-                    && self.invocation == invocation
-                {
-                    replacement.retain_result_signal(previous_result, previous_episode);
                 }
                 if active
                     && replacement.view.chart.is_none()
@@ -70,7 +94,8 @@ impl Consumer {
                 replacement.view.connected = true;
                 *self = replacement;
             }
-            "scorepeek-event-v1" => {
+            "scorepeek-event-v2" => {
+                validate_public_record(record, expected_invocation)?;
                 let sequence = number(record, "sequence")?;
                 if !self.view.connected
                     || self.invocation != invocation
@@ -92,21 +117,11 @@ impl Consumer {
             "screen_state_changed" => {
                 self.view.screen.revision = self.view.screen.revision.saturating_add(1);
                 let Some(state) = record.get("state").filter(|value| !value.is_null()) else {
-                    self.finish_result_episode();
                     self.view.screen.kind = None;
                     self.view.screen.suspended_since_unix_ms = None;
                     return Ok(());
                 };
                 let screen = screen_kind(text(state, "screen")?)?;
-                if screen == ScreenKind::Result {
-                    let episode = number(state, "screen_episode_id")?;
-                    if self.result_episode_id != Some(episode) {
-                        self.result_episode_id = Some(episode);
-                        self.view.result_signal = LampState::Inactive;
-                    }
-                } else {
-                    self.finish_result_episode();
-                }
                 self.view.screen.kind = Some(screen);
                 self.view.screen.suspended_since_unix_ms = state["suspended"]
                     .as_bool()
@@ -129,23 +144,13 @@ impl Consumer {
                     _ => return Err("unsupported selection status".into()),
                 }
             }
-            "result_ingest_changed" => {
-                validate_result_ingest(record)?;
-            }
-            "result_provisional_changed" => {
-                let episode = number(record, "screen_episode_id")?;
-                if self.result_episode_id == Some(episode) {
-                    self.view.result_signal = match text(&record["state"], "status")? {
-                        "resolved" => LampState::Active,
-                        "withdrawn" => LampState::Error,
-                        _ => return Err("unsupported provisional result state".into()),
-                    };
-                }
-            }
-            "result_detected" => {
-                if record["capture"]["session_id"].as_str() == self.session_id.as_deref() {
-                    self.view.result_signal = LampState::Active;
-                }
+            "result_changed" => {
+                self.view.result_signal = match text(&record["state"], "status")? {
+                    "inactive" => LampState::Inactive,
+                    "provisional" | "confirmed" => LampState::Active,
+                    "retracted" => LampState::Error,
+                    _ => return Err("unsupported result state".into()),
+                };
             }
             "score_store_changed" => {
                 let _ = number(record, "revision")?;
@@ -164,8 +169,6 @@ impl Consumer {
                     record["status"]["watcher"].as_str(),
                     Some("session_finished" | "stopped")
                 ) {
-                    self.view.result_signal = LampState::Inactive;
-                    self.result_episode_id = None;
                     self.view.chart = None;
                     self.view.history = History::default();
                     self.view.screen.kind = None;
@@ -173,17 +176,13 @@ impl Consumer {
                     self.view.screen.revision = self.view.screen.revision.saturating_add(1);
                 }
             }
-            // Additive v1 events are intentionally skippable after envelope validation.
+            // Additive v2 events are intentionally skippable after envelope validation.
             _ => {}
         }
         Ok(())
     }
     fn apply_status(&mut self, status: &Value) {
         let session_id = status["capture"]["session_id"].as_str().map(str::to_owned);
-        if self.session_id.is_some() && self.session_id != session_id {
-            self.view.result_signal = LampState::Inactive;
-            self.result_episode_id = None;
-        }
         self.session_id = session_id;
         let dependencies_ready = ["catalog", "model"]
             .into_iter()
@@ -198,34 +197,6 @@ impl Consumer {
             }
             _ => LampState::Error,
         };
-    }
-
-    fn finish_result_episode(&mut self) {
-        if self.result_episode_id.take().is_some() && self.view.result_signal == LampState::Inactive
-        {
-            self.view.result_signal = LampState::Error;
-        }
-    }
-
-    fn retain_result_signal(&mut self, previous: LampState, previous_episode: Option<u64>) {
-        match (previous_episode, self.result_episode_id) {
-            (Some(previous_episode), Some(current_episode))
-                if previous_episode == current_episode =>
-            {
-                if self.view.result_signal == LampState::Inactive {
-                    self.view.result_signal = previous;
-                }
-            }
-            (Some(_), None) => {
-                self.view.result_signal = if previous == LampState::Inactive {
-                    LampState::Error
-                } else {
-                    previous
-                };
-            }
-            (None, None) => self.view.result_signal = previous,
-            _ => {}
-        }
     }
 
     pub fn disconnect(&mut self, now_unix_ms: i64) {
@@ -250,14 +221,309 @@ impl Consumer {
     }
 }
 
-fn validate_result_ingest(record: &Value) -> Result<(), String> {
-    let Some(ingest) = record.get("ingest").filter(|value| !value.is_null()) else {
-        return Ok(());
-    };
-    match text(ingest, "state")? {
-        "processing" | "persisted" | "failed" => Ok(()),
-        _ => Err("unsupported result ingest state".into()),
+fn validate_public_record(record: &Value, expected_invocation: &str) -> Result<(), String> {
+    let envelope: PublicEnvelope =
+        serde_json::from_value(record.clone()).map_err(|_| "invalid public event envelope")?;
+    if envelope.schema != "scorepeek-event-v2" || envelope.invocation_id != expected_invocation {
+        return Err("invalid public event envelope".into());
     }
+    let _ = (
+        envelope.sequence,
+        envelope.emitted_monotonic_ms,
+        envelope.emitted_unix_ms,
+    );
+    if envelope.event_id.is_empty() {
+        return Err("invalid public event id".into());
+    }
+    validate_capture(&envelope.capture)?;
+    match envelope.event.as_str() {
+        "screen_state_changed" => validate_screen(record),
+        "result_changed" => validate_result(record),
+        "music_selection_changed" => validate_selection(record),
+        "music_select_best_observed" => validate_select_best(record),
+        "status_changed" => validate_status(&record["status"]),
+        "score_store_changed" => {
+            number(record, "revision")?;
+            validate_chart(&record["chart"])
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_capture(capture: &Value) -> Result<(), String> {
+    if capture.is_null() {
+        return Ok(());
+    }
+    let object = capture.as_object().ok_or("invalid capture context")?;
+    if !object.contains_key("session_id")
+        || !(object["session_id"].is_null() || object["session_id"].is_string())
+    {
+        return Err("invalid capture session".into());
+    }
+    number(capture, "capture_generation")?;
+    let binding = object.get("binding").ok_or("missing capture binding")?;
+    if let Some(binding) = binding.as_object() {
+        for key in [
+            "capture_profile_sha256",
+            "normalizer_sha256",
+            "canonical_layout_sha256",
+            "catalog_sha256",
+            "model_sha256",
+            "runtime_sha256",
+        ] {
+            binding
+                .get(key)
+                .and_then(Value::as_str)
+                .ok_or("incomplete capture binding")?;
+        }
+    } else if !binding.is_null() {
+        return Err("invalid capture binding".into());
+    }
+    Ok(())
+}
+
+fn validate_screen(record: &Value) -> Result<(), String> {
+    let state = record.get("state").ok_or("missing screen state")?;
+    if state.is_null() {
+        return Ok(());
+    }
+    number(state, "screen_episode_id")?;
+    screen_kind(text(state, "screen")?)?;
+    state["suspended"]
+        .as_bool()
+        .ok_or_else(|| "missing screen suspended flag".to_owned())?;
+    Ok(())
+}
+
+fn validate_result(record: &Value) -> Result<(), String> {
+    number(record, "source_sequence")?;
+    let state = &record["state"];
+    match text(state, "status")? {
+        "inactive" => Ok(()),
+        "provisional" | "confirmed" => validate_result_identity(record, state),
+        "retracted" => {
+            match text(state, "reason")? {
+                "evidence_unresolved" | "attempt_rejected" | "session_ended" => {}
+                _ => return Err("unsupported result retraction reason".into()),
+            }
+            validate_result_identity(record, state)
+        }
+        _ => Err("unsupported result state".into()),
+    }
+}
+
+fn validate_result_identity(record: &Value, state: &Value) -> Result<(), String> {
+    let _session_id = record["capture"]["session_id"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .ok_or("missing result capture session")?;
+    let song_id = validate_song(state.get("song").ok_or("missing result song")?)?;
+    let result_id = validate_result_payload(&state["result"])?;
+    if song_id != result_id {
+        return Err("result song identity mismatch".into());
+    }
+    Ok(())
+}
+
+fn validate_song(song: &Value) -> Result<&str, String> {
+    if song.is_null() {
+        return Err("invalid result song".into());
+    }
+    let song_id = text(song, "scorepeek_song_id")?;
+    text(song, "artist")?;
+    if !song["display_titles"].as_array().is_some_and(|titles| {
+        !titles.is_empty()
+            && titles
+                .iter()
+                .all(|title| title.as_str().is_some_and(|value| !value.is_empty()))
+    }) {
+        return Err("invalid result song titles".into());
+    }
+    Ok(song_id)
+}
+
+fn validate_result_payload(result: &Value) -> Result<&str, String> {
+    if text(result, "contract")? != "scorepeek-result-detected-v2" {
+        return Err("unsupported result payload".into());
+    }
+    for key in ["attempt_id", "level", "notes", "current_score"] {
+        number(result, key)?;
+    }
+    let song_id = text(result, "scorepeek_song_id")?;
+    for key in [
+        "play_side",
+        "play_mode",
+        "play_type",
+        "difficulty",
+        "clear_type",
+    ] {
+        text(result, key)?;
+    }
+    for (object, fields) in [
+        (
+            &result["judgments"],
+            &["pgreat", "great", "good", "bad", "poor"][..],
+        ),
+        (&result["timing"], &["fast", "slow"] as &[&str]),
+        (
+            &result["previous_best"],
+            &["score", "miss_count", "clear_type"] as &[&str],
+        ),
+    ] {
+        let object = object.as_object().ok_or("invalid result object")?;
+        if fields.iter().any(|field| !object.contains_key(*field)) {
+            return Err("incomplete result payload".into());
+        }
+    }
+    for key in ["pgreat", "great", "good", "bad", "poor"] {
+        number(&result["judgments"], key)?;
+    }
+    validate_supplemental(&result["miss_count"], false, false)?;
+    validate_supplemental(&result["timing"]["fast"], false, false)?;
+    validate_supplemental(&result["timing"]["slow"], false, false)?;
+    validate_supplemental(&result["combo_break"], false, false)?;
+    validate_supplemental(&result["previous_best"]["score"], true, false)?;
+    validate_supplemental(&result["previous_best"]["miss_count"], true, false)?;
+    validate_supplemental(&result["previous_best"]["clear_type"], true, true)?;
+    match text(&result["play_options"], "status")? {
+        "known" => {
+            if !result["play_options"]["values"]
+                .as_array()
+                .is_some_and(|values| values.iter().all(Value::is_string))
+            {
+                return Err("invalid play options".into());
+            }
+        }
+        "unknown" => {
+            text(&result["play_options"], "reason")?;
+        }
+        _ => return Err("invalid play options".into()),
+    }
+    Ok(song_id)
+}
+
+fn validate_supplemental(value: &Value, previous: bool, known_string: bool) -> Result<(), String> {
+    match text(value, "status")? {
+        "known" => {
+            if (known_string && !value["value"].is_string())
+                || (!known_string && !value["value"].is_u64())
+            {
+                return Err("invalid known result field".into());
+            }
+        }
+        "unknown" => {
+            text(value, "reason")?;
+        }
+        "not_displayed" => {}
+        "not_played" if previous => {}
+        _ => return Err("invalid result field status".into()),
+    }
+    Ok(())
+}
+
+fn validate_selection(record: &Value) -> Result<(), String> {
+    for key in ["screen_episode_id", "source_sequence", "revision"] {
+        number(record, key)?;
+    }
+    let state = &record["state"];
+    match text(state, "status")? {
+        "selected" => {
+            validate_chart(state)?;
+            if !state["presentation"].is_object() {
+                return Err("missing selection presentation".into());
+            }
+            Ok(())
+        }
+        "unresolved" => text(state, "reason").map(|_| ()),
+        _ => Err("unsupported selection status".into()),
+    }
+}
+
+fn validate_select_best(record: &Value) -> Result<(), String> {
+    let snapshot = record
+        .get("snapshot")
+        .ok_or("missing music select best snapshot")?;
+    if snapshot.is_null() {
+        return Ok(());
+    }
+    if text(snapshot, "contract")? != "scorepeek-music-select-best-snapshot-v1" {
+        return Err("unsupported music select best snapshot".into());
+    }
+    number(snapshot, "revision")?;
+    text(snapshot, "observation_id")?;
+    validate_chart(&snapshot["chart"])?;
+    for key in ["score", "miss_count", "clear_type"] {
+        if !snapshot["values"].get(key).is_some_and(Value::is_object) {
+            return Err("incomplete music select best snapshot".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_status(status: &Value) -> Result<(), String> {
+    let object = status.as_object().ok_or("invalid status payload")?;
+    for key in [
+        "watcher",
+        "capture",
+        "catalog",
+        "model",
+        "scores",
+        "recording",
+        "last_session_outcome",
+    ] {
+        if !object.contains_key(key) {
+            return Err("incomplete status payload".into());
+        }
+    }
+    if !status["capture"].is_null() {
+        validate_capture(&status["capture"])?;
+    }
+    match text(status, "watcher")? {
+        "starting"
+        | "waiting_for_source"
+        | "ambiguous_sources"
+        | "remote_unavailable"
+        | "catalog_unavailable"
+        | "admission_rejected"
+        | "session_active"
+        | "session_finished"
+        | "stopped" => {}
+        _ => return Err("invalid watcher status".into()),
+    }
+    for key in ["catalog", "model"] {
+        if !matches!(
+            status[key].as_str(),
+            Some("not_ready" | "ready" | "unavailable")
+        ) {
+            return Err("invalid readiness".into());
+        }
+    }
+    for key in ["scores", "recording"] {
+        if !status[key].is_null()
+            && !matches!(
+                status[key].as_str(),
+                Some("not_ready" | "ready" | "unavailable")
+            )
+        {
+            return Err("invalid optional readiness".into());
+        }
+    }
+    if !status["last_session_outcome"].is_null()
+        && !matches!(
+            status["last_session_outcome"].as_str(),
+            Some("stopped" | "source_ended" | "error")
+        )
+    {
+        return Err("invalid session outcome".into());
+    }
+    Ok(())
+}
+
+fn validate_chart(chart: &Value) -> Result<(), String> {
+    for key in ["scorepeek_song_id", "play_type", "difficulty"] {
+        text(chart, key)?;
+    }
+    Ok(())
 }
 
 fn screen_kind(value: &str) -> Result<ScreenKind, String> {
@@ -301,12 +567,113 @@ fn chart(value: &Value, presentation: &Value) -> Result<Chart, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn status() -> Value {
+        json!({"watcher":"session_active","capture":{"session_id":"session","capture_generation":1,"binding":null},"catalog":"ready","model":"ready","scores":"ready","recording":null,"last_session_outcome":null})
+    }
+
+    fn result_payload() -> Value {
+        json!({"contract":"scorepeek-result-detected-v2","attempt_id":1,"scorepeek_song_id":"song","play_side":"1p","play_mode":"sp","play_type":"single","difficulty":"hyper","level":10,"notes":1000,"current_score":100,"clear_type":"CLEAR","judgments":{"pgreat":1,"great":2,"good":3,"bad":4,"poor":5},"miss_count":{"status":"known","value":9},"timing":{"fast":{"status":"known","value":4},"slow":{"status":"known","value":5}},"combo_break":{"status":"known","value":6},"previous_best":{"score":{"status":"known","value":90},"miss_count":{"status":"known","value":10},"clear_type":{"status":"known","value":"FAILED"}},"play_options":{"status":"known","values":[]}})
+    }
+
+    fn result_state(state: &str) -> Value {
+        match state {
+            "inactive" => json!({"status":"inactive"}),
+            "retracted" => {
+                json!({"status":"retracted","song":{"scorepeek_song_id":"song","display_titles":["Synthetic song"],"artist":"Synthetic artist"},"result":result_payload(),"reason":"evidence_unresolved"})
+            }
+            _ => {
+                json!({"status":state,"song":{"scorepeek_song_id":"song","display_titles":["Synthetic song"],"artist":"Synthetic artist"},"result":result_payload()})
+            }
+        }
+    }
+
+    fn wire(sequence: u64, event: &Value) -> Value {
+        let mut record = json!({"schema":"scorepeek-event-v2","invocation_id":"a","sequence":sequence,"event_id":format!("a:{sequence}"),"emitted_monotonic_ms":sequence,"emitted_unix_ms":1000+i64::try_from(sequence).unwrap(),"capture":{"session_id":"session","capture_generation":1,"binding":null}});
+        record
+            .as_object_mut()
+            .unwrap()
+            .extend(event.as_object().unwrap().clone());
+        record
+    }
+
+    fn snapshot(next_sequence: u64, result: &Value, screen: Option<&Value>) -> Value {
+        let result = json!({"event":"result_changed","source_sequence":0,"state":result});
+        json!({"schema":"scorepeek-event-snapshot-v2","invocation_id":"a","next_sequence":next_sequence,"status":status(),"result":wire(0,&result),"screen_state":screen,"music_selection":null,"music_select_best":null})
+    }
+
     #[test]
-    fn unknown_v1_event_advances_sequence() {
+    fn unknown_v2_event_advances_sequence() {
         let mut c = Consumer::default();
-        c.apply(&json!({"schema":"scorepeek-event-snapshot-v1","invocation_id":"a","next_sequence":2,"status":{"watcher":"session_active"}}),"a").unwrap();
-        c.apply(&json!({"schema":"scorepeek-event-v1","invocation_id":"a","sequence":2,"event":"future_event"}),"a").unwrap();
+        c.apply(&snapshot(2, &result_state("inactive"), None), "a")
+            .unwrap();
+        c.apply(&wire(2, &json!({"event":"future_event"})), "a")
+            .unwrap();
         assert!(c.view.connected);
+    }
+
+    #[test]
+    fn malformed_envelope_and_known_payload_do_not_advance_state() {
+        let mut missing_result = snapshot(2, &result_state("inactive"), None);
+        missing_result["result"] = Value::Null;
+        assert!(Consumer::default().apply(&missing_result, "a").is_err());
+        let wrong_slot = wire(1, &json!({"event":"future_event"}));
+        assert!(
+            Consumer::default()
+                .apply(
+                    &snapshot(2, &result_state("inactive"), Some(&wrong_slot)),
+                    "a"
+                )
+                .is_err()
+        );
+
+        let mut c = Consumer::default();
+        c.apply(&snapshot(2, &result_state("inactive"), None), "a")
+            .unwrap();
+        let mut missing_id = wire(2, &json!({"event":"future_event"}));
+        missing_id.as_object_mut().unwrap().remove("event_id");
+        assert!(c.apply(&missing_id, "a").is_err());
+        let incomplete = wire(
+            2,
+            &json!({"event":"result_changed","source_sequence":2,"state":{"status":"provisional"}}),
+        );
+        assert!(c.apply(&incomplete, "a").is_err());
+        let mut wrong_nested = wire(
+            2,
+            &json!({"event":"result_changed","source_sequence":2,"state":result_state("provisional")}),
+        );
+        wrong_nested["state"]["result"]["judgments"]["pgreat"] = json!("1");
+        assert!(c.apply(&wrong_nested, "a").is_err());
+        let mut missing_song = wire(
+            2,
+            &json!({"event":"result_changed","source_sequence":2,"state":result_state("provisional")}),
+        );
+        missing_song["state"]
+            .as_object_mut()
+            .unwrap()
+            .remove("song");
+        assert!(c.apply(&missing_song, "a").is_err());
+        let mut mismatched_song = wire(
+            2,
+            &json!({"event":"result_changed","source_sequence":2,"state":result_state("provisional")}),
+        );
+        mismatched_song["state"]["song"]["scorepeek_song_id"] = json!("other-song");
+        assert!(c.apply(&mismatched_song, "a").is_err());
+        let mut empty_title = wire(
+            2,
+            &json!({"event":"result_changed","source_sequence":2,"state":result_state("provisional")}),
+        );
+        empty_title["state"]["song"]["display_titles"] = json!([""]);
+        assert!(c.apply(&empty_title, "a").is_err());
+        let mut missing_capture = wire(
+            2,
+            &json!({"event":"result_changed","source_sequence":2,"state":result_state("provisional")}),
+        );
+        missing_capture["capture"] = Value::Null;
+        assert!(c.apply(&missing_capture, "a").is_err());
+        assert_eq!(c.view.result_signal, LampState::Inactive);
+        c.apply(&wire(2, &json!({"event":"future_event"})), "a")
+            .unwrap();
     }
     #[test]
     fn selection_carries_chart_attributes() {
@@ -333,8 +700,6 @@ mod tests {
         c.event(&json!({"event":"music_selection_changed","state":{"status":"selected","scorepeek_song_id":"s","play_type":"single","difficulty":"hyper","presentation":{"display_titles":["T"]}}})).unwrap();
         c.event(&json!({"event":"music_select_best_observed","snapshot":null}))
             .unwrap();
-        c.event(&json!({"event":"result_ingest_changed","ingest":{"state":"persisted"}}))
-            .unwrap();
         c.event(&json!({"event":"score_store_changed","revision":1,"chart":{"scorepeek_song_id":"other","play_type":"single","difficulty":"hyper"}})).unwrap();
         assert_eq!(c.query_revision, 0);
         c.event(&json!({"event":"score_store_changed","revision":2,"chart":{"scorepeek_song_id":"s","play_type":"single","difficulty":"hyper"}})).unwrap();
@@ -342,145 +707,56 @@ mod tests {
     }
 
     #[test]
-    fn result_signal_tracks_provisional_readiness_until_the_next_result() {
+    fn result_signal_tracks_only_explicit_result_states() {
         let mut c = Consumer::default();
         c.apply_status(&json!({"watcher":"session_active","capture":{"session_id":"session"},"catalog":"ready","model":"ready","scores":"ready","recording":null}));
         c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":100,"state":{"screen_episode_id":7,"screen":"result","suspended":false}})).unwrap();
         assert_eq!(c.view.result_signal, LampState::Inactive);
-        c.event(&json!({"event":"result_provisional_changed","screen_episode_id":7,"state":{"status":"resolved"}})).unwrap();
+        c.event(&json!({"event":"result_changed","state":{"status":"provisional"}}))
+            .unwrap();
         assert_eq!(c.view.result_signal, LampState::Active);
-        c.event(&json!({"event":"result_provisional_changed","screen_episode_id":7,"state":{"status":"withdrawn"}})).unwrap();
+        c.event(&json!({"event":"result_changed","state":{"status":"retracted"}}))
+            .unwrap();
         assert_eq!(c.view.result_signal, LampState::Error);
-        c.event(&json!({"event":"result_provisional_changed","screen_episode_id":7,"state":{"status":"resolved"}})).unwrap();
+        c.event(&json!({"event":"result_changed","state":{"status":"confirmed"}}))
+            .unwrap();
         c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":200,"state":null}))
             .unwrap();
         assert_eq!(c.view.result_signal, LampState::Active);
         c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":300,"state":{"screen_episode_id":8,"screen":"result","suspended":false}})).unwrap();
-        assert_eq!(c.view.result_signal, LampState::Inactive);
+        assert_eq!(c.view.result_signal, LampState::Active);
         c.event(&json!({"event":"screen_state_changed","emitted_unix_ms":400,"state":null}))
             .unwrap();
-        assert_eq!(c.view.result_signal, LampState::Error);
+        assert_eq!(c.view.result_signal, LampState::Active);
         c.event(&json!({"event":"status_changed","status":{"watcher":"session_finished","capture":null}})).unwrap();
-        assert_eq!(c.view.result_signal, LampState::Inactive);
+        assert_eq!(c.view.result_signal, LampState::Active);
     }
 
     #[test]
-    fn same_session_reconnect_retains_result_signal_and_new_session_clears_it() {
-        let status = json!({
-            "watcher":"session_active",
-            "capture":{"session_id":"session"},
-            "catalog":"ready",
-            "model":"ready",
-            "scores":"ready",
-            "recording":null
-        });
-        let screen = json!({
-            "event":"screen_state_changed",
-            "sequence":2,
-            "emitted_unix_ms":100,
-            "state":{"screen_episode_id":7,"screen":"result","suspended":false}
-        });
+    fn reconnect_restores_the_explicit_result_state() {
         let mut c = Consumer::default();
-        c.apply(
-            &json!({
-                "schema":"scorepeek-event-snapshot-v1",
-                "invocation_id":"a",
-                "next_sequence":3,
-                "status":status,
-                "screen_state":screen
-            }),
-            "a",
-        )
-        .unwrap();
-        c.apply(
-            &json!({
-                "schema":"scorepeek-event-v1",
-                "invocation_id":"a",
-                "sequence":3,
-                "event":"result_provisional_changed",
-                "screen_episode_id":7,
-                "state":{"status":"resolved"}
-            }),
-            "a",
-        )
-        .unwrap();
-        c.disconnect(200);
-        c.expire_screen(1_200, 1_000);
+        c.apply(&snapshot(4, &result_state("provisional"), None), "a")
+            .unwrap();
         assert_eq!(c.view.result_signal, LampState::Active);
-
-        c.apply(
-            &json!({
-                "schema":"scorepeek-event-snapshot-v1",
-                "invocation_id":"a",
-                "next_sequence":4,
-                "status":status,
-                "screen_state":screen
-            }),
-            "a",
-        )
-        .unwrap();
-        assert_eq!(c.view.result_signal, LampState::Active);
-
-        c.apply(
-            &json!({
-                "schema":"scorepeek-event-snapshot-v1",
-                "invocation_id":"a",
-                "next_sequence":5,
-                "status":{
-                    "watcher":"session_active",
-                    "capture":{"session_id":"next-session"},
-                    "catalog":"ready",
-                    "model":"ready",
-                    "scores":"ready",
-                    "recording":null
-                }
-            }),
-            "a",
-        )
-        .unwrap();
-        assert_eq!(c.view.result_signal, LampState::Inactive);
     }
 
     #[test]
-    fn first_snapshot_restores_a_resolved_provisional_result() {
+    fn first_snapshot_restores_a_retracted_result() {
         let mut c = Consumer::default();
-        c.apply(
-            &json!({
-                "schema":"scorepeek-event-snapshot-v1",
-                "invocation_id":"a",
-                "next_sequence":4,
-                "status":{
-                    "watcher":"session_active",
-                    "capture":{"session_id":"session"},
-                    "catalog":"ready",
-                    "model":"ready",
-                    "scores":"ready",
-                    "recording":null
-                },
-                "screen_state":{
-                    "event":"screen_state_changed",
-                    "sequence":2,
-                    "emitted_unix_ms":100,
-                    "state":{"screen_episode_id":7,"screen":"result","suspended":false}
-                },
-                "provisional_result":{
-                    "event":"result_provisional_changed",
-                    "sequence":3,
-                    "screen_episode_id":7,
-                    "state":{"status":"resolved"}
-                }
-            }),
-            "a",
-        )
-        .unwrap();
-        assert_eq!(c.view.result_signal, LampState::Active);
+        let screen = wire(
+            2,
+            &json!({"event":"screen_state_changed","state":{"screen_episode_id":7,"screen":"result","suspended":false}}),
+        );
+        c.apply(&snapshot(4, &result_state("retracted"), Some(&screen)), "a")
+            .unwrap();
+        assert_eq!(c.view.result_signal, LampState::Error);
         c.event(&json!({
             "event":"screen_state_changed",
             "emitted_unix_ms":200,
             "state":null
         }))
         .unwrap();
-        assert_eq!(c.view.result_signal, LampState::Active);
+        assert_eq!(c.view.result_signal, LampState::Error);
     }
 
     #[test]

@@ -7,10 +7,10 @@ checkpoint; implementation history belongs in Git.
 
 - M3 common PipeWire receiver/Gamescope observed-frame profile and M4 canonical recognition,
   evidence-first attempt resolution, and versioned event API remain in progress.
-- RESULT v2 remains the confirmed play/history contract. MUSIC SELECT best snapshot v1 is a
+- RESULT payload v2 is shared by provisional, retracted, and confirmed attempt state. MUSIC SELECT best snapshot v1 is a
   separate supplemental observation, not a play. ADR 0120 adds local score persistence;
   query CLI remains outside scope. ADR 0122 adds independent Wayland/OBS live overlays.
-- The public live API is socket/snapshot v1. Diagnostic protocols remain run-event v11 and recognition observation v22.
+- The public live API is Event API/socket snapshot v2 on stable `events.sock`. Diagnostic protocols remain run-event v12 and recognition observation v22.
   Joined sessions and private attempt labels remain v5. Readers retain supported older shapes and
   reject unknown versions.
 
@@ -58,9 +58,9 @@ checkpoint; implementation history belongs in Git.
   Blitz/Dioxus event dispatch; the visual harness exercises those callbacks. OBS owns reactive state
   and uses the existing backend lease API; its imperative JavaScript editor has been removed. Fixed mise XKB build inputs replace host development metadata;
   `libxkbcommon.so.0` is a native runtime prerequisite.
-- ADR 0130 makes the status widget RESULT lamp a provisional-readiness signal. A new RESULT is
-  unlit, resolved is green, withdrawn or exit without resolution is red, and the outcome remains
-  visible until the next RESULT or session end. Persistence state no longer drives the lamp.
+- ADR 0139 makes the status widget RESULT lamp follow the explicit result state: inactive is unlit,
+  provisional/confirmed is green, and retracted is red. PLAY and capture-session start publish
+  inactive; session finish retains the last result state.
 - ADR 0136 makes the native Wayland shell select the C client backend and dynamic loading
   explicitly. Building no longer requires host Wayland pkg-config metadata, development headers or
   an unversioned linker name; `libwayland-client.so.0` remains a live-runtime host boundary.
@@ -91,23 +91,24 @@ checkpoint; implementation history belongs in Git.
   Supplemental/reference changes do not revoke it (ADR 0083/0087); once accepted, repeated
   supplemental payloads may update the presentation without blocking close-time confirmation.
 
-- ADR 0126 adds a public `result_ingest_changed` lifecycle and nullable snapshot slot. With scores
-  enabled, RESULT begins processing; committed or duplicate DB success becomes persisted, while
-  recognition, persistence, timeout or interruption failures remain failed until DECIDE/PLAY clears
-  them. Status adds nullable score and recording readiness. Unknown additive v1 events are ignored
-  only after envelope and sequence validation. This does not make the public RESULT a DB authority.
+- Event API v2 removes `result_ingest_changed`; recognition state is the single `result_changed`
+  lifecycle, successful DB commits publish `score_store_changed`, and persistence failure remains in
+  score health/status. Unknown additive v2 events are ignored only after envelope/sequence validation.
 - Overlay consumers still do not initialize recognition or own capture resources. Children receive
   invocation/socket/DB/config and terminate on parent-pipe EOF; one overlay failure does not stop
   recognition, persistence or its peer. Parent controller diagnostics use a bounded in-process queue
   and the recording path rather than writing JSON to the TUI terminal. No overlay flag preserves the
   overlay-free behavior.
 
-- ADR 0120 adds `scorepeek-scores` as an independent public event v1 consumer. Normal run saves to
+- ADR 0139 advances `scorepeek-scores` to the independent public Event API v2 consumer. Normal run saves to
   the XDG data score database; `--scores-db` selects an instance and `--no-scores` disables it.
-  Confirmed RESULTs are deduplicated history. SELECT-only charts have best rows without plays;
+  Provisional RESULTs insert/update one attempt row immediately, retraction deletes it, and confirmation updates it. SELECT-only charts have best rows without plays;
   SELECT retains per-field current supplements, not revision history. Later known/no-record values
   can correct supplements, while RESULT/previous-best sources retain cumulative bests.
-- Integrated chart bests retain per-field provenance and are recomputed after SELECT corrections.
+- Integrated chart bests retain per-field provenance and are recomputed after RESULT retraction as well as SELECT corrections.
+  Database schema v2 migrates existing plays as confirmed, preserves the first provisional timestamp
+  across re-resolution, and promotes crash-left provisional rows to confirmed with recovery provenance
+  only after acquiring the database-specific single-writer lifetime lock.
   Public events carry an immutable `emitted_unix_ms` notification timestamp. SQLite transactions,
   WAL/FULL, bounded worker admission and bounded drain separate committed from unsaved data.
   Socket failures no longer freeze public projection or score delivery. Save failures stop score
@@ -126,8 +127,8 @@ checkpoint; implementation history belongs in Git.
   workers commit observations in source order. Identity uses independent song/chart factors,
   normalized family support and separate song/sibling-chart margins. SELECT and RESULT retain
   independent resolvers; best values never become identity evidence.
-- Only confirmed attempts emit `scorepeek-result-detected-v2`. Provisional RESULT uses the same
-  payload but a separate lifecycle and cannot increase result count. Ordered optional play options
+- `result_changed` emits inactive/provisional/retracted/confirmed around the unchanged
+  `scorepeek-result-detected-v2` payload; only confirmed increases result count. Ordered optional play options
   use the fixed label/marker and two matching observations. SELECT incumbent/successor evidence and
   latest-known difficulty hand off to the attempt after close-time drain.
 - ADR 0114 adds the independently measured SELECT SCORE DATA layout v1. SCORE, MISS COUNT and clear
@@ -148,11 +149,11 @@ checkpoint; implementation history belongs in Git.
 - Resolver notifications compare semantic state: resolved clock/streak updates alone do not emit.
   Internal observations remain fresh; connecting-client snapshots use the last published state.
   Held identity, current stabilization and the last published revision are distinct in the TUI.
-- ADR 0119 promotes `v1.sock` to the public snapshot/live NDJSON API. Confirmed/provisional RESULT,
+- ADR 0139 promotes stable `events.sock` and Event API v2 as the public snapshot/live NDJSON API. One four-state RESULT,
   current selection, supplemental SELECT best and operational status have a separate typed projection,
   public sequence, event identity and session binding. Raw observations, candidates, resolver state,
   timing, recording paths and history arrays remain internal. The observation socket is removed;
-  TUI, run-event v11 recording and headless replay continue to use their existing internal contracts.
+  TUI, run-event v12 recording and headless replay use the same result-state vocabulary.
 - Snapshot and publication share the sequence boundary. Queue overflow disconnects existing clients;
   slow clients are isolated. Events and snapshots are bounded to 1 MiB. Oversize or worker failure
   disables public delivery without changing recognition. Reconnect restores current state, not all
@@ -347,12 +348,18 @@ checkpoint; implementation history belongs in Git.
   Connecting snapshots preserve the last publication. Existing four-pane gate tests and held-state
   rendering pass at 120x40 and 80x25. Trace capacity/no-overwrite tests pass.
 - `mise run check`, workspace/all-target Clippy and the complete default-parallel `mise run test`
-  pass (506 runtime, 323 binary, 128 corpus library, 5 corpus binary and 13 scores tests, plus 99 offline OCR tests).
+  pass on the Event API v2/result-lifecycle snapshot. The suite includes 507 runtime library tests,
+  20 score-store tests and 62 embedded-web overlay tests; focused score-store and overlay runs pass
+  independently as well.
   Public API tests cover snapshot/live folding, provenance readiness, old queued-record exclusion,
   overflow with no subsequent event, idle reconnects/write-half-close, partial/slow clients, record
   limits, channel failure non-interference, and socket ownership cleanup. Raw diagnostic records and
-  accepted RESULT payloads remain separate. The binding-mismatch fixture uses the existing isolated
-  test supervisor. Independent final review of the API promotion has no actionable findings.
+  accepted RESULT payloads remain separate. Result-lifecycle coverage includes complete public-wire
+  validation, provisional update/retraction/confirmation under one attempt identity, confirmed-only
+  counts, v1 database migration, crash recovery under the database writer lease, snapshot reconnect,
+  SQLite-driven overlay detail and explicit inactive/retracted lamps. The binding-mismatch fixture
+  uses the existing isolated test supervisor. Independent final contract review has no remaining
+  actionable findings.
 - Trace provenance binds the running executable and both SELECT layouts; the three-file hash is
   explicitly a partial source fingerprint. Full production replay covers the final reducer/recognition
   behavior. Subsequent writer-provenance and test-fixture-only corrections pass focused tests,
