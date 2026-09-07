@@ -1272,6 +1272,7 @@ impl App {
                 .external_stop
                 .load(std::sync::atomic::Ordering::Acquire)
         {
+            let editing_before = self.editing.get();
             self.sync_workspace_projection();
             let should_edit = self
                 .workspace_open
@@ -1412,7 +1413,8 @@ impl App {
                 *self.shared_state.borrow_mut() = latest;
                 wake = true;
             }
-            let changed = wake && self.poll_dioxus();
+            let changed =
+                should_poll_dioxus(wake, editing_before, self.editing.get()) && self.poll_dioxus();
             self.pending_paint |= changed || visibility_changed;
             let reason = if configured {
                 Some(if self.paint_count == 0 {
@@ -2242,6 +2244,9 @@ impl Drop for App {
 
 const fn release_backend_on_drop(editing: bool, workspace_open: bool) -> bool {
     editing && !workspace_open
+}
+const fn should_poll_dioxus(surface_wake: bool, editing_before: bool, editing_after: bool) -> bool {
+    surface_wake || editing_before != editing_after
 }
 const fn control_updates_readonly(request: &crate::control::Request) -> bool {
     matches!(
@@ -3457,6 +3462,14 @@ mod skin_tests {
         assert!(!release_backend_on_drop(true, true));
         assert!(release_backend_on_drop(true, false));
         assert!(!release_backend_on_drop(false, false));
+    }
+
+    #[test]
+    fn peer_editor_transition_polls_without_a_local_surface_event() {
+        assert!(should_poll_dioxus(false, true, false));
+        assert!(should_poll_dioxus(false, false, true));
+        assert!(should_poll_dioxus(true, false, false));
+        assert!(!should_poll_dioxus(false, false, false));
     }
 
     #[test]
