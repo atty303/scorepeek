@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 mod appearance;
 mod assets;
 pub mod composition;
+pub mod editor;
 mod frame;
 pub use composition::{AspectRatio, Background, FrameWidth};
 pub mod motion;
@@ -15,9 +16,7 @@ pub const OXANIUM: &[u8] = include_bytes!("../assets/fonts/Oxanium.ttf");
 pub const BASE_CSS: &str = include_str!("../styles/base.css");
 pub const EDITOR_CSS: &str = concat!(
     include_str!("../styles/editor.css"),
-    include_str!("../styles/native-editor-v2.css"),
-    include_str!("../styles/native-editor-v3.css"),
-    include_str!("../styles/native-editor-v4.css")
+    include_str!("../styles/editor-button.css")
 );
 pub const SKIN_CSS: &str = concat!(
     include_str!("../styles/cyan-system.css"),

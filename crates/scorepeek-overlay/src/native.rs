@@ -18,6 +18,9 @@ use dioxus::prelude::*;
 use dioxus_core::VirtualDom;
 use dioxus_native_dom::DioxusDocument;
 use scorepeek_overlay_handles::{CursorStyle, Event, OutputDescription, Shell};
+use scorepeek_overlay_ui::editor::{
+    EditorAccess, EditorChrome, EditorOutput, EditorPanel, EditorTitleState, EditorView,
+};
 use scorepeek_overlay_ui::{Appearance, OXANIUM, OverlayState, WidgetLayout, overlay_canvas};
 use serde::{Deserialize, Serialize};
 use smithay_client_toolkit::reexports::calloop::ping::{Ping, make_ping};
@@ -359,22 +362,6 @@ struct NativeReactiveState {
     title_edit: Reactive<Option<TitleEdit>>,
 }
 
-fn delete_canvas_button(disabled: bool) -> Element {
-    if disabled {
-        rsx! { button { class:"delete-canvas danger", disabled:true, "DELETE SELECTED" } }
-    } else {
-        rsx! { button { class:"delete-canvas danger", "DELETE SELECTED" } }
-    }
-}
-
-fn undo_button(available: bool) -> Element {
-    if available {
-        rsx! { button { class:"undo-action", "UNDO" } }
-    } else {
-        rsx! { button { class:"undo-action", disabled:true, "UNDO" } }
-    }
-}
-
 fn use_native_reactive_state(
     NativeOverlayProps {
         state,
@@ -439,13 +426,6 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
         current
     };
     let current_settings = settings.borrow().clone();
-    let selected_widget = selected.borrow().as_ref().and_then(|id| {
-        widgets
-            .borrow()
-            .iter()
-            .find(|widget| &widget.id == id)
-            .cloned()
-    });
     let selected_visible = current_settings.has_selection
         && scorepeek_overlay_ui::canvas_visible(
             current_settings.show_on.as_deref(),
@@ -475,43 +455,26 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
             }
         }
         if editing.get() {
-            button { class:if reactive.dirty.get(){"native-panel-toggle dirty"}else{"native-panel-toggle"}, "aria-label":if reactive.panel_open.get(){"Hide editor panel"}else{"Show editor panel"}, "data-state":if reactive.panel_open.get(){"open"}else{"closed"}, if reactive.panel_open.get(){"‹"}else{"›"} span { class:"dirty-dot" } }
-            if reactive.panel_open.get() { div { class:"native-canvas-manager", style:format!("width:{}px",current_settings.panel_width),
-                header { strong { "SCOREPEEK OVERLAY" } small { "WAYLAND EDITOR" } if sample { b { "SAMPLE DATA" } } if reactive.dirty.get() { i { class:"unsaved-dot" } } }
-                div { class:"editor-fixed-top", p { "GAME SCREEN" } div { class:"preview-tabs",
-                    for (index,(label,kind)) in [("MUSIC SELECT",scorepeek_overlay_ui::ScreenKind::MusicSelect),("MODE SELECT",scorepeek_overlay_ui::ScreenKind::ModeSelect),("DECIDE",scorepeek_overlay_ui::ScreenKind::DecideTransition),("PLAY",scorepeek_overlay_ui::ScreenKind::Play),("RESULT",scorepeek_overlay_ui::ScreenKind::Result)].into_iter().enumerate() {
-                        button { class:if current_settings.preview_screen==kind{"selected preview-screen"}else{"preview-screen"}, "aria-selected":current_settings.preview_screen==kind, "data-index":index, "{label}" }
-                    }
-                }
-                section { class:"canvas-section", h2 { "CANVASES" }
-                    nav { class:"canvas-list", for canvas in managed.borrow().iter() {
-                        div { class:"canvas-row",
-                            button { class:if current_settings.has_selection && canvas.id==current_settings.id{"canvas-select selected"}else{"canvas-select"}, "aria-selected":current_settings.has_selection && canvas.id==current_settings.id, "data-canvas-id":"{canvas.id}", "{canvas.id}" }
-                            button { class:if scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), scorepeek_overlay_ui::ScreenView { kind:Some(current_settings.preview_screen), suspended_since_unix_ms:None, revision:0 }){"screen-toggle selected"}else{"screen-toggle"}, "aria-pressed":scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), scorepeek_overlay_ui::ScreenView { kind:Some(current_settings.preview_screen), suspended_since_unix_ms:None, revision:0 }), "data-canvas-id":"{canvas.id}", if scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), scorepeek_overlay_ui::ScreenView { kind:Some(current_settings.preview_screen), suspended_since_unix_ms:None, revision:0 }){"ON"}else{"OFF"} }
-                        }
-                    } }
-                    div { class:"canvas-actions", button { class:"add-canvas", "+ ADD CANVAS" } {delete_canvas_button(managed.borrow().len()<=1 || !current_settings.has_selection)} }
-                }
-                }
-                div { class:"editor-tab-body",
-                if current_settings.has_selection { section { class:"appearance-pane", h2 { "APPEARANCE" } h3 { "SKIN" }
-                    div { class:"native-skin-options button-grid three", for (index,(label,skin)) in [("CYAN",scorepeek_overlay_ui::Skin::CyanSystem),("AURORA",scorepeek_overlay_ui::Skin::ResultAurora),("BLACKBOX",scorepeek_overlay_ui::Skin::DjBlackbox)].into_iter().enumerate() { button { class:if appearance.get().skin==skin{"skin-option selected"}else{"skin-option"}, "aria-pressed":appearance.get().skin==skin, "data-index":index, if appearance.get().skin==skin{"✓ "} "{label}" } } }
-                    h3 { "BACKGROUND" }
-                    div { class:"button-grid three", for (index,(label,mode)) in [("NONE",scorepeek_overlay_ui::Background::None),("STATIC",scorepeek_overlay_ui::Background::Static),("ANIMATED",scorepeek_overlay_ui::Background::Animated)].into_iter().enumerate() { button { class:if current_settings.background == mode {"background-option selected"}else{"background-option"}, "data-index":index, "{label}" } } }
-                    h3 { "OPACITY" }
-                    div { class:"native-opacity button-grid four", for value in [25,50,75,100] { button { class:if current_settings.opacity_percent==value{"opacity-option selected"}else{"opacity-option"}, "aria-pressed":current_settings.opacity_percent==value, "data-value":value, if current_settings.opacity_percent==value{"✓ "} "{value}" } } }
-                }
-                section { class:"output-pane", h2 { "OUTPUT" } div { class:"output-list", for output in reactive.outputs.borrow().iter() { button { class:if current_settings.output.as_deref()==Some(output.name.as_str()){"output-option selected"}else{"output-option"}, "aria-selected":current_settings.output.as_deref()==Some(output.name.as_str()), "data-output":"{output.name}", strong { if current_settings.output.as_deref()==Some(output.name.as_str()){"✓ "} "{output.name}" } small { "{output.model}" if let Some([width,height])=output.logical_size { " · {width}×{height}" } } } } } }
-                if selected_visible { section { class:"widgets-pane", h2 { "WIDGETS" }
-                    for widget in widgets.borrow().iter() { button { class:if selected.borrow().as_deref()==Some(widget.id.as_str()){"widget-row selected"}else{"widget-row"}, "aria-selected":selected.borrow().as_deref()==Some(widget.id.as_str()), "data-widget-id":"{widget.id}", "{widget.id}" } }
-                    details { class:"widget-add", open:reactive.widget_add_open.get(), summary { class:"widget-add-summary", "+ ADD WIDGET" } if reactive.widget_add_open.get() { div { class:"button-grid", for (index,label) in ["STATUS","SELECTION","SCORE","HISTORY LIST","HISTORY GRAPH","EMPTY"].into_iter().enumerate() { button { class:"add-widget", "data-index":index, "+ {label}" } } } } }
-                    if let Some(widget) = selected_widget {
-                        {native_widget_settings(&widget, reactive.title_edit.borrow().as_ref())}
-                    }
-                } } else { div { class:"canvas-hidden-state", strong { "HIDDEN ON THIS GAME SCREEN" } span { "Turn this canvas ON in the list to edit its widgets." } } } } else { div { class:"canvas-hidden-state", strong { "NO CANVAS ON THIS GAME SCREEN" } span { "Turn a canvas ON or add one for this game screen." } } }
-                }
-                footer { {undo_button(reactive.undo_available.get())} div { class:"footer-actions", if reactive.dirty.get() { button { class:"discard-action", "DISCARD CHANGES" } button { class:"primary save-action", "SAVE ALL CHANGES AND CLOSE" } } else { button { class:"close-action", "CLOSE EDITOR" } } } }
-            } }
+            EditorPanel {
+                view: EditorView {
+                    backend_label:"WAYLAND EDITOR".into(),
+                    canvases: managed.borrow().clone(),
+                    selected_canvas: current_settings.has_selection.then(||current_settings.id.clone()),
+                    selected_widget:selected.borrow().clone(),
+                    preview_screen:current_settings.preview_screen,
+                    outputs:Some(reactive.outputs.borrow().iter().map(|output|EditorOutput {name:output.name.clone(),model:output.model.clone(),logical_size:output.logical_size}).collect()),
+                    panel_width:current_settings.panel_width,
+                    chrome:EditorChrome {panel_open:reactive.panel_open.get(),
+                    widget_add_open:reactive.widget_add_open.get(),sample},
+                    access:EditorAccess {dirty:reactive.dirty.get(),readonly:false,
+                    undo_available:reactive.undo_available.get()},
+                    title:reactive.title_edit.borrow().as_ref().map_or(EditorTitleState::Closed,|edit|if edit.preedit.is_empty(){EditorTitleState::Editing}else{EditorTitleState::Composing}),
+                },
+                title_input:rsx! { if let Some(edit)=reactive.title_edit.borrow().as_ref() {
+                    div { class:"empty-title-edit", role:"textbox", "aria-label":"Widget title", "aria-multiline":"false", {title_input_content(edit)} }
+                } },
+                onaction: |_| {},
+            }
             if reactive.surface_canvas_ids.borrow().contains(&current_settings.id) { if let Some(kind) = reactive.pending_widget.get() { div { class:"native-placement-ghost", style:format!("left:{}px;top:{}px",reactive.pending_point.get()[0],reactive.pending_point.get()[1]), "PLACE {kind:?}" } } }
         }
     }
@@ -534,15 +497,6 @@ fn title_input_content(edit: &TitleEdit) -> Element {
     }
 }
 
-fn aspect_ratio_index(ratio: scorepeek_overlay_ui::AspectRatio) -> usize {
-    use scorepeek_overlay_ui::AspectRatio;
-    match ratio {
-        AspectRatio::Free => 0,
-        AspectRatio::Wide => 1,
-        AspectRatio::Standard => 2,
-        AspectRatio::Current(_) => 3,
-    }
-}
 fn set_aspect_ratio(widget: &mut WidgetLayout, index: usize) {
     use scorepeek_overlay_ui::AspectRatio;
     widget.settings.aspect_ratio = [
@@ -551,39 +505,6 @@ fn set_aspect_ratio(widget: &mut WidgetLayout, index: usize) {
         AspectRatio::Standard,
         AspectRatio::Current([widget.width, widget.height]),
     ][index];
-}
-
-fn native_widget_settings(widget: &WidgetLayout, title_edit: Option<&TitleEdit>) -> Element {
-    rsx! {
-                        div { class:"native-widget-settings",
-                            strong { "{widget.id}" }
-                            h3 { "FRAME WIDTH" }
-                            for (index,value) in [scorepeek_overlay_ui::FrameWidth::S,scorepeek_overlay_ui::FrameWidth::M,scorepeek_overlay_ui::FrameWidth::L].into_iter().enumerate() { button { class:if widget.settings.frame_width==value {"frame-width selected"}else{"frame-width"}, "data-index":index, "{value:?}" } }
-                            if widget.kind == scorepeek_overlay_ui::WidgetKind::Empty {
-                                h3 { "TITLE" }
-                                if let Some(edit) = title_edit.filter(|edit| edit.widget == widget.id) {
-                                    div { class:"empty-title-edit", style:"min-height:36px;padding:8px;border:1px solid #78a9cf;background:#101a29;color:#f0f5ff;overflow-wrap:anywhere", role:"textbox", "aria-label":"Widget title", "aria-multiline":"false",
-                                        {title_input_content(edit)}
-                                    }
-                                    div { class:"button-grid", button { class:"title-accept", disabled:!edit.preedit.is_empty(), "APPLY TITLE" } button { class:"title-cancel", "CANCEL" } }
-                                } else { button { class:"empty-title-input", if widget.settings.title.is_empty(){"Enter title…"}else{"{widget.settings.title}"} } }
-                                h3 { "INTERIOR OPACITY · {widget.settings.fill_opacity_percent}%" }
-                                button { class:"fill-decrease", "−1" } button { class:"fill-increase", "+1" }
-                                for value in [0,25,50,75,100] { button { class:if widget.settings.fill_opacity_percent==value {"fill-opacity selected"}else{"fill-opacity"}, "data-value":value, "{value}%" } }
-                                h3 { "ASPECT RATIO" }
-                                div { class:"aspect-ratio-options button-grid four", role:"group", "aria-label":"Aspect ratio",
-                                    for (index,label) in ["FREE","16:9","4:3","CURRENT"].into_iter().enumerate() { button { class:if aspect_ratio_index(widget.settings.aspect_ratio)==index {"aspect-ratio selected"}else{"aspect-ratio"}, "aria-pressed":aspect_ratio_index(widget.settings.aspect_ratio)==index, "data-index":index, "{label}" } }
-                                }
-                            }
-                            if widget.kind == scorepeek_overlay_ui::WidgetKind::HistoryList {
-                                for value in [5,10,20,50] { button { class:if widget.settings.history_count==value{"history-count selected"}else{"history-count"}, "aria-pressed":widget.settings.history_count==value, "data-value":value, if widget.settings.history_count==value{"✓ "} "{value}" } }
-                            }
-                            if widget.kind == scorepeek_overlay_ui::WidgetKind::HistoryGraph {
-                                for value in [1,3,6,12] { button { class:if widget.settings.graph_months==value{"graph-months selected"}else{"graph-months"}, "aria-pressed":widget.settings.graph_months==value, "data-value":value, if widget.settings.graph_months==value{"✓ "} "{value}M" } }
-                            }
-                            div { class:"widget-delete-actions", button { class:"delete-widget danger", "DELETE WIDGET" } }
-                        }
-    }
 }
 
 struct CalloopWaker(Ping);
@@ -5104,7 +5025,10 @@ mod skin_tests {
                 session.click(&selector).unwrap();
                 let widgets = session.widgets.borrow();
                 let widget = widgets.iter().find(|widget| widget.id == "cam").unwrap();
-                assert_eq!(aspect_ratio_index(widget.settings.aspect_ratio), index);
+                assert_eq!(
+                    scorepeek_overlay_ui::editor::aspect_ratio_index(widget.settings.aspect_ratio),
+                    index
+                );
                 if index == 3 {
                     assert_eq!(
                         widget.settings.aspect_ratio,

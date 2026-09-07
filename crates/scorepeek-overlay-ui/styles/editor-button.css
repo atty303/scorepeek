@@ -1,0 +1,10 @@
+.editor-button{box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:4px;min-width:0;min-height:32px;margin:0;padding:6px 7px;appearance:none;border:1px solid #343f4c;background:#171e27;color:#dbe4ef;font:9px/14px Oxanium,system-ui,sans-serif;text-align:center;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
+.editor-button:hover{border-color:#5c7183;background:#1b2934}
+.editor-button.selected{border-color:#38d7f2;border-left:4px solid #38d7f2;background:#12313d;color:#fff;box-shadow:inset 10px 0 18px rgba(26,217,245,.08)}
+.editor-button:disabled{opacity:.35;cursor:default}
+.editor-button.primary{border-color:#55e3fa;background:#0c3943;color:#fff}
+.editor-button.danger{border-color:#66343a;color:#ff9aa3}
+.editor-button-row{justify-content:flex-start;min-height:36px;padding:8px 10px;font-size:13px;line-height:18px;text-align:left}
+.editor-button-stack{flex-direction:column;align-items:flex-start;min-height:36px;padding:8px 10px;text-align:left}
+.editor-button-stack strong{font-size:12px;line-height:17px}.editor-button-stack small{color:#91a0b1;font-size:9px;line-height:13px}
+.editor-button-icon{width:30px;height:30px;min-height:30px;padding:0;font-size:22px;line-height:24px}

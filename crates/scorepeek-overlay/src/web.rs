@@ -109,7 +109,6 @@ mod server {
         let app = Router::new()
             .route("/", get(canvas_index))
             .route("/overlay", get(stage_editor_index))
-            .route("/stage.js", get(stage_script))
             .route("/canvas/{id}", get(index))
             .route("/ws/stage", get(stage_socket))
             .route("/ws/{id}", get(socket))
@@ -163,25 +162,25 @@ mod server {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         };
         let canvases = canvases.replace('<', "\\u003c");
-        let html = format!(
-            r#"<!doctype html><html><head><meta charset="utf-8"><title>scorepeek OBS overlay</title><style>{}{}</style></head><body><div id="stage"></div><button id="panel-toggle" aria-label="Hide editor panel">‹<i></i></button><aside id="editor"></aside><div id="notice"></div><script id="initial" type="application/json">{canvases}</script><script src="/stage.js"></script></body></html>"#,
+        let Some(asset) = Assets::get("index.html") else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        let Ok(html) = std::str::from_utf8(&asset.data) else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        };
+        let initial = format!(
+            "<head><script id=\"scorepeek-stage\" type=\"application/json\">{canvases}</script><style>@font-face{{font-family:Oxanium;src:url('/fonts/oxanium.ttf');font-weight:200 800}}{}{}{} </style>",
+            scorepeek_overlay_ui::FONT_CSS,
             scorepeek_overlay_ui::EDITOR_CSS,
             include_str!("../../scorepeek-overlay-ui/styles/stage.css")
         );
+        let html = html.replacen("<head>", &initial, 1);
         (
             [
                 (header::CONTENT_TYPE, "text/html; charset=utf-8"),
                 (header::CACHE_CONTROL, "no-store"),
             ],
             html,
-        )
-            .into_response()
-    }
-
-    async fn stage_script() -> Response {
-        (
-            [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-            include_str!("stage.js"),
         )
             .into_response()
     }

@@ -51,8 +51,9 @@ checkpoint; implementation history belongs in Git.
   with chamfered transparent apertures, optional titles, interior opacity and aspect locks, and
   S/M/L outward frames for all widgets. Native title editing uses XKB keyboard/repeat and
   text-input-v3 IME; title confirmation becomes one undoable backend-draft change. Normal overlays
-  do not request keyboard focus. Native aspect controls have an explicit selected state and a
-  dedicated four-column row above the separate delete action. Fixed mise XKB build inputs replace host development metadata;
+  do not request keyboard focus. Both backends render the same Dioxus `EditorPanel` and `EditorButton` components,
+  with shared choice/action styles and a separate delete row. OBS owns reactive Rust editor state
+  and uses the existing backend lease API; its imperative JavaScript editor has been removed. Fixed mise XKB build inputs replace host development metadata;
   `libxkbcommon.so.0` is a native runtime prerequisite.
 - ADR 0130 makes the status widget RESULT lamp a provisional-readiness signal. A new RESULT is
   unlit, resolved is green, withdrawn or exit without resolution is red, and the outcome remains
@@ -245,7 +246,7 @@ checkpoint; implementation history belongs in Git.
   restrained lines/corner accents, with staggered moving highlights carrying the ambient motion.
   These checks do not establish live Wayland or OBS composition.
 - Repository checks and the complete workspace suite pass: 508 library,
-  325 binary, 128 corpus library, 5 corpus binary, 58 overlay, 7 handle, 4 overlay-UI, 0 overlay-web
+  325 binary, 128 corpus library, 5 corpus binary, 58 overlay, 7 handle, 4 overlay-UI, 6 overlay-web
   and 13 score tests, plus doctests. The embedded-web overlay integration test also passes. The 99 offline OCR tests and
   repository checks also pass. Public API and overlay state tests include score-store invalidation,
   RESULT readiness across withdrawal/re-resolution, fresh and same-session reconnect restoration,
@@ -374,9 +375,10 @@ checkpoint; implementation history belongs in Git.
   Interaction, readability, CPU/GPU/OBS lag and idle render cost. Current screenshots certify layout
   only, not interaction or performance. The installed target binary includes ADR 0129 at commit
   `00a04b17a7f615310866c7eec47efb5421b7c583`. No autostart, push or release is included.
-- Pinned dx produces a browser bundle, but its optional wasm-opt step reports unsupported DWARF
-  and skips optimization. Asset MIME/type tests pass on the emitted bundle; it is not claimed to
-  be wasm-opt optimized. Browser visual verification remains separate.
+- The release browser bundle disables DWARF debug symbols and completes without the prior
+  wasm-opt DWARF failure. Browser visual and input verification of the shared reactive editor
+  remains blocked by the Codex Browser plugin bootstrap; native render evidence is not a browser
+  interaction result.
 
 - Validate layout v4 in a fresh target-live run with the installed binary.
   Retained-frame inspection does not recover unrecorded PLAY spans or backfill missing RESULTs.

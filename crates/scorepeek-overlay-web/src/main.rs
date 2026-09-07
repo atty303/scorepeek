@@ -1,3 +1,4 @@
+mod editor;
 use dioxus::prelude::*;
 use scorepeek_overlay_ui::{
     Appearance, CanvasPresentation, LampState, OverlayState, overlay_canvas,
@@ -10,7 +11,13 @@ use std::{
 use wasm_bindgen::{JsCast as _, closure::Closure};
 
 fn main() {
-    dioxus_web::launch::launch_cfg(app, dioxus_web::Config::default());
+    let stage = web_sys::window()
+        .and_then(|window| window.document())
+        .is_some_and(|doc| doc.get_element_by_id("scorepeek-stage").is_some());
+    dioxus_web::launch::launch_cfg(
+        if stage { editor::app } else { app },
+        dioxus_web::Config::default(),
+    );
 }
 
 fn app() -> Element {

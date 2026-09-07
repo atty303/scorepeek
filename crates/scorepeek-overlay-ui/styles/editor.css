@@ -3,14 +3,60 @@
 .editing .widget-slot.selected{outline:2px solid #fff;box-shadow:none}
 .resize-handle{display:none}
 .editing .widget-slot:hover .resize-handle,.editing .widget-slot.selected .resize-handle{display:block;position:absolute;width:10px;height:10px;border:1px solid #fff;background:#101722;box-shadow:none;z-index:4}
-.resize-handle.nw{left:0;top:0}.resize-handle.ne{right:0;top:0}.resize-handle.sw{left:0;bottom:0}.resize-handle.se{right:0;bottom:0}
+.resize-handle.nw{left:0;top:0}
+.resize-handle.ne{right:0;top:0}
+.resize-handle.sw{left:0;bottom:0}
+.resize-handle.se{right:0;bottom:0}
 .editor-preview-canvas{position:absolute!important;overflow:hidden;outline:1px solid rgba(93,232,255,.38);background:rgba(2,7,14,.18)}
 .editor-preview-canvas.preview-only{outline-color:rgba(120,142,160,.3)}
 .editor-preview-canvas.selected{outline:2px solid #fff;box-shadow:none}
-.native-canvas-manager button,#editor button{appearance:none;border:1px solid #343f4c;background:#171e27;color:#dbe4ef;text-align:left;font:inherit}
-.native-canvas-manager button:hover,#editor button:hover{border-color:#5c7183;background:#1b2934}
-.native-canvas-manager button.selected,#editor button.selected,.native-canvas-manager button[aria-selected=true],#editor button[aria-selected=true],.native-canvas-manager button[aria-pressed=true],#editor button[aria-pressed=true]{border-color:#38d7f2;border-left:4px solid #38d7f2;background:#12313d;color:#fff;box-shadow:inset 10px 0 18px rgba(26,217,245,.08)}
-.native-canvas-manager button:disabled,#editor button:disabled{opacity:.35}
 .dirty-dot,.unsaved-dot{display:none;width:7px;height:7px;border-radius:50%;background:#ffd041;box-shadow:0 0 7px rgba(255,208,65,.85)}
 .dirty .dirty-dot,.unsaved-dot{display:block}
-.danger{border-color:#66343a!important;color:#ff9aa3!important}
+.empty-title-edit{box-sizing:border-box;min-height:36px;padding:8px;border:1px solid #78a9cf;background:#101a29;color:#f0f5ff;font:13px/18px Oxanium,system-ui,sans-serif;overflow-wrap:anywhere}
+.native-canvas-manager{position:fixed;inset:0 auto 0 0;box-sizing:border-box;z-index:10000;display:flex;flex-direction:column;padding:16px 16px 14px 48px;background:#0b1017;border-right:1px solid #3b4654;color:#e8eef7;font:13px/1.4 Oxanium,system-ui,sans-serif;box-shadow:12px 0 35px rgba(0,0,0,.58)}
+.native-canvas-manager header{position:relative;display:flex;flex-direction:column;min-height:52px;padding-bottom:12px;border-bottom:1px solid #343d49}
+.native-canvas-manager header strong{font-size:16px;letter-spacing:.09em}
+.native-canvas-manager header small{color:#7f8b99;letter-spacing:.16em}
+.native-canvas-manager header b{align-self:flex-start;margin-top:5px;padding:2px 6px;background:#6f5010;color:#ffd977;font-size:10px}
+.native-canvas-manager header .unsaved-dot{position:absolute;right:2px;top:6px}
+.native-panel-toggle{position:fixed;left:8px;top:8px;z-index:12001}
+.native-panel-toggle .dirty-dot{position:absolute;right:2px;top:2px}
+.editor-fixed-top{padding:10px 0}
+.editor-fixed-top>p{margin:0 0 6px;color:#91a0b1;font-size:10px;letter-spacing:.14em}
+.preview-tabs{display:grid;grid-template-columns:repeat(2,1fr);gap:3px}
+.canvas-section{margin-top:10px;padding:10px 0;border-top:1px solid #343d49;border-bottom:1px solid #343d49}
+.canvas-section h2{margin:0 0 7px;color:#91a0b1;font-size:10px;letter-spacing:.14em}
+.canvas-list{display:flex;flex-direction:column;gap:5px;max-height:clamp(72px,20vh,180px);overflow:auto;padding:2px 0}
+.canvas-row{display:grid;grid-template-columns:1fr 58px;gap:4px;min-height:34px}
+.canvas-actions{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:7px}
+.editor-tab-body{flex:1;min-height:0;overflow:auto;padding:3px 0 10px}
+.editor-tab-body section{display:block;padding:8px 0 11px;border-bottom:1px solid #343d49}
+.editor-tab-body h2{margin:0 0 8px;color:#91a0b1;font-size:10px;letter-spacing:.14em}
+.editor-tab-body h3{margin:10px 0 5px;color:#788797;font-size:9px;font-weight:400;letter-spacing:.12em}
+.widget-list{display:flex;flex-direction:column;gap:5px;margin-bottom:8px}
+.native-widget-settings{display:flex;margin-top:8px;padding:8px;border:1px solid #303b48;flex-wrap:wrap;gap:4px}
+.native-widget-settings strong{display:block;margin-bottom:7px;color:#9ba9b9;font-size:10px;flex-basis:100%}
+.native-canvas-manager details{display:block;margin-top:8px;width:100%}
+.native-canvas-manager summary{display:block;padding:8px 9px;border:1px solid #343f4c;background:#121922;color:#91a0b1;font-size:10px;letter-spacing:.08em;cursor:pointer}
+.native-canvas-manager details[open] summary{border-color:#526273;color:#fff}
+.native-canvas-manager .native-skin-options{position:static;left:auto;width:100%;gap:4px}
+.output-list{display:flex;flex-direction:column;gap:5px}
+.native-canvas-manager footer{display:grid;grid-template-columns:minmax(72px,.4fr) 1fr;gap:6px;padding-top:10px;border-top:1px solid #343d49}
+.footer-actions{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:6px}
+.footer-actions .close-action{grid-column:1/-1}
+.canvas-hidden-state{display:flex;flex-direction:column;gap:6px;margin:10px 0;padding:12px;border:1px solid #3a4653;background:#111923;color:#aeb9c6}
+.canvas-hidden-state strong{color:#fff;font-size:11px}
+.canvas-hidden-state span{font-size:10px}
+.button-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:6px}
+.button-grid.three{grid-template-columns:repeat(3,1fr)}
+.button-grid.four{grid-template-columns:repeat(4,1fr)}
+.native-placement-ghost{position:fixed;z-index:11000;min-width:150px;padding:12px;border:1px dashed #5ee7ff;background:#0bd4ee22;color:#fff;pointer-events:none;font:10px Oxanium,system-ui,sans-serif}
+.native-canvas-handle{display:block;position:absolute;width:10px;height:10px;border:1px solid #fff;background:#101722;box-shadow:none;z-index:6}
+.native-canvas-handle.nw{left:-6px;top:-6px}
+.native-canvas-handle.ne{right:-6px;top:-6px}
+.native-canvas-handle.sw{left:-6px;bottom:-6px}
+.native-canvas-handle.se{right:-6px;bottom:-6px}
+.native-widget-settings .aspect-ratio-options{margin-top:0}
+.widget-delete-actions{flex-basis:100%;width:100%;margin-top:10px;padding-top:10px;border-top:1px solid #303b48}
+.widget-delete-actions .editor-button{width:100%}
+.native-widget-settings h3,.native-widget-settings .button-grid,.native-widget-settings .empty-title-edit,.native-widget-settings .empty-title-input{flex-basis:100%;width:100%}

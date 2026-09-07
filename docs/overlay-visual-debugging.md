@@ -63,3 +63,15 @@ source to confirm that the aperture and fill expose/dim it.
 The composition fixture also exercises the native title editor with a synthetic IME preedit and
 commit batch via `title_text` (`composing: true` previews conversion). It uses the production title
 buffer and UI; it does not establish compositor keyboard focus or real IME candidate placement.
+
+## Shared editor UI
+
+Native and OBS render `scorepeek_overlay_ui::editor::EditorPanel`. `EditorView`
+contains presentation state and typed `EditorAction` values describe user intent.
+`EditorButton` owns text alignment, sizing, selected/disabled state and action tone.
+Container CSS owns placement and spacing between controls; it does not restyle
+button labels. The native adapter retains Wayland hit testing and its IME text
+field; the web adapter uses Dioxus events, signals and a browser input field.
+The OBS `/overlay` endpoint boots the same WASM bundle as canvas display pages.
+The Rust web editor owns draft state, pointer gestures and the existing stage
+WebSocket connection; it does not reconstruct the editor DOM with JavaScript.
