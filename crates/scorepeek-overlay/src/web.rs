@@ -345,7 +345,7 @@ mod server {
             .manifest
             .effective_canvas_properties(&canvas.skin_properties);
         let specification = serde_json::json!({
-            "canvas":{"id":canvas.id,"width":canvas.width,"height":canvas.height,"properties":canvas_properties},
+            "canvas":{"id":canvas.id,"skin":skin_id,"width":canvas.width,"height":canvas.height,"properties":canvas_properties},
             "widgets":canvas.widgets.iter().map(|widget| { let kind=serde_json::to_value(widget.kind).ok().and_then(|value|value.as_str().map(str::to_owned)).unwrap_or_default(); let properties=package.manifest.effective_widget_properties(&kind,&widget.skin_properties); serde_json::json!({"id":widget.id,"kind":widget.kind,"x":widget.x,"y":widget.y,"width":widget.width,"height":widget.height,"settings":widget.settings,"properties":properties}) }).collect::<Vec<_>>(),
             "wasm":format!("/skin/{skin_id}/{}", crate::skin::MODULE_PATH),
         });
@@ -354,7 +354,7 @@ mod server {
         };
         let specification = specification.replace('<', "\\u003c");
         let html = format!(
-            "<!doctype html><html data-backend=\"obs\"><head><meta charset=\"utf-8\"><base href=\"/skin/{skin_id}/\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src blob:; style-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'self'\"><link rel=\"stylesheet\" href=\"/skin-host.css\"><link rel=\"stylesheet\" href=\"/skin/{skin_id}/{}\"></head><body><div id=\"skin-root\"></div><script type=\"application/json\" id=\"scorepeek-skin\">{specification}</script><script src=\"/skin-runtime.js\"></script></body></html>",
+            "<!doctype html><html data-backend=\"obs\"><head><meta charset=\"utf-8\"><base href=\"/skin/{skin_id}/\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src blob:; style-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'self'\"><link rel=\"stylesheet\" href=\"/skin-host.css\"><link rel=\"stylesheet\" href=\"/skin/{skin_id}/{}\"></head><body><div id=\"skin-root\" class=\"scorepeek-skin-scope\"></div><script type=\"application/json\" id=\"scorepeek-skin\">{specification}</script><script src=\"/skin-runtime.js\"></script></body></html>",
             crate::skin::STYLE_PATH,
         );
         (

@@ -135,16 +135,22 @@
       "selector": ".widget-row[data-widget-id='score']"
     },
     {
-      "action": "click",
-      "selector": ".frame-width[data-index='0']"
+      "action": "scroll",
+      "selector": ".editor-tab-body",
+      "dx": 0,
+      "dy": -800
     },
     {
       "action": "click",
-      "selector": ".frame-width[data-index='2']"
+      "selector": ".skin-property[data-property='frame-width'] button[data-index='0']"
     },
     {
       "action": "click",
-      "selector": ".background-option[data-index='1']"
+      "selector": ".skin-property[data-property='frame-width'] button[data-index='2']"
+    },
+    {
+      "action": "click",
+      "selector": ".skin-property[data-property='background'] button[data-index='1']"
     },
     {
       "action": "click",

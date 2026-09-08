@@ -310,7 +310,7 @@ impl Package {
     pub fn smoke_test(&self) -> Result<(), String> {
         for backend in ["native", "obs"] {
             let mut runtime = Runtime::new(self)?;
-            let input = serde_json::json!({"schema":"scorepeek-skin-input-v1","backend":backend,"canvas":{"id":"install-smoke","width":1920,"height":1080,"properties":{}},"widgets":[],"state":{"screen":"unknown"}});
+            let input = serde_json::json!({"schema":"scorepeek-skin-input-v1","backend":backend,"canvas":{"id":"install-smoke","skin":self.manifest.id,"width":1920,"height":1080,"properties":{}},"widgets":[],"state":{"screen":"unknown"}});
             runtime.init(&input)?;
             runtime.render(&input)?;
         }

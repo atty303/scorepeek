@@ -86,6 +86,19 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     assert!(page.contains("/skin/dev.atty303.scorepeek.skin.result-aurora/skin.css"));
     assert!(page.contains("dev.atty303.scorepeek.skin.result-aurora"));
     assert!(page.contains("scorepeek-skin"));
+    assert!(page.contains("class=\"scorepeek-skin-scope\""));
+    let skin_css = String::from_utf8(
+        get(
+            address,
+            "/skin/dev.atty303.scorepeek.skin.result-aurora/skin.css",
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(skin_css.contains(".scorepeek-skin-scope .overlay-canvas"));
+    assert!(
+        skin_css.contains(".scorepeek-skin-scope,.scorepeek-skin-scope *{pointer-events:none}")
+    );
     let runtime = String::from_utf8(get(address, "/skin-runtime.js").unwrap()).unwrap();
     assert!(runtime.contains("WebAssembly.compileStreaming"));
     assert!(runtime.contains("new URL(spec.wasm, location.href).href"));
@@ -118,8 +131,14 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     let package_root = "/skin/dev.atty303.scorepeek.skin.result-aurora";
     for (name, mime) in [
         ("preview.png", "image/png"),
-        ("background.png", "image/png"),
-        ("font.ttf", "application/octet-stream"),
+        ("result-aurora-background.png", "image/png"),
+        ("result-aurora-frame.png", "image/png"),
+        ("result-aurora-header.png", "image/png"),
+        ("type-result-aurora.png", "image/png"),
+        ("labels-result-aurora.png", "image/png"),
+        ("Oxanium.ttf", "application/octet-stream"),
+        ("Orbitron.ttf", "application/octet-stream"),
+        ("Rajdhani-SemiBold.ttf", "application/octet-stream"),
         ("skin.wasm", "application/wasm"),
     ] {
         let asset = get(address, &format!("{package_root}/{name}")).unwrap();

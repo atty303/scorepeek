@@ -34,7 +34,10 @@ checkpoint; implementation history belongs in Git.
   three old names to formal IDs and preserves background/frame/fill values. A missing initial config
   chooses the lexicographically first installed skin and creates one empty canvas per backend; no
   installed skin is a startup error. The repository retains a Rust guest SDK/core and three package
-  sources; `mise run overlay:skins:build` produces uncommitted ZIPs without installing them.
+  sources; their shared guest recreates the full status, selection, score, history and graph DOM,
+  material frames, atlases and semantic styling from the superseded fixed renderer.
+  `mise run overlay:skins:build` scopes package CSS below the noninteractive skin root and produces
+  uncommitted ZIPs without installing them.
 
 - Repository skill `.agents/skills/create-overlay-skin/SKILL.md` defines new-skin and requested
   redesign work from concept comparison through package Wasm/CSS implementation and native/browser visual
@@ -229,12 +232,14 @@ checkpoint; implementation history belongs in Git.
   mandatory manifest, Wasm, CSS and preview plus package-owned artwork, font and license resources.
   Isolated-XDG CLI trials cover install, identifier-ordered list, same-release no-op and uninstall.
   Workspace tests cover manifest/identity/property migration, package resources and owned child
-  shutdown. The native 1920x1080 visual fixture completed all 22 editor, geometry, screen and
-  package-backed render captures with selector layouts; the latest run also shows the package PNG
-  and selected draft plugin tree in the native editor. A prior production OBS page reported
-  successful Web Worker `init` and `render` calls in Codex Browser. After moving CSS and runtime JS
-  to external same-origin resources, the full embedded-web integration passes; a browser rerun of
-  that hardened page remains open. These are development-host checks; live Wayland compositor and
+  shutdown. The native 1920x1080 visual fixture completed all 28 editor, skin-switch, motion,
+  geometry and screen captures with selector layouts; all three skins retain full widget content and
+  load their own frame resources after a draft switch, while selection, movement and resize remain
+  operable over the noninteractive skin tree. A production OBS page initialized and rendered the
+  same package Wasm with an idle next tick, and the full embedded-web integration passes with the
+  complete package resource set. The separate 21-capture composition scenario verifies package
+  background subtraction through four empty apertures, frame/background plugin property controls,
+  title editing and aspect changes. These are development-host checks; live Wayland compositor and
   OBS Browser Source verification remain open.
 
 - The repository skin skill passes structural validation, scoped checks and independent review.

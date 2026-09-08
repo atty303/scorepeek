@@ -85,7 +85,7 @@ The complete input shape is:
 {
   "schema": "scorepeek-skin-input-v1",
   "backend": "native",
-  "canvas": {"id": "main", "width": 1920, "height": 1080, "properties": {}},
+  "canvas": {"id": "main", "skin": "dev.example.skin", "width": 1920, "height": 1080, "properties": {}},
   "widgets": [{
     "id": "score", "kind": "score", "x": 20, "y": 20,
     "width": 640, "height": 280, "settings": {}, "properties": {}
@@ -135,7 +135,8 @@ pointer, keyboard, focus, click, timer, thread, filesystem, network, database, E
 asynchronous callback interface.
 
 Rust reference types and buffer helpers live in `crates/scorepeek-skin-sdk`. The repository guest
-in `skins/guest-core` is a minimal buildable template.
+in `skins/guest-core` is the buildable reference used by the three repository skins; it reproduces
+their complete widget hierarchy, image-backed materials, atlas typography, graphs, and motion.
 
 ## Local package management
 

@@ -17,6 +17,8 @@ pub struct Input {
 #[derive(Deserialize)]
 pub struct Canvas {
     pub id: String,
+    /// Manifest id of the package currently executing.
+    pub skin: String,
     pub width: u32,
     pub height: u32,
     #[serde(default)]
