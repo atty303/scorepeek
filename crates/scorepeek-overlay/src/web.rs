@@ -69,6 +69,7 @@ mod server {
         control_socket: std::path::PathBuf,
         feed: Feed,
         changed: Arc<Notify>,
+        skins: crate::skin::StoreRoot,
     }
 
     #[derive(serde::Deserialize)]
@@ -209,21 +210,26 @@ mod server {
             .filter(|canvas| canvas.backend == crate::runtime::Backend::Obs)
             .cloned()
             .collect();
+        let skin_store = config.skin_store.clone();
         let shared = Arc::new(Shared {
             canvases: Mutex::new(managed_canvases),
             control_socket: config.control_socket.clone(),
             feed,
             changed,
+            skins: crate::skin::StoreRoot::new(skin_store),
         });
         let app = Router::new()
             .route("/", get(canvas_index))
             .route("/overlay", get(stage_editor_index))
             .route("/canvas/{id}", get(index))
+            .route("/skin/{id}/{*path}", get(skin_asset))
             .route("/ws/stage", get(stage_socket))
             .route("/ws/{id}", get(socket))
             .route("/fonts/oxanium.ttf", get(font))
             .route("/fonts/{name}", get(extra_font))
             .route("/motion.js", get(motion_script))
+            .route("/skin-runtime.js", get(skin_runtime_script))
+            .route("/skin-host.css", get(skin_host_style))
             .route("/fonts/OFL.txt", get(font_license))
             .route("/{*path}", get(asset))
             .with_state(Arc::clone(&shared));
@@ -271,6 +277,35 @@ mod server {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         };
         let canvases = canvases.replace('<', "\\u003c");
+        let skins = shared
+            .skins
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|skin| {
+                let package = shared.skins.open(&skin.id).ok()?;
+                Some(scorepeek_overlay_ui::editor::EditorSkin {
+                    id: skin.id.parse().ok()?,
+                    name: skin.name,
+                    release: skin.release,
+                    preview: format!("/skin/{}/{}", skin.id, crate::skin::PREVIEW_PATH),
+                    preview_video: package
+                        .resource("preview.webm")
+                        .map(|_| format!("/skin/{}/preview.webm", skin.id)),
+                    canvas_properties: serde_json::from_value(
+                        serde_json::to_value(package.manifest.canvas_properties).ok()?,
+                    )
+                    .ok()?,
+                    widget_properties: serde_json::from_value(
+                        serde_json::to_value(package.manifest.widget_properties).ok()?,
+                    )
+                    .ok()?,
+                })
+            })
+            .collect::<Vec<_>>();
+        let skins = serde_json::to_string(&skins)
+            .unwrap_or_else(|_| "[]".into())
+            .replace('<', "\\u003c");
         let Some(asset) = Assets::get("index.html") else {
             return StatusCode::NOT_FOUND.into_response();
         };
@@ -278,7 +313,7 @@ mod server {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         };
         let initial = format!(
-            "<head><script id=\"scorepeek-stage\" type=\"application/json\">{canvases}</script><style>@font-face{{font-family:Oxanium;src:url('/fonts/oxanium.ttf');font-weight:200 800}}{}{}{} </style>",
+            "<head><script id=\"scorepeek-stage\" type=\"application/json\">{canvases}</script><script id=\"scorepeek-skins\" type=\"application/json\">{skins}</script><style>@font-face{{font-family:Oxanium;src:url('/fonts/oxanium.ttf');font-weight:200 800}}{}{}{} </style>",
             scorepeek_overlay_ui::FONT_CSS,
             scorepeek_overlay_ui::EDITOR_CSS,
             include_str!("../../scorepeek-overlay-ui/styles/stage.css")
@@ -295,12 +330,6 @@ mod server {
     }
 
     async fn index(Path(id): Path<String>, State(shared): State<Arc<Shared>>) -> Response {
-        let Some(asset) = Assets::get("index.html") else {
-            return StatusCode::NOT_FOUND.into_response();
-        };
-        let Ok(html) = std::str::from_utf8(&asset.data) else {
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        };
         let canvases = shared
             .canvases
             .lock()
@@ -308,19 +337,64 @@ mod server {
         let Some(canvas) = canvases.iter().find(|canvas| canvas.id == id) else {
             return StatusCode::NOT_FOUND.into_response();
         };
-        let Ok(canvas_json) = serde_json::to_string(&canvas.presentation()) else {
+        let skin_id = canvas.skin.name();
+        let Ok(package) = shared.skins.open(skin_id) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        let canvas_properties = package
+            .manifest
+            .effective_canvas_properties(&canvas.skin_properties);
+        let specification = serde_json::json!({
+            "canvas":{"id":canvas.id,"width":canvas.width,"height":canvas.height,"properties":canvas_properties},
+            "widgets":canvas.widgets.iter().map(|widget| { let kind=serde_json::to_value(widget.kind).ok().and_then(|value|value.as_str().map(str::to_owned)).unwrap_or_default(); let properties=package.manifest.effective_widget_properties(&kind,&widget.skin_properties); serde_json::json!({"id":widget.id,"kind":widget.kind,"x":widget.x,"y":widget.y,"width":widget.width,"height":widget.height,"settings":widget.settings,"properties":properties}) }).collect::<Vec<_>>(),
+            "wasm":format!("/skin/{skin_id}/{}", crate::skin::MODULE_PATH),
+        });
+        let Ok(specification) = serde_json::to_string(&specification) else {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         };
-        let canvas_json = canvas_json.replace('<', "\\u003c");
-        let initial = format!(
-            "<head><script type=\"application/json\" id=\"scorepeek-canvas\">{canvas_json}</script><style>@font-face{{font-family:Oxanium;src:url('/fonts/oxanium.ttf') format('truetype');font-weight:200 800;font-style:normal;font-display:swap}}</style>"
+        let specification = specification.replace('<', "\\u003c");
+        let html = format!(
+            "<!doctype html><html data-backend=\"obs\"><head><meta charset=\"utf-8\"><base href=\"/skin/{skin_id}/\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src blob:; style-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'self'\"><link rel=\"stylesheet\" href=\"/skin-host.css\"><link rel=\"stylesheet\" href=\"/skin/{skin_id}/{}\"></head><body><div id=\"skin-root\"></div><script type=\"application/json\" id=\"scorepeek-skin\">{specification}</script><script src=\"/skin-runtime.js\"></script></body></html>",
+            crate::skin::STYLE_PATH,
         );
         (
             [
                 (header::CONTENT_TYPE, "text/html"),
                 (header::CACHE_CONTROL, "no-store"),
             ],
-            html.replacen("<head>", &initial, 1).replace("</head>", &format!("<style>{}</style><script id=\"scorepeek-motion\" type=\"application/json\">{}</script><script defer src=\"/motion.js\"></script></head>", scorepeek_overlay_ui::FONT_CSS, scorepeek_overlay_ui::motion::SPEC)),
+            html,
+        )
+            .into_response()
+    }
+
+    async fn skin_asset(
+        Path((id, path)): Path<(String, String)>,
+        State(shared): State<Arc<Shared>>,
+    ) -> Response {
+        let Ok(package) = shared.skins.open(&id) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        let Some(bytes) = package.resource(&path) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        let content_type = match std::path::Path::new(&path)
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+        {
+            Some("wasm") => "application/wasm",
+            Some("css") => "text/css; charset=utf-8",
+            Some("png") => "image/png",
+            Some("webm") => "video/webm",
+            Some("svg") => "image/svg+xml",
+            Some("json") => "application/json",
+            _ => "application/octet-stream",
+        };
+        (
+            [
+                (header::CONTENT_TYPE, content_type),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            bytes.to_vec(),
         )
             .into_response()
     }
@@ -343,6 +417,20 @@ mod server {
         (
             [(header::CONTENT_TYPE, "text/javascript")],
             scorepeek_overlay_ui::motion::BROWSER_DRIVER,
+        )
+            .into_response()
+    }
+    async fn skin_runtime_script() -> Response {
+        (
+            [(header::CONTENT_TYPE, "text/javascript")],
+            include_str!("skin_browser.js"),
+        )
+            .into_response()
+    }
+    async fn skin_host_style() -> Response {
+        (
+            [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+            "html,body,#skin-root{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}",
         )
             .into_response()
     }
@@ -443,6 +531,20 @@ mod server {
                     message = socket.recv() => {
                         match message {
                             Some(Ok(Message::Text(text))) => {
+                                if let Ok(message) = serde_json::from_str::<serde_json::Value>(&text)
+                                    && message.get("type").and_then(serde_json::Value::as_str) == Some("skin_diagnostic")
+                                {
+                                    crate::diagnostics::emit("skin_render", &serde_json::json!({
+                                        "backend":"obs",
+                                        "canvas_id":id,
+                                        "status":message.get("status").and_then(serde_json::Value::as_str).filter(|value|matches!(*value,"success"|"failed")).unwrap_or("failed"),
+                                        "phase":message.get("phase").and_then(serde_json::Value::as_str).filter(|value|matches!(*value,"init"|"render")),
+                                        "duration_us":message.get("duration_us").and_then(serde_json::Value::as_u64),
+                                        "next_tick":message.get("next_tick").and_then(serde_json::Value::as_str).filter(|value|matches!(*value,"idle"|"next-frame"|"after-ms")),
+                                        "error_type":message.get("error_type").and_then(serde_json::Value::as_str).filter(|value|matches!(*value,"hard_timeout"|"compile"|"instantiate"|"init"|"render"|"tree_apply_failed"|"canvas_unavailable")),
+                                    }));
+                                    continue;
+                                }
                                 let reply = serde_json::json!({
                                     "type":"control",
                                     "request":"display_only",
@@ -457,7 +559,6 @@ mod server {
                                     }
                                 });
                                 let Ok(reply) = serde_json::to_string(&reply) else { break; };
-                                let _ = text;
                                 if socket.send(Message::Text(reply.into())).await.is_err() { break; }
                             }
                             None | Some(Err(_) | Ok(Message::Close(_))) => break,

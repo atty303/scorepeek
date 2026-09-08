@@ -115,10 +115,10 @@ pub(crate) fn background(mode: Background, widgets: &[WidgetLayout], skin: Skin)
             .filter(|w| w.kind == WidgetKind::Empty)
             .map(|w| (w.x, w.y, w.width, w.height)),
     );
-    let image = match skin {
-        Skin::CyanSystem => "cyan-system-background.png",
-        Skin::ResultAurora => "result-aurora-background.png",
-        Skin::DjBlackbox => "dj-blackbox-background.png",
+    let image = match skin.name() {
+        Skin::CYAN_SYSTEM_ID => "cyan-system-background.png",
+        Skin::RESULT_AURORA_ID => "result-aurora-background.png",
+        _ => "dj-blackbox-background.png",
     };
     rsx! { div { key:"{mode:?}", class:"canvas-background", style:mask, "data-motion":if mode == Background::Animated { "animated" } else { "static" }, aria_hidden:"true",
         div { class:"canvas-background-art", style:format!("background-image:url('/skins/{image}')") }

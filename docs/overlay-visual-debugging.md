@@ -38,7 +38,8 @@ Native and browser images are evidence for human or Codex comparison; pixel equa
 acceptance condition. Actual Wayland composition/input delivery and rendering inside OBS remain live
 verification boundaries.
 
-A scenario may set `skin` to `cyan-system`, `result-aurora`, or `dj-blackbox`.
+A scenario may set `skin` to any installed reverse-domain skin ID. The visual tasks build and
+install the three repository packages into an isolated XDG store before running the scenario.
 `{"action":"motion","seconds":2.25}` samples the production native motion driver at an explicit
 nonnegative timestamp and records another PNG/layout pair. Use multiple timestamps to inspect
 changing paint as well as stable text. The action is a development capture clock, not a runtime setting.
@@ -83,12 +84,12 @@ selector names as setting commands. Native IME buffers and browser input element
 platform text entry. Output/surface ownership, keyboard focus, pointer capture and the
 existing save/lease transports remain host responsibilities.
 
-OBS `/overlay` boots the canvas WASM bundle and places display-only canvas iframes inside
+OBS `/overlay` boots the editor WASM bundle and places display-only skin canvas iframes inside
 the shared editor canvas. Native supplies rendered canvas content in the same component
 slot. This content layer is noninteractive and isolated below the shared hit regions.
 Selected widget handles take precedence when they coincide with canvas corners; selecting
 the canvas in the panel clears widget selection and exposes canvas handles. Widget artwork
-and content use the same `overlay_canvas` renderer in both routes.
+and content come from the same package Wasm full-tree ABI in both routes.
 Browser capture and actual Wayland composition/input remain separate verification gates.
 
 `tests/fixtures/visual-empty-editor.json` starts with no visible canvas and toggles the

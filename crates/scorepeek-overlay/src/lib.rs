@@ -5,6 +5,7 @@ pub mod control;
 pub mod diagnostics;
 pub mod native;
 pub mod runtime;
+pub mod skin;
 pub mod state;
 pub mod web;
 

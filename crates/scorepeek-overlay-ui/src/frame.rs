@@ -24,20 +24,20 @@ struct FrameMaterial {
 
 impl FrameMaterial {
     fn for_skin(skin: Skin) -> Self {
-        match skin {
-            Skin::CyanSystem => Self {
+        match skin.name() {
+            Skin::CYAN_SYSTEM_ID => Self {
                 image: "cyan-system-frame.png",
                 corner_x: 340.0,
                 corner_y: 200.0,
                 scale: 0.16,
             },
-            Skin::ResultAurora => Self {
+            Skin::RESULT_AURORA_ID => Self {
                 image: "result-aurora-frame.png",
                 corner_x: 160.0,
                 corner_y: 160.0,
                 scale: 0.24,
             },
-            Skin::DjBlackbox => Self {
+            _ => Self {
                 image: "dj-blackbox-frame.png",
                 corner_x: 260.0,
                 corner_y: 120.0,
@@ -94,10 +94,10 @@ pub fn render(widget: &WidgetLayout, skin: Skin) -> Element {
             pieces.push(rsx! { div { class: "material-slice", style } });
         }
     }
-    let edge = match skin {
-        Skin::CyanSystem => "#13dcef",
-        Skin::ResultAurora => "#c2a660",
-        Skin::DjBlackbox => "#687067",
+    let edge = match skin.name() {
+        Skin::CYAN_SYSTEM_ID => "#13dcef",
+        Skin::RESULT_AURORA_ID => "#c2a660",
+        _ => "#687067",
     };
     rsx! { div { class: "material-frame", style:format!("left:{offset}px;top:{offset}px;width:{width}px;height:{height}px"), {pieces.into_iter()} }
         if skin == Skin::ResultAurora && widget.kind == WidgetKind::Selection {
@@ -113,15 +113,15 @@ pub fn render(widget: &WidgetLayout, skin: Skin) -> Element {
 
 pub fn chart_rail(width: u32, skin: Skin) -> Element {
     let width = f64::from(width);
-    let edge = match skin {
-        Skin::CyanSystem => "#13dcef",
-        Skin::ResultAurora => "#c2a660",
-        Skin::DjBlackbox => "#8c918c",
+    let edge = match skin.name() {
+        Skin::CYAN_SYSTEM_ID => "#13dcef",
+        Skin::RESULT_AURORA_ID => "#c2a660",
+        _ => "#8c918c",
     };
-    let inner = match skin {
-        Skin::CyanSystem => "#086f83",
-        Skin::ResultAurora => "#b383cc",
-        Skin::DjBlackbox => "#444943",
+    let inner = match skin.name() {
+        Skin::CYAN_SYSTEM_ID => "#086f83",
+        Skin::RESULT_AURORA_ID => "#b383cc",
+        _ => "#444943",
     };
     let badge = "M34 4H88L97 13V21L88 30H34L25 21V13Z";
     rsx! { svg { class: "rail-frame", width: "{width}", height: "34", view_box: "0 0 {width} 34",
@@ -133,10 +133,10 @@ pub fn chart_rail(width: u32, skin: Skin) -> Element {
 }
 
 pub fn lamp(state: crate::LampState, vertical: bool, skin: Skin, role: &str) -> Element {
-    let accent = match skin {
-        Skin::CyanSystem => "#10dcfa",
-        Skin::ResultAurora => "#c16aff",
-        Skin::DjBlackbox => "#c5e819",
+    let accent = match skin.name() {
+        Skin::CYAN_SYSTEM_ID => "#10dcfa",
+        Skin::RESULT_AURORA_ID => "#c16aff",
+        _ => "#c5e819",
     };
     let light = match state {
         crate::LampState::Active if vertical => accent,

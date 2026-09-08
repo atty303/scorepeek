@@ -383,6 +383,10 @@ authoritative.
   adds schema-v2 screen filters, shared Wayland visibility, opacity/cursor behavior and the full-screen
   OBS canvas stage.
 
+- [ADR 0143: Install and run overlay skin packages](0143-install-and-run-overlay-skin-packages.md)
+  replaces binary-owned skins with local ZIP installation, a shared core-Wasm ABI, ordinary keyed
+  browser/Blitz DOM, manifest properties, and schema-v6 skin IDs without adding a registry.
+
 ## Historical
 
 - ADR 0001: upstream release/resource adoption

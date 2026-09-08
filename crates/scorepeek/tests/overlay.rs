@@ -28,6 +28,12 @@ fn get(address: SocketAddr, path: &str) -> std::io::Result<Vec<u8>> {
 #[allow(clippy::too_many_lines)]
 fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     let temporary = tempfile::tempdir().unwrap();
+    let skin_store = scorepeek_overlay::skin::StoreRoot::new(temporary.path().join("skins"));
+    skin_store
+        .install(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/result-aurora.zip"),
+        )
+        .unwrap();
     let address = TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -38,13 +44,15 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
             let mut canvas = scorepeek_overlay::config::OverlayConfig::initial()
                 .canvases
                 .into_iter()
-                .find(|canvas| canvas.id == "obs-selection")
+                .find(|canvas| canvas.backend == Backend::Obs)
                 .unwrap();
+            canvas.id = "obs-selection".into();
             canvas.skin = scorepeek_overlay::Skin::ResultAurora;
             vec![canvas]
         },
         config_path: temporary.path().join("overlay.toml"),
         control_socket: temporary.path().join("absent-control.sock"),
+        skin_store: skin_store.path().to_owned(),
         socket: temporary.path().join("absent.sock"),
         invocation: "test".into(),
         scores_db: None,
@@ -72,9 +80,16 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     let page = String::from_utf8(page).unwrap();
     assert!(page.starts_with("HTTP/1.1 200"));
     assert!(page.contains("text/html"));
-    assert!(page.contains(".js"));
-    assert!(page.contains("result-aurora"));
-    assert!(page.contains("scorepeek-canvas"));
+    assert!(page.contains("'wasm-unsafe-eval'"));
+    assert!(!page.contains("'unsafe-inline'"));
+    assert!(page.contains("/skin-runtime.js"));
+    assert!(page.contains("/skin/dev.atty303.scorepeek.skin.result-aurora/skin.css"));
+    assert!(page.contains("dev.atty303.scorepeek.skin.result-aurora"));
+    assert!(page.contains("scorepeek-skin"));
+    let runtime = String::from_utf8(get(address, "/skin-runtime.js").unwrap()).unwrap();
+    assert!(runtime.contains("WebAssembly.compileStreaming"));
+    assert!(runtime.contains("new URL(spec.wasm, location.href).href"));
+    assert!(runtime.contains("validateOutput"));
     let stage = String::from_utf8(get(address, "/overlay").unwrap()).unwrap();
     assert!(stage.starts_with("HTTP/1.1 200"));
     assert!(stage.contains("id=\"scorepeek-stage\""));
@@ -82,6 +97,7 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     assert!(stage.contains("type=\"module\""));
     assert!(stage.contains("obs-selection"));
     assert!(stage.contains("editor-button"));
+    assert!(stage.contains("/skin/dev.atty303.scorepeek.skin.result-aurora/preview.png"));
     let font = get(address, "/fonts/oxanium.ttf").unwrap();
     assert!(font.starts_with(b"HTTP/1.1 200"));
     assert!(font.windows(8).any(|bytes| bytes == b"font/ttf"));
@@ -99,24 +115,24 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
             .unwrap()
             .contains("SIL OPEN FONT LICENSE")
     );
-    for name in [
-        "cyan-system-frame",
-        "result-aurora-frame",
-        "dj-blackbox-frame",
-        "result-aurora-header",
+    let package_root = "/skin/dev.atty303.scorepeek.skin.result-aurora";
+    for (name, mime) in [
+        ("preview.png", "image/png"),
+        ("background.png", "image/png"),
+        ("font.ttf", "application/octet-stream"),
+        ("skin.wasm", "application/wasm"),
     ] {
-        let image = get(address, &format!("/skins/{name}.png")).unwrap();
-        assert!(image.starts_with(b"HTTP/1.1 200"));
-        assert!(image.windows(9).any(|bytes| bytes == b"image/png"));
-        let expected = std::fs::read(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join(format!("../scorepeek-overlay-ui/assets/skins/{name}.png")),
-        )
-        .unwrap();
-        assert!(image.ends_with(&expected));
+        let asset = get(address, &format!("{package_root}/{name}")).unwrap();
+        assert!(asset.starts_with(b"HTTP/1.1 200"), "{name}");
+        assert!(
+            asset
+                .windows(mime.len())
+                .any(|bytes| bytes == mime.as_bytes()),
+            "{name}"
+        );
     }
     assert!(
-        get(address, "/skins/missing.png")
+        get(address, &format!("{package_root}/missing.png"))
             .unwrap()
             .starts_with(b"HTTP/1.1 404")
     );
@@ -139,5 +155,10 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
             .iter()
             .any(|record| record["record"]["operation"] == "child_exit")
     );
-    assert_eq!(std::fs::read_dir(temporary.path()).unwrap().count(), 0);
+    assert!(
+        skin_store
+            .path()
+            .join("dev.atty303.scorepeek.skin.result-aurora.zip")
+            .is_file()
+    );
 }

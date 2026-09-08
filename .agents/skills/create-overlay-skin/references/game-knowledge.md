@@ -28,7 +28,7 @@ source anchorはrepository rootから解決する。実装が変わったらanch
 
 | 表示 | sourceと意味 |
 | --- | --- |
-| `OverlayState` | `crates/scorepeek-overlay-ui/src/lib.rs`: chart、best、detail、history、system/result_signal、screenを共有DOMへ渡す |
+| `OverlayState` | `crates/scorepeek-overlay-ui/src/lib.rs`: chart、best、detail、history、system/result_signal、screenをskin ABI inputへ渡す |
 | BEST | `crates/scorepeek-overlay/src/runtime.rs` の `refresh_history()`、`crates/scorepeek-scores/src/query.rs` の `chart_dashboard()`: 統合されたchart best。各値が同じ一回のplayから得られたとは限らない |
 | RESULT DETAIL | `query.rs`: 保存playの最高EX、同点なら既知かつ少ないmiss、その後新しい記録を代表にする。`runtime.rs` が内訳を抽出。最新画面のリザルトと断定しない |
 | DJ LEVEL | `runtime.rs` の `dj_level()`: N=notes、S=scoreとして `min(8, floor(9*max(S,0)/(2*N)))`。8/7/6/5/4/3/2/0–1をAAA/AA/A/B/C/D/E/Fへ対応。必要値なし/notes=0は中立表示 |

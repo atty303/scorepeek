@@ -1,5 +1,6 @@
 //! Editor controls share their layout and state styles across rendering backends.
 use dioxus::prelude::*;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Default, PartialEq)]
 pub enum ButtonLayout {
@@ -91,6 +92,8 @@ pub enum EditorAction {
     AddCanvas,
     DeleteCanvas,
     Skin(Skin),
+    CanvasSkinProperty(String, serde_json::Value),
+    WidgetSkinProperty(String, serde_json::Value),
     Background(Background),
     Opacity(u8),
     Output(String),
@@ -150,6 +153,97 @@ pub struct RefreshRateEditor {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct EditorSkin {
+    pub id: Skin,
+    pub name: String,
+    pub release: String,
+    pub preview: String,
+    pub preview_video: Option<String>,
+    #[serde(default)]
+    pub canvas_properties: std::collections::BTreeMap<String, EditorProperty>,
+    #[serde(default)]
+    pub widget_properties:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, EditorProperty>>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum EditorProperty {
+    Boolean {
+        default: bool,
+    },
+    Integer {
+        default: i64,
+        minimum: i64,
+        maximum: i64,
+    },
+    Number {
+        default: f64,
+        minimum: f64,
+        maximum: f64,
+    },
+    Color {
+        default: String,
+    },
+    Enum {
+        default: String,
+        values: Vec<String>,
+    },
+    String {
+        default: String,
+        maximum_length: usize,
+    },
+}
+
+impl EditorProperty {
+    pub(crate) fn kind(&self) -> &'static str {
+        match self {
+            Self::Boolean { .. } => "boolean",
+            Self::Integer { .. } => "integer",
+            Self::Number { .. } => "number",
+            Self::Color { .. } => "color",
+            Self::Enum { .. } => "enum",
+            Self::String { .. } => "string",
+        }
+    }
+    pub(crate) fn effective(&self, value: Option<&serde_json::Value>) -> serde_json::Value {
+        let valid = value.filter(|value| match self {
+            Self::Boolean { .. } => value.is_boolean(),
+            Self::Integer {
+                minimum, maximum, ..
+            } => value
+                .as_i64()
+                .is_some_and(|value| *minimum <= value && value <= *maximum),
+            Self::Number {
+                minimum, maximum, ..
+            } => value
+                .as_f64()
+                .is_some_and(|value| value.is_finite() && *minimum <= value && value <= *maximum),
+            Self::Color { .. } => value.as_str().is_some_and(|value| {
+                matches!(value.len(), 4 | 5 | 7 | 9)
+                    && value.starts_with('#')
+                    && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+            }),
+            Self::Enum { values, .. } => value
+                .as_str()
+                .is_some_and(|value| values.iter().any(|item| item == value)),
+            Self::String { maximum_length, .. } => value
+                .as_str()
+                .is_some_and(|value| value.chars().count() <= *maximum_length),
+        });
+        valid.cloned().unwrap_or_else(|| match self {
+            Self::Boolean { default } => (*default).into(),
+            Self::Integer { default, .. } => (*default).into(),
+            Self::Number { default, .. } => serde_json::Number::from_f64(*default)
+                .map_or(serde_json::Value::Null, serde_json::Value::Number),
+            Self::Color { default } | Self::Enum { default, .. } | Self::String { default, .. } => {
+                default.clone().into()
+            }
+        })
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub struct EditorView {
     pub backend_label: String,
@@ -163,6 +257,7 @@ pub struct EditorView {
     pub access: EditorAccess,
     pub title: EditorTitleState,
     pub refresh_rate: Option<RefreshRateEditor>,
+    pub skins: Vec<EditorSkin>,
 }
 
 #[component]
@@ -223,9 +318,12 @@ pub fn EditorPanel(
                     if let Some(error)=&refresh.error { p { class:"refresh-rate-error", role:"alert", "{error}" } }
                 } }
                 if let Some(canvas) = canvas { section { class:"appearance-pane", h2 { "APPEARANCE" } h3 { "SKIN" }
-                    div { class:"native-skin-options button-grid three", for (index,(label,skin)) in [("CYAN",Skin::CyanSystem),("AURORA",Skin::ResultAurora),("BLACKBOX",Skin::DjBlackbox)].into_iter().enumerate() { EditorButton { class:"skin-option", disabled:view.access.readonly, onclick:move |_| onaction.call(EditorAction::Skin(skin)), selected:canvas.skin==skin, "data-index":index, if canvas.skin==skin{"✓ "} "{label}" } } }
-                    h3 { "BACKGROUND" }
-                    div { class:"button-grid three", for (index,(label,mode)) in [("NONE",Background::None),("STATIC",Background::Static),("ANIMATED",Background::Animated)].into_iter().enumerate() { EditorButton { class:"background-option", disabled:view.access.readonly, onclick:move |_| onaction.call(EditorAction::Background(mode)), selected:canvas.background == mode , "data-index":index, "{label}" } } }
+                    div { class:"native-skin-options button-grid", for (index,skin) in view.skins.iter().enumerate() { EditorButton { class:"skin-option", disabled:view.access.readonly, onclick:{let value=skin.id; move |_| onaction.call(EditorAction::Skin(value))}, selected:canvas.skin==skin.id, "data-index":index, if canvas.skin==skin.id{"✓ "} "{skin.name}" small { "{skin.release}" } } } }
+                    if let Some(skin)=view.skins.iter().find(|skin|skin.id==canvas.skin) {
+                        if !skin.preview.is_empty() { img { class:"skin-preview", src:"{skin.preview}", alt:"{skin.name} preview" } }
+                        if view.outputs.is_none() { if let Some(preview_video)=&skin.preview_video { video { class:"skin-preview-video", src:"{preview_video}", autoplay:true, muted:true, r#loop:true } } }
+                        {property_controls(&skin.canvas_properties,&canvas.skin_properties,true,view.access.readonly,onaction)}
+                    }
                     if view.outputs.is_some() { h3 { "OPACITY" }
                     div { class:"native-opacity button-grid four", for value in [25,50,75,100] { EditorButton { class:"opacity-option", disabled:view.access.readonly, onclick:move |_| onaction.call(EditorAction::Opacity(value)), selected:canvas.opacity_percent==value, "data-value":value, if canvas.opacity_percent==value{"✓ "} "{value}" } } }
                 }
@@ -238,6 +336,7 @@ pub fn EditorPanel(
                     details { class:"widget-add", open:view.chrome.widget_add_open, summary { class:"widget-add-summary", onclick:move |event| {event.prevent_default(); onaction.call(EditorAction::ToggleWidgetAdd);}, "+ ADD WIDGET" } if view.chrome.widget_add_open { div { class:"button-grid", for (index,label) in ["STATUS","SELECTION","SCORE","HISTORY LIST","HISTORY GRAPH","EMPTY"].into_iter().enumerate() { EditorButton { class:"add-widget", disabled:view.access.readonly, onclick:move |_| onaction.call(EditorAction::AddWidget(index)), "data-index":index, "+ {label}" } } } } }
                     if let Some(widget) = canvas.widgets.iter().find(|widget| view.selected_widget.as_deref()==Some(widget.id.as_str())) {
                         {widget_settings(widget, &view, title_input.clone(), onaction)}
+                        if let Some(skin)=view.skins.iter().find(|skin|skin.id==canvas.skin) { if let Some(properties)=skin.widget_properties.get(widget.kind.name()).or_else(||skin.widget_properties.get("*")) { {property_controls(properties,&widget.skin_properties,false,view.access.readonly,onaction)} } }
                     }
                 } } else { div { class:"canvas-hidden-state", strong { "HIDDEN ON THIS GAME SCREEN" } span { "Turn this canvas ON in the list to edit its widgets." } } } } else { div { class:"canvas-hidden-state", strong { "NO CANVAS ON THIS GAME SCREEN" } span { "Turn a canvas ON or add one for this game screen." } } }
                 }
@@ -245,6 +344,34 @@ pub fn EditorPanel(
             } }
 
     }
+}
+
+fn property_controls(
+    properties: &std::collections::BTreeMap<String, EditorProperty>,
+    values: &std::collections::BTreeMap<String, serde_json::Value>,
+    canvas: bool,
+    readonly: bool,
+    onaction: EventHandler<EditorAction>,
+) -> Element {
+    let action = move |key: String, value: serde_json::Value| {
+        if canvas {
+            onaction.call(EditorAction::CanvasSkinProperty(key, value));
+        } else {
+            onaction.call(EditorAction::WidgetSkinProperty(key, value));
+        }
+    };
+    rsx! { div { class:"skin-property-list", for (key,property) in properties {
+        div { class:"skin-property", "data-property":key, label { "{key}" }
+            match property {
+                EditorProperty::Boolean{default} => { let value=values.get(key).and_then(serde_json::Value::as_bool).unwrap_or(*default); rsx!{EditorButton{disabled:readonly,selected:value,onclick:{let key=key.clone();move |_|action(key.clone(),(!value).into())},if value{"ON"}else{"OFF"}}} },
+                EditorProperty::Enum{default,values:options} => { let value=values.get(key).and_then(serde_json::Value::as_str).unwrap_or(default); rsx!{div{class:"button-grid",for option in options{EditorButton{disabled:readonly,selected:value==option,onclick:{let key=key.clone();let option=option.clone();move |_|action(key.clone(),option.clone().into())},"{option}"}}}} },
+                EditorProperty::Integer{default,minimum,maximum} => { let value=values.get(key).and_then(serde_json::Value::as_i64).unwrap_or(*default); rsx!{input{r#type:"number",value:"{value}",min:"{minimum}",max:"{maximum}",disabled:readonly,oninput:{let key=key.clone();move |event|if let Ok(value)=event.value().parse::<i64>(){action(key.clone(),value.into())}}}} },
+                EditorProperty::Number{default,minimum,maximum} => { let value=values.get(key).and_then(serde_json::Value::as_f64).unwrap_or(*default); rsx!{input{r#type:"number",value:"{value}",min:"{minimum}",max:"{maximum}",disabled:readonly,oninput:{let key=key.clone();move |event|if let Ok(value)=event.value().parse::<f64>()&&let Some(value)=serde_json::Number::from_f64(value){action(key.clone(),value.into())}}}} },
+                EditorProperty::Color{default} => { let value=values.get(key).and_then(serde_json::Value::as_str).unwrap_or(default); rsx!{input{r#type:"color",value:"{value}",disabled:readonly,oninput:{let key=key.clone();move |event|action(key.clone(),event.value().into())}}} },
+                EditorProperty::String{default,maximum_length} => { let value=values.get(key).and_then(serde_json::Value::as_str).unwrap_or(default); rsx!{input{r#type:"text",value:"{value}",maxlength:"{maximum_length}",disabled:readonly,oninput:{let key=key.clone();move |event|action(key.clone(),event.value().into())}}} },
+            }
+        }
+    } } }
 }
 
 fn widget_settings(
@@ -256,17 +383,12 @@ fn widget_settings(
     rsx! {
                         div { class:"native-widget-settings",
                             strong { "{widget.id}" }
-                            h3 { "FRAME WIDTH" }
-                            for (index,value) in [FrameWidth::S,FrameWidth::M,FrameWidth::L].into_iter().enumerate() { EditorButton { class:"frame-width", onclick:move |_| onaction.call(EditorAction::FrameWidth(value)), disabled:view.access.readonly, selected:widget.settings.frame_width==value , "data-index":index, "{value:?}" } }
                             if widget.kind == WidgetKind::Empty {
                                 h3 { "TITLE" }
                                 if view.title!=EditorTitleState::Closed {
                                     {title_input}
                                     div { class:"button-grid", EditorButton { class:"title-accept", onclick:move |_| onaction.call(EditorAction::AcceptTitle), disabled:view.access.readonly || view.title==EditorTitleState::Composing, "APPLY TITLE" } EditorButton { class:"title-cancel", onclick:move |_| onaction.call(EditorAction::CancelTitle), disabled:view.access.readonly, "CANCEL" } }
                                 } else { EditorButton { class:"empty-title-input", onclick:move |_| onaction.call(EditorAction::EditTitle), disabled:view.access.readonly, if widget.settings.title.is_empty(){"Enter title…"}else{"{widget.settings.title}"} } }
-                                h3 { "INTERIOR OPACITY · {widget.settings.fill_opacity_percent}%" }
-                                EditorButton { class:"fill-decrease", onclick:move |_| onaction.call(EditorAction::FillDelta(-1)), disabled:view.access.readonly, "−1" } EditorButton { class:"fill-increase", onclick:move |_| onaction.call(EditorAction::FillDelta(1)), disabled:view.access.readonly, "+1" }
-                                for value in [0,25,50,75,100] { EditorButton { class:"fill-opacity", onclick:move |_| onaction.call(EditorAction::FillOpacity(value)), disabled:view.access.readonly, selected:widget.settings.fill_opacity_percent==value , "data-value":value, "{value}%" } }
                                 h3 { "ASPECT RATIO" }
                                 div { class:"aspect-ratio-options button-grid four", role:"group", "aria-label":"Aspect ratio",
                                     for (index,label) in ["FREE","16:9","4:3","CURRENT"].into_iter().enumerate() { EditorButton { class:"aspect-ratio", onclick:move |_| onaction.call(EditorAction::AspectRatio(index)), disabled:view.access.readonly, selected:aspect_ratio_index(widget.settings.aspect_ratio)==index , "data-index":index, "{label}" } }

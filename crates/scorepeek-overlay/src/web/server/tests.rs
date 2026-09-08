@@ -96,6 +96,7 @@ impl Fixture {
         ));
         std::fs::create_dir(&directory).unwrap();
         let directory = TestDirectory(directory);
+        let skins = crate::skin::StoreRoot::new(directory.0.join("skins"));
         let document = OverlayConfig::initial();
         let path = directory.0.join("overlay.toml");
         let controller = Controller::start(&path, document.clone()).unwrap();
@@ -107,6 +108,7 @@ impl Fixture {
             canvases: document.canvases.clone(),
             config_path: path,
             control_socket: controller.path().to_owned(),
+            skin_store: skins.path().to_owned(),
             socket: directory.0.join("absent.sock"),
             invocation: "stage-session-test".into(),
             scores_db: None,
@@ -127,6 +129,7 @@ impl Fixture {
             control_socket: controller.path().to_owned(),
             feed: Feed::start(config, Arc::new(|| {})).unwrap(),
             changed,
+            skins,
         });
         let app = Router::new()
             .route("/ws/stage", get(stage_socket))

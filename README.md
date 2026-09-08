@@ -218,8 +218,8 @@ Source, or a stable URL such as `http://127.0.0.1:3939/canvas/obs-selection` for
 listen address is `obs_listen` in TOML. Omit both enable flags for an overlay-free run.
 
 Right-click anywhere on the Wayland canvas or the OBS page in Browser Source Interaction to enter
-its editor; DONE is the only exit. Drag/resize widgets, add or remove them, switch among CYAN SYSTEM,
-RESULT AURORA and DJ BLACKBOX, and configure history rows or graph range. OBS also manages its canvas
+its editor; DONE is the only exit. Drag/resize widgets, add or remove them, switch among installed
+skins, and configure manifest-declared appearance properties. OBS also manages its canvas
 list there. Each canvas can be always visible or restricted to MUSIC SELECT, MODE SELECT, DECIDE,
 PLAY and RESULT; UNKNOWN and socket loss retain the previous layout for the configured grace period.
 Wayland content opacity, canvas z-order and the grace period are also editable without a keyboard.
@@ -237,17 +237,20 @@ notification time. The graph labels DJ LEVEL thresholds and uses a fixed 0-100% 
 See [the screen-aware canvas contract](docs/decisions/0127-switch-overlay-canvases-by-semantic-screen.md) and
 [RESULT ingest lifecycle](docs/decisions/0126-publish-result-ingest-lifecycle.md).
 
-Canvas composition supports skin backgrounds (none/static/animated), transparent empty frames with
-optional titles, interior opacity and aspect locks, and S/M/L frame widths for every widget.
+Canvas composition is produced by the selected skin's package-owned Wasm DOM, CSS and resources.
+The host retains canvas/widget geometry, empty-widget aspect locks and canvas opacity.
 Native title editing uses Enter/APPLY to confirm and Esc/CANCEL to cancel; navigating away cancels
 an unfinished title. Confirmed edits join the normal backend draft and its UNDO/SAVE/DISCARD flow.
 Japanese conversion uses the compositor's text-input-v3 IME. The native runtime requires
 `libxkbcommon.so.0`; mise supplies fixed XKB build metadata and libraries without host development
 packages. Keyboard focus is requested only during an explicit title edit.
 
-Development: `mise run overlay:web:check` needs no bundle; `mise run overlay:web:test` builds and
-checks real assets and owned-child cleanup. `mise run dist:build` includes Oxanium, its OFL license,
-three skin frames and the browser bundle in the single binary. `mise run overlay:test:live
+Build the repository examples with `mise run overlay:skins:build`, then install one with
+`scorepeek skin install target/skins/cyan-system.zip`; `scorepeek skin list` and
+`scorepeek skin uninstall ID` provide the other local management operations. Skin ZIPs are not
+embedded in the scorepeek binary. Development: `mise run overlay:web:check` needs no bundle;
+`mise run overlay:web:test` builds and checks real assets and owned-child cleanup.
+`mise run overlay:test:live
 --scores-db PATH` is an explicit desktop gate requiring a dedicated test database. GUI and target
 performance verification remain separate from unit tests.
 

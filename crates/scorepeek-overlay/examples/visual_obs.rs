@@ -48,6 +48,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .collect(),
         config_path,
         control_socket: controller.path().to_owned(),
+        skin_store: scorepeek_overlay::skin::StoreRoot::discover()
+            .path()
+            .to_owned(),
         socket: std::env::temp_dir().join(format!(
             "scorepeek-visual-absent-{}.sock",
             std::process::id()

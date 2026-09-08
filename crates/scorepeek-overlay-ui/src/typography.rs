@@ -78,9 +78,9 @@ pub const LABELS: &[(&str, Tone)] = &[
 ];
 
 #[must_use]
-pub const fn label_font(skin: Skin) -> &'static str {
-    match skin {
-        Skin::DjBlackbox => "Rajdhani",
+pub fn label_font(skin: Skin) -> &'static str {
+    match skin.name() {
+        Skin::DJ_BLACKBOX_ID => "Rajdhani",
         _ => "Oxanium",
     }
 }

@@ -764,11 +764,11 @@ SELECTは譜面・項目別の現在補完値として保持し、revision履歴
 `--scores-db PATH`でrun単位の保存先を選び、`--no-scores`で無効化する。保存失敗は認識と配信へ干渉させない。
 日時、schema、出典、transaction、queueと終了上限はADR 0120を原典とする。過去記録importと照会CLIは含めない。
 
-### Live Overlay canvas（ADR 0122 / 0125 / 0127 / 0128 / 0129 / 0130 / 0135 / 0137 / 0138 / 0140）
+### Live Overlay canvas（ADR 0122 / 0125 / 0127 / 0128 / 0129 / 0130 / 0135 / 0137 / 0138 / 0140 / 0143）
 
 配布binaryは`scorepeek`だけとし、`run --overlay-wayland`と`run --overlay-obs`で独立consumerを有効化する。
-`--overlay-config PATH`はschema v5のTOMLを選び、未指定時は`$XDG_CONFIG_HOME/scorepeek/overlay.toml`を使う。schema v2は`z`を除去し、schema v3はcanvasの`enabled`を除去し、schema v4はwidget外形を内側content領域へ変換して自動migrationする。旧`enabled = false`は`show_on = []`へ変換し、それ以外の`show_on`は保持する。schema v1は拒否する。既存schema v5に`wayland_refresh_hz`がなければ`"auto"`をatomicに追記する。`--overlay-wayland-edit`はWaylandを有効化して起動時に編集workspaceを開く。
-未作成ならWayland/OBSそれぞれに常時status、MUSIC SELECT dashboard、DECIDE/PLAY compact selection、RESULT dashboardの4 canvasをatomicに作成する。Wayland初期canvasは選択outputの右上から20px内側に置く。backendはcanvas作成後に変更しない。
+`--overlay-config PATH`はschema v6のTOMLを選び、未指定時は`$XDG_CONFIG_HOME/scorepeek/overlay.toml`を使う。schema v2は`z`を除去し、schema v3はcanvasの`enabled`を除去し、schema v4はwidget外形を内側content領域へ変換し、schema v5は旧skin名を正式IDへ変換してappearance値をpropertyへ保存する。旧`enabled = false`は`show_on = []`へ変換し、それ以外の`show_on`は保持する。schema v1は拒否する。`--overlay-wayland-edit`はWaylandを有効化して起動時に編集workspaceを開く。
+未作成ならinstall済みskin IDの辞書順先頭を使い、widgetなしのWayland/OBS canvasを1枚ずつatomicに作成する。skinがなければ作成を拒否する。Wayland初期canvasは選択outputの右上から20px内側に置く。backendはcanvas作成後に変更しない。
 global/schema errorは全体を拒否し、個別canvas errorはそのcanvasだけを隔離する。各backendはvalidなcanvasを1枚以上保持するが、全canvasを非表示にしてよい。
 
 Waylandはcanvasごとのlayer surfaceを1 child内で所有し、TOMLのoutput、論理座標とsizeを適用する。
@@ -800,18 +800,16 @@ editor preview中はcurrent GAME SCREENで表示中の全empty widgetに、inner
 表示するBEST、RESULT DETAIL、recorded、historyは常にcommit済みDB stateから作り、最新公開RESULTを直接score widgetへ流用しない。
 親pipe EOFで子を有界回収し、overlay失敗は認識・保存・他backendを停止しない。親config controllerの診断はbounded queueからrun-event recordingへ流し、TUIのterminal streamへJSONを直接出力しない。
 
-### Overlay skinとasset（ADR 0123 / 0124 / 0125）
+### Overlay skin package（ADR 0143）
 
-cyan-system（既定）、result-aurora、dj-blackboxをcanvas単位で選ぶ。同じ意味DOMと状態logicを共有しつつ、
-ADR 0133により原典design masterの比率・輪郭・配色・文字階層へ忠実に合わせる。
-ADR 0134により、初期imagegenの素材感を保つため全skinのframeを同梱PNGの角・辺・中央へ分けて描画する。角の縦横比と縁の厚みを保ち、譜面rail・lampは意味を持つ共有SVGとする。AURORAの光は曲名headerへ限定し、scoreを金色にする。
-EX SCOREとDJ LEVELは同梱fontから再生成できるskin別の金属atlasを使う。見出し・譜面情報・判定名・clear・履歴列名・graphラベルも意味別配色と比例文字組みを保ったatlasで描画する。和英混在の曲名と小さい動的な内訳・履歴値は通常文字とする。実値はaccessible DOM textとして維持する。
-新規widgetは原典のコンパクトな比率とし、保存済み配置は自動変更しない。runtime値は即時に正しい値を表示し、count-upはしない。
-Oxanium/Orbitron/Rajdhaniをlicense付きで同梱する。日本語はシステムのNoto Sans JP等を使い、同梱しない（ADR 0132）。
-DOM/CSS・素材・意味に対応したmotion設定は共通とし、native RustとOBS JavaScriptで駆動する。
-演出はwidget外へ広がりcanvasでcropする。利用者がcanvasとwidget配置で調整する。
-外部CSS/asset downloadは行わない。表示中は常時animationを許容し、非表示native surfaceはidleにする。
+skinは`skin.toml`、core `skin.wasm`、`skin.css`、`preview.png`と任意resourceをrootに持つ単一ZIPとして利用者がinstallする。初期管理面は`scorepeek skin install ZIP`、`uninstall ID`、`list`だけとしregistryは持たない。storeはoriginal ZIPをIDごとに保持し、同releaseはno-op、異なるreleaseはproperty scope/type互換性を確認してatomic replaceする。quota、digest、signature、prune、実行中replace保護は設けない。
 
-開発hostではstrict TOML、atomic save、lease/revision、DB query、公開event fold、全skinのnative DOM、WASM、embedded asset、時刻を指定したmotion描画と非表示停止を検証する。
+nativeはWasmtime、OBSはcanvasごとのWeb Workerで同じversioned JSON ABIを実行する。WASI、host import、interaction callbackはなく、hostがsemantic snapshot、widget data、geometryとmanifest propertyを渡す。出力はstable unique key付きの完全treeと次回scheduleであり、hostは通常のbrowser DOMまたはBlitz DOMへreconcileする。tag、attribute、CSS、tree規模を制限せず、canvasだけを最終clipとする。相対asset URLはZIP内だけへ解決し、外部URLはOBS CSPとpackage resource経路の外に置く。
+
+propertyはboolean、bounded integer/number、color、enum、bounded stringをcanvas/widget kind単位で宣言する。同じIDのupdateでは追加・削除とenum entry変更を許し、存続keyのscope/typeは変えない。無効値は警告なくdefaultへ解決し、通常SAVEまでconfigを自動書換えしない。skin切替はtargetでも有効な同名同型値だけを引き継ぐ1 undo操作とする。missing packageはfallbackせずcanvasを利用不能とし、uninstall時もconfigは保持する。
+
+repositoryのcyan-system、result-aurora、dj-blackbox sourceとRust SDK/coreは`mise run overlay:skins:build`でlocal ZIPへbuildし、通常buildではinstallしない。生成ZIPはcommitしない。preview PNGは両editor、任意WebMはOBS editorだけが扱う。
+
+開発hostではstrict TOML、atomic save、lease/revision、DB query、公開event fold、install smoke、全skinのnative/OBS DOM、WASM、package asset、時刻を指定したmotion描画と非表示停止を隔離XDGで検証し、作成物を後始末する。
 実機ではWayland output境界、整数/小数scale、入力、ゲーム上の可読性と占有面積、OBS Interaction、CPU/GPU/OBS lagを別のlive gateで確認する。
 fresh review後にこの変更だけmainへcommitする。push、deploy、autostart、releaseは含めない。

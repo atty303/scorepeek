@@ -1,5 +1,5 @@
 {
-  "appearance": { "skin": "cyan-system" },
+  "appearance": { "skin": "dev.atty303.scorepeek.skin.cyan-system" },
   "state": {
     "connected": true,
     "chart": {

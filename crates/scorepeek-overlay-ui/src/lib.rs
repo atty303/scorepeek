@@ -243,6 +243,20 @@ pub enum WidgetKind {
     Empty,
 }
 
+impl WidgetKind {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::Selection => "selection",
+            Self::Score => "score",
+            Self::HistoryList => "history-list",
+            Self::HistoryGraph => "history-graph",
+            Self::Empty => "empty",
+        }
+    }
+}
+
 #[must_use]
 pub const fn default_widget_size(kind: WidgetKind) -> (u32, u32) {
     match kind {
@@ -317,6 +331,8 @@ pub struct WidgetLayout {
     pub height: u32,
     #[serde(default)]
     pub settings: WidgetSettings,
+    #[serde(default)]
+    pub skin_properties: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -326,6 +342,8 @@ pub struct CanvasPresentation {
     pub background: Background,
     pub id: String,
     pub skin: Skin,
+    #[serde(default)]
+    pub skin_properties: std::collections::BTreeMap<String, serde_json::Value>,
     pub revision: u64,
     #[serde(default)]
     pub show_on: Option<Vec<ScreenKind>>,
@@ -493,6 +511,7 @@ pub fn default_widgets() -> Vec<WidgetLayout> {
         width: 544,
         height: height - 16,
         settings: WidgetSettings::default(),
+        skin_properties: std::collections::BTreeMap::new(),
     };
     vec![
         widget("status", WidgetKind::Status, 0, 60),
@@ -788,6 +807,7 @@ mod tests {
             width: 560,
             height: 72,
             settings: WidgetSettings::default(),
+            skin_properties: std::collections::BTreeMap::new(),
         };
         let widgets = [widget("status"), widget("status-1"), widget("status-3")];
         assert_eq!(next_widget_id(WidgetKind::Status, &widgets), "status-2");

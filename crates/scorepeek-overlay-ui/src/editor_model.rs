@@ -1,4 +1,7 @@
-use crate::editor::{EditorAccess, EditorAction, EditorChrome, EditorTitleState, EditorView};
+use crate::editor::{
+    EditorAccess, EditorAction, EditorChrome, EditorProperty, EditorSkin, EditorTitleState,
+    EditorView,
+};
 use crate::{
     AspectRatio, Background, CanvasPresentation, ScreenKind, Skin, WidgetKind, WidgetLayout,
     WidgetSettings, default_widget_size, next_widget_id,
@@ -11,6 +14,46 @@ pub const SCREENS: [ScreenKind; 5] = [
     ScreenKind::Play,
     ScreenKind::Result,
 ];
+
+fn migrate_properties(
+    old: Option<&std::collections::BTreeMap<String, EditorProperty>>,
+    target: &std::collections::BTreeMap<String, EditorProperty>,
+    values: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    target
+        .iter()
+        .map(|(key, property)| {
+            let candidate = old
+                .and_then(|old| old.get(key))
+                .filter(|old| old.kind() == property.kind())
+                .and_then(|_| values.get(key));
+            (key.clone(), property.effective(candidate))
+        })
+        .collect()
+}
+
+fn normalize_properties(canvases: &mut [CanvasPresentation], skins: &[EditorSkin]) {
+    for canvas in canvases {
+        let Some(skin) = skins.iter().find(|skin| skin.id == canvas.skin) else {
+            continue;
+        };
+        canvas.skin_properties = migrate_properties(
+            Some(&skin.canvas_properties),
+            &skin.canvas_properties,
+            &canvas.skin_properties,
+        );
+        for widget in &mut canvas.widgets {
+            let properties = skin
+                .widget_properties
+                .get(widget.kind.name())
+                .or_else(|| skin.widget_properties.get("*"));
+            widget.skin_properties =
+                properties.map_or_else(std::collections::BTreeMap::new, |properties| {
+                    migrate_properties(Some(properties), properties, &widget.skin_properties)
+                });
+        }
+    }
+}
 #[derive(Clone)]
 pub struct TitleDraft {
     pub canvas: String,
@@ -48,6 +91,7 @@ pub struct Model {
     pub backend_revision: u64,
     pub discard_pending: bool,
     pub notice: Option<String>,
+    pub skins: Vec<EditorSkin>,
 }
 impl Model {
     #[must_use]
@@ -56,6 +100,25 @@ impl Model {
         viewport: [u32; 2],
         namespace: &'static str,
     ) -> Self {
+        let skins = canvases
+            .iter()
+            .map(|canvas| {
+                (
+                    canvas.skin,
+                    EditorSkin {
+                        id: canvas.skin,
+                        name: canvas.skin.name().into(),
+                        release: String::new(),
+                        preview: String::new(),
+                        preview_video: None,
+                        canvas_properties: std::collections::BTreeMap::new(),
+                        widget_properties: std::collections::BTreeMap::new(),
+                    },
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+            .into_values()
+            .collect();
         Self {
             namespace,
             selected_canvas: canvases.first().map(|canvas| canvas.id.clone()),
@@ -81,9 +144,17 @@ impl Model {
             backend_revision: 0,
             discard_pending: false,
             notice: None,
+            skins,
         }
     }
-    pub fn receive_stage(&mut self, canvases: Vec<CanvasPresentation>) {
+
+    pub fn set_skins(&mut self, skins: Vec<EditorSkin>) {
+        self.skins = skins;
+        normalize_properties(&mut self.draft, &self.skins);
+        self.saved.clone_from(&self.draft);
+    }
+    pub fn receive_stage(&mut self, mut canvases: Vec<CanvasPresentation>) {
+        normalize_properties(&mut canvases, &self.skins);
         if !self.editing && self.draft != canvases {
             self.saved.clone_from(&canvases);
             self.draft = canvases;
@@ -138,6 +209,7 @@ impl Model {
                     }
                 }),
             refresh_rate: None,
+            skins: self.skins.clone(),
         }
     }
     pub fn select_visible(&mut self) {
@@ -266,7 +338,9 @@ impl Model {
             true
         }
     }
+    #[allow(clippy::too_many_lines)]
     fn apply_settings(&mut self, action: &EditorAction) {
+        let skins = self.skins.clone();
         match action {
             EditorAction::ToggleCanvas(id) => {
                 if let Some(canvas) = self.draft.iter_mut().find(|canvas| &canvas.id == id) {
@@ -291,7 +365,17 @@ impl Model {
                     .unwrap();
                 self.draft.push(CanvasPresentation {
                     id: id.clone(),
-                    skin: Skin::CyanSystem,
+                    skin: self.skins.first().map_or(Skin::CyanSystem, |skin| skin.id),
+                    skin_properties: self.skins.first().map_or_else(
+                        std::collections::BTreeMap::new,
+                        |skin| {
+                            migrate_properties(
+                                None,
+                                &skin.canvas_properties,
+                                &std::collections::BTreeMap::new(),
+                            )
+                        },
+                    ),
                     background: Background::None,
                     revision: 0,
                     show_on: Some(vec![self.preview]),
@@ -320,8 +404,47 @@ impl Model {
                     .find(|canvas| Some(&canvas.id) == self.selected_canvas.as_ref())
                 {
                     match action {
-                        EditorAction::Skin(value) => canvas.skin = *value,
+                        EditorAction::Skin(value) => {
+                            let old = skins.iter().find(|skin| skin.id == canvas.skin);
+                            let target = skins.iter().find(|skin| skin.id == *value);
+                            if let Some(target) = target {
+                                canvas.skin_properties = migrate_properties(
+                                    old.map(|skin| &skin.canvas_properties),
+                                    &target.canvas_properties,
+                                    &canvas.skin_properties,
+                                );
+                                for widget in &mut canvas.widgets {
+                                    let old = old.and_then(|skin| {
+                                        skin.widget_properties
+                                            .get(widget.kind.name())
+                                            .or_else(|| skin.widget_properties.get("*"))
+                                    });
+                                    let target = target
+                                        .widget_properties
+                                        .get(widget.kind.name())
+                                        .or_else(|| target.widget_properties.get("*"));
+                                    widget.skin_properties = target.map_or_else(
+                                        std::collections::BTreeMap::new,
+                                        |target| {
+                                            migrate_properties(old, target, &widget.skin_properties)
+                                        },
+                                    );
+                                }
+                                canvas.skin = *value;
+                            }
+                        }
                         EditorAction::Background(value) => canvas.background = *value,
+                        EditorAction::CanvasSkinProperty(key, value) => {
+                            if let Some(property) = skins
+                                .iter()
+                                .find(|skin| skin.id == canvas.skin)
+                                .and_then(|skin| skin.canvas_properties.get(key))
+                            {
+                                canvas
+                                    .skin_properties
+                                    .insert(key.clone(), property.effective(Some(value)));
+                            }
+                        }
                         EditorAction::Opacity(value) => canvas.opacity_percent = *value,
                         EditorAction::Output(value) => canvas.output = Some(value.clone()),
                         EditorAction::DeleteWidget => {
@@ -337,7 +460,29 @@ impl Model {
                                 .iter_mut()
                                 .find(|widget| Some(&widget.id) == self.selected_widget.as_ref())
                             {
-                                apply_widget_action(widget, &canvas.id, &mut self.title, action);
+                                if let EditorAction::WidgetSkinProperty(key, value) = action {
+                                    if let Some(property) = skins
+                                        .iter()
+                                        .find(|skin| skin.id == canvas.skin)
+                                        .and_then(|skin| {
+                                            skin.widget_properties
+                                                .get(widget.kind.name())
+                                                .or_else(|| skin.widget_properties.get("*"))
+                                        })
+                                        .and_then(|properties| properties.get(key))
+                                    {
+                                        widget
+                                            .skin_properties
+                                            .insert(key.clone(), property.effective(Some(value)));
+                                    }
+                                } else {
+                                    apply_widget_action(
+                                        widget,
+                                        &canvas.id,
+                                        &mut self.title,
+                                        action,
+                                    );
+                                }
                             }
                         }
                     }
@@ -353,6 +498,17 @@ impl Model {
             return false;
         };
         let before = self.draft.clone();
+        let skin_properties = self
+            .current()
+            .and_then(|canvas| self.skins.iter().find(|skin| skin.id == canvas.skin))
+            .and_then(|skin| {
+                skin.widget_properties
+                    .get(kind.name())
+                    .or_else(|| skin.widget_properties.get("*"))
+            })
+            .map_or_else(std::collections::BTreeMap::new, |properties| {
+                migrate_properties(None, properties, &std::collections::BTreeMap::new())
+            });
         let Some(canvas) = self
             .draft
             .iter_mut()
@@ -374,6 +530,7 @@ impl Model {
             width,
             height,
             settings: WidgetSettings::default(),
+            skin_properties,
         });
         self.selected_widget = Some(id);
         self.undo = Some(before);
@@ -659,5 +816,74 @@ fn apply_widget_action(
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod skin_tests {
+    use super::*;
+
+    fn skin(id: &str, default: i64) -> EditorSkin {
+        EditorSkin {
+            id: id.parse().unwrap(),
+            name: id.into(),
+            release: "1".into(),
+            preview: "/preview.png".into(),
+            preview_video: None,
+            canvas_properties: std::collections::BTreeMap::from([(
+                "amount".into(),
+                EditorProperty::Integer {
+                    default,
+                    minimum: 0,
+                    maximum: 10,
+                },
+            )]),
+            widget_properties: std::collections::BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn installed_catalog_normalizes_values_and_allows_switching() {
+        let first: Skin = "dev.example.first".parse().unwrap();
+        let second: Skin = "dev.example.second".parse().unwrap();
+        let canvas = CanvasPresentation {
+            id: "canvas".into(),
+            skin: first,
+            skin_properties: std::collections::BTreeMap::from([(
+                "amount".into(),
+                serde_json::json!(99),
+            )]),
+            show_on: None,
+            background: Background::None,
+            opacity_percent: 100,
+            output: None,
+            revision: 0,
+            x: 0,
+            y: 0,
+            width: 560,
+            height: 1040,
+            widgets: Vec::new(),
+        };
+        let mut model = Model::new(vec![canvas], [1920, 1080], "test");
+        model.set_skins(vec![skin(first.name(), 2), skin(second.name(), 7)]);
+        assert_eq!(
+            model.draft[0].skin_properties["amount"],
+            serde_json::json!(2)
+        );
+        model.apply_settings(&EditorAction::Skin(second));
+        assert_eq!(model.draft[0].skin, second);
+        assert_eq!(
+            model.draft[0].skin_properties["amount"],
+            serde_json::json!(2)
+        );
+        let mut received = model.draft[0].clone();
+        received
+            .skin_properties
+            .insert("amount".into(), serde_json::json!(-1));
+        model.receive_stage(vec![received]);
+        assert_eq!(
+            model.draft[0].skin_properties["amount"],
+            serde_json::json!(7)
+        );
     }
 }

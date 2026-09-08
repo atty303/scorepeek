@@ -31,6 +31,8 @@ serde_json.workspace = true
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws"] }
 tokio = { workspace = true, features = ["net", "sync", "macros", "rt-multi-thread"] }
 toml.workspace = true
+wasmtime.workspace = true
+zip.workspace = true
 rust-embed = { version = "8.12", features = ["mime-guess", "interpolate-folder-path", "deterministic-timestamps"], optional = true }
 
 [features]

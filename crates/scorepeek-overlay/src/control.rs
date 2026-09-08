@@ -603,7 +603,7 @@ mod tests {
         (
             root.join("overlay.toml"),
             Mutex::new(State {
-                config: OverlayConfig::initial(),
+                config: crate::config::visual_debug_config(),
                 leases: BTreeMap::new(),
                 diagnostics: VecDeque::new(),
                 dropped_diagnostics: 0,

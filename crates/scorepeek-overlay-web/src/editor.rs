@@ -13,7 +13,12 @@ use std::rc::Rc;
 use wasm_bindgen::{JsCast as _, closure::Closure};
 
 pub fn app() -> Element {
-    let mut model = use_signal(|| Model::new(read_initial(), viewport(), "obs"));
+    let mut model = use_signal(|| {
+        let (canvases, skins) = read_initial();
+        let mut model = Model::new(canvases, viewport(), "obs");
+        model.set_skins(skins);
+        model
+    });
     let compatibility = use_signal(|| Compatibility::Checking);
     let connection = use_hook(move || Connection::new(model, compatibility));
     let _resize = use_hook(move || Rc::new(ResizeListener::new(model)));
@@ -103,13 +108,25 @@ fn encode_id(id: &str) -> String {
     }
     encoded
 }
-fn read_initial() -> Vec<CanvasPresentation> {
-    web_sys::window()
-        .and_then(|window| window.document())
-        .and_then(|doc| doc.get_element_by_id("scorepeek-stage"))
-        .and_then(|node| node.text_content())
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+fn read_initial() -> (
+    Vec<CanvasPresentation>,
+    Vec<scorepeek_overlay_ui::editor::EditorSkin>,
+) {
+    let document = web_sys::window().and_then(|window| window.document());
+    let read = |id: &str| {
+        document
+            .as_ref()
+            .and_then(|doc| doc.get_element_by_id(id))
+            .and_then(|node| node.text_content())
+    };
+    (
+        read("scorepeek-stage")
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default(),
+        read("scorepeek-skins")
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default(),
+    )
 }
 fn viewport() -> [u32; 2] {
     web_sys::window()

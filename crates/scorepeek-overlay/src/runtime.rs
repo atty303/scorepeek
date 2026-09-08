@@ -27,6 +27,7 @@ pub struct Config {
     pub canvases: Vec<crate::config::Canvas>,
     pub config_path: PathBuf,
     pub control_socket: PathBuf,
+    pub skin_store: PathBuf,
     pub socket: PathBuf,
     pub invocation: String,
     pub scores_db: Option<PathBuf>,

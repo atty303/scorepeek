@@ -93,7 +93,7 @@ run = "dx bundle --package scorepeek-overlay-web --web --release --locked --debu
 
 [tasks."overlay:web:test"]
 description = "Test real embedded assets and child lifecycle in isolated storage"
-depends = ["overlay:web:bundle"]
+depends = ["overlay:web:bundle", "overlay:skins:build"]
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
@@ -109,14 +109,18 @@ run = "cargo test --locked -p scorepeek-overlay-handles --lib"
 description = "Render a skin preview JSON to a create-only PAM using native DOM/Vello (no Wayland or DB)"
 run = 'cargo run --locked -p scorepeek-overlay --example render_skin -- "$@"'
 
+[tasks."overlay:skins:build"]
+description = "Build repository skin ZIP packages without installing them"
+run = "bash scripts/build-skins.sh"
+
 [tasks."overlay:visual:native"]
 description = "Run a scripted native Dioxus/Blitz/Vello visual-debug scenario without Wayland"
-run = 'cargo run --locked -p scorepeek-overlay --example visual_native -- "$@"'
+run = 'scripts/with-isolated-skins.sh cargo run --locked -p scorepeek-overlay --example visual_native -- "$@"'
 
 [tasks."overlay:visual:obs"]
 description = "Serve the production OBS overlay from an isolated config for Codex Browser inspection"
 depends = ["overlay:web:bundle"]
-run = 'cargo run --locked -p scorepeek-overlay --features embedded-web --example visual_obs -- "$@"'
+run = 'scripts/with-isolated-skins.sh cargo run --locked -p scorepeek-overlay --features embedded-web --example visual_obs -- "$@"'
 
 [tasks."overlay:test:live"]
 description = "Explicit live overlay run; supply a dedicated --scores-db instance and profile"

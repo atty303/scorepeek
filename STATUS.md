@@ -16,8 +16,28 @@ checkpoint; implementation history belongs in Git.
 
 ## Implemented authority
 
+- ADR 0143 replaces the binary-owned skin set with local, user-installable ZIP packages. The
+  package boundary requires a manifest, one core Wasm module, CSS and PNG preview; optional WebM
+  and package-relative resources remain opaque. `scorepeek skin install`, `uninstall` and `list`
+  manage original ZIPs in the XDG data store. Install performs structural, PNG, ABI and two-backend
+  smoke validation against a scorepeek-owned fixed staging snapshot before atomic replacement;
+  same ID/release is a no-op. Native executes the shared JSON ABI in Wasmtime with an epoch hard
+  timeout covering instantiation and every guest export and reconciles keyed ordinary DOM through
+  Blitz. OBS executes one instance per canvas in a Web Worker and reconciles ordinary browser DOM
+  under external package CSS/runtime routes and a same-origin CSP. Both editors show the mandatory
+  PNG preview; OBS additionally shows an optional WebM. The native editor renders the selected
+  draft through its package runtime rather than the superseded fixed renderer. No registry,
+  digest/signature, quota, fallback,
+  interaction API, WASI/host import, or running-instance replacement protection exists.
+- Overlay TOML is schema v6. Skin identity is an arbitrary reverse-domain ID and canvas/widget
+  properties are persisted maps resolved through installed manifest schemas. Schema v5 maps the
+  three old names to formal IDs and preserves background/frame/fill values. A missing initial config
+  chooses the lexicographically first installed skin and creates one empty canvas per backend; no
+  installed skin is a startup error. The repository retains a Rust guest SDK/core and three package
+  sources; `mise run overlay:skins:build` produces uncommitted ZIPs without installing them.
+
 - Repository skill `.agents/skills/create-overlay-skin/SKILL.md` defines new-skin and requested
-  redesign work from concept comparison through shared native/browser implementation and visual
+  redesign work from concept comparison through package Wasm/CSS implementation and native/browser visual
   evaluation. Its references separate IIDX facts, current display contracts and approved design
   choices. This adds no runtime skin or changes to existing skin assets.
 
@@ -28,7 +48,7 @@ checkpoint; implementation history belongs in Git.
   automatically migrates schema v2 and v3. ADR 0129 overlays a responsive editor panel on a
   one-to-one output preview and assigns canvas movement to edit-only right-drag.
   `--overlay-wayland` and `--overlay-obs` enable the backends; `--overlay-config` selects the document.
-  Missing configuration creates status, MUSIC SELECT, DECIDE/PLAY and RESULT canvases per backend.
+  ADR 0143 supersedes its initial four-canvas creation with one empty canvas per backend.
   Each canvas has optional semantic-screen filters; Wayland also has 1–100% content
   opacity. UNKNOWN and socket loss retain the previous screen for the configured global grace. The
   parent is the sole atomic writer. One backend lease owns the complete in-memory draft; SAVE checks
@@ -68,8 +88,8 @@ checkpoint; implementation history belongs in Git.
   events and reactive state remain event-driven; motion samples elapsed monotonic time. Initial
   configure, reconfigure, visibility clear and the editor bypass the cap. The setting joins the
   Wayland draft, undo and atomic save while OBS remains owned by Browser Source custom frame rate.
-  Schema v5 is retained and always writes the new field, including atomic `"auto"` insertion into an
-  older v5 document. During either editor preview, visible empty apertures show compact logical
+  ADR 0143 supersedes schema v5 with v6; `wayland_refresh_hz` remains part of the same document.
+  During either editor preview, visible empty apertures show compact logical
   `x,y · width×height` relative to the output or `/overlay` viewport; normal display omits it and OBS
   scene transforms remain outside scorepeek authority.
 - ADR 0141 makes the Gamescope receiver always request a 1920x1080-bounded capture domain. Gamescope
@@ -90,7 +110,9 @@ checkpoint; implementation history belongs in Git.
 - ADR 0136 makes the native Wayland shell select the C client backend and dynamic loading
   explicitly. Building no longer requires host Wayland pkg-config metadata, development headers or
   an unversioned linker name; `libwayland-client.so.0` remains a live-runtime host boundary.
-- CYAN SYSTEM, RESULT AURORA and DJ BLACKBOX are canvas-level skins using shared image-backed frames
+- CYAN SYSTEM, RESULT AURORA and DJ BLACKBOX remain repository package sources rather than
+  executable-owned skin variants. Their prior fixed Dioxus renderer and embedded-asset authority
+  below is superseded by ADR 0143's Wasm/full-tree/package-resource contract. They previously used shared image-backed frames
   with fixed-aspect corners (ADR 0134), SVG chart/status fittings and embedded surface artwork. Oxanium and OFL 1.1 are embedded alongside Japanese system-font
   fallbacks. ADR 0131 adds embedded Orbitron/Rajdhani, new transparent
   energy/circuit artwork and semantic clear/difficulty/rank treatments. Shared motion tracks drive
@@ -202,6 +224,18 @@ checkpoint; implementation history belongs in Git.
   code/model/layout binding and non-interfering recording failure status.
 
 ## Verification
+
+- The three repository skin ZIPs build reproducibly enough for local install testing and contain the
+  mandatory manifest, Wasm, CSS and preview plus package-owned artwork, font and license resources.
+  Isolated-XDG CLI trials cover install, identifier-ordered list, same-release no-op and uninstall.
+  Workspace tests cover manifest/identity/property migration, package resources and owned child
+  shutdown. The native 1920x1080 visual fixture completed all 22 editor, geometry, screen and
+  package-backed render captures with selector layouts; the latest run also shows the package PNG
+  and selected draft plugin tree in the native editor. A prior production OBS page reported
+  successful Web Worker `init` and `render` calls in Codex Browser. After moving CSS and runtime JS
+  to external same-origin resources, the full embedded-web integration passes; a browser rerun of
+  that hardened page remains open. These are development-host checks; live Wayland compositor and
+  OBS Browser Source verification remain open.
 
 - The repository skin skill passes structural validation, scoped checks and independent review.
   Forward trials cover concept generation/correction, missing required tools, selection gates and
@@ -322,9 +356,9 @@ checkpoint; implementation history belongs in Git.
   a viewport shared with plot geometry; colors are shared with CSS axes and legends. Frames use
   restrained lines/corner accents, with staggered moving highlights carrying the ambient motion.
   These checks do not establish live Wayland or OBS composition.
-- Repository checks and the complete workspace suite pass: 508 library,
-  325 binary, 128 corpus library, 5 corpus binary, 58 overlay, 7 handle, 4 overlay-UI, 7 overlay-web
-  and 13 score tests, plus doctests. The embedded-web overlay integration test also passes. The 99 offline OCR tests and
+- Repository checks and the complete workspace suite pass: 510 library,
+  324 binary, 128 corpus library, 5 corpus binary, 76 overlay, 7 handle, 6 overlay-UI, 7 overlay-web
+  and 20 score tests, plus doctests. The embedded-web overlay integration test also passes. The 99 offline OCR tests and
   repository checks also pass. Public API and overlay state tests include score-store invalidation,
   RESULT readiness across withdrawal/re-resolution, fresh and same-session reconnect restoration,
   and completion publication after shutdown drain.

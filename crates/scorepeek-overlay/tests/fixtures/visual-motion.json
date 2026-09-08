@@ -3,7 +3,7 @@
     1920,
     1080
   ],
-  "skin": "result-aurora",
+  "skin": "dev.atty303.scorepeek.skin.result-aurora",
   "editing": true,
   "selectors": [
     ".overlay-canvas",

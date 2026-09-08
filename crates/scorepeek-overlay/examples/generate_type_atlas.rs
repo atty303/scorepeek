@@ -22,7 +22,7 @@ fn sheet((skin, labels): (Skin, bool)) -> Element {
         match skin {
             Skin::CyanSystem => "Orbitron",
             Skin::ResultAurora => "Oxanium",
-            Skin::DjBlackbox => "Rajdhani",
+            _ => "Rajdhani",
         }
     };
     rsx! {
@@ -134,12 +134,12 @@ fn tint(skin: Skin, tone: Tone) -> [i32; 3] {
         Tone::Heading => match skin {
             Skin::CyanSystem => [35, 224, 255],
             Skin::ResultAurora => [224, 163, 255],
-            Skin::DjBlackbox => [206, 230, 107],
+            _ => [206, 230, 107],
         },
         Tone::Metric => match skin {
             Skin::CyanSystem => [70, 222, 255],
             Skin::ResultAurora => [244, 236, 252],
-            Skin::DjBlackbox => [235, 205, 121],
+            _ => [235, 205, 121],
         },
         Tone::Silver => [235, 242, 253],
         Tone::Gold => [255, 215, 98],
@@ -225,7 +225,7 @@ fn material(mask: &RgbaImage, skin: Skin, tone: Tone, large: bool) -> RgbaImage 
                     1030 - (t - 580) * 30 / 100
                 }
             }
-            Skin::DjBlackbox => 970 - t * 14 / 100,
+            _ => 970 - t * 14 / 100,
         };
         let grain = if skin == Skin::DjBlackbox {
             i32::try_from((x * 17 + y * 131 + (x * y) % 19) % 13).expect("grain") - 6

@@ -2,7 +2,7 @@
   "canvases": [
     {
       "id": "design",
-      "skin": "result-aurora",
+      "skin": "dev.atty303.scorepeek.skin.result-aurora",
       "revision": 0,
       "x": 0,
       "y": 0,

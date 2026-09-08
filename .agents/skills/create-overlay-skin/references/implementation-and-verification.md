@@ -6,23 +6,23 @@ repository rootから次を読む。行番号ではなく型・関数を確認�
 
 | 責務 | 原典 |
 | --- | --- |
-| Skin列挙・CSS組込み・widget描画 | `crates/scorepeek-overlay-ui/src/lib.rs`、`src/appearance.rs` |
-| frameのcorner/edge/surface | `crates/scorepeek-overlay-ui/src/frame.rs`、`styles/rich.css` |
-| canvas背景・emptyの形状・fill | `crates/scorepeek-overlay-ui/src/composition.rs`、`styles/composition.css` |
-| 色・skin-specific CSS | `crates/scorepeek-overlay-ui/styles/` |
-| artwork/fontの共有登録 | `crates/scorepeek-overlay-ui/src/assets.rs`、`assets/skins/README.md` |
-| 文字の意味・atlas寸法/baseline | `crates/scorepeek-overlay-ui/src/typography.rs` |
-| atlas生成 | `crates/scorepeek-overlay/examples/generate_type_atlas.rs`、`mise run overlay:type:generate` |
-| motionの共有仕様と両driver | `crates/scorepeek-overlay-ui/assets/motion.json`、`src/motion.rs`、`motion.js` |
-| native/web接続 | `crates/scorepeek-overlay/src/native.rs`、`src/web.rs`、`crates/scorepeek-overlay-web/src/` |
-| 設定と既存schema | `crates/scorepeek-overlay/src/config.rs` |
+| ZIP manifest・CSS・package resource | `skins/<name>/skin.toml`、`skins/<name>/skin.css` |
+| 共通guest DOM実装 | `skins/guest-core/src/lib.rs` |
+| Rust ABI型・buffer helper | `crates/scorepeek-skin-sdk/src/lib.rs` |
+| package検証・native Wasmtime/DOM | `crates/scorepeek-overlay/src/skin.rs`、`src/native.rs` |
+| OBS Web Worker/browser DOM | `crates/scorepeek-overlay/src/skin_browser.js`、`src/web.rs` |
+| package build/install | `scripts/build-skins.sh`、`scripts/with-isolated-skins.sh` |
+| versioned authoring contract | `docs/skin-plugin-api-v1.md`、ADR 0143 |
+| 設定schemaとmanifest property | `crates/scorepeek-overlay/src/config.rs` |
 | masterと素材の由来 | `docs/design/overlay-canvas/README.md` |
 
-表の後半にある省略path（`src/`、`styles/`、`assets/`、`motion.js`）は同じセルの先頭pathと同じcrate配下。新skin登録ではenum、名前、CSS、画像URL、
-atlas/labelの選択、frame/composition、editor選択肢、serialization、生成toolの全対応をsourceで追う。
-既存3種だけを列挙するmatch/arrayを検索し、登録漏れを確認する。新しい別rendererは追加しない。
-画像の固定cornerと伸縮edgeを保ち、widget resizeで枠厚や文字が一緒に伸びないようにする。
-S/M/Lは内側のcontent寸法を維持して外側へ広がる。canvas crop、chamfered apertureを保つ。
+skin ID、表示名、release、propertyはmanifestが所有し、editorへ静的enumを追加しない。既存の
+共通guestを使うなら同じWasmをpackageし、独自treeが必要ならv1 ABIに従うguest crateを作る。
+`scripts/build-skins.sh`へsourceと自己完結resourceのpackage手順を追加する。画像・font・licenseは
+ZIP内へ入れ、通常runtimeのembedded assetへ登録しない。widget resizeで枠厚や文字が一緒に
+伸びないこと、canvas cropと意図したoverflowを両hostで確認する。
+`preview.png`は実際のskinを代表する必須画像として制作し、editorで選択して表示を確認する。
+`preview.webm`を含める場合はOBS editorで再生・loopを確認する。native editorはPNGだけを表示する。
 
 素材には生成元/制作条件・再生成方法・必要なlicenseを残す。独自生成素材とOFL fontを用い、
 ゲーム画像、upstream資産、実playerデータはrepositoryの包含許可なしにcommitしない。
@@ -40,7 +40,7 @@ mise run overlay:visual:native -- crates/scorepeek-overlay/tests/fixtures/visual
 必ず**全PNG、対応するselector-layout JSON、manifestのcomplete/status**を確認する。
 contact sheetで全体を走査しても、文字/baseline/frameの疑わしい箇所は原寸で開く。
 layoutの正のrectangleだけではnative paintを証明できない。
-`visual-composition.json` も使用し、各skinと明示motion時刻のvariantを新しい一時scenarioとして作る。
+`visual-composition.json` も使用し、各skin IDと明示motion時刻のvariantを新しい一時scenarioとして作る。
 sourceのscenario型が許す項目だけを使う。fixtureに未対応のstate注入をあるものとして実行しない。
 
 ```sh
@@ -50,9 +50,9 @@ mise run overlay:visual:obs -- /tmp/skin-browser-new/overlay.toml 127.0.0.1:1738
 - configは未存在であること。stdinを保持する対話terminalで起動し、HTTP応答後に開く。Enterで終了するserverなのでstdin EOFを起動失敗と誤認しない。
 - 利用可能なBrowser skillに従い、利用者が指定したブラウザを使う。`/overlay` を原則1920×1080（指定があればそのlogical size）で開く。
 - 右clickで編集に入り、対象skin・screen/canvasを選ぶ。top-levelとcanvas iframeのDOMを両方読む。composed screenshotを取得して実際に見る。
-- widget選択、移動、四隅resize、S/M/L、EMPTY title有無・aspect・fill・背景、scroll、save/reopen、別変更のdiscardを試す。保存先は一時configだけ。
+- widget選択、移動、四隅resize、manifestで宣言したproperty、EMPTY title有無・aspect、scroll、save/reopen、別変更のdiscardを試す。保存先は一時configだけ。
 - 狙ったskinが全canvasへ反映されたか確認する。一つのcanvasの変更だけで全画面のskin検証済みとしない。
-- 時刻の異なる表示を取得し、動きと安定した実値を確認する。nativeとbrowserで同じ内容/サイズを比較し、pixel equalityは求めない。
+- 時刻の異なる表示を取得し、動きと安定した実値を確認する。CSS animationは明示motion時刻で、Wasmのscheduled full-tree更新はrender呼出しを伴うcaptureで確認する。ABIは時刻を渡さないため、Wasm側の経過時刻そのものをscenarioのmotion値から決定できるとは扱わない。nativeとbrowserで同じ内容/サイズを比較し、pixel equalityは求めない。
 - 終了後serverを止め、所有tabを閉じ、viewportを戻し、一時config/scenario/outputをcleanupする。比較証拠を残すなら保持先を明示する。
 
 `overlay:visual:obs` はbundle依存を持つ。backendだけを古いbundleと組み合わせない。
@@ -74,9 +74,10 @@ mise run overlay:visual:obs -- /tmp/skin-browser-new/overlay.toml 127.0.0.1:1738
 | AAA+FAILED、AA+FC、A+EX HARD | 評価軸を混同せず、同時motionがcontentを圧倒しない |
 | 判定、FAST/SLOW、miss0、不明 | 原則どおりの強弱、対称性、中立表示。0とunknownを区別 |
 | 履歴・graph、欠損値 | 列/軸/単位/順序を維持し、欠損を架空の線で結ばない |
-| 小widget・横長/縦長・S/M/L | 固定cornerと枠厚、内側寸法、resize handle、cropを保つ |
-| EMPTY、title有無、aspect、fill | cut cornerが矩形化せず、内側は透過/fill設定に従う |
-| 背景none/static/animated | narrow gapで素材が見え、noneでも完成形。背景や光がcanvasから漏れない |
+| 小widget・横長/縦長・host geometry | 固定cornerと枠厚、内側寸法、resize handle、cropを保つ |
+| EMPTY、title有無、aspect | cut cornerが矩形化せず、内側の意図した透過またはfillを保つ |
+| manifest-declared enum/range/color/string | 宣言したcontrolだけが表示され、変更が両hostへ同じ型と値で届く |
+| canvas背景（skinが提供する場合） | narrow gapで素材が見え、背景なしでも完成形。canvas外のparticle等を含め意図したoverflowだけが現れる |
 | 複数motion時刻・非表示/再表示 | 状態表現だけが動き、実値とplot位置は動かない。新規達成演出なし |
 
 既存harnessで表現できない条件は、まず型とfixtureの制限を報告する。必要最小の合成fixture/harness変更を
