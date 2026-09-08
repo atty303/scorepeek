@@ -519,9 +519,14 @@ checkpoint; implementation history belongs in Git.
   Interaction, readability, CPU/GPU/OBS lag and idle render cost. Current screenshots certify layout
   only, not interaction or performance. The installed target binary includes ADR 0129 at commit
   `00a04b17a7f615310866c7eec47efb5421b7c583`. No autostart, push or release is included.
-  The nested-Scroll editor interaction regression is resolved. Target-compositor validation still
-  needs the same Close, right-click reopen, state-change and second-Close sequence; if it regresses,
-  inspect `native_editor_pointer` before changing input regions or DOM hit testing.
+  The nested-Scroll editor interaction regression is resolved. On the current three-output Scroll
+  host, a DP-1 editor host sharing its output with four canvas surfaces receives pointer buttons and
+  emits `PreviewScreen`; the resulting MODE SELECT state appears on all three peer panels. Passive
+  pointer motion now bypasses editor-model, shared-draft and skin-render work unless a drag is active;
+  a live burst of 80 motion events followed immediately by a click changes the screen on all three
+  panels. UI Close, right-click reopen and a second Close still need the same target-compositor
+  sequence; if they regress, inspect `native_editor_pointer` before changing input regions or DOM hit
+  testing.
 - OBS editor build compatibility is checked at connection and request boundaries. A mismatch
   discards the unsaved editor state, blocks edits and presents a reload button. The backend and
   WASM share a deterministic source/asset build identity. Socket-owned editor leases are released

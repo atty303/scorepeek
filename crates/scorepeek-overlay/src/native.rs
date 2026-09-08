@@ -190,6 +190,16 @@ fn editor_surface_host(
         .or_else(|| surfaces.first().cloned())
 }
 
+fn passive_pointer_move(action: &SurfaceAction, dragging: bool) -> Option<[i32; 2]> {
+    if dragging {
+        return None;
+    }
+    match action {
+        SurfaceAction::Move(point) => Some(*point),
+        _ => None,
+    }
+}
+
 fn shown_on(
     canvas: &scorepeek_overlay_ui::CanvasPresentation,
     screen: scorepeek_overlay_ui::ScreenKind,
@@ -2131,6 +2141,11 @@ impl App {
         if matches!(action, SurfaceAction::Enter(_)) {
             return;
         }
+        if let Some(point) = passive_pointer_move(&action, self.interaction.is_some()) {
+            self.pending_point
+                .set([f64::from(point[0]), f64::from(point[1])]);
+            return;
+        }
         if matches!(
             action,
             SurfaceAction::Start { .. } | SurfaceAction::Select(_)
@@ -3685,6 +3700,19 @@ fn sanitize_artifact_name(name: &str) -> String {
 #[cfg(test)]
 mod skin_tests {
     use super::*;
+
+    #[test]
+    fn passive_pointer_motion_does_not_enter_the_editor_model_path() {
+        assert_eq!(
+            passive_pointer_move(&SurfaceAction::Move([320, 180]), false),
+            Some([320, 180])
+        );
+        assert_eq!(
+            passive_pointer_move(&SurfaceAction::Move([320, 180]), true),
+            None
+        );
+        assert_eq!(passive_pointer_move(&SurfaceAction::End, false), None);
+    }
 
     fn resize_widget(
         widget: &mut WidgetLayout,
