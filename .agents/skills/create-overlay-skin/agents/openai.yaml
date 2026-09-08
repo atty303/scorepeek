@@ -1,0 +1,4 @@
+interface:
+  display_name: "Scorepeek Skin Studio"
+  short_description: "IIDXの意味を守るスキン設計・素材制作・共有実装・視覚検証"
+  default_prompt: "$create-overlay-skin を使って、scorepeekのスキンをデザイン案の比較から共有実装と両描画経路の視覚検証まで制作してください。"

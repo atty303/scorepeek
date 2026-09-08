@@ -1,5 +1,11 @@
 # Overlay canvas design masters
 
+For new skins and requested redesigns, use the repository skill
+[`create-overlay-skin`](../../../.agents/skills/create-overlay-skin/SKILL.md).
+It owns the approved per-field design principles, sourced IIDX knowledge, concept/motion
+selection gates and shared native/browser verification workflow. Existing masters below remain
+the references for their respective skins; adding the skill does not redesign them retroactively.
+
 These independently generated mockups define the worlds and information design of the three bundled overlay
 skins. ADR 0133 makes these sheets the reference for faithful panel proportions, contours,
 materials, typography hierarchy and information density. Runtime values remain semantic and charts retain their data meaning.

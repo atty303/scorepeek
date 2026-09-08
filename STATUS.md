@@ -16,6 +16,11 @@ checkpoint; implementation history belongs in Git.
 
 ## Implemented authority
 
+- Repository skill `.agents/skills/create-overlay-skin/SKILL.md` defines new-skin and requested
+  redesign work from concept comparison through shared native/browser implementation and visual
+  evaluation. Its references separate IIDX facts, current display contracts and approved design
+  choices. This adds no runtime skin or changes to existing skin assets.
+
 - ADR 0125 replaces the fixed overlay cards/layout flags with independently positioned status,
   selection, score, history-list and history-graph widgets. ADR 0127 advances the strict overlay
   TOML with screen-aware canvases. ADR 0128 removes canvas/widget z-order. ADR 0135 advances it to
@@ -197,6 +202,14 @@ checkpoint; implementation history belongs in Git.
   code/model/layout binding and non-interfering recording failure status.
 
 ## Verification
+
+- The repository skin skill passes structural validation, scoped checks and independent review.
+  Forward trials cover concept generation/correction, missing required tools, selection gates and
+  an unrelated connection-diagnosis request. A real 1920x1080 Codex Browser trial exercised Aurora
+  selection, widget resize, frame change, save/reload and discard in an isolated configuration;
+  native inspection covered the 22-step fixture and five Aurora captures including motion times.
+  This verifies sampled skill stages, not a complete new skin or the full per-skin matrix. Generated
+  comparison images with inconsistent content were not accepted as implementation references.
 
 - Gamescope `3.16.19-128-g7282613+` on the development host reproduces the original pressure at
   5120x1440@120 Hz: before ADR 0141 it supplied about 120 full BGRx frames per second, and a bounded
