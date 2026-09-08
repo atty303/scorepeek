@@ -211,6 +211,10 @@ checkpoint; implementation history belongs in Git.
   heartbeat it published a bounded observed profile and verified all nine fiducials. The windowed
   3840x2160 development-host run observed 1920x1074 because its actual source content was not exact
   fullscreen 16:9; this proves setup completion, not the target fullscreen geometry.
+- In one subsequent operator-observed INFINITAS target session, Gamescope's `out of buffers`
+  warnings decreased substantially after the bounded-capture changes, and Gamescope remained alive
+  when scorepeek exited. This is qualitative single-session lifecycle evidence; it does not confirm
+  target profile publication or complete the repeated attach/detach or soak gates.
 
 - The Wayland shell passes its standalone locked build, link and test gate through the repository pkg-config
   boundary, which exposes only the pinned PipeWire SDK. The same check passes from an empty Cargo
@@ -410,11 +414,13 @@ checkpoint; implementation history belongs in Git.
 
 ## Unverified and next execution boundary
 
-- Rerun `scorepeek setup gamescope` for the requested-size capture domain before the next target
-  INFINITAS run. Then verify 1920x1080 BGRx negotiation on the 16:9 target, absence or boundedness of
-  Gamescope `out of buffers` warnings, 100 attach/detach cycles, three 15-minute runs and one
-  30-minute soak. Development-host vkcube lifecycle evidence does not establish target INFINITAS
-  support or repair a remaining Gamescope producer defect.
+- Confirm that `scorepeek setup gamescope` published the requested-size target profile, or rerun it
+  if it did not. Then verify the exact bounded BGRx negotiation on the 16:9 target, quantify the
+  remaining Gamescope `out of buffers` warnings, and complete 100 attach/detach cycles, three
+  15-minute runs and one 30-minute soak. The single target INFINITAS exit that left Gamescope alive
+  is encouraging but does not complete these gates; development-host vkcube lifecycle evidence
+  likewise does not establish target INFINITAS support or repair a remaining Gamescope producer
+  defect.
 
 - Stream composition has all-three-skin development-host native PNG/layout/manifest inspection,
   alpha checks for overlapping apertures and frame-width content-geometry checks. Synthetic native

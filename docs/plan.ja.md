@@ -126,9 +126,13 @@
   ADR 0141により、上記のfull-output calibration evidenceは歴史的な検証として保持する一方、現在receiverは
   Gamescope固有の`requested_size=1920x1080`を常に提示する。source aspectを保った最終contractだけを最初の
   valid frameで確定し、全bufferを返しながらapplication-owned copyをfixed 10 Hzへ制限する。停止時はstreamを
-  pause/quiesceしてからdisconnectする。従来のfull-size profileは再解釈せず、次のtarget session前にsetupで
+  pause/quiesceしてからdisconnectする。従来のfull-size profileは再解釈せず、target qualification前にsetupで
   bounded capture domainを再測定する。ADR 0142により、静止したsetup markerは内容を変えない1 pixelの
   10 Hz damage heartbeatをreceiver startup中も送り、requested-size切替後の最初の正常frameを生成させる。
+  その後のoperator-observedなINFINITAS target session 1回では、Gamescopeの`out of buffers` warningが
+  従来より大幅に減少し、scorepeek終了後もGamescopeが生存した。ただしこれは定性的な単一sessionの
+  lifecycle evidenceであり、target profile発行、残存warningの定量化、反復attach/detachおよびsoak gateは
+  未確認または未完了である。
   OBS/obs-vkcapture並行、
   soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
