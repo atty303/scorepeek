@@ -63,6 +63,14 @@ struct FrameCadence {
     last_paint: Option<Duration>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum EditorPointerObservation {
+    #[default]
+    AwaitingPress,
+    AwaitingRelease,
+    Observed,
+}
+
 impl FrameCadence {
     fn permits(
         &self,
@@ -1170,6 +1178,7 @@ struct App {
     dirty: Reactive<bool>,
     undo_available: Reactive<bool>,
     readonly: Reactive<bool>,
+    editor_pointer_observation: EditorPointerObservation,
     selected: Reactive<Option<String>>,
     pending_widget: Reactive<Option<scorepeek_overlay_ui::WidgetKind>>,
     pending_point: Reactive<[f64; 2]>,
@@ -1398,6 +1407,7 @@ impl App {
             dirty: reactive.dirty,
             undo_available: reactive.undo_available,
             readonly: reactive.readonly,
+            editor_pointer_observation: EditorPointerObservation::default(),
             selected: reactive.selected,
             pending_widget: reactive.pending_widget,
             pending_point: reactive.pending_point,
@@ -1857,6 +1867,7 @@ impl App {
     fn set_editing(&mut self, value: bool) {
         if value {
             self.editing.set(true);
+            self.editor_pointer_observation = EditorPointerObservation::AwaitingPress;
             self.preview_skin_runtime = None;
             self.acquire();
             self.next_keepalive = Instant::now() + Duration::from_secs(5);
@@ -1932,11 +1943,25 @@ impl App {
             }
             return;
         }
-        if self.readonly.get() {
-            return;
+        if pressed && self.editor_pointer_observation == EditorPointerObservation::AwaitingPress {
+            self.editor_pointer_observation = EditorPointerObservation::AwaitingRelease;
         }
         self.pointer
             .dispatch(&mut self.document, [x, y], button, Some(pressed));
+        if !pressed && self.editor_pointer_observation == EditorPointerObservation::AwaitingRelease
+        {
+            crate::diagnostics::emit(
+                "native_editor_pointer",
+                &serde_json::json!({
+                    "status": "dispatched",
+                    "button": if button == 0x111 { "secondary" } else { "primary" },
+                    "readonly": self.readonly.get(),
+                    "editor_actions": self.actions.borrow().len(),
+                    "surface_actions": self.surface_actions.borrow().len(),
+                }),
+            );
+            self.editor_pointer_observation = EditorPointerObservation::Observed;
+        }
         self.drain_editor_events();
     }
     fn drain_editor_events(&mut self) {
@@ -2098,7 +2123,7 @@ impl App {
         Ok(())
     }
     fn surface_action(&mut self, action: SurfaceAction) {
-        if !self.editing.get() || self.readonly.get() {
+        if !self.editing.get() {
             return;
         }
         if matches!(action, SurfaceAction::Enter(_)) {

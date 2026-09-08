@@ -886,4 +886,32 @@ mod skin_tests {
             serde_json::json!(7)
         );
     }
+
+    #[test]
+    fn readonly_keeps_navigation_available_and_rejects_mutation() {
+        let canvas = CanvasPresentation {
+            id: "canvas".into(),
+            skin: "dev.example.skin".parse().unwrap(),
+            skin_properties: std::collections::BTreeMap::new(),
+            show_on: None,
+            background: Background::None,
+            opacity_percent: 100,
+            output: None,
+            revision: 0,
+            x: 0,
+            y: 0,
+            width: 560,
+            height: 1040,
+            widgets: Vec::new(),
+        };
+        let mut model = Model::new(vec![canvas], [1920, 1080], "test");
+        model.readonly = true;
+        model.chrome.panel_open = true;
+        let before = model.draft.clone();
+
+        assert!(!model.action(&EditorAction::TogglePanel));
+        assert!(!model.chrome.panel_open);
+        assert!(!model.action(&EditorAction::AddCanvas));
+        assert_eq!(model.draft, before);
+    }
 }
