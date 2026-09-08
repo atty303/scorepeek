@@ -2,7 +2,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use x11rb::COPY_DEPTH_FROM_PARENT;
-use x11rb::connection::Connection as _;
+use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
     AtomEnum, ConnectionExt as _, CreateGCAux, CreateWindowAux, EventMask, ImageFormat, PropMode,
     WindowClass,
@@ -14,6 +14,7 @@ pub const HEIGHT: u32 = 1_080;
 pub const FIDUCIAL_SIZE: u32 = 48;
 const LIFETIME: Duration = Duration::from_secs(30);
 const PUT_ROWS: u32 = 32;
+const DAMAGE_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(100);
 
 pub fn rgb8() -> Box<[u8]> {
     let mut pixels = Vec::with_capacity((WIDTH * HEIGHT * 3) as usize);
@@ -132,6 +133,9 @@ pub fn run_x11() -> Result<(), String> {
         .map_err(|error| format!("calibration marker flush failed: {error}"))?;
 
     let deadline = Instant::now() + LIFETIME;
+    let heartbeat_rgb = pixel(0, 0);
+    let heartbeat_bgrx = [heartbeat_rgb[2], heartbeat_rgb[1], heartbeat_rgb[0], 0];
+    let mut next_damage_heartbeat = Instant::now();
     while Instant::now() < deadline {
         if connection
             .poll_for_event()
@@ -140,9 +144,47 @@ pub fn run_x11() -> Result<(), String> {
         {
             return Ok(());
         }
+        if Instant::now() >= next_damage_heartbeat {
+            // Gamescope applies PipeWire requested_size after the consumer connects. Repaint one
+            // unchanged pixel so a static marker produces a valid frame after that transition.
+            send_damage_heartbeat(
+                &connection,
+                window,
+                graphics,
+                screen.root_depth,
+                heartbeat_bgrx,
+            )?;
+            next_damage_heartbeat = Instant::now() + DAMAGE_HEARTBEAT_INTERVAL;
+        }
         thread::sleep(Duration::from_millis(10));
     }
     Ok(())
+}
+
+fn send_damage_heartbeat(
+    connection: &impl Connection,
+    window: u32,
+    graphics: u32,
+    depth: u8,
+    bgrx: [u8; 4],
+) -> Result<(), String> {
+    connection
+        .put_image(
+            ImageFormat::Z_PIXMAP,
+            window,
+            graphics,
+            1,
+            1,
+            0,
+            0,
+            0,
+            depth,
+            &bgrx,
+        )
+        .map_err(|error| format!("calibration marker heartbeat failed: {error}"))?;
+    connection
+        .flush()
+        .map_err(|error| format!("calibration marker heartbeat flush failed: {error}"))
 }
 
 #[cfg(test)]

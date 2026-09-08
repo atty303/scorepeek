@@ -75,6 +75,10 @@ checkpoint; implementation history belongs in Git.
   quiesces the stream, services a bounded in-flight grace period, then disconnects. Physical output
   and observed capture dimensions are independent calibration facts. Existing full-size profiles
   therefore fail admission and require `scorepeek setup gamescope`; they are not rewritten.
+- ADR 0142 keeps the setup-owned static X11 calibration marker repainting one unchanged pixel at
+  10 Hz. This bounded damage heartbeat lets Gamescope produce a valid frame after applying
+  `requested_size` without changing marker pixels, fiducials, the common receiver or ordinary game
+  capture.
 - ADR 0139 makes the status widget RESULT lamp follow the explicit result state: inactive is unlit,
   provisional/confirmed is green, and retracted is red. PLAY and capture-session start publish
   inactive; session finish retains the last result state.
@@ -202,6 +206,11 @@ checkpoint; implementation history belongs in Git.
   one-second lifecycle runs each copied 11 frames, completed receiver/provider shutdown, retained
   bounded file descriptor/thread/RSS counts and left Gamescope live. Its observed log contained
   streaming/paused transitions without `out of buffers` or a PipeWire assertion during this gate.
+- The same isolated `scorepeek setup gamescope` command failed before ADR 0142 with
+  `FirstFrameTimedOut` after Gamescope's requested-size stream transitions. With the unchanged-pixel
+  heartbeat it published a bounded observed profile and verified all nine fiducials. The windowed
+  3840x2160 development-host run observed 1920x1074 because its actual source content was not exact
+  fullscreen 16:9; this proves setup completion, not the target fullscreen geometry.
 
 - The Wayland shell passes its standalone locked build, link and test gate through the repository pkg-config
   boundary, which exposes only the pinned PipeWire SDK. The same check passes from an empty Cargo

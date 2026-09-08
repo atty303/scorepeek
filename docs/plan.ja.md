@@ -127,7 +127,8 @@
   Gamescope固有の`requested_size=1920x1080`を常に提示する。source aspectを保った最終contractだけを最初の
   valid frameで確定し、全bufferを返しながらapplication-owned copyをfixed 10 Hzへ制限する。停止時はstreamを
   pause/quiesceしてからdisconnectする。従来のfull-size profileは再解釈せず、次のtarget session前にsetupで
-  bounded capture domainを再測定する。
+  bounded capture domainを再測定する。ADR 0142により、静止したsetup markerは内容を変えない1 pixelの
+  10 Hz damage heartbeatをreceiver startup中も送り、requested-size切替後の最初の正常frameを生成させる。
   OBS/obs-vkcapture並行、
   soak/performanceは未検証・未着手）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
