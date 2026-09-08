@@ -1161,6 +1161,7 @@ struct App {
     render_calls: u32,
     steady_paint_count: u32,
     pending_paint: bool,
+    full_layout_pending: bool,
     cadence: FrameCadence,
     report: Rc<RefCell<RunReport>>,
     feed_state: Arc<std::sync::Mutex<OverlayState>>,
@@ -1390,6 +1391,7 @@ impl App {
             render_calls: 0,
             steady_paint_count: 0,
             pending_paint: false,
+            full_layout_pending: false,
             cadence: FrameCadence::default(),
             report,
             feed_state,
@@ -2434,6 +2436,9 @@ impl App {
         {
             changed = true;
         }
+        // Blitz incremental damage may retain layout-child IDs removed by a Dioxus mutation.
+        // Rebuild layout once before resuming incremental animation paints.
+        self.full_layout_pending |= changed;
         changed
     }
     fn render_skin(&mut self, state: &OverlayState) -> Result<(), String> {
@@ -2535,7 +2540,15 @@ impl App {
         if self.visible.get() {
             apply_motion(&mut inner, seconds);
         }
+        let incremental_layout = inner.incremental_layout();
+        if self.full_layout_pending {
+            inner.set_incremental_layout(false);
+        }
         resolve_with_loaded_resources(&mut inner, seconds);
+        if self.full_layout_pending {
+            inner.set_incremental_layout(incremental_layout);
+            self.full_layout_pending = false;
+        }
         self.animating = self.visible.get();
         if self.animating {
             self.shell.request_frame();

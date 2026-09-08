@@ -244,9 +244,15 @@ checkpoint; implementation history belongs in Git.
   Native editor pointer delivery no longer treats a readonly backend lease as a reason to discard
   every button event: shared navigation remains available while the editor model still rejects
   draft mutations. The first complete post-open pointer cycle emits one bounded, value-free
-  `native_editor_pointer` observation with dispatch and handler counts. The focused readonly model
-  regression, complete repository suite and 28-step native visual scenario pass; the reported live
-  Wayland interaction failure still requires a fresh compositor run with this build.
+  `native_editor_pointer` observation with dispatch and handler counts. That observation and a
+  Wayland protocol trace proved the remaining failure occurred after a Close action reached Dioxus:
+  Blitz incremental layout retained a removed layout-child ID and panicked while resolving the next
+  paint. A Dioxus mutation now forces one full layout before restoring incremental animation paints.
+  An automated nested-Scroll run on the development host verified Close, right-click reopen,
+  MODE SELECT state change, a second Close and clean process shutdown. The focused readonly model
+  regression, complete repository suite and 28-step native visual scenario pass. This is live
+  Wayland protocol, composition and input evidence in a nested compositor, not target-compositor or
+  target-game-session validation.
 
 - The repository skin skill passes structural validation, scoped checks and independent review.
   Forward trials cover concept generation/correction, missing required tools, selection gates and
@@ -513,9 +519,9 @@ checkpoint; implementation history belongs in Git.
   Interaction, readability, CPU/GPU/OBS lag and idle render cost. Current screenshots certify layout
   only, not interaction or performance. The installed target binary includes ADR 0129 at commit
   `00a04b17a7f615310866c7eec47efb5421b7c583`. No autostart, push or release is included.
-  In the next native editor run, inspect `native_editor_pointer`: its absence after a control click
-  means the Wayland seat/input-region path did not deliver a complete cycle, while a dispatched
-  record with zero handler actions localizes the remaining failure to native DOM hit testing.
+  The nested-Scroll editor interaction regression is resolved. Target-compositor validation still
+  needs the same Close, right-click reopen, state-change and second-Close sequence; if it regresses,
+  inspect `native_editor_pointer` before changing input regions or DOM hit testing.
 - OBS editor build compatibility is checked at connection and request boundaries. A mismatch
   discards the unsaved editor state, blocks edits and presents a reload button. The backend and
   WASM share a deterministic source/asset build identity. Socket-owned editor leases are released
