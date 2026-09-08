@@ -213,8 +213,22 @@ checkpoint; implementation history belongs in Git.
   fullscreen 16:9; this proves setup completion, not the target fullscreen geometry.
 - In one subsequent operator-observed INFINITAS target session, Gamescope's `out of buffers`
   warnings decreased substantially after the bounded-capture changes, and Gamescope remained alive
-  when scorepeek exited. This is qualitative single-session lifecycle evidence; it does not confirm
-  target profile publication or complete the repeated attach/detach or soak gates.
+  when scorepeek exited.
+- A separate monitored target session confirmed the published `gamescope-4k` profile and the live
+  Gamescope-to-scorepeek PipeWire contract as BGRx 1920x1080 with the private requested size also
+  1920x1080. Both nodes remained running with zero PipeWire `ERR` across 31 samples. Scorepeek's
+  public status remained `session_active` with generation 1 and ready catalog, model and score store
+  after Gamescope had run for at least 958 seconds. Gamescope console output was not retained in the
+  journal; the operator independently observed about ten `out of buffers` lines over the session.
+  After the operator ended it, neither process remained, and the retained coredump and system
+  journal records contained no scorepeek or Gamescope crash, assertion or `destroy_buffer` entry.
+  This completes one of the three 15-minute target runs, but not the repeated lifecycle or 30-minute
+  soak gates.
+- During that monitored run, Gamescope stayed at 114,256 KiB RSS and 14 threads, while the main
+  scorepeek process grew from 1,229,276 KiB RSS at 205 seconds to 2,505,356 KiB at 972 seconds with
+  24 threads. The measured growth was private anonymous memory with no swap. It sometimes slowed
+  substantially but had not established a bound before shutdown, so it remains a soak risk rather
+  than a confirmed unbounded leak.
 
 - The Wayland shell passes its standalone locked build, link and test gate through the repository pkg-config
   boundary, which exposes only the pinned PipeWire SDK. The same check passes from an empty Cargo
@@ -414,13 +428,13 @@ checkpoint; implementation history belongs in Git.
 
 ## Unverified and next execution boundary
 
-- Confirm that `scorepeek setup gamescope` published the requested-size target profile, or rerun it
-  if it did not. Then verify the exact bounded BGRx negotiation on the 16:9 target, quantify the
-  remaining Gamescope `out of buffers` warnings, and complete 100 attach/detach cycles, three
-  15-minute runs and one 30-minute soak. The single target INFINITAS exit that left Gamescope alive
-  is encouraging but does not complete these gates; development-host vkcube lifecycle evidence
-  likewise does not establish target INFINITAS support or repair a remaining Gamescope producer
-  defect.
+- Complete 100 attach/detach cycles, two further 15-minute target runs and one 30-minute soak. Keep
+  an exact Gamescope `out of buffers` count for those runs and establish whether scorepeek's private
+  anonymous RSS reaches a stable bound under representative screen transitions. The confirmed
+  1920x1080 target contract, one scorepeek-only exit that left Gamescope alive and one monitored
+  15-minute run are encouraging but do not complete these gates; development-host vkcube lifecycle
+  evidence likewise does not establish target INFINITAS support or repair a remaining Gamescope
+  producer defect.
 
 - Stream composition has all-three-skin development-host native PNG/layout/manifest inspection,
   alpha checks for overlapping apertures and frame-width content-geometry checks. Synthetic native

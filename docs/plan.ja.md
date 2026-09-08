@@ -130,11 +130,16 @@
   bounded capture domainを再測定する。ADR 0142により、静止したsetup markerは内容を変えない1 pixelの
   10 Hz damage heartbeatをreceiver startup中も送り、requested-size切替後の最初の正常frameを生成させる。
   その後のoperator-observedなINFINITAS target session 1回では、Gamescopeの`out of buffers` warningが
-  従来より大幅に減少し、scorepeek終了後もGamescopeが生存した。ただしこれは定性的な単一sessionの
-  lifecycle evidenceであり、target profile発行、残存warningの定量化、反復attach/detachおよびsoak gateは
-  未確認または未完了である。
-  OBS/obs-vkcapture並行、
-  soak/performanceは未検証・未着手）
+  従来より大幅に減少し、scorepeekだけを終了した後もGamescopeが生存した。別の監視下target sessionでは、
+  発行済み`gamescope-4k` profileとlive PipeWire contractがrequested sizeを含むBGRx 1920x1080で一致し、
+  両nodeの31 sampleでPipeWire `ERR=0`、Gamescopeの958秒以上の生存を確認した。journalに保持されない
+  Gamescope consoleではoperatorがsession全体で約10行の`out of buffers`を観測した。終了後は両processが
+  残留せず、保持されたcoredumpとsystem journalにはcrash/assertion/`destroy_buffer`記録がなかった。
+  これは3本中1本の15分target runを満たす。一方、scorepeek本体は205秒時点の1,229,276 KiBから
+  972秒時点の2,505,356 KiBへprivate anonymous RSSが増加し、終了前に上限を確認できなかった。
+  残り2本の15分run、100 attach/detach、30分soak、warningのexact countおよび代表的な画面遷移下での
+  scorepeek RSS上限は未完了である。
+  OBS/obs-vkcapture並行は未着手で、target soak/performance gateは3本中1本の15分runだけ完了）
 - 元録画をdataset rootとして固定するFFV1 packet-order import/seal/S3-compatible再利用CLI: 完了
 - M4 offline canonical/recognition spike: 着手（OBS/vkcapture実録画からnormalizer、共通result/music-select
   layout、fail-closed screen判定、result title cropのRust前処理/Paddle/公式ONNX CTC parity、
