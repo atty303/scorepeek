@@ -22,7 +22,7 @@
 .canvas-list{display:flex;flex-direction:column;gap:5px;max-height:clamp(72px,20vh,180px);overflow:auto;padding:2px 0}
 .canvas-row{display:grid;grid-template-columns:1fr 58px;gap:4px;min-height:34px}
 .canvas-actions{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:7px}
-.editor-tab-body{flex:1;min-height:0;overflow:auto;padding:3px 0 10px}
+.editor-tab-body{flex:1;min-height:0;overflow:auto;padding:3px 0 112px}
 .editor-tab-body section{display:block;padding:8px 0 11px;border-bottom:1px solid #343d49}
 .editor-tab-body h2{margin:0 0 8px;color:#91a0b1;font-size:10px;letter-spacing:.14em}
 .editor-tab-body h3{margin:10px 0 5px;color:#788797;font-size:9px;font-weight:400;letter-spacing:.12em}

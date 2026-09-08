@@ -150,16 +150,16 @@ impl Model {
 
     pub fn set_skins(&mut self, skins: Vec<EditorSkin>) {
         self.skins = skins;
-        normalize_properties(&mut self.draft, &self.skins);
-        self.saved.clone_from(&self.draft);
     }
-    pub fn receive_stage(&mut self, mut canvases: Vec<CanvasPresentation>) {
-        normalize_properties(&mut canvases, &self.skins);
+    pub fn receive_stage(&mut self, canvases: Vec<CanvasPresentation>) {
         if !self.editing && self.draft != canvases {
             self.saved.clone_from(&canvases);
             self.draft = canvases;
             self.generation += 1;
         }
+    }
+    pub fn normalize_for_save(&mut self) {
+        normalize_properties(&mut self.draft, &self.skins);
     }
     #[must_use]
     pub fn dirty(&self) -> bool {
@@ -843,7 +843,7 @@ mod skin_tests {
     }
 
     #[test]
-    fn installed_catalog_normalizes_values_and_allows_switching() {
+    fn installed_catalog_preserves_values_until_switch_or_save() {
         let first: Skin = "dev.example.first".parse().unwrap();
         let second: Skin = "dev.example.second".parse().unwrap();
         let canvas = CanvasPresentation {
@@ -868,13 +868,13 @@ mod skin_tests {
         model.set_skins(vec![skin(first.name(), 2), skin(second.name(), 7)]);
         assert_eq!(
             model.draft[0].skin_properties["amount"],
-            serde_json::json!(2)
+            serde_json::json!(99)
         );
         model.apply_settings(&EditorAction::Skin(second));
         assert_eq!(model.draft[0].skin, second);
         assert_eq!(
             model.draft[0].skin_properties["amount"],
-            serde_json::json!(2)
+            serde_json::json!(7)
         );
         let mut received = model.draft[0].clone();
         received
@@ -883,7 +883,44 @@ mod skin_tests {
         model.receive_stage(vec![received]);
         assert_eq!(
             model.draft[0].skin_properties["amount"],
+            serde_json::json!(-1)
+        );
+        model.normalize_for_save();
+        assert_eq!(
+            model.draft[0].skin_properties["amount"],
             serde_json::json!(7)
+        );
+    }
+
+    #[test]
+    fn installing_catalog_does_not_create_a_draft_change() {
+        let id: Skin = "dev.example.skin".parse().unwrap();
+        let canvas = CanvasPresentation {
+            id: "canvas".into(),
+            skin: id,
+            skin_properties: std::collections::BTreeMap::from([(
+                "amount".into(),
+                serde_json::json!(99),
+            )]),
+            show_on: None,
+            background: Background::None,
+            opacity_percent: 100,
+            output: None,
+            revision: 0,
+            x: 0,
+            y: 0,
+            width: 560,
+            height: 1040,
+            widgets: Vec::new(),
+        };
+        let mut model = Model::new(vec![canvas], [1920, 1080], "test");
+
+        model.set_skins(vec![skin(id.name(), 2)]);
+
+        assert!(!model.dirty());
+        assert_eq!(
+            model.draft[0].skin_properties["amount"],
+            serde_json::json!(99)
         );
     }
 

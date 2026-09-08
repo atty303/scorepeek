@@ -524,9 +524,13 @@ checkpoint; implementation history belongs in Git.
   emits `PreviewScreen`; the resulting MODE SELECT state appears on all three peer panels. Passive
   pointer motion now bypasses editor-model, shared-draft and skin-render work unless a drag is active;
   a live burst of 80 motion events followed immediately by a click changes the screen on all three
-  panels. UI Close, right-click reopen and a second Close still need the same target-compositor
-  sequence; if they regress, inspect `native_editor_pointer` before changing input regions or DOM hit
-  testing.
+  panels. The same target host now verifies clean screen navigation, UI Close, right-click reopen,
+  cross-output selection sync, property editing, save-and-close, and persisted-property normalization
+  only at Save. A clicked non-host canvas no longer becomes a transient full-output editor before the
+  stable per-output host takes over; the two-canvas live check reduced the observed reopened-editor RSS
+  high-water from about 704 MiB to 665 MiB. Installed skin release 2 exposes `s`, `m`, and `l` frame-width
+  values, and both checked-in native visual scenarios complete with the property controls above the
+  fixed footer. These target checks used isolated XDG state and did not change the normal configuration.
 - OBS editor build compatibility is checked at connection and request boundaries. A mismatch
   discards the unsaved editor state, blocks edits and presents a reload button. The backend and
   WASM share a deterministic source/asset build identity. Socket-owned editor leases are released

@@ -1778,17 +1778,6 @@ impl App {
         host.as_deref() == Some(self.surface_canvas.id.as_str())
     }
 
-    fn pin_editor_host(&self) {
-        self.workspace_ui
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .editor_hosts
-            .insert(
-                self.surface_output.clone().unwrap_or_default(),
-                self.surface_canvas.id.clone(),
-            );
-    }
-
     fn sync_workspace_projection(&mut self) {
         let (
             ui,
@@ -1944,14 +1933,12 @@ impl App {
         }
         if !self.editing.get() {
             if button == 0x111 && pressed {
-                self.pin_editor_host();
                 self.workspace_open
                     .store(true, std::sync::atomic::Ordering::Release);
                 if let Some(screen) = self.shared_state.borrow().screen.kind {
                     self.settings.borrow_mut().preview_screen = screen;
                 }
                 self.select_canvas(Some(self.canvas.id.clone()));
-                self.set_editing(true);
             }
             return;
         }
@@ -2406,6 +2393,9 @@ impl App {
         if self.refresh_edit.borrow().is_some() && !self.finish_refresh_edit(true) {
             return;
         }
+        let mut model = self.editor_model();
+        model.normalize_for_save();
+        self.apply_editor_model(model);
         self.persist_canvas();
         let canvases = self.managed.borrow().clone();
         let response = self.request(crate::control::Request::CommitBackend {

@@ -28,7 +28,10 @@ pub fn app() -> Element {
             return;
         }
         match action {
-            EditorAction::Save if !model.read().readonly => transport.send(Command::Save),
+            EditorAction::Save if !model.read().readonly => {
+                model.write().normalize_for_save();
+                transport.send(Command::Save);
+            }
             EditorAction::Discard if !model.read().readonly && !model.read().discard_pending => {
                 model.write().discard_pending = true;
                 transport.send(Command::Discard);

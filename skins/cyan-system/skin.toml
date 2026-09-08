@@ -1,6 +1,6 @@
 id = "dev.atty303.scorepeek.skin.cyan-system"
 name = "Cyan System"
-release = "1"
+release = "2"
 api_version = 1
 description = "Cyan circuitry and luminous system panels."
 author = "scorepeek"
@@ -12,8 +12,8 @@ values = ["none", "static", "animated"]
 
 [widget_properties."*".frame-width]
 type = "enum"
-default = "normal"
-values = ["thin", "normal", "thick"]
+default = "m"
+values = ["s", "m", "l"]
 
 [widget_properties."*".fill-opacity-percent]
 type = "integer"

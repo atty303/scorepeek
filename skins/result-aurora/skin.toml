@@ -1,6 +1,6 @@
 id = "dev.atty303.scorepeek.skin.result-aurora"
 name = "Result Aurora"
-release = "1"
+release = "2"
 api_version = 1
 description = "Violet aurora glass with warm result accents."
 author = "scorepeek"
@@ -12,8 +12,8 @@ values = ["none", "static", "animated"]
 
 [widget_properties."*".frame-width]
 type = "enum"
-default = "normal"
-values = ["thin", "normal", "thick"]
+default = "m"
+values = ["s", "m", "l"]
 
 [widget_properties."*".fill-opacity-percent]
 type = "integer"

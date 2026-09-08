@@ -1553,10 +1553,10 @@ fn frame_width(widget: &Widget) -> u32 {
         .properties
         .get("frame-width")
         .and_then(Value::as_str)
-        .unwrap_or("normal")
+        .unwrap_or("m")
     {
-        "thin" => 4,
-        "thick" => 16,
+        "s" => 4,
+        "l" => 16,
         _ => 8,
     }
 }
@@ -1682,7 +1682,7 @@ mod tests {
             height: 224,
             settings: serde_json::json!({"history_count":5,"graph_months":6}),
             properties: BTreeMap::from([
-                ("frame-width".into(), Value::String("normal".into())),
+                ("frame-width".into(), Value::String("m".into())),
                 ("fill-opacity-percent".into(), Value::from(0)),
             ]),
         };
