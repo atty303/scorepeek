@@ -239,8 +239,14 @@ checkpoint; implementation history belongs in Git.
   same package Wasm with an idle next tick, and the full embedded-web integration passes with the
   complete package resource set. The separate 21-capture composition scenario verifies package
   background subtraction through four empty apertures, frame/background plugin property controls,
-  title editing and aspect changes. These are development-host checks; live Wayland compositor and
-  OBS Browser Source verification remain open.
+  title editing and aspect changes. A production 1920x1080 Codex Browser run found that the Wasm
+  canvas CSP rejected plugin-declared inline geometry and that the replacement runtime dropped the
+  editor's sample-state request. The browser host now applies plugin style attributes through the
+  CSS object model without weakening the same-origin CSP, and forwards sample mode to the state socket.
+  The same run confirmed all five populated widgets at their saved rectangles with full sample data,
+  material frames and backgrounds for Cyan System, DJ Blackbox and Result Aurora. These are
+  development-host browser checks; live Wayland compositor and actual OBS Browser Source rendering
+  remain separate boundaries.
   Native editor pointer delivery no longer treats a readonly backend lease as a reason to discard
   every button event: shared navigation remains available while the editor model still rejects
   draft mutations. The first complete post-open pointer cycle emits one bounded, value-free

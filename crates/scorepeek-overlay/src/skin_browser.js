@@ -132,7 +132,10 @@
       element = old && old.nodeType === Node.ELEMENT_NODE && old.localName === node.tag && old.namespaceURI === namespace
         ? old : document.createElementNS(namespace, node.tag);
       for (const attribute of [...element.attributes]) if (!(attribute.name in node.attributes)) element.removeAttribute(attribute.name);
-      for (const [name,value] of Object.entries(node.attributes)) element.setAttribute(name,value);
+      for (const [name,value] of Object.entries(node.attributes)) {
+        if (name === "style" && "style" in element) element.style.cssText = value;
+        else element.setAttribute(name,value);
+      }
       const keyed = new Map([...element.childNodes].map(child => [child.__scorepeekKey, child]));
       for (const child of node.children) element.append(make(child, keyed.get(child.key), svg && node.tag !== "foreignObject"));
       for (const child of [...element.childNodes]) if (!node.children.some(next => next.key === child.__scorepeekKey)) child.remove();
@@ -143,7 +146,8 @@
   }
   function apply(tree) { root.replaceChildren(make(tree, root.firstChild)); }
 
-  const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/${encodeURIComponent(spec.canvas.id)}`);
+  const sample = new URLSearchParams(location.search).get("sample") === "1" ? "?sample=1" : "";
+  const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/${encodeURIComponent(spec.canvas.id)}${sample}`);
   socket.onmessage = event => {
     const message = JSON.parse(event.data);
     if (message.type === "state") { state = message.state; requestRender(); }

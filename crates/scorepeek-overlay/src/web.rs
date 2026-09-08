@@ -469,8 +469,21 @@ mod server {
         let _ = path;
         StatusCode::NOT_FOUND.into_response()
     }
+
+    fn display_state(
+        state: scorepeek_overlay_ui::OverlayState,
+        sample: bool,
+    ) -> scorepeek_overlay_ui::OverlayState {
+        if sample && state.system == scorepeek_overlay_ui::LampState::Inactive {
+            scorepeek_overlay_ui::editor_sample_state()
+        } else {
+            state
+        }
+    }
+
     async fn socket(
         Path(id): Path<String>,
+        RawQuery(query): RawQuery,
         ws: WebSocketUpgrade,
         State(shared): State<Arc<Shared>>,
     ) -> Response {
@@ -483,6 +496,9 @@ mod server {
         {
             return StatusCode::NOT_FOUND.into_response();
         }
+        let sample = query
+            .as_deref()
+            .is_some_and(|query| query.split('&').any(|part| part == "sample=1"));
         ws.on_upgrade(move |mut socket| async move {
             let mut sent = None;
             loop {
@@ -502,12 +518,13 @@ mod server {
                     break;
                 }
                 let notified = shared.changed.notified();
-                let state = shared
+                let mut state = shared
                     .feed
                     .state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone();
+                state = display_state(state, sample);
                 if sent.as_ref() != Some(&state) {
                     let Ok(bytes) = serde_json::to_string(&serde_json::json!({"type":"state", "state":state})) else {
                         break;

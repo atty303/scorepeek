@@ -1107,6 +1107,7 @@ mod tests {
         assert!(browser.contains("Number.isSafeInteger"));
         assert!(browser.contains("value.attributes === undefined"));
         assert!(browser.contains("value.children === undefined"));
+        assert!(browser.contains("element.style.cssText = value"));
     }
 
     #[test]

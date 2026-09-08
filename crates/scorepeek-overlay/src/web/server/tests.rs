@@ -10,12 +10,15 @@ use std::{
 struct Client(TcpStream);
 impl Client {
     fn connect(address: SocketAddr, version: Option<&str>) -> Self {
+        let query = version.map_or_else(String::new, |value| format!("?asset_version={value}"));
+        Self::connect_path(address, &format!("/ws/stage{query}"))
+    }
+    fn connect_path(address: SocketAddr, path: &str) -> Self {
         let mut stream = TcpStream::connect(address).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();
-        let query = version.map_or_else(String::new, |value| format!("?asset_version={value}"));
-        write!(stream, "GET /ws/stage{query} HTTP/1.1\r\nHost: {address}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").unwrap();
+        write!(stream, "GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").unwrap();
         let mut header = Vec::new();
         while !header.ends_with(b"\r\n\r\n") {
             let mut byte = [0];
@@ -90,9 +93,11 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let directory = std::env::temp_dir().join(format!(
-            "scorepeek-stage-session-test-{}",
-            std::process::id()
+            "scorepeek-stage-session-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir(&directory).unwrap();
         let directory = TestDirectory(directory);
@@ -133,6 +138,7 @@ impl Fixture {
         });
         let app = Router::new()
             .route("/ws/stage", get(stage_socket))
+            .route("/ws/{id}", get(socket))
             .with_state(Arc::clone(&shared));
         let task = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
@@ -234,4 +240,31 @@ async fn stage_versions_gate_edits_and_disconnect_releases_only_its_lease() {
     let fixture = Fixture::new().await;
     assert_version_rejections(&fixture);
     assert_disconnect_discards_draft(&fixture);
+
+    let id = fixture.shared.canvases.lock().unwrap()[0].id.clone();
+    let mut client = Client::connect_path(fixture.address, &format!("/ws/{id}?sample=1"));
+    let message = client.receive();
+    assert_eq!(message["type"], "state");
+    assert_eq!(message["state"]["chart"]["title"], "NEON CIRCUIT");
+    assert_eq!(message["state"]["best"]["score"], "2846");
+    assert!(
+        message["state"]["history"]["plays"]
+            .as_array()
+            .unwrap()
+            .len()
+            >= 5
+    );
+}
+
+#[test]
+fn sample_display_state_only_replaces_an_inactive_live_state() {
+    let inactive = scorepeek_overlay_ui::OverlayState::default();
+    let sample = display_state(inactive.clone(), true);
+    assert_ne!(sample, inactive);
+    assert!(sample.chart.is_some());
+
+    let mut active = inactive;
+    active.system = scorepeek_overlay_ui::LampState::Active;
+    assert_eq!(display_state(active.clone(), true), active);
+    assert_eq!(display_state(active.clone(), false), active);
 }
