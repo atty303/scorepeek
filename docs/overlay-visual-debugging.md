@@ -28,9 +28,34 @@ empty-workspace editor automatically, and persists only to the supplied path:
 mise run overlay:visual:wayland -- /tmp/scorepeek-wayland-visual.toml 60
 ```
 
+To reproduce startup and selection cost with an existing current-schema document without modifying
+it, pass it as the third argument. The first path is still a create-only shadow copy and is the only
+configuration the run may save:
+
+```text
+mise run overlay:visual:wayland -- /tmp/scorepeek-wayland-latency.toml 60 /path/to/source-overlay.toml
+```
+
 When compositor nesting is part of the test, launch this task inside the nested compositor's own
 `WAYLAND_DISPLAY`; record that display and the compositor process independently from the parent
 desktop session.
+
+The native child emits timestamped `native_startup_timing` records for shell connection, renderer
+creation, application initialization and first paint. `elapsed_us` is measured from that surface
+worker's start; renderer records split time waiting for the process-wide renderer lock from time in
+the renderer operation. `native_skin_runtime_timing` separately reports in-process cache hits,
+waits and cold Cranelift compilation, including engine and module time, only from the native child
+diagnostic path. Editor button actions emit a
+`native_editor_interaction` `state_applied`
+record followed by the first corresponding `painted` record. Their shared `run_id` and
+`interaction_id` correlate the operation, while `action_us`, `control_us`, `skin_us`, `dioxus_us`,
+`renderer_wait_us`, `paint_us` and total `duration_us` localize latency. Control and skin components
+also emit individual timing records with success or a stable error type. These records contain only
+stable action/request names and operational canvas/output identifiers; they do not record titles,
+property values or other entered content. Up to 64 actions awaiting paint retain distinct
+correlations; overflow emits a typed `interaction_queue_full` dropped record instead of silently
+replacing an earlier action. The child-to-parent queue remains bounded and uses the existing local
+diagnostic recording path.
 
 For the OBS route, give the server a new dedicated configuration path and optionally a loopback
 listen address. The configuration file must not already exist, and non-loopback addresses are

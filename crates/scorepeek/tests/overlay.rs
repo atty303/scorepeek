@@ -8,6 +8,7 @@ use std::{
     io::{Read as _, Write as _},
     net::{SocketAddr, TcpListener, TcpStream},
     path::Path,
+    process::Command,
     thread,
     time::{Duration, Instant},
 };
@@ -22,6 +23,25 @@ fn get(address: SocketAddr, path: &str) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     stream.read_to_end(&mut bytes)?;
     Ok(bytes)
+}
+
+#[test]
+fn skin_install_stdout_remains_one_result_line() {
+    let temporary = tempfile::tempdir().unwrap();
+    let executable = std::env::var_os("SCOREPEEK_TEST_BINARY").map_or_else(
+        || Path::new(env!("CARGO_BIN_EXE_scorepeek")).to_path_buf(),
+        std::path::PathBuf::from,
+    );
+    let package =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins/result-aurora.zip");
+    let output = Command::new(executable)
+        .args(["skin", "install"])
+        .arg(package)
+        .env("XDG_DATA_HOME", temporary.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"installed\n");
 }
 
 #[test]

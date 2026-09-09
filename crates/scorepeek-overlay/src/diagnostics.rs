@@ -3,7 +3,16 @@ use serde::Serialize;
 use std::io::Write as _;
 
 pub(crate) fn emit(operation: &str, data: &impl Serialize) {
-    let record = serde_json::json!({"operation": operation, "data": data});
+    let timestamp_unix_us = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros();
+    let record = serde_json::json!({
+        "timestamp_unix_us": timestamp_unix_us,
+        "process_id": std::process::id(),
+        "operation": operation,
+        "data": data,
+    });
     if let Ok(bytes) = serde_json::to_string(&record) {
         let _ = writeln!(std::io::stdout().lock(), "{bytes}");
     }

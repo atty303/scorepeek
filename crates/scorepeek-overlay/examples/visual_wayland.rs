@@ -25,8 +25,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .parse::<u64>()
             .map_err(|error| format!("SECONDS: {error}"))
     })?;
+    let source_config = args.next();
     if seconds == 0 || args.next().is_some() {
-        return Err("usage: visual_wayland CONFIG.toml [SECONDS>0]".into());
+        return Err("usage: visual_wayland CONFIG.toml [SECONDS>0] [SOURCE_CONFIG.toml]".into());
     }
     let config_path = std::path::PathBuf::from(config_path);
     let parent = config_path
@@ -34,7 +35,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
     std::fs::create_dir_all(parent)?;
-    let document = scorepeek_overlay::config::OverlayConfig::initial();
+    let document = if let Some(source_config) = source_config {
+        let bytes = std::fs::read(&source_config)?;
+        let document: scorepeek_overlay::config::OverlayConfig = toml::from_slice(&bytes)?;
+        if document.schema_version != scorepeek_overlay::config::SCHEMA_VERSION {
+            return Err("SOURCE_CONFIG.toml must already use the current schema".into());
+        }
+        document.validated()?;
+        document
+    } else {
+        scorepeek_overlay::config::OverlayConfig::initial()
+    };
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -45,7 +56,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let controller = Controller::start(&config_path, document.clone())?;
     let config = Config {
         backend: Backend::Wayland,
-        canvases: Vec::new(),
+        canvases: document
+            .canvases
+            .iter()
+            .filter(|canvas| canvas.backend == Backend::Wayland)
+            .cloned()
+            .collect(),
         config_path,
         control_socket: controller.path().to_owned(),
         skin_store: scorepeek_overlay::skin::StoreRoot::discover()

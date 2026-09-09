@@ -1,11 +1,11 @@
 //! Installed overlay skin packages and the versioned core WebAssembly ABI.
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File, OpenOptions},
     io::Read as _,
     path::{Component, Path, PathBuf},
-    sync::mpsc,
+    sync::{Arc, Condvar, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 use wasmtime::{Engine, Instance, Memory, Module, Store, TypedFunc};
@@ -19,6 +19,35 @@ pub const PREVIEW_PATH: &str = "preview.png";
 pub const PREVIEW_VIDEO_PATH: &str = "preview.webm";
 pub const MAX_AFTER_MS: u64 = 2_147_483_647;
 const CALL_TIMEOUT: Duration = Duration::from_secs(2);
+const EPOCH_TICK: Duration = Duration::from_millis(10);
+const CALL_TIMEOUT_TICKS: u64 = 200;
+const COMPILED_MODULE_CACHE_CAPACITY: usize = 16;
+
+struct CompiledModule {
+    engine: Engine,
+    module: Module,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct RuntimeTiming {
+    pub cache_phase: &'static str,
+    pub engine_us: Option<u64>,
+    pub module_us: Option<u64>,
+    pub duration_us: u64,
+}
+
+enum CompiledModuleEntry {
+    Compiling,
+    Ready(Arc<CompiledModule>),
+}
+
+#[derive(Default)]
+struct CompiledModuleCache {
+    entries: VecDeque<(Vec<u8>, CompiledModuleEntry)>,
+}
+
+static COMPILED_MODULES: OnceLock<(Mutex<CompiledModuleCache>, Condvar)> = OnceLock::new();
+static SKIN_ENGINE: OnceLock<Result<Engine, String>> = OnceLock::new();
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Manifest {
@@ -341,13 +370,126 @@ fn validate_entry_path(path: &str) -> Result<(), String> {
 }
 
 fn engine() -> Result<Engine, String> {
-    let mut config = wasmtime::Config::new();
-    config.epoch_interruption(true);
-    Engine::new(&config).map_err(|error| format!("initialize skin runtime: {error}"))
+    SKIN_ENGINE
+        .get_or_init(|| {
+            let mut config = wasmtime::Config::new();
+            config.epoch_interruption(true);
+            let engine = Engine::new(&config)
+                .map_err(|error| format!("initialize skin runtime: {error}"))?;
+            let ticker_engine = engine.clone();
+            std::thread::Builder::new()
+                .name("overlay-skin-epoch".into())
+                .spawn(move || {
+                    loop {
+                        std::thread::sleep(EPOCH_TICK);
+                        ticker_engine.increment_epoch();
+                    }
+                })
+                .map_err(|error| format!("start skin timeout clock: {error}"))?;
+            Ok(engine)
+        })
+        .clone()
+}
+
+fn compile_module(
+    wasm: &[u8],
+    requested_at: Instant,
+) -> Result<(Arc<CompiledModule>, RuntimeTiming), String> {
+    let engine_started = Instant::now();
+    let engine = engine()?;
+    let engine_us = u64::try_from(engine_started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let module_started = Instant::now();
+    let module =
+        Module::new(&engine, wasm).map_err(|error| format!("compile skin.wasm: {error:#}"))?;
+    let module_us = u64::try_from(module_started.elapsed().as_micros()).unwrap_or(u64::MAX);
+    Ok((
+        Arc::new(CompiledModule { engine, module }),
+        RuntimeTiming {
+            cache_phase: "compiled",
+            engine_us: Some(engine_us),
+            module_us: Some(module_us),
+            duration_us: u64::try_from(requested_at.elapsed().as_micros()).unwrap_or(u64::MAX),
+        },
+    ))
+}
+
+fn compiled_module(wasm: &[u8]) -> Result<(Arc<CompiledModule>, RuntimeTiming), String> {
+    let requested_at = Instant::now();
+    let (cache_mutex, ready) = COMPILED_MODULES
+        .get_or_init(|| (Mutex::new(CompiledModuleCache::default()), Condvar::new()));
+    let mut cache = cache_mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut waited = false;
+    loop {
+        match cache
+            .entries
+            .iter()
+            .find(|(candidate, _)| candidate.as_slice() == wasm)
+            .map(|(_, entry)| entry)
+        {
+            Some(CompiledModuleEntry::Ready(compiled)) => {
+                return Ok((
+                    Arc::clone(compiled),
+                    RuntimeTiming {
+                        cache_phase: if waited { "waited" } else { "hit" },
+                        engine_us: None,
+                        module_us: None,
+                        duration_us: u64::try_from(requested_at.elapsed().as_micros())
+                            .unwrap_or(u64::MAX),
+                    },
+                ));
+            }
+            Some(CompiledModuleEntry::Compiling) => {
+                waited = true;
+                cache = ready
+                    .wait(cache)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            None => break,
+        }
+    }
+    cache
+        .entries
+        .push_back((wasm.to_vec(), CompiledModuleEntry::Compiling));
+    drop(cache);
+
+    let compiled = compile_module(wasm, requested_at);
+
+    let mut cache = cache_mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, entry)) = cache
+        .entries
+        .iter_mut()
+        .find(|(candidate, _)| candidate.as_slice() == wasm)
+    {
+        match &compiled {
+            Ok((compiled, _)) => *entry = CompiledModuleEntry::Ready(Arc::clone(compiled)),
+            Err(_) => {
+                cache
+                    .entries
+                    .retain(|(candidate, _)| candidate.as_slice() != wasm);
+            }
+        }
+    }
+    while cache.entries.len() > COMPILED_MODULE_CACHE_CAPACITY {
+        if cache
+            .entries
+            .front()
+            .is_some_and(|(_, entry)| matches!(entry, CompiledModuleEntry::Ready(_)))
+        {
+            cache.entries.pop_front();
+        } else {
+            break;
+        }
+    }
+    ready.notify_all();
+    compiled
 }
 
 pub struct Runtime {
-    engine: Engine,
+    _compiled: Arc<CompiledModule>,
     store: Store<()>,
     memory: Memory,
     alloc: TypedFunc<i32, i32>,
@@ -362,15 +504,19 @@ impl Runtime {
     /// # Errors
     /// Returns compile, import or export ABI errors.
     pub fn new(package: &Package) -> Result<Self, String> {
-        let engine = engine()?;
-        let module = Module::new(&engine, required(&package.entries, MODULE_PATH)?)
-            .map_err(|error| format!("compile skin.wasm: {error}"))?;
+        Self::new_measured(package).map(|(runtime, _)| runtime)
+    }
+
+    pub(crate) fn new_measured(package: &Package) -> Result<(Self, RuntimeTiming), String> {
+        let (compiled, timing) = compiled_module(required(&package.entries, MODULE_PATH)?)?;
+        let engine = compiled.engine.clone();
+        let module = compiled.module.clone();
         if module.imports().next().is_some() {
             return Err("skin.wasm must not import host or WASI functions".into());
         }
         let mut store = Store::new(&engine, ());
-        store.set_epoch_deadline(1);
-        let instance = run_with_timeout(&engine, "instantiate", || {
+        store.set_epoch_deadline(CALL_TIMEOUT_TICKS);
+        let instance = run_with_timeout("instantiate", || {
             Instance::new(&mut store, &module, &[])
                 .map_err(|error| format!("instantiate skin.wasm: {error}"))
         })?;
@@ -389,16 +535,19 @@ impl Runtime {
         let render = instance
             .get_typed_func(&mut store, "scorepeek_render")
             .map_err(|error| format!("skin.wasm scorepeek_render ABI: {error}"))?;
-        Ok(Self {
-            engine,
-            store,
-            memory,
-            alloc,
-            dealloc,
-            init,
-            render,
-            _instance: instance,
-        })
+        Ok((
+            Self {
+                _compiled: compiled,
+                store,
+                memory,
+                alloc,
+                dealloc,
+                init,
+                render,
+                _instance: instance,
+            },
+            timing,
+        ))
     }
 
     /// Initializes this canvas instance and returns its first tree.
@@ -424,10 +573,9 @@ impl Runtime {
             serde_json::to_vec(input).map_err(|error| format!("serialize skin input: {error}"))?;
         let length =
             i32::try_from(bytes.len()).map_err(|_| "skin input exceeds ABI address space")?;
-        self.store.set_epoch_deadline(1);
+        self.store.set_epoch_deadline(CALL_TIMEOUT_TICKS);
         let phase = if initialize { "init" } else { "render" };
-        let engine = self.engine.clone();
-        let packed = run_with_timeout(&engine, phase, || {
+        let packed = run_with_timeout(phase, || {
             let pointer = self
                 .alloc
                 .call(&mut self.store, length)
@@ -475,21 +623,11 @@ impl Runtime {
 }
 
 fn run_with_timeout<T>(
-    engine: &Engine,
     phase: &str,
     operation: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
-    let (cancel_tx, cancel_rx) = mpsc::channel();
-    let timer_engine = engine.clone();
-    let timer = std::thread::spawn(move || {
-        if cancel_rx.recv_timeout(CALL_TIMEOUT).is_err() {
-            timer_engine.increment_epoch();
-        }
-    });
     let started = Instant::now();
     let result = operation();
-    let _ = cancel_tx.send(());
-    let _ = timer.join();
     result.map_err(|error| {
         if started.elapsed() >= CALL_TIMEOUT {
             format!("skin {phase} hard timeout")
@@ -1151,6 +1289,52 @@ mod tests {
             },
         );
         assert!(compatible_properties(&old, &changed).is_err());
+    }
+
+    #[test]
+    fn compiled_modules_are_reused_by_exact_bytes() {
+        let wasm = [
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+            0x03, 0x02, 0x01, 0x00, 0x08, 0x01, 0x00, 0x0a, 0x09, 0x01, 0x07, 0x00, 0x03, 0x40,
+            0x0c, 0x00, 0x0b, 0x0b,
+        ];
+        let (first, _) = compiled_module(&wasm).unwrap();
+        let (second, timing) = compiled_module(&wasm).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(timing.cache_phase, "hit");
+    }
+
+    #[test]
+    fn one_runtime_timeout_does_not_expire_another_runtime_deadline() {
+        let wasm = [
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x60, 0x00, 0x01,
+            0x7f, 0x60, 0x00, 0x00, 0x03, 0x03, 0x02, 0x00, 0x01, 0x07, 0x0f, 0x02, 0x04, 0x66,
+            0x61, 0x73, 0x74, 0x00, 0x00, 0x04, 0x6c, 0x6f, 0x6f, 0x70, 0x00, 0x01, 0x0a, 0x0e,
+            0x02, 0x04, 0x00, 0x41, 0x07, 0x0b, 0x07, 0x00, 0x03, 0x40, 0x0c, 0x00, 0x0b, 0x0b,
+        ];
+        let (compiled, _) = compiled_module(&wasm).unwrap();
+        let mut looping_store = Store::new(&compiled.engine, ());
+        looping_store.set_epoch_deadline(CALL_TIMEOUT_TICKS);
+        let looping_instance = Instance::new(&mut looping_store, &compiled.module, &[]).unwrap();
+        let looping = looping_instance
+            .get_typed_func::<(), ()>(&mut looping_store, "loop")
+            .unwrap();
+        let keep_compiled = Arc::clone(&compiled);
+        let timeout = std::thread::spawn(move || {
+            let result = looping.call(&mut looping_store, ());
+            drop(keep_compiled);
+            result
+        });
+
+        std::thread::sleep(Duration::from_secs(1));
+        let mut fast_store = Store::new(&compiled.engine, ());
+        fast_store.set_epoch_deadline(CALL_TIMEOUT_TICKS);
+        let fast_instance = Instance::new(&mut fast_store, &compiled.module, &[]).unwrap();
+        let fast = fast_instance
+            .get_typed_func::<(), i32>(&mut fast_store, "fast")
+            .unwrap();
+        assert!(timeout.join().unwrap().is_err());
+        assert_eq!(fast.call(&mut fast_store, ()).unwrap(), 7);
     }
 
     #[test]

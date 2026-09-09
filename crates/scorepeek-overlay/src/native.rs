@@ -124,6 +124,18 @@ impl RendererInitCoordinator {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         operation()
     }
+
+    fn exclusive_timed<T>(&self, operation: impl FnOnce() -> T) -> (T, Duration, Duration) {
+        let waiting = Instant::now();
+        let _guard = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let wait = waiting.elapsed();
+        let running = Instant::now();
+        let result = operation();
+        (result, wait, running.elapsed())
+    }
 }
 
 #[derive(Default)]
@@ -372,6 +384,84 @@ struct NativeWorkspace {
     editor_hosts: std::collections::BTreeMap<String, String>,
     active_output: Option<String>,
     wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
+}
+
+struct PendingEditorInteraction {
+    id: u64,
+    action: &'static str,
+    source_output: Option<String>,
+    started: Instant,
+    action_us: u64,
+    control_us: u64,
+    skin_us: u64,
+    dioxus_us: u64,
+}
+
+const PENDING_EDITOR_INTERACTION_CAPACITY: usize = 64;
+
+fn enqueue_pending_interaction(
+    interactions: &mut std::collections::VecDeque<PendingEditorInteraction>,
+    interaction: PendingEditorInteraction,
+) -> Option<PendingEditorInteraction> {
+    let dropped = (interactions.len() == PENDING_EDITOR_INTERACTION_CAPACITY)
+        .then(|| interactions.pop_front())
+        .flatten();
+    interactions.push_back(interaction);
+    dropped
+}
+
+fn attribute_skin_duration(
+    interactions: &mut std::collections::VecDeque<PendingEditorInteraction>,
+    duration_us: u64,
+) -> Vec<u64> {
+    interactions
+        .iter_mut()
+        .map(|interaction| {
+            interaction.skin_us = interaction.skin_us.saturating_add(duration_us);
+            interaction.id
+        })
+        .collect()
+}
+
+fn new_native_skin_runtime(
+    package: &crate::skin::Package,
+    report: &Rc<RefCell<RunReport>>,
+    canvas_id: &str,
+    output: Option<&str>,
+    interaction_ids: &[u64],
+) -> Result<crate::skin::Runtime, String> {
+    let started = Instant::now();
+    let result = crate::skin::Runtime::new_measured(package);
+    match &result {
+        Ok((_, timing)) => crate::diagnostics::emit(
+            "native_skin_runtime_timing",
+            &serde_json::json!({
+                "run_id": report.borrow().run_id,
+                "interaction_ids": interaction_ids,
+                "canvas_id": canvas_id,
+                "output": output,
+                "cache_phase": timing.cache_phase,
+                "engine_us": timing.engine_us,
+                "module_us": timing.module_us,
+                "cache_duration_us": timing.duration_us,
+                "duration_us": duration_us(started.elapsed()),
+                "status": "success",
+            }),
+        ),
+        Err(_) => crate::diagnostics::emit(
+            "native_skin_runtime_timing",
+            &serde_json::json!({
+                "run_id": report.borrow().run_id,
+                "interaction_ids": interaction_ids,
+                "canvas_id": canvas_id,
+                "output": output,
+                "duration_us": duration_us(started.elapsed()),
+                "status": "error",
+                "error_type": "skin_runtime_create_failed",
+            }),
+        ),
+    }
+    result.map(|(runtime, _)| runtime)
 }
 
 #[derive(Clone)]
@@ -853,7 +943,38 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             desired.first().map(|canvas| canvas.id.clone());
     }
-    if desired.is_empty() {
+    if workspace_open.load(std::sync::atomic::Ordering::Acquire) {
+        let probe = desired
+            .first()
+            .cloned()
+            .map_or_else(|| editor_bootstrap(&config), Ok)?;
+        let started = Instant::now();
+        let outputs = discover_editor_outputs(&probe)?;
+        crate::diagnostics::emit(
+            "native_startup_timing",
+            &serde_json::json!({
+                "phase": "outputs_discovered",
+                "output_count": outputs.len(),
+                "duration_us": duration_us(started.elapsed()),
+                "status": "success",
+            }),
+        );
+        let mut workspace = workspace_ui
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        workspace.outputs = outputs
+            .into_iter()
+            .map(|output| (output.name.clone(), output))
+            .collect();
+        workspace.active_output = workspace.outputs.keys().next().cloned();
+    }
+    if desired.is_empty()
+        && workspace_ui
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .outputs
+            .is_empty()
+    {
         desired.push(editor_bootstrap(&config)?);
         crate::diagnostics::emit(
             "native_editor_stage",
@@ -1028,6 +1149,22 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
     Ok(())
 }
 
+fn discover_editor_outputs(
+    canvas: &crate::config::Canvas,
+) -> Result<Vec<OutputDescription>, String> {
+    let ping = make_ping().map_err(|error| error.to_string())?;
+    let shell = Shell::open(
+        Some(canvas.output.as_str()),
+        canvas.width,
+        canvas.height,
+        canvas.x,
+        canvas.y,
+        false,
+        ping.1,
+    )?;
+    Ok(shell.output_descriptions)
+}
+
 fn editor_bootstrap(config: &Config) -> Result<crate::config::Canvas, String> {
     let skin = crate::skin::StoreRoot::new(config.skin_store.clone())
         .list()?
@@ -1104,6 +1241,7 @@ fn run_canvas(
     wayland_refresh_hz: Arc<std::sync::Mutex<scorepeek_overlay_ui::WaylandRefreshRate>>,
     wakes: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Ping>>>,
 ) -> Result<(), String> {
+    let startup_started = Instant::now();
     let report = Rc::new(RefCell::new(RunReport::new()));
     let ping = make_ping().map_err(|e| e.to_string())?;
     let wake = ping.0.clone();
@@ -1117,6 +1255,7 @@ fn run_canvas(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(canvas.id.clone(), wake);
     let configured_output = canvas.output.clone();
+    let shell_started = Instant::now();
     let shell = Shell::open(
         Some(canvas.output.as_str()),
         canvas.width,
@@ -1126,6 +1265,16 @@ fn run_canvas(
         false,
         ping.1,
     )?;
+    crate::diagnostics::emit(
+        "native_startup_timing",
+        &serde_json::json!({
+            "run_id": report.borrow().run_id,
+            "canvas_id": canvas.id,
+            "phase": "shell_opened",
+            "duration_us": duration_us(shell_started.elapsed()),
+            "elapsed_us": duration_us(startup_started.elapsed()),
+        }),
+    );
     let mut pending_resolved_output = None;
     if let Some(selected_output) = shell.output_name.as_deref()
         && canvas.output != selected_output
@@ -1182,13 +1331,24 @@ fn run_canvas(
         } else {
             "integer_scale_fallback"
         });
-    let renderer = renderer_init.exclusive(|| {
+    let (renderer, renderer_wait, renderer_duration) = renderer_init.exclusive_timed(|| {
         VelloWindowRenderer::with_options(
             VelloRendererOptions::default()
                 .base_color(peniko::Color::TRANSPARENT)
                 .composite_alpha_mode(CompositeAlphaMode::Transparent),
         )
     });
+    crate::diagnostics::emit(
+        "native_startup_timing",
+        &serde_json::json!({
+            "run_id": report.borrow().run_id,
+            "canvas_id": canvas.id,
+            "phase": "renderer_created",
+            "wait_us": duration_us(renderer_wait),
+            "duration_us": duration_us(renderer_duration),
+            "elapsed_us": duration_us(startup_started.elapsed()),
+        }),
+    );
     report
         .borrow_mut()
         .operations
@@ -1196,6 +1356,7 @@ fn run_canvas(
     let appearance = Appearance { skin: canvas.skin };
     let widgets = canvas.widgets.iter().map(widget_layout).collect();
     let control_socket = config.control_socket.clone();
+    let app_started = Instant::now();
     let mut app = App::new(
         appearance,
         widgets,
@@ -1218,7 +1379,18 @@ fn run_canvas(
         wakes,
         suppressed,
         wayland_refresh_hz,
+        startup_started,
     )?;
+    crate::diagnostics::emit(
+        "native_startup_timing",
+        &serde_json::json!({
+            "run_id": report.borrow().run_id,
+            "canvas_id": app.surface_canvas.id,
+            "phase": "app_initialized",
+            "duration_us": duration_us(app_started.elapsed()),
+            "elapsed_us": duration_us(startup_started.elapsed()),
+        }),
+    );
     let result = app.run();
     let renderer_coordinator = Arc::clone(&app.renderer_init);
     renderer_coordinator.exclusive(|| app.renderer.suspend());
@@ -1285,6 +1457,9 @@ struct App {
     undo_available: Reactive<bool>,
     readonly: Reactive<bool>,
     editor_pointer_observation: EditorPointerObservation,
+    input_started: Option<Instant>,
+    interaction_sequence: u64,
+    pending_interactions: std::collections::VecDeque<PendingEditorInteraction>,
     selected: Reactive<Option<String>>,
     pending_widget: Reactive<Option<scorepeek_overlay_ui::WidgetKind>>,
     pending_point: Reactive<[f64; 2]>,
@@ -1319,6 +1494,7 @@ struct App {
     skin_store: std::path::PathBuf,
     skin_assets: Arc<std::sync::Mutex<Option<crate::skin::Package>>>,
     skin_package_open_count: u64,
+    startup_started: Instant,
 }
 
 impl App {
@@ -1349,6 +1525,7 @@ impl App {
         workspace_wakes: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Ping>>>,
         suppressed: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
         wayland_refresh_hz: Arc<std::sync::Mutex<scorepeek_overlay_ui::WaylandRefreshRate>>,
+        startup_started: Instant,
     ) -> Result<Self, String> {
         let shared_state = Rc::new(RefCell::new(OverlayState::default()));
         let reactive = Rc::new(RefCell::new(None));
@@ -1429,7 +1606,13 @@ impl App {
         let (document_config, skin_assets) = document_config_with_skin_handle(package.clone());
         let mut document = DioxusDocument::new(vdom, document_config);
         document.initial_build();
-        let mut skin_runtime = crate::skin::Runtime::new(&package)?;
+        let mut skin_runtime = new_native_skin_runtime(
+            &package,
+            &report,
+            &canvas.id,
+            shell.output_name.as_deref(),
+            &[],
+        )?;
         let skin_input = native_skin_input(&canvas, &OverlayState::default(), &package.manifest);
         let started = Instant::now();
         let initial = skin_runtime.init(&skin_input).inspect_err(|error| {
@@ -1528,6 +1711,9 @@ impl App {
             undo_available: reactive.undo_available,
             readonly: reactive.readonly,
             editor_pointer_observation: EditorPointerObservation::default(),
+            input_started: None,
+            interaction_sequence: 0,
+            pending_interactions: std::collections::VecDeque::new(),
             selected: reactive.selected,
             pending_widget: reactive.pending_widget,
             pending_point: reactive.pending_point,
@@ -1563,6 +1749,7 @@ impl App {
             skin_store,
             skin_assets,
             skin_package_open_count: 1,
+            startup_started,
         })
     }
     #[allow(clippy::too_many_lines)]
@@ -1891,7 +2078,26 @@ impl App {
     #[allow(clippy::needless_pass_by_value)]
     fn request(&mut self, request: crate::control::Request) -> Option<crate::control::Response> {
         let updates_readonly = control_updates_readonly(&request);
-        let response = crate::control::request(&self.control_socket, &request).ok()?;
+        let request_name = control_request_name(&request);
+        let started = Instant::now();
+        let result = crate::control::request(&self.control_socket, &request);
+        let duration = started.elapsed();
+        if let Some(interaction) = self.pending_interactions.back_mut() {
+            interaction.control_us = interaction.control_us.saturating_add(duration_us(duration));
+            crate::diagnostics::emit(
+                "native_editor_control_timing",
+                &serde_json::json!({
+                    "run_id": self.report.borrow().run_id,
+                    "interaction_id": interaction.id,
+                    "action": interaction.action,
+                    "request": request_name,
+                    "duration_us": duration_us(duration),
+                    "status": if result.is_ok() { "success" } else { "error" },
+                    "error_type": result.as_ref().err().map(|_| "control_request_failed"),
+                }),
+            );
+        }
+        let response = result.ok()?;
         let mut workspace_changed = false;
         if updates_readonly {
             self.readonly.set_if_changed(response.readonly);
@@ -2007,7 +2213,9 @@ impl App {
             self.settings.borrow_mut().active_output = active_output;
         }
         if *self.surface_canvas_ids.borrow() != surface_canvas_ids {
-            *self.surface_canvas_ids.borrow_mut() = surface_canvas_ids;
+            self.surface_canvas_ids
+                .borrow_mut()
+                .clone_from(&surface_canvas_ids);
         }
         self.panel_open.set_if_changed(ui.panel_open);
         self.widget_add_open.set_if_changed(ui.widget_add_open);
@@ -2049,6 +2257,7 @@ impl App {
                     .cloned()
             });
             if let Some(presentation) = presentation
+                && surface_canvas_ids.contains(&presentation.id)
                 && self.canvas.presentation() != presentation
             {
                 if self.canvas.id != presentation.id {
@@ -2162,6 +2371,9 @@ impl App {
         if pressed && self.editor_pointer_observation == EditorPointerObservation::AwaitingPress {
             self.editor_pointer_observation = EditorPointerObservation::AwaitingRelease;
         }
+        if !pressed {
+            self.input_started = Some(Instant::now());
+        }
         self.pointer
             .dispatch(&mut self.document, [x, y], button, Some(pressed));
         if !pressed && self.editor_pointer_observation == EditorPointerObservation::AwaitingRelease
@@ -2179,6 +2391,9 @@ impl App {
             self.editor_pointer_observation = EditorPointerObservation::Observed;
         }
         self.drain_editor_events();
+        if !pressed {
+            self.input_started = None;
+        }
     }
     fn drain_editor_events(&mut self) {
         let actions = std::mem::take(&mut *self.actions.borrow_mut());
@@ -2242,9 +2457,11 @@ impl App {
     }
 
     fn update_editor_skin(&mut self) {
+        let started = Instant::now();
         self.editor_skin_updates.pending = false;
         self.editor_skin_updates.renders = self.editor_skin_updates.renders.saturating_add(1);
-        if let Err(error) = self.render_editor_skin() {
+        let result = self.render_editor_skin();
+        if let Err(error) = &result {
             self.next_skin_render = None;
             self.animating = false;
             self.skin_tree.apply(
@@ -2270,9 +2487,40 @@ impl App {
             );
             crate::diagnostics::emit(
                 "skin_render",
-                &serde_json::json!({"skin_id":self.canvas.skin.name(),"canvas_id":self.canvas.id,"backend":"native","phase":if self.editing.get() { "editor-preview" } else { "render" },"status":"failed","error_type":skin_error_type(&error),"tree_applied":true}),
+                &serde_json::json!({"skin_id":self.canvas.skin.name(),"canvas_id":self.canvas.id,"backend":"native","phase":if self.editing.get() { "editor-preview" } else { "render" },"status":"failed","error_type":skin_error_type(error),"tree_applied":true}),
             );
         }
+        let duration = started.elapsed();
+        let interaction_ids =
+            attribute_skin_duration(&mut self.pending_interactions, duration_us(duration));
+        crate::diagnostics::emit(
+            "native_editor_skin_timing",
+            &serde_json::json!({
+                "run_id": self.report.borrow().run_id,
+                "interaction_ids": interaction_ids,
+                "canvas_id": self.canvas.id,
+                "output": self.surface_output,
+                "duration_us": duration_us(duration),
+                "startup_elapsed_us": duration_us(self.startup_started.elapsed()),
+                "status": if result.is_ok() { "success" } else { "error" },
+                "error_type": result.as_ref().err().map(|error| skin_error_type(error)),
+            }),
+        );
+    }
+
+    fn create_skin_runtime(&self) -> Result<crate::skin::Runtime, String> {
+        let interaction_ids = self
+            .pending_interactions
+            .iter()
+            .map(|interaction| interaction.id)
+            .collect::<Vec<_>>();
+        new_native_skin_runtime(
+            &self.skin_package,
+            &self.report,
+            &self.canvas.id,
+            self.surface_output.as_deref(),
+            &interaction_ids,
+        )
     }
 
     fn render_editor_skin(&mut self) -> Result<(), String> {
@@ -2310,7 +2558,7 @@ impl App {
                     .2
                     .render(&input)?
             } else {
-                let mut runtime = crate::skin::Runtime::new(&self.skin_package)?;
+                let mut runtime = self.create_skin_runtime()?;
                 let output = runtime.init(&input)?;
                 self.preview_skin_runtime = Some((
                     self.skin_package.manifest.id.clone(),
@@ -2347,7 +2595,7 @@ impl App {
             self.skin_tree
                 .set_css(&mut self.document.inner.borrow_mut(), css);
         } else {
-            let mut runtime = crate::skin::Runtime::new(&self.skin_package)?;
+            let mut runtime = self.create_skin_runtime()?;
             let output = runtime.init(&native_skin_input(
                 &self.canvas,
                 &state,
@@ -2403,6 +2651,62 @@ impl App {
     }
     #[allow(clippy::too_many_lines)]
     fn editor_action(&mut self, action: &EditorAction) {
+        let started = self.input_started.take().unwrap_or_else(Instant::now);
+        self.interaction_sequence = self.interaction_sequence.saturating_add(1);
+        let interaction_id = self.interaction_sequence;
+        let action_name = editor_action_name(action);
+        let dropped = enqueue_pending_interaction(
+            &mut self.pending_interactions,
+            PendingEditorInteraction {
+                id: interaction_id,
+                action: action_name,
+                source_output: self.surface_output.clone(),
+                started,
+                action_us: 0,
+                control_us: 0,
+                skin_us: 0,
+                dioxus_us: 0,
+            },
+        );
+        if let Some(dropped) = dropped {
+            crate::diagnostics::emit(
+                "native_editor_interaction",
+                &serde_json::json!({
+                    "run_id": self.report.borrow().run_id,
+                    "interaction_id": dropped.id,
+                    "action": dropped.action,
+                    "source_output": dropped.source_output,
+                    "phase": "dropped",
+                    "duration_us": duration_us(dropped.started.elapsed()),
+                    "status": "dropped",
+                    "error_type": "interaction_queue_full",
+                }),
+            );
+        }
+        self.editor_action_inner(action);
+        if let Some(interaction) = self
+            .pending_interactions
+            .back_mut()
+            .filter(|interaction| interaction.id == interaction_id)
+        {
+            interaction.action_us = duration_us(started.elapsed());
+            crate::diagnostics::emit(
+                "native_editor_interaction",
+                &serde_json::json!({
+                    "run_id": self.report.borrow().run_id,
+                    "interaction_id": interaction.id,
+                    "action": interaction.action,
+                    "source_output": interaction.source_output,
+                    "phase": "state_applied",
+                    "duration_us": interaction.action_us,
+                    "status": "success",
+                }),
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn editor_action_inner(&mut self, action: &EditorAction) {
         if let EditorAction::SelectOutput(output) = action {
             self.workspace_ui
                 .lock()
@@ -2704,6 +3008,7 @@ impl App {
     }
 
     fn poll_dioxus(&mut self) -> bool {
+        let started = Instant::now();
         let mut changed = false;
         while self
             .document
@@ -2714,6 +3019,11 @@ impl App {
         // Blitz incremental damage may retain layout-child IDs removed by a Dioxus mutation.
         // Rebuild layout once before resuming incremental animation paints.
         self.full_layout_pending |= changed;
+        for interaction in &mut self.pending_interactions {
+            interaction.dioxus_us = interaction
+                .dioxus_us
+                .saturating_add(duration_us(started.elapsed()));
+        }
         changed
     }
     fn render_skin(&mut self, state: &OverlayState) -> Result<(), String> {
@@ -2790,8 +3100,51 @@ impl App {
         Ok(())
     }
     fn paint(&mut self, reason: PaintReason, now: Duration) -> Result<(), String> {
+        let first_paint = self.paint_count == 0;
         let renderer_coordinator = Arc::clone(&self.renderer_init);
-        renderer_coordinator.exclusive(|| self.paint_exclusive())?;
+        let (result, renderer_wait, paint_duration) =
+            renderer_coordinator.exclusive_timed(|| self.paint_exclusive());
+        if first_paint {
+            crate::diagnostics::emit(
+                "native_startup_timing",
+                &serde_json::json!({
+                    "run_id": self.report.borrow().run_id,
+                    "canvas_id": self.surface_canvas.id,
+                    "output": self.surface_output,
+                    "phase": "first_paint",
+                    "renderer_wait_us": duration_us(renderer_wait),
+                    "paint_us": duration_us(paint_duration),
+                    "elapsed_us": duration_us(self.startup_started.elapsed()),
+                    "status": if result.is_ok() { "success" } else { "error" },
+                    "error_type": result.as_ref().err().map(|_| "renderer_paint_failed"),
+                }),
+            );
+        }
+        if let Err(error) = result {
+            for interaction in self.pending_interactions.drain(..) {
+                crate::diagnostics::emit(
+                    "native_editor_interaction",
+                    &serde_json::json!({
+                        "run_id": self.report.borrow().run_id,
+                        "interaction_id": interaction.id,
+                        "action": interaction.action,
+                        "source_output": interaction.source_output,
+                        "paint_output": self.surface_output,
+                        "phase": "paint_failed",
+                        "action_us": interaction.action_us,
+                        "control_us": interaction.control_us,
+                        "skin_us": interaction.skin_us,
+                        "dioxus_us": interaction.dioxus_us,
+                        "renderer_wait_us": duration_us(renderer_wait),
+                        "paint_us": duration_us(paint_duration),
+                        "duration_us": duration_us(interaction.started.elapsed()),
+                        "status": "error",
+                        "error_type": "renderer_paint_failed",
+                    }),
+                );
+            }
+            return Err(error);
+        }
         self.cadence.record(now);
         self.pending_paint = false;
         if reason == PaintReason::Steady {
@@ -2802,6 +3155,27 @@ impl App {
                 .cap_bypass_paints
                 .entry(reason.name().to_owned())
                 .or_default() += 1;
+        }
+        for interaction in self.pending_interactions.drain(..) {
+            crate::diagnostics::emit(
+                "native_editor_interaction",
+                &serde_json::json!({
+                    "run_id": self.report.borrow().run_id,
+                    "interaction_id": interaction.id,
+                    "action": interaction.action,
+                    "source_output": interaction.source_output,
+                    "paint_output": self.surface_output,
+                    "phase": "painted",
+                    "action_us": interaction.action_us,
+                    "control_us": interaction.control_us,
+                    "skin_us": interaction.skin_us,
+                    "dioxus_us": interaction.dioxus_us,
+                    "renderer_wait_us": duration_us(renderer_wait),
+                    "paint_us": duration_us(paint_duration),
+                    "duration_us": duration_us(interaction.started.elapsed()),
+                    "status": "success",
+                }),
+            );
         }
         Ok(())
     }
@@ -2910,6 +3284,63 @@ const fn control_updates_readonly(request: &crate::control::Request) -> bool {
     )
 }
 
+const fn control_request_name(request: &crate::control::Request) -> &'static str {
+    match request {
+        crate::control::Request::AcquireBackend { .. } => "acquire_backend",
+        crate::control::Request::KeepAliveBackend { .. } => "keep_alive_backend",
+        crate::control::Request::ReleaseBackend { .. } => "release_backend",
+        crate::control::Request::GetBackend { .. } => "get_backend",
+        crate::control::Request::ResolveWaylandOutputs { .. } => "resolve_wayland_outputs",
+        crate::control::Request::UpdateBackendDraft { .. } => "update_backend_draft",
+        crate::control::Request::CommitBackend { .. } => "commit_backend",
+    }
+}
+
+const fn editor_action_name(action: &EditorAction) -> &'static str {
+    match action {
+        EditorAction::TogglePanel => "toggle_panel",
+        EditorAction::PreviewScreen(_) => "preview_screen",
+        EditorAction::SelectOutput(_) => "select_output",
+        EditorAction::SelectCanvas(_) => "select_canvas",
+        EditorAction::ToggleCanvas(_) => "toggle_canvas",
+        EditorAction::AddCanvas => "add_canvas",
+        EditorAction::DeleteCanvas => "delete_canvas",
+        EditorAction::NewCanvasSkin(_) => "new_canvas_skin",
+        EditorAction::Skin(_) => "skin",
+        EditorAction::CanvasSkinProperty(_, _) => "canvas_skin_property",
+        EditorAction::WidgetSkinProperty(_, _) => "widget_skin_property",
+        EditorAction::Background(_) => "background",
+        EditorAction::Opacity(_) => "opacity",
+        EditorAction::Output(_) => "output",
+        EditorAction::FitToOutput => "fit_to_output",
+        EditorAction::SelectWidget(_) => "select_widget",
+        EditorAction::ToggleWidgetAdd => "toggle_widget_add",
+        EditorAction::AddWidget(_) => "add_widget",
+        EditorAction::Undo => "undo",
+        EditorAction::Discard => "discard",
+        EditorAction::Save => "save",
+        EditorAction::Close => "close",
+        EditorAction::FrameWidth(_) => "frame_width",
+        EditorAction::EditTitle => "edit_title",
+        EditorAction::AcceptTitle => "accept_title",
+        EditorAction::CancelTitle => "cancel_title",
+        EditorAction::FillDelta(_) => "fill_delta",
+        EditorAction::FillOpacity(_) => "fill_opacity",
+        EditorAction::AspectRatio(_) => "aspect_ratio",
+        EditorAction::HistoryCount(_) => "history_count",
+        EditorAction::GraphMonths(_) => "graph_months",
+        EditorAction::DeleteWidget => "delete_widget",
+        EditorAction::RefreshRateAuto => "refresh_rate_auto",
+        EditorAction::EditRefreshRate => "edit_refresh_rate",
+        EditorAction::AcceptRefreshRate => "accept_refresh_rate",
+        EditorAction::CancelRefreshRate => "cancel_refresh_rate",
+    }
+}
+
+fn duration_us(duration: Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
 #[derive(Serialize)]
 struct RunReport {
     run_id: String,
@@ -2937,12 +3368,17 @@ struct RunReport {
 
 impl RunReport {
     fn new() -> Self {
+        static RUN_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
         Self {
-            run_id: format!("{timestamp}-{}", std::process::id()),
+            run_id: format!(
+                "{timestamp}-{}-{}",
+                std::process::id(),
+                RUN_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ),
             build_revision: option_env!("OVERLAY_BUILD_REVISION").unwrap_or("working-tree"),
             output_name: None,
             logical_size: None,
@@ -3988,6 +4424,47 @@ fn sanitize_artifact_name(name: &str) -> String {
 #[cfg(test)]
 mod skin_tests {
     use super::*;
+
+    #[test]
+    fn pending_editor_interactions_retain_every_action_until_paint() {
+        let pending = |id| PendingEditorInteraction {
+            id,
+            action: "select_canvas",
+            source_output: Some("output".into()),
+            started: Instant::now(),
+            action_us: 0,
+            control_us: 0,
+            skin_us: 0,
+            dioxus_us: 0,
+        };
+        let mut interactions = std::collections::VecDeque::new();
+        assert!(enqueue_pending_interaction(&mut interactions, pending(1)).is_none());
+        assert!(enqueue_pending_interaction(&mut interactions, pending(2)).is_none());
+        assert_eq!(attribute_skin_duration(&mut interactions, 37), vec![1, 2]);
+        assert!(
+            interactions
+                .iter()
+                .all(|interaction| interaction.skin_us == 37)
+        );
+        assert_eq!(
+            interactions
+                .drain(..)
+                .map(|interaction| interaction.id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn native_run_ids_are_unique_across_parallel_surfaces() {
+        let ids = (0..32)
+            .map(|_| std::thread::spawn(|| RunReport::new().run_id))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids.len(), 32);
+    }
 
     #[test]
     fn editor_skin_updates_coalesce_while_dragging_and_flush_on_frame_or_release() {

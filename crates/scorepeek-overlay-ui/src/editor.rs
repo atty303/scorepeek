@@ -369,8 +369,6 @@ pub fn EditorPanel(
                 if let Some(canvas) = canvas { section { class:"appearance-pane", h2 { "APPEARANCE" } h3 { "SKIN" }
                     div { class:"native-skin-options button-grid", for (index,skin) in view.skins.iter().enumerate() { EditorButton { class:"skin-option", disabled:view.access.readonly, onclick:{let value=skin.id; move |_| onaction.call(EditorAction::Skin(value))}, selected:canvas.skin==skin.id, "data-index":index, if canvas.skin==skin.id{"✓ "} "{skin.name}" small { "{skin.release}" } } } }
                     if let Some(skin)=view.skins.iter().find(|skin|skin.id==canvas.skin) {
-                        if !skin.preview.is_empty() { img { class:"skin-preview", src:"{skin.preview}", alt:"{skin.name} preview" } }
-                        if let Some(preview_video)=&skin.preview_video { video { class:"skin-preview-video", src:"{preview_video}", autoplay:true, muted:true, r#loop:true } }
                         {property_controls(&skin.canvas_properties,&canvas.skin_properties,true,view.access.readonly,onaction)}
                     }
                     h3 { "OPACITY" }

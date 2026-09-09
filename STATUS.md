@@ -24,8 +24,9 @@ checkpoint; implementation history belongs in Git.
   same ID/release is a no-op. Native executes the shared JSON ABI in Wasmtime with an epoch hard
   timeout covering instantiation and every guest export and reconciles keyed ordinary DOM through
   Blitz. OBS executes one instance per canvas in a Web Worker and reconciles ordinary browser DOM
-  under external package CSS/runtime routes and a same-origin CSP. Both editors show the mandatory
-  PNG preview; OBS additionally shows an optional WebM. The native editor renders the selected
+  under external package CSS/runtime routes and a same-origin CSP. Mandatory PNG and optional WebM
+  previews remain package validation metadata but are not decoded into the shared editor panel; the
+  selected canvas itself is the live preview. The native editor renders the selected
   draft through its package runtime rather than the superseded fixed renderer. No registry,
   digest/signature, quota, fallback,
   interaction API, WASI/host import, or running-instance replacement protection exists.
@@ -325,11 +326,30 @@ checkpoint; implementation history belongs in Git.
   no surface recreation, configure timeout or worker failure. Editor skin motion is paused, unchanged
   keepalive responses do not touch reactive state, and both stages stop painting when idle; the final
   summaries recorded 6 and 5 paints over about 170 seconds instead of the pre-fix run's roughly 2200
-  paints per stage. Scroll IPC accepted pointer move/press/release in 0.17-0.29 seconds. UNKNOWN
-  preview, opacity change and output navigation were also exercised in that bounded run. A separate
+  paints per stage. UNKNOWN preview, opacity change and output navigation were also exercised in
+  that bounded run. A separate
   passive-stage check clicked WL-2 while WL-1 was active: no editor pointer event was emitted and
   Scroll handled the input. Transition tests also keep a runtime-hidden stage input-disabled when
   the editor closes.
+  Timestamped child diagnostics now correlate startup phases and editor input-to-paint work by
+  process, run and interaction IDs, including control, skin, Dioxus, renderer-wait and paint time.
+  In a three-canvas/two-output nested-Scroll reproduction, the pre-fix first editor paint took about
+  12.4 seconds and a cross-skin canvas selection took 2.667 seconds: 2.260 seconds were repeated
+  Wasmtime compilation and 351 ms were shared-editor reconstruction. The native runtime now keeps a
+  bounded on-demand exact-byte compiled-module cache with per-store deadlines on a shared periodic
+  epoch clock, skips the discarded full bootstrap
+  application when outputs are discoverable, and does not initialize a selected preview on a
+  surface that does not own that canvas. Removing package
+  thumbnails from the shared panel reduced its reconstruction to 1.85 ms. The same nested llvmpipe
+  route then reached first paint in 3.87 seconds and painted the canvas selection in 292 ms (0.61 ms
+  state, 228 ms instance/tree, 1.85 ms Dioxus and 61 ms paint). A later cold one-output run attributed
+  2.038 of its 5.149 seconds to module compilation and 1.604 seconds to the llvmpipe first paint;
+  cache hits in the same process took 18 microseconds. Output reassignment painted on the
+  source surface in 43.8 ms and initialized the destination skin once without a repaint loop. A
+  Chrome run of production `/overlay` right-clicked into the empty OBS editor, added a canvas and
+  changed opacity in 1.3 ms while retaining the exact canvas iframe URL. A fresh 28-step native
+  PNG/layout/manifest run remained complete. These are development-host measurements, not target
+  compositor, GPU or OBS Browser Source performance gates.
 
 - Schema-v2 defaults/rejection, screen filters, semantic-screen snapshot/live folding,
   suspension/disconnect grace and immediate known-screen replacement have focused development-host
