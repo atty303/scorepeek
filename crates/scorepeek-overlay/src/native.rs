@@ -234,14 +234,38 @@ fn editor_skin_presentation_changed(
         || before.widgets != after.widgets
 }
 
-fn shown_on(
-    canvas: &scorepeek_overlay_ui::CanvasPresentation,
+fn active_editor_canvas_on_surface(
+    canvas_id: &str,
+    show_on: Option<&[scorepeek_overlay_ui::ScreenKind]>,
+    selected_canvas_id: Option<&str>,
+    surface_canvas_ids: &std::collections::BTreeSet<String>,
     screen: scorepeek_overlay_ui::ScreenKind,
 ) -> bool {
-    canvas
-        .show_on
-        .as_ref()
-        .is_none_or(|screens| screens.contains(&screen))
+    selected_canvas_id == Some(canvas_id)
+        && surface_canvas_ids.contains(canvas_id)
+        && show_on.is_none_or(|screens| screens.contains(&screen))
+}
+
+fn surface_canvas_ids_for_draft(
+    current_surface_canvas_ids: &std::collections::BTreeSet<String>,
+    draft: &[scorepeek_overlay_ui::CanvasPresentation],
+    surface_output: Option<&str>,
+) -> std::collections::BTreeSet<String> {
+    current_surface_canvas_ids
+        .iter()
+        .filter(|id| {
+            draft
+                .iter()
+                .find(|canvas| canvas.id == id.as_str())
+                .is_some_and(|canvas| {
+                    canvas
+                        .output
+                        .as_deref()
+                        .is_none_or(|output| Some(output) == surface_output)
+                })
+        })
+        .cloned()
+        .collect()
 }
 
 #[derive(Clone)]
@@ -522,23 +546,25 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
         .borrow()
         .as_ref()
         .and_then(|edit| parse_refresh_rate(&edit.text).err());
-    let selected_visible = current_settings.has_selection
-        && scorepeek_overlay_ui::canvas_visible(
-            current_settings.show_on.as_deref(),
-            scorepeek_overlay_ui::ScreenView {
-                kind: Some(current_settings.preview_screen),
-                suspended_since_unix_ms: None,
-                revision: 0,
-            },
-        );
+    let selected_canvas_id = current_settings
+        .has_selection
+        .then_some(current_settings.id.as_str());
+    let surface_canvas_ids = reactive.surface_canvas_ids.borrow().clone();
+    let selected_visible = active_editor_canvas_on_surface(
+        &current_settings.id,
+        current_settings.show_on.as_deref(),
+        selected_canvas_id,
+        &surface_canvas_ids,
+        current_settings.preview_screen,
+    );
     rsx! {
       EditorSurface { onaction:onsurface,
         div { class:"canvas-content",style:if editing.get(){format!("display:{};opacity:{};position:absolute;left:{}px;top:{}px;width:{}px;height:{}px",if reactive.visible.get()&&selected_visible{"block"}else{"none"},f32::from(current_settings.opacity_percent)/100.0,current_settings.x,current_settings.y,current_settings.width,current_settings.height)}else{format!("display:{};opacity:{}",if reactive.visible.get(){"block"}else{"none"},f32::from(current_settings.opacity_percent)/100.0)},
             div { id:"scorepeek-skin-root", class:"scorepeek-skin-scope", "data-backend":"native", style:"position:absolute;inset:0" }
         }
         if editing.get() {
-            for canvas in managed.borrow().iter().filter(|canvas| reactive.surface_canvas_ids.borrow().contains(&canvas.id) && shown_on(canvas,current_settings.preview_screen)) {
-                EditorCanvas {key:"{canvas.id}",canvas:canvas.clone(),editing:true,selected:canvas.id==current_settings.id&&selected_visible,selected_widget:selected.borrow().clone(),onaction:onsurface,
+            for canvas in managed.borrow().iter().filter(|canvas| active_editor_canvas_on_surface(&canvas.id,canvas.show_on.as_deref(),selected_canvas_id,&surface_canvas_ids,current_settings.preview_screen)) {
+                EditorCanvas {key:"{canvas.id}",canvas:canvas.clone(),editing:true,selected:true,selected_widget:selected.borrow().clone(),onaction:onsurface,
                     div {}
                 }
             }
@@ -569,7 +595,7 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
                     } },
                     onaction: move |action| actions.borrow_mut().push(action),
             }
-            if reactive.surface_canvas_ids.borrow().contains(&current_settings.id) { if let Some(kind) = reactive.pending_widget.get() { PlacementPreview {kind,point:reactive.pending_point.get()} } }
+            if selected_visible { if let Some(kind) = reactive.pending_widget.get() { PlacementPreview {kind,point:reactive.pending_point.get()} } }
         }
     }
     }
@@ -1857,6 +1883,11 @@ impl App {
                 workspace.wayland_refresh_hz,
             )
         };
+        let surface_canvas_ids = surface_canvas_ids_for_draft(
+            &surface_canvas_ids,
+            &draft,
+            self.surface_output.as_deref(),
+        );
         self.refresh_rate.set_if_changed(wayland_refresh_hz);
         if *self.surface_canvas_ids.borrow() != surface_canvas_ids {
             *self.surface_canvas_ids.borrow_mut() = surface_canvas_ids;
@@ -3068,6 +3099,8 @@ struct VisualDebugSession {
     state: Reactive<OverlayState>,
     visible: Reactive<bool>,
     settings: Reactive<NativeCanvasSettings>,
+    #[cfg(test)]
+    surface_canvas_ids: Reactive<std::collections::BTreeSet<String>>,
     title_edit: Reactive<Option<TitleEdit>>,
     skin: Option<(
         crate::skin::Runtime,
@@ -3228,6 +3261,8 @@ impl VisualDebugSession {
             state: reactive.state,
             visible: reactive.visible,
             settings: reactive.settings,
+            #[cfg(test)]
+            surface_canvas_ids: reactive.surface_canvas_ids,
             title_edit: reactive.title_edit,
             skin,
             skin_assets,
@@ -3844,14 +3879,14 @@ mod skin_tests {
             let probe = inner.query_selector("#native-css-probe").unwrap().unwrap();
             inner.get_client_bounding_rect(probe).unwrap().width
         };
-        assert_eq!(width(&session), 80.0);
+        assert!((width(&session) - 80.0).abs() < f64::EPSILON);
 
         tree.set_css(
             &mut session.document.inner.borrow_mut(),
             "#native-css-probe { display: block; width: 160px; height: 20px; }",
         );
         session.document.inner.borrow_mut().resolve(0.0);
-        assert_eq!(width(&session), 160.0);
+        assert!((width(&session) - 160.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -4002,71 +4037,28 @@ mod skin_tests {
         }
     }
     #[test]
-    fn unselected_canvas_consumes_first_widget_body_and_corner_gesture() {
-        for corner in [false, true] {
-            let mut scenario: VisualDebugScenario =
-                serde_json::from_str(include_str!("../tests/fixtures/visual-composition.json"))
-                    .unwrap();
-            let mut other = scenario.canvases.as_ref().unwrap()[0].clone();
-            other.id = "other".into();
-            other.x = 800;
-            other.y = 400;
-            other.width = 256;
-            other.height = 256;
-            let mut widget = other
-                .widgets
-                .iter()
-                .find(|w| w.id == "cam")
+    fn unselected_canvas_has_no_native_hit_regions() {
+        let mut scenario: VisualDebugScenario =
+            serde_json::from_str(include_str!("../tests/fixtures/visual-composition.json"))
+                .unwrap();
+        let mut other = scenario.canvases.as_ref().unwrap()[0].clone();
+        other.id = "other".into();
+        other.x = 800;
+        other.y = 400;
+        scenario.canvases.as_mut().unwrap().push(other);
+        let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        session.editing.set(true);
+        session.panel_open.set(false);
+        session.resolve();
+
+        let inner = session.document.inner.borrow();
+        assert_eq!(inner.query_selector_all(".editor-canvas").unwrap().len(), 1);
+        assert!(
+            inner
+                .query_selector(".editor-canvas[data-canvas='other']")
                 .unwrap()
-                .clone();
-            widget.x = 24;
-            widget.y = 24;
-            widget.width = 100;
-            widget.height = 100;
-            other.widgets = vec![widget];
-            scenario.canvases.as_mut().unwrap().push(other);
-            let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
-            session.editing.set(true);
-            session.panel_open.set(false);
-            session.resolve();
-            let point = if corner {
-                [919.0, 519.0]
-            } else {
-                [850.0, 450.0]
-            };
-            let to = [point[0] - 20.0, point[1] - 20.0];
-            let mut model = session.editor_model();
-            let before = model.draft.clone();
-            session
-                .pointer
-                .dispatch(&mut session.document, point, 0x110, None);
-            session.resolve();
-            session
-                .pointer
-                .dispatch(&mut session.document, point, 0x110, Some(true));
-            session.drain_editor_events(&mut model);
-            assert!(model.drag.is_none());
-            assert_eq!(model.selected_canvas.as_deref(), Some("other"));
-            session.resolve();
-            session
-                .pointer
-                .dispatch(&mut session.document, to, 0x110, None);
-            session
-                .pointer
-                .dispatch(&mut session.document, to, 0x110, Some(false));
-            session.drain_editor_events(&mut model);
-            session.resolve();
-            assert_eq!(
-                model.draft, before,
-                "first gesture only selects; corner={corner}"
-            );
-            session.drag(point, to, VisualDebugButton::Left).unwrap();
-            assert_ne!(
-                *session.managed.borrow(),
-                before,
-                "second gesture edits; corner={corner}"
-            );
-        }
+                .is_none()
+        );
     }
     #[test]
     fn shared_dioxus_handles_resize_from_all_four_corners() {
@@ -4323,7 +4315,7 @@ mod skin_tests {
     }
 
     #[test]
-    fn visual_debug_surface_contains_every_headless_canvas() {
+    fn visual_debug_surface_contains_only_the_selected_visible_canvas() {
         let scenario = VisualDebugScenario {
             canvases: None,
             skin: None,
@@ -4355,8 +4347,90 @@ mod skin_tests {
             .filter_map(|id| inner.get_client_bounding_rect(id))
             .filter(|rect| rect.width > 0.0 && rect.height > 0.0)
             .count();
-        assert_eq!(canvas_rects, 2);
-        assert_eq!(widget_rects, 5);
+        assert_eq!(canvas_rects, 1);
+        assert_eq!(widget_rects, 4);
+    }
+
+    #[test]
+    fn editor_canvas_requires_selection_surface_ownership_and_preview_visibility() {
+        use scorepeek_overlay_ui::ScreenKind::{Play, Result};
+
+        let surface_canvas_ids = std::collections::BTreeSet::from(["selected".to_owned()]);
+        assert!(active_editor_canvas_on_surface(
+            "selected",
+            Some(&[Result]),
+            Some("selected"),
+            &surface_canvas_ids,
+            Result,
+        ));
+        assert!(!active_editor_canvas_on_surface(
+            "other",
+            Some(&[Result]),
+            Some("selected"),
+            &surface_canvas_ids,
+            Result,
+        ));
+        assert!(!active_editor_canvas_on_surface(
+            "selected",
+            Some(&[Result]),
+            Some("other"),
+            &surface_canvas_ids,
+            Result,
+        ));
+        assert!(!active_editor_canvas_on_surface(
+            "selected",
+            Some(&[Result]),
+            Some("selected"),
+            &std::collections::BTreeSet::new(),
+            Result,
+        ));
+        assert!(!active_editor_canvas_on_surface(
+            "selected",
+            Some(&[Play]),
+            Some("selected"),
+            &surface_canvas_ids,
+            Result,
+        ));
+    }
+
+    #[test]
+    fn selected_canvas_is_not_previewed_on_another_output_surface() {
+        let scenario = VisualDebugScenario {
+            canvases: None,
+            skin: None,
+            logical_size: [1920, 1080],
+            scale: 1.0,
+            canvas_id: Some("wayland-status".into()),
+            editing: true,
+            selectors: Vec::new(),
+            actions: Vec::new(),
+        };
+        let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        let stale_surface_canvas_ids =
+            std::collections::BTreeSet::from(["wayland-status".to_owned()]);
+        let mut draft = session.managed.borrow().clone();
+        draft
+            .iter_mut()
+            .find(|canvas| canvas.id == "wayland-status")
+            .unwrap()
+            .output = Some("OUTPUT-B".to_owned());
+        session.surface_canvas_ids.set(surface_canvas_ids_for_draft(
+            &stale_surface_canvas_ids,
+            &draft,
+            Some("OUTPUT-A"),
+        ));
+        session.resolve();
+
+        let inner = session.document.inner.borrow();
+        assert!(
+            inner
+                .query_selector_all(".editor-canvas")
+                .unwrap()
+                .is_empty()
+        );
+        let content = inner.query_selector(".canvas-content").unwrap().unwrap();
+        let content = inner.get_client_bounding_rect(content).unwrap();
+        assert_eq!((content.width, content.height), (0.0, 0.0));
     }
 
     #[test]

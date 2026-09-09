@@ -68,9 +68,10 @@ checkpoint; implementation history belongs in Git.
   one complete-backend-draft UNDO plus clean CLOSE or dirty DISCARD/SAVE controls. One gesture or
   command replaces the single undo snapshot only when it changes the draft; navigation does not.
   Wayland lists connector, model and logical output size for every output candidate. While editing,
-  synchronized peer panels appear on every connected output, right-drag moves canvases, left-drag
-  moves widgets, a first left click on an unselected visible preview selects only that canvas, and
-  Wayland pointer-axis input scrolls the bounded canvas list or settings under the pointer.
+  synchronized peer panels appear on every connected output. Only the selected canvas renders its
+  native preview and editing hit regions, and only on its assigned output when its current-screen
+  filter is visible; the canvas list changes selection. Right-drag moves canvases, left-drag moves
+  widgets, and Wayland pointer-axis input scrolls the bounded canvas list or settings under the pointer.
   Wayland missing-output recovery opens the same unsaved draft on a deterministic fitting or largest
   output and shrinks only the canvas boundary when required. SAVE adopts it; DISCARD leaves TOML
   untouched and suppresses that canvas for the run. `--overlay-wayland-edit` opens this recovery editor.
