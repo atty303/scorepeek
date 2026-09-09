@@ -247,24 +247,18 @@ fn active_editor_canvas_on_surface(
 }
 
 fn surface_canvas_ids_for_draft(
-    current_surface_canvas_ids: &std::collections::BTreeSet<String>,
     draft: &[scorepeek_overlay_ui::CanvasPresentation],
     surface_output: Option<&str>,
 ) -> std::collections::BTreeSet<String> {
-    current_surface_canvas_ids
+    draft
         .iter()
-        .filter(|id| {
-            draft
-                .iter()
-                .find(|canvas| canvas.id == id.as_str())
-                .is_some_and(|canvas| {
-                    canvas
-                        .output
-                        .as_deref()
-                        .is_none_or(|output| Some(output) == surface_output)
-                })
+        .filter(|canvas| {
+            canvas
+                .output
+                .as_deref()
+                .is_none_or(|output| Some(output) == surface_output)
         })
-        .cloned()
+        .map(|canvas| canvas.id.clone())
         .collect()
 }
 
@@ -273,6 +267,7 @@ struct NativeCanvasSettings {
     id: String,
     has_selection: bool,
     output: Option<String>,
+    active_output: Option<String>,
     show_on: Option<Vec<scorepeek_overlay_ui::ScreenKind>>,
     background: scorepeek_overlay_ui::Background,
     opacity_percent: u8,
@@ -427,10 +422,6 @@ impl<T: 'static> Reactive<T> {
         let mut signal = self.0;
         signal.set(value);
     }
-
-    fn replace(&self, value: T) -> T {
-        std::mem::replace(&mut *self.borrow_mut(), value)
-    }
 }
 
 impl<T: PartialEq + 'static> Reactive<T> {
@@ -575,12 +566,12 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
             EditorPanel {
                     view: EditorView {
                         backend_label:"EDITOR".into(),
-                        canvases: managed.borrow().iter().filter(|canvas|canvas.output==current_settings.output).cloned().collect(),
+                        canvases: managed.borrow().iter().filter(|canvas|canvas.output==current_settings.active_output).cloned().collect(),
                         selected_canvas: current_settings.has_selection.then(||current_settings.id.clone()),
                         selected_widget:selected.borrow().clone(),
                         preview_screen:current_settings.preview_screen,
                         outputs:reactive.outputs.borrow().iter().map(|output|EditorOutput {name:output.name.clone(),model:output.model.clone(),logical_size:output.logical_size}).collect(),
-                        active_output:current_settings.output.clone(),
+                        active_output:current_settings.active_output.clone(),
                         panel_width:current_settings.panel_width,
                         chrome:EditorChrome {panel_open:reactive.panel_open.get(),
                         widget_add_open:reactive.widget_add_open.get(),sample},
@@ -673,7 +664,10 @@ fn native_skin_input_presentation(
     })
 }
 
-fn skin_deadline(schedule: &crate::skin::Schedule) -> Option<Instant> {
+fn skin_deadline(schedule: &crate::skin::Schedule, editing: bool) -> Option<Instant> {
+    if editing {
+        return None;
+    }
     match schedule {
         crate::skin::Schedule::Idle => None,
         crate::skin::Schedule::NextFrame => Some(Instant::now()),
@@ -894,96 +888,27 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             }
         }
         workspace_was_open = workspace_is_open;
-        if workspace_open.load(std::sync::atomic::Ordering::Acquire)
-            && let Ok(response) = crate::control::request(
-                &config.control_socket,
-                &crate::control::Request::AcquireBackend {
-                    backend: crate::runtime::Backend::Wayland,
-                    editor_id: format!("wayland-{}", std::process::id()),
-                },
-            )
-            && !response.readonly
-        {
-            if let Some(refresh) = response.wayland_refresh_hz {
-                *wayland_refresh_hz
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = refresh;
-                workspace_ui
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .wayland_refresh_hz = refresh;
-            }
-            desired = response
-                .canvases
-                .into_iter()
-                .map(|presentation| {
-                    let mut canvas = crate::config::empty_canvas(
-                        presentation.id.clone(),
-                        crate::runtime::Backend::Wayland,
-                    );
-                    canvas.apply_presentation(&presentation);
-                    canvas
-                })
-                .collect();
-        }
-        if workspace_open.load(std::sync::atomic::Ordering::Acquire) && desired.is_empty() {
-            desired.push(editor_bootstrap(&config)?);
-        }
-        if workspace_open.load(std::sync::atomic::Ordering::Acquire) {
-            let (outputs, surfaces) = {
-                let workspace = workspace_ui
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                (
-                    workspace.outputs.values().cloned().collect::<Vec<_>>(),
-                    workspace.surfaces.clone(),
-                )
-            };
-            for (index, output) in outputs.into_iter().enumerate() {
-                if let Some(bootstrap) = desired.iter_mut().find(|canvas| {
-                    canvas.id == "__scorepeek-editor-bootstrap"
-                        && canvas.output == crate::config::UNRESOLVED_WAYLAND_OUTPUT_ID
-                }) {
-                    bootstrap.output.clone_from(&output.name);
-                    if let Some([width, height]) = output.logical_size {
-                        bootstrap.width = width;
-                        bootstrap.height = height;
-                    }
-                }
-                let represented = desired.iter().any(|canvas| canvas.output == output.name)
-                    || surfaces.get(&output.name).is_some_and(|surface_ids| {
-                        desired
-                            .iter()
-                            .any(|canvas| surface_ids.contains(&canvas.id))
-                    });
-                if represented {
-                    continue;
-                }
-                let mut id = format!("__scorepeek-editor-surface-{index}");
-                while desired.iter().any(|canvas| canvas.id == id) {
-                    id.push('_');
-                }
-                let editor_skin = desired.first().map(|canvas| canvas.skin);
-                let mut canvas = crate::config::empty_canvas(id, crate::runtime::Backend::Wayland);
-                if let Some(skin) = editor_skin {
-                    canvas.skin = skin;
-                }
-                canvas.output = output.name;
-                canvas.show_on = Some(Vec::new());
-                if let Some([width, height]) = output.logical_size {
-                    canvas.width = width.max(32);
-                    canvas.height = height.max(32);
-                }
-                desired.push(canvas);
-            }
-        }
-        let desired_ids: std::collections::BTreeSet<_> = desired
+        let editing = workspace_open.load(std::sync::atomic::Ordering::Acquire);
+        let projected = if editing {
+            let outputs = workspace_ui
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .outputs
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            editor_stage_canvases(&config, &desired, &outputs)?
+        } else {
+            desired.clone()
+        };
+        let desired_ids: std::collections::BTreeSet<_> = projected
             .iter()
             .filter(|canvas| {
-                !suppressed
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .contains(&canvas.id)
+                editing
+                    || !suppressed
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .contains(&canvas.id)
             })
             .map(|canvas| canvas.id.clone())
             .collect();
@@ -998,7 +923,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             .filter(|(id, worker)| {
                 force_reload
                     || !desired_ids.contains(*id)
-                    || desired
+                    || projected
                         .iter()
                         .find(|canvas| canvas.id == id.as_str())
                         .is_some_and(|canvas| Some(&canvas.output) != worker.output.as_ref())
@@ -1018,7 +943,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                 match worker.join.join() {
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => {
-                        if let Some(canvas) = desired.iter().find(|canvas| canvas.id == id) {
+                        if let Some(canvas) = projected.iter().find(|canvas| canvas.id == id) {
                             failed
                                 .insert(id.clone(), (Some(canvas.output.clone()), Instant::now()));
                         }
@@ -1036,11 +961,12 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                 }
             }
         }
-        for canvas in &desired {
-            if suppressed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contains(&canvas.id)
+        for canvas in &projected {
+            if !editing
+                && suppressed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .contains(&canvas.id)
             {
                 continue;
             }
@@ -1078,7 +1004,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                         suppressed,
                         renderer_init,
                         refresh_rate,
-                        &wakes,
+                        wakes,
                     )
                 })
                 .map_err(|error| error.to_string())?;
@@ -1122,6 +1048,48 @@ fn editor_bootstrap(config: &Config) -> Result<crate::config::Canvas, String> {
     Ok(bootstrap)
 }
 
+fn editor_stage_canvases(
+    config: &Config,
+    canvases: &[crate::config::Canvas],
+    outputs: &[OutputDescription],
+) -> Result<Vec<crate::config::Canvas>, String> {
+    if outputs.is_empty() {
+        return Ok(vec![editor_bootstrap(config)?]);
+    }
+    let skin = if let Some(canvas) = canvases.first() {
+        canvas.skin
+    } else {
+        editor_bootstrap(config)?.skin
+    };
+    Ok(editor_stage_projections(canvases, outputs, skin))
+}
+
+fn editor_stage_projections(
+    canvases: &[crate::config::Canvas],
+    outputs: &[OutputDescription],
+    skin: scorepeek_overlay_ui::Skin,
+) -> Vec<crate::config::Canvas> {
+    outputs
+        .iter()
+        .enumerate()
+        .map(|(index, output)| {
+            let mut id = format!("__scorepeek-editor-stage-{index}");
+            while canvases.iter().any(|canvas| canvas.id == id) {
+                id.push('_');
+            }
+            let mut stage = crate::config::empty_canvas(id, crate::runtime::Backend::Wayland);
+            stage.skin = skin;
+            stage.output.clone_from(&output.name);
+            stage.show_on = Some(Vec::new());
+            if let Some([width, height]) = output.logical_size {
+                stage.width = width.max(32);
+                stage.height = height.max(32);
+            }
+            stage
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn run_canvas(
     config: &Config,
@@ -1134,7 +1102,7 @@ fn run_canvas(
     suppressed: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     renderer_init: Arc<RendererInitCoordinator>,
     wayland_refresh_hz: Arc<std::sync::Mutex<scorepeek_overlay_ui::WaylandRefreshRate>>,
-    wakes: &std::sync::Mutex<std::collections::BTreeMap<String, Ping>>,
+    wakes: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Ping>>>,
 ) -> Result<(), String> {
     let report = Rc::new(RefCell::new(RunReport::new()));
     let ping = make_ping().map_err(|e| e.to_string())?;
@@ -1247,6 +1215,7 @@ fn run_canvas(
         preview,
         workspace_open,
         workspace_ui,
+        wakes,
         suppressed,
         wayland_refresh_hz,
     )?;
@@ -1331,6 +1300,7 @@ struct App {
     preview: Arc<std::sync::Mutex<Option<String>>>,
     workspace_open: Arc<std::sync::atomic::AtomicBool>,
     workspace_ui: Arc<std::sync::Mutex<NativeWorkspace>>,
+    workspace_wakes: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Ping>>>,
     surface_canvas_ids: Reactive<std::collections::BTreeSet<String>>,
     suppressed: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     settings: Reactive<NativeCanvasSettings>,
@@ -1376,6 +1346,7 @@ impl App {
         preview: Arc<std::sync::Mutex<Option<String>>>,
         workspace_open: Arc<std::sync::atomic::AtomicBool>,
         workspace_ui: Arc<std::sync::Mutex<NativeWorkspace>>,
+        workspace_wakes: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Ping>>>,
         suppressed: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
         wayland_refresh_hz: Arc<std::sync::Mutex<scorepeek_overlay_ui::WaylandRefreshRate>>,
     ) -> Result<Self, String> {
@@ -1408,6 +1379,7 @@ impl App {
             id: canvas.id.clone(),
             has_selection: true,
             output: Some(canvas.output.clone()),
+            active_output: Some(canvas.output.clone()),
             show_on: canvas.show_on.clone(),
             background: canvas.background,
             opacity_percent: canvas.opacity_percent,
@@ -1486,7 +1458,7 @@ impl App {
             "skin_render",
             &serde_json::json!({"skin_id":package.manifest.id,"release":package.manifest.release,"canvas_id":canvas.id,"backend":"native","phase":"init","status":"success","duration_us":u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),"tree_applied":true}),
         );
-        let next_skin_render = skin_deadline(&initial.schedule);
+        let next_skin_render = skin_deadline(&initial.schedule, false);
         let reactive = reactive
             .borrow()
             .clone()
@@ -1572,6 +1544,7 @@ impl App {
             preview,
             workspace_open,
             workspace_ui,
+            workspace_wakes,
             surface_canvas_ids: reactive.surface_canvas_ids,
             suppressed,
             settings: reactive.settings,
@@ -1622,7 +1595,11 @@ impl App {
                     == self.surface_output.as_deref();
             if self.interactive.get() != should_interact {
                 self.interactive.set(should_interact);
-                self.shell.set_input_enabled(should_interact);
+                self.shell.set_input_enabled(surface_input_enabled(
+                    should_edit,
+                    should_interact,
+                    self.visible.get(),
+                ));
             }
             self.retry_resolved_output();
             if self.editing.get() && Instant::now() >= self.next_keepalive {
@@ -1829,11 +1806,7 @@ impl App {
                 })
             } else if visibility_changed && !visible {
                 Some(PaintReason::VisibilityClear)
-            } else if self.editing.get()
-                && visible
-                && frame
-                && (self.pending_paint || self.animating)
-            {
+            } else if self.editing.get() && visible && frame && self.pending_paint {
                 Some(PaintReason::Editor)
             } else if visible && (self.pending_paint || (frame && self.animating)) {
                 Some(PaintReason::Steady)
@@ -1919,39 +1892,51 @@ impl App {
     fn request(&mut self, request: crate::control::Request) -> Option<crate::control::Response> {
         let updates_readonly = control_updates_readonly(&request);
         let response = crate::control::request(&self.control_socket, &request).ok()?;
+        let mut workspace_changed = false;
         if updates_readonly {
-            self.readonly.set(response.readonly);
+            self.readonly.set_if_changed(response.readonly);
         }
         if let Some(generation) = response.generation {
-            self.generation = generation;
-            self.dirty.set(response.dirty);
-            self.managed.borrow_mut().clone_from(&response.canvases);
-            {
+            workspace_changed = self.generation != generation
+                || self.dirty.get() != response.dirty
+                || *self.managed.borrow() != response.canvases;
+            if workspace_changed {
+                self.generation = generation;
+                self.dirty.set_if_changed(response.dirty);
+                self.managed.borrow_mut().clone_from(&response.canvases);
                 let mut workspace = self
                     .workspace_ui
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 workspace.draft.clone_from(&response.canvases);
                 workspace.dirty = response.dirty;
-            }
-            let selected = if self.editing.get() {
-                self.preview
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone()
-            } else {
-                Some(self.surface_canvas.id.clone())
-            };
-            if let Some(presentation) = response
-                .canvases
-                .iter()
-                .find(|item| Some(item.id.as_str()) == selected.as_deref())
-            {
-                self.apply_selected_presentation(presentation);
+                drop(workspace);
+                let selected = if self.editing.get() {
+                    self.preview
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone()
+                } else {
+                    Some(self.surface_canvas.id.clone())
+                };
+                if let Some(presentation) = response
+                    .canvases
+                    .iter()
+                    .find(|item| Some(item.id.as_str()) == selected.as_deref())
+                    && self.canvas.presentation() != *presentation
+                {
+                    self.apply_selected_presentation(presentation);
+                }
             }
         }
-        if let Some(refresh) = response.wayland_refresh_hz {
+        if let Some(refresh) = response.wayland_refresh_hz
+            && self.refresh_rate.get() != refresh
+        {
+            workspace_changed = true;
             self.set_refresh_rate_draft(refresh);
+        }
+        if workspace_changed {
+            self.wake_workspace();
         }
         Some(response)
     }
@@ -1997,14 +1982,13 @@ impl App {
             undo_available,
             selected_widget,
             pending_widget,
-            surface_canvas_ids,
             wayland_refresh_hz,
+            active_output,
         ) = {
             let workspace = self
                 .workspace_ui
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let key = self.surface_output.clone().unwrap_or_default();
             (
                 workspace.ui,
                 workspace.draft.clone(),
@@ -2012,16 +1996,16 @@ impl App {
                 workspace.undo.is_some(),
                 workspace.selected_widget.clone(),
                 workspace.pending_widget,
-                workspace.surfaces.get(&key).cloned().unwrap_or_default(),
                 workspace.wayland_refresh_hz,
+                workspace.active_output.clone(),
             )
         };
-        let surface_canvas_ids = surface_canvas_ids_for_draft(
-            &surface_canvas_ids,
-            &draft,
-            self.surface_output.as_deref(),
-        );
+        let surface_canvas_ids =
+            surface_canvas_ids_for_draft(&draft, self.surface_output.as_deref());
         self.refresh_rate.set_if_changed(wayland_refresh_hz);
+        if self.settings.borrow().active_output != active_output {
+            self.settings.borrow_mut().active_output = active_output;
+        }
         if *self.surface_canvas_ids.borrow() != surface_canvas_ids {
             *self.surface_canvas_ids.borrow_mut() = surface_canvas_ids;
         }
@@ -2110,9 +2094,21 @@ impl App {
             self.preview_skin_runtime = None;
         }
         self.set_editor_geometry(value);
-        if value && !self.visible.replace(true) {
-            self.shell.set_input_enabled(true);
+        if value {
+            self.visible.set(true);
         }
+        let runtime_visible = scorepeek_overlay_ui::canvas_visible(
+            self.surface_canvas.show_on.as_deref(),
+            self.feed_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .screen,
+        );
+        self.shell.set_input_enabled(transition_input_enabled(
+            value,
+            self.interactive.get(),
+            runtime_visible,
+        ));
         self.interaction = None;
 
         if !value {
@@ -2336,8 +2332,8 @@ impl App {
                 self.skin_tree
                     .replace(&mut self.document.inner.borrow_mut(), css, &output);
             }
-            self.next_skin_render = skin_deadline(&output.schedule);
-            self.animating = matches!(output.schedule, crate::skin::Schedule::NextFrame);
+            self.next_skin_render = skin_deadline(&output.schedule, self.editing.get());
+            self.animating = false;
         } else if self.skin_manifest.id == self.skin_package.manifest.id
             && self.skin_release == self.skin_package.manifest.release
         {
@@ -2365,7 +2361,7 @@ impl App {
             .map_err(|error| format!("skin.css is not UTF-8: {error}"))?;
             self.skin_tree
                 .replace(&mut self.document.inner.borrow_mut(), css, &output);
-            self.next_skin_render = skin_deadline(&output.schedule);
+            self.next_skin_render = skin_deadline(&output.schedule, self.editing.get());
             self.animating = matches!(output.schedule, crate::skin::Schedule::NextFrame);
             self.skin_release
                 .clone_from(&self.skin_package.manifest.release);
@@ -2629,6 +2625,19 @@ impl App {
             .selected_widget
             .clone_from(&self.selected.borrow());
         workspace.pending_widget = self.pending_widget.get();
+        drop(workspace);
+        self.wake_workspace();
+    }
+
+    fn wake_workspace(&self) {
+        for wake in self
+            .workspace_wakes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+        {
+            wake.ping();
+        }
     }
 
     fn select_canvas(&self, next: Option<String>) {
@@ -2720,7 +2729,7 @@ impl App {
             })?;
         self.skin_tree
             .apply(&mut self.document.inner.borrow_mut(), &output);
-        self.next_skin_render = skin_deadline(&output.schedule);
+        self.next_skin_render = skin_deadline(&output.schedule, self.editing.get());
         self.animating = matches!(output.schedule, crate::skin::Schedule::NextFrame);
         crate::diagnostics::emit(
             "skin_render",
@@ -2787,7 +2796,7 @@ impl App {
         self.pending_paint = false;
         if reason == PaintReason::Steady {
             self.steady_paint_count = self.steady_paint_count.saturating_add(1);
-        } else {
+        } else if reason.bypasses_cap() {
             let mut report = self.report.borrow_mut();
             *report
                 .cap_bypass_paints
@@ -2815,7 +2824,7 @@ impl App {
             inner.set_incremental_layout(incremental_layout);
             self.full_layout_pending = false;
         }
-        self.animating = self.visible.get();
+        self.animating = !self.editing.get() && self.visible.get();
         if self.animating {
             self.shell.request_frame();
         }
@@ -2883,6 +2892,12 @@ const fn release_backend_on_drop(editing: bool, workspace_open: bool) -> bool {
 }
 const fn should_poll_dioxus(surface_wake: bool, editing_before: bool, editing_after: bool) -> bool {
     surface_wake || editing_before != editing_after
+}
+const fn surface_input_enabled(editing: bool, interactive: bool, visible: bool) -> bool {
+    visible && (!editing || interactive)
+}
+const fn transition_input_enabled(editing: bool, interactive: bool, runtime_visible: bool) -> bool {
+    surface_input_enabled(editing, interactive, editing || runtime_visible)
 }
 const fn control_updates_readonly(request: &crate::control::Request) -> bool {
     matches!(
@@ -3316,6 +3331,7 @@ impl VisualDebugSession {
             id: canvas.id.clone(),
             has_selection: true,
             output: canvas.output.clone(),
+            active_output: canvas.output.clone(),
             show_on: canvas.show_on.clone(),
             background: canvas.background,
             opacity_percent: canvas.opacity_percent,
@@ -3525,10 +3541,12 @@ impl VisualDebugSession {
         self.appearance.set(Appearance { skin: canvas.skin });
         self.widgets.borrow_mut().clone_from(&canvas.widgets);
         let preview_screen = self.settings.borrow().preview_screen;
+        let active_output = self.settings.borrow().active_output.clone();
         *self.settings.borrow_mut() = NativeCanvasSettings {
             id: canvas.id,
             has_selection: true,
             output: canvas.output,
+            active_output,
             show_on: canvas.show_on,
             background: canvas.background,
             opacity_percent: canvas.opacity_percent,
@@ -4342,6 +4360,19 @@ mod skin_tests {
     }
 
     #[test]
+    fn only_active_editor_stage_accepts_input() {
+        assert!(surface_input_enabled(true, true, true));
+        assert!(!surface_input_enabled(true, false, true));
+        assert!(!surface_input_enabled(true, true, false));
+        assert!(surface_input_enabled(false, false, true));
+
+        assert!(!transition_input_enabled(false, false, false));
+        assert!(transition_input_enabled(false, false, true));
+        assert!(transition_input_enabled(true, true, false));
+        assert!(!transition_input_enabled(true, false, true));
+    }
+
+    #[test]
     fn added_surface_does_not_replace_the_pinned_editor_host() {
         let mut surfaces =
             std::collections::BTreeSet::from(["canvas-b".to_owned(), "canvas-a".to_owned()]);
@@ -4430,6 +4461,49 @@ mod skin_tests {
             scorepeek_overlay_ui::WaylandRefreshRate::Auto,
             PaintReason::Steady,
         ));
+        assert!(cadence.permits(
+            Duration::from_millis(1),
+            scorepeek_overlay_ui::WaylandRefreshRate::Auto,
+            PaintReason::Editor,
+        ));
+        assert!(skin_deadline(&crate::skin::Schedule::NextFrame, false).is_some());
+        assert!(skin_deadline(&crate::skin::Schedule::NextFrame, true).is_none());
+    }
+
+    #[test]
+    fn editor_stages_are_output_owned_when_canvas_assignment_changes() {
+        let mut canvases = crate::config::visual_debug_config()
+            .canvases
+            .into_iter()
+            .filter(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
+            .collect::<Vec<_>>();
+        let outputs = vec![
+            OutputDescription {
+                name: "WL-1".into(),
+                model: "Nested output 1".into(),
+                logical_size: Some([1280, 720]),
+            },
+            OutputDescription {
+                name: "WL-2".into(),
+                model: "Nested output 2".into(),
+                logical_size: Some([1920, 1080]),
+            },
+        ];
+        let before = editor_stage_projections(&canvases, &outputs, canvases[0].skin);
+        canvases[0].output = "WL-2".into();
+        let after = editor_stage_projections(&canvases, &outputs, canvases[0].skin);
+
+        assert_eq!(before, after);
+        assert_eq!(
+            before
+                .iter()
+                .map(|stage| (stage.id.as_str(), stage.output.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("__scorepeek-editor-stage-0", "WL-1"),
+                ("__scorepeek-editor-stage-1", "WL-2"),
+            ]
+        );
     }
 
     #[test]
@@ -4576,19 +4650,15 @@ mod skin_tests {
             actions: Vec::new(),
         };
         let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
-        let stale_surface_canvas_ids =
-            std::collections::BTreeSet::from(["wayland-status".to_owned()]);
         let mut draft = session.managed.borrow().clone();
         draft
             .iter_mut()
             .find(|canvas| canvas.id == "wayland-status")
             .unwrap()
             .output = Some("OUTPUT-B".to_owned());
-        session.surface_canvas_ids.set(surface_canvas_ids_for_draft(
-            &stale_surface_canvas_ids,
-            &draft,
-            Some("OUTPUT-A"),
-        ));
+        session
+            .surface_canvas_ids
+            .set(surface_canvas_ids_for_draft(&draft, Some("OUTPUT-A")));
         session.resolve();
 
         let inner = session.document.inner.borrow();
@@ -4766,6 +4836,7 @@ mod skin_tests {
                             id: "test".into(),
                             has_selection: true,
                             output: None,
+                            active_output: None,
                             show_on: None,
                             background: scorepeek_overlay_ui::Background::None,
                             opacity_percent: 100,
@@ -4845,6 +4916,7 @@ mod skin_tests {
                         id: "test".into(),
                         has_selection: true,
                         output: None,
+                        active_output: None,
                         show_on: None,
                         background: scorepeek_overlay_ui::Background::None,
                         opacity_percent: 100,
@@ -4974,6 +5046,7 @@ mod skin_tests {
                         id: "wayland-selection".into(),
                         has_selection: true,
                         output: Some("DP-1".into()),
+                        active_output: Some("DP-1".into()),
                         show_on: None,
                         background: scorepeek_overlay_ui::Background::None,
                         opacity_percent: 100,

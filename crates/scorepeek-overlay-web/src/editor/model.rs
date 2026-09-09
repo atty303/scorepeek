@@ -60,14 +60,12 @@ mod tests {
         model.close();
         model.receive_stage(remote);
         assert_eq!(model.draft.len(), 2);
-        let generation = model.generation;
         let mut remote = model.draft.clone();
         remote.remove(0);
         remote[0].background = Background::Static;
         model.receive_stage(remote.clone());
         assert_eq!(model.draft, remote);
         assert_eq!(model.saved, remote);
-        assert!(model.generation > generation);
     }
     #[test]
     fn title_composition_survives_reactive_reads_and_only_applies_on_accept() {

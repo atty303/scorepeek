@@ -306,8 +306,12 @@ checkpoint; implementation history belongs in Git.
   rectangles. A fresh 1920x1080 Codex Browser run against production `/overlay` starts from no OBS
   canvas, opens the editor by right-click, selects UNKNOWN and DJ BLACKBOX, creates an exact
   1920x1080 canvas, adds a status widget, deletes the last canvas, restores it with UNDO, saves and
-  returns to display-only rendering. The canvas iframe receives every draft generation, including an
-  empty projection, and the browser reports no warning or error. The checked-in Wayland runner starts
+  returns to display-only rendering. The canvas iframe now keeps its Wasm instance across same-skin
+  move, resize and property changes and receives presentation differences over its existing
+  WebSocket; canvas lifecycle, skin/sample changes and editor close/reopen remain reload boundaries.
+  A follow-up Browser run covered two canvases, UNKNOWN preview, widget placement and drag, canvas and
+  widget properties, undo, save/reopen and discard/reopen without changing the iframe URL during
+  same-skin edits. The browser reports no warning or error. The checked-in Wayland runner starts
   the production native child against an isolated config. Inside a real nested Scroll compositor, an
   empty workspace promoted its bootstrap stage to the discovered WL-1 1716x1494 output; compositor
   pointer input selected UNKNOWN and DJ BLACKBOX, created and saved a canvas with exact 1716x1494
@@ -316,6 +320,16 @@ checkpoint; implementation history belongs in Git.
   the same child process instead of leaving the workspace unreachable. This is nested-compositor
   protocol, composition and input evidence; actual OBS Browser Source and a non-nested target
   compositor remain separate boundaries.
+  A two-output nested Scroll regression run keeps one stable full-output editor stage on each
+  1716x1494 output while a canvas is created and reassigned from WL-1 to WL-2. The reassignment causes
+  no surface recreation, configure timeout or worker failure. Editor skin motion is paused, unchanged
+  keepalive responses do not touch reactive state, and both stages stop painting when idle; the final
+  summaries recorded 6 and 5 paints over about 170 seconds instead of the pre-fix run's roughly 2200
+  paints per stage. Scroll IPC accepted pointer move/press/release in 0.17-0.29 seconds. UNKNOWN
+  preview, opacity change and output navigation were also exercised in that bounded run. A separate
+  passive-stage check clicked WL-2 while WL-1 was active: no editor pointer event was emitted and
+  Scroll handled the input. Transition tests also keep a runtime-hidden stage input-disabled when
+  the editor closes.
 
 - Schema-v2 defaults/rejection, screen filters, semantic-screen snapshot/live folding,
   suspension/disconnect grace and immediate known-screen replacement have focused development-host
@@ -511,9 +525,9 @@ checkpoint; implementation history belongs in Git.
   unverified; the Codex Browser run exercised the same production HTTP/Wasm route but not OBS itself.
   The schema-v7 editor is not installed on the target and no autostart, push or release is included.
   Existing non-nested target evidence predates ADR 0144 and does not establish its new full-output
-  stage lifecycle. The fresh nested-Scroll run establishes one-output protocol, composition, pointer
-  input, empty bootstrap, creation and persistence, but not target GPU/compositor performance or
-  multi-output hot reconciliation.
+  stage lifecycle. The fresh nested-Scroll runs establish two-output protocol, composition, pointer
+  input, empty bootstrap, creation, output reassignment and idle paint behavior, but not target
+  GPU/compositor performance or output-hotplug reconciliation.
 - OBS editor build compatibility is checked at connection and request boundaries. A mismatch
   discards the unsaved editor state, blocks edits and presents a reload button. The backend and
   WASM share a deterministic source/asset build identity. Socket-owned editor leases are released

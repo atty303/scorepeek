@@ -80,7 +80,7 @@ pub fn app() -> Element {
             div { id:"stage",
                 for canvas in state.draft.iter().filter(|canvas|state.visible(canvas)) {
                     EditorCanvas {key:"{canvas.id}",canvas:canvas.clone(),editing:state.editing,selected:state.editing&&state.selected_canvas.as_deref()==Some(canvas.id.as_str()),selected_widget:state.selected_widget.clone(),onaction:surface,oncapture:capture,
-                        iframe {src:format!("/canvas/{}?sample={}&presentation={}",encode_id(&canvas.id),u8::from(state.editing&&state.chrome.sample),state.generation),tabindex:-1}
+                        iframe {src:format!("/canvas/{}?sample={}&skin={}",encode_id(&canvas.id),u8::from(state.editing&&state.chrome.sample),encode_id(canvas.skin.name())),tabindex:-1}
                     }
                 }
             }

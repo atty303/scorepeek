@@ -343,14 +343,7 @@ mod server {
         let Ok(package) = shared.skins.open(skin_id) else {
             return StatusCode::NOT_FOUND.into_response();
         };
-        let canvas_properties = package
-            .manifest
-            .effective_canvas_properties(&canvas.skin_properties);
-        let specification = serde_json::json!({
-            "canvas":{"id":canvas.id,"skin":skin_id,"width":canvas.width,"height":canvas.height,"properties":canvas_properties},
-            "widgets":canvas.widgets.iter().map(|widget| { let kind=serde_json::to_value(widget.kind).ok().and_then(|value|value.as_str().map(str::to_owned)).unwrap_or_default(); let properties=package.manifest.effective_widget_properties(&kind,&widget.skin_properties); serde_json::json!({"id":widget.id,"kind":widget.kind,"x":widget.x,"y":widget.y,"width":widget.width,"height":widget.height,"settings":widget.settings,"properties":properties}) }).collect::<Vec<_>>(),
-            "wasm":format!("/skin/{skin_id}/{}", crate::skin::MODULE_PATH),
-        });
+        let specification = canvas_specification(canvas, &package);
         let Ok(specification) = serde_json::to_string(&specification) else {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         };
@@ -367,6 +360,21 @@ mod server {
             html,
         )
             .into_response()
+    }
+
+    fn canvas_specification(
+        canvas: &crate::config::Canvas,
+        package: &crate::skin::Package,
+    ) -> serde_json::Value {
+        let skin_id = canvas.skin.name();
+        let canvas_properties = package
+            .manifest
+            .effective_canvas_properties(&canvas.skin_properties);
+        serde_json::json!({
+            "canvas":{"id":canvas.id,"skin":skin_id,"width":canvas.width,"height":canvas.height,"properties":canvas_properties},
+            "widgets":canvas.widgets.iter().map(|widget| { let kind=serde_json::to_value(widget.kind).ok().and_then(|value|value.as_str().map(str::to_owned)).unwrap_or_default(); let properties=package.manifest.effective_widget_properties(&kind,&widget.skin_properties); serde_json::json!({"id":widget.id,"kind":widget.kind,"x":widget.x,"y":widget.y,"width":widget.width,"height":widget.height,"settings":widget.settings,"properties":properties}) }).collect::<Vec<_>>(),
+            "wasm":format!("/skin/{skin_id}/{}", crate::skin::MODULE_PATH),
+        })
     }
 
     async fn skin_asset(
@@ -483,6 +491,50 @@ mod server {
         }
     }
 
+    async fn handle_canvas_socket_message(
+        socket: &mut axum::extract::ws::WebSocket,
+        message: Option<Result<Message, axum::Error>>,
+        id: &str,
+    ) -> bool {
+        let Some(Ok(Message::Text(text))) = message else {
+            return !matches!(message, None | Some(Err(_) | Ok(Message::Close(_))));
+        };
+        if let Ok(message) = serde_json::from_str::<serde_json::Value>(&text)
+            && message.get("type").and_then(serde_json::Value::as_str) == Some("skin_diagnostic")
+        {
+            crate::diagnostics::emit(
+                "skin_render",
+                &serde_json::json!({
+                    "backend":"obs",
+                    "canvas_id":id,
+                    "status":message.get("status").and_then(serde_json::Value::as_str).filter(|value|matches!(*value,"success"|"failed")).unwrap_or("failed"),
+                    "phase":message.get("phase").and_then(serde_json::Value::as_str).filter(|value|matches!(*value,"init"|"render")),
+                    "duration_us":message.get("duration_us").and_then(serde_json::Value::as_u64),
+                    "next_tick":message.get("next_tick").and_then(serde_json::Value::as_str).filter(|value|matches!(*value,"idle"|"next-frame"|"after-ms")),
+                    "error_type":message.get("error_type").and_then(serde_json::Value::as_str).filter(|value|matches!(*value,"hard_timeout"|"compile"|"instantiate"|"init"|"render"|"tree_apply_failed"|"canvas_unavailable")),
+                }),
+            );
+            return true;
+        }
+        let reply = serde_json::json!({
+            "type":"control",
+            "request":"display_only",
+            "response":crate::control::Response {
+                ok:false,
+                readonly:true,
+                error:Some("このURLは表示専用です。編集には /overlay をOBS Browser SourceのInteractionで開いてください。".into()),
+                canvases:Vec::new(),
+                generation:None,
+                dirty:false,
+                wayland_refresh_hz:None,
+            }
+        });
+        let Ok(reply) = serde_json::to_string(&reply) else {
+            return false;
+        };
+        socket.send(Message::Text(reply.into())).await.is_ok()
+    }
+
     async fn socket(
         Path(id): Path<String>,
         RawQuery(query): RawQuery,
@@ -502,15 +554,17 @@ mod server {
             .as_deref()
             .is_some_and(|query| query.split('&').any(|part| part == "sample=1"));
         ws.on_upgrade(move |mut socket| async move {
-            let mut sent = None;
+            let mut sent_state = None;
+            let mut sent_presentation = None;
             loop {
-                let available = shared
+                let canvas = shared
                     .canvases
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .iter()
-                    .any(|canvas| canvas.id == id);
-                if !available {
+                    .find(|canvas| canvas.id == id)
+                    .cloned();
+                let Some(canvas) = canvas else {
                     let message = serde_json::json!({"type":"canvas_unavailable"}).to_string();
                     let _ = tokio::time::timeout(
                         Duration::from_secs(2),
@@ -518,7 +572,7 @@ mod server {
                     )
                     .await;
                     break;
-                }
+                };
                 let notified = shared.changed.notified();
                 let mut state = shared
                     .feed
@@ -527,8 +581,10 @@ mod server {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone();
                 state = display_state(state, sample);
-                if sent.as_ref() != Some(&state) {
-                    let Ok(bytes) = serde_json::to_string(&serde_json::json!({"type":"state", "state":state})) else {
+                if sent_state.as_ref() != Some(&state) {
+                    let Ok(bytes) =
+                        serde_json::to_string(&serde_json::json!({"type":"state", "state":state}))
+                    else {
                         break;
                     };
                     if tokio::time::timeout(
@@ -540,7 +596,26 @@ mod server {
                     {
                         break;
                     }
-                    sent = Some(state);
+                    sent_state = Some(state);
+                }
+                let Ok(package) = shared.skins.open(canvas.skin.name()) else {
+                    break;
+                };
+                let presentation = canvas_specification(&canvas, &package);
+                if sent_presentation.as_ref() != Some(&presentation) {
+                    let bytes =
+                        serde_json::json!({"type":"presentation", "specification":presentation})
+                            .to_string();
+                    if tokio::time::timeout(
+                        Duration::from_secs(2),
+                        socket.send(Message::Text(bytes.into())),
+                    )
+                    .await
+                    .map_or(true, |result| result.is_err())
+                    {
+                        break;
+                    }
+                    sent_presentation = Some(presentation);
                 }
                 tokio::select! {
                     () = notified => {},
@@ -548,40 +623,8 @@ mod server {
                         if shared.feed.stop.load(Ordering::Acquire) { break; }
                     },
                     message = socket.recv() => {
-                        match message {
-                            Some(Ok(Message::Text(text))) => {
-                                if let Ok(message) = serde_json::from_str::<serde_json::Value>(&text)
-                                    && message.get("type").and_then(serde_json::Value::as_str) == Some("skin_diagnostic")
-                                {
-                                    crate::diagnostics::emit("skin_render", &serde_json::json!({
-                                        "backend":"obs",
-                                        "canvas_id":id,
-                                        "status":message.get("status").and_then(serde_json::Value::as_str).filter(|value|matches!(*value,"success"|"failed")).unwrap_or("failed"),
-                                        "phase":message.get("phase").and_then(serde_json::Value::as_str).filter(|value|matches!(*value,"init"|"render")),
-                                        "duration_us":message.get("duration_us").and_then(serde_json::Value::as_u64),
-                                        "next_tick":message.get("next_tick").and_then(serde_json::Value::as_str).filter(|value|matches!(*value,"idle"|"next-frame"|"after-ms")),
-                                        "error_type":message.get("error_type").and_then(serde_json::Value::as_str).filter(|value|matches!(*value,"hard_timeout"|"compile"|"instantiate"|"init"|"render"|"tree_apply_failed"|"canvas_unavailable")),
-                                    }));
-                                    continue;
-                                }
-                                let reply = serde_json::json!({
-                                    "type":"control",
-                                    "request":"display_only",
-                                    "response":crate::control::Response {
-                                        ok:false,
-                                        readonly:true,
-                                        error:Some("このURLは表示専用です。編集には /overlay をOBS Browser SourceのInteractionで開いてください。".into()),
-                                        canvases:Vec::new(),
-                                        generation:None,
-                                        dirty:false,
-                                        wayland_refresh_hz:None,
-                                    }
-                                });
-                                let Ok(reply) = serde_json::to_string(&reply) else { break; };
-                                if socket.send(Message::Text(reply.into())).await.is_err() { break; }
-                            }
-                            None | Some(Err(_) | Ok(Message::Close(_))) => break,
-                            _ => {}
+                        if !handle_canvas_socket_message(&mut socket, message, &id).await {
+                            break;
                         }
                     }
                 }

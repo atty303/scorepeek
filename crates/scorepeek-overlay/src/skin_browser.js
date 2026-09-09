@@ -151,6 +151,11 @@
   socket.onmessage = event => {
     const message = JSON.parse(event.data);
     if (message.type === "state") { state = message.state; requestRender(); }
+    if (message.type === "presentation") {
+      spec.canvas = message.specification.canvas;
+      spec.widgets = message.specification.widgets;
+      requestRender();
+    }
     if (message.type === "canvas_unavailable") fail("canvas_unavailable");
   };
   document.addEventListener("visibilitychange", () => { if (!document.hidden) requestRender(); });

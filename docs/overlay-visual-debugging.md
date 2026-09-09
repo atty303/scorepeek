@@ -46,6 +46,13 @@ terminal to stop it. The server uses the production `/overlay`, iframe canvas, W
 code, but an absent event socket and no score database, so it starts with the editor's fixed sample
 data and never initializes capture, recognition, Wayland or OBS.
 
+For incremental-update verification, record the selected canvas iframe URL, move and resize a
+widget, change canvas and widget properties, and inspect the iframe DOM after each action. The iframe
+must keep the same URL and Wasm instance while its WebSocket applies the new presentation. A skin
+change, sample-mode change, editor close/reopen, or canvas lifecycle change may create a new iframe.
+Also exercise output navigation, UNKNOWN preview, add/delete/undo, save/reopen and discard/reopen;
+these cover state transitions that a single drag does not.
+
 Native and browser images are evidence for human or Codex comparison; pixel equality is not an
 acceptance condition. Actual Wayland composition/input delivery and rendering inside OBS remain live
 verification boundaries.
@@ -95,6 +102,13 @@ renderer. The native visual scenario also sends these events; it does not interp
 selector names as setting commands. Native IME buffers and browser input elements adapt
 platform text entry. Output/surface ownership, keyboard focus, pointer capture and the
 existing save/lease transports remain host responsibilities.
+
+During native editing, there is one output-owned full-output stage per connected output. Canvas
+assignment must update the shared draft without destroying or recreating those stages. Every local
+editor transition wakes the peer stages immediately. Skin motion schedules are paused while the
+editor is open; direct manipulation and state changes still request paints. In a nested multi-output
+check, leave the editor idle before and after an output assignment and confirm that paint counts stop
+advancing and that no configure timeout or canvas-worker failure is reported.
 
 OBS `/overlay` boots the editor WASM bundle and places display-only skin canvas iframes inside
 the shared editor canvas. Native supplies rendered canvas content in the same component

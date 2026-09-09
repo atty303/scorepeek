@@ -46,7 +46,6 @@ struct Reply {
     error: Option<String>,
     #[serde(default)]
     canvases: Vec<CanvasPresentation>,
-    generation: Option<u64>,
     #[serde(default)]
     dirty: bool,
 }
@@ -296,9 +295,6 @@ impl Connection {
                     let mut model = self.model.write_unchecked();
                     model.readonly = response.readonly;
                     model.notice = response.error;
-                    if let Some(generation) = response.generation {
-                        model.generation = generation;
-                    }
                     if matches!(
                         command,
                         Some(Command::Acquire | Command::Update | Command::Save | Command::Discard)
@@ -309,7 +305,6 @@ impl Connection {
                             let model = &mut *model;
                             model.saved.clone_from(&model.draft);
                         }
-                        model.generation += 1;
                         if !model
                             .draft
                             .iter()

@@ -108,9 +108,6 @@ impl Controller {
         }
         let listener = UnixListener::bind(&socket)
             .map_err(|error| format!("bind {}: {error}", socket.display()))?;
-        listener
-            .set_nonblocking(true)
-            .map_err(|error| error.to_string())?;
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = Arc::clone(&stop);
         let config_path = path.to_owned();
@@ -127,9 +124,6 @@ impl Controller {
                 while !stopping.load(Ordering::Acquire) {
                     match listener.accept() {
                         Ok((stream, _)) => handle(stream, &config_path, &worker_state),
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(25));
-                        }
                         Err(error) => {
                             if let Ok(mut state) = worker_state.lock() {
                                 state.observe(

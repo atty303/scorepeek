@@ -89,7 +89,6 @@ pub struct Model {
     pub viewport: [u32; 2],
     pub outputs: Vec<crate::editor::EditorOutput>,
     pub active_output: Option<String>,
-    pub generation: u64,
     pub discard_pending: bool,
     pub notice: Option<String>,
     pub skins: Vec<EditorSkin>,
@@ -147,7 +146,6 @@ impl Model {
             viewport,
             outputs: Vec::new(),
             active_output,
-            generation: 0,
             discard_pending: false,
             notice: None,
             new_canvas_skin,
@@ -187,7 +185,6 @@ impl Model {
         if !self.editing && self.draft != canvases {
             self.saved.clone_from(&canvases);
             self.draft = canvases;
-            self.generation += 1;
         }
     }
     pub fn normalize_for_save(&mut self) {
