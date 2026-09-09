@@ -159,6 +159,7 @@ fn widget_slot(widget: &Widget, state: &Value, skin: Skin) -> Node {
     let child = if widget.kind == "empty" {
         empty_widget(&key, widget, skin)
     } else {
+        let expanded = expanded_widget(widget);
         el(
             &format!("{key}:origin"),
             "div",
@@ -173,7 +174,7 @@ fn widget_slot(widget: &Widget, state: &Value, skin: Skin) -> Node {
                     ),
                 ),
             ],
-            vec![render_widget(&key, widget, state, skin)],
+            vec![render_widget(&key, &expanded, state, skin)],
         )
     };
     el(
@@ -192,6 +193,19 @@ fn widget_slot(widget: &Widget, state: &Value, skin: Skin) -> Node {
         ],
         vec![child],
     )
+}
+
+fn expanded_widget(widget: &Widget) -> Widget {
+    Widget {
+        id: widget.id.clone(),
+        kind: widget.kind.clone(),
+        x: widget.x,
+        y: widget.y,
+        width: widget.width.saturating_add(16),
+        height: widget.height.saturating_add(16),
+        settings: widget.settings.clone(),
+        properties: widget.properties.clone(),
+    }
 }
 
 fn render_widget(key: &str, widget: &Widget, state: &Value, skin: Skin) -> Node {
@@ -1340,16 +1354,7 @@ fn empty_widget(key: &str, widget: &Widget, skin: Skin) -> Node {
         .and_then(Value::as_str)
         .unwrap_or("");
     let edge = frame_width(widget);
-    let expanded = Widget {
-        id: widget.id.clone(),
-        kind: widget.kind.clone(),
-        x: widget.x,
-        y: widget.y,
-        width: widget.width.saturating_add(16),
-        height: widget.height.saturating_add(16),
-        settings: widget.settings.clone(),
-        properties: widget.properties.clone(),
-    };
+    let expanded = expanded_widget(widget);
     let mask = aperture_mask([(
         i64::from(edge),
         i64::from(edge),
@@ -1672,6 +1677,42 @@ mod tests {
     }
 
     #[test]
+    fn status_retains_the_original_expanded_rendering_surface() {
+        let output = tree(Input {
+            schema: "scorepeek-skin-input-v1".into(),
+            backend: "native".into(),
+            canvas: Canvas {
+                id: "test".into(),
+                skin: "dev.atty303.scorepeek.skin.cyan-system".into(),
+                width: 560,
+                height: 60,
+                properties: BTreeMap::new(),
+            },
+            widgets: vec![Widget {
+                id: "status".into(),
+                kind: "status".into(),
+                x: 8,
+                y: 8,
+                width: 544,
+                height: 44,
+                settings: Value::Null,
+                properties: BTreeMap::new(),
+            }],
+            state: serde_json::json!({}),
+        });
+        let slot = element_with_class(&output.tree, "widget-slot").unwrap();
+        assert_eq!(
+            slot.get("style").unwrap(),
+            "left:8px;top:8px;width:544px;height:44px"
+        );
+        let frame = element_with_class(&output.tree, "material-frame").unwrap();
+        assert_eq!(
+            frame.get("style").unwrap(),
+            "left:0px;top:0px;width:560px;height:60px"
+        );
+    }
+
+    #[test]
     fn original_widget_surface_is_retained_in_the_rendered_tree() {
         let widget = |kind: &str, y| Widget {
             id: kind.into(),
@@ -1765,5 +1806,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn element_with_class<'a>(
+        node: &'a Node,
+        expected: &str,
+    ) -> Option<&'a BTreeMap<String, String>> {
+        let Node::Element {
+            attributes,
+            children,
+            ..
+        } = node
+        else {
+            return None;
+        };
+        if attributes.get("class").is_some_and(|classes| {
+            classes
+                .split_ascii_whitespace()
+                .any(|class| class == expected)
+        }) {
+            return Some(attributes);
+        }
+        children
+            .iter()
+            .find_map(|child| element_with_class(child, expected))
     }
 }

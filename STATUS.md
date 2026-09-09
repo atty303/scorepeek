@@ -237,7 +237,11 @@ checkpoint; implementation history belongs in Git.
   load their own frame resources after a draft switch, while selection, movement and resize remain
   operable over the noninteractive skin tree. A production OBS page initialized and rendered the
   same package Wasm with an idle next tick, and the full embedded-web integration passes with the
-  complete package resource set. The separate 21-capture composition scenario verifies package
+  complete package resource set. The shared Wasm guest now preserves the original Dioxus widget
+  surface contract: the saved rectangle stays unchanged while every populated renderer receives
+  the 16-pixel-expanded surface behind its negative-eight-pixel origin. The status frame is therefore
+  560x60 for a 544x44 saved rectangle in both native and browser DOMs, with its wordmark and two lamps.
+  The separate 21-capture composition scenario verifies package
   background subtraction through four empty apertures, frame/background plugin property controls,
   title editing and aspect changes. A production 1920x1080 Codex Browser run found that the Wasm
   canvas CSP rejected plugin-declared inline geometry and that the replacement runtime dropped the
