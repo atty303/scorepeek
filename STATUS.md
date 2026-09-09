@@ -554,9 +554,11 @@ checkpoint; implementation history belongs in Git.
 - The release browser bundle disables DWARF debug symbols and completes without the prior
   wasm-opt DWARF failure. Shared editor hit regions sit above noninteractive rendered content,
   selected widget handles take precedence at canvas edges, and native pointer moves retain the
-  actual pressed-button state. Regression tests exercise body selection and edge-aligned resizing
-  through Dioxus, plus delivered button state. Native render evidence remains distinct from live
-  Wayland input and OBS composition.
+  actual pressed-button state. Manifest-defined canvas and widget properties now use a shared,
+  typed editor card with human-readable labels, balanced choice segments, bounded numeric fields,
+  units and dedicated toggle, color and text treatments in both native and OBS editors. Regression
+  tests exercise body selection and edge-aligned resizing through Dioxus, plus delivered button state.
+  Native render evidence remains distinct from live Wayland input and OBS composition.
 
 - Validate layout v4 in a fresh target-live run with the installed binary.
   Retained-frame inspection does not recover unrecorded PLAY spans or backfill missing RESULTs.

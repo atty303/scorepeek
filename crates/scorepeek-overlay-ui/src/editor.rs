@@ -360,18 +360,154 @@ fn property_controls(
             onaction.call(EditorAction::WidgetSkinProperty(key, value));
         }
     };
-    rsx! { div { class:"skin-property-list", for (key,property) in properties {
-        div { class:"skin-property", "data-property":key, label { "{key}" }
+    rsx! { section { class:"skin-property-list",
+        h3 { class:"property-section-title", if canvas {"CANVAS STYLE"} else {"WIDGET STYLE"} }
+        for (key,property) in properties {
+        div { class:"skin-property", "data-property":key,
+            div { class:"property-heading",
+                label { class:"property-label", title:"{key}", "{property_key_display(properties,key)}" }
+                span { class:"property-kind", "{property_kind_label(property)}" }
+            }
             match property {
-                EditorProperty::Boolean{default} => { let value=values.get(key).and_then(serde_json::Value::as_bool).unwrap_or(*default); rsx!{EditorButton{disabled:readonly,selected:value,onclick:{let key=key.clone();move |_|action(key.clone(),(!value).into())},if value{"ON"}else{"OFF"}}} },
-                EditorProperty::Enum{default,values:options} => { let value=values.get(key).and_then(serde_json::Value::as_str).unwrap_or(default); rsx!{div{class:"button-grid",for (index,option) in options.iter().enumerate(){EditorButton{disabled:readonly,selected:value==option,onclick:{let key=key.clone();let option=option.clone();move |_|action(key.clone(),option.clone().into())},"data-index":index,"data-value":option,"{option}"}}}} },
-                EditorProperty::Integer{default,minimum,maximum} => { let value=values.get(key).and_then(serde_json::Value::as_i64).unwrap_or(*default); rsx!{input{r#type:"number",value:"{value}",min:"{minimum}",max:"{maximum}",disabled:readonly,oninput:{let key=key.clone();move |event|if let Ok(value)=event.value().parse::<i64>(){action(key.clone(),value.into())}}}} },
-                EditorProperty::Number{default,minimum,maximum} => { let value=values.get(key).and_then(serde_json::Value::as_f64).unwrap_or(*default); rsx!{input{r#type:"number",value:"{value}",min:"{minimum}",max:"{maximum}",disabled:readonly,oninput:{let key=key.clone();move |event|if let Ok(value)=event.value().parse::<f64>()&&let Some(value)=serde_json::Number::from_f64(value){action(key.clone(),value.into())}}}} },
-                EditorProperty::Color{default} => { let value=values.get(key).and_then(serde_json::Value::as_str).unwrap_or(default); rsx!{input{r#type:"color",value:"{value}",disabled:readonly,oninput:{let key=key.clone();move |event|action(key.clone(),event.value().into())}}} },
-                EditorProperty::String{default,maximum_length} => { let value=values.get(key).and_then(serde_json::Value::as_str).unwrap_or(default); rsx!{input{r#type:"text",value:"{value}",maxlength:"{maximum_length}",disabled:readonly,oninput:{let key=key.clone();move |event|action(key.clone(),event.value().into())}}} },
+                EditorProperty::Boolean{default} => { let value=values.get(key).and_then(serde_json::Value::as_bool).unwrap_or(*default); rsx!{EditorButton{class:"property-toggle",disabled:readonly,selected:value,onclick:{let key=key.clone();move |_|action(key.clone(),(!value).into())},span{class:"property-toggle-state",if value{"ENABLED"}else{"DISABLED"}} span{class:"property-toggle-mark",if value{"ON"}else{"OFF"}}}} },
+                EditorProperty::Enum{default,values:options} => { let value=values.get(key).and_then(serde_json::Value::as_str).unwrap_or(default); rsx!{div{class:"property-options",for (index,option) in options.iter().enumerate(){EditorButton{class:"property-option",disabled:readonly,selected:value==option,onclick:{let key=key.clone();let option=option.clone();move |_|action(key.clone(),option.clone().into())},"data-index":index,"data-value":option,title:"{option}",span{class:"property-option-label","{property_option_display(options,option)}"}}}}} },
+                EditorProperty::Integer{default,minimum,maximum} => { let value=values.get(key).and_then(serde_json::Value::as_i64).unwrap_or(*default); let unit=property_unit(key); rsx!{div{class:"property-number-control",div{class:"property-value",input{class:"property-value-input",r#type:"number",value:"{value}",min:"{minimum}",max:"{maximum}",disabled:readonly,oninput:{let key=key.clone();let minimum=*minimum;let maximum=*maximum;move |event|if let Some(value)=integer_property_value(&event.value(),minimum,maximum){action(key.clone(),value.into())}},onblur:{let key=key.clone();move |_|action(key.clone(),value.into())}} if !unit.is_empty(){span{"{unit}"}}} small{class:"property-range","{minimum}–{maximum}{unit}"}}} },
+                EditorProperty::Number{default,minimum,maximum} => { let value=values.get(key).and_then(serde_json::Value::as_f64).unwrap_or(*default); let unit=property_unit(key); rsx!{div{class:"property-number-control",div{class:"property-value",input{class:"property-value-input",r#type:"number",value:"{value}",min:"{minimum}",max:"{maximum}",disabled:readonly,oninput:{let key=key.clone();let minimum=*minimum;let maximum=*maximum;move |event|if let Some(value)=number_property_value(&event.value(),minimum,maximum){action(key.clone(),value.into())}},onblur:{let key=key.clone();move |_|action(key.clone(),serde_json::Number::from_f64(value).expect("effective number is finite").into())}} if !unit.is_empty(){span{"{unit}"}}} small{class:"property-range","{minimum}–{maximum}{unit}"}}} },
+                EditorProperty::Color{default} => { let value=values.get(key).and_then(serde_json::Value::as_str).unwrap_or(default); rsx!{div{class:"property-color-control",span{class:"property-color-swatch",style:"background-color:{value}",aria_hidden:"true"} input{class:"property-color-input",r#type:"text",value:"{value}",disabled:readonly,oninput:{let key=key.clone();move |event|if valid_property_color(&event.value()){action(key.clone(),event.value().into())}},onblur:{let key=key.clone();let value=value.to_owned();move |_|action(key.clone(),value.clone().into())}}}} },
+                EditorProperty::String{default,maximum_length} => { let value=values.get(key).and_then(serde_json::Value::as_str).unwrap_or(default); rsx!{div{class:"property-string-control",input{class:"property-string-input",r#type:"text",value:"{value}",disabled:readonly,oninput:{let key=key.clone();let maximum_length=*maximum_length;move |event|if valid_property_string(&event.value(),maximum_length){action(key.clone(),event.value().into())}},onblur:{let key=key.clone();let value=value.to_owned();move |_|action(key.clone(),value.clone().into())}} small{class:"property-limit","MAX {maximum_length}"}}} },
             }
         }
     } } }
+}
+
+fn property_label(key: &str) -> String {
+    property_token(key.strip_suffix("-percent").unwrap_or(key))
+}
+
+fn property_token(value: &str) -> String {
+    value
+        .split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .map(str::to_ascii_uppercase)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn property_display_label(raw: &str, label: &str, ambiguous: bool) -> String {
+    if label.is_empty() {
+        raw.to_ascii_uppercase()
+    } else if ambiguous {
+        format!("{label} · {raw}")
+    } else {
+        label.to_owned()
+    }
+}
+
+fn property_key_display(
+    properties: &std::collections::BTreeMap<String, EditorProperty>,
+    key: &str,
+) -> String {
+    let label = property_label(key);
+    let ambiguous = properties
+        .keys()
+        .filter(|candidate| property_label(candidate) == label)
+        .count()
+        > 1;
+    property_display_label(key, &label, ambiguous)
+}
+
+fn property_option_display(options: &[String], option: &str) -> String {
+    let label = property_token(option);
+    let ambiguous = options
+        .iter()
+        .filter(|candidate| property_token(candidate) == label)
+        .count()
+        > 1;
+    property_display_label(option, &label, ambiguous)
+}
+
+fn valid_property_color(value: &str) -> bool {
+    matches!(value.len(), 4 | 5 | 7 | 9)
+        && value.starts_with('#')
+        && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn valid_property_string(value: &str, maximum_length: usize) -> bool {
+    value.chars().count() <= maximum_length
+}
+
+fn integer_property_value(value: &str, minimum: i64, maximum: i64) -> Option<i64> {
+    value
+        .parse()
+        .ok()
+        .filter(|value| minimum <= *value && *value <= maximum)
+}
+
+fn number_property_value(value: &str, minimum: f64, maximum: f64) -> Option<serde_json::Number> {
+    let value = value.parse::<f64>().ok()?;
+    (value.is_finite() && minimum <= value && value <= maximum)
+        .then(|| serde_json::Number::from_f64(value))
+        .flatten()
+}
+
+fn property_unit(key: &str) -> &'static str {
+    if key.ends_with("-percent") { "%" } else { "" }
+}
+
+fn property_kind_label(property: &EditorProperty) -> &'static str {
+    match property {
+        EditorProperty::Boolean { .. } => "TOGGLE",
+        EditorProperty::Integer { .. } | EditorProperty::Number { .. } => "NUMBER",
+        EditorProperty::Color { .. } => "COLOR",
+        EditorProperty::Enum { .. } => "CHOICE",
+        EditorProperty::String { .. } => "TEXT",
+    }
+}
+
+#[cfg(test)]
+mod property_tests {
+    use super::{
+        integer_property_value, number_property_value, property_display_label, property_token,
+        valid_property_color, valid_property_string,
+    };
+
+    #[test]
+    fn property_labels_preserve_empty_and_ambiguous_raw_tokens() {
+        assert_eq!(
+            property_display_label("-", &property_token("-"), false),
+            "-"
+        );
+        assert_eq!(
+            property_display_label("foo_bar", &property_token("foo_bar"), true),
+            "FOO BAR · foo_bar"
+        );
+    }
+
+    #[test]
+    fn property_colors_retain_every_manifest_hex_form() {
+        for color in ["#123", "#1234", "#123456", "#12345678"] {
+            assert!(valid_property_color(color));
+        }
+        assert!(!valid_property_color("#12"));
+        assert!(!valid_property_color("#xyz"));
+    }
+
+    #[test]
+    fn property_string_length_counts_unicode_scalars() {
+        assert!(valid_property_string("😀", 1));
+        assert!(!valid_property_string("😀a", 1));
+    }
+
+    #[test]
+    fn numeric_property_edits_ignore_out_of_range_prefixes() {
+        assert_eq!(integer_property_value("2", 10, 99), None);
+        assert_eq!(integer_property_value("25", 10, 99), Some(25));
+        assert_eq!(number_property_value("2", 10.0, 99.0), None);
+        assert_eq!(
+            number_property_value("25.5", 10.0, 99.0).and_then(|value| value.as_f64()),
+            Some(25.5)
+        );
+    }
 }
 
 fn widget_settings(
