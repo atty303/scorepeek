@@ -117,6 +117,9 @@ mod server {
                     backend, editor_id, ..
                 } => (backend, Some(editor_id)),
                 Request::GetBackend { backend } => (backend, None),
+                Request::ResolveWaylandOutputs { .. } => {
+                    return Err("stage control cannot resolve Wayland outputs".into());
+                }
             };
             if *backend != crate::runtime::Backend::Obs {
                 return Err("stage control only accepts the OBS backend".into());
@@ -137,8 +140,7 @@ mod server {
             {
                 self.owns_lease.set(false);
             }
-            if publishes && response.ok && !response.readonly && response.backend_revision.is_some()
-            {
+            if publishes && response.ok && !response.readonly && response.generation.is_some() {
                 let mut canvases = self
                     .shared
                     .canvases
@@ -570,7 +572,7 @@ mod server {
                                         readonly:true,
                                         error:Some("このURLは表示専用です。編集には /overlay をOBS Browser SourceのInteractionで開いてください。".into()),
                                         canvases:Vec::new(),
-                                        backend_revision:None,
+                                        generation:None,
                                         dirty:false,
                                         wayland_refresh_hz:None,
                                     }
@@ -650,7 +652,7 @@ mod server {
                                     .and_then(|request| session.request(request))
                                     .unwrap_or_else(|error| crate::control::Response {
                                         ok:false, readonly:true, error:Some(error),
-                                        canvases:Vec::new(), backend_revision:None, dirty:false,
+                                        canvases:Vec::new(), generation:None, dirty:false,
                                         wayland_refresh_hz:None,
                                     });
                                 let reply = serde_json::json!({"type":"control", "request_id":request_id, "response":response}).to_string();

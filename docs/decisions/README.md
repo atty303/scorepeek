@@ -6,6 +6,7 @@ authoritative.
 
 ## Current
 
+- [ADR 0144: Unify overlay editor sessions and output stages](0144-unify-overlay-editor-session-and-output-stages.md) gives Wayland and OBS one backend-neutral editor domain, adds empty-workspace recovery and UNKNOWN preview, and replaces persisted revisions with a single locked parent writer.
 - [ADR 0142: Repaint the static Gamescope calibration marker through receiver startup](0142-repaint-static-gamescope-calibration-marker.md) adds an unchanged 1x1 damage heartbeat so requested-size negotiation can produce the setup frame.
 - [ADR 0141: Bound Gamescope capture size and frame copies, then quiesce disconnect](0141-bound-gamescope-frame-copies-and-quiesce-disconnect.md) requests a 1920x1080-bounded source domain, limits application-owned copies to fixed 10 Hz deadlines, and quiesces the stream before disconnect.
 - [ADR 0140: Cap Wayland overlay rasterization](0140-cap-wayland-overlay-rasterization.md) adds a backend-wide AUTO or 1–1000 Hz Wayland paint cap, leaves OBS cadence to Browser Source, and shows viewport-relative empty aperture geometry during editing.

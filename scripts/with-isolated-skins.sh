@@ -14,9 +14,11 @@ cargo build --locked -p scorepeek
 export XDG_DATA_HOME="$xdg/data"
 export XDG_CONFIG_HOME="$xdg/config"
 export XDG_CACHE_HOME="$xdg/cache"
-export XDG_RUNTIME_DIR="$xdg/runtime"
-mkdir -p "$XDG_RUNTIME_DIR"
-chmod 700 "$XDG_RUNTIME_DIR"
+if [[ "${SCOREPEEK_PRESERVE_XDG_RUNTIME_DIR:-0}" != 1 ]]; then
+  export XDG_RUNTIME_DIR="$xdg/runtime"
+  mkdir -p "$XDG_RUNTIME_DIR"
+  chmod 700 "$XDG_RUNTIME_DIR"
+fi
 
 for package in "$root"/target/skins/*.zip; do
   "$root/target/debug/scorepeek" skin install "$package"

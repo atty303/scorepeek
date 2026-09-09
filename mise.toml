@@ -117,6 +117,10 @@ run = "bash scripts/build-skins.sh"
 description = "Run a scripted native Dioxus/Blitz/Vello visual-debug scenario without Wayland"
 run = 'scripts/with-isolated-skins.sh cargo run --locked -p scorepeek-overlay --example visual_native -- "$@"'
 
+[tasks."overlay:visual:wayland"]
+description = "Open the production Wayland editor with an isolated empty config for a bounded live check"
+run = 'SCOREPEEK_PRESERVE_XDG_RUNTIME_DIR=1 scripts/with-isolated-skins.sh cargo run --locked -p scorepeek-overlay --example visual_wayland -- "$@"'
+
 [tasks."overlay:visual:obs"]
 description = "Serve the production OBS overlay from an isolated config for Codex Browser inspection"
 depends = ["overlay:web:bundle"]

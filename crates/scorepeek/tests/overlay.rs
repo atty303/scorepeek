@@ -41,12 +41,8 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
     let config = Config {
         backend: Backend::Obs,
         canvases: {
-            let mut canvas = scorepeek_overlay::config::OverlayConfig::initial()
-                .canvases
-                .into_iter()
-                .find(|canvas| canvas.backend == Backend::Obs)
-                .unwrap();
-            canvas.id = "obs-selection".into();
+            let mut canvas =
+                scorepeek_overlay::config::empty_canvas("obs-selection".into(), Backend::Obs);
             canvas.skin = scorepeek_overlay::Skin::ResultAurora;
             vec![canvas]
         },
@@ -58,7 +54,6 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
         scores_db: None,
         listen: address,
         unknown_grace_ms: 1_000,
-        settings_revision: 0,
         wayland_refresh_hz: scorepeek_overlay::WaylandRefreshRate::Auto,
         edit_on_start: false,
     };

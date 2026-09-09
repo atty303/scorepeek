@@ -87,16 +87,19 @@ use crate::{
 pub enum EditorAction {
     TogglePanel,
     PreviewScreen(ScreenKind),
+    SelectOutput(String),
     SelectCanvas(String),
     ToggleCanvas(String),
     AddCanvas,
     DeleteCanvas,
+    NewCanvasSkin(Skin),
     Skin(Skin),
     CanvasSkinProperty(String, serde_json::Value),
     WidgetSkinProperty(String, serde_json::Value),
     Background(Background),
     Opacity(u8),
     Output(String),
+    FitToOutput,
     SelectWidget(String),
     ToggleWidgetAdd,
     AddWidget(usize),
@@ -251,13 +254,15 @@ pub struct EditorView {
     pub selected_canvas: Option<String>,
     pub selected_widget: Option<String>,
     pub preview_screen: ScreenKind,
-    pub outputs: Option<Vec<EditorOutput>>,
+    pub outputs: Vec<EditorOutput>,
+    pub active_output: Option<String>,
     pub panel_width: u32,
     pub chrome: EditorChrome,
     pub access: EditorAccess,
     pub title: EditorTitleState,
     pub refresh_rate: Option<RefreshRateEditor>,
     pub skins: Vec<EditorSkin>,
+    pub new_canvas_skin: Skin,
 }
 
 #[component]
@@ -284,13 +289,57 @@ pub fn EditorPanel(
         .refresh_rate
         .as_ref()
         .is_none_or(|refresh| refresh.error.is_none());
+    let output_state = canvas.and_then(|canvas| {
+        let output = canvas.output.as_deref()?;
+        match view
+            .outputs
+            .iter()
+            .find(|candidate| candidate.name == output)
+        {
+            None => Some("OUTPUT UNAVAILABLE"),
+            Some(candidate)
+                if candidate.logical_size.is_some_and(|[width, height]| {
+                    canvas.x < 0
+                        || canvas.y < 0
+                        || u32::try_from(canvas.x)
+                            .unwrap_or_default()
+                            .saturating_add(canvas.width)
+                            > width
+                        || u32::try_from(canvas.y)
+                            .unwrap_or_default()
+                            .saturating_add(canvas.height)
+                            > height
+                }) =>
+            {
+                Some("CANVAS OUTSIDE OUTPUT BOUNDS")
+            }
+            Some(_) => None,
+        }
+    });
     rsx! {
             EditorButton { onclick:move |_| onaction.call(EditorAction::TogglePanel), layout:ButtonLayout::Icon, class:if view.access.dirty{"native-panel-toggle dirty"}else{"native-panel-toggle"}, "aria-label":if view.chrome.panel_open{"Hide editor panel"}else{"Show editor panel"}, "data-state":if view.chrome.panel_open{"open"}else{"closed"}, if view.chrome.panel_open{"‹"}else{"›"} span { class:"dirty-dot" } }
             if view.chrome.panel_open { div { class:"native-canvas-manager", style:format!("width:{}px",view.panel_width),
                 header { strong { "SCOREPEEK OVERLAY" } small { "{view.backend_label}" } if view.chrome.sample { b { "SAMPLE DATA" } } if view.access.dirty { i { class:"unsaved-dot" } } }
                 div { class:"editor-fixed-top", p { "GAME SCREEN" } div { class:"preview-tabs",
-                    for (index,(label,kind)) in [("MUSIC SELECT",ScreenKind::MusicSelect),("MODE SELECT",ScreenKind::ModeSelect),("DECIDE",ScreenKind::DecideTransition),("PLAY",ScreenKind::Play),("RESULT",ScreenKind::Result)].into_iter().enumerate() {
+                    for (index,(label,kind)) in [("UNKNOWN",ScreenKind::Unknown),("MUSIC SELECT",ScreenKind::MusicSelect),("MODE SELECT",ScreenKind::ModeSelect),("DECIDE",ScreenKind::DecideTransition),("PLAY",ScreenKind::Play),("RESULT",ScreenKind::Result)].into_iter().enumerate() {
                         EditorButton { class:"preview-screen", onclick:move |_| onaction.call(EditorAction::PreviewScreen(kind)), selected:view.preview_screen==kind, "aria-selected":view.preview_screen==kind, "data-index":index, "{label}" }
+                    }
+                }
+                section { class:"workspace-output-pane",
+                    h2 { "CANVAS OUTPUT" }
+                    div { class:"output-list",
+                        for output in view.outputs.iter() {
+                            EditorButton {
+                                class:"workspace-output-option",
+                                onclick:{let value=output.name.clone(); move |_| onaction.call(EditorAction::SelectOutput(value.clone()))},
+                                layout:ButtonLayout::Stack,
+                                selected:view.active_output.as_deref()==Some(output.name.as_str()),
+                                "aria-selected":view.active_output.as_deref()==Some(output.name.as_str()),
+                                "data-output":"{output.name}",
+                                strong { "{output.name}" }
+                                small { "{output.model}" if let Some([width,height])=output.logical_size { " · {width}×{height}" } }
+                            }
+                        }
                     }
                 }
                 section { class:"canvas-section", h2 { "CANVASES" }
@@ -300,7 +349,7 @@ pub fn EditorPanel(
                             EditorButton { class:"screen-toggle", disabled:view.access.readonly, onclick:{let value=canvas.id.clone(); move |_| onaction.call(EditorAction::ToggleCanvas(value.clone()))}, selected:canvas_visible(canvas.show_on.as_deref(), ScreenView { kind:Some(view.preview_screen), suspended_since_unix_ms:None, revision:0 }), "data-canvas-id":"{canvas.id}", if canvas_visible(canvas.show_on.as_deref(), ScreenView { kind:Some(view.preview_screen), suspended_since_unix_ms:None, revision:0 }){"ON"}else{"OFF"} }
                         }
                     } }
-                    div { class:"canvas-actions", EditorButton { class:"add-canvas", disabled:view.access.readonly, onclick:move |_| onaction.call(EditorAction::AddCanvas), "+ ADD CANVAS" } EditorButton { class:"delete-canvas", onclick:move |_| onaction.call(EditorAction::DeleteCanvas), tone:ButtonTone::Danger, disabled:view.access.readonly || view.canvases.len()<=1 || view.selected_canvas.is_none(), "DELETE SELECTED" } }
+                    div { class:"canvas-actions", EditorButton { class:"add-canvas", disabled:view.access.readonly || view.active_output.is_none(), onclick:move |_| onaction.call(EditorAction::AddCanvas), if view.canvases.is_empty(){"CREATE FIRST CANVAS"}else{"+ ADD CANVAS"} } EditorButton { class:"delete-canvas", onclick:move |_| onaction.call(EditorAction::DeleteCanvas), tone:ButtonTone::Danger, disabled:view.access.readonly || view.selected_canvas.is_none(), "DELETE SELECTED" } }
                 }
                 }
                 div { class:"editor-tab-body",
@@ -321,15 +370,13 @@ pub fn EditorPanel(
                     div { class:"native-skin-options button-grid", for (index,skin) in view.skins.iter().enumerate() { EditorButton { class:"skin-option", disabled:view.access.readonly, onclick:{let value=skin.id; move |_| onaction.call(EditorAction::Skin(value))}, selected:canvas.skin==skin.id, "data-index":index, if canvas.skin==skin.id{"✓ "} "{skin.name}" small { "{skin.release}" } } } }
                     if let Some(skin)=view.skins.iter().find(|skin|skin.id==canvas.skin) {
                         if !skin.preview.is_empty() { img { class:"skin-preview", src:"{skin.preview}", alt:"{skin.name} preview" } }
-                        if view.outputs.is_none() { if let Some(preview_video)=&skin.preview_video { video { class:"skin-preview-video", src:"{preview_video}", autoplay:true, muted:true, r#loop:true } } }
+                        if let Some(preview_video)=&skin.preview_video { video { class:"skin-preview-video", src:"{preview_video}", autoplay:true, muted:true, r#loop:true } }
                         {property_controls(&skin.canvas_properties,&canvas.skin_properties,true,view.access.readonly,onaction)}
                     }
-                    if view.outputs.is_some() { h3 { "OPACITY" }
+                    h3 { "OPACITY" }
                     div { class:"native-opacity button-grid four", for value in [25,50,75,100] { EditorButton { class:"opacity-option", disabled:view.access.readonly, onclick:move |_| onaction.call(EditorAction::Opacity(value)), selected:canvas.opacity_percent==value, "data-value":value, if canvas.opacity_percent==value{"✓ "} "{value}" } } }
                 }
-                }
-                if let Some(outputs) = &view.outputs { section { class:"output-pane", h2 { "OUTPUT" } div { class:"output-list", for output in outputs.iter() { EditorButton { class:"output-option", disabled:view.access.readonly, onclick:{let value=output.name.clone(); move |_| onaction.call(EditorAction::Output(value.clone()))}, layout:ButtonLayout::Stack, selected:canvas.output.as_deref()==Some(output.name.as_str()), "aria-selected":canvas.output.as_deref()==Some(output.name.as_str()), "data-output":"{output.name}", strong { if canvas.output.as_deref()==Some(output.name.as_str()){"✓ "} "{output.name}" } small { "{output.model}" if let Some([width,height])=output.logical_size { " · {width}×{height}" } } } } } }
-                }
+                section { class:"output-pane", h2 { "ASSIGNED OUTPUT" } if let Some(message)=output_state { p { class:"output-state-error", role:"alert", "{message}" } } div { class:"output-list", for output in view.outputs.iter() { EditorButton { class:"output-option", disabled:view.access.readonly, onclick:{let value=output.name.clone(); move |_| onaction.call(EditorAction::Output(value.clone()))}, layout:ButtonLayout::Stack, selected:canvas.output.as_deref()==Some(output.name.as_str()), "aria-selected":canvas.output.as_deref()==Some(output.name.as_str()), "data-output":"{output.name}", strong { if canvas.output.as_deref()==Some(output.name.as_str()){"✓ "} "{output.name}" } small { "{output.model}" if let Some([width,height])=output.logical_size { " · {width}×{height}" } } } } } EditorButton { class:"fit-output", disabled:view.access.readonly, onclick:move |_| onaction.call(EditorAction::FitToOutput), "FIT TO OUTPUT" } }
                 if selected_visible { section { class:"widgets-pane", h2 { "WIDGETS" }
                     div {class:"widget-list", for widget in canvas.widgets.iter() { EditorButton { class:"widget-row", onclick:{let value=widget.id.clone(); move |_| onaction.call(EditorAction::SelectWidget(value.clone()))}, layout:ButtonLayout::Row, selected:view.selected_widget.as_deref()==Some(widget.id.as_str()), "aria-selected":view.selected_widget.as_deref()==Some(widget.id.as_str()), "data-widget-id":"{widget.id}", "{widget.id}" } }
                     }
@@ -338,7 +385,10 @@ pub fn EditorPanel(
                         {widget_settings(widget, &view, title_input.clone(), onaction)}
                         if let Some(skin)=view.skins.iter().find(|skin|skin.id==canvas.skin) { if let Some(properties)=skin.widget_properties.get(widget.kind.name()).or_else(||skin.widget_properties.get("*")) { {property_controls(properties,&widget.skin_properties,false,view.access.readonly,onaction)} } }
                     }
-                } } else { div { class:"canvas-hidden-state", strong { "HIDDEN ON THIS GAME SCREEN" } span { "Turn this canvas ON in the list to edit its widgets." } } } } else { div { class:"canvas-hidden-state", strong { "NO CANVAS ON THIS GAME SCREEN" } span { "Turn a canvas ON or add one for this game screen." } } }
+                } } else { div { class:"canvas-hidden-state", strong { "HIDDEN ON THIS GAME SCREEN" } span { "Turn this canvas ON in the list to edit its widgets." } } } } else { section { class:"appearance-pane empty-canvas-appearance", h2 { "NEW CANVAS" } h3 { "SKIN" }
+                    div { class:"native-skin-options button-grid", for (index,skin) in view.skins.iter().enumerate() { EditorButton { class:"skin-option", disabled:view.access.readonly, onclick:{let value=skin.id; move |_| onaction.call(EditorAction::NewCanvasSkin(value))}, selected:view.new_canvas_skin==skin.id, "data-index":index, if view.new_canvas_skin==skin.id{"✓ "} "{skin.name}" small { "{skin.release}" } } } }
+                    div { class:"canvas-hidden-state", strong { "NO CANVAS ON THIS OUTPUT" } span { "Choose a skin, then create the first canvas." } }
+                } }
                 }
                 footer { EditorButton { class:"undo-action", onclick:move |_| onaction.call(EditorAction::Undo), disabled:view.access.readonly || !view.access.undo_available, "UNDO" } div { class:"footer-actions", if view.access.dirty { EditorButton { class:"discard-action", disabled:view.access.readonly, onclick:move |_| onaction.call(EditorAction::Discard), "DISCARD CHANGES" } EditorButton { class:"save-action", disabled:view.access.readonly || !refresh_rate_valid, onclick:move |_| onaction.call(EditorAction::Save), tone:ButtonTone::Primary, "SAVE ALL CHANGES AND CLOSE" } } else { EditorButton { class:"close-action", onclick:move |_| onaction.call(EditorAction::Close), "CLOSE EDITOR" } } } }
             } }

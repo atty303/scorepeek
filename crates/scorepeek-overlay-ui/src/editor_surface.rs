@@ -89,7 +89,7 @@ pub fn EditorCanvas(
     rsx! { div {
         class: if selected {"editor-canvas selected"} else {"editor-canvas"},
         "data-canvas":"{canvas.id}",
-        style:format!("left:{}px;top:{}px;width:{}px;height:{}px",canvas.x,canvas.y,canvas.width,canvas.height),
+        style:format!("left:{}px;top:{}px;width:{}px;height:{}px;opacity:{}",canvas.x,canvas.y,canvas.width,canvas.height,f32::from(canvas.opacity_percent)/100.0),
         oncontextmenu:move |event| {event.prevent_default();event.stop_propagation();onaction.call(SurfaceAction::Enter(Some(context_id.clone())));},
         onpointerdown:move |event| {if editing {start.call((event,id.clone(),None,None));}},
         onclick:move |event| {if selecting.replace(false){return;}let point=event.client_coordinates().to_i32();onaction.call(SurfaceAction::Place([point.x,point.y]));},

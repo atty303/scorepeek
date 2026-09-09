@@ -29,13 +29,15 @@ checkpoint; implementation history belongs in Git.
   draft through its package runtime rather than the superseded fixed renderer. No registry,
   digest/signature, quota, fallback,
   interaction API, WASI/host import, or running-instance replacement protection exists.
-- Overlay TOML is schema v6. Skin identity is an arbitrary reverse-domain ID and canvas/widget
+- Overlay TOML is schema v7. Skin identity is an arbitrary reverse-domain ID and canvas/widget
   properties are persisted maps resolved through installed manifest schemas. Schema v5 maps the
-  three old names to formal IDs and preserves background/frame/fill values. A missing initial config
-  chooses the lexicographically first installed skin and creates one empty canvas per backend; no
-  installed skin is a startup error. The repository retains a Rust guest SDK/core and three package
-  sources; their shared guest recreates the full status, selection, score, history and graph DOM,
-  material frames, atlases and semantic styling from the superseded fixed renderer.
+  three old names to formal IDs and preserves background/frame/fill values. Schema v7 removes all
+  persisted overlay revisions and initial placement, permits zero canvases, and requires an output
+  ID for every canvas. A missing initial config creates empty Wayland and OBS workspaces; the visual
+  editor is the creation path. No installed skin is a startup error. The repository retains a Rust
+  guest SDK/core and three package sources; their shared guest recreates the full status, selection,
+  score, history and graph DOM, material frames, atlases and semantic styling from the superseded
+  fixed renderer.
   `mise run overlay:skins:build` scopes package CSS below the noninteractive skin root and produces
   uncommitted ZIPs without installing them.
 
@@ -44,62 +46,23 @@ checkpoint; implementation history belongs in Git.
   evaluation. Its references separate IIDX facts, current display contracts and approved design
   choices. This adds no runtime skin or changes to existing skin assets.
 
-- ADR 0125 replaces the fixed overlay cards/layout flags with independently positioned status,
-  selection, score, history-list and history-graph widgets. ADR 0127 advances the strict overlay
-  TOML with screen-aware canvases. ADR 0128 removes canvas/widget z-order. ADR 0135 advances it to
-  schema v4, removes canvas enablement, treats an empty `show_on` as hidden on every screen, and
-  automatically migrates schema v2 and v3. ADR 0129 overlays a responsive editor panel on a
-  one-to-one output preview and assigns canvas movement to edit-only right-drag.
-  `--overlay-wayland` and `--overlay-obs` enable the backends; `--overlay-config` selects the document.
-  ADR 0143 supersedes its initial four-canvas creation with one empty canvas per backend.
-  Each canvas has optional semantic-screen filters; Wayland also has 1–100% content
-  opacity. UNKNOWN and socket loss retain the previous screen for the configured global grace. The
-  parent is the sole atomic writer. One backend lease owns the complete in-memory draft; SAVE checks
-  the backend revision and atomically replaces it once, while a failed save retains draft and lease.
-  Wayland owns one interactive surface per native canvas and shares one feed/visibility
-  clock across them. Hidden surfaces are transparent, idle and have an empty input region. OBS
-  exposes stable `/canvas/<id>` URLs plus the full-screen `/overlay` multi-canvas Browser Source.
-  Browser Source Interaction edits the same `/overlay` page; `/canvas/<id>` is display-only.
-  Right-click opens an opaque 360–480px panel over the output-coordinate preview. The workspace shows
-  every canvas, makes GAME SCREEN the current editing context and offers fixed inactive sample data.
-  A fixed CANVASES section owns the bounded list, current-screen ON/OFF controls and immediate add or
-  selected-delete actions; at least one canvas remains. The settings scroller separates APPEARANCE
-  (SKIN and OPACITY), always-expanded OUTPUT candidates and visible WIDGETS. The fixed footer provides
-  one complete-backend-draft UNDO plus clean CLOSE or dirty DISCARD/SAVE controls. One gesture or
-  command replaces the single undo snapshot only when it changes the draft; navigation does not.
-  Wayland lists connector, model and logical output size for every output candidate. While editing,
-  synchronized peer panels appear on every connected output. Only the selected canvas renders its
-  native preview and editing hit regions, and only on its assigned output when its current-screen
-  filter is visible; the canvas list changes selection. Right-drag moves canvases, left-drag moves
-  widgets, and Wayland pointer-axis input scrolls the bounded canvas list or settings under the pointer.
-  Wayland missing-output recovery opens the same unsaved draft on a deterministic fitting or largest
-  output and shrinks only the canvas boundary when required. SAVE adopts it; DISCARD leaves TOML
-  untouched and suppresses that canvas for the run. `--overlay-wayland-edit` opens this recovery editor.
-- ADR 0138 advances overlay configuration to schema v5 with inner widget geometry and migrates
-  schemas v2–v4 atomically. Every skin has none/static/animated canvas backgrounds, empty widgets
-  with chamfered transparent apertures, optional titles, interior opacity and aspect locks, and
-  S/M/L outward frames for all widgets. Native title editing uses XKB keyboard/repeat and
-  text-input-v3 IME; title confirmation becomes one undoable backend-draft change. Normal overlays
-  do not request keyboard focus. Both backends render shared Dioxus panel, buttons, canvas interaction surface, resize handles
-  and placement previews,
-  with shared choice/action styles and a separate delete row. A shared Rust editor model owns
-  settings, selection, placement and move/resize transitions. Native forwards pointer input into
-  Blitz/Dioxus event dispatch; the visual harness exercises those callbacks. OBS owns reactive state
-  and uses the existing backend lease API; its imperative JavaScript editor has been removed. Fixed mise XKB build inputs replace host development metadata;
-  `libxkbcommon.so.0` is a native runtime prerequisite.
-  A native editor surface retains its current opened skin package. Canvas position
-  changes remain host transforms and do not rerun the skin; skin-affecting drag changes coalesce to
-  one Wasm/DOM update per compositor frame, with the final release update applied immediately. The
-  native run report separates requested editor skin updates, actual renders and package opens.
-- ADR 0140 adds one backend-wide Wayland rasterization cap: `"auto"` retains compositor cadence and
-  1–1000 Hz values coalesce steady state and motion changes into the next permitted paint. Public
-  events and reactive state remain event-driven; motion samples elapsed monotonic time. Initial
-  configure, reconfigure, visibility clear and the editor bypass the cap. The setting joins the
-  Wayland draft, undo and atomic save while OBS remains owned by Browser Source custom frame rate.
-  ADR 0143 supersedes schema v5 with v6; `wayland_refresh_hz` remains part of the same document.
-  During either editor preview, visible empty apertures show compact logical
-  `x,y · width×height` relative to the output or `/overlay` viewport; normal display omits it and OBS
-  scene transforms remain outside scorepeek authority.
+- ADR 0144 makes Wayland and OBS adapters of one backend-neutral editor session, reducer, Dioxus DOM
+  and CSS. Wayland and OBS keep independent workspaces, while the shared hierarchy is workspace,
+  output, canvas and widget; game-screen preview is an orthogonal six-value state including UNKNOWN.
+  Omitted `show_on` means all contexts and explicit lists remain explicit. Zero canvases is valid,
+  and the empty editor retains output and skin selection before CREATE FIRST CANVAS. New canvases
+  fill the active output's exact logical outer bounds and start in only the current preview context.
+  Canvas movement uses secondary-button drag; widget selection, movement and resize use the primary
+  button. Output reassignment and FIT TO OUTPUT are explicit undoable operations.
+  Outside editing, Wayland owns one surface per canvas; editing temporarily supplies one full-output
+  stage per connected output, with only the active stage accepting management input. Empty Wayland
+  startup opens an internal full-output editor stage automatically. OBS always uses one full-output
+  stage, with right-click on blank space opening the same editor. A single parent writer serializes
+  backend-local leases and atomic commits against one startup-loaded document; Wayland and OBS may
+  edit concurrently. A process-lifetime same-path lock rejects a second writer. External edits are
+  outside the contract, while renderer projection generations remain run-local transport state.
+  The Wayland rasterization cap remains a runtime setting outside the shared canvas editor transaction.
+  Installed skin packages remain canvas-owned and immutable for each running projection.
 - ADR 0141 makes the Gamescope receiver always request a 1920x1080-bounded capture domain. Gamescope
   can preserve aspect ratio, so the negotiated observed dimensions remain authoritative. Its
   startup full-output contract and corrupted transition buffer may be replaced only before the
@@ -321,7 +284,7 @@ checkpoint; implementation history belongs in Git.
   PipeWire/native build inputs. Neither check uses feature unification from another workspace member
   or a host `wayland-client.pc`.
 
-- Overlay visual debugging now has two reproducible development-host entries. The native scenario
+- Overlay visual debugging has three reproducible development-host entries. The native scenario
   runner keeps one Dioxus editor workspace across selector clicks, Blitz scrolls and logical-pixel
   drags plus runtime screen changes, retains one image renderer for the complete scenario, renders
   every step through native DOM/Blitz/Vello without a Wayland connection, and writes
@@ -338,12 +301,21 @@ checkpoint; implementation history belongs in Git.
   back to RESULT on that same renderer, so image-resource loss across normal canvas visibility is
   represented instead of being hidden by a fresh renderer per capture.
   The Wayland rate contract has deterministic AUTO/cap/bypass and strict schema-v5 migration tests.
-  The representative 22-frame native scenario and the 20-frame composition scenario complete with
+  The representative 28-frame native scenario and the 20-frame composition scenario complete with
   selector layouts; the latter shows all four empty-aperture geometry overlays at their logical
-  rectangles. A 1920x1080 Codex Browser run against production `/overlay` confirms expanded iframe
-  DOM, two simultaneous empty geometry labels, live drag from `1340,700` to `1340,600`, resize from
-  `560x360` to `476x296`, label removal on discard/close, and no browser warnings or errors. Actual
-  OBS composition and Wayland target performance remain unverified.
+  rectangles. A fresh 1920x1080 Codex Browser run against production `/overlay` starts from no OBS
+  canvas, opens the editor by right-click, selects UNKNOWN and DJ BLACKBOX, creates an exact
+  1920x1080 canvas, adds a status widget, deletes the last canvas, restores it with UNDO, saves and
+  returns to display-only rendering. The canvas iframe receives every draft generation, including an
+  empty projection, and the browser reports no warning or error. The checked-in Wayland runner starts
+  the production native child against an isolated config. Inside a real nested Scroll compositor, an
+  empty workspace promoted its bootstrap stage to the discovered WL-1 1716x1494 output; compositor
+  pointer input selected UNKNOWN and DJ BLACKBOX, created and saved a canvas with exact 1716x1494
+  bounds, and the child reported complete shutdown after the bounded run. A follow-up run deleted
+  that last canvas, saved `canvases = []`, and confirmed that the empty editor stage was recreated in
+  the same child process instead of leaving the workspace unreachable. This is nested-compositor
+  protocol, composition and input evidence; actual OBS Browser Source and a non-nested target
+  compositor remain separate boundaries.
 
 - Schema-v2 defaults/rejection, screen filters, semantic-screen snapshot/live folding,
   suspension/disconnect grace and immediate known-screen replacement have focused development-host
@@ -395,7 +367,7 @@ checkpoint; implementation history belongs in Git.
   restrained lines/corner accents, with staggered moving highlights carrying the ambient motion.
   These checks do not establish live Wayland or OBS composition.
 - Repository checks and the complete workspace suite pass: 510 library,
-  324 binary, 128 corpus library, 5 corpus binary, 76 overlay, 7 handle, 6 overlay-UI, 7 overlay-web
+  324 binary, 128 corpus library, 5 corpus binary, 87 overlay, 7 handle, 14 overlay-UI, 7 overlay-web
   and 20 score tests, plus doctests. The embedded-web overlay integration test also passes. The 99 offline OCR tests and
   repository checks also pass. Public API and overlay state tests include score-store invalidation,
   RESULT readiness across withdrawal/re-resolution, fresh and same-session reconnect restoration,
@@ -533,25 +505,15 @@ checkpoint; implementation history belongs in Git.
 - The score-store invalidation, RESULT readiness lamp, and parent-controller TUI isolation are
   development-host verified but not installed or exercised in a target-live game session.
 - Target-live validation is still required for screen-driven surface visibility, configured
-  opacity, forced cursor shapes/fallback, OBS `/overlay` Interaction workspace and display-only
-  canvas guidance, compositor output selection/bounds, missing-output save/discard, initial
-  upper-right placement, output switching and native canvas-list/output hot reconciliation,
-  gesture behavior across integer/fractional outputs, Gamescope foreground behavior, real OBS
-  Interaction, readability, CPU/GPU/OBS lag and idle render cost. Current screenshots certify layout
-  only, not interaction or performance. The installed target binary includes ADR 0129 at commit
-  `00a04b17a7f615310866c7eec47efb5421b7c583`. No autostart, push or release is included.
-  The nested-Scroll editor interaction regression is resolved. On the current three-output Scroll
-  host, a DP-1 editor host sharing its output with four canvas surfaces receives pointer buttons and
-  emits `PreviewScreen`; the resulting MODE SELECT state appears on all three peer panels. Passive
-  pointer motion now bypasses editor-model, shared-draft and skin-render work unless a drag is active;
-  a live burst of 80 motion events followed immediately by a click changes the screen on all three
-  panels. The same target host now verifies clean screen navigation, UI Close, right-click reopen,
-  cross-output selection sync, property editing, save-and-close, and persisted-property normalization
-  only at Save. A clicked non-host canvas no longer becomes a transient full-output editor before the
-  stable per-output host takes over; the two-canvas live check reduced the observed reopened-editor RSS
-  high-water from about 704 MiB to 665 MiB. Installed skin release 2 exposes `s`, `m`, and `l` frame-width
-  values, and both checked-in native visual scenarios complete with the property controls above the
-  fixed footer. These target checks used isolated XDG state and did not change the normal configuration.
+  opacity, forced cursor shapes/fallback, output hotplug while editing, cross-output interaction on
+  integer/fractional multi-output layouts, Gamescope foreground behavior, readability, CPU/GPU/OBS
+  lag and idle render cost. Actual OBS Browser Source composition and Interaction also remain
+  unverified; the Codex Browser run exercised the same production HTTP/Wasm route but not OBS itself.
+  The schema-v7 editor is not installed on the target and no autostart, push or release is included.
+  Existing non-nested target evidence predates ADR 0144 and does not establish its new full-output
+  stage lifecycle. The fresh nested-Scroll run establishes one-output protocol, composition, pointer
+  input, empty bootstrap, creation and persistence, but not target GPU/compositor performance or
+  multi-output hot reconciliation.
 - OBS editor build compatibility is checked at connection and request boundaries. A mismatch
   discards the unsaved editor state, blocks edits and presents a reload button. The backend and
   WASM share a deterministic source/asset build identity. Socket-owned editor leases are released

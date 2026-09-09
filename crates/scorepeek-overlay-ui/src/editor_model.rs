@@ -7,7 +7,8 @@ use crate::{
     WidgetSettings, default_widget_size, next_widget_id,
 };
 
-pub const SCREENS: [ScreenKind; 5] = [
+pub const SCREENS: [ScreenKind; 6] = [
+    ScreenKind::Unknown,
     ScreenKind::MusicSelect,
     ScreenKind::ModeSelect,
     ScreenKind::DecideTransition,
@@ -71,7 +72,6 @@ pub struct Drag {
 }
 #[derive(Clone)]
 pub struct Model {
-    namespace: &'static str,
     pub saved: Vec<CanvasPresentation>,
     pub draft: Vec<CanvasPresentation>,
     pub selected_canvas: Option<String>,
@@ -87,19 +87,25 @@ pub struct Model {
     pub drag: Option<Drag>,
     pub title: Option<TitleDraft>,
     pub viewport: [u32; 2],
+    pub outputs: Vec<crate::editor::EditorOutput>,
+    pub active_output: Option<String>,
     pub generation: u64,
-    pub backend_revision: u64,
     pub discard_pending: bool,
     pub notice: Option<String>,
     pub skins: Vec<EditorSkin>,
+    pub new_canvas_skin: Skin,
 }
 impl Model {
     #[must_use]
     pub fn new(
         canvases: Vec<CanvasPresentation>,
         viewport: [u32; 2],
-        namespace: &'static str,
+        _namespace: &'static str,
     ) -> Self {
+        let active_output = canvases.first().and_then(|canvas| canvas.output.clone());
+        let new_canvas_skin = canvases
+            .first()
+            .map_or(Skin::CyanSystem, |canvas| canvas.skin);
         let skins = canvases
             .iter()
             .map(|canvas| {
@@ -120,7 +126,6 @@ impl Model {
             .into_values()
             .collect();
         Self {
-            namespace,
             selected_canvas: canvases.first().map(|canvas| canvas.id.clone()),
             saved: canvases.clone(),
             draft: canvases,
@@ -140,16 +145,43 @@ impl Model {
             drag: None,
             title: None,
             viewport,
+            outputs: Vec::new(),
+            active_output,
             generation: 0,
-            backend_revision: 0,
             discard_pending: false,
             notice: None,
+            new_canvas_skin,
             skins,
         }
     }
 
     pub fn set_skins(&mut self, skins: Vec<EditorSkin>) {
         self.skins = skins;
+        if !self
+            .skins
+            .iter()
+            .any(|skin| skin.id == self.new_canvas_skin)
+        {
+            self.new_canvas_skin = self.skins.first().map_or(Skin::CyanSystem, |skin| skin.id);
+        }
+    }
+    pub fn set_outputs(&mut self, outputs: Vec<crate::editor::EditorOutput>) {
+        self.outputs = outputs;
+        if self
+            .active_output
+            .as_ref()
+            .is_none_or(|active| !self.outputs.iter().any(|output| &output.name == active))
+        {
+            self.active_output = self.outputs.first().map(|output| output.name.clone());
+        }
+        if let Some(size) = self
+            .outputs
+            .iter()
+            .find(|output| Some(&output.name) == self.active_output.as_ref())
+            .and_then(|output| output.logical_size)
+        {
+            self.viewport = size;
+        }
     }
     pub fn receive_stage(&mut self, canvases: Vec<CanvasPresentation>) {
         if !self.editing && self.draft != canvases {
@@ -185,12 +217,18 @@ impl Model {
     #[must_use]
     pub fn view(&self) -> EditorView {
         EditorView {
-            backend_label: format!("{} EDITOR", self.namespace.to_ascii_uppercase()),
-            canvases: self.draft.clone(),
+            backend_label: "EDITOR".into(),
+            canvases: self
+                .draft
+                .iter()
+                .filter(|canvas| canvas.output.as_ref() == self.active_output.as_ref())
+                .cloned()
+                .collect(),
             selected_canvas: self.selected_canvas.clone(),
             selected_widget: self.selected_widget.clone(),
             preview_screen: self.preview,
-            outputs: None,
+            outputs: self.outputs.clone(),
+            active_output: self.active_output.clone(),
             panel_width: (self.viewport[0] / 5).clamp(360, 480),
             chrome: self.chrome.clone(),
             access: EditorAccess {
@@ -210,13 +248,17 @@ impl Model {
                 }),
             refresh_rate: None,
             skins: self.skins.clone(),
+            new_canvas_skin: self.new_canvas_skin,
         }
     }
     pub fn select_visible(&mut self) {
         self.selected_canvas = self
             .draft
             .iter()
-            .find(|canvas| visible_on(canvas, Some(self.preview)))
+            .find(|canvas| {
+                canvas.output.as_ref() == self.active_output.as_ref()
+                    && visible_on(canvas, Some(self.preview))
+            })
             .map(|canvas| canvas.id.clone());
         self.selected_widget = None;
         self.title = None;
@@ -245,7 +287,24 @@ impl Model {
             EditorAction::TogglePanel => self.chrome.panel_open = !self.chrome.panel_open,
             EditorAction::PreviewScreen(screen) => {
                 self.preview = *screen;
-                self.select_visible();
+            }
+            EditorAction::SelectOutput(output) => {
+                if self
+                    .outputs
+                    .iter()
+                    .any(|candidate| candidate.name == *output)
+                {
+                    self.active_output = Some(output.clone());
+                    self.viewport = self
+                        .outputs
+                        .iter()
+                        .find(|candidate| candidate.name == *output)
+                        .and_then(|candidate| candidate.logical_size)
+                        .unwrap_or(self.viewport);
+                    self.selected_canvas = None;
+                    self.selected_widget = None;
+                    self.title = None;
+                }
             }
             EditorAction::SelectCanvas(id) => {
                 if let Some(canvas) = self.draft.iter().find(|canvas| &canvas.id == id) {
@@ -267,6 +326,11 @@ impl Model {
             }
             EditorAction::ToggleWidgetAdd => {
                 self.chrome.widget_add_open = !self.chrome.widget_add_open;
+            }
+            EditorAction::NewCanvasSkin(skin) => {
+                if self.skins.iter().any(|candidate| candidate.id == *skin) {
+                    self.new_canvas_skin = *skin;
+                }
             }
             EditorAction::CancelTitle => self.title = None,
             _ => return false,
@@ -341,6 +405,11 @@ impl Model {
     #[allow(clippy::too_many_lines)]
     fn apply_settings(&mut self, action: &EditorAction) {
         let skins = self.skins.clone();
+        let output_sizes = self
+            .outputs
+            .iter()
+            .filter_map(|output| output.logical_size.map(|size| (output.name.clone(), size)))
+            .collect::<std::collections::BTreeMap<_, _>>();
         match action {
             EditorAction::ToggleCanvas(id) => {
                 if let Some(canvas) = self.draft.iter_mut().find(|canvas| &canvas.id == id) {
@@ -350,52 +419,46 @@ impl Model {
                     if !shown {
                         screens.push(self.preview);
                     }
-                    canvas.show_on = if screens.len() == SCREENS.len() {
-                        None
-                    } else {
-                        Some(screens)
-                    };
+                    canvas.show_on = Some(screens);
                 }
                 self.title = None;
             }
             EditorAction::AddCanvas => {
                 let id = (1..=self.draft.len() + 1)
-                    .map(|i| format!("{}-canvas-{i}", self.namespace))
+                    .map(|i| format!("canvas-{i}"))
                     .find(|id| self.draft.iter().all(|canvas| &canvas.id != id))
                     .unwrap();
                 self.draft.push(CanvasPresentation {
                     id: id.clone(),
-                    skin: self.skins.first().map_or(Skin::CyanSystem, |skin| skin.id),
-                    skin_properties: self.skins.first().map_or_else(
-                        std::collections::BTreeMap::new,
-                        |skin| {
+                    skin: self.new_canvas_skin,
+                    skin_properties: self
+                        .skins
+                        .iter()
+                        .find(|skin| skin.id == self.new_canvas_skin)
+                        .map_or_else(std::collections::BTreeMap::new, |skin| {
                             migrate_properties(
                                 None,
                                 &skin.canvas_properties,
                                 &std::collections::BTreeMap::new(),
                             )
-                        },
-                    ),
+                        }),
                     background: Background::None,
-                    revision: 0,
                     show_on: Some(vec![self.preview]),
                     opacity_percent: 100,
-                    output: None,
+                    output: self.active_output.clone(),
                     x: 0,
                     y: 0,
-                    width: grid(self.viewport[0].min(560)),
-                    height: grid(self.viewport[1].min(1040)),
+                    width: self.viewport[0],
+                    height: self.viewport[1],
                     widgets: vec![],
                 });
                 self.selected_canvas = Some(id);
                 self.selected_widget = None;
             }
             EditorAction::DeleteCanvas => {
-                if self.draft.len() > 1 {
-                    self.draft
-                        .retain(|canvas| Some(&canvas.id) != self.selected_canvas.as_ref());
-                    self.select_visible();
-                }
+                self.draft
+                    .retain(|canvas| Some(&canvas.id) != self.selected_canvas.as_ref());
+                self.select_visible();
             }
             _ => {
                 if let Some(canvas) = self
@@ -447,6 +510,26 @@ impl Model {
                         }
                         EditorAction::Opacity(value) => canvas.opacity_percent = *value,
                         EditorAction::Output(value) => canvas.output = Some(value.clone()),
+                        EditorAction::FitToOutput => {
+                            if let Some(size) = canvas
+                                .output
+                                .as_ref()
+                                .and_then(|output| output_sizes.get(output))
+                            {
+                                canvas.width = canvas.width.min(grid(size[0])).max(32);
+                                canvas.height = canvas.height.min(grid(size[1])).max(32);
+                                canvas.x = canvas.x.clamp(
+                                    0,
+                                    i32::try_from(size[0].saturating_sub(canvas.width))
+                                        .unwrap_or(i32::MAX),
+                                );
+                                canvas.y = canvas.y.clamp(
+                                    0,
+                                    i32::try_from(size[1].saturating_sub(canvas.height))
+                                        .unwrap_or(i32::MAX),
+                                );
+                            }
+                        }
                         EditorAction::DeleteWidget => {
                             canvas
                                 .widgets
@@ -670,7 +753,7 @@ pub fn visible_on(canvas: &CanvasPresentation, screen: Option<ScreenKind>) -> bo
     canvas
         .show_on
         .as_ref()
-        .is_none_or(|screens| screen.is_some_and(|screen| screens.contains(&screen)))
+        .is_none_or(|screens| screens.contains(&screen.unwrap_or(ScreenKind::Unknown)))
 }
 fn grid(value: u32) -> u32 {
     value / 4 * 4
@@ -843,6 +926,60 @@ mod skin_tests {
     }
 
     #[test]
+    fn empty_workspace_creates_a_full_output_canvas_for_only_the_preview_context() {
+        let mut model = Model::new(Vec::new(), [1, 1], "ignored");
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "DP-1".into(),
+            model: "test".into(),
+            logical_size: Some([1716, 1494]),
+        }]);
+        model.editing = true;
+        model.readonly = false;
+        model.preview = ScreenKind::Unknown;
+        model.set_skins(vec![skin("dev.atty303.scorepeek.skin.dj-blackbox", 1)]);
+        model.action(&EditorAction::NewCanvasSkin(Skin::DjBlackbox));
+
+        assert!(model.action(&EditorAction::AddCanvas));
+        let canvas = &model.draft[0];
+        assert_eq!(canvas.output.as_deref(), Some("DP-1"));
+        assert_eq!([canvas.x, canvas.y], [0, 0]);
+        assert_eq!([canvas.width, canvas.height], [1716, 1494]);
+        assert_eq!(canvas.skin, Skin::DjBlackbox);
+        assert_eq!(canvas.show_on, Some(vec![ScreenKind::Unknown]));
+
+        assert!(model.action(&EditorAction::DeleteCanvas));
+        assert!(model.draft.is_empty());
+    }
+
+    #[test]
+    fn output_navigation_clears_selection_without_changing_preview_or_draft() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.set_outputs(vec![
+            crate::editor::EditorOutput {
+                name: "DP-1".into(),
+                model: "first".into(),
+                logical_size: Some([1920, 1080]),
+            },
+            crate::editor::EditorOutput {
+                name: "DP-2".into(),
+                model: "second".into(),
+                logical_size: Some([1080, 1920]),
+            },
+        ]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        let draft = model.draft.clone();
+        model.preview = ScreenKind::Result;
+
+        assert!(!model.action(&EditorAction::SelectOutput("DP-2".into())));
+        assert_eq!(model.active_output.as_deref(), Some("DP-2"));
+        assert_eq!(model.preview, ScreenKind::Result);
+        assert_eq!(model.draft, draft);
+        assert!(model.selected_canvas.is_none());
+    }
+
+    #[test]
     fn installed_catalog_preserves_values_until_switch_or_save() {
         let first: Skin = "dev.example.first".parse().unwrap();
         let second: Skin = "dev.example.second".parse().unwrap();
@@ -857,7 +994,6 @@ mod skin_tests {
             background: Background::None,
             opacity_percent: 100,
             output: None,
-            revision: 0,
             x: 0,
             y: 0,
             width: 560,
@@ -906,7 +1042,6 @@ mod skin_tests {
             background: Background::None,
             opacity_percent: 100,
             output: None,
-            revision: 0,
             x: 0,
             y: 0,
             width: 560,
@@ -934,7 +1069,6 @@ mod skin_tests {
             background: Background::None,
             opacity_percent: 100,
             output: None,
-            revision: 0,
             x: 0,
             y: 0,
             width: 560,

@@ -2,27 +2,31 @@ use scorepeek_overlay::{
     control::Controller,
     runtime::{Backend, Config},
 };
-use std::io::Write as _;
+use std::{io::Write as _, time::Duration};
+
+struct TimedLease(Duration);
+
+impl std::io::Read for TimedLease {
+    fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+        std::thread::sleep(self.0);
+        Ok(0)
+    }
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
     let config_path = args
         .next()
-        .ok_or("usage: visual_obs CONFIG.toml [LISTEN]")?;
-    let listen_text = args.next().map_or_else(
-        || Ok::<_, Box<dyn std::error::Error>>("127.0.0.1:17384".to_owned()),
-        |value| {
-            value
-                .into_string()
-                .map_err(|_| "LISTEN must be UTF-8".into())
-        },
-    )?;
-    let listen: std::net::SocketAddr = listen_text.parse()?;
-    if !listen.ip().is_loopback() {
-        return Err("LISTEN must use a loopback address".into());
-    }
-    if args.next().is_some() {
-        return Err("usage: visual_obs CONFIG.toml [LISTEN]".into());
+        .ok_or("usage: visual_wayland CONFIG.toml [SECONDS]")?;
+    let seconds = args.next().map_or(Ok(30_u64), |value| {
+        value
+            .to_str()
+            .ok_or("SECONDS must be UTF-8")?
+            .parse::<u64>()
+            .map_err(|error| format!("SECONDS: {error}"))
+    })?;
+    if seconds == 0 || args.next().is_some() {
+        return Err("usage: visual_wayland CONFIG.toml [SECONDS>0]".into());
     }
     let config_path = std::path::PathBuf::from(config_path);
     let parent = config_path
@@ -40,12 +44,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     file.sync_all()?;
     let controller = Controller::start(&config_path, document.clone())?;
     let config = Config {
-        backend: Backend::Obs,
-        canvases: document
-            .canvases
-            .into_iter()
-            .filter(|canvas| canvas.backend == Backend::Obs)
-            .collect(),
+        backend: Backend::Wayland,
+        canvases: Vec::new(),
         config_path,
         control_socket: controller.path().to_owned(),
         skin_store: scorepeek_overlay::skin::StoreRoot::discover()
@@ -55,15 +55,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "scorepeek-visual-absent-{}.sock",
             std::process::id()
         )),
-        invocation: "overlay-visual-debug".into(),
+        invocation: "overlay-visual-wayland".into(),
         scores_db: None,
-        listen,
+        listen: document.obs_listen.parse()?,
         unknown_grace_ms: document.unknown_grace_ms,
         wayland_refresh_hz: document.wayland_refresh_hz,
-        edit_on_start: false,
+        edit_on_start: true,
     };
-    eprintln!("Open http://{listen}/overlay and press Enter to stop.");
-    scorepeek_overlay::web::run(config, std::io::stdin())?;
+    eprintln!("Wayland editor will remain open for {seconds} seconds.");
+    scorepeek_overlay::native::run(config, TimedLease(Duration::from_secs(seconds)))?;
     drop(controller);
     Ok(())
 }

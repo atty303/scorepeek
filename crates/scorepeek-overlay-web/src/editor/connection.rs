@@ -46,7 +46,7 @@ struct Reply {
     error: Option<String>,
     #[serde(default)]
     canvases: Vec<CanvasPresentation>,
-    backend_revision: Option<u64>,
+    generation: Option<u64>,
     #[serde(default)]
     dirty: bool,
 }
@@ -218,9 +218,6 @@ impl Connection {
         if matches!(command, Command::Update | Command::Save) {
             request["canvases"] = json!(model.draft);
         }
-        if command == Command::Save {
-            request["expected_revision"] = json!(model.backend_revision);
-        }
         drop(model);
         let id = self.next.get();
         self.next.set(id + 1);
@@ -299,11 +296,13 @@ impl Connection {
                     let mut model = self.model.write_unchecked();
                     model.readonly = response.readonly;
                     model.notice = response.error;
-                    if let Some(revision) = response.backend_revision {
-                        model.backend_revision = revision;
+                    if let Some(generation) = response.generation {
+                        model.generation = generation;
                     }
-                    if !response.canvases.is_empty()
-                        && request_id >= self.latest_draft_request.get()
+                    if matches!(
+                        command,
+                        Some(Command::Acquire | Command::Update | Command::Save | Command::Discard)
+                    ) && request_id >= self.latest_draft_request.get()
                     {
                         model.draft = response.canvases;
                         if !response.dirty {

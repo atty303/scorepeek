@@ -38,6 +38,9 @@ pub enum Request {
     GetBackend {
         backend: Backend,
     },
+    ResolveWaylandOutputs {
+        outputs: Vec<String>,
+    },
     UpdateBackendDraft {
         backend: Backend,
         editor_id: String,
@@ -48,7 +51,6 @@ pub enum Request {
     CommitBackend {
         backend: Backend,
         editor_id: String,
-        expected_revision: u64,
         canvases: Vec<CanvasPresentation>,
         #[serde(default)]
         wayland_refresh_hz: Option<WaylandRefreshRate>,
@@ -62,7 +64,7 @@ pub struct Response {
     pub error: Option<String>,
     #[serde(default)]
     pub canvases: Vec<CanvasPresentation>,
-    pub backend_revision: Option<u64>,
+    pub generation: Option<u64>,
     #[serde(default)]
     pub dirty: bool,
     #[serde(default)]
@@ -72,7 +74,7 @@ pub struct Response {
 struct Lease {
     editor_id: String,
     touched: Instant,
-    base_revision: u64,
+    projection_generation: u64,
     draft: Vec<CanvasPresentation>,
     wayland_refresh_hz: Option<WaylandRefreshRate>,
 }
@@ -88,6 +90,7 @@ pub struct Controller {
     stop: Arc<AtomicBool>,
     state: Arc<Mutex<State>>,
     worker: Option<JoinHandle<()>>,
+    _config_lock: std::fs::File,
 }
 
 impl Controller {
@@ -95,12 +98,11 @@ impl Controller {
     /// # Errors
     /// Returns socket or worker creation errors.
     pub fn start(path: &Path, config: OverlayConfig) -> Result<Self, String> {
-        let runtime =
-            std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
-        let socket = runtime.join(format!(
-            "scorepeek-overlay-control-{}.sock",
-            std::process::id()
-        ));
+        let config_lock = acquire_config_lock(path)?;
+        let parent = path
+            .parent()
+            .ok_or("overlay config lock has no parent directory")?;
+        let socket = parent.join(format!(".overlay-control-{}.sock", std::process::id()));
         if socket.exists() {
             std::fs::remove_file(&socket).map_err(|error| error.to_string())?;
         }
@@ -148,6 +150,7 @@ impl Controller {
             stop,
             state,
             worker: Some(worker),
+            _config_lock: config_lock,
         })
     }
 
@@ -173,6 +176,29 @@ impl Controller {
         }
         observations
     }
+}
+
+fn acquire_config_lock(path: &Path) -> Result<std::fs::File, String> {
+    let lock_path = path.with_extension("toml.lock");
+    let parent = lock_path
+        .parent()
+        .ok_or("overlay config lock has no parent directory")?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|error| format!("open {}: {error}", lock_path.display()))?;
+    file.try_lock().map_err(|error| {
+        format!(
+            "overlay config {} is already owned by another scorepeek process: {error}",
+            path.display()
+        )
+    })?;
+    Ok(file)
 }
 
 impl State {
@@ -215,7 +241,7 @@ fn handle(mut stream: UnixStream, path: &Path, shared: &Mutex<State>) {
             readonly: true,
             error: Some(error),
             canvases: Vec::new(),
-            backend_revision: None,
+            generation: None,
             dirty: false,
             wayland_refresh_hz: None,
         },
@@ -237,7 +263,7 @@ fn request_identity(request: &Request) -> Option<(Backend, String)> {
         | Request::CommitBackend {
             backend, editor_id, ..
         } => Some((*backend, editor_id.clone())),
-        Request::GetBackend { .. } => None,
+        Request::GetBackend { .. } | Request::ResolveWaylandOutputs { .. } => None,
     }
 }
 
@@ -252,7 +278,7 @@ fn failed_response(
             readonly: true,
             error: Some(error),
             canvases: Vec::new(),
-            backend_revision: None,
+            generation: None,
             dirty: false,
             wayland_refresh_hz: None,
         };
@@ -263,7 +289,7 @@ fn failed_response(
             readonly: true,
             error: Some(error),
             canvases: Vec::new(),
-            backend_revision: None,
+            generation: None,
             dirty: false,
             wayland_refresh_hz: None,
         };
@@ -313,12 +339,19 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
                 );
                 return Ok(lease_response(&state, backend));
             }
-            let readonly = state
+            let occupied = state
                 .leases
                 .get(&backend)
                 .is_some_and(|lease| lease.editor_id != editor_id);
-            if !readonly {
-                let base_revision = state.config.backend_revisions.get(backend);
+            if occupied {
+                state.observe(
+                    "overlay_editor_lease",
+                    serde_json::json!({"backend":backend,"status":"rejected"}),
+                );
+                return Err("workspace editor is already active".into());
+            }
+            {
+                let projection_generation = state.config.projection_generations.get(backend);
                 let draft = state
                     .config
                     .canvases
@@ -332,7 +365,7 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
                     Lease {
                         editor_id,
                         touched: Instant::now(),
-                        base_revision,
+                        projection_generation,
                         draft,
                         wayland_refresh_hz,
                     },
@@ -341,14 +374,10 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
             state.observe(
                 "overlay_editor_lease",
                 serde_json::json!({
-                    "backend": backend, "status": if readonly { "readonly" } else { "acquired" }
+                    "backend": backend, "status": "acquired"
                 }),
             );
-            if readonly {
-                Ok(backend_response(&state.config, backend, true))
-            } else {
-                Ok(lease_response(&state, backend))
-            }
+            Ok(lease_response(&state, backend))
         }
         Request::KeepAliveBackend { backend, editor_id } => {
             require_lease(&mut state, backend, &editor_id)?;
@@ -373,6 +402,51 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
             Ok(backend_response(&state.config, backend, false))
         }
         Request::GetBackend { backend } => Ok(backend_response(&state.config, backend, true)),
+        Request::ResolveWaylandOutputs { mut outputs } => {
+            outputs.sort();
+            outputs.dedup();
+            let first = outputs
+                .first()
+                .filter(|output| !output.is_empty())
+                .ok_or("Wayland output discovery returned no named outputs")?
+                .clone();
+            let mut candidate = state.config.clone();
+            let mut changed = 0_usize;
+            for canvas in &mut candidate.canvases {
+                if canvas.backend == Backend::Wayland
+                    && canvas.output == crate::config::UNRESOLVED_WAYLAND_OUTPUT_ID
+                {
+                    canvas.output.clone_from(&first);
+                    changed += 1;
+                }
+            }
+            if changed > 0 {
+                if let Err(error) = save_atomic(path, &candidate) {
+                    state.observe(
+                        "overlay_config_migration",
+                        serde_json::json!({
+                            "schema":crate::config::SCHEMA_VERSION,
+                            "status":"failed",
+                            "canvas_count":changed,
+                            "output_count":outputs.len(),
+                            "error":error
+                        }),
+                    );
+                    return Err(error);
+                }
+                state.config = candidate;
+            }
+            state.observe(
+                "overlay_config_migration",
+                serde_json::json!({
+                    "schema":crate::config::SCHEMA_VERSION,
+                    "status":if changed>0{"saved"}else{"unchanged"},
+                    "canvas_count":changed,
+                    "output_count":outputs.len()
+                }),
+            );
+            Ok(backend_response(&state.config, Backend::Wayland, true))
+        }
         Request::UpdateBackendDraft {
             backend,
             editor_id,
@@ -390,33 +464,34 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
             lease.touched = Instant::now();
             lease.draft = canvases;
             lease.wayland_refresh_hz = wayland_refresh_hz;
+            lease.projection_generation = lease.projection_generation.saturating_add(1);
             Ok(lease_response(&state, backend))
         }
         Request::CommitBackend {
             backend,
             editor_id,
-            expected_revision,
             canvases,
             wayland_refresh_hz,
         } => {
             require_lease(&mut state, backend, &editor_id)?;
-            if state.config.backend_revisions.get(backend) != expected_revision {
-                return Err("backend revision conflict".into());
-            }
             let replacements = build_replacements(&state.config, backend, canvases)?;
             let wayland_refresh_hz = validate_backend_refresh(backend, wayland_refresh_hz)?;
-            let previous = state.config.clone();
-            state
-                .config
+            let mut candidate = state.config.clone();
+            candidate
                 .canvases
                 .retain(|canvas| canvas.backend != backend);
-            state.config.canvases.extend(replacements);
+            candidate.canvases.extend(replacements);
             if let Some(refresh) = wayland_refresh_hz {
-                state.config.wayland_refresh_hz = refresh;
+                candidate.wayland_refresh_hz = refresh;
             }
-            state.config.backend_revisions.increment(backend)?;
-            if let Err(error) = save_atomic(path, &state.config) {
-                state.config = previous;
+            if candidate.canvases.iter().any(|canvas| {
+                canvas.backend == Backend::Wayland
+                    && canvas.output == crate::config::UNRESOLVED_WAYLAND_OUTPUT_ID
+            }) {
+                return Err("Wayland output migration is waiting for output discovery".into());
+            }
+            candidate.projection_generations.increment(backend)?;
+            if let Err(error) = save_atomic(path, &candidate) {
                 state.observe(
                     "overlay_editor_commit",
                     serde_json::json!({
@@ -425,6 +500,7 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
                 );
                 return Err(error);
             }
+            state.config = candidate;
             let canvas_count = state
                 .config
                 .canvases
@@ -451,7 +527,7 @@ fn empty_response(readonly: bool) -> Response {
         readonly,
         error: None,
         canvases: Vec::new(),
-        backend_revision: None,
+        generation: None,
         dirty: false,
         wayland_refresh_hz: None,
     }
@@ -472,20 +548,11 @@ fn build_replacements(
     backend: Backend,
     presentations: Vec<CanvasPresentation>,
 ) -> Result<Vec<Canvas>, String> {
-    if presentations.is_empty() {
-        return Err("backend must retain at least one canvas".into());
-    }
-    let other_ids = config
-        .canvases
-        .iter()
-        .filter(|canvas| canvas.backend != backend)
-        .map(|canvas| canvas.id.as_str())
-        .collect::<BTreeSet<_>>();
     let mut ids = BTreeSet::new();
     let mut replacements = Vec::with_capacity(presentations.len());
     for presentation in presentations {
-        if !ids.insert(presentation.id.clone()) || other_ids.contains(presentation.id.as_str()) {
-            return Err("canvas ids must be globally unique".into());
+        if !ids.insert(presentation.id.clone()) {
+            return Err("canvas ids must be unique within a backend workspace".into());
         }
         let mut canvas = config
             .canvases
@@ -493,14 +560,7 @@ fn build_replacements(
             .find(|canvas| canvas.backend == backend && canvas.id == presentation.id)
             .cloned()
             .unwrap_or_else(|| empty_canvas(presentation.id.clone(), backend));
-        let changed = canvas.presentation() != presentation;
         canvas.apply_presentation(&presentation);
-        if changed {
-            canvas.revision = canvas
-                .revision
-                .checked_add(1)
-                .ok_or("canvas revision exhausted")?;
-        }
         replacements.push(canvas);
     }
     let mut candidate = config.clone();
@@ -542,7 +602,7 @@ fn backend_response(config: &OverlayConfig, backend: Backend, readonly: bool) ->
             .filter(|canvas| canvas.backend == backend)
             .map(Canvas::presentation)
             .collect(),
-        backend_revision: Some(config.backend_revisions.get(backend)),
+        generation: Some(config.projection_generations.get(backend)),
         dirty: false,
         wayland_refresh_hz: backend_refresh(config, backend),
     }
@@ -562,7 +622,7 @@ fn lease_response(state: &State, backend: Backend) -> Response {
         readonly: false,
         error: None,
         canvases: lease.draft.clone(),
-        backend_revision: Some(lease.base_revision),
+        generation: Some(lease.projection_generation),
         dirty: lease.draft != saved
             || lease.wayland_refresh_hz != backend_refresh(&state.config, backend),
         wayland_refresh_hz: lease.wayland_refresh_hz,
@@ -612,6 +672,139 @@ mod tests {
     }
 
     #[test]
+    fn controller_holds_one_process_lifetime_writer_lock_per_config() {
+        let root = std::env::temp_dir().join(format!(
+            "scorepeek-overlay-writer-lock-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("overlay.toml");
+        let first = acquire_config_lock(&path).unwrap();
+        let error = acquire_config_lock(&path).unwrap_err();
+        assert!(error.contains("already owned"), "{error}");
+        drop(first);
+        let reopened = acquire_config_lock(&path).unwrap();
+        drop(reopened);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn wayland_output_discovery_finalizes_deferred_schema_migration_once() {
+        let (path, shared) = fixture("resolve-output");
+        {
+            let mut state = shared.lock().unwrap();
+            for canvas in &mut state.config.canvases {
+                if canvas.backend == Backend::Wayland {
+                    canvas.output = crate::config::UNRESOLVED_WAYLAND_OUTPUT_ID.into();
+                }
+            }
+        }
+        let response = apply(
+            Request::ResolveWaylandOutputs {
+                outputs: vec!["DP-2".into(), "DP-1".into()],
+            },
+            &path,
+            &shared,
+        )
+        .unwrap();
+        assert!(
+            response
+                .canvases
+                .iter()
+                .all(|canvas| { canvas.output.as_deref() == Some("DP-1") })
+        );
+        let persisted = std::fs::read_to_string(&path).unwrap();
+        assert!(persisted.contains("schema_version = 7"));
+        assert!(persisted.contains("output = \"DP-1\""));
+        assert!(!persisted.contains("revision"));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn another_backend_cannot_persist_a_pending_wayland_output_migration() {
+        let (path, shared) = fixture("pending-output-commit");
+        {
+            let mut state = shared.lock().unwrap();
+            for canvas in &mut state.config.canvases {
+                if canvas.backend == Backend::Wayland {
+                    canvas.output = crate::config::UNRESOLVED_WAYLAND_OUTPUT_ID.into();
+                }
+            }
+        }
+        let acquired = apply(
+            Request::AcquireBackend {
+                backend: Backend::Obs,
+                editor_id: "editor".into(),
+            },
+            &path,
+            &shared,
+        )
+        .unwrap();
+        let error = apply(
+            Request::CommitBackend {
+                backend: Backend::Obs,
+                editor_id: "editor".into(),
+                canvases: acquired.canvases,
+                wayland_refresh_hz: None,
+            },
+            &path,
+            &shared,
+        )
+        .unwrap_err();
+        assert!(error.contains("waiting for output discovery"));
+        assert!(!path.exists());
+        assert!(shared.lock().unwrap().config.canvases.iter().any(|canvas| {
+            canvas.backend == Backend::Wayland
+                && canvas.output == crate::config::UNRESOLVED_WAYLAND_OUTPUT_ID
+        }));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn failed_output_migration_save_keeps_the_pending_state_for_retry() {
+        let (path, shared) = fixture("output-save-retry");
+        {
+            let mut state = shared.lock().unwrap();
+            for canvas in &mut state.config.canvases {
+                if canvas.backend == Backend::Wayland {
+                    canvas.output = crate::config::UNRESOLVED_WAYLAND_OUTPUT_ID.into();
+                }
+            }
+        }
+        std::fs::create_dir(&path).unwrap();
+        assert!(
+            apply(
+                Request::ResolveWaylandOutputs {
+                    outputs: vec!["DP-1".into()],
+                },
+                &path,
+                &shared,
+            )
+            .is_err()
+        );
+        assert!(shared.lock().unwrap().config.canvases.iter().any(|canvas| {
+            canvas.backend == Backend::Wayland
+                && canvas.output == crate::config::UNRESOLVED_WAYLAND_OUTPUT_ID
+        }));
+        std::fs::remove_dir(&path).unwrap();
+        let response = apply(
+            Request::ResolveWaylandOutputs {
+                outputs: vec!["DP-1".into()],
+            },
+            &path,
+            &shared,
+        )
+        .unwrap();
+        assert!(
+            response
+                .canvases
+                .iter()
+                .all(|canvas| { canvas.output.as_deref() == Some("DP-1") })
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn backend_lease_serializes_editors_and_commit_is_atomic() {
         let (path, shared) = fixture("atomic");
         let first = apply(
@@ -625,7 +818,7 @@ mod tests {
         .unwrap();
         assert!(!first.readonly);
         assert!(!first.dirty);
-        assert!(
+        assert_eq!(
             apply(
                 Request::AcquireBackend {
                     backend: Backend::Obs,
@@ -634,8 +827,8 @@ mod tests {
                 &path,
                 &shared
             )
-            .unwrap()
-            .readonly
+            .unwrap_err(),
+            "workspace editor is already active"
         );
         let mut draft = first.canvases;
         draft[0].skin = scorepeek_overlay_ui::Skin::DjBlackbox;
@@ -666,7 +859,6 @@ mod tests {
             Request::CommitBackend {
                 backend: Backend::Obs,
                 editor_id: "first".into(),
-                expected_revision: first.backend_revision.unwrap(),
                 canvases: draft,
                 wayland_refresh_hz: None,
             },
@@ -675,7 +867,7 @@ mod tests {
         )
         .unwrap();
         assert!(!saved.dirty);
-        assert_eq!(saved.backend_revision, Some(1));
+        assert_eq!(saved.generation, Some(1));
         assert_eq!(
             saved.canvases[0].skin,
             scorepeek_overlay_ui::Skin::DjBlackbox
@@ -764,17 +956,17 @@ mod tests {
         let stale = release("expired");
         assert!(stale.ok);
         assert!(stale.canvases.is_empty());
-        assert_eq!(stale.backend_revision, None);
+        assert_eq!(stale.generation, None);
         let current = acquire("current");
         assert!(current.dirty);
         assert_eq!(current.canvases, draft);
         let restored = release("current");
         assert_eq!(restored.canvases, saved);
-        assert_eq!(restored.backend_revision, Some(0));
+        assert_eq!(restored.generation, Some(0));
         assert!(!restored.dirty);
         let repeated = release("current");
         assert_eq!(repeated.canvases, saved);
-        assert_eq!(repeated.backend_revision, Some(0));
+        assert_eq!(repeated.generation, Some(0));
         acquire("abandoned");
         apply(
             Request::UpdateBackendDraft {
@@ -796,7 +988,7 @@ mod tests {
             .touched = Instant::now().checked_sub(LEASE_TIMEOUT).unwrap();
         let abandoned = release("abandoned");
         assert_eq!(abandoned.canvases, saved);
-        assert_eq!(abandoned.backend_revision, Some(0));
+        assert_eq!(abandoned.generation, Some(0));
         assert!(!abandoned.dirty);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -816,33 +1008,33 @@ mod tests {
         let saved = acquired.canvases.clone();
         let mut changed = acquired.canvases;
         changed[0].opacity_percent = 25;
-        assert!(
-            apply(
-                Request::UpdateBackendDraft {
-                    backend: Backend::Wayland,
-                    editor_id: "editor".into(),
-                    canvases: changed,
-                    wayland_refresh_hz: Some(WaylandRefreshRate::Auto),
-                },
-                &path,
-                &shared,
-            )
-            .unwrap()
-            .dirty
-        );
-        assert!(
-            !apply(
-                Request::UpdateBackendDraft {
-                    backend: Backend::Wayland,
-                    editor_id: "editor".into(),
-                    canvases: saved,
-                    wayland_refresh_hz: Some(WaylandRefreshRate::Auto),
-                },
-                &path,
-                &shared,
-            )
-            .unwrap()
-            .dirty
+        let changed = apply(
+            Request::UpdateBackendDraft {
+                backend: Backend::Wayland,
+                editor_id: "editor".into(),
+                canvases: changed,
+                wayland_refresh_hz: Some(WaylandRefreshRate::Auto),
+            },
+            &path,
+            &shared,
+        )
+        .unwrap();
+        assert!(changed.dirty);
+        let restored = apply(
+            Request::UpdateBackendDraft {
+                backend: Backend::Wayland,
+                editor_id: "editor".into(),
+                canvases: saved,
+                wayland_refresh_hz: Some(WaylandRefreshRate::Auto),
+            },
+            &path,
+            &shared,
+        )
+        .unwrap();
+        assert!(!restored.dirty);
+        assert_eq!(
+            restored.generation,
+            changed.generation.map(|value| value + 1)
         );
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -880,7 +1072,6 @@ mod tests {
             Request::CommitBackend {
                 backend: Backend::Wayland,
                 editor_id: "editor".into(),
-                expected_revision: acquired.backend_revision.unwrap(),
                 canvases: acquired.canvases,
                 wayland_refresh_hz: Some(capped),
             },
@@ -945,7 +1136,6 @@ mod tests {
             Request::CommitBackend {
                 backend: Backend::Wayland,
                 editor_id: "editor".into(),
-                expected_revision: 0,
                 canvases: invalid,
                 wayland_refresh_hz: Some(WaylandRefreshRate::Auto),
             },

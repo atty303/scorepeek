@@ -102,7 +102,10 @@ impl Fixture {
         std::fs::create_dir(&directory).unwrap();
         let directory = TestDirectory(directory);
         let skins = crate::skin::StoreRoot::new(directory.0.join("skins"));
-        let document = OverlayConfig::initial();
+        let mut document = OverlayConfig::initial();
+        document
+            .canvases
+            .push(crate::config::empty_canvas("obs-test".into(), Backend::Obs));
         let path = directory.0.join("overlay.toml");
         let controller = Controller::start(&path, document.clone()).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -119,7 +122,6 @@ impl Fixture {
             scores_db: None,
             listen: address,
             unknown_grace_ms: document.unknown_grace_ms,
-            settings_revision: document.settings_revision,
             wayland_refresh_hz: document.wayland_refresh_hz,
             edit_on_start: false,
         };
@@ -215,7 +217,7 @@ fn assert_disconnect_discards_draft(fixture: &Fixture) {
     let restored = acquire_after_disconnect(&mut successor);
     assert_eq!(restored["canvases"], saved);
     assert_eq!(restored["dirty"], false);
-    successor.send(json!({"command":"commit_backend", "backend":"obs", "editor_id":"ignored", "expected_revision":restored["backend_revision"], "canvases":draft}), Some("stale-assets"));
+    successor.send(json!({"command":"commit_backend", "backend":"obs", "editor_id":"ignored", "canvases":draft}), Some("stale-assets"));
     loop {
         if successor.receive()["type"] == "version_mismatch" {
             break;

@@ -8,7 +8,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
+pub const OBS_OUTPUT_ID: &str = "obs-output";
+pub const UNRESOLVED_WAYLAND_OUTPUT_ID: &str = "__first-connected-output__";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -16,27 +18,23 @@ pub struct OverlayConfig {
     pub schema_version: u32,
     #[serde(default)]
     pub wayland_refresh_hz: WaylandRefreshRate,
-    #[serde(default)]
-    pub settings_revision: u64,
     #[serde(default = "default_unknown_grace_ms")]
     pub unknown_grace_ms: u32,
-    #[serde(default)]
-    pub backend_revisions: BackendRevisions,
+    /// Run-local projection generations; omitted from the persisted v7 document.
+    #[serde(skip)]
+    pub projection_generations: ProjectionGenerations,
     #[serde(default = "default_listen")]
     pub obs_listen: String,
     pub canvases: Vec<Canvas>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct BackendRevisions {
-    #[serde(default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProjectionGenerations {
     pub wayland: u64,
-    #[serde(default)]
     pub obs: u64,
 }
 
-impl BackendRevisions {
+impl ProjectionGenerations {
     #[must_use]
     pub fn get(&self, backend: Backend) -> u64 {
         match backend {
@@ -44,18 +42,19 @@ impl BackendRevisions {
             Backend::Obs => self.obs,
         }
     }
-    /// Advances one backend's canvas-list revision.
+    /// Advances the run-local renderer projection generation.
+    ///
     /// # Errors
-    /// Returns an error if the revision counter is exhausted.
+    /// Returns an error if the process-lifetime counter is exhausted.
     pub fn increment(&mut self, backend: Backend) -> Result<u64, String> {
-        let revision = match backend {
+        let generation = match backend {
             Backend::Wayland => &mut self.wayland,
             Backend::Obs => &mut self.obs,
         };
-        *revision = revision
+        *generation = generation
             .checked_add(1)
-            .ok_or("backend revision exhausted")?;
-        Ok(*revision)
+            .ok_or("projection generation exhausted")?;
+        Ok(*generation)
     }
 }
 
@@ -74,10 +73,7 @@ pub struct Canvas {
     pub show_on: Option<Vec<scorepeek_overlay_ui::ScreenKind>>,
     #[serde(default = "default_opacity_percent")]
     pub opacity_percent: u8,
-    #[serde(default)]
-    pub output: Option<String>,
-    #[serde(default)]
-    pub initial_placement: Option<InitialPlacement>,
+    pub output: String,
     #[serde(default)]
     pub x: i32,
     #[serde(default)]
@@ -87,15 +83,7 @@ pub struct Canvas {
     #[serde(default = "default_height")]
     pub height: u32,
     #[serde(default)]
-    pub revision: u64,
-    #[serde(default)]
     pub widgets: Vec<Widget>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum InitialPlacement {
-    UpperRight,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -127,14 +115,10 @@ impl OverlayConfig {
         Self {
             schema_version: SCHEMA_VERSION,
             wayland_refresh_hz: WaylandRefreshRate::Auto,
-            settings_revision: 0,
             unknown_grace_ms: default_unknown_grace_ms(),
-            backend_revisions: BackendRevisions::default(),
+            projection_generations: ProjectionGenerations::default(),
             obs_listen: default_listen(),
-            canvases: [Backend::Wayland, Backend::Obs]
-                .into_iter()
-                .flat_map(initial_canvases)
-                .collect(),
+            canvases: Vec::new(),
         }
     }
 
@@ -189,13 +173,6 @@ impl OverlayConfig {
                 }),
             }
         }
-        for backend in [Backend::Wayland, Backend::Obs] {
-            if !valid.iter().any(|canvas| canvas.backend == backend) {
-                return Err(format!(
-                    "overlay {backend:?} must retain at least one valid canvas"
-                ));
-            }
-        }
         Ok((valid, issues))
     }
 }
@@ -208,10 +185,9 @@ impl Canvas {
             id: self.id.clone(),
             skin: self.skin,
             skin_properties: self.skin_properties.clone(),
-            revision: self.revision,
             show_on: self.show_on.clone(),
             opacity_percent: self.opacity_percent,
-            output: self.output.clone(),
+            output: Some(self.output.clone()),
             x: self.x,
             y: self.y,
             width: self.width,
@@ -238,11 +214,11 @@ impl Canvas {
         self.skin = presentation.skin;
         self.skin_properties
             .clone_from(&presentation.skin_properties);
-        self.revision = presentation.revision;
         self.show_on.clone_from(&presentation.show_on);
         self.opacity_percent = presentation.opacity_percent;
-        self.output.clone_from(&presentation.output);
-        self.initial_placement = None;
+        if let Some(output) = &presentation.output {
+            self.output.clone_from(output);
+        }
         self.x = presentation.x;
         self.y = presentation.y;
         self.width = presentation.width;
@@ -289,16 +265,7 @@ fn load_or_create_with_store(
     store: &crate::skin::StoreRoot,
 ) -> Result<(OverlayConfig, Vec<ConfigIssue>), String> {
     if !path.exists() {
-        let installed = store.list()?;
-        let selected = installed
-            .first()
-            .ok_or("overlay configuration requires at least one installed skin")?
-            .id
-            .parse::<Skin>()?;
-        let mut config = OverlayConfig::initial();
-        for canvas in &mut config.canvases {
-            canvas.skin = selected;
-        }
+        let config = OverlayConfig::initial();
         save_atomic_with_store(path, &config, store)?;
         return Ok((config, Vec::new()));
     }
@@ -311,13 +278,13 @@ fn load_or_create_with_store(
         .get("schema_version")
         .and_then(toml::Value::as_integer)
         .ok_or("overlay schema_version is required")?;
-    let mut migrated = matches!(schema, 2..=5);
+    let mut migrated = matches!(schema, 2..=6);
     if schema == 2 {
         migrate_v2_document(&mut document)?;
         migrate_v3_document(&mut document)?;
     } else if schema == 3 {
         migrate_v3_document(&mut document)?;
-    } else if schema != 4 && schema != 5 && schema != i64::from(SCHEMA_VERSION) {
+    } else if !matches!(schema, 4..=7) {
         return Err(format!("overlay schema_version must be {SCHEMA_VERSION}"));
     }
     if schema <= 4 {
@@ -325,6 +292,9 @@ fn load_or_create_with_store(
     }
     if schema <= 5 {
         migrate_v5_document(&mut document)?;
+    }
+    if schema <= 6 {
+        migrate_v6_document(&mut document)?;
     }
     if document.get("wayland_refresh_hz").is_none() {
         document
@@ -341,7 +311,10 @@ fn load_or_create_with_store(
         .try_into()
         .map_err(|error| format!("overlay TOML: {error}"))?;
     let (valid, issues) = config.validated_with_store(store)?;
-    if migrated {
+    let output_migration_pending = config.canvases.iter().any(|canvas| {
+        canvas.backend == Backend::Wayland && canvas.output == UNRESOLVED_WAYLAND_OUTPUT_ID
+    });
+    if migrated && !output_migration_pending {
         let migrated = toml::to_string_pretty(&document)
             .map_err(|error| format!("serialize migrated overlay TOML: {error}"))?;
         write_atomic(path, migrated.as_bytes())?;
@@ -425,7 +398,44 @@ fn migrate_v5_document(document: &mut toml::Value) -> Result<(), String> {
             }
         }
     }
-    document["schema_version"] = toml::Value::Integer(i64::from(SCHEMA_VERSION));
+    document["schema_version"] = toml::Value::Integer(6);
+    Ok(())
+}
+
+fn migrate_v6_document(document: &mut toml::Value) -> Result<(), String> {
+    let root = document
+        .as_table_mut()
+        .ok_or("overlay TOML root must be a table")?;
+    root.remove("settings_revision");
+    root.remove("backend_revisions");
+    let canvases = root
+        .get_mut("canvases")
+        .and_then(toml::Value::as_array_mut)
+        .ok_or("overlay canvases must be an array")?;
+    for canvas in canvases {
+        let table = canvas
+            .as_table_mut()
+            .ok_or("overlay canvas must be a table")?;
+        table.remove("revision");
+        table.remove("initial_placement");
+        let backend = table
+            .get("backend")
+            .and_then(toml::Value::as_str)
+            .ok_or("overlay canvas backend must be a string")?;
+        let missing = table.get("output").is_none();
+        if missing {
+            let output = if backend == "obs" {
+                OBS_OUTPUT_ID
+            } else {
+                UNRESOLVED_WAYLAND_OUTPUT_ID
+            };
+            table.insert("output".into(), toml::Value::String(output.into()));
+        }
+    }
+    root.insert(
+        "schema_version".into(),
+        toml::Value::Integer(i64::from(SCHEMA_VERSION)),
+    );
     Ok(())
 }
 
@@ -527,7 +537,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_canvas(canvas: &Canvas, canvas_ids: &mut BTreeSet<String>) -> Result<(), String> {
+fn validate_canvas(
+    canvas: &Canvas,
+    canvas_ids: &mut BTreeSet<(Backend, String)>,
+) -> Result<(), String> {
     if canvas.id.is_empty()
         || !canvas
             .id
@@ -536,24 +549,17 @@ fn validate_canvas(canvas: &Canvas, canvas_ids: &mut BTreeSet<String>) -> Result
     {
         return Err("id must use ASCII letters, digits, '-' or '_'".into());
     }
-    if !canvas_ids.insert(canvas.id.clone()) {
-        return Err("duplicate canvas id".into());
+    if !canvas_ids.insert((canvas.backend, canvas.id.clone())) {
+        return Err("duplicate canvas id within backend workspace".into());
+    }
+    if canvas.output.is_empty() {
+        return Err("output must be non-empty".into());
     }
     if canvas.width < 32 || canvas.height < 32 {
         return Err("canvas dimensions must be at least 32x32".into());
     }
     if canvas.opacity_percent == 0 || canvas.opacity_percent > 100 {
         return Err("canvas opacity_percent must be between 1 and 100".into());
-    }
-    if canvas.backend == Backend::Obs && canvas.opacity_percent != 100 {
-        return Err("OBS canvas opacity_percent must be 100".into());
-    }
-    if canvas.x % 4 != 0
-        || canvas.y % 4 != 0
-        || !canvas.width.is_multiple_of(4)
-        || !canvas.height.is_multiple_of(4)
-    {
-        return Err("canvas position and dimensions must align to the 4px grid".into());
     }
     let mut widget_ids = BTreeSet::new();
     for widget in &canvas.widgets {
@@ -601,32 +607,8 @@ fn validate_canvas(canvas: &Canvas, canvas_ids: &mut BTreeSet<String>) -> Result
     Ok(())
 }
 
-fn initial_canvases(backend: Backend) -> Vec<Canvas> {
-    let prefix = match backend {
-        Backend::Wayland => "wayland",
-        Backend::Obs => "obs",
-    };
-    vec![Canvas {
-        id: format!("{prefix}-canvas-1"),
-        backend,
-        background: scorepeek_overlay_ui::Background::None,
-        skin: Skin::CyanSystem,
-        skin_properties: std::collections::BTreeMap::new(),
-        show_on: None,
-        opacity_percent: 100,
-        output: None,
-        initial_placement: (backend == Backend::Wayland).then_some(InitialPlacement::UpperRight),
-        x: 20,
-        y: 20,
-        width: default_width(),
-        height: default_height(),
-        revision: 0,
-        widgets: Vec::new(),
-    }]
-}
-
 /// Legacy-shaped composition used only by the deterministic visual debugger and its tests.
-/// Runtime initialization intentionally remains the one-empty-canvas document.
+/// Runtime initialization intentionally remains the empty-workspace document.
 pub(crate) fn visual_debug_config() -> OverlayConfig {
     use scorepeek_overlay_ui::ScreenKind;
 
@@ -682,14 +664,15 @@ pub(crate) fn visual_debug_config() -> OverlayConfig {
                 skin_properties: std::collections::BTreeMap::new(),
                 show_on,
                 opacity_percent: 100,
-                output: None,
-                initial_placement: (backend == Backend::Wayland)
-                    .then_some(InitialPlacement::UpperRight),
+                output: if backend == Backend::Obs {
+                    OBS_OUTPUT_ID.into()
+                } else {
+                    "DP-1".into()
+                },
                 x,
                 y,
                 width,
                 height,
-                revision: 0,
                 widgets: widgets
                     .into_iter()
                     .map(|(id, kind, x, y)| {
@@ -731,13 +714,15 @@ pub fn empty_canvas(id: String, backend: Backend) -> Canvas {
         skin_properties: std::collections::BTreeMap::new(),
         show_on: Some(Vec::new()),
         opacity_percent: 100,
-        output: None,
-        initial_placement: None,
+        output: if backend == Backend::Obs {
+            OBS_OUTPUT_ID.into()
+        } else {
+            UNRESOLVED_WAYLAND_OUTPUT_ID.into()
+        },
         x: 20,
         y: 20,
         width: default_width(),
         height: default_height(),
-        revision: 0,
         widgets: Vec::new(),
     }
 }
@@ -784,18 +769,20 @@ mod tests {
     }
 
     #[test]
-    fn initial_config_round_trips_and_has_both_backends() {
+    fn initial_empty_workspace_round_trips_without_revisions() {
         let config = OverlayConfig::initial();
         let text = toml::to_string(&config).unwrap();
         let decoded: OverlayConfig = toml::from_str(&text).unwrap();
         assert_eq!(decoded, config);
         assert!(config.validated().unwrap().1.is_empty());
         assert!(text.contains("wayland_refresh_hz = \"auto\""));
+        assert!(config.canvases.is_empty());
+        assert!(!text.contains("revision"));
     }
 
     #[test]
     fn wayland_refresh_rate_round_trips_as_auto_or_integer() {
-        let mut config = OverlayConfig::initial();
+        let mut config = visual_debug_config();
         config.wayland_refresh_hz = WaylandRefreshRate::capped(30).unwrap();
         let text = toml::to_string(&config).unwrap();
         assert!(text.contains("wayland_refresh_hz = 30"));
@@ -836,13 +823,13 @@ mod tests {
 
     #[test]
     fn invalid_canvas_is_isolated() {
-        let mut config = OverlayConfig::initial();
+        let mut config = visual_debug_config();
         config.canvases.push(Canvas {
             id: "bad id".into(),
             ..config.canvases[0].clone()
         });
         let (valid, issues) = config.validated().unwrap();
-        assert_eq!(valid.len(), 2);
+        assert_eq!(valid.len(), 8);
         assert_eq!(issues.len(), 1);
     }
 
@@ -850,7 +837,7 @@ mod tests {
     fn loading_omits_invalid_canvases_and_reports_them() {
         let root = temporary("invalid-canvas");
         let path = root.join("overlay.toml");
-        let mut config = OverlayConfig::initial();
+        let mut config = visual_debug_config();
         config.canvases.push(Canvas {
             id: "bad id".into(),
             ..config.canvases[0].clone()
@@ -858,7 +845,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(&path, toml::to_string(&config).unwrap()).unwrap();
         let (loaded, issues) = load_or_create(&path).unwrap();
-        assert_eq!(loaded.canvases.len(), 2);
+        assert_eq!(loaded.canvases.len(), 8);
         assert_eq!(issues.len(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -875,14 +862,14 @@ mod tests {
 
     #[test]
     fn canvas_with_off_grid_widget_is_isolated() {
-        let mut config = OverlayConfig::initial();
+        let mut config = visual_debug_config();
         let mut invalid = config.canvases[0].clone();
         invalid.id = "wayland-off-grid".into();
         invalid.widgets.push(test_widget());
         invalid.widgets[0].x = 1;
         config.canvases.push(invalid);
         let (valid, issues) = config.validated().unwrap();
-        assert_eq!(valid.len(), 2);
+        assert_eq!(valid.len(), 8);
         assert_eq!(issues[0].canvas_id, "wayland-off-grid");
         assert!(issues[0].message.contains("4px grid"));
     }
@@ -895,14 +882,15 @@ mod tests {
     }
 
     #[test]
-    fn missing_config_requires_an_installed_skin() {
+    fn missing_config_creates_an_empty_workspace_without_a_skin() {
         let root = temporary("create");
         let path = root.join("overlay.toml");
         let store = crate::skin::StoreRoot::new(root.join("skins"));
-        assert_eq!(
-            load_or_create_with_store(&path, &store).unwrap_err(),
-            "overlay configuration requires at least one installed skin"
-        );
+        let (config, issues) = load_or_create_with_store(&path, &store).unwrap();
+        assert!(config.canvases.is_empty());
+        assert!(issues.is_empty());
+        assert!(path.exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -912,7 +900,7 @@ mod tests {
         let store = crate::skin::StoreRoot::new(root.join("skins"));
         std::fs::create_dir_all(store.path()).unwrap();
         std::fs::write(store.path().join("dev.example.custom.zip"), []).unwrap();
-        let mut config = OverlayConfig::initial();
+        let mut config = visual_debug_config();
         for canvas in &mut config.canvases {
             canvas.skin = "dev.example.custom".parse().unwrap();
         }
@@ -934,8 +922,41 @@ mod tests {
         config.schema_version = 1;
         assert_eq!(
             config.validated().unwrap_err(),
-            "overlay schema_version must be 6"
+            "overlay schema_version must be 7"
         );
+    }
+
+    #[test]
+    fn schema_v6_wayland_output_migration_waits_for_discovery() {
+        let root = temporary("migrate-v6-output");
+        let path = root.join("overlay.toml");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut value = toml::Value::try_from(visual_debug_config()).unwrap();
+        value["schema_version"] = toml::Value::Integer(6);
+        let canvas = value["canvases"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|canvas| canvas["backend"].as_str() == Some("wayland"))
+            .unwrap()
+            .as_table_mut()
+            .unwrap();
+        canvas.remove("output");
+        canvas.insert("revision".into(), toml::Value::Integer(9));
+        value
+            .as_table_mut()
+            .unwrap()
+            .insert("settings_revision".into(), toml::Value::Integer(3));
+        let old = toml::to_string_pretty(&value).unwrap();
+        std::fs::write(&path, &old).unwrap();
+
+        let (loaded, issues) = load_or_create(&path).unwrap();
+        assert!(issues.is_empty());
+        assert!(loaded.canvases.iter().any(|canvas| {
+            canvas.backend == Backend::Wayland && canvas.output == UNRESOLVED_WAYLAND_OUTPUT_ID
+        }));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -943,7 +964,7 @@ mod tests {
         let root = temporary("migrate-v2");
         let path = root.join("overlay.toml");
         std::fs::create_dir_all(&root).unwrap();
-        let mut value = toml::Value::try_from(OverlayConfig::initial()).unwrap();
+        let mut value = toml::Value::try_from(visual_debug_config()).unwrap();
         value["schema_version"] = toml::Value::Integer(2);
         let canvases = value["canvases"].as_array_mut().unwrap();
         canvases[0]["widgets"] =
@@ -967,7 +988,7 @@ mod tests {
                 .lines()
                 .any(|line| line.trim_start().starts_with("z ="))
         );
-        assert!(persisted.contains("schema_version = 6"));
+        assert!(persisted.contains("schema_version = 7"));
         assert!(
             !persisted
                 .lines()
@@ -981,7 +1002,7 @@ mod tests {
         let root = temporary("migrate-v3-disabled");
         let path = root.join("overlay.toml");
         std::fs::create_dir_all(&root).unwrap();
-        let mut value = toml::Value::try_from(OverlayConfig::initial()).unwrap();
+        let mut value = toml::Value::try_from(visual_debug_config()).unwrap();
         value["schema_version"] = toml::Value::Integer(3);
         value["canvases"].as_array_mut().unwrap()[0]
             .as_table_mut()
@@ -1008,7 +1029,7 @@ mod tests {
         let root = temporary("migrate-v3-enabled");
         let path = root.join("overlay.toml");
         std::fs::create_dir_all(&root).unwrap();
-        let mut value = toml::Value::try_from(OverlayConfig::initial()).unwrap();
+        let mut value = toml::Value::try_from(visual_debug_config()).unwrap();
         value["schema_version"] = toml::Value::Integer(3);
         let canvas = value["canvases"]
             .as_array_mut()
@@ -1036,44 +1057,37 @@ mod tests {
     }
 
     #[test]
-    fn initial_config_has_one_empty_canvas_per_backend() {
+    fn initial_config_has_no_canvases() {
         let config = OverlayConfig::initial();
-        for backend in [Backend::Wayland, Backend::Obs] {
-            let canvases = config
-                .canvases
-                .iter()
-                .filter(|canvas| canvas.backend == backend)
-                .collect::<Vec<_>>();
-            assert_eq!(canvases.len(), 1);
-            assert_eq!(
-                canvases
-                    .iter()
-                    .filter(|canvas| canvas.show_on.is_none())
-                    .count(),
-                1
-            );
-            assert!(canvases[0].widgets.is_empty());
-        }
+        assert!(config.canvases.is_empty());
+        assert!(config.validated().unwrap().1.is_empty());
     }
 
     #[test]
     fn visibility_and_opacity_are_strict() {
-        let mut empty = OverlayConfig::initial();
+        let mut empty = visual_debug_config();
         empty.canvases[0].show_on = Some(Vec::new());
         assert!(empty.validated().unwrap().1.is_empty());
 
-        let mut transparent = OverlayConfig::initial();
+        let mut transparent = visual_debug_config();
         transparent.canvases[0].opacity_percent = 0;
-        assert!(transparent.validated().unwrap_err().contains("Wayland"));
+        assert!(
+            transparent
+                .validated()
+                .unwrap()
+                .1
+                .iter()
+                .any(|issue| issue.message.contains("1 and 100"))
+        );
 
-        let mut obs = OverlayConfig::initial();
+        let mut obs = visual_debug_config();
         let canvas = obs
             .canvases
             .iter_mut()
             .find(|canvas| canvas.backend == Backend::Obs)
             .unwrap();
         canvas.opacity_percent = 50;
-        assert!(obs.validated().unwrap_err().contains("Obs"));
+        assert!(obs.validated().unwrap().1.is_empty());
     }
     #[test]
     fn schema_v4_migration_preserves_outer_geometry_and_round_trips_once() {

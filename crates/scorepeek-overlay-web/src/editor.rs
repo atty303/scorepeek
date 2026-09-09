@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use dioxus_web::WebEventExt;
 use model::Model;
 use scorepeek_overlay_ui::CanvasPresentation;
-use scorepeek_overlay_ui::editor::{EditorAction, EditorPanel};
+use scorepeek_overlay_ui::editor::{EditorAction, EditorOutput, EditorPanel};
 use scorepeek_overlay_ui::editor_surface::{
     EditorCanvas, EditorSurface, PlacementPreview, SurfaceAction,
 };
@@ -17,6 +17,11 @@ pub fn app() -> Element {
         let (canvases, skins) = read_initial();
         let mut model = Model::new(canvases, viewport(), "obs");
         model.set_skins(skins);
+        model.set_outputs(vec![EditorOutput {
+            name: "obs-output".into(),
+            model: "OBS Browser Source".into(),
+            logical_size: Some(viewport()),
+        }]);
         model
     });
     let compatibility = use_signal(|| Compatibility::Checking);

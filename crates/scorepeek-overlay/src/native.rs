@@ -24,7 +24,7 @@ use dioxus_native_dom::DioxusDocument;
 use scorepeek_overlay_handles::{CursorStyle, Event, OutputDescription, Shell};
 use scorepeek_overlay_ui::editor::{
     EditorAccess, EditorAction, EditorChrome, EditorOutput, EditorPanel, EditorTitleState,
-    EditorView, RefreshRateEditor,
+    EditorView,
 };
 use scorepeek_overlay_ui::{Appearance, OXANIUM, OverlayState, WidgetLayout};
 use serde::{Deserialize, Serialize};
@@ -282,6 +282,7 @@ struct NativeCanvasSettings {
     height: u32,
     preview_screen: scorepeek_overlay_ui::ScreenKind,
     panel_width: u32,
+    new_canvas_skin: scorepeek_overlay_ui::Skin,
 }
 
 impl NativeCanvasSettings {
@@ -374,6 +375,7 @@ struct NativeWorkspace {
     outputs: std::collections::BTreeMap<String, OutputDescription>,
     surfaces: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     editor_hosts: std::collections::BTreeMap<String, String>,
+    active_output: Option<String>,
     wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
 }
 
@@ -382,6 +384,7 @@ struct NativeOverlayProps {
     appearance: Rc<Cell<Appearance>>,
     widgets: Rc<RefCell<Vec<WidgetLayout>>>,
     editing: Rc<Cell<bool>>,
+    interactive: Rc<Cell<bool>>,
     panel_open: Rc<Cell<bool>>,
     widget_add_open: Rc<Cell<bool>>,
     dirty: Rc<Cell<bool>>,
@@ -455,6 +458,7 @@ struct NativeReactiveState {
     appearance: Reactive<Appearance>,
     widgets: Reactive<Vec<WidgetLayout>>,
     editing: Reactive<bool>,
+    interactive: Reactive<bool>,
     panel_open: Reactive<bool>,
     widget_add_open: Reactive<bool>,
     dirty: Reactive<bool>,
@@ -484,6 +488,7 @@ fn use_native_reactive_state(
         appearance,
         widgets,
         editing,
+        interactive,
         panel_open,
         widget_add_open,
         dirty,
@@ -505,6 +510,7 @@ fn use_native_reactive_state(
         appearance: Reactive(use_signal(move || appearance.get())),
         widgets: Reactive(use_signal(move || widgets.borrow().clone())),
         editing: Reactive(use_signal(move || editing.get())),
+        interactive: Reactive(use_signal(move || interactive.get())),
         panel_open: Reactive(use_signal(move || panel_open.get())),
         widget_add_open: Reactive(use_signal(move || widget_add_open.get())),
         dirty: Reactive(use_signal(move || dirty.get())),
@@ -533,6 +539,7 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
         appearance: _,
         widgets: _,
         editing,
+        interactive,
         selected,
         managed,
         settings,
@@ -541,11 +548,6 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
     let current = reactive.state.borrow().clone();
     let sample = editing.get() && current.system == scorepeek_overlay_ui::LampState::Inactive;
     let current_settings = settings.borrow().clone();
-    let refresh_error = reactive
-        .refresh_edit
-        .borrow()
-        .as_ref()
-        .and_then(|edit| parse_refresh_rate(&edit.text).err());
     let selected_canvas_id = current_settings
         .has_selection
         .then_some(current_settings.id.as_str());
@@ -564,28 +566,30 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
         }
         if editing.get() {
             for canvas in managed.borrow().iter().filter(|canvas| active_editor_canvas_on_surface(&canvas.id,canvas.show_on.as_deref(),selected_canvas_id,&surface_canvas_ids,current_settings.preview_screen)) {
-                EditorCanvas {key:"{canvas.id}",canvas:canvas.clone(),editing:true,selected:true,selected_widget:selected.borrow().clone(),onaction:onsurface,
+                EditorCanvas {key:"{canvas.id}",canvas:canvas.clone(),editing:interactive.get(),selected:interactive.get(),selected_widget:selected.borrow().clone(),onaction:onsurface,
                     div {}
                 }
             }
         }
-        if editing.get() {
+        if interactive.get() {
             EditorPanel {
                     view: EditorView {
-                        backend_label:"WAYLAND EDITOR".into(),
-                        canvases: managed.borrow().clone(),
+                        backend_label:"EDITOR".into(),
+                        canvases: managed.borrow().iter().filter(|canvas|canvas.output==current_settings.output).cloned().collect(),
                         selected_canvas: current_settings.has_selection.then(||current_settings.id.clone()),
                         selected_widget:selected.borrow().clone(),
                         preview_screen:current_settings.preview_screen,
-                        outputs:Some(reactive.outputs.borrow().iter().map(|output|EditorOutput {name:output.name.clone(),model:output.model.clone(),logical_size:output.logical_size}).collect()),
+                        outputs:reactive.outputs.borrow().iter().map(|output|EditorOutput {name:output.name.clone(),model:output.model.clone(),logical_size:output.logical_size}).collect(),
+                        active_output:current_settings.output.clone(),
                         panel_width:current_settings.panel_width,
                         chrome:EditorChrome {panel_open:reactive.panel_open.get(),
                         widget_add_open:reactive.widget_add_open.get(),sample},
                         access:EditorAccess {dirty:reactive.dirty.get() || reactive.refresh_edit.borrow().is_some(),readonly:reactive.readonly.get(),
                         undo_available:reactive.undo_available.get()},
                         title:reactive.title_edit.borrow().as_ref().map_or(EditorTitleState::Closed,|edit|if edit.preedit.is_empty(){EditorTitleState::Editing}else{EditorTitleState::Composing}),
-                        refresh_rate:Some(RefreshRateEditor {rate:reactive.refresh_rate.get(),editing:reactive.refresh_edit.borrow().is_some(),error:refresh_error}),
+                        refresh_rate:None,
                         skins:installed_editor_skins(),
+                        new_canvas_skin:current_settings.new_canvas_skin,
                     },
                     title_input:rsx! { if let Some(edit)=reactive.title_edit.borrow().as_ref() {
                         div { class:"empty-title-edit", role:"textbox", "aria-label":"Widget title", "aria-multiline":"false", {title_input_content(edit)} }
@@ -795,12 +799,11 @@ fn watch_parent(
 }
 
 fn recent_same_failure(
-    failure: &(Option<String>, u64, Instant),
+    failure: &(Option<String>, Instant),
     canvas: &crate::config::Canvas,
 ) -> bool {
-    failure.0 == canvas.output
-        && failure.1 == canvas.revision
-        && failure.2.elapsed() < Duration::from_secs(5)
+    failure.0.as_deref() == Some(canvas.output.as_str())
+        && failure.1.elapsed() < Duration::from_secs(5)
 }
 
 /// Runs until the parent's lifetime lease closes.
@@ -835,7 +838,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
     let feed_stop = Arc::clone(&feed.stop);
     let mut desired = config.canvases.clone();
     let mut workers = BTreeMap::<String, Worker>::new();
-    let mut failed = BTreeMap::<String, (Option<String>, u64, Instant)>::new();
+    let mut failed = BTreeMap::<String, (Option<String>, Instant)>::new();
     let preview = Arc::new(std::sync::Mutex::new(None::<String>));
     let workspace_open = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let workspace_ui = Arc::new(std::sync::Mutex::new(NativeWorkspace::default()));
@@ -845,28 +848,52 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
         .wayland_refresh_hz = config.wayland_refresh_hz;
     let wayland_refresh_hz = Arc::new(std::sync::Mutex::new(config.wayland_refresh_hz));
     let renderer_init = Arc::new(RendererInitCoordinator::default());
+    let mut workspace_was_open = false;
     let suppressed = Arc::new(std::sync::Mutex::new(
         std::collections::BTreeSet::<String>::new(),
     ));
-    if config.edit_on_start
-        && let Some(canvas) = desired.first()
-    {
+    if config.edit_on_start || desired.is_empty() {
         workspace_open.store(true, std::sync::atomic::Ordering::Release);
         *preview
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(canvas.id.clone());
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            desired.first().map(|canvas| canvas.id.clone());
+    }
+    if desired.is_empty() {
+        desired.push(editor_bootstrap(&config)?);
+        crate::diagnostics::emit(
+            "native_editor_stage",
+            &serde_json::json!({"status":"bootstrap","canvas_count":0}),
+        );
     }
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
-        if let Ok((loaded, _)) = crate::config::load_or_create(&config.config_path) {
-            *wayland_refresh_hz
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = loaded.wayland_refresh_hz;
-            desired = loaded
+        let workspace_is_open = workspace_open.load(std::sync::atomic::Ordering::Acquire);
+        if workspace_was_open
+            && !workspace_is_open
+            && let Ok(response) = crate::control::request(
+                &config.control_socket,
+                &crate::control::Request::GetBackend {
+                    backend: crate::runtime::Backend::Wayland,
+                },
+            )
+        {
+            desired = response
                 .canvases
                 .into_iter()
-                .filter(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
+                .map(|presentation| {
+                    let mut canvas = crate::config::empty_canvas(
+                        presentation.id.clone(),
+                        crate::runtime::Backend::Wayland,
+                    );
+                    canvas.apply_presentation(&presentation);
+                    canvas
+                })
                 .collect();
+            if desired.is_empty() {
+                workspace_open.store(true, std::sync::atomic::Ordering::Release);
+            }
         }
+        workspace_was_open = workspace_is_open;
         if workspace_open.load(std::sync::atomic::Ordering::Acquire)
             && let Ok(response) = crate::control::request(
                 &config.control_socket,
@@ -876,7 +903,6 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                 },
             )
             && !response.readonly
-            && !response.canvases.is_empty()
         {
             if let Some(refresh) = response.wayland_refresh_hz {
                 *wayland_refresh_hz
@@ -900,6 +926,9 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                 })
                 .collect();
         }
+        if workspace_open.load(std::sync::atomic::Ordering::Acquire) && desired.is_empty() {
+            desired.push(editor_bootstrap(&config)?);
+        }
         if workspace_open.load(std::sync::atomic::Ordering::Acquire) {
             let (outputs, surfaces) = {
                 let workspace = workspace_ui
@@ -911,9 +940,17 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                 )
             };
             for (index, output) in outputs.into_iter().enumerate() {
-                let represented = desired
-                    .iter()
-                    .any(|canvas| canvas.output.as_deref() == Some(output.name.as_str()))
+                if let Some(bootstrap) = desired.iter_mut().find(|canvas| {
+                    canvas.id == "__scorepeek-editor-bootstrap"
+                        && canvas.output == crate::config::UNRESOLVED_WAYLAND_OUTPUT_ID
+                }) {
+                    bootstrap.output.clone_from(&output.name);
+                    if let Some([width, height]) = output.logical_size {
+                        bootstrap.width = width;
+                        bootstrap.height = height;
+                    }
+                }
+                let represented = desired.iter().any(|canvas| canvas.output == output.name)
                     || surfaces.get(&output.name).is_some_and(|surface_ids| {
                         desired
                             .iter()
@@ -931,11 +968,11 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                 if let Some(skin) = editor_skin {
                     canvas.skin = skin;
                 }
-                canvas.output = Some(output.name);
+                canvas.output = output.name;
                 canvas.show_on = Some(Vec::new());
                 if let Some([width, height]) = output.logical_size {
-                    canvas.width = grid_floor(width).max(32);
-                    canvas.height = grid_floor(height).max(32);
+                    canvas.width = width.max(32);
+                    canvas.height = height.max(32);
                 }
                 desired.push(canvas);
             }
@@ -964,7 +1001,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                     || desired
                         .iter()
                         .find(|canvas| canvas.id == id.as_str())
-                        .is_some_and(|canvas| canvas.output != worker.output)
+                        .is_some_and(|canvas| Some(&canvas.output) != worker.output.as_ref())
                     || worker.join.is_finished()
             })
             .map(|(id, _)| id.clone())
@@ -982,10 +1019,8 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => {
                         if let Some(canvas) = desired.iter().find(|canvas| canvas.id == id) {
-                            failed.insert(
-                                id.clone(),
-                                (canvas.output.clone(), canvas.revision, Instant::now()),
-                            );
+                            failed
+                                .insert(id.clone(), (Some(canvas.output.clone()), Instant::now()));
                         }
                         crate::diagnostics::emit(
                             "native_canvas_failed",
@@ -1050,7 +1085,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             workers.insert(
                 canvas.id.clone(),
                 Worker {
-                    output: canvas.output.clone(),
+                    output: Some(canvas.output.clone()),
                     stop: canvas_stop,
                     join,
                 },
@@ -1065,6 +1100,26 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
         let _ = worker.join.join();
     }
     Ok(())
+}
+
+fn editor_bootstrap(config: &Config) -> Result<crate::config::Canvas, String> {
+    let skin = crate::skin::StoreRoot::new(config.skin_store.clone())
+        .list()?
+        .first()
+        .ok_or("Wayland editor requires at least one installed skin")?
+        .id
+        .parse::<scorepeek_overlay_ui::Skin>()?;
+    let mut bootstrap = crate::config::empty_canvas(
+        "__scorepeek-editor-bootstrap".into(),
+        crate::runtime::Backend::Wayland,
+    );
+    bootstrap.skin = skin;
+    bootstrap.x = 0;
+    bootstrap.y = 0;
+    bootstrap.width = 1920;
+    bootstrap.height = 1080;
+    bootstrap.show_on = Some(Vec::new());
+    Ok(bootstrap)
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -1095,17 +1150,17 @@ fn run_canvas(
         .insert(canvas.id.clone(), wake);
     let configured_output = canvas.output.clone();
     let shell = Shell::open(
-        canvas.output.as_deref(),
+        Some(canvas.output.as_str()),
         canvas.width,
         canvas.height,
         canvas.x,
         canvas.y,
-        canvas.initial_placement == Some(crate::config::InitialPlacement::UpperRight),
+        false,
         ping.1,
     )?;
     let mut pending_resolved_output = None;
     if let Some(selected_output) = shell.output_name.as_deref()
-        && canvas.output.as_deref() != Some(selected_output)
+        && canvas.output != selected_output
     {
         pending_resolved_output = Some(selected_output.to_owned());
         if let Some([output_width, output_height]) = shell.output_logical_size {
@@ -1133,6 +1188,12 @@ fn run_canvas(
     if pending_resolved_output.is_some()
         && let Some([output_width, output_height]) = shell.output_logical_size
     {
+        if canvas.id.starts_with("__scorepeek-editor-") {
+            canvas.x = 0;
+            canvas.y = 0;
+            canvas.width = output_width.max(32);
+            canvas.height = output_height.max(32);
+        }
         canvas.x = canvas
             .x
             .clamp(0, maximum_grid_position(output_width, canvas.width));
@@ -1248,6 +1309,7 @@ struct App {
     appearance: Reactive<Appearance>,
     editor_id: String,
     editing: Reactive<bool>,
+    interactive: Reactive<bool>,
     panel_open: Reactive<bool>,
     widget_add_open: Reactive<bool>,
     dirty: Reactive<bool>,
@@ -1261,7 +1323,7 @@ struct App {
     interaction: Option<Drag>,
     next_keepalive: Instant,
     managed: Reactive<Vec<scorepeek_overlay_ui::CanvasPresentation>>,
-    backend_revision: u64,
+    generation: u64,
     outputs: Reactive<Vec<OutputDescription>>,
     visible: Reactive<bool>,
     pending_resolved_output: Option<String>,
@@ -1321,6 +1383,7 @@ impl App {
         let reactive = Rc::new(RefCell::new(None));
         let shared_widgets = Rc::new(RefCell::new(widgets));
         let editing = Rc::new(Cell::new(false));
+        let interactive = Rc::new(Cell::new(false));
         let ui = workspace_ui
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1344,7 +1407,7 @@ impl App {
         let settings = Rc::new(RefCell::new(NativeCanvasSettings {
             id: canvas.id.clone(),
             has_selection: true,
-            output: canvas.output.clone(),
+            output: Some(canvas.output.clone()),
             show_on: canvas.show_on.clone(),
             background: canvas.background,
             opacity_percent: canvas.opacity_percent,
@@ -1354,6 +1417,7 @@ impl App {
             height: canvas.height,
             preview_screen: ui.preview_screen,
             panel_width,
+            new_canvas_skin: canvas.skin,
         }));
         let initially_visible = canvas.show_on.is_none();
         shell.set_input_enabled(initially_visible);
@@ -1370,6 +1434,7 @@ impl App {
                 appearance: Rc::clone(&appearance),
                 widgets: Rc::clone(&shared_widgets),
                 editing: Rc::clone(&editing),
+                interactive: Rc::clone(&interactive),
                 panel_open: Rc::clone(&panel_open),
                 widget_add_open: Rc::clone(&widget_add_open),
                 dirty: Rc::clone(&dirty),
@@ -1445,6 +1510,9 @@ impl App {
                 .iter()
                 .map(|output| (output.name.clone(), output.clone()))
                 .collect();
+            if workspace.active_output.is_none() {
+                workspace.active_output = workspace.outputs.keys().next().cloned();
+            }
             workspace
                 .surfaces
                 .entry(surface_output.clone().unwrap_or_default())
@@ -1481,6 +1549,7 @@ impl App {
             appearance: reactive.appearance,
             editor_id: format!("wayland-{}", std::process::id()),
             editing: reactive.editing,
+            interactive: reactive.interactive,
             panel_open: reactive.panel_open,
             widget_add_open: reactive.widget_add_open,
             dirty: reactive.dirty,
@@ -1495,7 +1564,7 @@ impl App {
 
             next_keepalive: Instant::now(),
             managed: reactive.managed,
-            backend_revision: 0,
+            generation: 0,
             outputs: reactive.outputs,
             pending_resolved_output,
             next_output_persist: Instant::now() + Duration::from_secs(1),
@@ -1543,6 +1612,18 @@ impl App {
             } else if self.editing.get() && !should_edit {
                 self.set_editing(false);
             }
+            let should_interact = should_edit
+                && self
+                    .workspace_ui
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .active_output
+                    .as_deref()
+                    == self.surface_output.as_deref();
+            if self.interactive.get() != should_interact {
+                self.interactive.set(should_interact);
+                self.shell.set_input_enabled(should_interact);
+            }
             self.retry_resolved_output();
             if self.editing.get() && Instant::now() >= self.next_keepalive {
                 let _ = self.request(crate::control::Request::KeepAliveBackend {
@@ -1551,7 +1632,17 @@ impl App {
                 });
                 self.next_keepalive = Instant::now() + Duration::from_secs(5);
             }
-            let events = self.shell.dispatch(Duration::from_millis(500))?;
+            let events = match self.shell.dispatch(Duration::from_millis(500)) {
+                Ok(events) => events,
+                Err(_)
+                    if self
+                        .external_stop
+                        .load(std::sync::atomic::Ordering::Acquire) =>
+                {
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
             let mut wake = false;
             let mut frame = false;
             let mut configured = false;
@@ -1647,16 +1738,42 @@ impl App {
                 .workspace_open
                 .load(std::sync::atomic::Ordering::Acquire)
                 && !self.editing.get();
-            let visible = !workspace_peer
-                && (self.editing.get()
+            let visible = if workspace_peer {
+                let selected = self
+                    .preview
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                let screen = self
+                    .workspace_ui
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .ui
+                    .preview_screen;
+                selected.as_deref() != Some(self.surface_canvas.id.as_str())
+                    && scorepeek_overlay_ui::canvas_visible(
+                        self.surface_canvas.show_on.as_deref(),
+                        scorepeek_overlay_ui::ScreenView {
+                            kind: Some(screen),
+                            ..scorepeek_overlay_ui::ScreenView::default()
+                        },
+                    )
+            } else {
+                self.editing.get()
                     || scorepeek_overlay_ui::canvas_visible(
                         self.surface_canvas.show_on.as_deref(),
                         latest.screen,
-                    ));
+                    )
+            };
             let visibility_changed = self.visible.get() != visible;
             if visibility_changed {
                 self.visible.set(visible);
-                self.shell.set_input_enabled(visible);
+                let accepts_input = visible
+                    && (!self
+                        .workspace_open
+                        .load(std::sync::atomic::Ordering::Acquire)
+                        || self.interactive.get());
+                self.shell.set_input_enabled(accepts_input);
                 crate::diagnostics::emit(
                     "native_canvas_visibility",
                     &serde_json::json!({
@@ -1753,6 +1870,22 @@ impl App {
         let Some(output) = self.pending_resolved_output.clone() else {
             return;
         };
+        let output_names = self
+            .outputs
+            .borrow()
+            .iter()
+            .map(|output| output.name.clone())
+            .collect();
+        let resolved = crate::control::request(
+            &self.control_socket,
+            &crate::control::Request::ResolveWaylandOutputs {
+                outputs: output_names,
+            },
+        );
+        if !resolved.is_ok_and(|response| response.ok) {
+            self.next_output_persist = Instant::now() + Duration::from_secs(1);
+            return;
+        }
         let fallback = self.canvas.clone();
         self.pending_resolved_output = None;
         self.workspace_open
@@ -1763,7 +1896,7 @@ impl App {
         self.canvas.y = fallback.y;
         self.canvas.width = fallback.width;
         self.canvas.height = fallback.height;
-        self.canvas.output = Some(output.clone());
+        self.canvas.output.clone_from(&output);
         {
             let mut settings = self.settings.borrow_mut();
             settings.x = fallback.x;
@@ -1789,8 +1922,8 @@ impl App {
         if updates_readonly {
             self.readonly.set(response.readonly);
         }
-        if let Some(revision) = response.backend_revision {
-            self.backend_revision = revision;
+        if let Some(generation) = response.generation {
+            self.generation = generation;
             self.dirty.set(response.dirty);
             self.managed.borrow_mut().clone_from(&response.canvases);
             {
@@ -1915,7 +2048,7 @@ impl App {
             *self.selected.borrow_mut() = selected_widget;
         }
         self.pending_widget.set_if_changed(pending_widget);
-        if self.interaction.is_none() && !draft.is_empty() && *self.managed.borrow() != draft {
+        if self.interaction.is_none() && *self.managed.borrow() != draft {
             self.managed.borrow_mut().clone_from(&draft);
         }
         if self.editing.get() && self.interaction.is_none() {
@@ -2016,6 +2149,11 @@ impl App {
         }
         if !self.editing.get() {
             if button == 0x111 && pressed {
+                self.workspace_ui
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .active_output
+                    .clone_from(&self.surface_output);
                 self.workspace_open
                     .store(true, std::sync::atomic::Ordering::Release);
                 if let Some(screen) = self.shared_state.borrow().screen.kind {
@@ -2059,6 +2197,18 @@ impl App {
     fn editor_model(&self) -> EditorModel {
         let mut model = EditorModel::new(self.draft_snapshot(), self.surface_logical, "wayland");
         model.set_skins(installed_editor_skins());
+        model.set_outputs(
+            self.outputs
+                .borrow()
+                .iter()
+                .map(|output| EditorOutput {
+                    name: output.name.clone(),
+                    model: output.model.clone(),
+                    logical_size: output.logical_size,
+                })
+                .collect(),
+        );
+        model.active_output.clone_from(&self.surface_output);
         model.readonly = self.readonly.get();
         model.editing = self.editing.get();
         model.preview = self.settings.borrow().preview_screen;
@@ -2070,6 +2220,7 @@ impl App {
         model.selected_widget.clone_from(&self.selected.borrow());
         model.chrome.panel_open = self.panel_open.get();
         model.chrome.widget_add_open = self.widget_add_open.get();
+        model.new_canvas_skin = self.settings.borrow().new_canvas_skin;
         model.placing = self.pending_widget.get();
         model.drag.clone_from(&self.interaction);
         model
@@ -2081,6 +2232,7 @@ impl App {
         }
         self.managed.set(model.draft);
         self.settings.borrow_mut().preview_screen = model.preview;
+        self.settings.borrow_mut().new_canvas_skin = model.new_canvas_skin;
         self.panel_open.set(model.chrome.panel_open);
         self.widget_add_open.set(model.chrome.widget_add_open);
         self.pending_widget.set(model.placing);
@@ -2253,7 +2405,16 @@ impl App {
             });
         }
     }
+    #[allow(clippy::too_many_lines)]
     fn editor_action(&mut self, action: &EditorAction) {
+        if let EditorAction::SelectOutput(output) = action {
+            self.workspace_ui
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .active_output = Some(output.clone());
+            self.select_canvas(None);
+            return;
+        }
         if !matches!(action, EditorAction::AcceptTitle | EditorAction::EditTitle) {
             self.finish_title_edit(false);
         }
@@ -2502,7 +2663,6 @@ impl App {
         let response = self.request(crate::control::Request::CommitBackend {
             backend: crate::runtime::Backend::Wayland,
             editor_id: self.editor_id.clone(),
-            expected_revision: self.backend_revision,
             canvases,
             wayland_refresh_hz: Some(self.refresh_rate.get()),
         });
@@ -3092,6 +3252,7 @@ struct VisualDebugSession {
     appearance: Reactive<Appearance>,
     widgets: Reactive<Vec<WidgetLayout>>,
     editing: Reactive<bool>,
+    interactive: Reactive<bool>,
     panel_open: Reactive<bool>,
     widget_add_open: Reactive<bool>,
     selected: Reactive<Option<String>>,
@@ -3142,6 +3303,7 @@ impl VisualDebugSession {
         let appearance = Rc::new(Cell::new(Appearance { skin: canvas.skin }));
         let widgets = Rc::new(RefCell::new(canvas.widgets.clone()));
         let editing = Rc::new(Cell::new(scenario.editing));
+        let interactive = Rc::new(Cell::new(scenario.editing));
         let panel_open = Rc::new(Cell::new(true));
         let widget_add_open = Rc::new(Cell::new(false));
         let selected = Rc::new(RefCell::new(None));
@@ -3163,6 +3325,7 @@ impl VisualDebugSession {
             height: canvas.height,
             preview_screen: scorepeek_overlay_ui::ScreenKind::MusicSelect,
             panel_width: editor_panel_width(Some(scenario.logical_size[0])),
+            new_canvas_skin: canvas.skin,
         }));
         let reactive = Rc::new(RefCell::new(None));
         let actions = Rc::new(RefCell::new(Vec::new()));
@@ -3171,6 +3334,7 @@ impl VisualDebugSession {
             appearance: Rc::clone(&appearance),
             widgets: Rc::clone(&widgets),
             editing: Rc::clone(&editing),
+            interactive: Rc::clone(&interactive),
             panel_open: Rc::clone(&panel_open),
             widget_add_open: Rc::clone(&widget_add_open),
             dirty: Rc::new(Cell::new(false)),
@@ -3254,6 +3418,7 @@ impl VisualDebugSession {
             appearance: reactive.appearance,
             widgets: reactive.widgets,
             editing: reactive.editing,
+            interactive: reactive.interactive,
             panel_open: reactive.panel_open,
             widget_add_open: reactive.widget_add_open,
             selected: reactive.selected,
@@ -3373,6 +3538,7 @@ impl VisualDebugSession {
             height: canvas.height,
             preview_screen,
             panel_width: editor_panel_width(Some(self.logical_size[0])),
+            new_canvas_skin: canvas.skin,
         };
     }
 
@@ -3391,11 +3557,13 @@ impl VisualDebugSession {
         model.selected_widget.clone_from(&self.selected.borrow());
         model.chrome.panel_open = self.panel_open.get();
         model.chrome.widget_add_open = self.widget_add_open.get();
+        model.new_canvas_skin = self.settings.borrow().new_canvas_skin;
         model
     }
     fn apply_editor_model(&self, model: &EditorModel) {
         self.managed.set(model.draft.clone());
         self.settings.borrow_mut().preview_screen = model.preview;
+        self.settings.borrow_mut().new_canvas_skin = model.new_canvas_skin;
         if let Some(canvas) = model.current() {
             self.load_canvas(canvas.clone());
         }
@@ -3689,6 +3857,7 @@ pub fn run_visual_debug(
                 }
                 VisualDebugAction::SetEditing { value } => {
                     session.editing.set(*value);
+                    session.interactive.set(*value);
                     session.resolve();
                     format!("set-editing-{value}")
                 }
@@ -4078,6 +4247,7 @@ mod skin_tests {
         for corner in ["nw", "ne", "sw", "se"] {
             let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
             session.editing.set(true);
+            session.interactive.set(true);
             session.panel_open.set(false);
             session.selected.set(Some("cam".into()));
             session.resolve();
@@ -4192,7 +4362,7 @@ mod skin_tests {
 
     #[test]
     fn one_draft_snapshot_undoes_every_field_and_is_not_replaced_by_a_no_op() {
-        let before = crate::config::OverlayConfig::initial()
+        let before = crate::config::visual_debug_config()
             .canvases
             .into_iter()
             .filter(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
@@ -4571,6 +4741,7 @@ mod skin_tests {
                         appearance: Rc::new(Cell::new(Appearance { skin })),
                         widgets: Rc::new(RefCell::new(scorepeek_overlay_ui::default_widgets())),
                         editing: Rc::new(Cell::new(true)),
+                        interactive: Rc::new(Cell::new(true)),
                         panel_open: Rc::new(Cell::new(true)),
                         widget_add_open: Rc::new(Cell::new(false)),
                         dirty: Rc::new(Cell::new(false)),
@@ -4604,6 +4775,7 @@ mod skin_tests {
                             height: 1040,
                             preview_screen: scorepeek_overlay_ui::ScreenKind::MusicSelect,
                             panel_width: 400,
+                            new_canvas_skin: scorepeek_overlay_ui::Skin::CyanSystem,
                         })),
                         surface_canvas_ids: Rc::new(RefCell::new(
                             std::collections::BTreeSet::from(["test".into()]),
@@ -4657,6 +4829,7 @@ mod skin_tests {
                         skin_properties: std::collections::BTreeMap::new(),
                     }])),
                     editing: Rc::new(Cell::new(false)),
+                    interactive: Rc::new(Cell::new(false)),
                     panel_open: Rc::new(Cell::new(true)),
                     widget_add_open: Rc::new(Cell::new(false)),
                     dirty: Rc::new(Cell::new(false)),
@@ -4681,6 +4854,7 @@ mod skin_tests {
                         height: 72,
                         preview_screen: scorepeek_overlay_ui::ScreenKind::MusicSelect,
                         panel_width: 400,
+                        new_canvas_skin: scorepeek_overlay_ui::Skin::CyanSystem,
                     })),
                     surface_canvas_ids: Rc::new(RefCell::new(std::collections::BTreeSet::from([
                         "test".into(),
@@ -4751,7 +4925,6 @@ mod skin_tests {
             background: scorepeek_overlay_ui::Background::None,
             opacity_percent: 100,
             output: Some("DP-1".into()),
-            revision: 0,
             x: 120,
             y: 80,
             width: 560,
@@ -4781,6 +4954,7 @@ mod skin_tests {
                     })),
                     widgets: Rc::new(RefCell::new(Vec::new())),
                     editing: Rc::new(Cell::new(true)),
+                    interactive: Rc::new(Cell::new(true)),
                     panel_open: Rc::new(Cell::new(true)),
                     widget_add_open: Rc::new(Cell::new(false)),
                     dirty: Rc::new(Cell::new(false)),
@@ -4809,6 +4983,7 @@ mod skin_tests {
                         height: 120,
                         preview_screen: scorepeek_overlay_ui::ScreenKind::MusicSelect,
                         panel_width: 384,
+                        new_canvas_skin: scorepeek_overlay_ui::Skin::CyanSystem,
                     })),
                     surface_canvas_ids: Rc::new(RefCell::new(std::collections::BTreeSet::from([
                         "wayland-selection".into(),
@@ -4890,7 +5065,7 @@ mod skin_tests {
     #[test]
     fn screen_switch_is_the_only_canvas_visibility_state() {
         use scorepeek_overlay_ui::editor_model::SCREENS;
-        let mut canvas = crate::config::OverlayConfig::initial().canvases[0].presentation();
+        let mut canvas = crate::config::visual_debug_config().canvases[0].presentation();
         canvas.show_on = None;
         let mut model = EditorModel::new(vec![canvas.clone()], [1920, 1080], "wayland");
         model.readonly = false;
@@ -4903,7 +5078,7 @@ mod skin_tests {
             model.preview = screen;
             model.action(&EditorAction::ToggleCanvas(canvas.id.clone()));
         }
-        assert_eq!(model.draft[0].show_on, None);
+        assert_eq!(model.draft[0].show_on, Some(SCREENS.to_vec()));
     }
 
     #[test]

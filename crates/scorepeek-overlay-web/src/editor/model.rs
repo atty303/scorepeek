@@ -22,13 +22,13 @@ mod tests {
         model
     }
     #[test]
-    fn host_namespaces_do_not_collide_and_undo_closes_unconfirmed_title() {
+    fn backend_workspaces_share_canvas_ids_and_undo_closes_unconfirmed_title() {
         let mut obs = editor();
         let mut native = Model::new(obs.draft.clone(), obs.viewport, "wayland");
         native.readonly = false;
         assert!(obs.action(&EditorAction::AddCanvas));
         assert!(native.action(&EditorAction::AddCanvas));
-        assert_ne!(obs.selected_canvas, native.selected_canvas);
+        assert_eq!(obs.selected_canvas, native.selected_canvas);
         obs.action(&EditorAction::SelectCanvas("design".into()));
         obs.action(&EditorAction::SelectWidget("cam".into()));
         obs.action(&EditorAction::EditTitle);

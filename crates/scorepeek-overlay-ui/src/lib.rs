@@ -210,6 +210,7 @@ pub struct OverlayState {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ScreenKind {
+    Unknown,
     MusicSelect,
     ModeSelect,
     DecideTransition,
@@ -229,7 +230,7 @@ pub struct ScreenView {
 
 #[must_use]
 pub fn canvas_visible(show_on: Option<&[ScreenKind]>, screen: ScreenView) -> bool {
-    show_on.is_none_or(|screens| screen.kind.is_some_and(|kind| screens.contains(&kind)))
+    show_on.is_none_or(|screens| screens.contains(&screen.kind.unwrap_or(ScreenKind::Unknown)))
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -344,7 +345,6 @@ pub struct CanvasPresentation {
     pub skin: Skin,
     #[serde(default)]
     pub skin_properties: std::collections::BTreeMap<String, serde_json::Value>,
-    pub revision: u64,
     #[serde(default)]
     pub show_on: Option<Vec<ScreenKind>>,
     #[serde(default = "default_opacity_percent")]
@@ -830,6 +830,10 @@ mod tests {
         assert!(!canvas_visible(Some(&[ScreenKind::Result]), screen));
         assert!(!canvas_visible(
             Some(&[ScreenKind::Play]),
+            ScreenView::default()
+        ));
+        assert!(canvas_visible(
+            Some(&[ScreenKind::Unknown]),
             ScreenView::default()
         ));
     }

@@ -2,7 +2,7 @@
   "logical_size": [1920, 1080],
   "editing": true,
   "canvases": [{
-    "id": "empty-output", "skin": "dev.atty303.scorepeek.skin.cyan-system", "revision": 0,
+    "id": "empty-output", "skin": "dev.atty303.scorepeek.skin.cyan-system",
     "x": 500, "y": 100, "width": 640, "height": 480,
     "show_on": [], "widgets": []
   }],
