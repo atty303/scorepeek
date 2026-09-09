@@ -63,6 +63,28 @@ struct FrameCadence {
     last_paint: Option<Duration>,
 }
 
+#[derive(Default)]
+struct EditorSkinUpdates {
+    pending: bool,
+    requests: u64,
+    renders: u64,
+}
+
+impl EditorSkinUpdates {
+    fn request(&mut self) {
+        self.pending = true;
+        self.requests = self.requests.saturating_add(1);
+    }
+
+    fn take_if_ready(&mut self, frame: bool, dragging: bool) -> bool {
+        if !self.pending || (!frame && dragging) {
+            return false;
+        }
+        self.pending = false;
+        true
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum EditorPointerObservation {
     #[default]
@@ -198,6 +220,18 @@ fn passive_pointer_move(action: &SurfaceAction, dragging: bool) -> Option<[i32; 
         SurfaceAction::Move(point) => Some(*point),
         _ => None,
     }
+}
+
+fn editor_skin_presentation_changed(
+    before: &scorepeek_overlay_ui::CanvasPresentation,
+    after: &scorepeek_overlay_ui::CanvasPresentation,
+) -> bool {
+    before.id != after.id
+        || before.skin != after.skin
+        || before.skin_properties != after.skin_properties
+        || before.width != after.width
+        || before.height != after.height
+        || before.widgets != after.widgets
 }
 
 fn shown_on(
@@ -1136,6 +1170,9 @@ fn run_canvas(
         let mut report = report.borrow_mut();
         report.paint_count = app.paint_count;
         report.render_calls = app.render_calls;
+        report.editor_skin_update_requests = app.editor_skin_updates.requests;
+        report.editor_skin_render_count = app.editor_skin_updates.renders;
+        report.skin_package_open_count = app.skin_package_open_count;
         report.elapsed_ms = u64::try_from(app.started.elapsed().as_millis()).unwrap_or(u64::MAX);
         report.wayland_refresh_hz = *app
             .wayland_refresh_hz
@@ -1173,6 +1210,7 @@ struct App {
     pending_paint: bool,
     full_layout_pending: bool,
     cadence: FrameCadence,
+    editor_skin_updates: EditorSkinUpdates,
     report: Rc<RefCell<RunReport>>,
     feed_state: Arc<std::sync::Mutex<OverlayState>>,
     feed_stop: Arc<std::sync::atomic::AtomicBool>,
@@ -1219,8 +1257,10 @@ struct App {
     next_skin_render: Option<Instant>,
     skin_release: String,
     skin_manifest: crate::skin::Manifest,
+    skin_package: crate::skin::Package,
     skin_store: std::path::PathBuf,
     skin_assets: Arc<std::sync::Mutex<Option<crate::skin::Package>>>,
+    skin_package_open_count: u64,
 }
 
 impl App {
@@ -1403,6 +1443,7 @@ impl App {
             pending_paint: false,
             full_layout_pending: false,
             cadence: FrameCadence::default(),
+            editor_skin_updates: EditorSkinUpdates::default(),
             report,
             feed_state,
             feed_stop,
@@ -1449,9 +1490,11 @@ impl App {
             skin_tree,
             next_skin_render,
             skin_release: package.manifest.release.clone(),
-            skin_manifest: package.manifest,
+            skin_manifest: package.manifest.clone(),
+            skin_package: package,
             skin_store,
             skin_assets,
+            skin_package_open_count: 1,
         })
     }
     #[allow(clippy::too_many_lines)]
@@ -1603,7 +1646,7 @@ impl App {
                 *self.shared_state.borrow_mut() = latest.clone();
                 if visible {
                     if self.editing.get() {
-                        self.update_editor_skin();
+                        self.editor_skin_updates.request();
                     } else {
                         self.render_skin(&latest)?;
                     }
@@ -1618,10 +1661,18 @@ impl App {
                     .is_some_and(|deadline| Instant::now() >= deadline)
             {
                 if self.editing.get() {
-                    self.update_editor_skin();
+                    self.editor_skin_updates.request();
                 } else {
                     self.render_skin(&latest)?;
                 }
+                wake = true;
+            }
+            if self.editing.get()
+                && self
+                    .editor_skin_updates
+                    .take_if_ready(frame, self.interaction.is_some())
+            {
+                self.update_editor_skin();
                 wake = true;
             }
             let changed =
@@ -1637,7 +1688,8 @@ impl App {
                 Some(PaintReason::VisibilityClear)
             } else if self.editing.get()
                 && visible
-                && (self.pending_paint || (frame && self.animating))
+                && frame
+                && (self.pending_paint || self.animating)
             {
                 Some(PaintReason::Editor)
             } else if visible && (self.pending_paint || (frame && self.animating)) {
@@ -1992,6 +2044,7 @@ impl App {
         model
     }
     fn apply_editor_model(&mut self, model: EditorModel) {
+        let previous = self.canvas.presentation();
         if let Some(canvas) = model.current() {
             self.apply_selected_presentation(canvas);
         }
@@ -2003,11 +2056,15 @@ impl App {
         self.select_canvas(model.selected_canvas);
         self.selected.set(model.selected_widget);
         self.interaction = model.drag;
-        self.update_editor_skin();
+        if editor_skin_presentation_changed(&previous, &self.canvas.presentation()) {
+            self.editor_skin_updates.request();
+        }
         self.sync_workspace_ui();
     }
 
     fn update_editor_skin(&mut self) {
+        self.editor_skin_updates.pending = false;
+        self.editor_skin_updates.renders = self.editor_skin_updates.renders.saturating_add(1);
         if let Err(error) = self.render_editor_skin() {
             self.next_skin_render = None;
             self.animating = false;
@@ -2047,23 +2104,26 @@ impl App {
         } else {
             self.shared_state.borrow().clone()
         };
-        let package =
-            crate::skin::StoreRoot::new(self.skin_store.clone()).open(self.canvas.skin.name())?;
-        let css = std::str::from_utf8(
-            package
-                .resource(crate::skin::STYLE_PATH)
-                .ok_or("skin.css missing")?,
-        )
-        .map_err(|error| format!("skin.css is not UTF-8: {error}"))?
-        .to_owned();
+        let desired_skin = self.canvas.skin.name();
+        if self.skin_package.manifest.id != desired_skin {
+            let package =
+                crate::skin::StoreRoot::new(self.skin_store.clone()).open(desired_skin)?;
+            *self
+                .skin_assets
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(package.clone());
+            self.skin_package = package;
+            self.skin_package_open_count = self.skin_package_open_count.saturating_add(1);
+        }
         if self.editing.get() {
             let same_preview =
                 self.preview_skin_runtime
                     .as_ref()
                     .is_some_and(|(id, release, _)| {
-                        id == &package.manifest.id && release == &package.manifest.release
+                        id == &self.skin_package.manifest.id
+                            && release == &self.skin_package.manifest.release
                     });
-            let input = native_skin_input(&self.canvas, &state, &package.manifest);
+            let input = native_skin_input(&self.canvas, &state, &self.skin_package.manifest);
             let output = if same_preview {
                 self.preview_skin_runtime
                     .as_mut()
@@ -2071,52 +2131,62 @@ impl App {
                     .2
                     .render(&input)?
             } else {
-                let mut runtime = crate::skin::Runtime::new(&package)?;
+                let mut runtime = crate::skin::Runtime::new(&self.skin_package)?;
                 let output = runtime.init(&input)?;
                 self.preview_skin_runtime = Some((
-                    package.manifest.id.clone(),
-                    package.manifest.release.clone(),
+                    self.skin_package.manifest.id.clone(),
+                    self.skin_package.manifest.release.clone(),
                     runtime,
                 ));
                 output
             };
-            *self
-                .skin_assets
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(package);
             if same_preview {
                 self.skin_tree
                     .apply(&mut self.document.inner.borrow_mut(), &output);
             } else {
+                let css = std::str::from_utf8(
+                    self.skin_package
+                        .resource(crate::skin::STYLE_PATH)
+                        .ok_or("skin.css missing")?,
+                )
+                .map_err(|error| format!("skin.css is not UTF-8: {error}"))?;
                 self.skin_tree
-                    .replace(&mut self.document.inner.borrow_mut(), &css, &output);
+                    .replace(&mut self.document.inner.borrow_mut(), css, &output);
             }
             self.next_skin_render = skin_deadline(&output.schedule);
             self.animating = matches!(output.schedule, crate::skin::Schedule::NextFrame);
-        } else if self.skin_manifest.id == package.manifest.id
-            && self.skin_release == package.manifest.release
+        } else if self.skin_manifest.id == self.skin_package.manifest.id
+            && self.skin_release == self.skin_package.manifest.release
         {
-            *self
-                .skin_assets
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(package);
             self.render_skin(&state)?;
+            let css = std::str::from_utf8(
+                self.skin_package
+                    .resource(crate::skin::STYLE_PATH)
+                    .ok_or("skin.css missing")?,
+            )
+            .map_err(|error| format!("skin.css is not UTF-8: {error}"))?;
             self.skin_tree
-                .set_css(&mut self.document.inner.borrow_mut(), &css);
+                .set_css(&mut self.document.inner.borrow_mut(), css);
         } else {
-            let mut runtime = crate::skin::Runtime::new(&package)?;
-            let output =
-                runtime.init(&native_skin_input(&self.canvas, &state, &package.manifest))?;
-            *self
-                .skin_assets
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(package.clone());
+            let mut runtime = crate::skin::Runtime::new(&self.skin_package)?;
+            let output = runtime.init(&native_skin_input(
+                &self.canvas,
+                &state,
+                &self.skin_package.manifest,
+            ))?;
+            let css = std::str::from_utf8(
+                self.skin_package
+                    .resource(crate::skin::STYLE_PATH)
+                    .ok_or("skin.css missing")?,
+            )
+            .map_err(|error| format!("skin.css is not UTF-8: {error}"))?;
             self.skin_tree
-                .replace(&mut self.document.inner.borrow_mut(), &css, &output);
+                .replace(&mut self.document.inner.borrow_mut(), css, &output);
             self.next_skin_render = skin_deadline(&output.schedule);
             self.animating = matches!(output.schedule, crate::skin::Schedule::NextFrame);
-            self.skin_release.clone_from(&package.manifest.release);
-            self.skin_manifest = package.manifest;
+            self.skin_release
+                .clone_from(&self.skin_package.manifest.release);
+            self.skin_manifest = self.skin_package.manifest.clone();
             self.skin_runtime = runtime;
         }
         Ok(())
@@ -2646,6 +2716,9 @@ struct RunReport {
     gpu_adapter: Option<String>,
     paint_count: u32,
     render_calls: u32,
+    editor_skin_update_requests: u64,
+    editor_skin_render_count: u64,
+    skin_package_open_count: u64,
     wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
     elapsed_ms: u64,
     effective_paint_hz: Option<f64>,
@@ -2673,6 +2746,9 @@ impl RunReport {
             gpu_adapter: None,
             paint_count: 0,
             render_calls: 0,
+            editor_skin_update_requests: 0,
+            editor_skin_render_count: 0,
+            skin_package_open_count: 0,
             wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate::Auto,
             elapsed_ms: 0,
             effective_paint_hz: None,
@@ -3690,6 +3766,93 @@ fn sanitize_artifact_name(name: &str) -> String {
 #[cfg(test)]
 mod skin_tests {
     use super::*;
+
+    #[test]
+    fn editor_skin_updates_coalesce_while_dragging_and_flush_on_frame_or_release() {
+        let mut updates = EditorSkinUpdates::default();
+        for _ in 0..100 {
+            updates.request();
+            assert!(!updates.take_if_ready(false, true));
+        }
+        assert!(updates.take_if_ready(true, true));
+        assert!(!updates.take_if_ready(true, true));
+
+        updates.request();
+        assert!(updates.take_if_ready(false, false));
+        assert_eq!(updates.requests, 101);
+    }
+
+    #[test]
+    fn canvas_position_does_not_invalidate_skin_but_content_geometry_does() {
+        let mut before = crate::config::visual_debug_config()
+            .canvases
+            .into_iter()
+            .find(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
+            .expect("visual debug config must contain a Wayland canvas")
+            .presentation();
+        let mut after = before.clone();
+        after.x += 40;
+        after.y += 24;
+        assert!(!editor_skin_presentation_changed(&before, &after));
+
+        after.width += 4;
+        assert!(editor_skin_presentation_changed(&before, &after));
+
+        after = before.clone();
+        before
+            .widgets
+            .first_mut()
+            .expect("visual debug canvas must contain a widget")
+            .x += 4;
+        assert!(editor_skin_presentation_changed(&after, &before));
+    }
+
+    #[test]
+    fn retained_skin_tree_can_restore_live_css_after_preview() {
+        let scenario: VisualDebugScenario =
+            serde_json::from_str(include_str!("../tests/fixtures/visual-composition.json"))
+                .unwrap();
+        let session = VisualDebugSession::new(&scenario, [1920, 1080]).unwrap();
+        let root = session
+            .document
+            .inner
+            .borrow()
+            .query_selector("#scorepeek-skin-root")
+            .unwrap()
+            .unwrap();
+        let output = crate::skin::RenderOutput {
+            schedule: crate::skin::Schedule::Idle,
+            tree: crate::skin::Node::Element {
+                key: "probe".into(),
+                tag: "div".into(),
+                attributes: std::collections::BTreeMap::from([(
+                    "id".into(),
+                    "native-css-probe".into(),
+                )]),
+                children: Vec::new(),
+            },
+        };
+        let mut tree = crate::skin::NativeTree::new(
+            &mut session.document.inner.borrow_mut(),
+            root,
+            "#native-css-probe { display: block; width: 80px; height: 20px; }",
+        );
+        tree.apply(&mut session.document.inner.borrow_mut(), &output);
+        session.document.inner.borrow_mut().resolve(0.0);
+        let width = |session: &VisualDebugSession| {
+            let inner = session.document.inner.borrow();
+            let probe = inner.query_selector("#native-css-probe").unwrap().unwrap();
+            inner.get_client_bounding_rect(probe).unwrap().width
+        };
+        assert_eq!(width(&session), 80.0);
+
+        tree.set_css(
+            &mut session.document.inner.borrow_mut(),
+            "#native-css-probe { display: block; width: 160px; height: 20px; }",
+        );
+        session.document.inner.borrow_mut().resolve(0.0);
+        assert_eq!(width(&session), 160.0);
+    }
 
     #[test]
     fn passive_pointer_motion_does_not_enter_the_editor_model_path() {

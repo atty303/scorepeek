@@ -86,6 +86,10 @@ checkpoint; implementation history belongs in Git.
   Blitz/Dioxus event dispatch; the visual harness exercises those callbacks. OBS owns reactive state
   and uses the existing backend lease API; its imperative JavaScript editor has been removed. Fixed mise XKB build inputs replace host development metadata;
   `libxkbcommon.so.0` is a native runtime prerequisite.
+  A native editor surface retains its current opened skin package. Canvas position
+  changes remain host transforms and do not rerun the skin; skin-affecting drag changes coalesce to
+  one Wasm/DOM update per compositor frame, with the final release update applied immediately. The
+  native run report separates requested editor skin updates, actual renders and package opens.
 - ADR 0140 adds one backend-wide Wayland rasterization cap: `"auto"` retains compositor cadence and
   1–1000 Hz values coalesce steady state and motion changes into the next permitted paint. Public
   events and reactive state remain event-driven; motion samples elapsed monotonic time. Initial
@@ -263,6 +267,12 @@ checkpoint; implementation history belongs in Git.
   regression, complete repository suite and 28-step native visual scenario pass. This is live
   Wayland protocol, composition and input evidence in a nested compositor, not target-compositor or
   target-game-session validation.
+  The native drag-performance regression covers 100 skin update requests coalescing to one frame
+  render, immediate release flushing, and canvas x/y changes avoiding skin invalidation while canvas
+  size and widget geometry still invalidate it. A retained native tree also restores the live skin
+  CSS after a different preview skin. The 80 overlay library tests and a fresh 28-step native visual
+  run pass after the package-retention change. Target-compositor performance for sustained
+  widget move/resize remains a separate live verification boundary.
 
 - The repository skin skill passes structural validation, scoped checks and independent review.
   Forward trials cover concept generation/correction, missing required tools, selection gates and
