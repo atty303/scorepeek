@@ -313,7 +313,7 @@ pub fn NavigatorItem(props: NavigatorItemProps) -> Element {
     let expanded = props.expanded;
     rsx! {
         div { class: "navigator-item {props.class}", role: "treeitem", "aria-expanded": expanded.map(|value| value.to_string()), ..props.attributes,
-            div { class: "navigator-item-line", style: format!("padding-left:{}px", props.depth * 14),
+            div { class: "navigator-item-line", "data-depth": props.depth,
                 if let Some(handler) = props.ontoggle {
                     IconButton { class: "tree-disclosure", label: format!("Toggle {} children", props.label), onclick: move |event| handler.call(event), if expanded == Some(true) { "−" } else { "+" } }
                 } else { span { class: "tree-spacer" } }

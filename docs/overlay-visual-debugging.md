@@ -169,6 +169,10 @@ slot. This content layer is noninteractive and isolated below the shared hit reg
 Selected widget handles take precedence when they coincide with canvas corners; selecting
 the canvas in the panel clears widget selection and exposes canvas handles. Widget artwork
 and content come from the same package Wasm full-tree ABI in both routes.
+The selected canvas or widget also carries one noninteractive high-contrast label with its display
+name and viewport-relative `x,y · width×height` geometry. The label remains present between gestures;
+dragging and resizing update the same shared DOM text. For a selected EMPTY widget it replaces the
+otherwise duplicated empty-aperture geometry label.
 Browser capture and actual Wayland composition/input remain separate verification gates.
 
 `tests/fixtures/visual-empty-editor.json` starts with no visible canvas and toggles the

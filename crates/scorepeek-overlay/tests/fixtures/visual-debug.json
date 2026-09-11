@@ -9,6 +9,7 @@
     ".widget-slot",
     ".resize-handle",
     ".canvas-resize",
+    ".selection-metrics",
     ".editor-panel-toggle",
     ".editor-panel",
     ".object-navigator",

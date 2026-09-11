@@ -424,8 +424,13 @@ pub fn ContextBar(view: EditorView, onaction: EventHandler<EditorAction>) -> Ele
                 onopen: move |open| picker_open.set(open),
                 onselect: move |index| if let Some(screen) = crate::editor_model::SCREENS.get(index) { onaction.call(EditorAction::PreviewScreen(*screen)); },
             }
-            div { class: "context-output", small { "OUTPUT" } strong { "{active_output}" } }
-            if view.access.dirty { StatusBadge { label: "UNSAVED", tone: "dirty" } }
+            div { class: if view.access.dirty { "context-status dirty" } else { "context-status" },
+                small { "OUTPUT" }
+                strong { "{active_output}" }
+                if view.access.dirty {
+                    span { class: "dirty-dot", role: "status", "aria-label": "Unsaved changes" }
+                }
+            }
         }
     }
 }
@@ -620,7 +625,7 @@ pub fn Inspector(
         .find(|canvas| Some(canvas.id.as_str()) == view.selected_canvas.as_deref());
     rsx! {
         main { class: "object-inspector",
-            div { class: "pane-heading", strong { "INSPECTOR" } if let Some(canvas) = canvas { small { if let Some(widget) = canvas.widgets.iter().find(|widget| view.selected_widget.as_deref() == Some(widget.id.as_str())) { "{widget_label(widget, &canvas.widgets)}" } else { "{canvas.name}" } } } }
+            div { class: "pane-heading", strong { "INSPECTOR" } }
             div { class: "inspector-scroll",
                 Accordion { label: "Object properties",
                     if let Some(canvas) = canvas {
@@ -675,7 +680,7 @@ fn screen_label(screen: ScreenKind) -> &'static str {
     }
 }
 
-fn widget_label(widget: &WidgetLayout, widgets: &[WidgetLayout]) -> String {
+pub(crate) fn widget_label(widget: &WidgetLayout, widgets: &[WidgetLayout]) -> String {
     let same = widgets
         .iter()
         .filter(|candidate| candidate.kind == widget.kind)
@@ -756,7 +761,7 @@ fn canvas_inspector(
     });
     rsx! {
         AccordionSection { title: "Identity", TextField { field_key: format!("{}:name", canvas.id), label: "Name", value: canvas.name.clone(), disallowed, disabled: view.access.readonly, update_on_input: true, onchange: move |value| onaction.call(EditorAction::CanvasName(value)), onvalidity } small { class: "stable-id", "ID · {canvas.id}" } }
-        AccordionSection { title: "Geometry", {geometry_fields(GeometrySpec { rect: [canvas.x, canvas.y, i32::try_from(canvas.width).unwrap_or(i32::MAX), i32::try_from(canvas.height).unwrap_or(i32::MAX)], bounds, minimum: child_min, key: &canvas.id, widget: false, readonly: view.access.readonly }, onvalidity, onaction)} Button { class: "fit-output", disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::FitToOutput), "Fit to output" } }
+        AccordionSection { title: "Geometry", {geometry_fields(GeometrySpec { rect: [canvas.x, canvas.y, i32::try_from(canvas.width).unwrap_or(i32::MAX), i32::try_from(canvas.height).unwrap_or(i32::MAX)], bounds, minimum: child_min, key: &canvas.id, widget: false, readonly: view.access.readonly }, onvalidity, onaction)} div { class: "geometry-action", Button { class: "fit-output", disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::FitToOutput), "Fit to output" } } }
         AccordionSection { title: "Visibility", div { class: "visibility-actions", Button { disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::CanvasVisibleAll), "All" } Button { disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::CanvasVisibleNone), "None" } } {visibility_toggles(&canvas.id, canvas.show_on.as_deref(), view.access.readonly, onaction)} }
         AccordionSection { title: "Appearance", {skin_picker(view, canvas.skin, false, onaction)} SegmentedControl { class: "opacity-control", label: "Canvas opacity", for value in [25, 50, 75, 100] { Button { class: "opacity-option", selected: canvas.opacity_percent == value, disabled: view.access.readonly, "data-value": value, onclick: move |_| onaction.call(EditorAction::Opacity(value)), "{value}%" } } } if let Some(skin) = view.skins.iter().find(|skin| skin.id == canvas.skin) { {property_controls(&skin.canvas_properties, &canvas.skin_properties, true, view.access.readonly, onaction)} } }
         AccordionSection { title: "Output", div { class: "output-list", for output in view.outputs.iter() { Button { class: "output-option", layout: ButtonLayout::Stack, selected: canvas.output.as_deref() == Some(output.name.as_str()), disabled: view.access.readonly, "data-output": "{output.name}", onclick: { let output = output.name.clone(); move |_| onaction.call(EditorAction::Output(output.clone())) }, strong { "{output.name}" } small { "{output.model}" } } } } }

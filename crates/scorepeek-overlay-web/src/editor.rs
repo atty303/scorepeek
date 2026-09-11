@@ -7,7 +7,7 @@ use model::Model;
 use scorepeek_overlay_ui::CanvasPresentation;
 use scorepeek_overlay_ui::editor::{EditorAction, EditorOutput, EditorPanel};
 use scorepeek_overlay_ui::editor_surface::{
-    EditorCanvas, EditorSurface, PlacementPreview, SurfaceAction,
+    EditorCanvas, EditorSelectionMetrics, EditorSurface, PlacementPreview, SurfaceAction,
 };
 use std::rc::Rc;
 use wasm_bindgen::{JsCast as _, closure::Closure};
@@ -75,6 +75,7 @@ pub fn app() -> Element {
     });
     let state = model.read().clone();
     let title_input = title_field(model, action);
+    let selected_canvas = selected_canvas(&state);
     rsx! {
         EditorSurface {onaction:surface,
             div { id:"stage",
@@ -82,6 +83,9 @@ pub fn app() -> Element {
                     EditorCanvas {key:"{canvas.id}",canvas:canvas.clone(),editing:state.editing,selected:state.editing&&state.selected_canvas.as_deref()==Some(canvas.id.as_str()),selected_widget:state.selected_widget.clone(),onaction:surface,oncapture:capture,
                         iframe {src:format!("/canvas/{}?sample={}&skin={}",encode_id(&canvas.id),u8::from(state.editing&&state.chrome.sample),encode_id(canvas.skin.name())),tabindex:-1}
                     }
+                }
+                if let Some(canvas) = selected_canvas {
+                    EditorSelectionMetrics { canvas, selected_widget: state.selected_widget.clone() }
                 }
             }
             if state.editing {EditorPanel {view:state.view(),title_input,onaction:action}}
@@ -102,6 +106,18 @@ pub fn app() -> Element {
             if let Some(notice)=state.notice {div {id:"notice",class:"show error","{notice}"}}
         }
     }
+}
+
+fn selected_canvas(state: &Model) -> Option<CanvasPresentation> {
+    state
+        .draft
+        .iter()
+        .find(|canvas| {
+            state.editing
+                && state.selected_canvas.as_deref() == Some(canvas.id.as_str())
+                && state.visible(canvas)
+        })
+        .cloned()
 }
 
 fn encode_id(id: &str) -> String {

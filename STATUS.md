@@ -71,8 +71,12 @@ checkpoint; implementation history belongs in Git.
   Canvas and output workers are explicit display or editor-stage views; they do not elect a host,
   own the workspace-open state, or independently acquire, keep alive and release the editor lease.
 
-- ADR 0145 restructures that shared editor around object inspection, and ADR 0146 completes it as a
-  fresh compact Dioxus component system shared unchanged by native and OBS. The one-line ContextBar,
+- ADR 0145 restructures that shared editor around object inspection, ADR 0146 completes it as a
+  fresh compact Dioxus component system shared unchanged by native and OBS, and ADR 0147 refines its
+  visual hierarchy without changing behavior or information architecture. The balanced shared
+  treatment uses 13/11 px system typography, a 4/8/12/16 px spacing scale, quiet graphite filled
+  controls, flat Inspector sections, a compact guided object tree, a stable one-line ContextBar and
+  artwork-independent selection geometry labels. The one-line ContextBar,
   independently scrolling `Workspace → Output → Canvas → Widget` ObjectNavigator and Inspector,
   sidebar-confined ActionBar, and collapsed top-left reopen control replace the prior title block,
   full-height collapse rail and long control column. Custom buttons, fields, toggles, segmented
@@ -635,6 +639,25 @@ checkpoint; implementation history belongs in Git.
   geometry, visibility-following widget selection, body selection and edge-aligned resizing through
   Dioxus, plus delivered button state. Native render and browser-route evidence remain distinct from
   live Wayland input and actual OBS composition.
+
+- ADR 0147 now defines and implements the shared editor's balanced visual hierarchy: 13 px body and
+  11 px secondary type, 4/8/12/16 px spacing, quiet graphite surfaces, flat Inspector sections, a
+  compact guided object tree, primary/secondary/tertiary actions, and a one-line output-plus-dirty
+  Context Bar. The Inspector heading no longer repeats the selected object. Geometry keeps X, Y,
+  Width and Height in one equal four-field row and places Fit to output in a separate action row.
+  Selection paint uses artwork-independent edges, four handles and a label containing the object and
+  complete viewport-relative geometry. The panel toggle, picker and output cluster are top-aligned.
+  A fresh persistent-renderer native run completed all 30 PNG/layout pairs with the production
+  `dioxus-native-dom/blitz/vello` resource, including the previously sensitive consecutive editor
+  interactions. A production browser run at 1920x1080 confirmed the 384 px panel, 36 px top-left
+  toggle, four-field Geometry row, picker alignment, right-click editing, selection label updates,
+  widget drag from 688,520 to 704,536, resize from 544x44 to 560x60, and preservation of the canvas
+  iframe URL and instance. With canvas opacity set to 25%, the same route measured opacity 0.25 only
+  on rendered canvas content while the editor root and selection label remained at 1. The complete
+  repository suite covers the revised 180--260 px Navigator scroll geometry, overlapping
+  canvas/widget resize handles, and a one-percent-opacity 16x16 widget whose complete selection label
+  remains outside object clipping. Actual Wayland composition/input and rendering inside OBS remain
+  separate target-live boundaries.
 
 - Validate layout v4 in a fresh target-live run with the installed binary.
   Retained-frame inspection does not recover unrecorded PLAY spans or backfill missing RESULTs.

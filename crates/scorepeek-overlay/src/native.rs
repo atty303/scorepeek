@@ -1,7 +1,7 @@
 mod text;
 use scorepeek_overlay_ui::editor_model::{Drag, Model as EditorModel};
 use scorepeek_overlay_ui::editor_surface::{
-    EditorCanvas, EditorSurface, PlacementPreview, SurfaceAction,
+    EditorCanvas, EditorSelectionMetrics, EditorSurface, PlacementPreview, SurfaceAction,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -854,8 +854,13 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
         }
         if editing.get() {
             for canvas in managed.borrow().iter().filter(|canvas| active_editor_canvas_on_surface(&canvas.id,canvas.show_on.as_deref(),selected_canvas_id,&surface_canvas_ids,current_settings.preview_screen)) {
-                EditorCanvas {key:"{canvas.id}",canvas:canvas.clone(),editing:interactive.get(),selected:interactive.get(),selected_widget:selected.borrow().clone(),onaction:onsurface,
-                    div {}
+                Fragment { key:"{canvas.id}",
+                    EditorCanvas {canvas:canvas.clone(),editing:interactive.get(),selected:interactive.get(),selected_widget:selected.borrow().clone(),onaction:onsurface,
+                        div {}
+                    }
+                    if interactive.get() {
+                        EditorSelectionMetrics { canvas: canvas.clone(), selected_widget: selected.borrow().clone() }
+                    }
                 }
             }
         }
@@ -5252,6 +5257,58 @@ mod skin_tests {
     }
 
     #[test]
+    fn small_selection_metrics_escape_object_opacity_and_clipping() {
+        let mut scenario: VisualDebugScenario =
+            serde_json::from_str(include_str!("../tests/fixtures/visual-composition.json"))
+                .unwrap();
+        let canvas = &mut scenario.canvases.as_mut().unwrap()[0];
+        canvas.opacity_percent = 1;
+        let cam = canvas
+            .widgets
+            .iter_mut()
+            .find(|widget| widget.id == "cam")
+            .unwrap();
+        cam.x = 0;
+        cam.y = 0;
+        cam.width = 16;
+        cam.height = 16;
+        let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        session.editing.set(true);
+        session.interactive.set(true);
+        session.panel_open.set(false);
+        session.selected.set(Some("cam".into()));
+        session.resolve();
+
+        let inner = session.document.inner.borrow();
+        let canvas = inner.query_selector(".editor-canvas").unwrap().unwrap();
+        let canvas_html = inner.get_node(canvas).unwrap().outer_html();
+        let canvas_start = canvas_html.split_once('>').unwrap().0;
+        assert!(!canvas_start.contains("opacity:"));
+        let content = inner
+            .query_selector(".editor-canvas-content")
+            .unwrap()
+            .unwrap();
+        assert!(
+            inner
+                .get_node(content)
+                .unwrap()
+                .outer_html()
+                .contains("opacity:0.01")
+        );
+        let metrics = inner.query_selector(".selection-metrics").unwrap().unwrap();
+        let metrics_html = inner.get_node(metrics).unwrap().outer_html();
+        assert!(metrics_html.contains("selection-label"));
+        assert!(metrics_html.contains("selection-geometry"));
+        assert!(metrics_html.contains("EMPTY 2"));
+        assert!(metrics_html.contains("0,0 · 16×16"));
+        let metrics = inner.get_client_bounding_rect(metrics).unwrap();
+        assert!(metrics.width > 16.0);
+        assert!(metrics.x >= 0.0 && metrics.y >= 0.0, "{metrics:?}");
+        assert!(metrics.x + metrics.width <= f64::from(scenario.logical_size[0]));
+        assert!(metrics.y + metrics.height <= f64::from(scenario.logical_size[1]));
+    }
+
+    #[test]
     fn stage_shutdown_is_broadcast_before_any_worker_is_reaped() {
         struct Worker(Arc<std::sync::atomic::AtomicBool>);
         impl WorkerControl for Worker {
@@ -6362,10 +6419,11 @@ mod skin_tests {
             scenario.logical_size = size;
             scenario.editing = true;
             let mut session = VisualDebugSession::new(&scenario, size).unwrap();
-            session.scroll(".navigator-scroll", 0.0, -100.0).unwrap();
+            session.scroll(".navigator-scroll", 0.0, -200.0).unwrap();
             session.click(".widget-row[data-widget-id='cam']").unwrap();
             assert_eq!(session.selected.borrow().as_deref(), Some("cam"));
             session.scroll(".inspector-scroll", 0.0, -2000.0).unwrap();
+            session.scroll(".inspector-scroll", 0.0, 60.0).unwrap();
             for index in [1, 2, 3, 0] {
                 let selector = format!(".aspect-ratio[data-index='{index}']");
                 session.click(&selector).unwrap();

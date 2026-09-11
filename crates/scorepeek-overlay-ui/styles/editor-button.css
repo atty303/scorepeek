@@ -1,11 +1,12 @@
-.editor-button{box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:var(--editor-space-2);min-width:0;min-height:var(--editor-control);margin:0;padding:0 var(--editor-space-3);appearance:none;border:1px solid var(--editor-border);border-radius:4px;background:var(--editor-control-bg);color:var(--editor-text);font:500 var(--editor-font-body)/1.25 system-ui,sans-serif;text-align:center;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
+.editor-button{box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:var(--editor-space-2);min-width:0;min-height:var(--editor-control);margin:0;padding:0 var(--editor-space-3);appearance:none;border:1px solid var(--editor-border);border-radius:var(--editor-radius);background:var(--editor-control-bg);color:var(--editor-text);font:500 var(--editor-font-body)/1.25 system-ui,sans-serif;text-align:center;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
 .editor-button:hover{border-color:var(--editor-border-strong);background:var(--editor-control-hover)}
-.editor-button:focus{outline:2px solid var(--editor-focus);outline-offset:-2px}
+.editor-button:focus{border-color:var(--editor-focus);outline:2px solid var(--editor-focus);outline-offset:-2px}
 .editor-button.selected{border-color:var(--editor-selected);background:var(--editor-selected-bg);color:var(--editor-text-strong)}
-.editor-button:disabled{opacity:.38;cursor:default}
-.editor-button.primary{border-color:var(--editor-selected);background:var(--editor-selected);color:#061014;font-weight:700}
+.editor-button:disabled{opacity:.4;cursor:default}
+.editor-button.primary{border-color:var(--editor-selected);background:var(--editor-selected);color:#071216;font-weight:700}
+.editor-button.primary:hover{background:#71e3f2}
 .editor-button.danger{border-color:var(--editor-danger-border);background:var(--editor-danger-bg);color:var(--editor-danger)}
 .editor-button-row{justify-content:flex-start;text-align:left}
-.editor-button-stack{min-height:44px;flex-direction:column;align-items:flex-start;text-align:left}
+.editor-button-stack{min-height:48px;flex-direction:column;align-items:flex-start;text-align:left}
 .editor-button-stack strong{font-size:var(--editor-font-body)}.editor-button-stack small{color:var(--editor-text-muted);font-size:var(--editor-font-help)}
 .editor-button-icon{width:var(--editor-control);height:var(--editor-control);min-height:var(--editor-control);padding:0;font-size:18px;line-height:1}

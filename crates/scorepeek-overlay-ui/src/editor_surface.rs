@@ -23,6 +23,45 @@ fn point(event: &PointerEvent) -> [i32; 2] {
 }
 
 #[component]
+pub fn EditorSelectionMetrics(
+    canvas: CanvasPresentation,
+    selected_widget: Option<String>,
+) -> Element {
+    let (label, x, y, width, height) = selected_widget
+        .as_deref()
+        .and_then(|id| canvas.widgets.iter().find(|widget| widget.id == id))
+        .map_or_else(
+            || {
+                (
+                    canvas.name.clone(),
+                    canvas.x,
+                    canvas.y,
+                    canvas.width,
+                    canvas.height,
+                )
+            },
+            |widget| {
+                (
+                    crate::editor::widget_label(widget, &canvas.widgets),
+                    canvas.x.saturating_add(widget.x),
+                    canvas.y.saturating_add(widget.y),
+                    widget.width,
+                    widget.height,
+                )
+            },
+        );
+    rsx! {
+        div {
+            class: "selection-metrics",
+            aria_hidden: "true",
+            span { class: "selection-label", "{label}" }
+            span { aria_hidden: "true", " · " }
+            span { class: "selection-geometry", "{x},{y} · {width}×{height}" }
+        }
+    }
+}
+
+#[component]
 pub fn EditorSurface(onaction: EventHandler<SurfaceAction>, children: Element) -> Element {
     rsx! { crate::OverlayStyles {}
     div { class:"editor-surface",
@@ -87,17 +126,17 @@ pub fn EditorCanvas(
     let id = canvas.id.clone();
     let context_id = id.clone();
     rsx! { div {
-        class: if selected {"editor-canvas selected"} else {"editor-canvas"},
+        class: if selected_widget.is_some() && selected { "editor-canvas selected widget-selected" } else if selected { "editor-canvas selected" } else { "editor-canvas" },
         "data-canvas":"{canvas.id}",
-        style:format!("left:{}px;top:{}px;width:{}px;height:{}px;opacity:{}",canvas.x,canvas.y,canvas.width,canvas.height,f32::from(canvas.opacity_percent)/100.0),
+        style:format!("left:{}px;top:{}px;width:{}px;height:{}px",canvas.x,canvas.y,canvas.width,canvas.height),
         oncontextmenu:move |event| {event.prevent_default();event.stop_propagation();onaction.call(SurfaceAction::Enter(Some(context_id.clone())));},
         onpointerdown:move |event| {if editing {start.call((event,id.clone(),None,None));}},
         onclick:move |event| {if selecting.replace(false){return;}let point=event.client_coordinates().to_i32();onaction.call(SurfaceAction::Place([point.x,point.y]));},
-        div {class:"editor-canvas-content", {children}}
+        div {class:"editor-canvas-content",style:format!("opacity:{}",f32::from(canvas.opacity_percent)/100.0), {children}}
         if editing {
             for widget in &canvas.widgets {
                 Fragment { key:"{widget.id}",
-                    if widget.kind == WidgetKind::Empty {
+                    if widget.kind == WidgetKind::Empty && !(selected && selected_widget.as_deref() == Some(widget.id.as_str())) {
                         div { class:"empty-geometry", aria_hidden:"true",
                             style:format!("left:{}px;top:{}px;width:{}px;height:{}px",widget.x,widget.y,widget.width,widget.height),
                             span { {format!("{},{} · {}×{}",canvas.x.saturating_add(widget.x),canvas.y.saturating_add(widget.y),widget.width,widget.height)} }
