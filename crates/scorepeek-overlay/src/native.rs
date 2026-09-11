@@ -30,9 +30,6 @@ use scorepeek_overlay_ui::{Appearance, OXANIUM, OverlayState, WidgetLayout};
 use serde::{Deserialize, Serialize};
 use smithay_client_toolkit::reexports::calloop::ping::{Ping, make_ping};
 
-#[derive(Default)]
-struct RendererInitCoordinator(std::sync::Mutex<()>);
-
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum PaintReason {
     Steady,
@@ -116,28 +113,6 @@ impl FrameCadence {
     }
 }
 
-impl RendererInitCoordinator {
-    fn exclusive<T>(&self, operation: impl FnOnce() -> T) -> T {
-        let _guard = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        operation()
-    }
-
-    fn exclusive_timed<T>(&self, operation: impl FnOnce() -> T) -> (T, Duration, Duration) {
-        let waiting = Instant::now();
-        let _guard = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let wait = waiting.elapsed();
-        let running = Instant::now();
-        let result = operation();
-        (result, wait, running.elapsed())
-    }
-}
-
 #[derive(Default)]
 struct PointerInput {
     buttons: blitz_traits::events::MouseEventButtons,
@@ -212,6 +187,27 @@ fn editor_panel_width(output_width: Option<u32>) -> u32 {
         Some(width) => (width / 5).clamp(360, 480),
         None => 400,
     }
+}
+
+fn broadcast_stops<'a>(stops: impl IntoIterator<Item = &'a Arc<std::sync::atomic::AtomicBool>>) {
+    for stop in stops {
+        stop.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+fn worker_needs_replacement(
+    id: &str,
+    output: Option<&str>,
+    desired_ids: &std::collections::BTreeSet<String>,
+    projected: &[crate::config::Canvas],
+    finished: bool,
+) -> bool {
+    !desired_ids.contains(id)
+        || projected
+            .iter()
+            .find(|canvas| canvas.id == id)
+            .is_some_and(|canvas| Some(canvas.output.as_str()) != output)
+        || finished
 }
 
 fn editor_surface_host(
@@ -374,7 +370,6 @@ struct NativeWorkspace {
     ui: EditorWorkspaceUi,
     undo: Option<DraftUndo>,
     fallback: std::collections::BTreeSet<String>,
-    reload_saved: bool,
     draft: Vec<scorepeek_overlay_ui::CanvasPresentation>,
     dirty: bool,
     selected_widget: Option<String>,
@@ -383,7 +378,31 @@ struct NativeWorkspace {
     surfaces: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     editor_hosts: std::collections::BTreeMap<String, String>,
     active_output: Option<String>,
+    output_selection_epoch: u64,
     wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
+}
+
+fn replace_workspace_outputs(
+    workspace: &mut NativeWorkspace,
+    selected_canvas: &mut Option<String>,
+    outputs: std::collections::BTreeMap<String, OutputDescription>,
+) -> bool {
+    let next_active = workspace
+        .active_output
+        .as_ref()
+        .filter(|active| outputs.contains_key(*active))
+        .cloned()
+        .or_else(|| outputs.keys().next().cloned());
+    let active_changed = workspace.active_output != next_active;
+    workspace.outputs = outputs;
+    if active_changed {
+        workspace.active_output = next_active;
+        selected_canvas.take();
+        workspace.selected_widget.take();
+        workspace.pending_widget.take();
+        workspace.output_selection_epoch = workspace.output_selection_epoch.saturating_add(1);
+    }
+    active_changed
 }
 
 struct PendingEditorInteraction {
@@ -931,7 +950,6 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .wayland_refresh_hz = config.wayland_refresh_hz;
     let wayland_refresh_hz = Arc::new(std::sync::Mutex::new(config.wayland_refresh_hz));
-    let renderer_init = Arc::new(RendererInitCoordinator::default());
     let mut workspace_was_open = false;
     let suppressed = Arc::new(std::sync::Mutex::new(
         std::collections::BTreeSet::<String>::new(),
@@ -983,6 +1001,17 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
     }
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
         let workspace_is_open = workspace_open.load(std::sync::atomic::Ordering::Acquire);
+        if workspace_was_open != workspace_is_open {
+            crate::diagnostics::emit(
+                "native_editor_workspace_transition",
+                &serde_json::json!({
+                    "from": if workspace_was_open { "open" } else { "closed" },
+                    "to": if workspace_is_open { "open" } else { "closed" },
+                    "worker_count": workers.len(),
+                    "status": "success",
+                }),
+            );
+        }
         if workspace_was_open
             && !workspace_is_open
             && let Ok(response) = crate::control::request(
@@ -1033,36 +1062,58 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             })
             .map(|canvas| canvas.id.clone())
             .collect();
-        let force_reload = {
-            let mut workspace = workspace_ui
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            std::mem::take(&mut workspace.reload_saved)
-        };
         let remove: Vec<_> = workers
             .iter()
             .filter(|(id, worker)| {
-                force_reload
-                    || !desired_ids.contains(*id)
-                    || projected
-                        .iter()
-                        .find(|canvas| canvas.id == id.as_str())
-                        .is_some_and(|canvas| Some(&canvas.output) != worker.output.as_ref())
-                    || worker.join.is_finished()
+                worker_needs_replacement(
+                    id,
+                    worker.output.as_deref(),
+                    &desired_ids,
+                    &projected,
+                    worker.join.is_finished(),
+                )
             })
             .map(|(id, _)| id.clone())
             .collect();
-        for id in remove {
+        let stop_started = Instant::now();
+        for id in &remove {
             canvas_wakes
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&id);
+                .remove(id);
+            if let Some(worker) = workers.get(id) {
+                crate::diagnostics::emit(
+                    "native_editor_stage_shutdown",
+                    &serde_json::json!({
+                        "canvas_id": id,
+                        "output": worker.output,
+                        "phase": "stop_requested",
+                        "reason": "projection_changed",
+                    }),
+                );
+            }
+        }
+        broadcast_stops(
+            remove
+                .iter()
+                .filter_map(|id| workers.get(id).map(|worker| &worker.stop)),
+        );
+        for id in remove {
             if let Some(worker) = workers.remove(&id) {
-                worker
-                    .stop
-                    .store(true, std::sync::atomic::Ordering::Release);
+                let output = worker.output.clone();
                 match worker.join.join() {
-                    Ok(Ok(())) => {}
+                    Ok(Ok(())) => {
+                        crate::diagnostics::emit(
+                            "native_editor_stage_shutdown",
+                            &serde_json::json!({
+                                "canvas_id": id,
+                                "output": output,
+                                "phase": "stopped",
+                                "duration_us": duration_us(stop_started.elapsed()),
+                                "status": "success",
+                            }),
+                        );
+                    }
                     Ok(Err(error)) => {
                         if let Some(canvas) = projected.iter().find(|canvas| canvas.id == id) {
                             failed
@@ -1072,11 +1123,33 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                             "native_canvas_failed",
                             &serde_json::json!({"canvas_id":id,"error":error}),
                         );
+                        crate::diagnostics::emit(
+                            "native_editor_stage_shutdown",
+                            &serde_json::json!({
+                                "canvas_id": id,
+                                "output": output,
+                                "phase": "stopped",
+                                "duration_us": duration_us(stop_started.elapsed()),
+                                "status": "error",
+                                "error_type": canvas_worker_error_type(&error),
+                            }),
+                        );
                     }
                     Err(_) => {
                         crate::diagnostics::emit(
                             "native_canvas_failed",
                             &serde_json::json!({"canvas_id":id,"error":"panicked"}),
+                        );
+                        crate::diagnostics::emit(
+                            "native_editor_stage_shutdown",
+                            &serde_json::json!({
+                                "canvas_id": id,
+                                "output": output,
+                                "phase": "stopped",
+                                "duration_us": duration_us(stop_started.elapsed()),
+                                "status": "error",
+                                "error_type": "canvas_worker_panicked",
+                            }),
                         );
                     }
                 }
@@ -1108,7 +1181,6 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             let workspace_open = Arc::clone(&workspace_open);
             let workspace_ui = Arc::clone(&workspace_ui);
             let suppressed = Arc::clone(&suppressed);
-            let renderer_init = Arc::clone(&renderer_init);
             let refresh_rate = Arc::clone(&wayland_refresh_hz);
             let wakes = Arc::clone(&canvas_wakes);
             let join = std::thread::Builder::new()
@@ -1123,7 +1195,6 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                         workspace_open,
                         workspace_ui,
                         suppressed,
-                        renderer_init,
                         refresh_rate,
                         wakes,
                     )
@@ -1140,11 +1211,38 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    for (_, worker) in workers {
-        worker
-            .stop
-            .store(true, std::sync::atomic::Ordering::Release);
-        let _ = worker.join.join();
+    let shutdown_started = Instant::now();
+    for (id, worker) in &workers {
+        crate::diagnostics::emit(
+            "native_editor_stage_shutdown",
+            &serde_json::json!({
+                "canvas_id": id,
+                "output": worker.output,
+                "phase": "stop_requested",
+                "reason": "parent_lease_closed",
+            }),
+        );
+    }
+    broadcast_stops(workers.values().map(|worker| &worker.stop));
+    for (id, worker) in workers {
+        let output = worker.output.clone();
+        let result = worker.join.join();
+        let error_type = match &result {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(canvas_worker_error_type(error)),
+            Err(_) => Some("canvas_worker_panicked"),
+        };
+        crate::diagnostics::emit(
+            "native_editor_stage_shutdown",
+            &serde_json::json!({
+                "canvas_id": id,
+                "output": output,
+                "phase": "stopped",
+                "duration_us": duration_us(shutdown_started.elapsed()),
+                "status": if result.as_ref().is_ok_and(std::result::Result::is_ok) { "success" } else { "error" },
+                "error_type": error_type,
+            }),
+        );
     }
     Ok(())
 }
@@ -1237,7 +1335,6 @@ fn run_canvas(
     workspace_open: Arc<std::sync::atomic::AtomicBool>,
     workspace_ui: Arc<std::sync::Mutex<NativeWorkspace>>,
     suppressed: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
-    renderer_init: Arc<RendererInitCoordinator>,
     wayland_refresh_hz: Arc<std::sync::Mutex<scorepeek_overlay_ui::WaylandRefreshRate>>,
     wakes: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Ping>>>,
 ) -> Result<(), String> {
@@ -1331,20 +1428,19 @@ fn run_canvas(
         } else {
             "integer_scale_fallback"
         });
-    let (renderer, renderer_wait, renderer_duration) = renderer_init.exclusive_timed(|| {
-        VelloWindowRenderer::with_options(
-            VelloRendererOptions::default()
-                .base_color(peniko::Color::TRANSPARENT)
-                .composite_alpha_mode(CompositeAlphaMode::Transparent),
-        )
-    });
+    let renderer_started = Instant::now();
+    let renderer = VelloWindowRenderer::with_options(
+        VelloRendererOptions::default()
+            .base_color(peniko::Color::TRANSPARENT)
+            .composite_alpha_mode(CompositeAlphaMode::Transparent),
+    );
+    let renderer_duration = renderer_started.elapsed();
     crate::diagnostics::emit(
         "native_startup_timing",
         &serde_json::json!({
             "run_id": report.borrow().run_id,
             "canvas_id": canvas.id,
             "phase": "renderer_created",
-            "wait_us": duration_us(renderer_wait),
             "duration_us": duration_us(renderer_duration),
             "elapsed_us": duration_us(startup_started.elapsed()),
         }),
@@ -1361,7 +1457,6 @@ fn run_canvas(
         appearance,
         widgets,
         renderer,
-        renderer_init,
         shell,
         Waker::from(Arc::new(CalloopWaker(ping.0))),
         feed_state,
@@ -1392,8 +1487,55 @@ fn run_canvas(
         }),
     );
     let result = app.run();
-    let renderer_coordinator = Arc::clone(&app.renderer_init);
-    renderer_coordinator.exclusive(|| app.renderer.suspend());
+    crate::diagnostics::emit(
+        "native_renderer_shutdown",
+        &serde_json::json!({
+            "run_id": report.borrow().run_id,
+            "canvas_id": app.surface_canvas.id,
+            "output": app.surface_output,
+            "phase": "app_stopped",
+        }),
+    );
+    crate::diagnostics::emit(
+        "native_renderer_shutdown",
+        &serde_json::json!({
+            "run_id": report.borrow().run_id,
+            "canvas_id": app.surface_canvas.id,
+            "output": app.surface_output,
+            "phase": "suspend_requested",
+        }),
+    );
+    crate::diagnostics::emit(
+        "native_renderer_shutdown",
+        &serde_json::json!({
+            "run_id": report.borrow().run_id,
+            "canvas_id": app.surface_canvas.id,
+            "output": app.surface_output,
+            "phase": "suspend_started",
+        }),
+    );
+    app.renderer.suspend();
+    crate::diagnostics::emit(
+        "native_renderer_shutdown",
+        &serde_json::json!({
+            "run_id": report.borrow().run_id,
+            "canvas_id": app.surface_canvas.id,
+            "output": app.surface_output,
+            "phase": "suspend_completed",
+        }),
+    );
+    let unmap = app.shell.unmap();
+    crate::diagnostics::emit(
+        "native_surface_unmap",
+        &serde_json::json!({
+            "run_id": report.borrow().run_id,
+            "canvas_id": app.surface_canvas.id,
+            "output": app.surface_output,
+            "status": if unmap.is_ok() { "success" } else { "error" },
+            "error_type": unmap.as_ref().err().map(|_| "wayland_flush_failed"),
+        }),
+    );
+    let (result, secondary_failure) = native_shutdown_result(result, unmap);
     {
         let mut report = report.borrow_mut();
         report.paint_count = app.paint_count;
@@ -1411,18 +1553,23 @@ fn run_canvas(
         report.effective_steady_paint_hz =
             (seconds > 0.0).then(|| f64::from(app.steady_paint_count) / seconds);
         report.status = if result.is_ok() { "complete" } else { "failed" };
+        report.failure_type = result
+            .as_ref()
+            .err()
+            .map(|error| canvas_worker_error_type(error));
         report.failure = result.as_ref().err().cloned();
+        report.secondary_failure_type = secondary_failure.as_deref().map(canvas_worker_error_type);
+        report.secondary_failure = secondary_failure;
         report.operations.push("shutdown");
         crate::diagnostics::emit("native_summary", &*report);
     }
-    renderer_coordinator.exclusive(|| drop(app));
+    drop(app);
     result
 }
 
 struct App {
     // Renderer is dropped before the shell; its own Arc handle also retains ownership.
     renderer: VelloWindowRenderer,
-    renderer_init: Arc<RendererInitCoordinator>,
     shell: Shell,
     document: DioxusDocument,
     pointer: PointerInput,
@@ -1465,6 +1612,7 @@ struct App {
     pending_point: Reactive<[f64; 2]>,
     shared_widgets: Reactive<Vec<WidgetLayout>>,
     interaction: Option<Drag>,
+    output_selection_epoch: u64,
     next_keepalive: Instant,
     managed: Reactive<Vec<scorepeek_overlay_ui::CanvasPresentation>>,
     generation: u64,
@@ -1507,7 +1655,6 @@ impl App {
         appearance: Appearance,
         widgets: Vec<WidgetLayout>,
         renderer: VelloWindowRenderer,
-        renderer_init: Arc<RendererInitCoordinator>,
         mut shell: Shell,
         waker: Waker,
         feed_state: Arc<std::sync::Mutex<OverlayState>>,
@@ -1532,10 +1679,12 @@ impl App {
         let shared_widgets = Rc::new(RefCell::new(widgets));
         let editing = Rc::new(Cell::new(false));
         let interactive = Rc::new(Cell::new(false));
-        let ui = workspace_ui
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .ui;
+        let (ui, output_selection_epoch) = {
+            let workspace = workspace_ui
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (workspace.ui, workspace.output_selection_epoch)
+        };
         let panel_open = Rc::new(Cell::new(ui.panel_open));
         let widget_add_open = Rc::new(Cell::new(ui.widget_add_open));
         let dirty = Rc::new(Cell::new(false));
@@ -1676,7 +1825,6 @@ impl App {
         }
         Ok(Self {
             renderer,
-            renderer_init,
             shell,
             document,
             pointer: PointerInput::default(),
@@ -1719,6 +1867,7 @@ impl App {
             pending_point: reactive.pending_point,
             shared_widgets: reactive.widgets,
             interaction: None,
+            output_selection_epoch,
 
             next_keepalive: Instant::now(),
             managed: reactive.managed,
@@ -1814,17 +1963,29 @@ impl App {
                 self.outputs
                     .borrow_mut()
                     .clone_from(&self.shell.output_descriptions);
-                let mut workspace = self
-                    .workspace_ui
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                workspace.outputs = self
+                let outputs = self
                     .shell
                     .output_descriptions
                     .iter()
                     .map(|output| (output.name.clone(), output.clone()))
                     .collect();
-                drop(workspace);
+                let active_changed = {
+                    let mut selected_canvas = self
+                        .preview
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    replace_workspace_outputs(
+                        &mut self
+                            .workspace_ui
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner),
+                        &mut selected_canvas,
+                        outputs,
+                    )
+                };
+                if active_changed {
+                    self.wake_workspace();
+                }
                 wake = true;
             }
             for event in events {
@@ -1834,9 +1995,9 @@ impl App {
                         physical,
                         scale_120,
                     } => {
-                        self.configure(logical, physical, scale_120)?;
-                        configured = true;
-                        wake = true;
+                        let changed = self.configure(logical, physical, scale_120)?;
+                        configured |= changed;
+                        wake |= changed;
                     }
                     Event::Wake => wake = true,
                     Event::PointerMotion { x, y } => {
@@ -2190,6 +2351,7 @@ impl App {
             pending_widget,
             wayland_refresh_hz,
             active_output,
+            output_selection_epoch,
         ) = {
             let workspace = self
                 .workspace_ui
@@ -2204,8 +2366,21 @@ impl App {
                 workspace.pending_widget,
                 workspace.wayland_refresh_hz,
                 workspace.active_output.clone(),
+                workspace.output_selection_epoch,
             )
         };
+        if self.output_selection_epoch != output_selection_epoch {
+            self.output_selection_epoch = output_selection_epoch;
+            self.preview
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            self.selected.set(None);
+            self.pending_widget.set(None);
+            self.interaction = None;
+            self.finish_title_edit(false);
+            self.finish_refresh_edit(false);
+        }
         let surface_canvas_ids =
             surface_canvas_ids_for_draft(&draft, self.surface_output.as_deref());
         self.refresh_rate.set_if_changed(wayland_refresh_hz);
@@ -2275,6 +2450,7 @@ impl App {
         });
     }
     fn set_editing(&mut self, value: bool) {
+        let previous = self.editing.get();
         if value {
             self.editing.set(true);
             self.editor_pointer_observation = EditorPointerObservation::AwaitingPress;
@@ -2325,6 +2501,19 @@ impl App {
             self.pending_widget.set(None);
         }
         self.sync_workspace_ui();
+        if previous != value {
+            crate::diagnostics::emit(
+                "native_editor_stage_transition",
+                &serde_json::json!({
+                    "run_id": self.report.borrow().run_id,
+                    "canvas_id": self.surface_canvas.id,
+                    "output": self.surface_output,
+                    "from": if previous { "editor" } else { "display" },
+                    "to": if value { "editor" } else { "display" },
+                    "status": "success",
+                }),
+            );
+        }
     }
     fn set_editor_geometry(&mut self, editing: bool) {
         if !editing {
@@ -2419,7 +2608,7 @@ impl App {
                 })
                 .collect(),
         );
-        model.active_output.clone_from(&self.surface_output);
+        model.activate_output(self.surface_output.as_deref());
         model.readonly = self.readonly.get();
         model.editing = self.editing.get();
         model.preview = self.settings.borrow().preview_screen;
@@ -2742,7 +2931,6 @@ impl App {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .extend(std::mem::take(&mut workspace.fallback));
-                    workspace.reload_saved = true;
                 }
                 workspace.undo = None;
                 drop(workspace);
@@ -2986,8 +3174,18 @@ impl App {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             workspace.fallback.clear();
             workspace.undo = None;
-            workspace.reload_saved = true;
             drop(workspace);
+            crate::diagnostics::emit(
+                "native_editor_workspace_transition",
+                &serde_json::json!({
+                    "run_id": self.report.borrow().run_id,
+                    "source_output": self.surface_output,
+                    "from": "open",
+                    "to": "closed",
+                    "reason": "save",
+                    "status": "success",
+                }),
+            );
             self.workspace_open
                 .store(false, std::sync::atomic::Ordering::Release);
             self.select_canvas(None);
@@ -3052,12 +3250,14 @@ impl App {
         logical: [u32; 2],
         physical: [u32; 2],
         scale_120: u32,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let [width, height] = physical;
         self.surface_logical = logical;
-        let physical_changed = {
+        let geometry_changed = {
             let mut report = self.report.borrow_mut();
-            let changed = report.physical_size != Some(physical);
+            let changed = report.logical_size != Some(logical)
+                || report.physical_size != Some(physical)
+                || report.scale_120 != scale_120;
             report.logical_size = Some(logical);
             report.physical_size = Some(physical);
             report.scale_120 = scale_120;
@@ -3070,23 +3270,20 @@ impl App {
             ColorScheme::Dark,
         ));
         if self.renderer.is_active() {
-            if physical_changed {
-                let renderer_coordinator = Arc::clone(&self.renderer_init);
-                renderer_coordinator.exclusive(|| self.renderer.set_size(width, height));
+            if geometry_changed {
+                self.renderer.set_size(width, height);
             }
         } else {
-            let renderer_coordinator = Arc::clone(&self.renderer_init);
-            let info = renderer_coordinator.exclusive(|| {
-                self.renderer
-                    .resume(self.shell.handles(), width, height, || {});
-                if !self.renderer.complete_resume() {
-                    return Err("gpu_adapter".to_owned());
-                }
-                self.renderer
-                    .current_device_handle()
-                    .map(|device| device.adapter.get_info())
-                    .ok_or_else(|| "gpu_adapter".to_owned())
-            })?;
+            self.renderer
+                .resume(self.shell.handles(), width, height, || {});
+            if !self.renderer.complete_resume() {
+                return Err("gpu_adapter".to_owned());
+            }
+            let info = self
+                .renderer
+                .current_device_handle()
+                .map(|device| device.adapter.get_info())
+                .ok_or_else(|| "gpu_adapter".to_owned())?;
             let mut report = self.report.borrow_mut();
             report.gpu_backend = Some(format!("{:?}", info.backend));
             report.gpu_adapter = Some(info.name);
@@ -3097,13 +3294,13 @@ impl App {
             report.operations.push("system_fonts_enabled");
         }
         crate::diagnostics::emit("surface_configured", &*self.report.borrow());
-        Ok(())
+        Ok(geometry_changed)
     }
     fn paint(&mut self, reason: PaintReason, now: Duration) -> Result<(), String> {
         let first_paint = self.paint_count == 0;
-        let renderer_coordinator = Arc::clone(&self.renderer_init);
-        let (result, renderer_wait, paint_duration) =
-            renderer_coordinator.exclusive_timed(|| self.paint_exclusive());
+        let paint_started = Instant::now();
+        let result = self.paint_exclusive();
+        let paint_duration = paint_started.elapsed();
         if first_paint {
             crate::diagnostics::emit(
                 "native_startup_timing",
@@ -3112,7 +3309,6 @@ impl App {
                     "canvas_id": self.surface_canvas.id,
                     "output": self.surface_output,
                     "phase": "first_paint",
-                    "renderer_wait_us": duration_us(renderer_wait),
                     "paint_us": duration_us(paint_duration),
                     "elapsed_us": duration_us(self.startup_started.elapsed()),
                     "status": if result.is_ok() { "success" } else { "error" },
@@ -3135,7 +3331,6 @@ impl App {
                         "control_us": interaction.control_us,
                         "skin_us": interaction.skin_us,
                         "dioxus_us": interaction.dioxus_us,
-                        "renderer_wait_us": duration_us(renderer_wait),
                         "paint_us": duration_us(paint_duration),
                         "duration_us": duration_us(interaction.started.elapsed()),
                         "status": "error",
@@ -3170,7 +3365,6 @@ impl App {
                     "control_us": interaction.control_us,
                     "skin_us": interaction.skin_us,
                     "dioxus_us": interaction.dioxus_us,
-                    "renderer_wait_us": duration_us(renderer_wait),
                     "paint_us": duration_us(paint_duration),
                     "duration_us": duration_us(interaction.started.elapsed()),
                     "status": "success",
@@ -3199,9 +3393,10 @@ impl App {
             self.full_layout_pending = false;
         }
         self.animating = !self.editing.get() && self.visible.get();
-        if self.animating {
-            self.shell.request_frame();
-        }
+        // Every present must publish a compositor callback. Editor and lifecycle paints are not
+        // continuously animated, but still need the callback to release frame-paced surface
+        // resources before another state change is rendered.
+        self.shell.request_frame();
         let (width, height) = inner.viewport().window_size;
         let scale = inner.viewport().scale_f64();
         self.renderer.render(|scene| {
@@ -3341,6 +3536,24 @@ fn duration_us(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
+fn canvas_worker_error_type(error: &str) -> &'static str {
+    if error.starts_with("unmap Wayland surface:") {
+        "wayland_surface_unmap_failed"
+    } else {
+        "canvas_worker_failed"
+    }
+}
+
+fn native_shutdown_result(
+    run: Result<(), String>,
+    unmap: Result<(), String>,
+) -> (Result<(), String>, Option<String>) {
+    match unmap {
+        Ok(()) => (run, None),
+        Err(error) => (Err(format!("unmap Wayland surface: {error}")), run.err()),
+    }
+}
+
 #[derive(Serialize)]
 struct RunReport {
     run_id: String,
@@ -3363,7 +3576,10 @@ struct RunReport {
     cap_bypass_paints: std::collections::BTreeMap<String, u64>,
     operations: Operations,
     status: &'static str,
+    failure_type: Option<&'static str>,
     failure: Option<String>,
+    secondary_failure_type: Option<&'static str>,
+    secondary_failure: Option<String>,
 }
 
 impl RunReport {
@@ -3398,7 +3614,10 @@ impl RunReport {
             cap_bypass_paints: std::collections::BTreeMap::new(),
             operations: Operations::default(),
             status: "running",
+            failure_type: None,
             failure: None,
+            secondary_failure_type: None,
+            secondary_failure: None,
         }
     }
 }
@@ -4787,38 +5006,99 @@ mod skin_tests {
     }
 
     #[test]
-    fn renderer_operations_are_serialized_across_surfaces() {
-        use std::sync::{
-            Barrier,
-            atomic::{AtomicUsize, Ordering},
+    fn stage_shutdown_is_broadcast_before_any_worker_is_reaped() {
+        let stops = (0..3)
+            .map(|_| Arc::new(std::sync::atomic::AtomicBool::new(false)))
+            .collect::<Vec<_>>();
+
+        broadcast_stops(&stops);
+
+        assert!(
+            stops
+                .iter()
+                .all(|stop| stop.load(std::sync::atomic::Ordering::Acquire))
+        );
+    }
+
+    #[test]
+    fn editor_stage_is_removed_when_display_projection_replaces_it() {
+        let desired = std::collections::BTreeSet::from(["wayland-canvas".to_owned()]);
+        let projected = vec![crate::config::empty_canvas(
+            "wayland-canvas".into(),
+            crate::runtime::Backend::Wayland,
+        )];
+
+        assert!(worker_needs_replacement(
+            "__scorepeek-editor-stage-0",
+            Some("WL-1"),
+            &desired,
+            &projected,
+            false,
+        ));
+    }
+
+    #[test]
+    fn surface_unmap_failure_has_a_stable_worker_error_type() {
+        assert_eq!(
+            canvas_worker_error_type("unmap Wayland surface: connection closed"),
+            "wayland_surface_unmap_failed"
+        );
+        assert_eq!(
+            canvas_worker_error_type("gpu_adapter"),
+            "canvas_worker_failed"
+        );
+    }
+
+    #[test]
+    fn active_output_disconnect_selects_a_remaining_output_and_clears_selection() {
+        let mut workspace = NativeWorkspace {
+            active_output: Some("WL-2".into()),
+            selected_widget: Some("score".into()),
+            pending_widget: Some(scorepeek_overlay_ui::WidgetKind::Score),
+            ..NativeWorkspace::default()
         };
+        let mut selected_canvas = Some("canvas-on-wl-2".into());
+        let outputs = [OutputDescription {
+            name: "WL-1".into(),
+            model: "Nested output 1".into(),
+            logical_size: Some([1280, 720]),
+        }]
+        .into_iter()
+        .map(|output| (output.name.clone(), output))
+        .collect();
 
-        let coordinator = Arc::new(RendererInitCoordinator::default());
-        let barrier = Arc::new(Barrier::new(3));
-        let active = Arc::new(AtomicUsize::new(0));
-        let maximum = Arc::new(AtomicUsize::new(0));
-        let mut workers = Vec::new();
-        for _ in 0..2 {
-            let coordinator = Arc::clone(&coordinator);
-            let barrier = Arc::clone(&barrier);
-            let active = Arc::clone(&active);
-            let maximum = Arc::clone(&maximum);
-            workers.push(std::thread::spawn(move || {
-                barrier.wait();
-                coordinator.exclusive(|| {
-                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
-                    maximum.fetch_max(current, Ordering::SeqCst);
-                    std::thread::sleep(Duration::from_millis(25));
-                    active.fetch_sub(1, Ordering::SeqCst);
-                });
-            }));
-        }
-        barrier.wait();
-        for worker in workers {
-            worker.join().unwrap();
-        }
+        assert!(replace_workspace_outputs(
+            &mut workspace,
+            &mut selected_canvas,
+            outputs
+        ));
+        assert_eq!(workspace.active_output.as_deref(), Some("WL-1"));
+        assert_eq!(workspace.output_selection_epoch, 1);
+        assert!(workspace.selected_widget.is_none());
+        assert!(workspace.pending_widget.is_none());
+        assert!(selected_canvas.is_none());
+    }
 
-        assert_eq!(maximum.load(Ordering::SeqCst), 1);
+    #[test]
+    fn unmap_failure_is_primary_when_the_app_loop_also_failed() {
+        let (result, secondary) = native_shutdown_result(
+            Err("dispatch Wayland events: connection closed".into()),
+            Err("connection closed".into()),
+        );
+        let primary = result.unwrap_err();
+
+        assert_eq!(
+            canvas_worker_error_type(&primary),
+            "wayland_surface_unmap_failed"
+        );
+        assert_eq!(
+            secondary.as_deref(),
+            Some("dispatch Wayland events: connection closed")
+        );
+        assert_eq!(
+            secondary.as_deref().map(canvas_worker_error_type),
+            Some("canvas_worker_failed")
+        );
     }
 
     #[test]

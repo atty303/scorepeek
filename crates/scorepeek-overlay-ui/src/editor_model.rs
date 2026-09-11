@@ -165,13 +165,22 @@ impl Model {
     }
     pub fn set_outputs(&mut self, outputs: Vec<crate::editor::EditorOutput>) {
         self.outputs = outputs;
-        if self
+        let active = if self
             .active_output
             .as_ref()
             .is_none_or(|active| !self.outputs.iter().any(|output| &output.name == active))
         {
-            self.active_output = self.outputs.first().map(|output| output.name.clone());
+            self.outputs.first().map(|output| output.name.as_str())
+        } else {
+            self.active_output.as_deref()
         }
+        .map(str::to_owned);
+        self.activate_output(active.as_deref());
+    }
+    pub fn activate_output(&mut self, output: Option<&str>) {
+        self.active_output = output
+            .filter(|name| self.outputs.iter().any(|candidate| candidate.name == *name))
+            .map(str::to_owned);
         if let Some(size) = self
             .outputs
             .iter()
@@ -291,13 +300,7 @@ impl Model {
                     .iter()
                     .any(|candidate| candidate.name == *output)
                 {
-                    self.active_output = Some(output.clone());
-                    self.viewport = self
-                        .outputs
-                        .iter()
-                        .find(|candidate| candidate.name == *output)
-                        .and_then(|candidate| candidate.logical_size)
-                        .unwrap_or(self.viewport);
+                    self.activate_output(Some(output));
                     self.selected_canvas = None;
                     self.selected_widget = None;
                     self.title = None;
@@ -974,6 +977,45 @@ mod skin_tests {
         assert_eq!(model.preview, ScreenKind::Result);
         assert_eq!(model.draft, draft);
         assert!(model.selected_canvas.is_none());
+    }
+
+    #[test]
+    fn active_output_updates_the_drag_bounds_for_mixed_resolutions() {
+        let canvas = CanvasPresentation {
+            id: "wide-canvas".into(),
+            skin: Skin::CyanSystem,
+            skin_properties: std::collections::BTreeMap::new(),
+            show_on: None,
+            background: Background::None,
+            opacity_percent: 100,
+            output: Some("DP-2".into()),
+            x: 0,
+            y: 0,
+            width: 560,
+            height: 960,
+            widgets: Vec::new(),
+        };
+        let mut model = Model::new(vec![canvas], [1, 1], "ignored");
+        model.set_outputs(vec![
+            crate::editor::EditorOutput {
+                name: "DP-2".into(),
+                model: "portrait".into(),
+                logical_size: Some([1728, 3072]),
+            },
+            crate::editor::EditorOutput {
+                name: "DP-1".into(),
+                model: "ultrawide".into(),
+                logical_size: Some([5120, 1440]),
+            },
+        ]);
+        model.activate_output(Some("DP-1"));
+        model.draft[0].output = Some("DP-1".into());
+        model.readonly = false;
+        model.begin_drag("wide-canvas".into(), None, None, [0, 0]);
+        model.move_pointer([10_000, 0]);
+
+        assert_eq!(model.viewport, [5120, 1440]);
+        assert_eq!(model.draft[0].x, 4560);
     }
 
     #[test]

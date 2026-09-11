@@ -63,6 +63,14 @@ pub struct SurfaceHandle {
     layer: LayerSurface,
     connection: Connection,
 }
+impl SurfaceHandle {
+    fn unmap(&self) -> Result<(), String> {
+        let surface = self.layer.wl_surface();
+        surface.attach(None, 0, 0);
+        surface.commit();
+        self.connection.flush().map_err(|error| error.to_string())
+    }
+}
 impl HasDisplayHandle for SurfaceHandle {
     fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
         let ptr = NonNull::new(self.connection.backend().display_ptr().cast())
@@ -402,6 +410,13 @@ impl Shell {
         self.owner.layer.set_margin(y, 0, 0, x);
         self.owner.layer.set_size(width, height);
         self.owner.layer.commit();
+    }
+
+    /// Detaches the current buffer after renderer teardown releases its surface resources.
+    /// # Errors
+    /// Returns a Wayland connection flush failure.
+    pub fn unmap(&self) -> Result<(), String> {
+        self.owner.unmap()
     }
 
     /// Enables the whole surface input region or replaces it with an empty one.

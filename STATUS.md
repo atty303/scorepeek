@@ -332,7 +332,7 @@ checkpoint; implementation history belongs in Git.
   Scroll handled the input. Transition tests also keep a runtime-hidden stage input-disabled when
   the editor closes.
   Timestamped child diagnostics now correlate startup phases and editor input-to-paint work by
-  process, run and interaction IDs, including control, skin, Dioxus, renderer-wait and paint time.
+  process, run and interaction IDs, including control, skin, Dioxus and paint time.
   In a three-canvas/two-output nested-Scroll reproduction, the pre-fix first editor paint took about
   12.4 seconds and a cross-skin canvas selection took 2.667 seconds: 2.260 seconds were repeated
   Wasmtime compilation and 351 ms were shared-editor reconstruction. The native runtime now keeps a
@@ -361,15 +361,37 @@ checkpoint; implementation history belongs in Git.
   draft state. Each overlay process was stopped immediately after its screenshot. Pointer gestures,
   native output handoff, compositor cursor behavior and real OBS Interaction remain unverified.
   On the current three-output Wayland host, editor startup with four configured canvases and
-  editor-only peer surfaces now keeps Vulkan context, adapter, device and surface initialization
-  serialized inside the single backend child process. Renderer resume, resize, paint, suspend and
-  destruction are serialized across those surface workers. Each output keeps one deterministic
+  editor-only peer surfaces uses an independent renderer per output inside the single backend child
+  process. Renderer work is not placed behind a cross-output mutex: a frame-paced present may block
+  without preventing another output from processing editor state or shutting down. Every native
+  present publishes a Wayland frame callback, and duplicate configure events with unchanged logical
+  size, physical size and scale do not repaint. Each output keeps one deterministic
   editor host surface for the lifetime of the workspace instead of transferring the editor when
   canvas selection changes, and unchanged geometry does not issue another layer-surface commit.
   The child remained live with all surface workers present, stopped cleanly, and produced no new
   coredump. A live right-drag and confirmation on this host produced neither compositor animation
   nor missing canvas background; this is one target-host confirmation, not a general compositor
   compatibility claim.
+  A subsequent two-output nested-Scroll reproduction found that the former editor path could fill a
+  non-animating surface's frame queue without requesting compositor callbacks; one worker then
+  remained inside paint while its peer waited forever on the shared renderer mutex. The corrected
+  run painted each 1140x1494 stage once, then completed app stop, renderer suspension, buffer detach
+  and both worker joins without a timeout; terminal worker durations were 198 and 410 milliseconds.
+  Save first transitions every full-output editor stage out of editor display, then broadcasts stop
+  to all removed stages before joining them; normal canvas-owned surfaces are created afterward.
+  Structured workspace, per-stage, renderer-shutdown and surface-unmap records identify any missing
+  transition without writing diagnostics into ordinary overlay output. If app dispatch and final
+  buffer-detach publication both fail, the unmap failure remains the primary typed failure and the
+  earlier app error remains in the native summary as a secondary failure. A disconnected active
+  output is replaced by the first remaining output in stable order. A model regression verifies
+  active-output replacement and shared widget/placement selection reset; the workspace epoch also
+  invalidates each stage's local canvas, title and drag selection while persisted canvas output
+  assignments remain unchanged.
+  A mixed-resolution model
+  regression switches from a 1728x3072 output to 5120x1440 and moves a 560-pixel canvas to x=4560,
+  proving that the active output and drag viewport change atomically. A fresh 28-operation native
+  PNG/layout/manifest run is complete with no selector-layout failures. The exact Save pointer action
+  and 5120x1440 movement remain target-interaction checks rather than claims from the nested output.
   A later target play session reproduced missing PNG widget backgrounds after semantic-screen canvas
   switching. The same image-present, image-absent, image-present sequence now reproduces headlessly:
   Vello 0.10 replaces its persistent image atlas on the image-free frame while retaining stale image
@@ -547,7 +569,7 @@ checkpoint; implementation history belongs in Git.
   Existing non-nested target evidence predates ADR 0144 and does not establish its new full-output
   stage lifecycle. The fresh nested-Scroll runs establish two-output protocol, composition, pointer
   input, empty bootstrap, creation, output reassignment and idle paint behavior, but not target
-  GPU/compositor performance or output-hotplug reconciliation.
+  GPU/compositor performance or live output-hotplug reconciliation.
 - OBS editor build compatibility is checked at connection and request boundaries. A mismatch
   discards the unsaved editor state, blocks edits and presents a reload button. The backend and
   WASM share a deterministic source/asset build identity. Socket-owned editor leases are released

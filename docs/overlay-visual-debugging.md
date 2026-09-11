@@ -42,20 +42,40 @@ desktop session.
 
 The native child emits timestamped `native_startup_timing` records for shell connection, renderer
 creation, application initialization and first paint. `elapsed_us` is measured from that surface
-worker's start; renderer records split time waiting for the process-wide renderer lock from time in
-the renderer operation. `native_skin_runtime_timing` separately reports in-process cache hits,
+worker's start; renderer creation and paint records report the duration of their own operation.
+`native_skin_runtime_timing` separately reports in-process cache hits,
 waits and cold Cranelift compilation, including engine and module time, only from the native child
 diagnostic path. Editor button actions emit a
 `native_editor_interaction` `state_applied`
 record followed by the first corresponding `painted` record. Their shared `run_id` and
 `interaction_id` correlate the operation, while `action_us`, `control_us`, `skin_us`, `dioxus_us`,
-`renderer_wait_us`, `paint_us` and total `duration_us` localize latency. Control and skin components
+`paint_us` and total `duration_us` localize latency. Control and skin components
 also emit individual timing records with success or a stable error type. These records contain only
 stable action/request names and operational canvas/output identifiers; they do not record titles,
 property values or other entered content. Up to 64 actions awaiting paint retain distinct
 correlations; overflow emits a typed `interaction_queue_full` dropped record instead of silently
 replacing an earlier action. The child-to-parent queue remains bounded and uses the existing local
 diagnostic recording path.
+
+Multi-output editor shutdown is recorded as `native_editor_workspace_transition`,
+`native_editor_stage_transition`, and `native_editor_stage_shutdown`. The workspace record
+identifies the close reason and initiating output. Each stage then records its editor-to-display
+transition. When the editor closes, topology changes or the parent lease closes, every affected stage
+records `stop_requested`; terminal `stopped` includes the output, status and duration, and
+`native_renderer_shutdown` separates app-loop completion, renderer suspension and
+surface teardown. `native_surface_unmap` then records publication of the buffer detach after the
+renderer has released its Wayland surface resources. A missing phase or unmap failure therefore
+distinguishes a worker wake failure, renderer teardown stall and Wayland publication failure
+without adding debug text to the overlay UI. An unmap publication failure also makes the worker and
+native summary fail with `wayland_surface_unmap_failed`; it cannot be reported as a successful stop.
+If the app loop and unmap both fail, unmap remains the primary `failure_type` while the earlier app
+loop error is retained as `secondary_failure_type` and `secondary_failure` in `native_summary`.
+
+Each native present publishes a Wayland frame callback, including editor and visibility-clear
+paints. A callback is not a request for continuous animation: it is the compositor acknowledgement
+that permits a later state change to reuse frame-paced surface resources. Repeated configure events
+with unchanged logical size, physical size and scale update no state and do not trigger another
+paint.
 
 For the OBS route, give the server a new dedicated configuration path and optionally a loopback
 listen address. The configuration file must not already exist, and non-loopback addresses are
