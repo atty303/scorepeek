@@ -321,13 +321,7 @@ impl Model {
             }
             EditorAction::SelectCanvas(id) => {
                 if let Some(canvas) = self.draft.iter().find(|canvas| &canvas.id == id) {
-                    if !visible_on(canvas, Some(self.preview))
-                        && let Some(screen) = SCREENS
-                            .into_iter()
-                            .find(|screen| visible_on(canvas, Some(*screen)))
-                    {
-                        self.preview = screen;
-                    }
+                    select_canvas_preview(canvas, &mut self.preview);
                     self.selected_canvas = Some(id.clone());
                     self.selected_widget = None;
                     self.title = None;
@@ -337,10 +331,11 @@ impl Model {
                 canvas_id,
                 widget_id,
             } => {
-                if self.draft.iter().any(|canvas| {
+                if let Some(canvas) = self.draft.iter().find(|canvas| {
                     &canvas.id == canvas_id
                         && canvas.widgets.iter().any(|widget| &widget.id == widget_id)
                 }) {
+                    select_canvas_preview(canvas, &mut self.preview);
                     self.selected_canvas = Some(canvas_id.clone());
                     self.selected_widget = Some(widget_id.clone());
                     self.title = None;
@@ -429,6 +424,7 @@ impl Model {
     #[allow(clippy::too_many_lines)]
     fn apply_settings(&mut self, action: &EditorAction) {
         let skins = self.skins.clone();
+        let outputs = self.outputs.clone();
         let output_sizes = self
             .outputs
             .iter()
@@ -589,7 +585,8 @@ impl Model {
                             }
                         }
                         EditorAction::CanvasGeometry(field, value) => {
-                            apply_canvas_geometry(canvas, *field, *value, self.viewport);
+                            let bounds = crate::editor::canvas_geometry_bounds(canvas, &outputs);
+                            apply_canvas_geometry(canvas, *field, *value, bounds);
                         }
                         EditorAction::DeleteWidget => {
                             canvas
@@ -679,7 +676,6 @@ impl Model {
             skin_properties,
         });
         self.selected_widget = Some(id);
-        self.chrome.widget_add_open = false;
         self.undo = Some(before);
         true
     }
@@ -866,13 +862,23 @@ pub fn visible_on(canvas: &CanvasPresentation, screen: Option<ScreenKind>) -> bo
         .is_none_or(|screens| screens.contains(&screen.unwrap_or(ScreenKind::Unknown)))
 }
 
+fn select_canvas_preview(canvas: &CanvasPresentation, preview: &mut ScreenKind) {
+    if !visible_on(canvas, Some(*preview))
+        && let Some(screen) = SCREENS
+            .into_iter()
+            .find(|screen| visible_on(canvas, Some(*screen)))
+    {
+        *preview = screen;
+    }
+}
+
 fn apply_canvas_geometry(
     canvas: &mut CanvasPresentation,
     field: GeometryField,
     value: i32,
     bounds: [u32; 2],
 ) {
-    if value < 0 || value % 4 != 0 {
+    if value < 0 {
         return;
     }
     let Ok(value_u32) = u32::try_from(value) else {
@@ -885,10 +891,14 @@ fn apply_canvas_geometry(
         ]
     });
     match field {
-        GeometryField::X if value_u32.saturating_add(canvas.width) <= bounds[0] => {
+        GeometryField::X
+            if value % 4 == 0 && value_u32.saturating_add(canvas.width) <= bounds[0] =>
+        {
             canvas.x = value;
         }
-        GeometryField::Y if value_u32.saturating_add(canvas.height) <= bounds[1] => {
+        GeometryField::Y
+            if value % 4 == 0 && value_u32.saturating_add(canvas.height) <= bounds[1] =>
+        {
             canvas.y = value;
         }
         GeometryField::Width
@@ -898,7 +908,12 @@ fn apply_canvas_geometry(
                     .saturating_add(value_u32)
                     <= bounds[0] =>
         {
-            canvas.width = value_u32;
+            let right = u32::try_from(canvas.x)
+                .unwrap_or(u32::MAX)
+                .saturating_add(value_u32);
+            if value % 4 == 0 || right == bounds[0] {
+                canvas.width = value_u32;
+            }
         }
         GeometryField::Height
             if value_u32 >= child_min[1]
@@ -907,7 +922,12 @@ fn apply_canvas_geometry(
                     .saturating_add(value_u32)
                     <= bounds[1] =>
         {
-            canvas.height = value_u32;
+            let bottom = u32::try_from(canvas.y)
+                .unwrap_or(u32::MAX)
+                .saturating_add(value_u32);
+            if value % 4 == 0 || bottom == bounds[1] {
+                canvas.height = value_u32;
+            }
         }
         _ => {}
     }
@@ -1174,6 +1194,23 @@ mod skin_tests {
     }
 
     #[test]
+    fn widget_picker_closes_before_adding_and_stays_closed() {
+        let mut model = Model::new(Vec::new(), [800, 600], "ignored");
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        model.action(&EditorAction::ToggleWidgetAdd);
+        assert!(model.chrome.widget_add_open);
+
+        model.action(&EditorAction::ToggleWidgetAdd);
+        assert!(model.action(&EditorAction::AddWidget(0)));
+
+        assert!(!model.chrome.widget_add_open);
+        assert_eq!(model.draft[0].widgets.len(), 1);
+        assert!(model.selected_widget.is_some());
+    }
+
+    #[test]
     fn widget_selection_changes_its_canvas_owner_atomically() {
         let mut model = Model::new(Vec::new(), [800, 600], "ignored");
         model.editing = true;
@@ -1199,6 +1236,27 @@ mod skin_tests {
         assert!(model.draft[0].widgets.is_empty());
         assert_eq!(model.draft[1].id, second_canvas);
         assert_eq!(model.draft[1].widgets[0].id, shared_widget_id);
+    }
+
+    #[test]
+    fn selecting_a_widget_switches_to_a_screen_where_its_canvas_is_visible() {
+        let mut model = Model::new(Vec::new(), [800, 600], "ignored");
+        model.editing = true;
+        model.readonly = false;
+        model.preview = ScreenKind::Play;
+        assert!(model.action(&EditorAction::AddCanvas));
+        assert!(model.action(&EditorAction::AddWidget(0)));
+        let canvas_id = model.draft[0].id.clone();
+        let widget_id = model.draft[0].widgets[0].id.clone();
+        model.draft[0].show_on = Some(vec![ScreenKind::Result]);
+        model.preview = ScreenKind::Play;
+
+        model.action(&EditorAction::SelectWidget {
+            canvas_id,
+            widget_id,
+        });
+
+        assert_eq!(model.preview, ScreenKind::Result);
     }
 
     #[test]
@@ -1278,6 +1336,45 @@ mod skin_tests {
     }
 
     #[test]
+    fn canvas_geometry_uses_its_assigned_output_instead_of_the_active_output() {
+        let canvas = CanvasPresentation {
+            id: "large-canvas".into(),
+            name: "Large canvas".into(),
+            skin: Skin::CyanSystem,
+            skin_properties: std::collections::BTreeMap::new(),
+            show_on: None,
+            background: Background::None,
+            opacity_percent: 100,
+            output: Some("large".into()),
+            x: 0,
+            y: 0,
+            width: 560,
+            height: 560,
+            widgets: Vec::new(),
+        };
+        let mut model = Model::new(vec![canvas], [800, 600], "ignored");
+        model.set_outputs(vec![
+            crate::editor::EditorOutput {
+                name: "small".into(),
+                model: "small".into(),
+                logical_size: Some([800, 600]),
+            },
+            crate::editor::EditorOutput {
+                name: "large".into(),
+                model: "large".into(),
+                logical_size: Some([1920, 1080]),
+            },
+        ]);
+        model.active_output = Some("small".into());
+        model.selected_canvas = Some("large-canvas".into());
+        model.readonly = false;
+
+        assert!(model.action(&EditorAction::CanvasGeometry(GeometryField::X, 1000)));
+        assert_eq!(model.current().unwrap().x, 1000);
+        assert!(model.document_valid());
+    }
+
+    #[test]
     fn exact_non_grid_output_edge_and_resized_active_output_remain_saveable() {
         let mut model = Model::new(Vec::new(), [1716, 1494], "ignored");
         model.set_outputs(vec![crate::editor::EditorOutput {
@@ -1295,6 +1392,25 @@ mod skin_tests {
         assert_eq!(model.viewport, [1922, 1082]);
         assert_eq!(model.outputs[0].logical_size, Some([1922, 1082]));
         assert!(model.action(&EditorAction::FitToOutput));
+        assert!(model.document_valid());
+    }
+
+    #[test]
+    fn canvas_geometry_accepts_an_exact_non_grid_output_edge() {
+        let mut model = Model::new(Vec::new(), [1716, 1494], "ignored");
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "output".into(),
+            model: "output".into(),
+            logical_size: Some([1716, 1494]),
+        }]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        assert!(model.action(&EditorAction::CanvasGeometry(GeometryField::Height, 1200,)));
+
+        assert!(model.action(&EditorAction::CanvasGeometry(GeometryField::Height, 1494,)));
+
+        assert_eq!(model.current().unwrap().height, 1494);
         assert!(model.document_valid());
     }
 

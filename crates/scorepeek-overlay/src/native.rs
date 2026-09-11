@@ -323,6 +323,21 @@ fn remember_draft_change(
     true
 }
 
+fn coordinator_draft_update(
+    canvases: Vec<scorepeek_overlay_ui::CanvasPresentation>,
+    outputs: &[EditorOutput],
+    wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
+    correlation: Option<InteractionCorrelation>,
+) -> Option<CoordinatorCommand> {
+    scorepeek_overlay_ui::editor::document_valid(&canvases, outputs).then_some(
+        CoordinatorCommand::UpdateDraft {
+            canvases,
+            wayland_refresh_hz,
+            correlation,
+        },
+    )
+}
+
 fn replace_canvas_selection(
     selected_canvas: &mut Option<String>,
     selected_widget: &mut Option<String>,
@@ -3284,6 +3299,7 @@ impl App {
             return;
         }
         self.undo_available.set(true);
+        self.dirty.set_if_changed(true);
         self.update_draft();
     }
 
@@ -3370,11 +3386,24 @@ impl App {
     fn update_draft(&mut self) {
         let canvases = self.managed.borrow().clone();
         self.dirty.set_if_changed(true);
-        let _ = self.coordinator.send(CoordinatorCommand::UpdateDraft {
+        let outputs = self
+            .outputs
+            .borrow()
+            .iter()
+            .map(|output| EditorOutput {
+                name: output.name.clone(),
+                model: output.model.clone(),
+                logical_size: output.logical_size,
+            })
+            .collect::<Vec<_>>();
+        if let Some(command) = coordinator_draft_update(
             canvases,
-            wayland_refresh_hz: self.refresh_rate.get(),
-            correlation: self.current_interaction_correlation(),
-        });
+            &outputs,
+            self.refresh_rate.get(),
+            self.current_interaction_correlation(),
+        ) {
+            let _ = self.coordinator.send(command);
+        }
     }
     fn save_and_close(&mut self) {
         if self.refresh_edit.borrow().is_some() && !self.finish_refresh_edit(true) {
@@ -4620,8 +4649,8 @@ pub fn run_visual_debug(
                 ".canvas-content",
                 ".overlay-canvas",
                 ".widget-slot",
-                ".native-panel-toggle",
-                ".native-canvas-manager",
+                ".editor-panel-toggle",
+                ".editor-panel",
                 ".inspector-scroll",
             ]
             .into_iter()
@@ -4701,7 +4730,10 @@ pub fn run_visual_debug(
                     session.drag(*from, *to, *button)?;
                     "drag".into()
                 }
-                VisualDebugAction::Capture { name } => sanitize_artifact_name(name),
+                VisualDebugAction::Capture { name } => {
+                    session.resolve();
+                    sanitize_artifact_name(name)
+                }
             };
             capture_visual_debug(
                 &mut session,
@@ -5009,8 +5041,12 @@ mod skin_tests {
         let scenario: VisualDebugScenario =
             serde_json::from_str(include_str!("../tests/fixtures/visual-debug.json")).unwrap();
         let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
-        session.click(".context-picker-trigger").unwrap();
-        session.click(".preview-screen[data-index='4']").unwrap();
+        session
+            .click(".screen-picker .list-picker-trigger")
+            .unwrap();
+        session
+            .click(".screen-picker .list-picker-option[data-index='4']")
+            .unwrap();
         session.scroll(".navigator-scroll", 0.0, -2000.0).unwrap();
         session
             .click(".canvas-select[data-canvas-id='wayland-result']")
@@ -5060,10 +5096,7 @@ mod skin_tests {
                 inner.query_selector_all(".editor-canvas").unwrap().len(),
                 expected
             );
-            let panel = inner
-                .query_selector(".native-canvas-manager")
-                .unwrap()
-                .unwrap();
+            let panel = inner.query_selector(".editor-panel").unwrap().unwrap();
             let panel = inner.get_client_bounding_rect(panel).unwrap();
             assert_eq!((panel.width, panel.height), (384.0, 1080.0));
             let footer = inner.query_selector("footer").unwrap().unwrap();
@@ -5370,6 +5403,35 @@ mod skin_tests {
     }
 
     #[test]
+    fn undo_between_invalid_names_never_builds_a_native_draft_command() {
+        let outputs = vec![EditorOutput {
+            name: "DP-1".into(),
+            model: "test".into(),
+            logical_size: Some([800, 600]),
+        }];
+        let mut model =
+            scorepeek_overlay_ui::editor_model::Model::new(Vec::new(), [800, 600], "ignored");
+        model.set_outputs(outputs.clone());
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        assert!(model.action(&EditorAction::CanvasName(" ".into())));
+        assert!(model.action(&EditorAction::CanvasName("  ".into())));
+        assert!(model.action(&EditorAction::Undo));
+        assert_eq!(model.current().unwrap().name, " ");
+
+        assert!(
+            coordinator_draft_update(
+                model.draft,
+                &outputs,
+                scorepeek_overlay_ui::WaylandRefreshRate::Auto,
+                None,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn frame_cadence_coalesces_steady_paints_and_bypasses_lifecycle_work() {
         let capped = scorepeek_overlay_ui::WaylandRefreshRate::capped(30).unwrap();
         let period = Duration::from_secs_f64(1.0 / 30.0);
@@ -5501,8 +5563,12 @@ mod skin_tests {
             actions: Vec::new(),
         };
         let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
-        session.click(".context-picker-trigger").unwrap();
-        session.click(".preview-screen[data-index='4']").unwrap();
+        session
+            .click(".screen-picker .list-picker-trigger")
+            .unwrap();
+        session
+            .click(".screen-picker .list-picker-option[data-index='4']")
+            .unwrap();
         session.scroll(".navigator-scroll", 0.0, -2000.0).unwrap();
         session
             .click(".canvas-select[data-canvas-id='wayland-result']")
@@ -5618,12 +5684,13 @@ mod skin_tests {
             actions: Vec::new(),
         };
         let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
-        session.click(".context-picker-trigger").unwrap();
-        session.click(".preview-screen[data-index='4']").unwrap();
         session
-            .click(".canvas-select[data-canvas-id='wayland-result']")
+            .click(".screen-picker .list-picker-trigger")
             .unwrap();
-        session.click(".native-panel-toggle").unwrap();
+        session
+            .click(".screen-picker .list-picker-option[data-index='5']")
+            .unwrap();
+        session.click(".editor-panel-toggle").unwrap();
 
         session
             .drag([25.0, 105.0], [9.0, 89.0], VisualDebugButton::Left)
@@ -5661,10 +5728,11 @@ mod skin_tests {
         };
         let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
 
-        session.click(".context-picker-trigger").unwrap();
-        session.click(".preview-screen[data-index='4']").unwrap();
         session
-            .click(".canvas-select[data-canvas-id='wayland-result']")
+            .click(".screen-picker .list-picker-trigger")
+            .unwrap();
+        session
+            .click(".screen-picker .list-picker-option[data-index='5']")
             .unwrap();
         *session.selected.borrow_mut() = Some("selection".into());
         session.resolve();
@@ -5998,7 +6066,7 @@ mod skin_tests {
                 .get_client_bounding_rect(inner.query_selector(selector).unwrap().unwrap())
                 .unwrap()
         };
-        let panel = rect(".native-canvas-manager");
+        let panel = rect(".editor-panel");
         let navigator = rect(".object-navigator");
         let inspector = rect(".object-inspector");
         let action_bar = rect(".editor-action-bar");

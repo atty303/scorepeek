@@ -17,7 +17,7 @@
   "actions": [
     {
       "action": "click",
-      "selector": ".native-panel-toggle"
+      "selector": ".editor-panel-toggle"
     },
     {
       "action": "motion",

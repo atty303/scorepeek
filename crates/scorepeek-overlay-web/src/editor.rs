@@ -44,7 +44,7 @@ pub fn app() -> Element {
             EditorAction::Close => transport.send(Command::Close),
             other => {
                 let changed = model.write().action(&other);
-                if changed {
+                if changed && model.read().document_valid() {
                     transport.send(Command::Update);
                 }
             }
@@ -92,7 +92,7 @@ pub fn app() -> Element {
                 div { class:"version-mismatch", role:"alert",
                     h2 { "UIが更新されました" }
                     p { "未保存の変更は破棄されました。再読み込みして、保存済み設定からやり直してください。" }
-                    scorepeek_overlay_ui::editor::EditorButton {
+                    scorepeek_overlay_ui::editor::Button {
                         tone:scorepeek_overlay_ui::editor::ButtonTone::Primary,
                         onclick:move |_| {if let Some(window)=web_sys::window(){let _=window.location().reload();}},
                         "再読み込み"

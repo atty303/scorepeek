@@ -1,10 +1,11 @@
-.editor-button{box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:4px;min-width:0;min-height:32px;margin:0;padding:6px 7px;appearance:none;border:1px solid #343f4c;background:#171e27;color:#dbe4ef;font:9px/14px Oxanium,system-ui,sans-serif;text-align:center;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
-.editor-button:hover{border-color:#5c7183;background:#1b2934}
-.editor-button.selected{border-color:#38d7f2;border-left:4px solid #38d7f2;background:#12313d;color:#fff;box-shadow:inset 10px 0 18px rgba(26,217,245,.08)}
-.editor-button:disabled{opacity:.35;cursor:default}
-.editor-button.primary{border-color:#55e3fa;background:#0c3943;color:#fff}
-.editor-button.danger{border-color:#66343a;color:#ff9aa3}
-.editor-button-row{justify-content:flex-start;min-height:36px;padding:8px 10px;font-size:13px;line-height:18px;text-align:left}
-.editor-button-stack{flex-direction:column;align-items:flex-start;min-height:36px;padding:8px 10px;text-align:left}
-.editor-button-stack strong{font-size:12px;line-height:17px}.editor-button-stack small{color:#91a0b1;font-size:9px;line-height:13px}
-.editor-button-icon{width:30px;height:30px;min-height:30px;padding:0;font-size:22px;line-height:24px}
+.editor-button{box-sizing:border-box;display:flex;align-items:center;justify-content:center;gap:var(--editor-space-2);min-width:0;min-height:var(--editor-control);margin:0;padding:0 var(--editor-space-3);appearance:none;border:1px solid var(--editor-border);border-radius:4px;background:var(--editor-control-bg);color:var(--editor-text);font:500 var(--editor-font-body)/1.25 system-ui,sans-serif;text-align:center;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
+.editor-button:hover{border-color:var(--editor-border-strong);background:var(--editor-control-hover)}
+.editor-button:focus{outline:2px solid var(--editor-focus);outline-offset:-2px}
+.editor-button.selected{border-color:var(--editor-selected);background:var(--editor-selected-bg);color:var(--editor-text-strong)}
+.editor-button:disabled{opacity:.38;cursor:default}
+.editor-button.primary{border-color:var(--editor-selected);background:var(--editor-selected);color:#061014;font-weight:700}
+.editor-button.danger{border-color:var(--editor-danger-border);background:var(--editor-danger-bg);color:var(--editor-danger)}
+.editor-button-row{justify-content:flex-start;text-align:left}
+.editor-button-stack{min-height:44px;flex-direction:column;align-items:flex-start;text-align:left}
+.editor-button-stack strong{font-size:var(--editor-font-body)}.editor-button-stack small{color:var(--editor-text-muted);font-size:var(--editor-font-help)}
+.editor-button-icon{width:var(--editor-control);height:var(--editor-control);min-height:var(--editor-control);padding:0;font-size:18px;line-height:1}

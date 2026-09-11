@@ -7,7 +7,7 @@
     "x": 500, "y": 100, "width": 640, "height": 480,
     "show_on": [], "widgets": []
   }],
-  "selectors": [".editor-surface", ".editor-canvas", ".native-canvas-manager", ".object-inspector", "footer", ".close-action"],
+  "selectors": [".editor-surface", ".editor-canvas", ".editor-panel", ".object-inspector", "footer", ".close-action"],
   "actions": [
     {"action": "click", "selector": ".screen-toggle[data-index='1']"},
     {"action": "click", "selector": ".screen-toggle[data-index='1']"}

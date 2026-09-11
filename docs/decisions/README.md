@@ -6,6 +6,7 @@ authoritative.
 
 ## Current
 
+- [ADR 0146: Complete the overlay editor component system](0146-complete-overlay-editor-component-system.md) makes the compact shared Dioxus component tree, fresh visual language, inline picker keyboard contract, live invalid-name draft, and retained invalid-output navigation explicit.
 - [ADR 0144: Unify overlay editor sessions and output stages](0144-unify-overlay-editor-session-and-output-stages.md) gives Wayland and OBS one backend-neutral editor domain, adds empty-workspace recovery and UNKNOWN preview, and replaces persisted revisions with a single locked parent writer.
 - [ADR 0142: Repaint the static Gamescope calibration marker through receiver startup](0142-repaint-static-gamescope-calibration-marker.md) adds an unchanged 1x1 damage heartbeat so requested-size negotiation can produce the setup frame.
 - [ADR 0141: Bound Gamescope capture size and frame copies, then quiesce disconnect](0141-bound-gamescope-frame-copies-and-quiesce-disconnect.md) requests a 1920x1080-bounded source domain, limits application-owned copies to fixed 10 Hz deadlines, and quiesces the stream before disconnect.
@@ -390,6 +391,9 @@ authoritative.
 - [ADR 0145: Restructure the overlay editor around object inspection](0145-restructure-overlay-editor-around-object-inspection.md)
   adds compact shared editor chrome, object navigation and inspection, persisted canvas names,
   aggregate screen visibility and exact geometry fields in schema v8.
+- [ADR 0146: Complete the overlay editor component system](0146-complete-overlay-editor-component-system.md)
+  supersedes ADR 0145's component and input-detail ambiguity with one compact Dioxus control system,
+  inline keyboard-operated pickers, live invalid-name drafts and visible invalid output branches.
 
 ## Historical
 

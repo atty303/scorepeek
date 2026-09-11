@@ -71,14 +71,21 @@ checkpoint; implementation history belongs in Git.
   Canvas and output workers are explicit display or editor-stage views; they do not elect a host,
   own the workspace-open state, or independently acquire, keep alive and release the editor lease.
 
-- ADR 0145 restructures that shared editor around a compact ContextBar, an independently scrollable
-  ObjectNavigator hierarchy, a selection-owned Inspector and a sidebar-confined ActionBar. The
-  Inspector owns canvas names, exact 4 px-grid canvas/widget geometry, aggregate and per-screen
-  visibility, appearance, settings and deletion. Invalid geometry or duplicate/empty names disable
-  save without mutating the draft. New canvases use the first unused `Canvas N`; widget labels are
-  derived from kind and numbered only when duplicated. Choosing a widget kind creates it centered
-  immediately, selects it and retains the existing one-level undo contract. Refresh rate remains a
-  native runtime setting outside the shared editor.
+- ADR 0145 restructures that shared editor around object inspection, and ADR 0146 completes it as a
+  fresh compact Dioxus component system shared unchanged by native and OBS. The one-line ContextBar,
+  independently scrolling `Workspace → Output → Canvas → Widget` ObjectNavigator and Inspector,
+  sidebar-confined ActionBar, and collapsed top-left reopen control replace the prior title block,
+  full-height collapse rail and long control column. Custom buttons, fields, toggles, segmented
+  controls, inline list pickers, navigator items, accordions and badges share keyboard and visual
+  contracts without browser-native select/dialog/popover controls. Missing and unassigned output
+  branches remain visible. Inspector owns canvas names, canvas/widget geometry on the 4 px grid
+  with exact non-grid output edges retained,
+  aggregate and per-screen visibility, appearance, settings and deletion. Empty or duplicate names
+  update the live draft and disable save; invalid geometry stays in a field-local buffer and does not
+  mutate the draft. New canvases use the first unused `Canvas N`; widget labels are derived from kind
+  and numbered only when duplicated. Choosing a widget kind creates it centered immediately, selects
+  it and retains the existing one-level undo contract. Refresh rate remains a native runtime setting
+  outside the shared editor.
 - ADR 0141 makes the Gamescope receiver always request a 1920x1080-bounded capture domain. Gamescope
   can preserve aspect ratio, so the negotiated observed dimensions remain authoritative. Its
   startup full-output contract and corrupted transition buffer may be replaced only before the
@@ -613,15 +620,21 @@ checkpoint; implementation history belongs in Git.
 - The release browser bundle disables DWARF debug symbols and completes without the prior
   wasm-opt DWARF failure. Shared editor hit regions sit above noninteractive rendered content,
   selected widget handles take precedence at canvas edges, and native pointer moves retain the
-  actual pressed-button state. Manifest-defined canvas and widget properties now use shared Dioxus
-  field, toggle and accordion components with human-readable labels, balanced choice segments,
-  bounded numeric fields, units and dedicated toggle, color and text treatments in both native and
-  OBS editors. A fresh 30-step 1920x1080 native visual run inspected every PNG and selector layout,
-  including selection-driven geometry updates. A production browser run at the same size measured a
-  384 px sidebar and a 383 px ActionBar confined to it, exercised immediate canvas/widget creation,
-  and confirmed the iframe widget DOM. Regression tests exercise body selection and edge-aligned
-  resizing through Dioxus, plus delivered button state. Native render and browser-route evidence
-  remain distinct from live Wayland input and actual OBS composition.
+  actual pressed-button state. Manifest-defined canvas and widget properties now use the complete
+  shared Dioxus component set with human-readable labels, balanced choice segments, bounded numeric
+  fields, units and dedicated toggle, color and text treatments in both native and OBS editors. A
+  fresh 30-step 1920x1080 native visual run inspected every PNG and selector layout, including
+  inline picker, panel collapse/reopen, skin switches and selection-driven geometry updates. Its
+  explicit capture action now resolves the production DOM before paint instead of producing a stale
+  or transparent diagnostic frame. A production Chromium run at the same size measured a 384 px
+  sidebar, 383 px sidebar-confined ActionBar and 34 px top-left collapsed control; it exercised the
+  inline picker's arrow/End/Enter contract, immediate canvas/widget creation, invalid live canvas
+  naming, real iframe widget DOM and panel collapse. Invalid local name drafts no longer reach either
+  strict backend stage transport before becoming valid. Regression tests exercise picker key
+  reduction and close-before-create ordering, assigned-output and exact non-grid output-edge
+  geometry, visibility-following widget selection, body selection and edge-aligned resizing through
+  Dioxus, plus delivered button state. Native render and browser-route evidence remain distinct from
+  live Wayland input and actual OBS composition.
 
 - Validate layout v4 in a fresh target-live run with the installed binary.
   Retained-frame inspection does not recover unrecorded PLAY spans or backfill missing RESULTs.
