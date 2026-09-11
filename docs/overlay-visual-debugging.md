@@ -146,9 +146,11 @@ The native adapter retains pressed buttons across motion/release, translates Way
 pointer input to Blitz `UiEvent` and lets Dioxus
 hit testing, bubbling and component callbacks produce the same typed actions as the web
 renderer. The native visual scenario also sends these events; it does not interpret
-selector names as setting commands. Native IME buffers and browser input elements adapt
-platform text entry. Output/surface ownership, keyboard focus, pointer capture and the
-existing save/lease transports remain host responsibilities.
+selector names as setting commands. Its scroll action resolves the selector center and sends
+the production Blitz wheel event there, so a nested canvas or widget exercises ancestor scroll
+targeting rather than directly mutating a scroll node. Native IME buffers and browser input
+elements adapt platform text entry. Output/surface ownership, keyboard focus, pointer capture
+and the existing save/lease transports remain host responsibilities.
 
 During native editing, there is one output-owned full-output stage per connected output. Canvas
 assignment must update the shared draft without destroying or recreating those stages. Every local
@@ -158,10 +160,11 @@ editor host. Draft updates, saves and output resolution are serialized by the co
 changes the coordinator phase, stops and wakes every editor stage, joins their unmap completion,
 releases the lease, and only then creates display-canvas surfaces. A failed lease release is a typed,
 fail-closed transition error and cannot expose display surfaces beside an unclosed backend editor
-session. Skin motion schedules are paused while the
-editor is open; direct manipulation and state changes still request paints. In a nested multi-output
-check, leave the editor idle before and after an output assignment and confirm that paint counts stop
-advancing and that no configure timeout or canvas-worker failure is reported.
+session. While the editor is open, the visible preview continues requesting compositor frame
+callbacks so shared presentation motion advances without another interaction; damage remains
+coalesced until the next callback. In a nested multi-output check, leave the editor idle before and
+after an output assignment and confirm that frame callbacks continue without a configure timeout or
+canvas-worker failure.
 
 OBS `/overlay` boots the editor WASM bundle and places display-only skin canvas iframes inside
 the shared editor canvas. Native supplies rendered canvas content in the same component

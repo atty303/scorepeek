@@ -168,6 +168,7 @@ pub fn ListPicker(props: ListPickerProps) -> Element {
     let mut cursor = use_signal(|| props.selected);
     let option_count = props.options.len();
     let keyboard_props = props.clone();
+    let accessible_label = format!("{}: {}", props.label, props.value);
     rsx! {
         div {
             class: "editor-list-picker {props.class}",
@@ -202,6 +203,7 @@ pub fn ListPicker(props: ListPickerProps) -> Element {
                     cursor.set(props.selected);
                     props.onopen.call(!props.open);
                 },
+                "aria-label": accessible_label,
                 "aria-expanded": props.open.to_string(),
                 "aria-haspopup": "listbox",
                 span { class: "list-picker-label", "{props.label}" }

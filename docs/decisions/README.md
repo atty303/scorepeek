@@ -6,6 +6,7 @@ authoritative.
 
 ## Current
 
+- [ADR 0148: Simplify overlay editor context and keep native preview live](0148-simplify-overlay-editor-context-and-keep-native-preview-live.md) removes repeated editor metadata, flattens appearance and output controls, routes native wheel input through Blitz, and keeps visible editor preview motion repainting.
 - [ADR 0147: Refine the overlay editor visual hierarchy](0147-refine-overlay-editor-visual-hierarchy.md) fixes the shared editor's balanced spacing and typography, compact one-line context status, flat inspector grouping, guided object tree, control hierarchy, and artwork-independent selection geometry.
 - [ADR 0146: Complete the overlay editor component system](0146-complete-overlay-editor-component-system.md) makes the compact shared Dioxus component tree, fresh visual language, inline picker keyboard contract, live invalid-name draft, and retained invalid-output navigation explicit.
 - [ADR 0144: Unify overlay editor sessions and output stages](0144-unify-overlay-editor-session-and-output-stages.md) gives Wayland and OBS one backend-neutral editor domain, adds empty-workspace recovery and UNKNOWN preview, and replaces persisted revisions with a single locked parent writer.
@@ -398,6 +399,9 @@ authoritative.
 - [ADR 0147: Refine the overlay editor visual hierarchy](0147-refine-overlay-editor-visual-hierarchy.md)
   supersedes ADR 0146 only for balanced visual tokens, flat spatial grouping, compact context
   metadata, guided navigation and high-contrast selection geometry.
+- [ADR 0148: Simplify overlay editor context and keep native preview live](0148-simplify-overlay-editor-context-and-keep-native-preview-live.md)
+  supersedes ADR 0147's active-output header treatment, removes redundant property metadata, and
+  restores native descendant wheel targeting and frame-paced editor motion.
 
 ## Historical
 

@@ -659,6 +659,18 @@ checkpoint; implementation history belongs in Git.
   remains outside object clipping. Actual Wayland composition/input and rendering inside OBS remain
   separate target-live boundaries.
 
+- ADR 0148 removes the Context Bar's repeated output and visible GAME SCREEN prefix while retaining
+  the accessible picker name and dirty indicator. Canvas identity combines the stable ID with the
+  Name label; output choices are single-line names; Appearance and Style expose properties without
+  nested style cards or schema-type badges; and canvas opacity has a visible heading. Editor action
+  text is single-line and no longer collapses into character-level wrapping after visibility or
+  opacity mutations. Native Wayland wheel input now follows Blitz's ordinary hit-test and ancestor
+  scroll path, with the native visual scenario scrolling from a nested canvas row rather than
+  calling the scroll node directly. Visible native editor previews continue frame-paced paints, so
+  shared presentation motion advances without unrelated interaction. The production native visual
+  scenario remains on the persistent `dioxus-native-dom/blitz/vello` renderer; actual Wayland
+  composition/input remains a target-live boundary.
+
 - Validate layout v4 in a fresh target-live run with the installed binary.
   Retained-frame inspection does not recover unrecorded PLAY spans or backfill missing RESULTs.
 

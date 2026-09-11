@@ -15,7 +15,7 @@ use text::TitleEdit;
 use crate::runtime::{Config, Feed};
 use anyrender::{CompositeAlphaMode, ImageRenderer, PaintScene, WindowRenderer};
 use anyrender_vello::{VelloRendererOptions, VelloWindowRenderer};
-use blitz_dom::{BaseDocument, Document, DocumentConfig};
+use blitz_dom::{Document, DocumentConfig};
 use blitz_paint::paint_scene;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use dioxus::prelude::*;
@@ -168,6 +168,28 @@ impl PointerInput {
         self.dispatch(document, point, 0x110, None);
         self.dispatch(document, point, 0x110, Some(true));
         self.dispatch(document, point, 0x110, Some(false));
+    }
+
+    fn wheel(&mut self, document: &mut DioxusDocument, point: [f64; 2], delta: [f64; 2]) {
+        use blitz_traits::events::{
+            BlitzWheelDelta, BlitzWheelEvent, Point, PointerCoords, UiEvent,
+        };
+        self.dispatch(document, point, 0x110, None);
+        let point = dioxus::html::geometry::ClientPoint::new(point[0], point[1]).to_f32();
+        document.handle_ui_event(UiEvent::Wheel(BlitzWheelEvent {
+            delta: BlitzWheelDelta::Pixels(delta[0], delta[1]),
+            coords: PointerCoords {
+                page_x: point.x,
+                page_y: point.y,
+                screen_x: point.x,
+                screen_y: point.y,
+                client_x: point.x,
+                client_y: point.y,
+            },
+            buttons: self.buttons,
+            mods: dioxus::html::Modifiers::default(),
+            element: Point::default(),
+        }));
     }
 }
 
@@ -347,22 +369,6 @@ fn replace_canvas_selection(
     selected_widget.take();
 }
 
-fn scroll_editor_at(document: &mut BaseDocument, point: [f64; 2], delta: [f64; 2]) -> bool {
-    let [x, y] = point;
-    for selector in [".navigator-scroll", ".inspector-scroll"] {
-        let Ok(Some(node)) = document.query_selector(selector) else {
-            continue;
-        };
-        let Some(rect) = document.get_client_bounding_rect(node) else {
-            continue;
-        };
-        if x >= rect.x && y >= rect.y && x < rect.x + rect.width && y < rect.y + rect.height {
-            return document.scroll_node_by_has_changed(node, delta[0], delta[1], |_| {});
-        }
-    }
-    false
-}
-
 #[derive(Clone, Copy)]
 enum PaintSignal {
     None,
@@ -398,16 +404,17 @@ impl PaintState {
     const fn ordinary_reason(self) -> Option<PaintReason> {
         if self.editing && self.visible && matches!(self.signal, PaintSignal::DamageAndFrame) {
             Some(PaintReason::Editor)
-        } else if !self.editing
-            && self.visible
-            && (matches!(
-                self.signal,
-                PaintSignal::Damage | PaintSignal::DamageAndFrame
-            ) || (self.animating
+        } else if self.visible
+            && ((!self.editing
                 && matches!(
                     self.signal,
-                    PaintSignal::Frame | PaintSignal::DamageAndFrame
-                )))
+                    PaintSignal::Damage | PaintSignal::DamageAndFrame
+                ))
+                || (self.animating
+                    && matches!(
+                        self.signal,
+                        PaintSignal::Frame | PaintSignal::DamageAndFrame
+                    )))
         {
             Some(PaintReason::Steady)
         } else {
@@ -2545,15 +2552,10 @@ impl App {
                         wake = true;
                     }
                     Event::PointerScroll { dx, dy, x, y } => {
-                        if self.editing.get()
-                            && self.panel_open.get()
-                            && scroll_editor_at(
-                                &mut self.document.inner.borrow_mut(),
-                                [x, y],
-                                [dx, dy],
-                            )
-                        {
+                        if self.editing.get() && self.panel_open.get() {
+                            self.pointer.wheel(&mut self.document, [x, y], [dx, dy]);
                             document_changed = true;
+                            wake = true;
                         }
                     }
                     Event::Text(command) => {
@@ -3706,10 +3708,10 @@ impl App {
             inner.set_incremental_layout(incremental_layout);
             self.full_layout_pending = false;
         }
-        self.animating = !self.editing.get() && self.visible.get();
-        // Every present must publish a compositor callback. Editor and lifecycle paints are not
-        // continuously animated, but still need the callback to release frame-paced surface
-        // resources before another state change is rendered.
+        self.animating = self.visible.get();
+        // Every present publishes the next compositor callback. Visible editor previews share the
+        // same presentation motion as ordinary canvases; lifecycle paints also need the callback
+        // to release frame-paced surface resources before another state change is rendered.
         self.shell.request_frame();
         let (width, height) = inner.viewport().window_size;
         let scale = inner.viewport().scale_f64();
@@ -4531,13 +4533,19 @@ impl VisualDebugSession {
     }
 
     fn scroll(&mut self, selector: &str, dx: f64, dy: f64) -> Result<(), String> {
-        let mut inner = self.document.inner.borrow_mut();
-        let node = inner
-            .query_selector(selector)
-            .map_err(|_| "invalid selector".to_owned())?
-            .ok_or_else(|| format!("selector did not match: {selector}"))?;
-        inner.scroll_node_by(node, dx, dy, |_| {});
-        inner.resolve(1.0);
+        let point = {
+            let inner = self.document.inner.borrow();
+            let node = inner
+                .query_selector(selector)
+                .map_err(|_| "invalid selector".to_owned())?
+                .ok_or_else(|| format!("selector did not match: {selector}"))?;
+            let rect = inner
+                .get_client_bounding_rect(node)
+                .ok_or("selector has no layout")?;
+            [rect.x + rect.width / 2.0, rect.y + rect.height / 2.0]
+        };
+        self.pointer.wheel(&mut self.document, point, [dx, dy]);
+        self.resolve();
         Ok(())
     }
 
@@ -5579,7 +5587,7 @@ mod skin_tests {
     }
 
     #[test]
-    fn idle_editor_damage_requests_a_frame_until_the_callback_arrives() {
+    fn editor_damage_waits_for_a_frame_and_visible_preview_motion_keeps_painting() {
         let idle_damage = PaintState {
             editing: true,
             visible: true,
@@ -5599,6 +5607,15 @@ mod skin_tests {
         assert_eq!(
             PaintState {
                 editing: false,
+                ..idle_damage
+            }
+            .ordinary_reason(),
+            Some(PaintReason::Steady)
+        );
+        assert_eq!(
+            PaintState {
+                signal: PaintSignal::Frame,
+                animating: true,
                 ..idle_damage
             }
             .ordinary_reason(),
@@ -6238,7 +6255,7 @@ mod skin_tests {
         let undo = rect(".undo-action");
         let delete = rect(".delete-canvas");
         let preview = rect(".editor-canvas.selected");
-        let canvas_list = rect(".navigator-scroll");
+        let nested_canvas = rect(".canvas-select[data-canvas-id='wayland-selection']");
         let cyan = rect(".skin-option[data-index='0']");
         let aurora = rect(".skin-option[data-index='1']");
         let blackbox = rect(".skin-option[data-index='2']");
@@ -6263,17 +6280,39 @@ mod skin_tests {
         assert!(blackbox.x + blackbox.width <= panel.x + panel.width);
         assert!(inner.query_selector(".manage-canvas").unwrap().is_none());
         assert!(inner.query_selector(".output-settings").unwrap().is_none());
+        assert!(inner.query_selector(".context-status").unwrap().is_none());
+        assert!(
+            inner
+                .query_selector(
+                    ".screen-picker .list-picker-trigger[aria-label='GAME SCREEN: Music Select']"
+                )
+                .unwrap()
+                .is_some()
+        );
+        assert!(inner.query_selector(".stable-id").unwrap().is_none());
+        assert!(inner.query_selector(".property-kind").unwrap().is_none());
+        assert!(
+            inner
+                .query_selector(".property-section-title")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            inner
+                .query_selector(".output-option small")
+                .unwrap()
+                .is_none()
+        );
+        assert!(inner.query_selector(".control-heading").unwrap().is_some());
         assert!((preview.x - 120.0).abs() < 1.0, "{preview:?}");
-        assert!(scroll_editor_at(
-            &mut inner,
-            [canvas_list.x + 8.0, canvas_list.y + 8.0],
-            [0.0, -120.0]
-        ));
-        assert!(!scroll_editor_at(
-            &mut inner,
-            [canvas_list.x + 8.0, canvas_list.y + 8.0],
-            [0.0, 0.0]
-        ));
+        let nested_canvas_point = [
+            nested_canvas.x + nested_canvas.width / 2.0,
+            nested_canvas.y + nested_canvas.height / 2.0,
+        ];
+        drop(inner);
+        PointerInput::default().wheel(&mut document, nested_canvas_point, [0.0, -120.0]);
+        while document.poll(Some(TaskContext::from_waker(Waker::noop()))) {}
+        let mut inner = document.inner.borrow_mut();
         inner.resolve(1.0);
         let last_after = inner
             .get_client_bounding_rect(
