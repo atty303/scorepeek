@@ -1812,6 +1812,8 @@ fn editor_stage_projections(
             stage.skin = skin;
             stage.output.clone_from(&output.name);
             stage.show_on = Some(Vec::new());
+            stage.x = 0;
+            stage.y = 0;
             if let Some([width, height]) = output.logical_size {
                 stage.width = width.max(32);
                 stage.height = height.max(32);
@@ -5486,6 +5488,7 @@ mod skin_tests {
         let after = editor_stage_projections(&canvases, &outputs, canvases[0].skin);
 
         assert_eq!(before, after);
+        assert!(before.iter().all(|stage| stage.x == 0 && stage.y == 0));
         assert_eq!(
             before
                 .iter()

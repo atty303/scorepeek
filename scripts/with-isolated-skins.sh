@@ -9,7 +9,6 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 "$root/scripts/build-skins.sh"
-cargo build --locked -p scorepeek
 
 export XDG_DATA_HOME="$xdg/data"
 export XDG_CONFIG_HOME="$xdg/config"
@@ -20,8 +19,6 @@ if [[ "${SCOREPEEK_PRESERVE_XDG_RUNTIME_DIR:-0}" != 1 ]]; then
   chmod 700 "$XDG_RUNTIME_DIR"
 fi
 
-for package in "$root"/target/skins/*.zip; do
-  "$root/target/debug/scorepeek" skin install "$package"
-done
+cargo run --locked -p scorepeek-overlay --example install_skins -- "$root"/target/skins/*.zip
 
 "$@"
