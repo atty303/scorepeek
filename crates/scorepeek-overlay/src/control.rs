@@ -708,7 +708,7 @@ mod tests {
                 .all(|canvas| { canvas.output.as_deref() == Some("DP-1") })
         );
         let persisted = std::fs::read_to_string(&path).unwrap();
-        assert!(persisted.contains("schema_version = 7"));
+        assert!(persisted.contains("schema_version = 8"));
         assert!(persisted.contains("output = \"DP-1\""));
         assert!(!persisted.contains("revision"));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();

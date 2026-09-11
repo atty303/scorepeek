@@ -2,13 +2,13 @@ use crate::runtime::Backend;
 use scorepeek_overlay_ui::{Skin, WaylandRefreshRate};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::Write as _,
     path::{Path, PathBuf},
 };
 
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 pub const OBS_OUTPUT_ID: &str = "obs-output";
 pub const UNRESOLVED_WAYLAND_OUTPUT_ID: &str = "__first-connected-output__";
 
@@ -64,6 +64,7 @@ pub struct Canvas {
     #[serde(default)]
     pub background: scorepeek_overlay_ui::Background,
     pub id: String,
+    pub name: String,
     pub backend: Backend,
     #[serde(default)]
     pub skin: Skin,
@@ -152,10 +153,11 @@ impl OverlayConfig {
             return Err("overlay obs_listen must use a loopback address".into());
         }
         let mut canvas_ids = BTreeSet::new();
+        let mut canvas_names = BTreeSet::new();
         let mut valid = Vec::new();
         let mut issues = Vec::new();
         for canvas in &self.canvases {
-            match validate_canvas(canvas, &mut canvas_ids).and_then(|()| {
+            match validate_canvas(canvas, &mut canvas_ids, &mut canvas_names).and_then(|()| {
                 crate::skin::validate_id(canvas.skin.name())?;
                 (store.is_installed(canvas.skin.name())?
                     || cfg!(test)
@@ -183,6 +185,7 @@ impl Canvas {
         scorepeek_overlay_ui::CanvasPresentation {
             background: self.background,
             id: self.id.clone(),
+            name: self.name.clone(),
             skin: self.skin,
             skin_properties: self.skin_properties.clone(),
             show_on: self.show_on.clone(),
@@ -210,6 +213,7 @@ impl Canvas {
     }
 
     pub fn apply_presentation(&mut self, presentation: &scorepeek_overlay_ui::CanvasPresentation) {
+        self.name.clone_from(&presentation.name);
         self.background = presentation.background;
         self.skin = presentation.skin;
         self.skin_properties
@@ -278,13 +282,13 @@ fn load_or_create_with_store(
         .get("schema_version")
         .and_then(toml::Value::as_integer)
         .ok_or("overlay schema_version is required")?;
-    let mut migrated = matches!(schema, 2..=6);
+    let mut migrated = matches!(schema, 2..=7);
     if schema == 2 {
         migrate_v2_document(&mut document)?;
         migrate_v3_document(&mut document)?;
     } else if schema == 3 {
         migrate_v3_document(&mut document)?;
-    } else if !matches!(schema, 4..=7) {
+    } else if !matches!(schema, 4..=8) {
         return Err(format!("overlay schema_version must be {SCHEMA_VERSION}"));
     }
     if schema <= 4 {
@@ -295,6 +299,9 @@ fn load_or_create_with_store(
     }
     if schema <= 6 {
         migrate_v6_document(&mut document)?;
+    }
+    if schema <= 7 {
+        migrate_v7_document(&mut document)?;
     }
     if document.get("wayland_refresh_hz").is_none() {
         document
@@ -432,6 +439,32 @@ fn migrate_v6_document(document: &mut toml::Value) -> Result<(), String> {
             table.insert("output".into(), toml::Value::String(output.into()));
         }
     }
+    root.insert("schema_version".into(), toml::Value::Integer(7));
+    Ok(())
+}
+
+fn migrate_v7_document(document: &mut toml::Value) -> Result<(), String> {
+    let root = document
+        .as_table_mut()
+        .ok_or("overlay TOML root must be a table")?;
+    let canvases = root
+        .get_mut("canvases")
+        .and_then(toml::Value::as_array_mut)
+        .ok_or("overlay canvases must be an array")?;
+    let mut next_by_backend = BTreeMap::<String, usize>::new();
+    for canvas in canvases {
+        let table = canvas
+            .as_table_mut()
+            .ok_or("overlay canvas must be a table")?;
+        let backend = table
+            .get("backend")
+            .and_then(toml::Value::as_str)
+            .ok_or("overlay canvas backend must be a string")?
+            .to_owned();
+        let next = next_by_backend.entry(backend).or_insert(1);
+        table.insert("name".into(), toml::Value::String(format!("Canvas {next}")));
+        *next += 1;
+    }
     root.insert(
         "schema_version".into(),
         toml::Value::Integer(i64::from(SCHEMA_VERSION)),
@@ -540,6 +573,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 fn validate_canvas(
     canvas: &Canvas,
     canvas_ids: &mut BTreeSet<(Backend, String)>,
+    canvas_names: &mut BTreeSet<(Backend, String)>,
 ) -> Result<(), String> {
     if canvas.id.is_empty()
         || !canvas
@@ -551,6 +585,12 @@ fn validate_canvas(
     }
     if !canvas_ids.insert((canvas.backend, canvas.id.clone())) {
         return Err("duplicate canvas id within backend workspace".into());
+    }
+    if canvas.name.trim().is_empty() {
+        return Err("canvas name must be non-empty".into());
+    }
+    if !canvas_names.insert((canvas.backend, canvas.name.clone())) {
+        return Err("duplicate canvas name within backend workspace".into());
     }
     if canvas.output.is_empty() {
         return Err("output must be non-empty".into());
@@ -658,6 +698,7 @@ pub(crate) fn visual_debug_config() -> OverlayConfig {
             .into_iter()
             .map(move |(suffix, y, width, height, show_on, widgets)| Canvas {
                 id: format!("{prefix}-{suffix}"),
+                name: suffix.replace('-', " "),
                 backend,
                 background: scorepeek_overlay_ui::Background::None,
                 skin: Skin::CyanSystem,
@@ -707,6 +748,7 @@ fn dashboard_test_widgets() -> Vec<(&'static str, WidgetKind, i32, i32)> {
 #[must_use]
 pub fn empty_canvas(id: String, backend: Backend) -> Canvas {
     Canvas {
+        name: id.clone(),
         id,
         backend,
         background: scorepeek_overlay_ui::Background::None,
@@ -865,6 +907,7 @@ mod tests {
         let mut config = visual_debug_config();
         let mut invalid = config.canvases[0].clone();
         invalid.id = "wayland-off-grid".into();
+        invalid.name = "Off grid".into();
         invalid.widgets.push(test_widget());
         invalid.widgets[0].x = 1;
         config.canvases.push(invalid);
@@ -922,7 +965,7 @@ mod tests {
         config.schema_version = 1;
         assert_eq!(
             config.validated().unwrap_err(),
-            "overlay schema_version must be 7"
+            "overlay schema_version must be 8"
         );
     }
 
@@ -960,6 +1003,57 @@ mod tests {
     }
 
     #[test]
+    fn schema_v7_canvas_names_are_assigned_in_backend_order() {
+        let root = temporary("migrate-v7-names");
+        let path = root.join("overlay.toml");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut value = toml::Value::try_from(visual_debug_config()).unwrap();
+        value["schema_version"] = toml::Value::Integer(7);
+        for canvas in value["canvases"].as_array_mut().unwrap() {
+            canvas.as_table_mut().unwrap().remove("name");
+        }
+        std::fs::write(&path, toml::to_string_pretty(&value).unwrap()).unwrap();
+
+        let (loaded, issues) = load_or_create(&path).unwrap();
+        assert!(issues.is_empty());
+        assert_eq!(loaded.schema_version, 8);
+        for backend in [Backend::Wayland, Backend::Obs] {
+            assert_eq!(
+                loaded
+                    .canvases
+                    .iter()
+                    .filter(|canvas| canvas.backend == backend)
+                    .map(|canvas| canvas.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["Canvas 1", "Canvas 2", "Canvas 3", "Canvas 4"]
+            );
+        }
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("name = \"Canvas 1\"")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn canvas_names_are_non_empty_and_unique_per_backend() {
+        let mut config = visual_debug_config();
+        config.canvases[0].name.clear();
+        let (_, issues) = config.validated().unwrap();
+        assert_eq!(issues[0].message, "canvas name must be non-empty");
+
+        let mut config = visual_debug_config();
+        let duplicate = config.canvases[0].name.clone();
+        config.canvases[1].name = duplicate;
+        let (_, issues) = config.validated().unwrap();
+        assert_eq!(
+            issues[0].message,
+            "duplicate canvas name within backend workspace"
+        );
+    }
+
+    #[test]
     fn schema_v2_is_migrated_atomically_through_v5() {
         let root = temporary("migrate-v2");
         let path = root.join("overlay.toml");
@@ -988,7 +1082,7 @@ mod tests {
                 .lines()
                 .any(|line| line.trim_start().starts_with("z ="))
         );
-        assert!(persisted.contains("schema_version = 7"));
+        assert!(persisted.contains("schema_version = 8"));
         assert!(
             !persisted
                 .lines()

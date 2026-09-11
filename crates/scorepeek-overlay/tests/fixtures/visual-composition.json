@@ -2,6 +2,7 @@
   "canvases": [
     {
       "id": "design",
+      "name": "Design",
       "skin": "dev.atty303.scorepeek.skin.result-aurora",
       "x": 0,
       "y": 0,
@@ -125,7 +126,7 @@
     },
     {
       "action": "scroll",
-      "selector": ".editor-tab-body",
+      "selector": ".navigator-scroll",
       "dx": 0,
       "dy": -720
     },
@@ -135,7 +136,7 @@
     },
     {
       "action": "scroll",
-      "selector": ".editor-tab-body",
+      "selector": ".inspector-scroll",
       "dx": 0,
       "dy": -800
     },
@@ -152,12 +153,18 @@
       "selector": ".skin-property[data-property='background'] button[data-index='1']"
     },
     {
+      "action": "scroll",
+      "selector": ".navigator-scroll",
+      "dx": 0,
+      "dy": 2000
+    },
+    {
       "action": "click",
       "selector": ".widget-row[data-widget-id='cam']"
     },
     {
       "action": "scroll",
-      "selector": ".editor-tab-body",
+      "selector": ".inspector-scroll",
       "dx": 0,
       "dy": -950
     },
@@ -180,7 +187,7 @@
     },
     {
       "action": "scroll",
-      "selector": ".editor-tab-body",
+      "selector": ".inspector-scroll",
       "dx": 0,
       "dy": -2000
     },

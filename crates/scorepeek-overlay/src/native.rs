@@ -334,7 +334,7 @@ fn replace_canvas_selection(
 
 fn scroll_editor_at(document: &mut BaseDocument, point: [f64; 2], delta: [f64; 2]) -> bool {
     let [x, y] = point;
-    for selector in [".canvas-list", ".editor-tab-body"] {
+    for selector in [".navigator-scroll", ".inspector-scroll"] {
         let Ok(Some(node)) = document.query_selector(selector) else {
             continue;
         };
@@ -796,7 +796,7 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
             EditorPanel {
                     view: EditorView {
                         backend_label:"EDITOR".into(),
-                        canvases: managed.borrow().iter().filter(|canvas|canvas.output==current_settings.active_output).cloned().collect(),
+                        canvases: managed.borrow().clone(),
                         selected_canvas: current_settings.has_selection.then(||current_settings.id.clone()),
                         selected_widget:selected.borrow().clone(),
                         preview_screen:current_settings.preview_screen,
@@ -805,18 +805,14 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
                         panel_width:current_settings.panel_width,
                         chrome:EditorChrome {panel_open:reactive.panel_open.get(),
                         widget_add_open:reactive.widget_add_open.get(),sample},
-                        access:EditorAccess {dirty:reactive.dirty.get() || reactive.refresh_edit.borrow().is_some(),readonly:reactive.readonly.get(),
-                        undo_available:reactive.undo_available.get()},
+                        access:EditorAccess {dirty:reactive.dirty.get(),readonly:reactive.readonly.get(),
+                        undo_available:reactive.undo_available.get(),save_validity:{let outputs=reactive.outputs.borrow().iter().map(|output|EditorOutput {name:output.name.clone(),model:output.model.clone(),logical_size:output.logical_size}).collect::<Vec<_>>();if scorepeek_overlay_ui::editor::document_valid(&managed.borrow(),&outputs){scorepeek_overlay_ui::editor::SaveValidity::Valid}else{scorepeek_overlay_ui::editor::SaveValidity::Invalid}}},
                         title:reactive.title_edit.borrow().as_ref().map_or(EditorTitleState::Closed,|edit|if edit.preedit.is_empty(){EditorTitleState::Editing}else{EditorTitleState::Composing}),
-                        refresh_rate:None,
                         skins:installed_editor_skins(),
                         new_canvas_skin:current_settings.new_canvas_skin,
                     },
                     title_input:rsx! { if let Some(edit)=reactive.title_edit.borrow().as_ref() {
                         div { class:"empty-title-edit", role:"textbox", "aria-label":"Widget title", "aria-multiline":"false", {title_input_content(edit)} }
-                    } },
-                    refresh_rate_input:rsx! { if let Some(edit)=reactive.refresh_edit.borrow().as_ref() {
-                        div { class:"refresh-rate-edit", role:"textbox", "aria-label":"Wayland refresh rate in Hz", "aria-multiline":"false", {title_input_content(edit)} }
                     } },
                     onaction: move |action| actions.borrow_mut().push(action),
             }
@@ -3166,15 +3162,7 @@ impl App {
         if !matches!(action, EditorAction::AcceptTitle | EditorAction::EditTitle) {
             self.finish_title_edit(false);
         }
-        if !matches!(
-            action,
-            EditorAction::EditRefreshRate
-                | EditorAction::AcceptRefreshRate
-                | EditorAction::CancelRefreshRate
-                | EditorAction::RefreshRateAuto
-        ) {
-            self.finish_refresh_edit(false);
-        }
+        self.finish_refresh_edit(false);
         match action {
             EditorAction::Save => {
                 self.save_and_close();
@@ -3194,33 +3182,6 @@ impl App {
             EditorAction::Undo => {
                 self.finish_refresh_edit(false);
                 self.undo_last_change();
-                return;
-            }
-            EditorAction::RefreshRateAuto => {
-                self.finish_refresh_edit(false);
-                let before = self.undo_snapshot();
-                self.set_refresh_rate_draft(scorepeek_overlay_ui::WaylandRefreshRate::Auto);
-                self.finish_draft_change(before);
-                return;
-            }
-            EditorAction::EditRefreshRate => {
-                self.finish_refresh_edit(false);
-                let text = self
-                    .refresh_rate
-                    .get()
-                    .hz()
-                    .map_or_else(String::new, |hz| hz.to_string());
-                self.refresh_edit
-                    .set(Some(TitleEdit::new("refresh-rate".into(), text)));
-                self.update_refresh_input(false);
-                return;
-            }
-            EditorAction::AcceptRefreshRate => {
-                self.finish_refresh_edit(true);
-                return;
-            }
-            EditorAction::CancelRefreshRate => {
-                self.finish_refresh_edit(false);
                 return;
             }
             _ => {}
@@ -3421,6 +3382,9 @@ impl App {
         }
         let mut model = self.editor_model();
         model.normalize_for_save();
+        if !model.document_valid() {
+            return;
+        }
         self.apply_editor_model(model);
         self.persist_canvas();
         let canvases = self.managed.borrow().clone();
@@ -3680,7 +3644,12 @@ const fn editor_action_name(action: &EditorAction) -> &'static str {
         EditorAction::PreviewScreen(_) => "preview_screen",
         EditorAction::SelectOutput(_) => "select_output",
         EditorAction::SelectCanvas(_) => "select_canvas",
-        EditorAction::ToggleCanvas(_) => "toggle_canvas",
+        EditorAction::CanvasName(_) => "canvas_name",
+        EditorAction::CanvasVisible(_, _) => "canvas_visibility",
+        EditorAction::CanvasVisibleAll => "canvas_visibility_all",
+        EditorAction::CanvasVisibleNone => "canvas_visibility_none",
+        EditorAction::CanvasGeometry(_, _) => "canvas_geometry",
+        EditorAction::WidgetGeometry(_, _) => "widget_geometry",
         EditorAction::AddCanvas => "add_canvas",
         EditorAction::DeleteCanvas => "delete_canvas",
         EditorAction::NewCanvasSkin(_) => "new_canvas_skin",
@@ -3691,7 +3660,7 @@ const fn editor_action_name(action: &EditorAction) -> &'static str {
         EditorAction::Opacity(_) => "opacity",
         EditorAction::Output(_) => "output",
         EditorAction::FitToOutput => "fit_to_output",
-        EditorAction::SelectWidget(_) => "select_widget",
+        EditorAction::SelectWidget { .. } => "select_widget",
         EditorAction::ToggleWidgetAdd => "toggle_widget_add",
         EditorAction::AddWidget(_) => "add_widget",
         EditorAction::Undo => "undo",
@@ -3708,10 +3677,6 @@ const fn editor_action_name(action: &EditorAction) -> &'static str {
         EditorAction::HistoryCount(_) => "history_count",
         EditorAction::GraphMonths(_) => "graph_months",
         EditorAction::DeleteWidget => "delete_widget",
-        EditorAction::RefreshRateAuto => "refresh_rate_auto",
-        EditorAction::EditRefreshRate => "edit_refresh_rate",
-        EditorAction::AcceptRefreshRate => "accept_refresh_rate",
-        EditorAction::CancelRefreshRate => "cancel_refresh_rate",
     }
 }
 
@@ -4657,7 +4622,7 @@ pub fn run_visual_debug(
                 ".widget-slot",
                 ".native-panel-toggle",
                 ".native-canvas-manager",
-                ".editor-tab-body",
+                ".inspector-scroll",
             ]
             .into_iter()
             .map(str::to_owned)
@@ -5044,7 +5009,9 @@ mod skin_tests {
         let scenario: VisualDebugScenario =
             serde_json::from_str(include_str!("../tests/fixtures/visual-debug.json")).unwrap();
         let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        session.click(".context-picker-trigger").unwrap();
         session.click(".preview-screen[data-index='4']").unwrap();
+        session.scroll(".navigator-scroll", 0.0, -2000.0).unwrap();
         session
             .click(".canvas-select[data-canvas-id='wayland-result']")
             .unwrap();
@@ -5079,9 +5046,14 @@ mod skin_tests {
                     .len()
                     == 1
             {
-                session
-                    .click(".screen-toggle[data-canvas-id='empty-output']")
-                    .unwrap();
+                let mut model = session.editor_model();
+                let visible = expected == 1;
+                assert!(model.action(&EditorAction::CanvasVisible(
+                    scorepeek_overlay_ui::ScreenKind::MusicSelect,
+                    visible,
+                )));
+                session.apply_editor_model(&model);
+                session.resolve();
             }
             let inner = session.document.inner.borrow();
             assert_eq!(
@@ -5097,7 +5069,7 @@ mod skin_tests {
             let footer = inner.query_selector("footer").unwrap().unwrap();
             let footer = inner.get_client_bounding_rect(footer).unwrap();
             assert!(footer.width > 250.0 && footer.y > 900.0 && footer.y + footer.height <= 1080.0);
-            let body = inner.query_selector(".editor-tab-body").unwrap().unwrap();
+            let body = inner.query_selector(".inspector-scroll").unwrap().unwrap();
             assert!(inner.get_client_bounding_rect(body).unwrap().height > 100.0);
         }
     }
@@ -5529,7 +5501,9 @@ mod skin_tests {
             actions: Vec::new(),
         };
         let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        session.click(".context-picker-trigger").unwrap();
         session.click(".preview-screen[data-index='4']").unwrap();
+        session.scroll(".navigator-scroll", 0.0, -2000.0).unwrap();
         session
             .click(".canvas-select[data-canvas-id='wayland-result']")
             .unwrap();
@@ -5644,6 +5618,7 @@ mod skin_tests {
             actions: Vec::new(),
         };
         let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        session.click(".context-picker-trigger").unwrap();
         session.click(".preview-screen[data-index='4']").unwrap();
         session
             .click(".canvas-select[data-canvas-id='wayland-result']")
@@ -5686,6 +5661,7 @@ mod skin_tests {
         };
         let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
 
+        session.click(".context-picker-trigger").unwrap();
         session.click(".preview-screen[data-index='4']").unwrap();
         session
             .click(".canvas-select[data-canvas-id='wayland-result']")
@@ -5934,6 +5910,7 @@ mod skin_tests {
     fn output_picker_stays_inside_the_overlay_panel_at_actual_canvas_coordinates() {
         let canvas = scorepeek_overlay_ui::CanvasPresentation {
             id: "wayland-selection".into(),
+            name: "Selection".into(),
             skin: Skin::CyanSystem,
             skin_properties: std::collections::BTreeMap::new(),
             show_on: None,
@@ -6022,29 +5999,25 @@ mod skin_tests {
                 .unwrap()
         };
         let panel = rect(".native-canvas-manager");
-        let output = rect(".output-option");
-        let canvas_section = rect(".canvas-section");
-        let appearance = rect(".appearance-pane");
-        let output_section = rect(".output-pane");
+        let navigator = rect(".object-navigator");
+        let inspector = rect(".object-inspector");
+        let action_bar = rect(".editor-action-bar");
         let undo = rect(".undo-action");
         let delete = rect(".delete-canvas");
         let preview = rect(".editor-canvas.selected");
-        let canvas_list = rect(".canvas-list");
+        let canvas_list = rect(".navigator-scroll");
         let cyan = rect(".skin-option[data-index='0']");
         let aurora = rect(".skin-option[data-index='1']");
         let blackbox = rect(".skin-option[data-index='2']");
         let last_before = rect(".canvas-select[data-canvas-id='wayland-extra-5']");
         assert!((panel.width - 384.0).abs() < 1.0, "{panel:?}");
+        assert!(navigator.y < inspector.y, "{navigator:?} {inspector:?}");
+        assert!(action_bar.y >= inspector.y, "{action_bar:?} {inspector:?}");
         assert!(
-            canvas_section.y < appearance.y,
-            "{canvas_section:?} {appearance:?}"
+            (action_bar.width - panel.width).abs() <= 1.5,
+            "{action_bar:?} {panel:?}"
         );
-        assert!(
-            appearance.y < output_section.y,
-            "{appearance:?} {output_section:?}"
-        );
-        assert!(output.x >= panel.x && output.x + output.width <= panel.x + panel.width);
-        assert!(undo.x >= panel.x && undo.y > canvas_section.y, "{undo:?}");
+        assert!(undo.x >= panel.x && undo.y >= action_bar.y, "{undo:?}");
         assert!(delete.width > 0.0, "{delete:?}");
         assert!(
             inner
@@ -6054,7 +6027,7 @@ mod skin_tests {
         );
         assert!(cyan.width > 0.0 && aurora.width > 0.0 && blackbox.width > 0.0);
         assert!(cyan.x >= panel.x && blackbox.x + blackbox.width <= panel.x + panel.width);
-        assert!(blackbox.y + blackbox.height <= output_section.y);
+        assert!(blackbox.x + blackbox.width <= panel.x + panel.width);
         assert!(inner.query_selector(".manage-canvas").unwrap().is_none());
         assert!(inner.query_selector(".output-settings").unwrap().is_none());
         assert!((preview.x - 120.0).abs() < 1.0, "{preview:?}");
@@ -6079,20 +6052,18 @@ mod skin_tests {
     }
 
     #[test]
-    fn screen_switch_is_the_only_canvas_visibility_state() {
+    fn aggregate_canvas_visibility_preserves_explicit_screen_membership() {
         use scorepeek_overlay_ui::editor_model::SCREENS;
         let mut canvas = crate::config::visual_debug_config().canvases[0].presentation();
         canvas.show_on = None;
         let mut model = EditorModel::new(vec![canvas.clone()], [1920, 1080], "wayland");
         model.readonly = false;
         for screen in SCREENS {
-            model.preview = screen;
-            model.action(&EditorAction::ToggleCanvas(canvas.id.clone()));
+            model.action(&EditorAction::CanvasVisible(screen, false));
         }
         assert_eq!(model.draft[0].show_on, Some(Vec::new()));
         for screen in SCREENS {
-            model.preview = screen;
-            model.action(&EditorAction::ToggleCanvas(canvas.id.clone()));
+            model.action(&EditorAction::CanvasVisible(screen, true));
         }
         assert_eq!(model.draft[0].show_on, Some(SCREENS.to_vec()));
     }
@@ -6210,10 +6181,10 @@ mod skin_tests {
             scenario.logical_size = size;
             scenario.editing = true;
             let mut session = VisualDebugSession::new(&scenario, size).unwrap();
-            session.scroll(".editor-tab-body", 0.0, -2000.0).unwrap();
+            session.scroll(".navigator-scroll", 0.0, -100.0).unwrap();
             session.click(".widget-row[data-widget-id='cam']").unwrap();
             assert_eq!(session.selected.borrow().as_deref(), Some("cam"));
-            session.scroll(".editor-tab-body", 0.0, -2000.0).unwrap();
+            session.scroll(".inspector-scroll", 0.0, -2000.0).unwrap();
             for index in [1, 2, 3, 0] {
                 let selector = format!(".aspect-ratio[data-index='{index}']");
                 session.click(&selector).unwrap();

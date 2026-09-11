@@ -1,14 +1,15 @@
 {
   "logical_size": [1920, 1080],
   "editing": true,
+  "canvas_id": "empty-output",
   "canvases": [{
-    "id": "empty-output", "skin": "dev.atty303.scorepeek.skin.cyan-system",
+    "id": "empty-output", "name": "Empty output", "skin": "dev.atty303.scorepeek.skin.cyan-system",
     "x": 500, "y": 100, "width": 640, "height": 480,
     "show_on": [], "widgets": []
   }],
-  "selectors": [".editor-surface", ".editor-canvas", ".native-canvas-manager", ".editor-tab-body", "footer", ".close-action"],
+  "selectors": [".editor-surface", ".editor-canvas", ".native-canvas-manager", ".object-inspector", "footer", ".close-action"],
   "actions": [
-    {"action": "click", "selector": ".screen-toggle[data-canvas-id='empty-output']"},
-    {"action": "click", "selector": ".screen-toggle[data-canvas-id='empty-output']"}
+    {"action": "click", "selector": ".screen-toggle[data-index='1']"},
+    {"action": "click", "selector": ".screen-toggle[data-index='1']"}
   ]
 }

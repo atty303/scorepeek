@@ -1,6 +1,6 @@
 use crate::editor::{
     EditorAccess, EditorAction, EditorChrome, EditorProperty, EditorSkin, EditorTitleState,
-    EditorView,
+    EditorView, GeometryField,
 };
 use crate::{
     AspectRatio, Background, CanvasPresentation, ScreenKind, Skin, WidgetKind, WidgetLayout,
@@ -190,6 +190,16 @@ impl Model {
             self.viewport = size;
         }
     }
+    pub fn resize_active_output(&mut self, size: [u32; 2]) {
+        self.viewport = size;
+        if let Some(output) = self
+            .outputs
+            .iter_mut()
+            .find(|output| Some(&output.name) == self.active_output.as_ref())
+        {
+            output.logical_size = Some(size);
+        }
+    }
     pub fn receive_stage(&mut self, canvases: Vec<CanvasPresentation>) {
         if !self.editing && self.draft != canvases {
             self.saved.clone_from(&canvases);
@@ -202,6 +212,10 @@ impl Model {
     #[must_use]
     pub fn dirty(&self) -> bool {
         self.saved != self.draft
+    }
+    #[must_use]
+    pub fn document_valid(&self) -> bool {
+        crate::editor::document_valid(&self.draft, &self.outputs)
     }
     #[must_use]
     pub fn current(&self) -> Option<&CanvasPresentation> {
@@ -224,12 +238,7 @@ impl Model {
     pub fn view(&self) -> EditorView {
         EditorView {
             backend_label: "EDITOR".into(),
-            canvases: self
-                .draft
-                .iter()
-                .filter(|canvas| canvas.output.as_ref() == self.active_output.as_ref())
-                .cloned()
-                .collect(),
+            canvases: self.draft.clone(),
             selected_canvas: self.selected_canvas.clone(),
             selected_widget: self.selected_widget.clone(),
             preview_screen: self.preview,
@@ -241,6 +250,11 @@ impl Model {
                 dirty: self.dirty(),
                 readonly: self.readonly || self.discard_pending,
                 undo_available: self.undo.is_some(),
+                save_validity: if self.document_valid() {
+                    crate::editor::SaveValidity::Valid
+                } else {
+                    crate::editor::SaveValidity::Invalid
+                },
             },
             title: self
                 .title
@@ -252,7 +266,6 @@ impl Model {
                         EditorTitleState::Editing
                     }
                 }),
-            refresh_rate: None,
             skins: self.skins.clone(),
             new_canvas_skin: self.new_canvas_skin,
         }
@@ -320,9 +333,18 @@ impl Model {
                     self.title = None;
                 }
             }
-            EditorAction::SelectWidget(id) => {
-                self.selected_widget = Some(id.clone());
-                self.title = None;
+            EditorAction::SelectWidget {
+                canvas_id,
+                widget_id,
+            } => {
+                if self.draft.iter().any(|canvas| {
+                    &canvas.id == canvas_id
+                        && canvas.widgets.iter().any(|widget| &widget.id == widget_id)
+                }) {
+                    self.selected_canvas = Some(canvas_id.clone());
+                    self.selected_widget = Some(widget_id.clone());
+                    self.title = None;
+                }
             }
             EditorAction::ToggleWidgetAdd => {
                 self.chrome.widget_add_open = !self.chrome.widget_add_open;
@@ -364,7 +386,7 @@ impl Model {
                 return false;
             }
             EditorAction::AddWidget(index) => {
-                self.placing = [
+                let Some(kind) = [
                     WidgetKind::Status,
                     WidgetKind::Selection,
                     WidgetKind::Score,
@@ -373,8 +395,10 @@ impl Model {
                     WidgetKind::Empty,
                 ]
                 .get(*index)
-                .copied();
-                return false;
+                .copied() else {
+                    return false;
+                };
+                return self.add_widget_centered(kind);
             }
             EditorAction::EditTitle => {
                 self.title = self.current().and_then(|canvas| {
@@ -411,17 +435,47 @@ impl Model {
             .filter_map(|output| output.logical_size.map(|size| (output.name.clone(), size)))
             .collect::<std::collections::BTreeMap<_, _>>();
         match action {
-            EditorAction::ToggleCanvas(id) => {
-                if let Some(canvas) = self.draft.iter_mut().find(|canvas| &canvas.id == id) {
-                    let shown = visible_on(canvas, Some(self.preview));
+            EditorAction::CanvasName(value) => {
+                if let Some(canvas) = self
+                    .draft
+                    .iter_mut()
+                    .find(|canvas| Some(&canvas.id) == self.selected_canvas.as_ref())
+                {
+                    canvas.name.clone_from(value);
+                }
+            }
+            EditorAction::CanvasVisible(screen, visible) => {
+                if let Some(canvas) = self
+                    .draft
+                    .iter_mut()
+                    .find(|canvas| Some(&canvas.id) == self.selected_canvas.as_ref())
+                {
                     let mut screens = canvas.show_on.clone().unwrap_or(SCREENS.to_vec());
-                    screens.retain(|screen| *screen != self.preview);
-                    if !shown {
-                        screens.push(self.preview);
+                    screens.retain(|candidate| candidate != screen);
+                    if *visible {
+                        screens.push(*screen);
                     }
                     canvas.show_on = Some(screens);
                 }
                 self.title = None;
+            }
+            EditorAction::CanvasVisibleAll => {
+                if let Some(canvas) = self
+                    .draft
+                    .iter_mut()
+                    .find(|canvas| Some(&canvas.id) == self.selected_canvas.as_ref())
+                {
+                    canvas.show_on = Some(SCREENS.to_vec());
+                }
+            }
+            EditorAction::CanvasVisibleNone => {
+                if let Some(canvas) = self
+                    .draft
+                    .iter_mut()
+                    .find(|canvas| Some(&canvas.id) == self.selected_canvas.as_ref())
+                {
+                    canvas.show_on = Some(Vec::new());
+                }
             }
             EditorAction::AddCanvas => {
                 let id = (1..=self.draft.len() + 1)
@@ -430,6 +484,10 @@ impl Model {
                     .unwrap();
                 self.draft.push(CanvasPresentation {
                     id: id.clone(),
+                    name: (1..=self.draft.len() + 1)
+                        .map(|i| format!("Canvas {i}"))
+                        .find(|name| self.draft.iter().all(|canvas| &canvas.name != name))
+                        .unwrap(),
                     skin: self.new_canvas_skin,
                     skin_properties: self
                         .skins
@@ -530,6 +588,9 @@ impl Model {
                                 );
                             }
                         }
+                        EditorAction::CanvasGeometry(field, value) => {
+                            apply_canvas_geometry(canvas, *field, *value, self.viewport);
+                        }
                         EditorAction::DeleteWidget => {
                             canvas
                                 .widgets
@@ -558,6 +619,13 @@ impl Model {
                                             .skin_properties
                                             .insert(key.clone(), property.effective(Some(value)));
                                     }
+                                } else if let EditorAction::WidgetGeometry(field, value) = action {
+                                    apply_widget_geometry(
+                                        widget,
+                                        *field,
+                                        *value,
+                                        [canvas.width, canvas.height],
+                                    );
                                 } else {
                                     apply_widget_action(
                                         widget,
@@ -572,6 +640,48 @@ impl Model {
                 }
             }
         }
+    }
+    fn add_widget_centered(&mut self, kind: WidgetKind) -> bool {
+        if self.readonly {
+            return false;
+        }
+        let before = self.draft.clone();
+        let skin_properties = self
+            .current()
+            .and_then(|canvas| self.skins.iter().find(|skin| skin.id == canvas.skin))
+            .and_then(|skin| {
+                skin.widget_properties
+                    .get(kind.name())
+                    .or_else(|| skin.widget_properties.get("*"))
+            })
+            .map_or_else(std::collections::BTreeMap::new, |properties| {
+                migrate_properties(None, properties, &std::collections::BTreeMap::new())
+            });
+        let Some(canvas) = self
+            .draft
+            .iter_mut()
+            .find(|canvas| Some(&canvas.id) == self.selected_canvas.as_ref())
+        else {
+            return false;
+        };
+        let (width, height) = default_widget_size(kind);
+        let width = grid(width.min(canvas.width));
+        let height = grid(height.min(canvas.height));
+        let id = next_widget_id(kind, &canvas.widgets);
+        canvas.widgets.push(WidgetLayout {
+            id: id.clone(),
+            kind,
+            x: snap(i32::try_from(canvas.width.saturating_sub(width) / 2).unwrap_or_default()),
+            y: snap(i32::try_from(canvas.height.saturating_sub(height) / 2).unwrap_or_default()),
+            width,
+            height,
+            settings: WidgetSettings::default(),
+            skin_properties,
+        });
+        self.selected_widget = Some(id);
+        self.chrome.widget_add_open = false;
+        self.undo = Some(before);
+        true
     }
     pub fn place(&mut self, point: [i32; 2]) -> bool {
         if self.readonly {
@@ -754,6 +864,94 @@ pub fn visible_on(canvas: &CanvasPresentation, screen: Option<ScreenKind>) -> bo
         .show_on
         .as_ref()
         .is_none_or(|screens| screens.contains(&screen.unwrap_or(ScreenKind::Unknown)))
+}
+
+fn apply_canvas_geometry(
+    canvas: &mut CanvasPresentation,
+    field: GeometryField,
+    value: i32,
+    bounds: [u32; 2],
+) {
+    if value < 0 || value % 4 != 0 {
+        return;
+    }
+    let Ok(value_u32) = u32::try_from(value) else {
+        return;
+    };
+    let child_min = canvas.widgets.iter().fold([32, 32], |minimum, widget| {
+        [
+            minimum[0].max(u32::try_from(widget.x).unwrap_or_default() + widget.width),
+            minimum[1].max(u32::try_from(widget.y).unwrap_or_default() + widget.height),
+        ]
+    });
+    match field {
+        GeometryField::X if value_u32.saturating_add(canvas.width) <= bounds[0] => {
+            canvas.x = value;
+        }
+        GeometryField::Y if value_u32.saturating_add(canvas.height) <= bounds[1] => {
+            canvas.y = value;
+        }
+        GeometryField::Width
+            if value_u32 >= child_min[0]
+                && u32::try_from(canvas.x)
+                    .unwrap_or(u32::MAX)
+                    .saturating_add(value_u32)
+                    <= bounds[0] =>
+        {
+            canvas.width = value_u32;
+        }
+        GeometryField::Height
+            if value_u32 >= child_min[1]
+                && u32::try_from(canvas.y)
+                    .unwrap_or(u32::MAX)
+                    .saturating_add(value_u32)
+                    <= bounds[1] =>
+        {
+            canvas.height = value_u32;
+        }
+        _ => {}
+    }
+}
+
+fn apply_widget_geometry(
+    widget: &mut WidgetLayout,
+    field: GeometryField,
+    value: i32,
+    bounds: [u32; 2],
+) {
+    if value < 0 || value % 4 != 0 {
+        return;
+    }
+    let Ok(value_u32) = u32::try_from(value) else {
+        return;
+    };
+    match field {
+        GeometryField::X if value_u32.saturating_add(widget.width) <= bounds[0] => {
+            widget.x = value;
+        }
+        GeometryField::Y if value_u32.saturating_add(widget.height) <= bounds[1] => {
+            widget.y = value;
+        }
+        GeometryField::Width
+            if value_u32 >= 16
+                && u32::try_from(widget.x)
+                    .unwrap_or(u32::MAX)
+                    .saturating_add(value_u32)
+                    <= bounds[0] =>
+        {
+            widget.width = value_u32;
+        }
+        GeometryField::Height
+            if value_u32 >= 16
+                && u32::try_from(widget.y)
+                    .unwrap_or(u32::MAX)
+                    .saturating_add(value_u32)
+                    <= bounds[1] =>
+        {
+            widget.height = value_u32;
+        }
+        _ => {}
+    }
 }
 fn grid(value: u32) -> u32 {
     value / 4 * 4
@@ -946,9 +1144,82 @@ mod skin_tests {
         assert_eq!([canvas.width, canvas.height], [1716, 1494]);
         assert_eq!(canvas.skin, Skin::DjBlackbox);
         assert_eq!(canvas.show_on, Some(vec![ScreenKind::Unknown]));
+        assert_eq!(canvas.name, "Canvas 1");
 
         assert!(model.action(&EditorAction::DeleteCanvas));
         assert!(model.draft.is_empty());
+    }
+
+    #[test]
+    fn adding_a_widget_centers_it_and_selects_it_immediately() {
+        let mut model = Model::new(Vec::new(), [800, 600], "ignored");
+        model.editing = true;
+        model.readonly = false;
+        model.action(&EditorAction::AddCanvas);
+
+        assert!(model.action(&EditorAction::AddWidget(0)));
+        let canvas = &model.draft[0];
+        let widget = &canvas.widgets[0];
+        assert_eq!(model.selected_widget.as_deref(), Some(widget.id.as_str()));
+        assert_eq!(widget.kind, WidgetKind::Status);
+        assert_eq!(
+            widget.x,
+            snap(i32::try_from((canvas.width - widget.width) / 2).unwrap())
+        );
+        assert_eq!(
+            widget.y,
+            snap(i32::try_from((canvas.height - widget.height) / 2).unwrap())
+        );
+        assert!(model.placing.is_none());
+    }
+
+    #[test]
+    fn widget_selection_changes_its_canvas_owner_atomically() {
+        let mut model = Model::new(Vec::new(), [800, 600], "ignored");
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        assert!(model.action(&EditorAction::AddWidget(0)));
+        let first_canvas = model.draft[0].id.clone();
+        let shared_widget_id = model.draft[0].widgets[0].id.clone();
+        assert!(model.action(&EditorAction::AddCanvas));
+        assert!(model.action(&EditorAction::AddWidget(0)));
+        let second_canvas = model.draft[1].id.clone();
+        assert_eq!(model.draft[1].widgets[0].id, shared_widget_id);
+
+        model.action(&EditorAction::SelectWidget {
+            canvas_id: first_canvas.clone(),
+            widget_id: shared_widget_id.clone(),
+        });
+        assert_eq!(
+            model.selected_canvas.as_deref(),
+            Some(first_canvas.as_str())
+        );
+        assert!(model.action(&EditorAction::DeleteWidget));
+        assert!(model.draft[0].widgets.is_empty());
+        assert_eq!(model.draft[1].id, second_canvas);
+        assert_eq!(model.draft[1].widgets[0].id, shared_widget_id);
+    }
+
+    #[test]
+    fn canvas_names_and_geometry_participate_in_undo_and_validation() {
+        let mut model = Model::new(Vec::new(), [800, 600], "ignored");
+        model.editing = true;
+        model.readonly = false;
+        model.action(&EditorAction::AddCanvas);
+        model.saved.clone_from(&model.draft);
+        model.undo = None;
+
+        assert!(model.action(&EditorAction::CanvasName(String::new())));
+        assert!(!model.document_valid());
+        assert!(model.action(&EditorAction::Undo));
+        assert_eq!(model.current().unwrap().name, "Canvas 1");
+        assert!(!model.action(&EditorAction::CanvasGeometry(GeometryField::X, 40)));
+        assert_eq!(
+            model.current().unwrap().x,
+            0,
+            "full-size canvas cannot move outside output"
+        );
     }
 
     #[test]
@@ -980,9 +1251,58 @@ mod skin_tests {
     }
 
     #[test]
+    fn output_reassignment_revalidates_canvas_bounds_before_save() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.set_outputs(vec![
+            crate::editor::EditorOutput {
+                name: "large".into(),
+                model: "large".into(),
+                logical_size: Some([1920, 1080]),
+            },
+            crate::editor::EditorOutput {
+                name: "small".into(),
+                model: "small".into(),
+                logical_size: Some([800, 600]),
+            },
+        ]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        assert!(model.document_valid());
+        assert!(model.action(&EditorAction::Output("small".into())));
+        assert!(!model.document_valid());
+        assert_eq!(
+            model.view().access.save_validity,
+            crate::editor::SaveValidity::Invalid
+        );
+    }
+
+    #[test]
+    fn exact_non_grid_output_edge_and_resized_active_output_remain_saveable() {
+        let mut model = Model::new(Vec::new(), [1716, 1494], "ignored");
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "output".into(),
+            model: "output".into(),
+            logical_size: Some([1716, 1494]),
+        }]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        assert_eq!([model.draft[0].width, model.draft[0].height], [1716, 1494]);
+        assert!(model.document_valid());
+
+        model.resize_active_output([1922, 1082]);
+        assert_eq!(model.viewport, [1922, 1082]);
+        assert_eq!(model.outputs[0].logical_size, Some([1922, 1082]));
+        assert!(model.action(&EditorAction::FitToOutput));
+        assert!(model.document_valid());
+    }
+
+    #[test]
     fn active_output_updates_the_drag_bounds_for_mixed_resolutions() {
         let canvas = CanvasPresentation {
             id: "wide-canvas".into(),
+            name: "Wide canvas".into(),
             skin: Skin::CyanSystem,
             skin_properties: std::collections::BTreeMap::new(),
             show_on: None,
@@ -1024,6 +1344,7 @@ mod skin_tests {
         let second: Skin = "dev.example.second".parse().unwrap();
         let canvas = CanvasPresentation {
             id: "canvas".into(),
+            name: "Canvas".into(),
             skin: first,
             skin_properties: std::collections::BTreeMap::from([(
                 "amount".into(),
@@ -1072,6 +1393,7 @@ mod skin_tests {
         let id: Skin = "dev.example.skin".parse().unwrap();
         let canvas = CanvasPresentation {
             id: "canvas".into(),
+            name: "Canvas".into(),
             skin: id,
             skin_properties: std::collections::BTreeMap::from([(
                 "amount".into(),
@@ -1102,6 +1424,7 @@ mod skin_tests {
     fn readonly_keeps_navigation_available_and_rejects_mutation() {
         let canvas = CanvasPresentation {
             id: "canvas".into(),
+            name: "Canvas".into(),
             skin: "dev.example.skin".parse().unwrap(),
             skin_properties: std::collections::BTreeMap::new(),
             show_on: None,

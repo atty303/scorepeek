@@ -30,7 +30,10 @@ mod tests {
         assert!(native.action(&EditorAction::AddCanvas));
         assert_eq!(obs.selected_canvas, native.selected_canvas);
         obs.action(&EditorAction::SelectCanvas("design".into()));
-        obs.action(&EditorAction::SelectWidget("cam".into()));
+        obs.action(&EditorAction::SelectWidget {
+            canvas_id: "design".into(),
+            widget_id: "cam".into(),
+        });
         obs.action(&EditorAction::EditTitle);
         obs.title.as_mut().unwrap().text = "not committed".into();
         assert!(obs.action(&EditorAction::Undo));
@@ -99,7 +102,10 @@ mod tests {
         assert!(!model.action(&EditorAction::DeleteCanvas));
         assert!(!model.action(&EditorAction::Undo));
         model.action(&EditorAction::TogglePanel);
-        model.action(&EditorAction::SelectWidget("game".into()));
+        model.action(&EditorAction::SelectWidget {
+            canvas_id: "design".into(),
+            widget_id: "game".into(),
+        });
         assert_eq!(model.draft, changed);
         assert_eq!(model.undo, undo);
     }

@@ -33,7 +33,7 @@ pub fn app() -> Element {
             return;
         }
         match action {
-            EditorAction::Save if !model.read().readonly => {
+            EditorAction::Save if !model.read().readonly && model.read().document_valid() => {
                 model.write().normalize_for_save();
                 transport.send(Command::Save);
             }
@@ -84,7 +84,7 @@ pub fn app() -> Element {
                     }
                 }
             }
-            if state.editing {EditorPanel {view:state.view(),title_input,refresh_rate_input:rsx!{},onaction:action}}
+            if state.editing {EditorPanel {view:state.view(),title_input,onaction:action}}
             if let Some(kind)=state.placing {if state.editing {
                 PlacementPreview {kind,point:state.point.map(f64::from)}
             }}
@@ -150,11 +150,9 @@ fn viewport() -> [u32; 2] {
 struct ResizeListener(Closure<dyn FnMut(web_sys::Event)>);
 impl ResizeListener {
     fn new(mut model: Signal<Model>) -> Self {
-        let callback =
-            Closure::wrap(
-                Box::new(move |_: web_sys::Event| model.write().viewport = viewport())
-                    as Box<dyn FnMut(_)>,
-            );
+        let callback = Closure::wrap(Box::new(move |_: web_sys::Event| {
+            model.write().resize_active_output(viewport());
+        }) as Box<dyn FnMut(_)>);
         if let Some(window) = web_sys::window() {
             let _ = window
                 .add_event_listener_with_callback("resize", callback.as_ref().unchecked_ref());

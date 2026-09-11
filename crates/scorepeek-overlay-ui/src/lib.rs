@@ -342,6 +342,7 @@ pub struct CanvasPresentation {
     #[serde(default)]
     pub background: Background,
     pub id: String,
+    pub name: String,
     pub skin: Skin,
     #[serde(default)]
     pub skin_properties: std::collections::BTreeMap<String, serde_json::Value>,

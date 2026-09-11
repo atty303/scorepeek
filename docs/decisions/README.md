@@ -387,6 +387,9 @@ authoritative.
 - [ADR 0143: Install and run overlay skin packages](0143-install-and-run-overlay-skin-packages.md)
   replaces binary-owned skins with local ZIP installation, a shared core-Wasm ABI, ordinary keyed
   browser/Blitz DOM, manifest properties, and schema-v6 skin IDs without adding a registry.
+- [ADR 0145: Restructure the overlay editor around object inspection](0145-restructure-overlay-editor-around-object-inspection.md)
+  adds compact shared editor chrome, object navigation and inspection, persisted canvas names,
+  aggregate screen visibility and exact geometry fields in schema v8.
 
 ## Historical
 

@@ -30,11 +30,13 @@ checkpoint; implementation history belongs in Git.
   draft through its package runtime rather than the superseded fixed renderer. No registry,
   digest/signature, quota, fallback,
   interaction API, WASI/host import, or running-instance replacement protection exists.
-- Overlay TOML is schema v7. Skin identity is an arbitrary reverse-domain ID and canvas/widget
+- Overlay TOML is schema v8. Skin identity is an arbitrary reverse-domain ID and canvas/widget
   properties are persisted maps resolved through installed manifest schemas. Schema v5 maps the
   three old names to formal IDs and preserves background/frame/fill values. Schema v7 removes all
   persisted overlay revisions and initial placement, permits zero canvases, and requires an output
-  ID for every canvas. A missing initial config creates empty Wayland and OBS workspaces; the visual
+  ID for every canvas. Schema v8 adds a nonempty backend-local unique canvas name; migration assigns
+  `Canvas 1`, `Canvas 2`, and so on in stable configuration order independently per backend. A
+  missing initial config creates empty Wayland and OBS workspaces; the visual
   editor is the creation path. No installed skin is a startup error. The repository retains a Rust
   guest SDK/core and three package sources; their shared guest recreates the full status, selection,
   score, history and graph DOM, material frames, atlases and semantic styling from the superseded
@@ -68,6 +70,15 @@ checkpoint; implementation history belongs in Git.
   phase, draft projection, active output, canvas/widget selection, gesture, undo and panel state.
   Canvas and output workers are explicit display or editor-stage views; they do not elect a host,
   own the workspace-open state, or independently acquire, keep alive and release the editor lease.
+
+- ADR 0145 restructures that shared editor around a compact ContextBar, an independently scrollable
+  ObjectNavigator hierarchy, a selection-owned Inspector and a sidebar-confined ActionBar. The
+  Inspector owns canvas names, exact 4 px-grid canvas/widget geometry, aggregate and per-screen
+  visibility, appearance, settings and deletion. Invalid geometry or duplicate/empty names disable
+  save without mutating the draft. New canvases use the first unused `Canvas N`; widget labels are
+  derived from kind and numbered only when duplicated. Choosing a widget kind creates it centered
+  immediately, selects it and retains the existing one-level undo contract. Refresh rate remains a
+  native runtime setting outside the shared editor.
 - ADR 0141 makes the Gamescope receiver always request a 1920x1080-bounded capture domain. Gamescope
   can preserve aspect ratio, so the negotiated observed dimensions remain authoritative. Its
   startup full-output contract and corrupted transition buffer may be replaced only before the
@@ -442,7 +453,7 @@ checkpoint; implementation history belongs in Git.
   restrained lines/corner accents, with staggered moving highlights carrying the ambient motion.
   These checks do not establish live Wayland or OBS composition.
 - Repository checks and the complete workspace suite pass: 510 library,
-  324 binary, 128 corpus library, 5 corpus binary, 87 overlay, 7 handle, 14 overlay-UI, 7 overlay-web
+  324 binary, 128 corpus library, 5 corpus binary, 96 overlay, 7 handle, 20 overlay-UI, 7 overlay-web
   and 20 score tests, plus doctests. The embedded-web overlay integration test also passes. The 99 offline OCR tests and
   repository checks also pass. Public API and overlay state tests include score-store invalidation,
   RESULT readiness across withdrawal/re-resolution, fresh and same-session reconnect restoration,
@@ -584,7 +595,7 @@ checkpoint; implementation history belongs in Git.
   integer/fractional multi-output layouts, Gamescope foreground behavior, readability, CPU/GPU/OBS
   lag and idle render cost. Actual OBS Browser Source composition and Interaction also remain
   unverified; the Codex Browser run exercised the same production HTTP/Wasm route but not OBS itself.
-  The schema-v7 editor is not installed on the target and no autostart, push or release is included.
+  The schema-v8 editor is not installed on the target and no autostart, push or release is included.
   Existing non-nested target evidence predates ADR 0144 and does not establish its new full-output
   stage lifecycle. The fresh nested-Scroll runs establish two-output protocol, composition, pointer
   input, empty bootstrap, creation, output reassignment and idle paint behavior, but not target
@@ -602,11 +613,15 @@ checkpoint; implementation history belongs in Git.
 - The release browser bundle disables DWARF debug symbols and completes without the prior
   wasm-opt DWARF failure. Shared editor hit regions sit above noninteractive rendered content,
   selected widget handles take precedence at canvas edges, and native pointer moves retain the
-  actual pressed-button state. Manifest-defined canvas and widget properties now use a shared,
-  typed editor card with human-readable labels, balanced choice segments, bounded numeric fields,
-  units and dedicated toggle, color and text treatments in both native and OBS editors. Regression
-  tests exercise body selection and edge-aligned resizing through Dioxus, plus delivered button state.
-  Native render evidence remains distinct from live Wayland input and OBS composition.
+  actual pressed-button state. Manifest-defined canvas and widget properties now use shared Dioxus
+  field, toggle and accordion components with human-readable labels, balanced choice segments,
+  bounded numeric fields, units and dedicated toggle, color and text treatments in both native and
+  OBS editors. A fresh 30-step 1920x1080 native visual run inspected every PNG and selector layout,
+  including selection-driven geometry updates. A production browser run at the same size measured a
+  384 px sidebar and a 383 px ActionBar confined to it, exercised immediate canvas/widget creation,
+  and confirmed the iframe widget DOM. Regression tests exercise body selection and edge-aligned
+  resizing through Dioxus, plus delivered button state. Native render and browser-route evidence
+  remain distinct from live Wayland input and actual OBS composition.
 
 - Validate layout v4 in a fresh target-live run with the installed binary.
   Retained-frame inspection does not recover unrecorded PLAY spans or backfill missing RESULTs.
