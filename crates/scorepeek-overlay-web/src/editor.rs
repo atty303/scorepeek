@@ -1,11 +1,13 @@
 mod connection;
 mod model;
-use connection::{Command, Compatibility, Connection};
+use connection::{Compatibility, Connection};
 use dioxus::prelude::*;
 use dioxus_web::WebEventExt;
-use model::Model;
+use model::EditorSession;
 use scorepeek_overlay_ui::CanvasPresentation;
 use scorepeek_overlay_ui::editor::{EditorAction, EditorOutput, EditorPanel};
+use scorepeek_overlay_ui::editor_model::EditorInput;
+use scorepeek_overlay_ui::editor_runtime::use_editor_runtime;
 use scorepeek_overlay_ui::editor_surface::{
     EditorCanvas, EditorSelectionMetrics, EditorSurface, PlacementPreview, SurfaceAction,
 };
@@ -13,41 +15,31 @@ use std::rc::Rc;
 use wasm_bindgen::{JsCast as _, closure::Closure};
 
 pub fn app() -> Element {
-    let mut model = use_signal(|| {
+    let runtime = use_editor_runtime(|| {
         let (canvases, skins) = read_initial();
-        let mut model = Model::new(canvases, viewport(), "obs");
+        let mut model = EditorSession::new(canvases, viewport(), "obs");
+        model.set_session_id(1);
         model.set_skins(skins);
         model.set_outputs(vec![EditorOutput {
             name: "obs-output".into(),
             model: "OBS Browser Source".into(),
             logical_size: Some(viewport()),
         }]);
+        model.editing = true;
+        model.readonly = true;
         model
     });
+    let dispatch = runtime.dispatch;
     let compatibility = use_signal(|| Compatibility::Checking);
-    let connection = use_hook(move || Connection::new(model, compatibility));
-    let _resize = use_hook(move || Rc::new(ResizeListener::new(model)));
+    let connection = use_hook(move || Connection::new(dispatch, compatibility));
+    let _resize = use_hook(move || Rc::new(ResizeListener::new(dispatch)));
     let transport = connection.clone();
     let action = Callback::new(move |action: EditorAction| {
         if compatibility() != Compatibility::Ready {
             return;
         }
-        match action {
-            EditorAction::Save if !model.read().readonly && model.read().document_valid() => {
-                model.write().normalize_for_save();
-                transport.send(Command::Save);
-            }
-            EditorAction::Discard if !model.read().readonly && !model.read().discard_pending => {
-                model.write().discard_pending = true;
-                transport.send(Command::Discard);
-            }
-            EditorAction::Close => transport.send(Command::Close),
-            other => {
-                let changed = model.write().action(&other);
-                if changed && model.read().document_valid() {
-                    transport.send(Command::Update);
-                }
-            }
+        for effect in dispatch.call(EditorInput::Action(action)) {
+            transport.send(&effect);
         }
     });
     let transport = connection.clone();
@@ -55,13 +47,8 @@ pub fn app() -> Element {
         if compatibility() != Compatibility::Ready {
             return;
         }
-        if let SurfaceAction::Enter(canvas) = action {
-            if !model.read().editing {
-                model.write().enter(canvas);
-                transport.send(Command::Acquire);
-            }
-        } else if model.write().surface(action) {
-            transport.send(Command::Update);
+        for effect in dispatch.call(EditorInput::Surface(action)) {
+            transport.send(&effect);
         }
     });
     let capture = Callback::new(move |event: PointerEvent| {
@@ -73,25 +60,32 @@ pub fn app() -> Element {
             let _ = target.set_pointer_capture(raw.pointer_id());
         }
     });
-    let state = model.read().clone();
-    let title_input = title_field(model, action);
-    let selected_canvas = selected_canvas(&state);
+    let projection = runtime.stages.read().first().cloned();
     rsx! {
         EditorSurface {onaction:surface,
             div { id:"stage",
-                for canvas in state.draft.iter().filter(|canvas|state.visible(canvas)) {
-                    EditorCanvas {key:"{canvas.id}",canvas:canvas.clone(),editing:state.editing,selected:state.editing&&state.selected_canvas.as_deref()==Some(canvas.id.as_str()),selected_widget:state.selected_widget.clone(),onaction:surface,oncapture:capture,
-                        iframe {src:format!("/canvas/{}?sample={}&skin={}",encode_id(&canvas.id),u8::from(state.editing&&state.chrome.sample),encode_id(canvas.skin.name())),tabindex:-1}
+                if let Some(projection)=&projection {
+                for canvas in &projection.canvases {
+                    EditorCanvas {key:"{canvas.id}",canvas:canvas.clone(),editing:projection.interactive,selected:projection.selected_canvas.as_ref().is_some_and(|selected|selected.id==canvas.id),selected_widget:projection.selected_widget.clone(),onaction:surface,oncapture:capture,
+                        iframe {src:format!("/canvas/{}?sample={}&skin={}",encode_id(&canvas.id),u8::from(projection.interactive&&projection.view.chrome.sample),encode_id(canvas.skin.name())),tabindex:-1}
                     }
                 }
-                if let Some(canvas) = selected_canvas {
-                    EditorSelectionMetrics { canvas, selected_widget: state.selected_widget.clone() }
+                if let Some(canvas) = &projection.selected_canvas {
+                    EditorSelectionMetrics { canvas:canvas.clone(), selected_widget: projection.selected_widget.clone() }
+                }
                 }
             }
-            if state.editing {EditorPanel {view:state.view(),title_input,onaction:action}}
-            if let Some(kind)=state.placing {if state.editing {
-                PlacementPreview {kind,point:state.point.map(f64::from)}
-            }}
+            if let Some(projection)=&projection {
+                if projection.interactive {
+                    EditorPanel {view:runtime.inspector.read().clone(),title:projection.title.clone(),onaction:action}
+                    if let Some(kind)=projection.placing {
+                        PlacementPreview {kind,point:projection.point.map(f64::from)}
+                    }
+                }
+                if let Some(notice)=&projection.notice {
+                    div {id:"notice",class:"show error","{notice}"}
+                }
+            }
             if compatibility() == Compatibility::Mismatch {
                 div { class:"version-mismatch", role:"alert",
                     h2 { "UIが更新されました" }
@@ -103,21 +97,8 @@ pub fn app() -> Element {
                     }
                 }
             }
-            if let Some(notice)=state.notice {div {id:"notice",class:"show error","{notice}"}}
         }
     }
-}
-
-fn selected_canvas(state: &Model) -> Option<CanvasPresentation> {
-    state
-        .draft
-        .iter()
-        .find(|canvas| {
-            state.editing
-                && state.selected_canvas.as_deref() == Some(canvas.id.as_str())
-                && state.visible(canvas)
-        })
-        .cloned()
 }
 
 fn encode_id(id: &str) -> String {
@@ -165,9 +146,14 @@ fn viewport() -> [u32; 2] {
 }
 struct ResizeListener(Closure<dyn FnMut(web_sys::Event)>);
 impl ResizeListener {
-    fn new(mut model: Signal<Model>) -> Self {
+    fn new(
+        dispatch: Callback<EditorInput, Vec<scorepeek_overlay_ui::editor_model::EditorEffect>>,
+    ) -> Self {
         let callback = Closure::wrap(Box::new(move |_: web_sys::Event| {
-            model.write().resize_active_output(viewport());
+            let _ = dispatch.call(EditorInput::Resize {
+                output: "obs-output".into(),
+                logical_size: viewport(),
+            });
         }) as Box<dyn FnMut(_)>);
         if let Some(window) = web_sys::window() {
             let _ = window
@@ -183,17 +169,4 @@ impl Drop for ResizeListener {
                 .remove_event_listener_with_callback("resize", self.0.as_ref().unchecked_ref());
         }
     }
-}
-
-fn title_field(mut model: Signal<Model>, action: EventHandler<EditorAction>) -> Element {
-    let state = model.read().clone();
-    rsx! { if let Some(title)=&state.title {
-        input { class:"empty-title-edit", r#type:"text", "aria-label":"Widget title", value:"{title.text}", disabled:state.readonly,
-            onmounted:move |event| async move {let _=event.set_focus(true).await;},
-            oninput:move |event| {if let Some(title)=model.write().title.as_mut(){title.text=event.value();}},
-            oncompositionstart:move |_| {if let Some(title)=model.write().title.as_mut(){title.composing=true;}},
-            oncompositionend:move |_| {if let Some(title)=model.write().title.as_mut(){title.composing=false;}},
-            onkeydown:move |event| {if event.key()==Key::Escape{event.prevent_default();action.call(EditorAction::CancelTitle);}else if event.key()==Key::Enter&&!event.is_composing(){event.prevent_default();action.call(EditorAction::AcceptTitle);}},
-        }
-    } }
 }

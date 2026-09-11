@@ -24,6 +24,9 @@ pub enum TextCommand {
     Delete,
     Left { select: bool },
     Right { select: bool },
+    Up,
+    Down,
+    Tab { reverse: bool },
     Home { select: bool },
     End { select: bool },
     SelectAll,
@@ -33,7 +36,8 @@ pub enum TextCommand {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TextUpdate {
     pub commit: Option<String>,
-    pub preedit: String,
+    /// `None` means the compositor did not replace the current preedit in this batch.
+    pub preedit: Option<String>,
     pub preedit_cursor: [i32; 2],
     pub delete_before: u32,
     pub delete_after: u32,
@@ -63,6 +67,8 @@ impl ImeSerial {
     }
 }
 
+// These flags describe independent Wayland seat, IME and editor-interactivity states.
+#[allow(clippy::struct_excessive_bools)]
 pub(super) struct Input {
     seats: SeatState,
     seat: Option<WlSeat>,
@@ -74,6 +80,7 @@ pub(super) struct Input {
     entered: bool,
     focused: bool,
     editing: Option<TextInputState>,
+    keyboard_enabled: bool,
     serial: ImeSerial,
     surrounding_supported: bool,
     pending: TextUpdate,
@@ -95,6 +102,7 @@ impl Input {
             entered: false,
             focused: false,
             editing: None,
+            keyboard_enabled: false,
             serial: ImeSerial::default(),
             surrounding_supported: false,
             pending: TextUpdate::default(),
@@ -170,8 +178,29 @@ fn surrounding_text(state: &TextInputState) -> Option<(String, i32, i32)> {
 }
 
 impl Shell {
-    /// Captures keys only for an explicit title edit; None restores normal overlay focus policy.
+    /// Enables keyboard focus for an interactive editor stage.
+    pub fn set_keyboard_enabled(&mut self, enabled: bool) {
+        if self.state.input.keyboard_enabled == enabled {
+            return;
+        }
+        self.state.input.keyboard_enabled = enabled;
+        self.owner.layer.set_keyboard_interactivity(if enabled {
+            smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity::Exclusive
+        } else {
+            smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity::None
+        });
+        self.owner.layer.commit();
+    }
+
+    /// Updates IME surrounding text without changing editor-stage keyboard ownership.
     pub fn set_text_input(&mut self, state: Option<TextInputState>) {
+        if !text_input_state_needs_commit(
+            self.state.input.editing.as_ref(),
+            state.as_ref(),
+            self.state.input.serial.deferred,
+        ) {
+            return;
+        }
         let was_editing = self.state.input.editing.is_some();
         let editing = state.is_some();
         if !editing {
@@ -182,15 +211,15 @@ impl Shell {
         if editing {
             self.state.input.send_state(!was_editing);
         }
-        if was_editing != editing {
-            self.owner.layer.set_keyboard_interactivity(if editing {
-                smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity::Exclusive
-            } else {
-                smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity::None
-            });
-            self.owner.layer.commit();
-        }
     }
+}
+
+fn text_input_state_needs_commit(
+    current: Option<&TextInputState>,
+    next: Option<&TextInputState>,
+    protocol_ack_pending: bool,
+) -> bool {
+    protocol_ack_pending || current != next
 }
 impl SeatHandler for Platform {
     fn seat_state(&mut self) -> &mut SeatState {
@@ -286,7 +315,7 @@ impl SeatHandler for Platform {
 }
 impl Platform {
     fn text_key(&mut self, event: KeyEvent) {
-        if !self.input.focused || self.input.editing.is_none() {
+        if !self.input.focused || !self.input.keyboard_enabled {
             return;
         }
         let m = self.input.modifiers;
@@ -306,6 +335,9 @@ fn key_command(key: Keysym, utf8: Option<String>, m: Modifiers) -> Option<TextCo
         Keysym::Delete => TextCommand::Delete,
         Keysym::Left => TextCommand::Left { select: m.shift },
         Keysym::Right => TextCommand::Right { select: m.shift },
+        Keysym::Up => TextCommand::Up,
+        Keysym::Down => TextCommand::Down,
+        Keysym::Tab => TextCommand::Tab { reverse: m.shift },
         Keysym::Home => TextCommand::Home { select: m.shift },
         Keysym::End => TextCommand::End { select: m.shift },
         Keysym::a | Keysym::A if m.ctrl => TextCommand::SelectAll,
@@ -420,7 +452,7 @@ impl wayland_client::Dispatch<ZwpTextInputV3, ()> for Platform {
                 cursor_begin,
                 cursor_end,
             } => {
-                state.input.pending.preedit = text.unwrap_or_default();
+                state.input.pending.preedit = Some(text.unwrap_or_default());
                 state.input.pending.preedit_cursor = [cursor_begin, cursor_end];
             }
             zwp_text_input_v3::Event::CommitString { text } => state.input.pending.commit = text,
@@ -515,5 +547,27 @@ mod tests {
             &state.text[4500..4512]
         );
         assert!(surrounding_text(&TextInputState { anchor: 0, ..state }).is_none());
+    }
+
+    #[test]
+    fn identical_text_input_state_is_sent_only_for_a_pending_protocol_ack() {
+        let state = Some(TextInputState {
+            from_ime: false,
+            text: "canvas".into(),
+            cursor: 6,
+            anchor: 6,
+            rectangle: [1, 2, 30, 16],
+        });
+        assert!(!text_input_state_needs_commit(
+            state.as_ref(),
+            state.as_ref(),
+            false
+        ));
+        assert!(text_input_state_needs_commit(
+            state.as_ref(),
+            state.as_ref(),
+            true
+        ));
+        assert!(text_input_state_needs_commit(None, state.as_ref(), false));
     }
 }

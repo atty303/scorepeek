@@ -17,6 +17,8 @@ pub struct ButtonProps {
     #[props(extends = button, extends = GlobalAttributes)]
     pub attributes: Vec<Attribute>,
     pub onclick: EventHandler<MouseEvent>,
+    #[props(default)]
+    pub onkeydown: Option<EventHandler<KeyboardEvent>>,
     pub children: Element,
 }
 
@@ -33,6 +35,7 @@ pub fn Button(props: ButtonProps) -> Element {
             r#type: "button",
             disabled: props.disabled.then_some(true),
             onclick:move |event| props.onclick.call(event),
+            onkeydown:move |event| if let Some(handler)=props.onkeydown { handler.call(event); },
             "aria-pressed": props.selected.map(|value| value.to_string()),
             ..props.attributes,
             {props.children}
@@ -63,18 +66,6 @@ pub fn IconButton(props: IconButtonProps) -> Element {
             {props.children}
         }
     }
-}
-
-#[derive(Props, Clone, PartialEq)]
-pub struct StatusBadgeProps {
-    pub label: String,
-    #[props(default)]
-    pub tone: String,
-}
-
-#[component]
-pub fn StatusBadge(props: StatusBadgeProps) -> Element {
-    rsx! { span { class: "editor-status-badge {props.tone}", "{props.label}" } }
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -115,6 +106,7 @@ pub struct ListPickerProps {
     pub value: String,
     pub options: Vec<ListPickerOption>,
     pub selected: usize,
+    pub cursor: usize,
     pub open: bool,
     #[props(default)]
     pub disabled: bool,
@@ -122,6 +114,7 @@ pub struct ListPickerProps {
     pub class: String,
     pub onopen: EventHandler<bool>,
     pub onselect: EventHandler<usize>,
+    pub oncursor: EventHandler<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,44 +158,49 @@ fn list_picker_key_action(
 
 #[component]
 pub fn ListPicker(props: ListPickerProps) -> Element {
-    let mut cursor = use_signal(|| props.selected);
+    let cursor = props.cursor;
     let option_count = props.options.len();
+    let trigger_id = format!("{}-trigger", props.class);
     let keyboard_props = props.clone();
+    let onkey = Callback::new(move |event: KeyboardEvent| {
+        if let Some(action) = list_picker_key_action(
+            &event.key(),
+            keyboard_props.open,
+            cursor,
+            keyboard_props.selected,
+            option_count,
+        ) {
+            match action {
+                ListPickerKeyAction::Open(index) => {
+                    keyboard_props.oncursor.call(index);
+                    keyboard_props.onopen.call(true);
+                }
+                ListPickerKeyAction::Move(index) => keyboard_props.oncursor.call(index),
+                ListPickerKeyAction::Select(index) => {
+                    keyboard_props.onopen.call(false);
+                    keyboard_props.onselect.call(index);
+                }
+                ListPickerKeyAction::Close => keyboard_props.onopen.call(false),
+            }
+            event.prevent_default();
+            event.stop_propagation();
+        }
+    });
     let accessible_label = format!("{}: {}", props.label, props.value);
     rsx! {
         div {
             class: "editor-list-picker {props.class}",
-            onkeydown: move |event| {
-                if let Some(action) = list_picker_key_action(
-                    &event.key(),
-                    keyboard_props.open,
-                    cursor(),
-                    keyboard_props.selected,
-                    option_count,
-                ) {
-                    match action {
-                        ListPickerKeyAction::Open(index) => {
-                            cursor.set(index);
-                            keyboard_props.onopen.call(true);
-                        }
-                        ListPickerKeyAction::Move(index) => cursor.set(index),
-                        ListPickerKeyAction::Select(index) => {
-                            keyboard_props.onopen.call(false);
-                            keyboard_props.onselect.call(index);
-                        }
-                        ListPickerKeyAction::Close => keyboard_props.onopen.call(false),
-                    }
-                    event.prevent_default();
-                    event.stop_propagation();
-                }
-            },
+            onkeydown: move |event| onkey.call(event),
             Button {
+                key: "trigger",
+                id: trigger_id,
                 class: "list-picker-trigger",
                 disabled: props.disabled,
                 onclick: move |_| {
-                    cursor.set(props.selected);
+                    props.oncursor.call(props.selected);
                     props.onopen.call(!props.open);
                 },
+                onkeydown: move |event| onkey.call(event),
                 "aria-label": accessible_label,
                 "aria-expanded": props.open.to_string(),
                 "aria-haspopup": "listbox",
@@ -214,7 +212,7 @@ pub fn ListPicker(props: ListPickerProps) -> Element {
                 div { class: "list-picker-options", role: "listbox", "aria-label": props.label,
                     for (index, option) in props.options.iter().enumerate() {
                         Button {
-                            class: if cursor() == index { "list-picker-option cursor" } else { "list-picker-option" },
+                            class: if cursor == index { "list-picker-option cursor" } else { "list-picker-option" },
                             layout: ButtonLayout::Row,
                             selected: props.selected == index,
                             onclick: move |_| {
@@ -348,26 +346,17 @@ pub struct TextFieldProps {
     pub disabled: bool,
     #[props(default)]
     pub update_on_input: bool,
+    pub draft: Option<super::EditorFieldDraft>,
     pub onchange: EventHandler<String>,
-    pub onvalidity: EventHandler<(String, bool)>,
+    pub onstate: EventHandler<super::EditorAction>,
 }
 
 #[component]
 pub fn TextField(props: TextFieldProps) -> Element {
-    let mut text = use_signal(|| props.value.clone());
-    let mut focused = use_signal(|| false);
-    let mut invalid = use_signal(|| false);
-    let cleanup_props = props.clone();
-    use_drop(move || {
-        cleanup_props
-            .onvalidity
-            .call((cleanup_props.field_key.clone(), true));
-    });
-    let displayed = if focused() || invalid() {
-        text()
-    } else {
-        props.value.clone()
-    };
+    let displayed = props
+        .draft
+        .as_ref()
+        .map_or_else(|| props.value.clone(), |draft| draft.text.clone());
     let error = if displayed.trim().is_empty() {
         Some("Name is required")
     } else if props.disallowed.contains(&displayed) {
@@ -375,47 +364,51 @@ pub fn TextField(props: TextFieldProps) -> Element {
     } else {
         None
     };
-    let focus_props = props.clone();
     let input_props = props.clone();
     let blur_props = props.clone();
+    let composition_start_props = props.clone();
+    let composition_end_props = props.clone();
     rsx! {
         label { class: if error.is_some() { "editor-field invalid" } else { "editor-field" },
             span { class: "editor-field-label", "{props.label}" }
             input {
+                id: props.field_key.clone(),
                 class: "editor-text-field",
                 r#type: "text",
                 value: "{displayed}",
                 disabled: props.disabled.then_some(true),
                 onfocus: move |_| {
-                    if !invalid() {
-                        text.set(focus_props.value.clone());
-                    }
-                    focused.set(true);
+                    props.onstate.call(super::EditorAction::BeginFieldEdit(
+                        props.field_key.clone(),
+                        displayed.clone(),
+                    ));
                 },
                 oninput: move |event| {
-                    text.set(event.value());
-                    let valid = !text().trim().is_empty()
-                        && !input_props.disallowed.contains(&text());
-                    invalid.set(!valid);
-                    input_props
-                        .onvalidity
-                        .call((input_props.field_key.clone(), valid));
+                    let value = event.value();
+                    let valid = !value.trim().is_empty()
+                        && !input_props.disallowed.contains(&value);
+                    input_props.onstate.call(super::EditorAction::UpdateFieldDraft(
+                        input_props.field_key.clone(), value.clone(), valid,
+                    ));
                     if input_props.update_on_input {
-                        input_props.onchange.call(text());
+                        input_props.onchange.call(value);
                     }
                 },
+                oncompositionstart: move |_| composition_start_props.onstate.call(super::EditorAction::TextComposition { field_key:composition_start_props.field_key.clone(), composing:true }),
+                oncompositionend: move |_| composition_end_props.onstate.call(super::EditorAction::TextComposition { field_key:composition_end_props.field_key.clone(), composing:false }),
                 onblur: move |_| {
-                    let value = text();
+                    let value = blur_props.draft.as_ref().map_or_else(
+                        || blur_props.value.clone(),
+                        |draft| draft.text.clone(),
+                    );
                     let valid = !value.trim().is_empty()
                         && !blur_props.disallowed.contains(&value);
-                    focused.set(false);
-                    invalid.set(!valid);
-                    blur_props
-                        .onvalidity
-                        .call((blur_props.field_key.clone(), valid));
                     if valid && !blur_props.update_on_input && value != blur_props.value {
-                        blur_props.onchange.call(value);
+                        blur_props.onchange.call(value.clone());
                     }
+                    blur_props.onstate.call(super::EditorAction::EndFieldEdit(
+                        blur_props.field_key.clone(), valid,
+                    ));
                 },
                 onkeydown: move |event| if event.key() == Key::Enter {
                     event.prevent_default();
@@ -440,72 +433,40 @@ pub struct NumberFieldProps {
     pub allow_maximum_off_grid: bool,
     #[props(default)]
     pub disabled: bool,
-    pub onchange: EventHandler<i32>,
-    pub onvalidity: EventHandler<(String, bool)>,
+    pub draft: Option<super::EditorFieldDraft>,
+    pub commit: super::EditorFieldCommit,
+    pub onstate: EventHandler<super::EditorAction>,
 }
 
 #[component]
 pub fn NumberField(props: NumberFieldProps) -> Element {
-    let mut text = use_signal(|| props.value.to_string());
-    let mut focused = use_signal(|| false);
-    let mut invalid = use_signal(|| false);
-    let cleanup_props = props.clone();
-    use_drop(move || {
-        cleanup_props
-            .onvalidity
-            .call((cleanup_props.field_key.clone(), true));
-    });
-    let displayed = if focused() || invalid() {
-        text()
-    } else {
-        props.value.to_string()
-    };
+    let displayed = props
+        .draft
+        .as_ref()
+        .map_or_else(|| props.value.to_string(), |draft| draft.text.clone());
     let valid = displayed.parse::<i32>().ok().is_some_and(|value| {
         props.minimum <= value
             && value <= props.maximum
             && ((value - props.minimum).rem_euclid(props.step) == 0
                 || props.allow_maximum_off_grid && value == props.maximum)
     });
-    let commit_blur = {
+    let commit = Callback::new({
         let props = props.clone();
-        move || {
-            let parsed = text().parse::<i32>().ok().filter(|value| {
-                props.minimum <= *value
-                    && *value <= props.maximum
-                    && ((*value - props.minimum).rem_euclid(props.step) == 0
-                        || props.allow_maximum_off_grid && *value == props.maximum)
-            });
-            props
-                .onvalidity
-                .call((props.field_key.clone(), parsed.is_some()));
-            if let Some(value) = parsed {
-                props.onchange.call(value);
-            }
+        move |()| {
+            props.onstate.call(super::EditorAction::CommitFieldDraft(
+                props.field_key.clone(),
+                props.commit.clone(),
+            ));
         }
-    };
-    let commit_key = {
-        let props = props.clone();
-        move || {
-            let parsed = text().parse::<i32>().ok().filter(|value| {
-                props.minimum <= *value
-                    && *value <= props.maximum
-                    && ((*value - props.minimum).rem_euclid(props.step) == 0
-                        || props.allow_maximum_off_grid && *value == props.maximum)
-            });
-            props
-                .onvalidity
-                .call((props.field_key.clone(), parsed.is_some()));
-            if let Some(value) = parsed {
-                props.onchange.call(value);
-            }
-        }
-    };
-    let focus_props = props.clone();
+    });
     let input_props = props.clone();
+    let composition_start_props = props.clone();
+    let composition_end_props = props.clone();
     rsx! {
         label { class: if valid { "editor-field number" } else { "editor-field number invalid" },
             span { class: "editor-field-label", "{props.label}" }
             input {
+                id: props.field_key.clone(),
                 class: "editor-number-field",
                 r#type: "text",
                 inputmode: "numeric",
@@ -513,31 +474,27 @@ pub fn NumberField(props: NumberFieldProps) -> Element {
                 disabled: props.disabled.then_some(true),
                 "aria-invalid": (!valid).then_some("true"),
                 onfocus: move |_| {
-                    if !invalid() {
-                        text.set(focus_props.value.to_string());
-                    }
-                    focused.set(true);
+                    props.onstate.call(super::EditorAction::BeginFieldEdit(
+                        props.field_key.clone(), displayed.clone(),
+                    ));
                 },
                 oninput: move |event| {
-                    text.set(event.value());
-                    let parsed = text().parse::<i32>().ok().filter(|value| {
+                    let text = event.value();
+                    let parsed = text.parse::<i32>().ok().filter(|value| {
                         input_props.minimum <= *value
                             && *value <= input_props.maximum
                             && ((*value - input_props.minimum).rem_euclid(input_props.step) == 0
                                 || input_props.allow_maximum_off_grid
                                     && *value == input_props.maximum)
                     });
-                    input_props
-                        .onvalidity
-                        .call((input_props.field_key.clone(), parsed.is_some()));
-                    invalid.set(parsed.is_none());
+                    input_props.onstate.call(super::EditorAction::UpdateFieldDraft(
+                        input_props.field_key.clone(), text, parsed.is_some(),
+                    ));
                 },
-                onblur: move |_| {
-                    commit_blur();
-                    invalid.set(!valid);
-                    focused.set(false);
-                },
-                onkeydown: move |event| if event.key() == Key::Enter { commit_key() },
+                oncompositionstart: move |_| composition_start_props.onstate.call(super::EditorAction::TextComposition { field_key:composition_start_props.field_key.clone(), composing:true }),
+                oncompositionend: move |_| composition_end_props.onstate.call(super::EditorAction::TextComposition { field_key:composition_end_props.field_key.clone(), composing:false }),
+                onblur: move |_| commit.call(()),
+                onkeydown: move |event| if event.key() == Key::Enter && !event.is_composing() { commit.call(()) },
             }
             if !valid { small { role: "alert", "{props.minimum}–{props.maximum}, {props.step}px grid or output edge" } }
         }
@@ -579,25 +536,26 @@ pub fn Toggle(props: ToggleProps) -> Element {
 #[derive(Props, Clone, PartialEq)]
 pub struct AccordionSectionProps {
     pub title: String,
-    #[props(default = true)]
-    pub initially_open: bool,
+    pub section_key: String,
+    pub open: bool,
+    pub ontoggle: EventHandler<MouseEvent>,
     pub children: Element,
 }
 
 #[component]
 pub fn AccordionSection(props: AccordionSectionProps) -> Element {
-    let mut open = use_signal(|| props.initially_open);
     rsx! {
         section { class: "editor-accordion",
             button {
                 class: "editor-accordion-heading",
                 r#type: "button",
-                "aria-expanded": open().to_string(),
-                onclick: move |_| open.toggle(),
+                "data-section": props.section_key,
+                "aria-expanded": props.open.to_string(),
+                onclick: move |event| props.ontoggle.call(event),
                 span { "{props.title}" }
-                i { aria_hidden: "true", if open() { "−" } else { "+" } }
+                i { aria_hidden: "true", if props.open { "−" } else { "+" } }
             }
-            div { class: "editor-accordion-body", style: if open() { "" } else { "display:none" }, {props.children} }
+            div { class: "editor-accordion-body", style: if props.open { "" } else { "display:none" }, {props.children} }
         }
     }
 }

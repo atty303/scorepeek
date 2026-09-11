@@ -66,10 +66,14 @@ checkpoint; implementation history belongs in Git.
   outside the contract, while renderer projection generations remain run-local transport state.
   The Wayland rasterization cap remains a runtime setting outside the shared canvas editor transaction.
   Installed skin packages remain canvas-owned and immutable for each running projection.
-  The native adapter has one parent-owned editor coordinator and `NativeEditorSession` for its
-  phase, draft projection, active output, canvas/widget selection, gesture, undo and panel state.
-  Canvas and output workers are explicit display or editor-stage views; they do not elect a host,
-  own the workspace-open state, or independently acquire, keep alive and release the editor lease.
+  ADR 0149 removes the native backend-owned editor mirror. Each backend lease now has one Dioxus
+  editor instance whose `Signal<EditorSession>` is the only writable editor state. Active output,
+  selection, Inspector view and output stages are memo-derived. OBS is the one-output form of the
+  same model. Wayland output workers receive only complete session/revision-tagged stage replicas;
+  they forward normalized input and never own or reconstruct editor state. The coordinator executes
+  transport, surface, paint and persistence effects without interpreting editor actions or fields.
+  Every Wayland frame polls Dioxus, while unchanged polls remain damage-free and frame callbacks
+  continue native preview animation.
 
 - ADR 0145 restructures that shared editor around object inspection, ADR 0146 completes it as a
   fresh compact Dioxus component system shared unchanged by native and OBS, and ADR 0147 refines its
@@ -677,6 +681,36 @@ checkpoint; implementation history belongs in Git.
   regions. The production native visual
   scenario remains on the persistent `dioxus-native-dom/blitz/vello` renderer; actual Wayland
   composition/input remains a target-live boundary.
+
+- ADR 0149 is covered by shared reducer tests for current-output reselection, output round trips,
+  peer-output resize isolation, revisioned disclosure/validation state, title/IME state, every drag
+  event and stale stage-replica rejection. Native renderer tests additionally cover shared-control
+  title, skin-property number and ListPicker keyboard input, invalid property drafts across a Dioxus
+  rebuild, focus continuity across a rebuild, all visible canvas skin trees in one stage, and
+  remounting skin content across editor/display roles. Legacy output discovery passes the
+  controller's complete response to the shared reducer instead of cloning or rewriting a canvas in
+  native code. Wayland text-input-v3 is connected to whichever shared DOM text control owns focus;
+  its batched preedit, surrounding deletion and commit operations are normalized in browser order,
+  unchanged protocol state is not recommitted without a pending acknowledgement, and native and
+  browser both report the same focused-control composition action to the shared session. Property
+  input preserves that composition state, and Enter/blur atomically revalidates and commits the
+  authority-owned draft against current output/property constraints instead of trusting a possibly
+  stale stage prop; rejection retains the draft. Display-mode secondary click enters
+  through the shared Dioxus context-menu action rather than a native editor shortcut. Selecting a
+  canvas or widget on a connected peer output activates that output atomically and makes a
+  screen-specific selection visible; initial editor-entry preview is not overwritten before such an
+  explicit navigation action.
+  Reducer-owned notices render from the stage projection in both routes. Backend-specific code is
+  limited to unavoidable protocol, surface,
+  complete-replica transport and browser-contract renderer normalization; it contains no
+  editor-semantic fallback. A fresh 33-operation 1920x1080 native visual run completed
+  with the production Dioxus native DOM, Blitz and Vello renderer; every PNG/layout pair and the
+  complete manifest were inspected, including nested navigator scrolling, panel collapse/reopen,
+  output/canvas reselection, widget and canvas drags, skin motion and screen visibility cycles. A
+  production Chromium `/overlay` run at 1920x1080 confirmed one-output OBS behavior, stable iframe
+  identity across canvas/property/widget projection updates, interaction-free CSS animation paint,
+  persisted save/reopen and restoration on discard/reopen. These development routes do not replace
+  target-live multi-output Wayland composition/input or rendering inside OBS.
 
 - Validate layout v4 in a fresh target-live run with the installed binary.
   Retained-frame inspection does not recover unrecorded PLAY spans or backfill missing RESULTs.

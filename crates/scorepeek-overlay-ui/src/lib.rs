@@ -7,6 +7,7 @@ mod assets;
 pub mod composition;
 pub mod editor;
 pub mod editor_model;
+pub mod editor_runtime;
 pub mod editor_surface;
 mod frame;
 pub use composition::{AspectRatio, Background, FrameWidth};

@@ -6,12 +6,12 @@ mod tests {
         AspectRatio, Background,
         editor::{EditorAction, EditorTitleState},
     };
-    fn editor() -> Model {
+    fn editor() -> EditorSession {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../scorepeek-overlay/tests/fixtures/visual-composition.json"
         ))
         .unwrap();
-        let mut model = Model::new(
+        let mut model = EditorSession::new(
             serde_json::from_value(fixture["canvases"].clone()).unwrap(),
             [1920, 1080],
             "obs",
@@ -24,7 +24,7 @@ mod tests {
     #[test]
     fn backend_workspaces_share_canvas_ids_and_undo_closes_unconfirmed_title() {
         let mut obs = editor();
-        let mut native = Model::new(obs.draft.clone(), obs.viewport, "wayland");
+        let mut native = EditorSession::new(obs.draft.clone(), obs.viewport, "wayland");
         native.readonly = false;
         assert!(obs.action(&EditorAction::AddCanvas));
         assert!(native.action(&EditorAction::AddCanvas));

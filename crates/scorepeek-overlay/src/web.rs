@@ -82,12 +82,12 @@ mod server {
 
     const ASSET_VERSION: &str = env!("SCOREPEEK_OVERLAY_BUILD_ID");
 
-    struct EditorSession {
+    struct EditorConnection {
         shared: Arc<Shared>,
         id: String,
         owns_lease: std::cell::Cell<bool>,
     }
-    impl EditorSession {
+    impl EditorConnection {
         fn new(shared: Arc<Shared>) -> Self {
             use std::sync::atomic::{AtomicU64, Ordering};
             static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -167,7 +167,7 @@ mod server {
             Ok(response)
         }
     }
-    impl Drop for EditorSession {
+    impl Drop for EditorConnection {
         fn drop(&mut self) {
             if !self.owns_lease.get() {
                 return;
@@ -638,7 +638,7 @@ mod server {
         State(shared): State<Arc<Shared>>,
     ) -> Response {
         ws.on_upgrade(move |mut socket| async move {
-            let session = EditorSession::new(Arc::clone(&shared));
+            let session = EditorConnection::new(Arc::clone(&shared));
             if version.as_deref() != Some(format!("asset_version={ASSET_VERSION}").as_str()) {
                 crate::diagnostics::emit("overlay_editor_version", &serde_json::json!({"status":"error", "error_type":"version_mismatch"}));
                 let _ = socket.send(Message::Text(version_mismatch().into())).await;

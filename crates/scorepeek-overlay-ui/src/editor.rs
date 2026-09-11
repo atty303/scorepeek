@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 mod components;
 pub use components::{
     Accordion, AccordionSection, Button, IconButton, ListPicker, ListPickerOption, NavigatorItem,
-    NavigatorTree, NumberField, SegmentedControl, StatusBadge, TextField, Toggle, ToggleGroup,
+    NavigatorTree, NumberField, SegmentedControl, TextField, Toggle, ToggleGroup,
 };
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -54,6 +54,15 @@ use crate::{
 #[derive(Clone, Debug, PartialEq)]
 pub enum EditorAction {
     TogglePanel,
+    SetScreenPickerOpen(bool),
+    SetPickerCursor(String, usize),
+    BeginFieldEdit(String, String),
+    UpdateFieldDraft(String, String, bool),
+    EndFieldEdit(String, bool),
+    CommitFieldDraft(String, EditorFieldCommit),
+    ToggleOutputExpanded(String),
+    ToggleCanvasExpanded(String),
+    ToggleAccordion(String),
     PreviewScreen(ScreenKind),
     SelectOutput(String),
     SelectCanvas(String),
@@ -87,12 +96,82 @@ pub enum EditorAction {
     EditTitle,
     AcceptTitle,
     CancelTitle,
+    TitleText(String),
+    TextComposition {
+        field_key: String,
+        composing: bool,
+    },
     FillDelta(i8),
     FillOpacity(u8),
     AspectRatio(usize),
     HistoryCount(u32),
     GraphMonths(u32),
     DeleteWidget,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum EditorFieldCommit {
+    CanvasGeometry(GeometryField),
+    WidgetGeometry(GeometryField),
+    CanvasSkinProperty(String),
+    WidgetSkinProperty(String),
+}
+
+impl EditorAction {
+    /// Value-free semantic label attached before an action crosses a backend transport.
+    #[must_use]
+    pub const fn diagnostic_name(&self) -> &'static str {
+        match self {
+            Self::TogglePanel => "toggle_panel",
+            Self::SetScreenPickerOpen(_) => "screen_picker",
+            Self::SetPickerCursor(_, _) => "picker_cursor",
+            Self::BeginFieldEdit(_, _) => "field_focus",
+            Self::UpdateFieldDraft(_, _, _) => "field_input",
+            Self::EndFieldEdit(_, _) => "field_blur",
+            Self::CommitFieldDraft(_, _) => "field_commit",
+            Self::ToggleOutputExpanded(_) => "output_disclosure",
+            Self::ToggleCanvasExpanded(_) => "canvas_disclosure",
+            Self::ToggleAccordion(_) => "inspector_disclosure",
+            Self::PreviewScreen(_) => "preview_screen",
+            Self::SelectOutput(_) => "select_output",
+            Self::SelectCanvas(_) => "select_canvas",
+            Self::CanvasName(_) => "canvas_name",
+            Self::CanvasVisible(_, _) => "canvas_visibility",
+            Self::CanvasVisibleAll => "canvas_visibility_all",
+            Self::CanvasVisibleNone => "canvas_visibility_none",
+            Self::CanvasGeometry(_, _) => "canvas_geometry",
+            Self::WidgetGeometry(_, _) => "widget_geometry",
+            Self::AddCanvas => "add_canvas",
+            Self::DeleteCanvas => "delete_canvas",
+            Self::NewCanvasSkin(_) => "new_canvas_skin",
+            Self::Skin(_) => "skin",
+            Self::CanvasSkinProperty(_, _) => "canvas_skin_property",
+            Self::WidgetSkinProperty(_, _) => "widget_skin_property",
+            Self::Background(_) => "background",
+            Self::Opacity(_) => "opacity",
+            Self::Output(_) => "output",
+            Self::FitToOutput => "fit_to_output",
+            Self::SelectWidget { .. } => "select_widget",
+            Self::ToggleWidgetAdd => "toggle_widget_add",
+            Self::AddWidget(_) => "add_widget",
+            Self::Undo => "undo",
+            Self::Discard => "discard",
+            Self::Save => "save",
+            Self::Close => "close",
+            Self::FrameWidth(_) => "frame_width",
+            Self::EditTitle => "edit_title",
+            Self::AcceptTitle => "accept_title",
+            Self::CancelTitle => "cancel_title",
+            Self::TitleText(_) => "title_text",
+            Self::TextComposition { .. } => "text_composition",
+            Self::FillDelta(_) => "fill_delta",
+            Self::FillOpacity(_) => "fill_opacity",
+            Self::AspectRatio(_) => "aspect_ratio",
+            Self::HistoryCount(_) => "history_count",
+            Self::GraphMonths(_) => "graph_months",
+            Self::DeleteWidget => "delete_widget",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -111,10 +190,27 @@ pub struct EditorOutput {
 }
 
 #[derive(Clone, PartialEq)]
+// These controls are independent disclosures, not mutually exclusive states.
+#[allow(clippy::struct_excessive_bools)]
 pub struct EditorChrome {
     pub panel_open: bool,
     pub widget_add_open: bool,
     pub sample: bool,
+    pub screen_picker_open: bool,
+    pub expanded_outputs: std::collections::BTreeSet<String>,
+    pub collapsed_outputs: std::collections::BTreeSet<String>,
+    pub expanded_canvases: std::collections::BTreeSet<String>,
+    pub collapsed_accordions: std::collections::BTreeSet<String>,
+    pub field_drafts: std::collections::BTreeMap<String, EditorFieldDraft>,
+    pub picker_cursors: std::collections::BTreeMap<String, usize>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditorFieldDraft {
+    pub text: String,
+    pub focused: bool,
+    pub valid: bool,
+    pub composing: bool,
 }
 #[derive(Clone, PartialEq)]
 pub struct EditorAccess {
@@ -224,11 +320,36 @@ impl EditorProperty {
             }
         })
     }
+
+    pub(crate) fn parse_text(&self, text: &str) -> Option<serde_json::Value> {
+        match self {
+            Self::Integer {
+                minimum, maximum, ..
+            } => text
+                .parse::<i64>()
+                .ok()
+                .filter(|value| minimum <= value && value <= maximum)
+                .map(Into::into),
+            Self::Number {
+                minimum, maximum, ..
+            } => text.parse::<f64>().ok().and_then(|value| {
+                (value.is_finite() && *minimum <= value && value <= *maximum)
+                    .then(|| serde_json::Number::from_f64(value).map(Into::into))
+                    .flatten()
+            }),
+            Self::Color { .. } if valid_property_color(text) => Some(text.into()),
+            Self::String { maximum_length, .. } if valid_property_string(text, *maximum_length) => {
+                Some(text.into())
+            }
+            Self::Boolean { .. } | Self::Color { .. } | Self::Enum { .. } | Self::String { .. } => {
+                None
+            }
+        }
+    }
 }
 
 #[derive(Clone, PartialEq)]
 pub struct EditorView {
-    pub backend_label: String,
     pub canvases: Vec<CanvasPresentation>,
     pub selected_canvas: Option<String>,
     pub selected_widget: Option<String>,
@@ -321,49 +442,13 @@ pub fn canvas_geometry_bounds(canvas: &CanvasPresentation, outputs: &[EditorOutp
 #[component]
 pub fn EditorPanel(
     view: EditorView,
-    title_input: Element,
+    title: Option<crate::editor_model::TitleDraft>,
     onaction: EventHandler<EditorAction>,
 ) -> Element {
-    let mut invalid_fields = use_signal(std::collections::BTreeSet::<String>::new);
     let canvas = view
         .canvases
         .iter()
         .find(|canvas| Some(canvas.id.as_str()) == view.selected_canvas.as_deref());
-    let validity = Callback::new(move |(key, valid): (String, bool)| {
-        let mut fields = invalid_fields.write();
-        if valid {
-            fields.remove(&key);
-        } else {
-            fields.insert(key);
-        }
-    });
-    let parent_action = onaction;
-    let selected_canvas = view.selected_canvas.clone();
-    let selected_widget = view.selected_widget.clone();
-    let onaction = Callback::new(move |action: EditorAction| {
-        let scope_changes = match &action {
-            EditorAction::SelectOutput(_)
-            | EditorAction::DeleteCanvas
-            | EditorAction::DeleteWidget
-            | EditorAction::Undo
-            | EditorAction::Discard => true,
-            EditorAction::SelectCanvas(id) => {
-                selected_canvas.as_ref() != Some(id) || selected_widget.is_some()
-            }
-            EditorAction::SelectWidget {
-                canvas_id,
-                widget_id,
-            } => {
-                selected_canvas.as_ref() != Some(canvas_id)
-                    || selected_widget.as_ref() != Some(widget_id)
-            }
-            _ => false,
-        };
-        if scope_changes {
-            invalid_fields.write().clear();
-        }
-        parent_action.call(action);
-    });
     let active_field_prefix = canvas.map(|canvas| {
         view.selected_widget.as_ref().map_or_else(
             || format!("{}:", canvas.id),
@@ -371,10 +456,10 @@ pub fn EditorPanel(
         )
     });
     let invalid_input = active_field_prefix.as_ref().is_some_and(|prefix| {
-        invalid_fields
-            .read()
+        view.chrome
+            .field_drafts
             .iter()
-            .any(|field| field.starts_with(prefix))
+            .any(|(field, draft)| field.starts_with(prefix) && !draft.valid)
     });
     rsx! {
         if !view.chrome.panel_open {
@@ -382,7 +467,7 @@ pub fn EditorPanel(
         } else {
             aside { class: "editor-panel", style: format!("width:{}px", view.panel_width),
                 ContextBar { view: view.clone(), onaction }
-                EditorWorkspace { view: view.clone(), title_input, onvalidity: validity, onaction }
+                EditorWorkspace { view: view.clone(), title, onaction }
                 ActionBar { view: view.clone(), invalid_input, onaction }
             }
         }
@@ -398,7 +483,6 @@ pub fn CollapsedEditorButton(dirty: bool, onaction: EventHandler<EditorAction>) 
 
 #[component]
 pub fn ContextBar(view: EditorView, onaction: EventHandler<EditorAction>) -> Element {
-    let mut picker_open = use_signal(|| false);
     let options = crate::editor_model::SCREENS
         .into_iter()
         .map(|screen| ListPickerOption {
@@ -419,9 +503,11 @@ pub fn ContextBar(view: EditorView, onaction: EventHandler<EditorAction>) -> Ele
                 value: screen_label(view.preview_screen),
                 options,
                 selected,
-                open: picker_open(),
-                onopen: move |open| picker_open.set(open),
+                cursor: view.chrome.picker_cursors.get("screen").copied().unwrap_or(selected),
+                open: view.chrome.screen_picker_open,
+                onopen: move |open| onaction.call(EditorAction::SetScreenPickerOpen(open)),
                 onselect: move |index| if let Some(screen) = crate::editor_model::SCREENS.get(index) { onaction.call(EditorAction::PreviewScreen(*screen)); },
+                oncursor: move |index| onaction.call(EditorAction::SetPickerCursor("screen".into(), index)),
             }
             if view.access.dirty {
                 span { class: "context-dirty dirty-dot", role: "status", "aria-label": "Unsaved changes" }
@@ -433,33 +519,19 @@ pub fn ContextBar(view: EditorView, onaction: EventHandler<EditorAction>) -> Ele
 #[component]
 pub fn EditorWorkspace(
     view: EditorView,
-    title_input: Element,
-    onvalidity: EventHandler<(String, bool)>,
+    title: Option<crate::editor_model::TitleDraft>,
     onaction: EventHandler<EditorAction>,
 ) -> Element {
     rsx! {
         div { class: "editor-workspace",
             ObjectNavigator { view: view.clone(), onaction }
-            Inspector { view, title_input, onvalidity, onaction }
+            Inspector { view, title, onaction }
         }
     }
 }
 
 #[component]
 pub fn ObjectNavigator(view: EditorView, onaction: EventHandler<EditorAction>) -> Element {
-    let initial_output = view.active_output.clone();
-    let initial_canvas = view.selected_canvas.clone();
-    let mut expanded_outputs = use_signal(move || {
-        initial_output
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>()
-    });
-    let mut collapsed_outputs = use_signal(std::collections::BTreeSet::<String>::new);
-    let mut expanded_canvases = use_signal(move || {
-        initial_canvas
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>()
-    });
     let canvas = view
         .canvases
         .iter()
@@ -527,9 +599,9 @@ pub fn ObjectNavigator(view: EditorView, onaction: EventHandler<EditorAction>) -
                             let output_name = output.name.clone();
                             let selected_ancestor = view.selected_canvas.as_ref().is_some_and(|selected| view.canvases.iter().any(|canvas| &canvas.id == selected && canvas.output.as_ref() == assigned_output.as_ref()));
                             let output_open = selected_ancestor
-                                || expanded_outputs.read().contains(&output.name)
+                                || view.chrome.expanded_outputs.contains(&output.name)
                                 || view.active_output.as_ref() == Some(&output.name)
-                                    && !collapsed_outputs.read().contains(&output.name);
+                                    && !view.chrome.collapsed_outputs.contains(&output.name);
                             rsx! {
                                 NavigatorItem {
                                     key: "{output.name}",
@@ -540,19 +612,11 @@ pub fn ObjectNavigator(view: EditorView, onaction: EventHandler<EditorAction>) -
                                     expanded: output_open,
                                     "data-output": output.name.clone(),
                                     onclick: { let assigned_output = assigned_output.clone(); move |_| if let Some(output) = &assigned_output { onaction.call(EditorAction::SelectOutput(output.clone())); } },
-                                    ontoggle: move |_| {
-                                        if output_open {
-                                            expanded_outputs.write().remove(&output_name);
-                                            collapsed_outputs.write().insert(output_name.clone());
-                                        } else {
-                                            collapsed_outputs.write().remove(&output_name);
-                                            expanded_outputs.write().insert(output_name.clone());
-                                        }
-                                    },
+                                    ontoggle: move |_| onaction.call(EditorAction::ToggleOutputExpanded(output_name.clone())),
                                     for canvas in view.canvases.iter().filter(|canvas| canvas.output.as_ref() == assigned_output.as_ref()) {
                                         {
                                             let canvas_id = canvas.id.clone();
-                                            let canvas_open = expanded_canvases.read().contains(&canvas.id) || view.selected_canvas.as_ref() == Some(&canvas.id);
+                                            let canvas_open = view.chrome.expanded_canvases.contains(&canvas.id) || view.selected_canvas.as_ref() == Some(&canvas.id);
                                             rsx! {
                                                 NavigatorItem {
                                                     key: "{canvas.id}",
@@ -562,8 +626,8 @@ pub fn ObjectNavigator(view: EditorView, onaction: EventHandler<EditorAction>) -
                                                     selected: view.selected_canvas.as_ref() == Some(&canvas.id) && view.selected_widget.is_none(),
                                                     expanded: canvas_open,
                                                     "data-canvas-id": canvas.id.clone(),
-                                                    onclick: { let canvas_id = canvas_id.clone(); move |_| { expanded_canvases.write().insert(canvas_id.clone()); onaction.call(EditorAction::SelectCanvas(canvas_id.clone())); } },
-                                                    ontoggle: move |_| { let mut values = expanded_canvases.write(); if !values.remove(&canvas_id) { values.insert(canvas_id.clone()); } },
+                                                    onclick: { let canvas_id = canvas_id.clone(); move |_| onaction.call(EditorAction::SelectCanvas(canvas_id.clone())) },
+                                                    ontoggle: move |_| onaction.call(EditorAction::ToggleCanvasExpanded(canvas_id.clone())),
                                                     for widget in canvas.widgets.iter() {
                                                         NavigatorItem {
                                                             key: "{canvas.id}:{widget.id}",
@@ -593,10 +657,12 @@ pub fn ObjectNavigator(view: EditorView, onaction: EventHandler<EditorAction>) -
                         value: "Widget",
                         options: widget_options,
                         selected: 0,
+                        cursor: view.chrome.picker_cursors.get("widget-add").copied().unwrap_or(0),
                         open: view.chrome.widget_add_open,
                         disabled: view.access.readonly,
                         onopen: move |open| if open != view.chrome.widget_add_open { onaction.call(EditorAction::ToggleWidgetAdd); },
                         onselect: move |index| onaction.call(EditorAction::AddWidget(index)),
+                        oncursor: move |index| onaction.call(EditorAction::SetPickerCursor("widget-add".into(), index)),
                     }
                 } else {
                     Button { class: "add-canvas", disabled: view.access.readonly || view.active_output.is_none(), onclick: move |_| onaction.call(EditorAction::AddCanvas), "+ Add canvas" }
@@ -609,8 +675,7 @@ pub fn ObjectNavigator(view: EditorView, onaction: EventHandler<EditorAction>) -
 #[component]
 pub fn Inspector(
     view: EditorView,
-    title_input: Element,
-    onvalidity: EventHandler<(String, bool)>,
+    title: Option<crate::editor_model::TitleDraft>,
     onaction: EventHandler<EditorAction>,
 ) -> Element {
     let canvas = view
@@ -625,16 +690,16 @@ pub fn Inspector(
                     if let Some(canvas) = canvas {
                         if let Some(widget) = canvas.widgets.iter().find(|widget| view.selected_widget.as_deref() == Some(widget.id.as_str())) {
                             div { key: "{canvas.id}:{widget.id}",
-                                AccordionSection { title: "Geometry", {geometry_fields(GeometrySpec { rect: [widget.x, widget.y, i32::try_from(widget.width).unwrap_or(i32::MAX), i32::try_from(widget.height).unwrap_or(i32::MAX)], bounds: [canvas.width, canvas.height], minimum: [16, 16], key: &format!("{}:{}", canvas.id, widget.id), widget: true, readonly: view.access.readonly }, onvalidity, onaction)} }
-                                AccordionSection { title: "Widget settings", {widget_settings(widget, &view, title_input.clone(), onaction)} }
-                                if let Some(skin) = view.skins.iter().find(|skin| skin.id == canvas.skin) { if let Some(properties) = skin.widget_properties.get(widget.kind.name()).or_else(|| skin.widget_properties.get("*")) { AccordionSection { title: "Style", {property_controls(properties, &widget.skin_properties, false, view.access.readonly, onaction)} } } }
+                                {editor_accordion(format!("widget:{}:{}:geometry", canvas.id, widget.id), "Geometry", &view, onaction, geometry_fields(GeometrySpec { rect: [widget.x, widget.y, i32::try_from(widget.width).unwrap_or(i32::MAX), i32::try_from(widget.height).unwrap_or(i32::MAX)], bounds: [canvas.width, canvas.height], minimum: [16, 16], key: &format!("{}:{}", canvas.id, widget.id), widget: true, readonly: view.access.readonly }, &view, onaction))}
+                                {editor_accordion(format!("widget:{}:{}:settings", canvas.id, widget.id), "Widget settings", &view, onaction, widget_settings(widget, &view, title.clone(), onaction))}
+                                if let Some(skin) = view.skins.iter().find(|skin| skin.id == canvas.skin) { if let Some(properties) = skin.widget_properties.get(widget.kind.name()).or_else(|| skin.widget_properties.get("*")) { {editor_accordion(format!("widget:{}:{}:style", canvas.id, widget.id), "Style", &view, onaction, property_controls(properties, &widget.skin_properties, &format!("{}:{}",canvas.id,widget.id), false, &view, onaction))} } }
                             }
                         } else {
-                            div { key: "{canvas.id}", {canvas_inspector(canvas, &view, onvalidity, onaction)} }
+                            div { key: "{canvas.id}", {canvas_inspector(canvas, &view, onaction)} }
                         }
                     } else {
                         div { class: "inspector-empty", strong { "Select an object" } p { "Choose an output or add a canvas to begin editing." } }
-                        AccordionSection { title: "New canvas skin", {skin_picker(&view, view.new_canvas_skin, true, onaction)} }
+                        {editor_accordion("new-canvas:skin".into(), "New canvas skin", &view, onaction, skin_picker(&view, view.new_canvas_skin, true, onaction))}
                     }
                 }
             }
@@ -705,7 +770,7 @@ struct GeometrySpec<'a> {
 
 fn geometry_fields(
     spec: GeometrySpec<'_>,
-    onvalidity: EventHandler<(String, bool)>,
+    view: &EditorView,
     onaction: EventHandler<EditorAction>,
 ) -> Element {
     let [x, y, width, height] = spec.rect;
@@ -719,25 +784,24 @@ fn geometry_fields(
     let maximum_height =
         i32::try_from(spec.bounds[1].saturating_sub(u32::try_from(y).unwrap_or_default()))
             .unwrap_or(i32::MAX);
-    let emit = move |field, value| {
+    let commit = move |field| {
         if spec.widget {
-            onaction.call(EditorAction::WidgetGeometry(field, value));
+            EditorFieldCommit::WidgetGeometry(field)
         } else {
-            onaction.call(EditorAction::CanvasGeometry(field, value));
+            EditorFieldCommit::CanvasGeometry(field)
         }
     };
     rsx! { div { class: "geometry-grid",
-        NumberField { field_key: format!("{}:x", spec.key), label: "X", value: x, minimum: 0, maximum: maximum_x, disabled: spec.readonly, onchange: move |value| emit(GeometryField::X, value), onvalidity }
-        NumberField { field_key: format!("{}:y", spec.key), label: "Y", value: y, minimum: 0, maximum: maximum_y, disabled: spec.readonly, onchange: move |value| emit(GeometryField::Y, value), onvalidity }
-        NumberField { field_key: format!("{}:width", spec.key), label: "Width", value: width, minimum: i32::try_from(spec.minimum[0]).unwrap_or(16), maximum: maximum_width, allow_maximum_off_grid: !spec.widget, disabled: spec.readonly, onchange: move |value| emit(GeometryField::Width, value), onvalidity }
-        NumberField { field_key: format!("{}:height", spec.key), label: "Height", value: height, minimum: i32::try_from(spec.minimum[1]).unwrap_or(16), maximum: maximum_height, allow_maximum_off_grid: !spec.widget, disabled: spec.readonly, onchange: move |value| emit(GeometryField::Height, value), onvalidity }
+        NumberField { field_key: format!("{}:x", spec.key), label: "X", value: x, minimum: 0, maximum: maximum_x, disabled: spec.readonly, draft:view.chrome.field_drafts.get(&format!("{}:x", spec.key)).cloned(), commit: commit(GeometryField::X), onstate:onaction }
+        NumberField { field_key: format!("{}:y", spec.key), label: "Y", value: y, minimum: 0, maximum: maximum_y, disabled: spec.readonly, draft:view.chrome.field_drafts.get(&format!("{}:y", spec.key)).cloned(), commit: commit(GeometryField::Y), onstate:onaction }
+        NumberField { field_key: format!("{}:width", spec.key), label: "Width", value: width, minimum: i32::try_from(spec.minimum[0]).unwrap_or(16), maximum: maximum_width, allow_maximum_off_grid: !spec.widget, disabled: spec.readonly, draft:view.chrome.field_drafts.get(&format!("{}:width", spec.key)).cloned(), commit: commit(GeometryField::Width), onstate:onaction }
+        NumberField { field_key: format!("{}:height", spec.key), label: "Height", value: height, minimum: i32::try_from(spec.minimum[1]).unwrap_or(16), maximum: maximum_height, allow_maximum_off_grid: !spec.widget, disabled: spec.readonly, draft:view.chrome.field_drafts.get(&format!("{}:height", spec.key)).cloned(), commit: commit(GeometryField::Height), onstate:onaction }
     } }
 }
 
 fn canvas_inspector(
     canvas: &CanvasPresentation,
     view: &EditorView,
-    onvalidity: EventHandler<(String, bool)>,
     onaction: EventHandler<EditorAction>,
 ) -> Element {
     let disallowed = view
@@ -754,12 +818,32 @@ fn canvas_inspector(
         ]
     });
     rsx! {
-        AccordionSection { title: "Identity", TextField { field_key: format!("{}:name", canvas.id), label: format!("Name · {}", canvas.id), value: canvas.name.clone(), disallowed, disabled: view.access.readonly, update_on_input: true, onchange: move |value| onaction.call(EditorAction::CanvasName(value)), onvalidity } }
-        AccordionSection { title: "Geometry", {geometry_fields(GeometrySpec { rect: [canvas.x, canvas.y, i32::try_from(canvas.width).unwrap_or(i32::MAX), i32::try_from(canvas.height).unwrap_or(i32::MAX)], bounds, minimum: child_min, key: &canvas.id, widget: false, readonly: view.access.readonly }, onvalidity, onaction)} div { class: "geometry-action", Button { class: "fit-output", disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::FitToOutput), "Fit to output" } } }
-        AccordionSection { title: "Visibility", div { class: "visibility-actions", Button { disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::CanvasVisibleAll), "All" } Button { disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::CanvasVisibleNone), "None" } } {visibility_toggles(&canvas.id, canvas.show_on.as_deref(), view.access.readonly, onaction)} }
-        AccordionSection { title: "Appearance", {skin_picker(view, canvas.skin, false, onaction)} div { class: "control-heading", "Opacity" } SegmentedControl { class: "opacity-control", label: "Canvas opacity", for value in [25, 50, 75, 100] { Button { class: "opacity-option", selected: canvas.opacity_percent == value, disabled: view.access.readonly, "data-value": value, onclick: move |_| onaction.call(EditorAction::Opacity(value)), "{value}%" } } } if let Some(skin) = view.skins.iter().find(|skin| skin.id == canvas.skin) { {property_controls(&skin.canvas_properties, &canvas.skin_properties, true, view.access.readonly, onaction)} } }
-        AccordionSection { title: "Output", div { class: "output-list", for output in view.outputs.iter() { Button { class: "output-option", layout: ButtonLayout::Row, selected: canvas.output.as_deref() == Some(output.name.as_str()), disabled: view.access.readonly, "data-output": "{output.name}", onclick: { let output = output.name.clone(); move |_| onaction.call(EditorAction::Output(output.clone())) }, strong { "{output.name}" } } } } }
-        AccordionSection { title: "Danger zone", Button { class: "delete-canvas", tone: ButtonTone::Danger, disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::DeleteCanvas), "Delete canvas" } }
+        {editor_accordion(format!("canvas:{}:identity", canvas.id), "Identity", view, onaction, rsx! { TextField { field_key: format!("{}:name", canvas.id), label: format!("Name · {}", canvas.id), value: canvas.name.clone(), disallowed, disabled: view.access.readonly, update_on_input: true, draft:view.chrome.field_drafts.get(&format!("{}:name", canvas.id)).cloned(), onchange: move |value| onaction.call(EditorAction::CanvasName(value)), onstate:onaction } })}
+        {editor_accordion(format!("canvas:{}:geometry", canvas.id), "Geometry", view, onaction, rsx! { {geometry_fields(GeometrySpec { rect: [canvas.x, canvas.y, i32::try_from(canvas.width).unwrap_or(i32::MAX), i32::try_from(canvas.height).unwrap_or(i32::MAX)], bounds, minimum: child_min, key: &canvas.id, widget: false, readonly: view.access.readonly }, view, onaction)} div { class: "geometry-action", Button { class: "fit-output", disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::FitToOutput), "Fit to output" } } })}
+        {editor_accordion(format!("canvas:{}:visibility", canvas.id), "Visibility", view, onaction, rsx! { div { class: "visibility-actions", Button { disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::CanvasVisibleAll), "All" } Button { disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::CanvasVisibleNone), "None" } } {visibility_toggles(&canvas.id, canvas.show_on.as_deref(), view.access.readonly, onaction)} })}
+        {editor_accordion(format!("canvas:{}:appearance", canvas.id), "Appearance", view, onaction, rsx! { {skin_picker(view, canvas.skin, false, onaction)} div { class: "control-heading", "Background" } SegmentedControl { class: "background-control", label: "Canvas background", for (value,label) in [(Background::None,"None"),(Background::Static,"Static"),(Background::Animated,"Animated")] { Button { class: "background-option", selected: canvas.background == value, disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::Background(value)), "{label}" } } } div { class: "control-heading", "Opacity" } SegmentedControl { class: "opacity-control", label: "Canvas opacity", for value in [25, 50, 75, 100] { Button { class: "opacity-option", selected: canvas.opacity_percent == value, disabled: view.access.readonly, "data-value": value, onclick: move |_| onaction.call(EditorAction::Opacity(value)), "{value}%" } } } if let Some(skin) = view.skins.iter().find(|skin| skin.id == canvas.skin) { {property_controls(&skin.canvas_properties, &canvas.skin_properties, &canvas.id, true, view, onaction)} } })}
+        {editor_accordion(format!("canvas:{}:output", canvas.id), "Output", view, onaction, rsx! { div { class: "output-list", for output in view.outputs.iter() { Button { class: "output-option", layout: ButtonLayout::Row, selected: canvas.output.as_deref() == Some(output.name.as_str()), disabled: view.access.readonly, "data-output": "{output.name}", onclick: { let output = output.name.clone(); move |_| onaction.call(EditorAction::Output(output.clone())) }, strong { "{output.name}" } } } } })}
+        {editor_accordion(format!("canvas:{}:danger", canvas.id), "Danger zone", view, onaction, rsx! { Button { class: "delete-canvas", tone: ButtonTone::Danger, disabled: view.access.readonly, onclick: move |_| onaction.call(EditorAction::DeleteCanvas), "Delete canvas" } })}
+    }
+}
+
+fn editor_accordion(
+    section_key: String,
+    title: &str,
+    view: &EditorView,
+    onaction: EventHandler<EditorAction>,
+    children: Element,
+) -> Element {
+    let open = !view.chrome.collapsed_accordions.contains(&section_key);
+    let action_key = section_key.clone();
+    rsx! {
+        AccordionSection {
+            title,
+            section_key,
+            open,
+            ontoggle: move |_| onaction.call(EditorAction::ToggleAccordion(action_key.clone())),
+            {children}
+        }
     }
 }
 
@@ -799,13 +883,78 @@ fn skin_picker(
     rsx! { div { class: "skin-picker", for (index, skin) in view.skins.iter().enumerate() { Button { class: "skin-option", layout: ButtonLayout::Row, selected: selected == skin.id, disabled: view.access.readonly, "data-index": index, onclick: { let skin = skin.id; move |_| if new_canvas { onaction.call(EditorAction::NewCanvasSkin(skin)); } else { onaction.call(EditorAction::Skin(skin)); } }, if !skin.preview.is_empty() { img { src: "{skin.preview}", alt: "" } } span { strong { "{skin.name}" } small { "{skin.release}" } } } } } }
 }
 
+#[derive(Props, Clone, PartialEq)]
+struct PropertyInputProps {
+    field_key: String,
+    class: String,
+    value: String,
+    #[props(default)]
+    numeric: bool,
+    disabled: bool,
+    draft: Option<EditorFieldDraft>,
+    validate: Callback<String, bool>,
+    commit: EditorFieldCommit,
+    onstate: EventHandler<EditorAction>,
+}
+
+#[component]
+fn PropertyInput(props: PropertyInputProps) -> Element {
+    let displayed = props
+        .draft
+        .as_ref()
+        .map_or_else(|| props.value.clone(), |draft| draft.text.clone());
+    let valid = props.validate.call(displayed.clone());
+    let commit = Callback::new({
+        let props = props.clone();
+        move |()| {
+            props.onstate.call(EditorAction::CommitFieldDraft(
+                props.field_key.clone(),
+                props.commit.clone(),
+            ));
+        }
+    });
+    let input_props = props.clone();
+    let composition_start_props = props.clone();
+    let composition_end_props = props.clone();
+    rsx! {
+        input {
+            id: props.field_key.clone(),
+            class: props.class,
+            r#type: "text",
+            inputmode: props.numeric.then_some("decimal"),
+            value: displayed.clone(),
+            disabled: props.disabled,
+            "aria-invalid": (!valid).then_some("true"),
+            onfocus: move |_| props.onstate.call(EditorAction::BeginFieldEdit(
+                props.field_key.clone(), displayed.clone(),
+            )),
+            oninput: move |event| {
+                let text = event.value();
+                let valid = input_props.validate.call(text.clone());
+                input_props.onstate.call(EditorAction::UpdateFieldDraft(
+                    input_props.field_key.clone(), text, valid,
+                ));
+            },
+            oncompositionstart: move |_| composition_start_props.onstate.call(EditorAction::TextComposition { field_key:composition_start_props.field_key.clone(), composing:true }),
+            oncompositionend: move |_| composition_end_props.onstate.call(EditorAction::TextComposition { field_key:composition_end_props.field_key.clone(), composing:false }),
+            onblur: move |_| commit.call(()),
+            onkeydown: move |event| if event.key() == Key::Enter && !event.is_composing() {
+                event.prevent_default();
+                commit.call(());
+            },
+        }
+    }
+}
+
 fn property_controls(
     properties: &std::collections::BTreeMap<String, EditorProperty>,
     values: &std::collections::BTreeMap<String, serde_json::Value>,
+    scope: &str,
     canvas: bool,
-    readonly: bool,
+    view: &EditorView,
     onaction: EventHandler<EditorAction>,
 ) -> Element {
+    let readonly = view.access.readonly;
     let action = move |key: String, value: serde_json::Value| {
         if canvas {
             onaction.call(EditorAction::CanvasSkinProperty(key, value));
@@ -822,10 +971,54 @@ fn property_controls(
             match property {
                 EditorProperty::Boolean{default} => { let value=values.get(key).and_then(serde_json::Value::as_bool).unwrap_or(*default); rsx!{Toggle{class:"property-toggle",label:if value{"Enabled"}else{"Disabled"},selected:value,disabled:readonly,onclick:{let key=key.clone();move |_|action(key.clone(),(!value).into())}}} },
                 EditorProperty::Enum{default,values:options} => { let value=values.get(key).and_then(serde_json::Value::as_str).unwrap_or(default); rsx!{SegmentedControl{class:"property-options",label:property_key_display(properties,key),for (index,option) in options.iter().enumerate(){Button{class:"property-option",disabled:readonly,selected:value==option,onclick:{let key=key.clone();let option=option.clone();move |_|action(key.clone(),option.clone().into())},"data-index":index,"data-value":option,title:"{option}",span{class:"property-option-label","{property_option_display(options,option)}"}}}}} },
-                EditorProperty::Integer{default,minimum,maximum} => { let value=values.get(key).and_then(serde_json::Value::as_i64).unwrap_or(*default); let unit=property_unit(key); rsx!{div{class:"property-number-control",div{class:"property-value",input{class:"property-value-input",r#type:"number",value:"{value}",min:"{minimum}",max:"{maximum}",disabled:readonly,oninput:{let key=key.clone();let minimum=*minimum;let maximum=*maximum;move |event|if let Some(value)=integer_property_value(&event.value(),minimum,maximum){action(key.clone(),value.into())}},onblur:{let key=key.clone();move |_|action(key.clone(),value.into())}} if !unit.is_empty(){span{"{unit}"}}} small{class:"property-range","{minimum}–{maximum}{unit}"}}} },
-                EditorProperty::Number{default,minimum,maximum} => { let value=values.get(key).and_then(serde_json::Value::as_f64).unwrap_or(*default); let unit=property_unit(key); rsx!{div{class:"property-number-control",div{class:"property-value",input{class:"property-value-input",r#type:"number",value:"{value}",min:"{minimum}",max:"{maximum}",disabled:readonly,oninput:{let key=key.clone();let minimum=*minimum;let maximum=*maximum;move |event|if let Some(value)=number_property_value(&event.value(),minimum,maximum){action(key.clone(),value.into())}},onblur:{let key=key.clone();move |_|action(key.clone(),serde_json::Number::from_f64(value).expect("effective number is finite").into())}} if !unit.is_empty(){span{"{unit}"}}} small{class:"property-range","{minimum}–{maximum}{unit}"}}} },
-                EditorProperty::Color{default} => { let value=values.get(key).and_then(serde_json::Value::as_str).unwrap_or(default); rsx!{div{class:"property-color-control",span{class:"property-color-swatch",style:"background-color:{value}",aria_hidden:"true"} input{class:"property-color-input",r#type:"text",value:"{value}",disabled:readonly,oninput:{let key=key.clone();move |event|if valid_property_color(&event.value()){action(key.clone(),event.value().into())}},onblur:{let key=key.clone();let value=value.to_owned();move |_|action(key.clone(),value.clone().into())}}}} },
-                EditorProperty::String{default,maximum_length} => { let value=values.get(key).and_then(serde_json::Value::as_str).unwrap_or(default); rsx!{div{class:"property-string-control",input{class:"property-string-input",r#type:"text",value:"{value}",disabled:readonly,oninput:{let key=key.clone();let maximum_length=*maximum_length;move |event|if valid_property_string(&event.value(),maximum_length){action(key.clone(),event.value().into())}},onblur:{let key=key.clone();let value=value.to_owned();move |_|action(key.clone(),value.clone().into())}} small{class:"property-limit","MAX {maximum_length}"}}} },
+                EditorProperty::Integer{default,minimum,maximum} => {
+                    let value=values.get(key).and_then(serde_json::Value::as_i64).unwrap_or(*default);
+                    let unit=property_unit(key);
+                    let field_key=format!("{scope}:property:{key}");
+                    let draft=view.chrome.field_drafts.get(&field_key).cloned();
+                    let minimum=*minimum;
+                    let maximum=*maximum;
+                    rsx!{div{class:"property-number-control",div{class:"property-value",
+                        PropertyInput{field_key,class:"property-value-input",value:value.to_string(),numeric:true,disabled:readonly,draft,
+                            validate:Callback::new(move|text:String|integer_property_value(&text,minimum,maximum).is_some()),
+                            commit:if canvas {EditorFieldCommit::CanvasSkinProperty(key.clone())} else {EditorFieldCommit::WidgetSkinProperty(key.clone())},onstate:onaction}
+                        if !unit.is_empty(){span{"{unit}"}}} small{class:"property-range","{minimum}–{maximum}{unit}"}}}
+                },
+                EditorProperty::Number{default,minimum,maximum} => {
+                    let value=values.get(key).and_then(serde_json::Value::as_f64).unwrap_or(*default);
+                    let unit=property_unit(key);
+                    let field_key=format!("{scope}:property:{key}");
+                    let draft=view.chrome.field_drafts.get(&field_key).cloned();
+                    let minimum=*minimum;
+                    let maximum=*maximum;
+                    rsx!{div{class:"property-number-control",div{class:"property-value",
+                        PropertyInput{field_key,class:"property-value-input",value:value.to_string(),numeric:true,disabled:readonly,draft,
+                            validate:Callback::new(move|text:String|number_property_value(&text,minimum,maximum).is_some()),
+                            commit:if canvas {EditorFieldCommit::CanvasSkinProperty(key.clone())} else {EditorFieldCommit::WidgetSkinProperty(key.clone())},onstate:onaction}
+                        if !unit.is_empty(){span{"{unit}"}}} small{class:"property-range","{minimum}–{maximum}{unit}"}}}
+                },
+                EditorProperty::Color{default} => {
+                    let value=values.get(key).and_then(serde_json::Value::as_str).unwrap_or(default).to_owned();
+                    let field_key=format!("{scope}:property:{key}");
+                    let draft=view.chrome.field_drafts.get(&field_key).cloned();
+                    let displayed=draft.as_ref().map_or_else(||value.clone(),|draft|draft.text.clone());
+                    rsx!{div{class:"property-color-control",span{class:"property-color-swatch",style:"background-color:{displayed}",aria_hidden:"true"}
+                        PropertyInput{field_key,class:"property-color-input",value,disabled:readonly,draft,
+                            validate:Callback::new(move|text:String|valid_property_color(&text)),
+                            commit:if canvas {EditorFieldCommit::CanvasSkinProperty(key.clone())} else {EditorFieldCommit::WidgetSkinProperty(key.clone())},onstate:onaction}
+                    }}
+                },
+                EditorProperty::String{default,maximum_length} => {
+                    let value=values.get(key).and_then(serde_json::Value::as_str).unwrap_or(default).to_owned();
+                    let field_key=format!("{scope}:property:{key}");
+                    let draft=view.chrome.field_drafts.get(&field_key).cloned();
+                    let maximum_length=*maximum_length;
+                    rsx!{div{class:"property-string-control",
+                        PropertyInput{field_key,class:"property-string-input",value,disabled:readonly,draft,
+                            validate:Callback::new(move|text:String|valid_property_string(&text,maximum_length)),
+                            commit:if canvas {EditorFieldCommit::CanvasSkinProperty(key.clone())} else {EditorFieldCommit::WidgetSkinProperty(key.clone())},onstate:onaction}
+                        small{class:"property-limit","MAX {maximum_length}"}}}
+                },
             }
         }
     } } }
@@ -954,7 +1147,7 @@ mod property_tests {
 fn widget_settings(
     widget: &WidgetLayout,
     view: &EditorView,
-    title_input: Element,
+    title: Option<crate::editor_model::TitleDraft>,
     onaction: EventHandler<EditorAction>,
 ) -> Element {
     rsx! {
@@ -963,7 +1156,29 @@ fn widget_settings(
                             if widget.kind == WidgetKind::Empty {
                                 h3 { "TITLE" }
                                 if view.title!=EditorTitleState::Closed {
-                                    {title_input}
+                                    if let Some(title)=title {
+                                        input {
+                                            id: "editor-title-input",
+                                            class: "empty-title-edit",
+                                            r#type: "text",
+                                            "aria-label": "Widget title",
+                                            value: "{title.text}",
+                                            disabled: view.access.readonly,
+                                            onmounted: move |event| async move { let _ = event.set_focus(true).await; },
+                                            oninput: move |event| onaction.call(EditorAction::TitleText(event.value())),
+                                            oncompositionstart: move |_| onaction.call(EditorAction::TextComposition { field_key:"editor-title-input".into(), composing:true }),
+                                            oncompositionend: move |_| onaction.call(EditorAction::TextComposition { field_key:"editor-title-input".into(), composing:false }),
+                                            onkeydown: move |event| {
+                                                if event.key() == Key::Escape {
+                                                    event.prevent_default();
+                                                    onaction.call(EditorAction::CancelTitle);
+                                                } else if event.key() == Key::Enter && !event.is_composing() {
+                                                    event.prevent_default();
+                                                    onaction.call(EditorAction::AcceptTitle);
+                                                }
+                                            },
+                                        }
+                                    }
                                     div { class:"button-grid", Button { class:"title-accept", onclick:move |_| onaction.call(EditorAction::AcceptTitle), disabled:view.access.readonly || view.title==EditorTitleState::Composing, "APPLY TITLE" } Button { class:"title-cancel", onclick:move |_| onaction.call(EditorAction::CancelTitle), disabled:view.access.readonly, "CANCEL" } }
                                 } else { Button { class:"empty-title-input", onclick:move |_| onaction.call(EditorAction::EditTitle), disabled:view.access.readonly, if widget.settings.title.is_empty(){"Enter title…"}else{"{widget.settings.title}"} } }
                                 h3 { "ASPECT RATIO" }

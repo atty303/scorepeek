@@ -1,6 +1,6 @@
 use crate::editor::{
-    EditorAccess, EditorAction, EditorChrome, EditorProperty, EditorSkin, EditorTitleState,
-    EditorView, GeometryField,
+    EditorAccess, EditorAction, EditorChrome, EditorFieldCommit, EditorProperty, EditorSkin,
+    EditorTitleState, EditorView, GeometryField,
 };
 use crate::{
     AspectRatio, Background, CanvasPresentation, ScreenKind, Skin, WidgetKind, WidgetLayout,
@@ -55,14 +55,20 @@ fn normalize_properties(canvases: &mut [CanvasPresentation], skins: &[EditorSkin
         }
     }
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct TitleDraft {
     pub canvas: String,
     pub widget: String,
     pub text: String,
     pub composing: bool,
 }
-#[derive(Clone)]
+
+fn single_line(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_control())
+        .collect()
+}
+#[derive(Clone, PartialEq)]
 pub struct Drag {
     pub canvas: String,
     pub widget: Option<String>,
@@ -70,8 +76,10 @@ pub struct Drag {
     pub start: [i32; 2],
     pub original: Vec<CanvasPresentation>,
 }
-#[derive(Clone)]
-pub struct Model {
+#[derive(Clone, PartialEq)]
+pub struct EditorSession {
+    pub session_id: u64,
+    pub revision: u64,
     pub saved: Vec<CanvasPresentation>,
     pub draft: Vec<CanvasPresentation>,
     pub selected_canvas: Option<String>,
@@ -94,7 +102,121 @@ pub struct Model {
     pub skins: Vec<EditorSkin>,
     pub new_canvas_skin: Skin,
 }
-impl Model {
+
+#[derive(Clone, PartialEq)]
+pub struct StageProjection {
+    pub session_id: u64,
+    pub revision: u64,
+    pub output: crate::editor::EditorOutput,
+    pub interactive: bool,
+    pub view: EditorView,
+    pub canvases: Vec<CanvasPresentation>,
+    pub selected_canvas: Option<CanvasPresentation>,
+    pub selected_widget: Option<String>,
+    pub placing: Option<WidgetKind>,
+    pub point: [i32; 2],
+    pub drag: Option<Drag>,
+    pub title: Option<TitleDraft>,
+    pub notice: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EditorEffectKind {
+    Acquire,
+    KeepAlive,
+    Update,
+    Save,
+    Discard,
+    Close,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum EditorEffect {
+    Acquire,
+    KeepAlive,
+    Update { canvases: Vec<CanvasPresentation> },
+    Save { canvases: Vec<CanvasPresentation> },
+    Discard,
+    Close,
+}
+
+impl EditorEffect {
+    #[must_use]
+    pub const fn kind(&self) -> EditorEffectKind {
+        match self {
+            Self::Acquire => EditorEffectKind::Acquire,
+            Self::KeepAlive => EditorEffectKind::KeepAlive,
+            Self::Update { .. } => EditorEffectKind::Update,
+            Self::Save { .. } => EditorEffectKind::Save,
+            Self::Discard => EditorEffectKind::Discard,
+            Self::Close => EditorEffectKind::Close,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditorBackendReply {
+    pub ok: bool,
+    pub readonly: bool,
+    pub error: Option<String>,
+    pub canvases: Vec<CanvasPresentation>,
+    pub dirty: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum EditorInput {
+    Open {
+        output: Option<String>,
+        canvas: Option<String>,
+        preview: ScreenKind,
+    },
+    SetOutputs(Vec<crate::editor::EditorOutput>),
+    Action(EditorAction),
+    Surface(crate::editor_surface::SurfaceAction),
+    Resize {
+        output: String,
+        logical_size: [u32; 2],
+    },
+    LegacyOutputsResolved {
+        unresolved_output: String,
+        canvases: Vec<CanvasPresentation>,
+    },
+    TransportReady {
+        screen: Option<ScreenKind>,
+        sample: bool,
+        canvases: Vec<CanvasPresentation>,
+        first: bool,
+    },
+    TransportLost,
+    KeepAliveTick,
+    VersionMismatch,
+    BackendCompleted {
+        effect: EditorEffectKind,
+        reply: EditorBackendReply,
+    },
+}
+
+impl EditorInput {
+    /// Stable semantic label for transport and reducer diagnostics.
+    #[must_use]
+    pub const fn diagnostic_name(&self) -> &'static str {
+        match self {
+            Self::Open { .. } => "open",
+            Self::SetOutputs(_) => "set_outputs",
+            Self::Action(_) => "action",
+            Self::Surface(_) => "surface",
+            Self::Resize { .. } => "resize",
+            Self::LegacyOutputsResolved { .. } => "legacy_outputs_resolved",
+            Self::TransportReady { .. } => "transport_ready",
+            Self::TransportLost => "transport_lost",
+            Self::KeepAliveTick => "keep_alive_tick",
+            Self::VersionMismatch => "version_mismatch",
+            Self::BackendCompleted { .. } => "backend_completed",
+        }
+    }
+}
+
+impl EditorSession {
     #[must_use]
     pub fn new(
         canvases: Vec<CanvasPresentation>,
@@ -124,7 +246,14 @@ impl Model {
             .collect::<std::collections::BTreeMap<_, _>>()
             .into_values()
             .collect();
+        let expanded_canvases = canvases
+            .first()
+            .map(|canvas| canvas.id.clone())
+            .into_iter()
+            .collect();
         Self {
+            session_id: 0,
+            revision: 0,
             selected_canvas: canvases.first().map(|canvas| canvas.id.clone()),
             saved: canvases.clone(),
             draft: canvases,
@@ -137,6 +266,13 @@ impl Model {
                 panel_open: true,
                 widget_add_open: false,
                 sample: true,
+                screen_picker_open: false,
+                expanded_outputs: active_output.clone().into_iter().collect(),
+                collapsed_outputs: std::collections::BTreeSet::new(),
+                expanded_canvases,
+                collapsed_accordions: std::collections::BTreeSet::new(),
+                field_drafts: std::collections::BTreeMap::new(),
+                picker_cursors: std::collections::BTreeMap::new(),
             },
             undo: None,
             placing: None,
@@ -153,6 +289,246 @@ impl Model {
         }
     }
 
+    pub fn set_session_id(&mut self, session_id: u64) {
+        self.session_id = session_id;
+    }
+
+    pub fn advance_revision(&mut self) {
+        self.revision = self.revision.saturating_add(1);
+    }
+
+    #[must_use]
+    pub fn stage_projection(&self, output: &crate::editor::EditorOutput) -> StageProjection {
+        let canvases = self
+            .draft
+            .iter()
+            .filter(|canvas| {
+                canvas.output.as_deref().or(self.active_output.as_deref())
+                    == Some(output.name.as_str())
+                    && self.visible(canvas)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let selected_canvas = canvases
+            .iter()
+            .find(|canvas| Some(&canvas.id) == self.selected_canvas.as_ref())
+            .cloned();
+        StageProjection {
+            session_id: self.session_id,
+            revision: self.revision,
+            output: output.clone(),
+            interactive: self.editing
+                && self.active_output.as_deref() == Some(output.name.as_str()),
+            view: self.view(),
+            canvases,
+            selected_canvas,
+            selected_widget: self.selected_widget.clone(),
+            placing: self.placing,
+            point: self.point,
+            drag: self.drag.clone(),
+            title: self.title.clone(),
+            notice: self.notice.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn stage_projections(&self) -> Vec<StageProjection> {
+        self.outputs
+            .iter()
+            .map(|output| self.stage_projection(output))
+            .collect()
+    }
+
+    pub fn reduce(&mut self, input: EditorInput) -> Vec<EditorEffect> {
+        let before = self.clone();
+        let effects = match input {
+            EditorInput::Open {
+                output,
+                canvas,
+                preview,
+            } => {
+                self.activate_output(output.as_deref());
+                self.enter(canvas, preview);
+                vec![EditorEffect::Acquire]
+            }
+            EditorInput::SetOutputs(outputs) => {
+                self.set_outputs(outputs);
+                Vec::new()
+            }
+            EditorInput::Action(action) => self.reduce_editor_action(action),
+            EditorInput::Surface(action) => self.reduce_surface_action(action),
+            EditorInput::Resize {
+                output,
+                logical_size,
+            } => {
+                self.resize_output(&output, logical_size);
+                Vec::new()
+            }
+            EditorInput::LegacyOutputsResolved {
+                unresolved_output,
+                canvases,
+            } => {
+                for current in self.saved.iter_mut().chain(&mut self.draft) {
+                    if current.output.as_deref() == Some(unresolved_output.as_str())
+                        && let Some(resolved) =
+                            canvases.iter().find(|canvas| canvas.id == current.id)
+                    {
+                        current.output.clone_from(&resolved.output);
+                    }
+                }
+                Vec::new()
+            }
+            EditorInput::TransportReady {
+                screen,
+                sample,
+                canvases,
+                first,
+            } => self.reduce_transport_ready(screen, sample, canvases, first),
+            EditorInput::TransportLost => {
+                self.readonly = true;
+                self.drag = None;
+                self.notice = Some("Editor connection lost; reconnecting.".into());
+                Vec::new()
+            }
+            EditorInput::KeepAliveTick => {
+                if self.editing {
+                    vec![if self.readonly {
+                        EditorEffect::Acquire
+                    } else {
+                        EditorEffect::KeepAlive
+                    }]
+                } else {
+                    Vec::new()
+                }
+            }
+            EditorInput::VersionMismatch => {
+                let saved = self.saved.clone();
+                let viewport = self.viewport;
+                let session_id = self.session_id;
+                *self = Self::new(saved, viewport, "editor");
+                self.session_id = session_id;
+                self.selected_canvas = None;
+                Vec::new()
+            }
+            EditorInput::BackendCompleted { effect, reply } => {
+                self.reduce_backend_completed(effect, reply)
+            }
+        };
+        if *self != before {
+            self.revision = before.revision.saturating_add(1);
+        }
+        effects
+    }
+
+    fn reduce_transport_ready(
+        &mut self,
+        screen: Option<ScreenKind>,
+        sample: bool,
+        canvases: Vec<CanvasPresentation>,
+        first: bool,
+    ) -> Vec<EditorEffect> {
+        self.screen = screen;
+        self.chrome.sample = sample;
+        self.receive_stage(canvases);
+        if first && self.editing {
+            vec![EditorEffect::Acquire]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn reduce_editor_action(&mut self, action: EditorAction) -> Vec<EditorEffect> {
+        match action {
+            EditorAction::Save if !self.readonly && self.document_valid() => {
+                self.normalize_for_save();
+                vec![EditorEffect::Save {
+                    canvases: self.draft.clone(),
+                }]
+            }
+            EditorAction::Discard if !self.readonly && !self.discard_pending => {
+                self.discard_pending = true;
+                vec![EditorEffect::Discard]
+            }
+            EditorAction::Close => vec![EditorEffect::Close],
+            other => {
+                let changed = self.action(&other);
+                if changed && self.document_valid() {
+                    vec![EditorEffect::Update {
+                        canvases: self.draft.clone(),
+                    }]
+                } else {
+                    Vec::new()
+                }
+            }
+        }
+    }
+
+    fn reduce_surface_action(
+        &mut self,
+        action: crate::editor_surface::SurfaceAction,
+    ) -> Vec<EditorEffect> {
+        if let crate::editor_surface::SurfaceAction::Enter(canvas) = action {
+            if !self.editing {
+                self.enter(canvas, self.screen.unwrap_or(ScreenKind::MusicSelect));
+                return vec![EditorEffect::Acquire];
+            }
+            return Vec::new();
+        }
+        if self.surface(action) && self.document_valid() {
+            vec![EditorEffect::Update {
+                canvases: self.draft.clone(),
+            }]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn reduce_backend_completed(
+        &mut self,
+        effect: EditorEffectKind,
+        reply: EditorBackendReply,
+    ) -> Vec<EditorEffect> {
+        self.readonly = reply.readonly;
+        self.notice = reply.error;
+        if matches!(
+            effect,
+            EditorEffectKind::Acquire
+                | EditorEffectKind::Update
+                | EditorEffectKind::Save
+                | EditorEffectKind::Discard
+        ) {
+            self.draft = reply.canvases;
+            if !reply.dirty {
+                self.saved.clone_from(&self.draft);
+            }
+            if !self
+                .draft
+                .iter()
+                .any(|canvas| Some(&canvas.id) == self.selected_canvas.as_ref())
+            {
+                self.select_visible();
+            }
+        }
+        if !reply.ok {
+            if effect == EditorEffectKind::Discard {
+                self.discard_pending = false;
+            }
+            return Vec::new();
+        }
+        match effect {
+            EditorEffectKind::Save => {
+                self.saved.clone_from(&self.draft);
+                vec![EditorEffect::Close]
+            }
+            EditorEffectKind::Discard | EditorEffectKind::Close => {
+                self.close();
+                Vec::new()
+            }
+            EditorEffectKind::Acquire if self.discard_pending => vec![EditorEffect::Discard],
+            _ => Vec::new(),
+        }
+    }
+
     pub fn set_skins(&mut self, skins: Vec<EditorSkin>) {
         self.skins = skins;
         if !self
@@ -164,6 +540,7 @@ impl Model {
         }
     }
     pub fn set_outputs(&mut self, outputs: Vec<crate::editor::EditorOutput>) {
+        let previous_active = self.active_output.clone();
         self.outputs = outputs;
         let active = if self
             .active_output
@@ -176,6 +553,14 @@ impl Model {
         }
         .map(str::to_owned);
         self.activate_output(active.as_deref());
+        if self.active_output != previous_active {
+            self.selected_canvas = None;
+            self.selected_widget = None;
+            self.placing = None;
+            self.drag = None;
+            self.title = None;
+            self.chrome.field_drafts.clear();
+        }
     }
     pub fn activate_output(&mut self, output: Option<&str>) {
         self.active_output = output
@@ -190,14 +575,12 @@ impl Model {
             self.viewport = size;
         }
     }
-    pub fn resize_active_output(&mut self, size: [u32; 2]) {
-        self.viewport = size;
-        if let Some(output) = self
-            .outputs
-            .iter_mut()
-            .find(|output| Some(&output.name) == self.active_output.as_ref())
-        {
+    pub fn resize_output(&mut self, name: &str, size: [u32; 2]) {
+        if let Some(output) = self.outputs.iter_mut().find(|output| output.name == name) {
             output.logical_size = Some(size);
+        }
+        if self.active_output.as_deref() == Some(name) {
+            self.viewport = size;
         }
     }
     pub fn receive_stage(&mut self, canvases: Vec<CanvasPresentation>) {
@@ -215,7 +598,20 @@ impl Model {
     }
     #[must_use]
     pub fn document_valid(&self) -> bool {
-        crate::editor::document_valid(&self.draft, &self.outputs)
+        crate::editor::document_valid(&self.draft, &self.outputs) && !self.active_field_invalid()
+    }
+    fn active_field_invalid(&self) -> bool {
+        let Some(canvas) = self.current() else {
+            return false;
+        };
+        let prefix = self.selected_widget.as_ref().map_or_else(
+            || format!("{}:", canvas.id),
+            |widget| format!("{}:{widget}:", canvas.id),
+        );
+        self.chrome
+            .field_drafts
+            .iter()
+            .any(|(field, draft)| field.starts_with(&prefix) && (!draft.valid || draft.composing))
     }
     #[must_use]
     pub fn current(&self) -> Option<&CanvasPresentation> {
@@ -237,7 +633,6 @@ impl Model {
     #[must_use]
     pub fn view(&self) -> EditorView {
         EditorView {
-            backend_label: "EDITOR".into(),
             canvases: self.draft.clone(),
             selected_canvas: self.selected_canvas.clone(),
             selected_widget: self.selected_widget.clone(),
@@ -282,19 +677,76 @@ impl Model {
         self.selected_widget = None;
         self.title = None;
     }
-    pub fn enter(&mut self, canvas: Option<String>) {
+    pub fn enter(&mut self, canvas: Option<String>, preview: ScreenKind) {
         self.editing = true;
         self.chrome.panel_open = true;
-        self.preview = self.screen.unwrap_or(ScreenKind::MusicSelect);
+        self.preview = preview;
         self.select_visible();
         if canvas.is_some() {
             self.selected_canvas = canvas;
         }
         self.readonly = true;
     }
+    fn activate_canvas_output(&mut self, canvas: &CanvasPresentation) -> bool {
+        let Some(output) = canvas.output.as_deref().filter(|output| {
+            self.outputs
+                .iter()
+                .any(|candidate| candidate.name == *output)
+        }) else {
+            return false;
+        };
+        let changed = self.active_output.as_deref() != Some(output);
+        self.activate_output(Some(output));
+        changed
+    }
+    fn select_canvas(&mut self, id: &str) {
+        let Some(canvas) = self.draft.iter().find(|canvas| canvas.id == id).cloned() else {
+            return;
+        };
+        let output_changed = self.activate_canvas_output(&canvas);
+        let scope_changed = self.selected_canvas.as_deref() != Some(id)
+            || self.selected_widget.is_some()
+            || output_changed;
+        select_canvas_preview(&canvas, &mut self.preview);
+        self.chrome.expanded_canvases.insert(id.to_owned());
+        self.selected_canvas = Some(id.to_owned());
+        self.selected_widget = None;
+        self.title = None;
+        if scope_changed {
+            self.placing = None;
+            self.chrome.field_drafts.clear();
+        }
+    }
+    fn select_widget(&mut self, canvas_id: &str, widget_id: &str) {
+        let Some(canvas) = self
+            .draft
+            .iter()
+            .find(|canvas| {
+                canvas.id == canvas_id && canvas.widgets.iter().any(|widget| widget.id == widget_id)
+            })
+            .cloned()
+        else {
+            return;
+        };
+        let output_changed = self.activate_canvas_output(&canvas);
+        let scope_changed = self.selected_canvas.as_deref() != Some(canvas_id)
+            || self.selected_widget.as_deref() != Some(widget_id)
+            || output_changed;
+        select_canvas_preview(&canvas, &mut self.preview);
+        self.selected_canvas = Some(canvas_id.to_owned());
+        self.selected_widget = Some(widget_id.to_owned());
+        self.title = None;
+        if scope_changed {
+            self.placing = None;
+            self.chrome.field_drafts.clear();
+        }
+    }
     pub fn close(&mut self) {
         self.editing = false;
         self.discard_pending = false;
+        self.chrome.screen_picker_open = false;
+        self.chrome.widget_add_open = false;
+        self.chrome.field_drafts.clear();
         self.selected_widget = None;
         self.undo = None;
         self.drag = None;
@@ -302,8 +754,33 @@ impl Model {
         self.title = None;
     }
     fn navigate(&mut self, action: &EditorAction) -> bool {
+        if self.navigate_control_state(action) {
+            return true;
+        }
         match action {
             EditorAction::TogglePanel => self.chrome.panel_open = !self.chrome.panel_open,
+            EditorAction::SetScreenPickerOpen(open) => self.chrome.screen_picker_open = *open,
+            EditorAction::ToggleOutputExpanded(output) => {
+                if self.chrome.expanded_outputs.remove(output) {
+                    self.chrome.collapsed_outputs.insert(output.clone());
+                } else if self.chrome.collapsed_outputs.remove(output) {
+                    self.chrome.expanded_outputs.insert(output.clone());
+                } else if self.active_output.as_ref() == Some(output) {
+                    self.chrome.collapsed_outputs.insert(output.clone());
+                } else {
+                    self.chrome.expanded_outputs.insert(output.clone());
+                }
+            }
+            EditorAction::ToggleCanvasExpanded(canvas) => {
+                if !self.chrome.expanded_canvases.remove(canvas) {
+                    self.chrome.expanded_canvases.insert(canvas.clone());
+                }
+            }
+            EditorAction::ToggleAccordion(section) => {
+                if !self.chrome.collapsed_accordions.remove(section) {
+                    self.chrome.collapsed_accordions.insert(section.clone());
+                }
+            }
             EditorAction::PreviewScreen(screen) => {
                 self.preview = *screen;
             }
@@ -312,34 +789,24 @@ impl Model {
                     .outputs
                     .iter()
                     .any(|candidate| candidate.name == *output)
+                    && self.active_output.as_deref() != Some(output.as_str())
                 {
                     self.activate_output(Some(output));
                     self.selected_canvas = None;
                     self.selected_widget = None;
+                    self.placing = None;
                     self.title = None;
+                    self.chrome.field_drafts.clear();
                 }
             }
             EditorAction::SelectCanvas(id) => {
-                if let Some(canvas) = self.draft.iter().find(|canvas| &canvas.id == id) {
-                    select_canvas_preview(canvas, &mut self.preview);
-                    self.selected_canvas = Some(id.clone());
-                    self.selected_widget = None;
-                    self.title = None;
-                }
+                self.select_canvas(id);
             }
             EditorAction::SelectWidget {
                 canvas_id,
                 widget_id,
             } => {
-                if let Some(canvas) = self.draft.iter().find(|canvas| {
-                    &canvas.id == canvas_id
-                        && canvas.widgets.iter().any(|widget| &widget.id == widget_id)
-                }) {
-                    select_canvas_preview(canvas, &mut self.preview);
-                    self.selected_canvas = Some(canvas_id.clone());
-                    self.selected_widget = Some(widget_id.clone());
-                    self.title = None;
-                }
+                self.select_widget(canvas_id, widget_id);
             }
             EditorAction::ToggleWidgetAdd => {
                 self.chrome.widget_add_open = !self.chrome.widget_add_open;
@@ -354,7 +821,139 @@ impl Model {
         }
         true
     }
+
+    fn navigate_control_state(&mut self, action: &EditorAction) -> bool {
+        match action {
+            EditorAction::SetPickerCursor(key, cursor) => {
+                self.chrome.picker_cursors.insert(key.clone(), *cursor);
+                true
+            }
+            EditorAction::BeginFieldEdit(key, value) => {
+                self.chrome.field_drafts.insert(
+                    key.clone(),
+                    crate::editor::EditorFieldDraft {
+                        text: value.clone(),
+                        focused: true,
+                        valid: true,
+                        composing: false,
+                    },
+                );
+                true
+            }
+            EditorAction::UpdateFieldDraft(key, value, valid) => {
+                let draft = self
+                    .chrome
+                    .field_drafts
+                    .entry(key.clone())
+                    .or_insert_with(|| crate::editor::EditorFieldDraft {
+                        text: String::new(),
+                        focused: true,
+                        valid: *valid,
+                        composing: false,
+                    });
+                draft.text.clone_from(value);
+                draft.focused = true;
+                draft.valid = *valid;
+                true
+            }
+            EditorAction::TextComposition {
+                field_key,
+                composing,
+            } if field_key != "editor-title-input" => {
+                if let Some(draft) = self.chrome.field_drafts.get_mut(field_key) {
+                    draft.composing = *composing;
+                }
+                true
+            }
+            EditorAction::EndFieldEdit(key, true) => {
+                self.chrome.field_drafts.remove(key);
+                true
+            }
+            EditorAction::EndFieldEdit(key, false) => {
+                if let Some(draft) = self.chrome.field_drafts.get_mut(key) {
+                    draft.focused = false;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn commit_field_draft(&mut self, key: &str, commit: &EditorFieldCommit) -> bool {
+        if self.readonly || self.discard_pending {
+            return false;
+        }
+        let Some(draft) = self.chrome.field_drafts.get(key).cloned() else {
+            return false;
+        };
+        if draft.composing {
+            if let Some(draft) = self.chrome.field_drafts.get_mut(key) {
+                draft.focused = false;
+            }
+            return true;
+        }
+        let semantic = (|| match commit {
+            EditorFieldCommit::CanvasGeometry(field) => {
+                let value = draft.text.parse().ok()?;
+                let mut canvas = self.current()?.clone();
+                let bounds = crate::editor::canvas_geometry_bounds(&canvas, &self.outputs);
+                apply_canvas_geometry(&mut canvas, *field, value, bounds);
+                (canvas_geometry_value(&canvas, *field) == value)
+                    .then_some(EditorAction::CanvasGeometry(*field, value))
+            }
+            EditorFieldCommit::WidgetGeometry(field) => {
+                let value = draft.text.parse().ok()?;
+                let canvas = self.current()?;
+                let mut widget = canvas
+                    .widgets
+                    .iter()
+                    .find(|widget| Some(&widget.id) == self.selected_widget.as_ref())?
+                    .clone();
+                apply_widget_geometry(&mut widget, *field, value, [canvas.width, canvas.height]);
+                (widget_geometry_value(&widget, *field) == value)
+                    .then_some(EditorAction::WidgetGeometry(*field, value))
+            }
+            EditorFieldCommit::CanvasSkinProperty(key) => self.current().and_then(|canvas| {
+                self.skins
+                    .iter()
+                    .find(|skin| skin.id == canvas.skin)
+                    .and_then(|skin| skin.canvas_properties.get(key))
+                    .and_then(|property| property.parse_text(&draft.text))
+                    .map(|value| EditorAction::CanvasSkinProperty(key.clone(), value))
+            }),
+            EditorFieldCommit::WidgetSkinProperty(key) => self.current().and_then(|canvas| {
+                let widget = canvas
+                    .widgets
+                    .iter()
+                    .find(|widget| Some(&widget.id) == self.selected_widget.as_ref())?;
+                self.skins
+                    .iter()
+                    .find(|skin| skin.id == canvas.skin)
+                    .and_then(|skin| {
+                        skin.widget_properties
+                            .get(widget.kind.name())
+                            .or_else(|| skin.widget_properties.get("*"))
+                    })
+                    .and_then(|properties| properties.get(key))
+                    .and_then(|property| property.parse_text(&draft.text))
+                    .map(|value| EditorAction::WidgetSkinProperty(key.clone(), value))
+            }),
+        })();
+        let Some(semantic) = semantic else {
+            if let Some(draft) = self.chrome.field_drafts.get_mut(key) {
+                draft.focused = false;
+                draft.valid = false;
+            }
+            return true;
+        };
+        self.chrome.field_drafts.remove(key);
+        let _ = self.action(&semantic);
+        true
+    }
     pub fn action(&mut self, action: &EditorAction) -> bool {
+        if let EditorAction::CommitFieldDraft(key, commit) = action {
+            return self.commit_field_draft(key, commit);
+        }
         if self.navigate(action) || self.readonly || self.discard_pending {
             return false;
         }
@@ -365,6 +964,7 @@ impl Model {
                     self.title = None;
                     self.drag = None;
                     self.placing = None;
+                    self.chrome.field_drafts.clear();
                     if self.current().is_none() {
                         self.select_visible();
                     }
@@ -408,6 +1008,23 @@ impl Model {
                             composing: false,
                         })
                 });
+                return false;
+            }
+            EditorAction::TitleText(text) => {
+                if let Some(title) = self.title.as_mut() {
+                    title.text = single_line(text);
+                }
+                return false;
+            }
+            EditorAction::TextComposition {
+                field_key,
+                composing,
+            } => {
+                if field_key == "editor-title-input"
+                    && let Some(title) = self.title.as_mut()
+                {
+                    title.composing = *composing;
+                }
                 return false;
             }
             _ => {}
@@ -508,11 +1125,13 @@ impl Model {
                 });
                 self.selected_canvas = Some(id);
                 self.selected_widget = None;
+                self.chrome.field_drafts.clear();
             }
             EditorAction::DeleteCanvas => {
                 self.draft
                     .retain(|canvas| Some(&canvas.id) != self.selected_canvas.as_ref());
                 self.select_visible();
+                self.chrome.field_drafts.clear();
             }
             _ => {
                 if let Some(canvas) = self
@@ -594,6 +1213,7 @@ impl Model {
                                 .retain(|widget| Some(&widget.id) != self.selected_widget.as_ref());
                             self.selected_widget = None;
                             self.title = None;
+                            self.chrome.field_drafts.clear();
                         }
                         _ => {
                             if let Some(widget) = canvas
@@ -676,6 +1296,7 @@ impl Model {
             skin_properties,
         });
         self.selected_widget = Some(id);
+        self.chrome.field_drafts.clear();
         self.undo = Some(before);
         true
     }
@@ -722,13 +1343,16 @@ impl Model {
             skin_properties,
         });
         self.selected_widget = Some(id);
+        self.chrome.field_drafts.clear();
         self.undo = Some(before);
         true
     }
     pub fn surface(&mut self, action: crate::editor_surface::SurfaceAction) -> bool {
         use crate::editor_surface::SurfaceAction;
         match action {
-            SurfaceAction::Enter(canvas) => self.enter(canvas),
+            SurfaceAction::Enter(canvas) => {
+                self.enter(canvas, self.screen.unwrap_or(ScreenKind::MusicSelect));
+            }
             SurfaceAction::Select(canvas) => {
                 self.action(&EditorAction::SelectCanvas(canvas));
             }
@@ -933,6 +1557,15 @@ fn apply_canvas_geometry(
     }
 }
 
+fn canvas_geometry_value(canvas: &CanvasPresentation, field: GeometryField) -> i32 {
+    match field {
+        GeometryField::X => canvas.x,
+        GeometryField::Y => canvas.y,
+        GeometryField::Width => i32::try_from(canvas.width).unwrap_or(i32::MAX),
+        GeometryField::Height => i32::try_from(canvas.height).unwrap_or(i32::MAX),
+    }
+}
+
 fn apply_widget_geometry(
     widget: &mut WidgetLayout,
     field: GeometryField,
@@ -971,6 +1604,15 @@ fn apply_widget_geometry(
             widget.height = value_u32;
         }
         _ => {}
+    }
+}
+
+fn widget_geometry_value(widget: &WidgetLayout, field: GeometryField) -> i32 {
+    match field {
+        GeometryField::X => widget.x,
+        GeometryField::Y => widget.y,
+        GeometryField::Width => i32::try_from(widget.width).unwrap_or(i32::MAX),
+        GeometryField::Height => i32::try_from(widget.height).unwrap_or(i32::MAX),
     }
 }
 fn grid(value: u32) -> u32 {
@@ -1123,6 +1765,7 @@ fn apply_widget_action(
 #[cfg(test)]
 mod skin_tests {
     use super::*;
+    type Model = EditorSession;
 
     fn skin(id: &str, default: i64) -> EditorSkin {
         EditorSkin {
@@ -1309,6 +1952,417 @@ mod skin_tests {
     }
 
     #[test]
+    fn selecting_the_active_output_preserves_canvas_selection() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "DP-1".into(),
+            model: "first".into(),
+            logical_size: Some([1920, 1080]),
+        }]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        let selected = model.selected_canvas.clone();
+
+        assert!(!model.action(&EditorAction::SelectOutput("DP-1".into())));
+
+        assert_eq!(model.selected_canvas, selected);
+        assert!(model.stage_projections()[0].selected_canvas.is_some());
+    }
+
+    #[test]
+    fn selecting_a_peer_canvas_or_widget_activates_its_output_atomically() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.set_outputs(vec![
+            crate::editor::EditorOutput {
+                name: "DP-1".into(),
+                model: "first".into(),
+                logical_size: Some([1920, 1080]),
+            },
+            crate::editor::EditorOutput {
+                name: "DP-2".into(),
+                model: "second".into(),
+                logical_size: Some([1080, 1920]),
+            },
+        ]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        model.action(&EditorAction::SelectOutput("DP-2".into()));
+        assert!(model.action(&EditorAction::AddCanvas));
+        assert!(model.action(&EditorAction::AddWidget(0)));
+        let canvas = model.selected_canvas.clone().unwrap();
+        let widget = model.selected_widget.clone().unwrap();
+        model.action(&EditorAction::SelectOutput("DP-1".into()));
+
+        model.action(&EditorAction::SelectCanvas(canvas.clone()));
+        assert_eq!(model.active_output.as_deref(), Some("DP-2"));
+        assert!(model.stage_projections()[1].selected_canvas.is_some());
+
+        model.action(&EditorAction::SelectOutput("DP-1".into()));
+        model.action(&EditorAction::SelectWidget {
+            canvas_id: canvas,
+            widget_id: widget,
+        });
+        assert_eq!(model.active_output.as_deref(), Some("DP-2"));
+        assert!(model.stage_projections()[1].selected_widget.is_some());
+    }
+
+    #[test]
+    fn selecting_a_canvas_without_a_connected_output_preserves_the_active_output() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "DP-1".into(),
+            model: "first".into(),
+            logical_size: Some([1920, 1080]),
+        }]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        let canvas = model.selected_canvas.clone().unwrap();
+        model
+            .draft
+            .iter_mut()
+            .find(|candidate| candidate.id == canvas)
+            .unwrap()
+            .output = Some("disconnected".into());
+
+        model.action(&EditorAction::SelectCanvas(canvas));
+
+        assert_eq!(model.active_output.as_deref(), Some("DP-1"));
+    }
+
+    #[test]
+    fn explicit_open_preview_is_not_replaced_by_the_observed_screen() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.screen = Some(ScreenKind::MusicSelect);
+        model.reduce(EditorInput::Open {
+            output: None,
+            canvas: None,
+            preview: ScreenKind::Result,
+        });
+
+        assert_eq!(model.preview, ScreenKind::Result);
+    }
+
+    #[test]
+    fn legacy_output_resolution_is_reduced_without_overwriting_a_user_assignment() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.set_outputs(vec![
+            crate::editor::EditorOutput {
+                name: "DP-1".into(),
+                model: "first".into(),
+                logical_size: Some([1920, 1080]),
+            },
+            crate::editor::EditorOutput {
+                name: "DP-2".into(),
+                model: "second".into(),
+                logical_size: Some([1920, 1080]),
+            },
+        ]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        model.saved = model.draft.clone();
+        model.saved[0].output = Some("legacy-unresolved".into());
+        model.draft[0].output = Some("DP-2".into());
+        let mut resolved = model.saved.clone();
+        resolved[0].output = Some("DP-1".into());
+
+        model.reduce(EditorInput::LegacyOutputsResolved {
+            unresolved_output: "legacy-unresolved".into(),
+            canvases: resolved,
+        });
+
+        assert_eq!(model.saved[0].output.as_deref(), Some("DP-1"));
+        assert_eq!(model.draft[0].output.as_deref(), Some("DP-2"));
+    }
+
+    #[test]
+    fn chrome_navigation_is_revisioned_editor_session_state() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        let canvas = model.selected_canvas.clone().unwrap();
+        model.chrome.expanded_canvases.clear();
+        let revision = model.revision;
+
+        assert!(
+            model
+                .reduce(EditorInput::Action(EditorAction::SelectCanvas(
+                    canvas.clone()
+                )))
+                .is_empty()
+        );
+
+        assert_eq!(model.revision, revision + 1);
+        assert!(model.chrome.expanded_canvases.contains(&canvas));
+        assert_eq!(model.selected_canvas.as_deref(), Some(canvas.as_str()));
+    }
+
+    #[test]
+    fn field_validation_is_revisioned_editor_session_state() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "DP-1".into(),
+            model: "first".into(),
+            logical_size: Some([1920, 1080]),
+        }]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        let canvas = model.selected_canvas.clone().unwrap();
+        let field = format!("{canvas}:width");
+        let revision = model.revision;
+
+        model.reduce(EditorInput::Action(EditorAction::UpdateFieldDraft(
+            field.clone(),
+            "99999".into(),
+            false,
+        )));
+
+        assert_eq!(model.revision, revision + 1);
+        assert!(!model.chrome.field_drafts[&field].valid);
+        assert!(!model.document_valid());
+        model.reduce(EditorInput::Action(EditorAction::TogglePanel));
+        model.reduce(EditorInput::Action(EditorAction::TogglePanel));
+        assert_eq!(model.chrome.field_drafts[&field].text, "99999");
+        assert!(!model.document_valid());
+        model.reduce(EditorInput::Action(EditorAction::SelectCanvas(canvas)));
+        model.reduce(EditorInput::Action(EditorAction::SelectOutput(
+            "DP-1".into(),
+        )));
+        assert_eq!(model.chrome.field_drafts[&field].text, "99999");
+        assert!(!model.document_valid());
+
+        model.reduce(EditorInput::Action(EditorAction::EndFieldEdit(field, true)));
+        assert!(model.document_valid());
+    }
+
+    #[test]
+    fn field_commit_uses_the_authoritative_draft_and_preserves_composition() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "DP-1".into(),
+            model: "first".into(),
+            logical_size: Some([1920, 1080]),
+        }]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        let canvas = model.selected_canvas.clone().unwrap();
+        let field = format!("{canvas}:width");
+        let initial_width = model.current().unwrap().width;
+
+        model.reduce(EditorInput::Action(EditorAction::BeginFieldEdit(
+            field.clone(),
+            initial_width.to_string(),
+        )));
+        model.reduce(EditorInput::Action(EditorAction::TextComposition {
+            field_key: field.clone(),
+            composing: true,
+        }));
+        model.reduce(EditorInput::Action(EditorAction::UpdateFieldDraft(
+            field.clone(),
+            "400".into(),
+            true,
+        )));
+        assert!(model.chrome.field_drafts[&field].composing);
+
+        model.reduce(EditorInput::Action(EditorAction::CommitFieldDraft(
+            field.clone(),
+            EditorFieldCommit::CanvasGeometry(GeometryField::Width),
+        )));
+        assert_eq!(model.current().unwrap().width, initial_width);
+        assert!(model.chrome.field_drafts.contains_key(&field));
+
+        model.reduce(EditorInput::Action(EditorAction::TextComposition {
+            field_key: field.clone(),
+            composing: false,
+        }));
+        model.reduce(EditorInput::Action(EditorAction::CommitFieldDraft(
+            field.clone(),
+            EditorFieldCommit::CanvasGeometry(GeometryField::Width),
+        )));
+        assert_eq!(model.current().unwrap().width, 400);
+        assert!(!model.chrome.field_drafts.contains_key(&field));
+    }
+
+    #[test]
+    fn field_commit_revalidates_against_current_output_bounds() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "DP-1".into(),
+            model: "first".into(),
+            logical_size: Some([1920, 1080]),
+        }]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        let canvas = model.selected_canvas.clone().unwrap();
+        let field = format!("{canvas}:width");
+        model.reduce(EditorInput::Action(EditorAction::UpdateFieldDraft(
+            field.clone(),
+            "1600".into(),
+            true,
+        )));
+        model.reduce(EditorInput::Resize {
+            output: "DP-1".into(),
+            logical_size: [1280, 720],
+        });
+
+        let effects = model.reduce(EditorInput::Action(EditorAction::CommitFieldDraft(
+            field.clone(),
+            EditorFieldCommit::CanvasGeometry(GeometryField::Width),
+        )));
+
+        assert!(effects.is_empty());
+        assert_eq!(model.current().unwrap().width, 1920);
+        assert_eq!(model.chrome.field_drafts[&field].text, "1600");
+        assert!(!model.chrome.field_drafts[&field].valid);
+    }
+
+    #[test]
+    fn field_commit_accepts_a_draft_that_current_output_bounds_make_valid() {
+        let mut model = Model::new(Vec::new(), [1280, 720], "ignored");
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "DP-1".into(),
+            model: "first".into(),
+            logical_size: Some([1280, 720]),
+        }]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        let canvas = model.selected_canvas.clone().unwrap();
+        let field = format!("{canvas}:width");
+        model.reduce(EditorInput::Action(EditorAction::UpdateFieldDraft(
+            field.clone(),
+            "1600".into(),
+            false,
+        )));
+        model.reduce(EditorInput::Resize {
+            output: "DP-1".into(),
+            logical_size: [1920, 1080],
+        });
+
+        let effects = model.reduce(EditorInput::Action(EditorAction::CommitFieldDraft(
+            field.clone(),
+            EditorFieldCommit::CanvasGeometry(GeometryField::Width),
+        )));
+
+        assert!(matches!(effects.as_slice(), [EditorEffect::Update { .. }]));
+        assert_eq!(model.current().unwrap().width, 1600);
+        assert!(!model.chrome.field_drafts.contains_key(&field));
+    }
+
+    #[test]
+    fn canvas_can_be_selected_after_round_trip_between_outputs() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.set_outputs(vec![
+            crate::editor::EditorOutput {
+                name: "DP-1".into(),
+                model: "first".into(),
+                logical_size: Some([1920, 1080]),
+            },
+            crate::editor::EditorOutput {
+                name: "DP-2".into(),
+                model: "second".into(),
+                logical_size: Some([1920, 1080]),
+            },
+        ]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        let canvas = model.selected_canvas.clone().unwrap();
+
+        model.reduce(EditorInput::Action(EditorAction::SelectOutput(
+            "DP-2".into(),
+        )));
+        model.reduce(EditorInput::Action(EditorAction::SelectOutput(
+            "DP-1".into(),
+        )));
+        model.reduce(EditorInput::Action(EditorAction::SelectCanvas(
+            canvas.clone(),
+        )));
+
+        assert_eq!(model.selected_canvas.as_deref(), Some(canvas.as_str()));
+        assert_eq!(
+            model.stage_projections()[0]
+                .selected_canvas
+                .as_ref()
+                .map(|item| item.id.as_str()),
+            Some(canvas.as_str())
+        );
+    }
+
+    #[test]
+    fn disconnected_active_output_selects_a_peer_and_clears_transient_selection() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.set_outputs(vec![
+            crate::editor::EditorOutput {
+                name: "DP-1".into(),
+                model: "first".into(),
+                logical_size: Some([1920, 1080]),
+            },
+            crate::editor::EditorOutput {
+                name: "DP-2".into(),
+                model: "second".into(),
+                logical_size: Some([1920, 1080]),
+            },
+        ]);
+        model.editing = true;
+        model.readonly = false;
+        model.reduce(EditorInput::Action(EditorAction::SelectOutput(
+            "DP-2".into(),
+        )));
+        assert!(model.action(&EditorAction::AddCanvas));
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "DP-1".into(),
+            model: "first".into(),
+            logical_size: Some([1920, 1080]),
+        }]);
+
+        assert_eq!(model.active_output.as_deref(), Some("DP-1"));
+        assert!(model.selected_canvas.is_none());
+        assert!(model.selected_widget.is_none());
+        assert!(model.drag.is_none());
+    }
+
+    #[test]
+    fn every_drag_pointer_event_advances_the_projection_revision() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "DP-1".into(),
+            model: "first".into(),
+            logical_size: Some([1920, 1080]),
+        }]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        let canvas = model.selected_canvas.clone().unwrap();
+        model.reduce(EditorInput::Surface(
+            crate::editor_surface::SurfaceAction::Start {
+                canvas,
+                widget: None,
+                corner: None,
+                point: [0, 0],
+            },
+        ));
+        let before = model.revision;
+        let effects = model.reduce(EditorInput::Surface(
+            crate::editor_surface::SurfaceAction::Move([20, 20]),
+        ));
+
+        assert!(
+            effects.is_empty(),
+            "drag motion is projected before persistence"
+        );
+        assert_eq!(model.revision, before + 1);
+        assert_eq!(model.stage_projections()[0].revision, model.revision);
+    }
+
+    #[test]
     fn output_reassignment_revalidates_canvas_bounds_before_save() {
         let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
         model.set_outputs(vec![
@@ -1388,11 +2442,38 @@ mod skin_tests {
         assert_eq!([model.draft[0].width, model.draft[0].height], [1716, 1494]);
         assert!(model.document_valid());
 
-        model.resize_active_output([1922, 1082]);
+        model.resize_output("output", [1922, 1082]);
         assert_eq!(model.viewport, [1922, 1082]);
         assert_eq!(model.outputs[0].logical_size, Some([1922, 1082]));
         assert!(model.action(&EditorAction::FitToOutput));
         assert!(model.document_valid());
+    }
+
+    #[test]
+    fn peer_output_resize_does_not_change_active_output_bounds() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.set_outputs(vec![
+            crate::editor::EditorOutput {
+                name: "DP-1".into(),
+                model: "primary".into(),
+                logical_size: Some([1920, 1080]),
+            },
+            crate::editor::EditorOutput {
+                name: "DP-2".into(),
+                model: "peer".into(),
+                logical_size: Some([1280, 720]),
+            },
+        ]);
+
+        model.reduce(EditorInput::Resize {
+            output: "DP-2".into(),
+            logical_size: [1024, 768],
+        });
+
+        assert_eq!(model.active_output.as_deref(), Some("DP-1"));
+        assert_eq!(model.viewport, [1920, 1080]);
+        assert_eq!(model.outputs[0].logical_size, Some([1920, 1080]));
+        assert_eq!(model.outputs[1].logical_size, Some([1024, 768]));
     }
 
     #[test]

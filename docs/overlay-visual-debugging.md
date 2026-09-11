@@ -45,33 +45,16 @@ creation, application initialization and first paint. `elapsed_us` is measured f
 worker's start; renderer creation and paint records report the duration of their own operation.
 `native_skin_runtime_timing` separately reports in-process cache hits,
 waits and cold Cranelift compilation, including engine and module time, only from the native child
-diagnostic path. Editor button actions emit a
-`native_editor_interaction` `state_applied`
-record followed by the first corresponding `painted` record. Their shared `run_id` and
-`interaction_id` correlate the operation, while `action_us`, `skin_us`, `dioxus_us`, `paint_us` and
-total `duration_us` localize the stage-side latency. Parent-owned control operations emit
-`native_editor_control_timing` with the same correlation and an individual request duration,
-success or a stable error type. These records contain only
-stable action/request names and operational canvas/output identifiers; they do not record titles,
-property values or other entered content. Up to 64 actions awaiting paint retain distinct
-correlations; overflow emits a typed `interaction_queue_full` dropped record instead of silently
-replacing an earlier action. A stage stopped before its next paint emits a `closed_before_paint`
-terminal instead of leaving the interaction incomplete. The child-to-parent queue remains bounded
-and uses the existing local diagnostic recording path.
-
-Multi-output editor shutdown is recorded as `native_editor_workspace_transition` and
-`native_editor_stage_shutdown`. The coordinator records the accepted phase change and the point at
-which the complete previous surface set has been removed. When the editor closes, topology changes
-or the parent lease closes, every affected stage records `stop_requested`; terminal `stopped`
-includes its display/editor-stage role, output, status and duration, and
-`native_renderer_shutdown` separates app-loop completion, renderer suspension and
-surface teardown. `native_surface_unmap` then records publication of the buffer detach after the
-renderer has released its Wayland surface resources. A missing phase or unmap failure therefore
-distinguishes a worker wake failure, renderer teardown stall and Wayland publication failure
-without adding debug text to the overlay UI. An unmap publication failure also makes the worker and
-native summary fail with `wayland_surface_unmap_failed`; it cannot be reported as a successful stop.
-If the app loop and unmap both fail, unmap remains the primary `failure_type` while the earlier app
-loop error is retained as `secondary_failure_type` and `secondary_failure` in `native_summary`.
+diagnostic path. The editor causal path is
+`native_editor_action_received` → `native_editor_action_reduced` →
+`native_editor_projection_published` → `native_editor_projection_received` →
+`native_editor_dioxus_rebuilt` → `native_editor_painted`. The editor authority records the
+`session_id` and input/reducer revision, while each stage records the same `session_id`, projection
+`revision`, output and native run ID at receipt and paint. `native_editor_effect` separately records
+the acquire, keepalive, draft update, commit and release effect outcome and duration. These records
+contain only stable input/effect names and operational canvas/output identifiers; they do not record
+titles, property values or other entered content. Editor input transport is an ordered, unbounded
+process-local channel, so no accepted drag movement or keyboard/IME input is intentionally dropped.
 
 Each native present publishes a Wayland frame callback, including editor and visibility-clear
 paints. A callback is not a request for continuous animation: it is the compositor acknowledgement
@@ -138,7 +121,7 @@ buffer and UI; it does not establish compositor keyboard focus or real IME candi
 
 Native and OBS render the shared Dioxus `EditorPanel`, `EditorSurface`, `EditorCanvas`,
 `ResizeHandles` and `PlacementPreview` components in `scorepeek-overlay-ui`. The shared
-`editor_model::Model` owns selection, settings, placement and gesture transitions, including
+`editor_model::EditorSession` owns selection, settings, placement and gesture transitions, including
 four-corner resize, aspect ratios and canvas bounds. `Button` owns text alignment,
 sizing, selected/disabled state and tone; parent CSS owns placement and spacing.
 
@@ -154,13 +137,11 @@ and the existing save/lease transports remain host responsibilities.
 
 During native editing, there is one output-owned full-output stage per connected output. Canvas
 assignment must update the shared draft without destroying or recreating those stages. Every local
-editor action updates the single parent-owned native editor session and wakes peer stage views
-immediately. Surface workers never acquire or release the backend editor lease and never elect an
-editor host. Draft updates, saves and output resolution are serialized by the coordinator. Closing
-changes the coordinator phase, stops and wakes every editor stage, joins their unmap completion,
-releases the lease, and only then creates display-canvas surfaces. A failed lease release is a typed,
-fail-closed transition error and cannot expose display surfaces beside an unclosed backend editor
-session. While the editor is open, the visible preview continues requesting compositor frame
+editor input updates the single Dioxus editor authority and publishes a complete revisioned
+projection to each stage. Surface workers never acquire or release the backend editor lease and
+never become editor authorities. Persistence effects and output resolution are serialized by the
+coordinator; stages retain only transport replicas. Closing releases the lease before the
+coordinator replaces the editor stages with display-canvas surfaces. While the editor is open, the visible preview continues requesting compositor frame
 callbacks so shared presentation motion advances without another interaction; damage remains
 coalesced until the next callback. In a nested multi-output check, leave the editor idle before and
 after an output assignment and confirm that frame callbacks continue without a configure timeout or

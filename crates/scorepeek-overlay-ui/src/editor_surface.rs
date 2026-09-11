@@ -2,7 +2,7 @@ use crate::{CanvasPresentation, WidgetKind, editor::ResizeHandles};
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SurfaceAction {
     Enter(Option<String>),
     Select(String),
@@ -84,7 +84,6 @@ pub fn EditorCanvas(
     #[props(default)] oncapture: EventHandler<PointerEvent>,
     children: Element,
 ) -> Element {
-    let mut selecting = use_signal(|| false);
     let start = Callback::new(
         move |(event, canvas, widget, corner): (
             PointerEvent,
@@ -92,9 +91,7 @@ pub fn EditorCanvas(
             Option<String>,
             Option<String>,
         )| {
-            selecting.set(false);
             if !selected && event.trigger_button() == Some(MouseButton::Primary) {
-                selecting.set(true);
                 event.prevent_default();
                 event.stop_propagation();
                 onaction.call(SurfaceAction::Select(canvas));
@@ -131,7 +128,7 @@ pub fn EditorCanvas(
         style:format!("left:{}px;top:{}px;width:{}px;height:{}px",canvas.x,canvas.y,canvas.width,canvas.height),
         oncontextmenu:move |event| {event.prevent_default();event.stop_propagation();onaction.call(SurfaceAction::Enter(Some(context_id.clone())));},
         onpointerdown:move |event| {if editing {start.call((event,id.clone(),None,None));}},
-        onclick:move |event| {if selecting.replace(false){return;}let point=event.client_coordinates().to_i32();onaction.call(SurfaceAction::Place([point.x,point.y]));},
+        onclick:move |event| {let point=event.client_coordinates().to_i32();onaction.call(SurfaceAction::Place([point.x,point.y]));},
         div {class:"editor-canvas-content",style:format!("opacity:{}",f32::from(canvas.opacity_percent)/100.0), {children}}
         if editing {
             for widget in &canvas.widgets {

@@ -1,5 +1,7 @@
-use super::model::Model;
 use dioxus::prelude::*;
+use scorepeek_overlay_ui::editor_model::{
+    EditorBackendReply, EditorEffect, EditorEffectKind, EditorInput,
+};
 use scorepeek_overlay_ui::{CanvasPresentation, LampState, OverlayState};
 use serde::Deserialize;
 use serde_json::json;
@@ -19,26 +21,6 @@ pub enum Compatibility {
     Mismatch,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum Command {
-    Acquire,
-    KeepAlive,
-    Update,
-    Save,
-    Discard,
-    Close,
-}
-impl Command {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Acquire => "acquire_backend",
-            Self::KeepAlive => "keep_alive_backend",
-            Self::Update => "update_backend_draft",
-            Self::Save => "commit_backend",
-            Self::Discard | Self::Close => "release_backend",
-        }
-    }
-}
 #[derive(Deserialize)]
 struct Reply {
     ok: bool,
@@ -79,10 +61,10 @@ impl Drop for SocketBinding {
     }
 }
 pub struct Connection {
-    pub model: Signal<Model>,
+    dispatch: Callback<EditorInput, Vec<EditorEffect>>,
     pub compatibility: Signal<Compatibility>,
     socket: RefCell<Option<SocketBinding>>,
-    pending: RefCell<BTreeMap<u64, Command>>,
+    pending: RefCell<BTreeMap<u64, EditorEffectKind>>,
     next: Cell<u64>,
     latest_draft_request: Cell<u64>,
     editor_id: String,
@@ -90,7 +72,10 @@ pub struct Connection {
     tick: RefCell<Option<Closure<dyn FnMut()>>>,
 }
 impl Connection {
-    pub fn new(model: Signal<Model>, compatibility: Signal<Compatibility>) -> Rc<Self> {
+    pub fn new(
+        dispatch: Callback<EditorInput, Vec<EditorEffect>>,
+        compatibility: Signal<Compatibility>,
+    ) -> Rc<Self> {
         let editor_id = format!(
             "obs-{}",
             web_sys::window()
@@ -99,7 +84,7 @@ impl Connection {
                 .unwrap_or_default()
         );
         let this = Rc::new(Self {
-            model,
+            dispatch,
             compatibility,
             socket: RefCell::new(None),
             pending: RefCell::new(BTreeMap::new()),
@@ -123,14 +108,8 @@ impl Connection {
                     .map(|socket| socket.socket.ready_state());
                 if ready.is_none_or(|state| state == web_sys::WebSocket::CLOSED) {
                     this.connect();
-                } else if this.model.read().editing
-                    && *this.compatibility.read() == Compatibility::Ready
-                {
-                    this.send(if this.model.read().readonly {
-                        Command::Acquire
-                    } else {
-                        Command::KeepAlive
-                    });
+                } else if *this.compatibility.read() == Compatibility::Ready {
+                    this.dispatch_and_send(EditorInput::KeepAliveTick);
                 }
             }
         }) as Box<dyn FnMut()>);
@@ -183,8 +162,16 @@ impl Connection {
                 match decoded.and_then(serde_json::from_value::<Message>) {
                     Ok(message) => this.receive(message),
                     Err(error) => {
-                        this.model.write_unchecked().notice =
-                            Some(format!("Invalid overlay response: {error}"));
+                        this.dispatch_and_send(EditorInput::BackendCompleted {
+                            effect: EditorEffectKind::KeepAlive,
+                            reply: EditorBackendReply {
+                                ok: false,
+                                readonly: true,
+                                error: Some(format!("Invalid overlay response: {error}")),
+                                canvases: Vec::new(),
+                                dirty: false,
+                            },
+                        });
                     }
                 }
             }
@@ -193,8 +180,7 @@ impl Connection {
         let close = Closure::wrap(Box::new(move |_: web_sys::CloseEvent| {
             if let Some(this) = weak.upgrade() {
                 this.pending.borrow_mut().clear();
-                this.model.write_unchecked().readonly = true;
-                this.model.write_unchecked().drag = None;
+                this.dispatch_and_send(EditorInput::TransportLost);
             }
         }) as Box<dyn FnMut(_)>);
         socket.set_onopen(Some(open.as_ref().unchecked_ref()));
@@ -207,17 +193,22 @@ impl Connection {
             _close: close,
         });
     }
-    pub fn send(&self, command: Command) {
+    pub fn send(&self, effect: &EditorEffect) {
         if *self.compatibility.read() != Compatibility::Ready {
             return;
         }
-        let model = self.model.read();
-        let mut request =
-            json!({"command":command.name(),"backend":"obs","editor_id":self.editor_id});
-        if matches!(command, Command::Update | Command::Save) {
-            request["canvases"] = json!(model.draft);
+        let kind = effect.kind();
+        let command = match kind {
+            EditorEffectKind::Acquire => "acquire_backend",
+            EditorEffectKind::KeepAlive => "keep_alive_backend",
+            EditorEffectKind::Update => "update_backend_draft",
+            EditorEffectKind::Save => "commit_backend",
+            EditorEffectKind::Discard | EditorEffectKind::Close => "release_backend",
+        };
+        let mut request = json!({"command":command,"backend":"obs","editor_id":self.editor_id});
+        if let EditorEffect::Update { canvases } | EditorEffect::Save { canvases } = effect {
+            request["canvases"] = json!(canvases);
         }
-        drop(model);
         let id = self.next.get();
         self.next.set(id + 1);
         let sent = self.socket.borrow().as_ref().is_some_and(|socket| {
@@ -231,25 +222,24 @@ impl Connection {
                     .is_ok()
         });
         if sent {
-            if matches!(command, Command::Update | Command::Save) {
+            if matches!(kind, EditorEffectKind::Update | EditorEffectKind::Save) {
                 self.latest_draft_request.set(id);
             }
-            self.pending.borrow_mut().insert(id, command);
+            self.pending.borrow_mut().insert(id, kind);
         } else {
-            let mut model = self.model.write_unchecked();
-            model.readonly = true;
-            model.notice = Some("Editor connection lost; reconnecting.".into());
+            self.dispatch_and_send(EditorInput::TransportLost);
+        }
+    }
+
+    fn dispatch_and_send(&self, input: EditorInput) {
+        for effect in self.dispatch.call(input) {
+            self.send(&effect);
         }
     }
     fn mismatch(&self) {
         *self.compatibility.write_unchecked() = Compatibility::Mismatch;
         self.pending.borrow_mut().clear();
-        let mut model = self.model.write_unchecked();
-        let saved = model.saved.clone();
-        let viewport = model.viewport;
-        *model = Model::new(saved, viewport, "obs");
-        model.selected_canvas = None;
-        drop(model);
+        self.dispatch_and_send(EditorInput::VersionMismatch);
         if let Some(socket) = self.socket.borrow().as_ref() {
             let _ = socket.socket.close();
         }
@@ -271,15 +261,12 @@ impl Connection {
                 }
                 let first = *self.compatibility.read() == Compatibility::Checking;
                 *self.compatibility.write_unchecked() = Compatibility::Ready;
-                let mut model = self.model.write_unchecked();
-                model.screen = state.screen.kind;
-                model.chrome.sample = state.system == LampState::Inactive;
-                model.receive_stage(canvases);
-                let acquire = first && model.editing;
-                drop(model);
-                if acquire {
-                    self.send(Command::Acquire);
-                }
+                self.dispatch_and_send(EditorInput::TransportReady {
+                    screen: state.screen.kind,
+                    sample: state.system == LampState::Inactive,
+                    canvases,
+                    first,
+                });
             }
             Message::Control {
                 request_id,
@@ -289,53 +276,26 @@ impl Connection {
                 if command.is_none() {
                     return;
                 }
-                let acquire_discard;
-                let mut release = false;
-                {
-                    let mut model = self.model.write_unchecked();
-                    model.readonly = response.readonly;
-                    model.notice = response.error;
-                    if matches!(
-                        command,
-                        Some(Command::Acquire | Command::Update | Command::Save | Command::Discard)
-                    ) && request_id >= self.latest_draft_request.get()
-                    {
-                        model.draft = response.canvases;
-                        if !response.dirty {
-                            let model = &mut *model;
-                            model.saved.clone_from(&model.draft);
-                        }
-                        if !model
-                            .draft
-                            .iter()
-                            .any(|canvas| Some(&canvas.id) == model.selected_canvas.as_ref())
-                        {
-                            model.select_visible();
-                        }
+                if let Some(effect) = command {
+                    let stale_draft = matches!(
+                        effect,
+                        EditorEffectKind::Acquire
+                            | EditorEffectKind::Update
+                            | EditorEffectKind::Save
+                            | EditorEffectKind::Discard
+                    ) && request_id < self.latest_draft_request.get();
+                    if !stale_draft {
+                        self.dispatch_and_send(EditorInput::BackendCompleted {
+                            effect,
+                            reply: EditorBackendReply {
+                                ok: response.ok,
+                                readonly: response.readonly,
+                                error: response.error,
+                                canvases: response.canvases,
+                                dirty: response.dirty,
+                            },
+                        });
                     }
-                    acquire_discard = response.ok
-                        && !response.readonly
-                        && command == Some(Command::Acquire)
-                        && model.discard_pending;
-                    if response.ok {
-                        match command {
-                            Some(Command::Save) => {
-                                let model = &mut *model;
-                                model.saved.clone_from(&model.draft);
-                                release = true;
-                            }
-                            Some(Command::Discard | Command::Close) => model.close(),
-                            _ => {}
-                        }
-                    } else if command == Some(Command::Discard) {
-                        model.discard_pending = false;
-                    }
-                }
-                if acquire_discard {
-                    self.send(Command::Discard);
-                }
-                if release {
-                    self.send(Command::Close);
                 }
             }
         }

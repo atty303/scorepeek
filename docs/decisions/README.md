@@ -6,6 +6,7 @@ authoritative.
 
 ## Current
 
+- [ADR 0149: Own overlay editor state in Dioxus](0149-own-overlay-editor-state-in-dioxus.md) makes one Dioxus `EditorSession` signal the editor authority, derives views with memos, and limits Wayland output stages to complete revisioned replicas without native editor-semantic fallbacks.
 - [ADR 0148: Simplify overlay editor context and keep native preview live](0148-simplify-overlay-editor-context-and-keep-native-preview-live.md) removes repeated editor metadata, flattens appearance and output controls, routes native wheel input through Blitz, and keeps visible editor preview motion repainting.
 - [ADR 0147: Refine the overlay editor visual hierarchy](0147-refine-overlay-editor-visual-hierarchy.md) fixes the shared editor's balanced spacing and typography, compact one-line context status, flat inspector grouping, guided object tree, control hierarchy, and artwork-independent selection geometry.
 - [ADR 0146: Complete the overlay editor component system](0146-complete-overlay-editor-component-system.md) makes the compact shared Dioxus component tree, fresh visual language, inline picker keyboard contract, live invalid-name draft, and retained invalid-output navigation explicit.
@@ -402,6 +403,9 @@ authoritative.
 - [ADR 0148: Simplify overlay editor context and keep native preview live](0148-simplify-overlay-editor-context-and-keep-native-preview-live.md)
   supersedes ADR 0147's active-output header treatment, removes redundant property metadata, and
   restores native descendant wheel targeting and frame-paced editor motion.
+- [ADR 0149: Own overlay editor state in Dioxus](0149-own-overlay-editor-state-in-dioxus.md)
+  replaces native backend-owned editor mirrors with one Dioxus session authority, memo-derived
+  views and complete revisioned Wayland stage replicas.
 
 ## Historical
 
