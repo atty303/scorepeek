@@ -136,5 +136,7 @@
 ## Version control
 
 - Preserve unrelated user work and commit only the current logical change.
+- After each development commit, run `mise run build` before handoff so
+  `target/debug/scorepeek` matches the committed source and includes the embedded OBS UI.
 - Do not create a remote, push, publish, release, or change external services
   unless the user explicitly requests it.
