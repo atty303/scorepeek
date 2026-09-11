@@ -357,11 +357,63 @@ fn scroll_editor_at(document: &mut BaseDocument, point: [f64; 2], delta: [f64; 2
             continue;
         };
         if x >= rect.x && y >= rect.y && x < rect.x + rect.width && y < rect.y + rect.height {
-            document.scroll_node_by(node, delta[0], delta[1], |_| {});
-            return true;
+            return document.scroll_node_by_has_changed(node, delta[0], delta[1], |_| {});
         }
     }
     false
+}
+
+#[derive(Clone, Copy)]
+enum PaintSignal {
+    None,
+    Frame,
+    Damage,
+    DamageAndFrame,
+}
+
+impl PaintSignal {
+    const fn from_state(frame: bool, pending: bool) -> Self {
+        match (frame, pending) {
+            (false, false) => Self::None,
+            (true, false) => Self::Frame,
+            (false, true) => Self::Damage,
+            (true, true) => Self::DamageAndFrame,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PaintState {
+    editing: bool,
+    visible: bool,
+    signal: PaintSignal,
+    animating: bool,
+}
+
+impl PaintState {
+    const fn editor_frame_needed(self) -> bool {
+        self.editing && self.visible && matches!(self.signal, PaintSignal::Damage)
+    }
+
+    const fn ordinary_reason(self) -> Option<PaintReason> {
+        if self.editing && self.visible && matches!(self.signal, PaintSignal::DamageAndFrame) {
+            Some(PaintReason::Editor)
+        } else if !self.editing
+            && self.visible
+            && (matches!(
+                self.signal,
+                PaintSignal::Damage | PaintSignal::DamageAndFrame
+            ) || (self.animating
+                && matches!(
+                    self.signal,
+                    PaintSignal::Frame | PaintSignal::DamageAndFrame
+                )))
+        {
+            Some(PaintReason::Steady)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Default)]
@@ -2439,6 +2491,7 @@ impl App {
             let mut wake = false;
             let mut frame = false;
             let mut configured = false;
+            let mut document_changed = false;
             if *self.outputs.borrow() != self.shell.output_descriptions {
                 self.outputs
                     .borrow_mut()
@@ -2495,7 +2548,7 @@ impl App {
                                 [dx, dy],
                             )
                         {
-                            wake = true;
+                            document_changed = true;
                         }
                     }
                     Event::Text(command) => {
@@ -2587,7 +2640,13 @@ impl App {
                 wake = true;
             }
             let changed = wake && self.poll_dioxus();
-            self.pending_paint |= changed || visibility_changed;
+            self.pending_paint |= changed || visibility_changed || document_changed;
+            let paint_state = PaintState {
+                editing: self.editing.get(),
+                visible,
+                signal: PaintSignal::from_state(frame, self.pending_paint),
+                animating: self.animating,
+            };
             let reason = if configured {
                 Some(if self.paint_count == 0 {
                     PaintReason::InitialConfigure
@@ -2596,12 +2655,8 @@ impl App {
                 })
             } else if visibility_changed && !visible {
                 Some(PaintReason::VisibilityClear)
-            } else if self.editing.get() && visible && frame && self.pending_paint {
-                Some(PaintReason::Editor)
-            } else if visible && (self.pending_paint || (frame && self.animating)) {
-                Some(PaintReason::Steady)
             } else {
-                None
+                paint_state.ordinary_reason()
             };
             if self.renderer.is_active()
                 && let Some(reason) = reason
@@ -2622,6 +2677,8 @@ impl App {
                 } else if visible {
                     self.shell.request_frame_and_commit();
                 }
+            } else if self.renderer.is_active() && paint_state.editor_frame_needed() {
+                self.shell.request_frame_and_commit();
             }
         }
         Ok(())
@@ -5465,6 +5522,54 @@ mod skin_tests {
     }
 
     #[test]
+    fn idle_editor_damage_requests_a_frame_until_the_callback_arrives() {
+        let idle_damage = PaintState {
+            editing: true,
+            visible: true,
+            signal: PaintSignal::Damage,
+            animating: false,
+        };
+        assert!(idle_damage.editor_frame_needed());
+        assert_eq!(idle_damage.ordinary_reason(), None);
+        assert_eq!(
+            PaintState {
+                signal: PaintSignal::DamageAndFrame,
+                ..idle_damage
+            }
+            .ordinary_reason(),
+            Some(PaintReason::Editor)
+        );
+        assert_eq!(
+            PaintState {
+                editing: false,
+                ..idle_damage
+            }
+            .ordinary_reason(),
+            Some(PaintReason::Steady)
+        );
+        for state in [
+            PaintState {
+                signal: PaintSignal::DamageAndFrame,
+                ..idle_damage
+            },
+            PaintState {
+                signal: PaintSignal::None,
+                ..idle_damage
+            },
+            PaintState {
+                editing: false,
+                ..idle_damage
+            },
+            PaintState {
+                visible: false,
+                ..idle_damage
+            },
+        ] {
+            assert!(!state.editor_frame_needed());
+        }
+    }
+
+    #[test]
     fn editor_stages_are_output_owned_when_canvas_assignment_changes() {
         let mut canvases = crate::config::visual_debug_config()
             .canvases
@@ -6106,6 +6211,11 @@ mod skin_tests {
             &mut inner,
             [canvas_list.x + 8.0, canvas_list.y + 8.0],
             [0.0, -120.0]
+        ));
+        assert!(!scroll_editor_at(
+            &mut inner,
+            [canvas_list.x + 8.0, canvas_list.y + 8.0],
+            [0.0, 0.0]
         ));
         inner.resolve(1.0);
         let last_after = inner
