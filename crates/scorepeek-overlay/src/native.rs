@@ -2523,7 +2523,6 @@ impl App {
                 }
                 Err(error) => return Err(error),
             };
-            let mut wake = false;
             let mut frame = false;
             let mut configured = false;
             let mut document_changed = false;
@@ -2547,7 +2546,6 @@ impl App {
                 if active_changed {
                     self.wake_workspace();
                 }
-                wake = true;
             }
             for event in events {
                 match event {
@@ -2558,12 +2556,10 @@ impl App {
                     } => {
                         let changed = self.configure(logical, physical, scale_120)?;
                         configured |= changed;
-                        wake |= changed;
                     }
-                    Event::Wake => wake = true,
+                    Event::Wake => {}
                     Event::PointerMotion { x, y } => {
                         self.pointer_motion(x, y);
-                        wake = true;
                     }
                     Event::PointerButton {
                         button,
@@ -2572,18 +2568,15 @@ impl App {
                         y,
                     } => {
                         self.pointer_button(button, pressed, x, y);
-                        wake = true;
                     }
                     Event::PointerScroll { dx, dy, x, y } => {
                         if self.editing.get() && self.panel_open.get() {
                             self.pointer.wheel(&mut self.document, [x, y], [dx, dy]);
                             document_changed = true;
-                            wake = true;
                         }
                     }
                     Event::Text(command) => {
                         self.input_command(&command);
-                        wake = true;
                     }
                     Event::Ime(update) => {
                         if let Some(edit) = self.refresh_edit.borrow_mut().as_mut() {
@@ -2593,7 +2586,6 @@ impl App {
                             edit.ime(update);
                             self.update_title_input(true);
                         }
-                        wake = true;
                     }
                     Event::KeyboardFocus(focused) => {
                         crate::diagnostics::emit(
@@ -2603,7 +2595,6 @@ impl App {
                         if !focused {
                             self.finish_title_edit(false);
                             self.finish_refresh_edit(false);
-                            wake = true;
                         }
                     }
                     Event::Frame => frame = true,
@@ -2634,7 +2625,6 @@ impl App {
                         "reason": if self.editing.get() { "editor_preview" } else { "screen_state" },
                     }),
                 );
-                wake = true;
             }
             if *self.shared_state.borrow() != latest {
                 *self.shared_state.borrow_mut() = latest.clone();
@@ -2645,7 +2635,6 @@ impl App {
                         self.render_skin(&latest)?;
                     }
                 }
-                wake = true;
             } else if visibility_changed && visible && !self.editing.get() {
                 self.render_skin(&latest)?;
             }
@@ -2659,7 +2648,6 @@ impl App {
                 } else {
                     self.render_skin(&latest)?;
                 }
-                wake = true;
             }
             if self.editing.get()
                 && self
@@ -2667,9 +2655,12 @@ impl App {
                     .take_if_ready(frame, self.interaction.is_some())
             {
                 self.update_editor_skin();
-                wake = true;
             }
-            let changed = wake && self.poll_dioxus();
+            // Match a browser frame turn: drain pending VDOM work before deciding whether the
+            // current Wayland frame needs paint. An idle poll returns false and does not damage or
+            // repaint the surface; gating this on selected signal transitions leaves peer stages
+            // with stale DOM whenever a newly shared state is omitted from that gate.
+            let changed = self.poll_dioxus();
             self.pending_paint |= changed || visibility_changed || document_changed;
             let paint_state = PaintState {
                 editing: self.editing.get(),
@@ -5493,6 +5484,38 @@ mod skin_tests {
         assert!(!surface_input_enabled(true, false, true));
         assert!(!surface_input_enabled(true, true, false));
         assert!(surface_input_enabled(false, false, true));
+    }
+
+    #[test]
+    fn peer_stage_removes_editor_chrome_after_interactivity_changes() {
+        let scenario: VisualDebugScenario =
+            serde_json::from_str(include_str!("../tests/fixtures/visual-composition.json"))
+                .unwrap();
+        let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        session.editing.set(true);
+        session.interactive.set(true);
+        session.resolve();
+        assert!(
+            session
+                .document
+                .inner
+                .borrow()
+                .query_selector(".editor-panel")
+                .unwrap()
+                .is_some()
+        );
+
+        session.interactive.set(false);
+        session.resolve();
+
+        let inner = session.document.inner.borrow();
+        assert!(inner.query_selector(".editor-panel").unwrap().is_none());
+        assert!(
+            inner
+                .query_selector_all(".editor-widget-hit")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

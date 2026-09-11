@@ -670,7 +670,11 @@ checkpoint; implementation history belongs in Git.
   opacity mutations. Native Wayland wheel input now follows Blitz's ordinary hit-test and ancestor
   scroll path, with the native visual scenario scrolling from a nested canvas row rather than
   calling the scroll node directly. Visible native editor previews continue frame-paced paints, so
-  shared presentation motion advances without unrelated interaction. The production native visual
+  shared presentation motion advances without unrelated interaction. Each native Wayland event-loop
+  turn drains pending Dioxus VDOM work before paint selection instead of maintaining a manual list
+  of signal transitions that merit polling; an idle poll produces no damage or repaint. This keeps
+  a stage switched from active to peer-preview state from retaining stale editor chrome or hit
+  regions. The production native visual
   scenario remains on the persistent `dioxus-native-dom/blitz/vello` renderer; actual Wayland
   composition/input remains a target-live boundary.
 
