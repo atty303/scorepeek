@@ -48,20 +48,22 @@ waits and cold Cranelift compilation, including engine and module time, only fro
 diagnostic path. Editor button actions emit a
 `native_editor_interaction` `state_applied`
 record followed by the first corresponding `painted` record. Their shared `run_id` and
-`interaction_id` correlate the operation, while `action_us`, `control_us`, `skin_us`, `dioxus_us`,
-`paint_us` and total `duration_us` localize latency. Control and skin components
-also emit individual timing records with success or a stable error type. These records contain only
+`interaction_id` correlate the operation, while `action_us`, `skin_us`, `dioxus_us`, `paint_us` and
+total `duration_us` localize the stage-side latency. Parent-owned control operations emit
+`native_editor_control_timing` with the same correlation and an individual request duration,
+success or a stable error type. These records contain only
 stable action/request names and operational canvas/output identifiers; they do not record titles,
 property values or other entered content. Up to 64 actions awaiting paint retain distinct
 correlations; overflow emits a typed `interaction_queue_full` dropped record instead of silently
-replacing an earlier action. The child-to-parent queue remains bounded and uses the existing local
-diagnostic recording path.
+replacing an earlier action. A stage stopped before its next paint emits a `closed_before_paint`
+terminal instead of leaving the interaction incomplete. The child-to-parent queue remains bounded
+and uses the existing local diagnostic recording path.
 
-Multi-output editor shutdown is recorded as `native_editor_workspace_transition`,
-`native_editor_stage_transition`, and `native_editor_stage_shutdown`. The workspace record
-identifies the close reason and initiating output. Each stage then records its editor-to-display
-transition. When the editor closes, topology changes or the parent lease closes, every affected stage
-records `stop_requested`; terminal `stopped` includes the output, status and duration, and
+Multi-output editor shutdown is recorded as `native_editor_workspace_transition` and
+`native_editor_stage_shutdown`. The coordinator records the accepted phase change and the point at
+which the complete previous surface set has been removed. When the editor closes, topology changes
+or the parent lease closes, every affected stage records `stop_requested`; terminal `stopped`
+includes its display/editor-stage role, output, status and duration, and
 `native_renderer_shutdown` separates app-loop completion, renderer suspension and
 surface teardown. `native_surface_unmap` then records publication of the buffer detach after the
 renderer has released its Wayland surface resources. A missing phase or unmap failure therefore
@@ -150,7 +152,13 @@ existing save/lease transports remain host responsibilities.
 
 During native editing, there is one output-owned full-output stage per connected output. Canvas
 assignment must update the shared draft without destroying or recreating those stages. Every local
-editor transition wakes the peer stages immediately. Skin motion schedules are paused while the
+editor action updates the single parent-owned native editor session and wakes peer stage views
+immediately. Surface workers never acquire or release the backend editor lease and never elect an
+editor host. Draft updates, saves and output resolution are serialized by the coordinator. Closing
+changes the coordinator phase, stops and wakes every editor stage, joins their unmap completion,
+releases the lease, and only then creates display-canvas surfaces. A failed lease release is a typed,
+fail-closed transition error and cannot expose display surfaces beside an unclosed backend editor
+session. Skin motion schedules are paused while the
 editor is open; direct manipulation and state changes still request paints. In a nested multi-output
 check, leave the editor idle before and after an output assignment and confirm that paint counts stop
 advancing and that no configure timeout or canvas-worker failure is reported.

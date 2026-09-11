@@ -189,12 +189,6 @@ fn editor_panel_width(output_width: Option<u32>) -> u32 {
     }
 }
 
-fn broadcast_stops<'a>(stops: impl IntoIterator<Item = &'a Arc<std::sync::atomic::AtomicBool>>) {
-    for stop in stops {
-        stop.store(true, std::sync::atomic::Ordering::Release);
-    }
-}
-
 fn worker_needs_replacement(
     id: &str,
     output: Option<&str>,
@@ -208,16 +202,6 @@ fn worker_needs_replacement(
             .find(|canvas| canvas.id == id)
             .is_some_and(|canvas| Some(canvas.output.as_str()) != output)
         || finished
-}
-
-fn editor_surface_host(
-    surfaces: &std::collections::BTreeSet<String>,
-    pinned: Option<&str>,
-) -> Option<String> {
-    pinned
-        .filter(|id| surfaces.contains(*id))
-        .map(str::to_owned)
-        .or_else(|| surfaces.first().cloned())
 }
 
 fn passive_pointer_move(action: &SurfaceAction, dragging: bool) -> Option<[i32; 2]> {
@@ -366,25 +350,163 @@ fn scroll_editor_at(document: &mut BaseDocument, point: [f64; 2], delta: [f64; 2
 }
 
 #[derive(Default)]
-struct NativeWorkspace {
+struct NativeEditorSession {
     ui: EditorWorkspaceUi,
     undo: Option<DraftUndo>,
     fallback: std::collections::BTreeSet<String>,
     draft: Vec<scorepeek_overlay_ui::CanvasPresentation>,
     dirty: bool,
+    readonly: bool,
     selected_widget: Option<String>,
     pending_widget: Option<scorepeek_overlay_ui::WidgetKind>,
+    interaction: Option<Drag>,
     outputs: std::collections::BTreeMap<String, OutputDescription>,
-    surfaces: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-    editor_hosts: std::collections::BTreeMap<String, String>,
+    selected_canvas: Option<String>,
     active_output: Option<String>,
     output_selection_epoch: u64,
     wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SurfaceRole {
+    DisplayCanvas,
+    EditorStage,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EditorPhase {
+    Display,
+    Editing,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct InteractionCorrelation {
+    run_id: String,
+    interaction_id: u64,
+    action: &'static str,
+}
+
+#[derive(Debug)]
+enum CoordinatorCommand {
+    Open {
+        output: Option<String>,
+        canvas: String,
+        preview_screen: Option<scorepeek_overlay_ui::ScreenKind>,
+        resolved_canvas: Option<scorepeek_overlay_ui::CanvasPresentation>,
+    },
+    Close {
+        reason: &'static str,
+        correlation: Option<InteractionCorrelation>,
+    },
+    UpdateDraft {
+        canvases: Vec<scorepeek_overlay_ui::CanvasPresentation>,
+        wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
+        correlation: Option<InteractionCorrelation>,
+    },
+    Save {
+        canvases: Vec<scorepeek_overlay_ui::CanvasPresentation>,
+        wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
+        correlation: Option<InteractionCorrelation>,
+    },
+    ResolveOutput {
+        output_names: Vec<String>,
+        output: Option<String>,
+        canvas: String,
+        preview_screen: Option<scorepeek_overlay_ui::ScreenKind>,
+        resolved_canvas: scorepeek_overlay_ui::CanvasPresentation,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum CoordinatorTransition {
+    Opened(Option<scorepeek_overlay_ui::CanvasPresentation>),
+    Closed {
+        reason: &'static str,
+        correlation: Option<InteractionCorrelation>,
+    },
+}
+
+fn apply_coordinator_command(
+    phase: &mut EditorPhase,
+    workspace: &mut NativeEditorSession,
+    suppressed: &mut std::collections::BTreeSet<String>,
+    command: CoordinatorCommand,
+) -> Option<CoordinatorTransition> {
+    match command {
+        CoordinatorCommand::Open {
+            output,
+            canvas,
+            preview_screen,
+            resolved_canvas,
+        } if *phase == EditorPhase::Display => {
+            workspace.active_output = output;
+            workspace.selected_canvas = Some(canvas);
+            if let Some(screen) = preview_screen {
+                workspace.ui.preview_screen = screen;
+            }
+            *phase = EditorPhase::Editing;
+            Some(CoordinatorTransition::Opened(resolved_canvas))
+        }
+        CoordinatorCommand::Close {
+            reason,
+            correlation,
+        } if *phase == EditorPhase::Editing => {
+            if reason == "discard" {
+                suppressed.extend(std::mem::take(&mut workspace.fallback));
+            }
+            workspace.undo = None;
+            workspace.selected_canvas = None;
+            workspace.selected_widget = None;
+            workspace.pending_widget = None;
+            workspace.interaction = None;
+            *phase = EditorPhase::Display;
+            Some(CoordinatorTransition::Closed {
+                reason,
+                correlation,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn stop_workers<'a>(
+    ids: impl IntoIterator<Item = &'a String>,
+    workers: &std::collections::BTreeMap<String, impl WorkerControl>,
+    wakes: &std::sync::Mutex<std::collections::BTreeMap<String, Ping>>,
+) {
+    for id in ids {
+        if let Some(worker) = workers.get(id) {
+            worker.request_stop();
+        }
+        if let Some(wake) = wakes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+        {
+            wake.ping();
+        }
+    }
+}
+
+trait WorkerControl {
+    fn request_stop(&self);
+}
+
+struct NativeWorker {
+    output: Option<String>,
+    role: SurfaceRole,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    join: std::thread::JoinHandle<Result<(), String>>,
+}
+
+impl WorkerControl for NativeWorker {
+    fn request_stop(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
 fn replace_workspace_outputs(
-    workspace: &mut NativeWorkspace,
-    selected_canvas: &mut Option<String>,
+    workspace: &mut NativeEditorSession,
     outputs: std::collections::BTreeMap<String, OutputDescription>,
 ) -> bool {
     let next_active = workspace
@@ -397,7 +519,7 @@ fn replace_workspace_outputs(
     workspace.outputs = outputs;
     if active_changed {
         workspace.active_output = next_active;
-        selected_canvas.take();
+        workspace.selected_canvas.take();
         workspace.selected_widget.take();
         workspace.pending_widget.take();
         workspace.output_selection_epoch = workspace.output_selection_epoch.saturating_add(1);
@@ -411,7 +533,6 @@ struct PendingEditorInteraction {
     source_output: Option<String>,
     started: Instant,
     action_us: u64,
-    control_us: u64,
     skin_us: u64,
     dioxus_us: u64,
 }
@@ -909,17 +1030,48 @@ fn recent_same_failure(
         && failure.1.elapsed() < Duration::from_secs(5)
 }
 
+fn release_editor_backend(
+    control_socket: &std::path::Path,
+    editor_id: &str,
+    correlation: Option<&InteractionCorrelation>,
+) -> Result<(), String> {
+    let started = Instant::now();
+    let result = crate::control::request(
+        control_socket,
+        &crate::control::Request::ReleaseBackend {
+            backend: crate::runtime::Backend::Wayland,
+            editor_id: editor_id.to_owned(),
+        },
+    );
+    let success = result.as_ref().is_ok_and(|response| response.ok);
+    crate::diagnostics::emit(
+        "native_editor_control_timing",
+        &serde_json::json!({
+            "owner": "coordinator",
+            "run_id": correlation.map(|item| item.run_id.as_str()),
+            "interaction_id": correlation.map(|item| item.interaction_id),
+            "action": correlation.map(|item| item.action),
+            "request": "release_backend",
+            "duration_us": duration_us(started.elapsed()),
+            "status": if success { "success" } else { "error" },
+            "error_type": (!success).then_some("control_release_failed"),
+        }),
+    );
+    match result {
+        Ok(response) if response.ok => Ok(()),
+        Ok(response) => Err(response
+            .error
+            .unwrap_or_else(|| "release Wayland editor backend rejected".into())),
+        Err(error) => Err(format!("release Wayland editor backend: {error}")),
+    }
+}
+
 /// Runs until the parent's lifetime lease closes.
 /// # Errors
 /// Returns Wayland, GPU or event-loop failures.
 #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result<(), String> {
     use std::collections::BTreeMap;
-    struct Worker {
-        output: Option<String>,
-        stop: Arc<std::sync::atomic::AtomicBool>,
-        join: std::thread::JoinHandle<Result<(), String>>,
-    }
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     watch_parent(input, Arc::clone(&stop))?;
     let canvas_wakes = Arc::new(std::sync::Mutex::new(BTreeMap::<String, Ping>::new()));
@@ -940,11 +1092,19 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
     let feed_state = Arc::clone(&feed.state);
     let feed_stop = Arc::clone(&feed.stop);
     let mut desired = config.canvases.clone();
-    let mut workers = BTreeMap::<String, Worker>::new();
+    let mut workers = BTreeMap::<String, NativeWorker>::new();
     let mut failed = BTreeMap::<String, (Option<String>, Instant)>::new();
-    let preview = Arc::new(std::sync::Mutex::new(None::<String>));
-    let workspace_open = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let workspace_ui = Arc::new(std::sync::Mutex::new(NativeWorkspace::default()));
+    let workspace_ui = Arc::new(std::sync::Mutex::new(NativeEditorSession::default()));
+    let (coordinator_tx, coordinator_rx) = std::sync::mpsc::channel();
+    let editor_id = format!("wayland-{}", std::process::id());
+    let mut editor_phase = if config.edit_on_start || desired.is_empty() {
+        EditorPhase::Editing
+    } else {
+        EditorPhase::Display
+    };
+    let mut workspace_transition_reason =
+        (editor_phase == EditorPhase::Editing).then_some("startup");
+    let mut next_keepalive = Instant::now() + Duration::from_secs(5);
     workspace_ui
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -954,14 +1114,13 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
     let suppressed = Arc::new(std::sync::Mutex::new(
         std::collections::BTreeSet::<String>::new(),
     ));
-    if config.edit_on_start || desired.is_empty() {
-        workspace_open.store(true, std::sync::atomic::Ordering::Release);
-        *preview
+    if editor_phase == EditorPhase::Editing {
+        workspace_ui
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            desired.first().map(|canvas| canvas.id.clone());
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .selected_canvas = desired.first().map(|canvas| canvas.id.clone());
     }
-    if workspace_open.load(std::sync::atomic::Ordering::Acquire) {
+    if editor_phase == EditorPhase::Editing {
         let probe = desired
             .first()
             .cloned()
@@ -986,6 +1145,28 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             .collect();
         workspace.active_output = workspace.outputs.keys().next().cloned();
     }
+    if editor_phase == EditorPhase::Editing
+        && let Ok(response) = crate::control::request(
+            &config.control_socket,
+            &crate::control::Request::AcquireBackend {
+                backend: crate::runtime::Backend::Wayland,
+                editor_id: editor_id.clone(),
+            },
+        )
+    {
+        let mut workspace = workspace_ui
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        workspace.draft = response.canvases;
+        workspace.dirty = response.dirty;
+        workspace.readonly = response.readonly;
+        if let Some(refresh) = response.wayland_refresh_hz {
+            workspace.wayland_refresh_hz = refresh;
+            *wayland_refresh_hz
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = refresh;
+        }
+    }
     if desired.is_empty()
         && workspace_ui
             .lock()
@@ -1000,15 +1181,226 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
         );
     }
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
-        let workspace_is_open = workspace_open.load(std::sync::atomic::Ordering::Acquire);
+        let mut pending_transition = None;
+        let mut pending_transition_started = None;
+        while let Ok(command) = coordinator_rx.try_recv() {
+            let transition = match command {
+                CoordinatorCommand::UpdateDraft {
+                    canvases,
+                    wayland_refresh_hz: refresh,
+                    correlation,
+                } => {
+                    {
+                        let mut workspace = workspace_ui
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        workspace.draft.clone_from(&canvases);
+                        workspace.dirty = true;
+                        workspace.wayland_refresh_hz = refresh;
+                    }
+                    let started = Instant::now();
+                    let result = crate::control::request(
+                        &config.control_socket,
+                        &crate::control::Request::UpdateBackendDraft {
+                            backend: crate::runtime::Backend::Wayland,
+                            editor_id: editor_id.clone(),
+                            canvases,
+                            wayland_refresh_hz: Some(refresh),
+                        },
+                    );
+                    crate::diagnostics::emit(
+                        "native_editor_control_timing",
+                        &serde_json::json!({
+                            "owner": "coordinator",
+                            "run_id": correlation.as_ref().map(|item| item.run_id.as_str()),
+                            "interaction_id": correlation.as_ref().map(|item| item.interaction_id),
+                            "action": correlation.as_ref().map(|item| item.action),
+                            "request": "update_backend_draft",
+                            "duration_us": duration_us(started.elapsed()),
+                            "status": if result.as_ref().is_ok_and(|response| response.ok) { "success" } else { "error" },
+                            "error_type": result.as_ref().err().map(|_| "control_request_failed"),
+                        }),
+                    );
+                    if let Ok(response) = result {
+                        let mut workspace = workspace_ui
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        workspace.readonly = response.readonly;
+                    }
+                    for wake in canvas_wakes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .values()
+                    {
+                        wake.ping();
+                    }
+                    None
+                }
+                CoordinatorCommand::Save {
+                    canvases,
+                    wayland_refresh_hz: refresh,
+                    correlation,
+                } => {
+                    let keep_editor_open = canvases.is_empty();
+                    let started = Instant::now();
+                    let result = crate::control::request(
+                        &config.control_socket,
+                        &crate::control::Request::CommitBackend {
+                            backend: crate::runtime::Backend::Wayland,
+                            editor_id: editor_id.clone(),
+                            canvases,
+                            wayland_refresh_hz: Some(refresh),
+                        },
+                    );
+                    crate::diagnostics::emit(
+                        "native_editor_control_timing",
+                        &serde_json::json!({
+                            "owner": "coordinator",
+                            "run_id": correlation.as_ref().map(|item| item.run_id.as_str()),
+                            "interaction_id": correlation.as_ref().map(|item| item.interaction_id),
+                            "action": correlation.as_ref().map(|item| item.action),
+                            "request": "commit_backend",
+                            "duration_us": duration_us(started.elapsed()),
+                            "status": if result.as_ref().is_ok_and(|response| response.ok) { "success" } else { "error" },
+                            "error_type": result.as_ref().err().map(|_| "control_request_failed"),
+                        }),
+                    );
+                    if let Ok(response) = result
+                        && response.ok
+                    {
+                        {
+                            let mut workspace = workspace_ui
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            workspace.dirty = response.dirty;
+                            workspace.readonly = response.readonly;
+                            workspace.fallback.clear();
+                            workspace.undo = None;
+                            if let Some(refresh) = response.wayland_refresh_hz {
+                                workspace.wayland_refresh_hz = refresh;
+                                *wayland_refresh_hz
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner) = refresh;
+                            }
+                        }
+                        if keep_editor_open {
+                            for wake in canvas_wakes
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .values()
+                            {
+                                wake.ping();
+                            }
+                            None
+                        } else {
+                            apply_coordinator_command(
+                                &mut editor_phase,
+                                &mut workspace_ui
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                                &mut suppressed
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                                CoordinatorCommand::Close {
+                                    reason: "save",
+                                    correlation,
+                                },
+                            )
+                        }
+                    } else {
+                        None
+                    }
+                }
+                CoordinatorCommand::ResolveOutput {
+                    output_names,
+                    output,
+                    canvas,
+                    preview_screen,
+                    resolved_canvas,
+                } => {
+                    let started = Instant::now();
+                    let result = crate::control::request(
+                        &config.control_socket,
+                        &crate::control::Request::ResolveWaylandOutputs {
+                            outputs: output_names,
+                        },
+                    );
+                    crate::diagnostics::emit(
+                        "native_editor_control_timing",
+                        &serde_json::json!({
+                            "owner": "coordinator",
+                            "request": "resolve_wayland_outputs",
+                            "duration_us": duration_us(started.elapsed()),
+                            "status": if result.as_ref().is_ok_and(|response| response.ok) { "success" } else { "error" },
+                            "error_type": result.as_ref().err().map(|_| "control_request_failed"),
+                        }),
+                    );
+                    if result.is_ok_and(|response| response.ok) {
+                        apply_coordinator_command(
+                            &mut editor_phase,
+                            &mut workspace_ui
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner),
+                            &mut suppressed
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner),
+                            CoordinatorCommand::Open {
+                                output,
+                                canvas,
+                                preview_screen,
+                                resolved_canvas: Some(resolved_canvas),
+                            },
+                        )
+                    } else {
+                        None
+                    }
+                }
+                command => apply_coordinator_command(
+                    &mut editor_phase,
+                    &mut workspace_ui
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    &mut suppressed
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    command,
+                ),
+            };
+            match &transition {
+                Some(CoordinatorTransition::Opened(_)) => {
+                    workspace_transition_reason = Some("open");
+                }
+                Some(CoordinatorTransition::Closed { reason, .. }) => {
+                    workspace_transition_reason = Some(*reason);
+                }
+                None => {}
+            }
+            if transition.is_some() {
+                pending_transition = transition;
+                pending_transition_started = Some(Instant::now());
+            }
+        }
+        if editor_phase == EditorPhase::Editing && Instant::now() >= next_keepalive {
+            let _ = crate::control::request(
+                &config.control_socket,
+                &crate::control::Request::KeepAliveBackend {
+                    backend: crate::runtime::Backend::Wayland,
+                    editor_id: editor_id.clone(),
+                },
+            );
+            next_keepalive = Instant::now() + Duration::from_secs(5);
+        }
+        let workspace_is_open = editor_phase == EditorPhase::Editing;
         if workspace_was_open != workspace_is_open {
             crate::diagnostics::emit(
                 "native_editor_workspace_transition",
                 &serde_json::json!({
                     "from": if workspace_was_open { "open" } else { "closed" },
                     "to": if workspace_is_open { "open" } else { "closed" },
+                    "reason": workspace_transition_reason.take().unwrap_or("projection"),
+                    "phase": "accepted",
                     "worker_count": workers.len(),
-                    "status": "success",
+                    "status": "accepted",
                 }),
             );
         }
@@ -1034,11 +1426,25 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                 })
                 .collect();
             if desired.is_empty() {
-                workspace_open.store(true, std::sync::atomic::Ordering::Release);
+                editor_phase = EditorPhase::Editing;
+                pending_transition = None;
+                pending_transition_started = None;
+                workspace_transition_reason = Some("empty_workspace");
+                crate::diagnostics::emit(
+                    "native_editor_workspace_transition",
+                    &serde_json::json!({
+                        "from": "closed",
+                        "to": "open",
+                        "reason": "empty_workspace",
+                        "phase": "recovered",
+                        "worker_count": workers.len(),
+                        "status": "success",
+                    }),
+                );
             }
         }
-        workspace_was_open = workspace_is_open;
-        let editing = workspace_open.load(std::sync::atomic::Ordering::Acquire);
+        workspace_was_open = editor_phase == EditorPhase::Editing;
+        let editing = editor_phase == EditorPhase::Editing;
         let projected = if editing {
             let outputs = workspace_ui
                 .lock()
@@ -1077,27 +1483,20 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             .collect();
         let stop_started = Instant::now();
         for id in &remove {
-            canvas_wakes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(id);
             if let Some(worker) = workers.get(id) {
                 crate::diagnostics::emit(
                     "native_editor_stage_shutdown",
                     &serde_json::json!({
                         "canvas_id": id,
                         "output": worker.output,
+                        "role": match worker.role { SurfaceRole::DisplayCanvas => "display", SurfaceRole::EditorStage => "editor_stage" },
                         "phase": "stop_requested",
                         "reason": "projection_changed",
                     }),
                 );
             }
         }
-        broadcast_stops(
-            remove
-                .iter()
-                .filter_map(|id| workers.get(id).map(|worker| &worker.stop)),
-        );
+        stop_workers(remove.iter(), &workers, &canvas_wakes);
         for id in remove {
             if let Some(worker) = workers.remove(&id) {
                 let output = worker.output.clone();
@@ -1108,6 +1507,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                             &serde_json::json!({
                                 "canvas_id": id,
                                 "output": output,
+                                "role": match worker.role { SurfaceRole::DisplayCanvas => "display", SurfaceRole::EditorStage => "editor_stage" },
                                 "phase": "stopped",
                                 "duration_us": duration_us(stop_started.elapsed()),
                                 "status": "success",
@@ -1128,6 +1528,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                             &serde_json::json!({
                                 "canvas_id": id,
                                 "output": output,
+                                "role": match worker.role { SurfaceRole::DisplayCanvas => "display", SurfaceRole::EditorStage => "editor_stage" },
                                 "phase": "stopped",
                                 "duration_us": duration_us(stop_started.elapsed()),
                                 "status": "error",
@@ -1145,6 +1546,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                             &serde_json::json!({
                                 "canvas_id": id,
                                 "output": output,
+                                "role": match worker.role { SurfaceRole::DisplayCanvas => "display", SurfaceRole::EditorStage => "editor_stage" },
                                 "phase": "stopped",
                                 "duration_us": duration_us(stop_started.elapsed()),
                                 "status": "error",
@@ -1154,6 +1556,80 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                     }
                 }
             }
+            canvas_wakes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&id);
+        }
+        let completed_transition = pending_transition.clone();
+        match pending_transition {
+            Some(CoordinatorTransition::Opened(resolved_canvas)) => {
+                let had_resolved_canvas = resolved_canvas.is_some();
+                let response = crate::control::request(
+                    &config.control_socket,
+                    &crate::control::Request::AcquireBackend {
+                        backend: crate::runtime::Backend::Wayland,
+                        editor_id: editor_id.clone(),
+                    },
+                );
+                let (draft, refresh) = {
+                    let mut workspace = workspace_ui
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if let Ok(response) = response {
+                        workspace.draft = response.canvases;
+                        workspace.dirty = response.dirty;
+                        if let Some(refresh) = response.wayland_refresh_hz {
+                            workspace.wayland_refresh_hz = refresh;
+                            *wayland_refresh_hz
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) = refresh;
+                        }
+                    }
+                    if let Some(resolved_canvas) = resolved_canvas
+                        && let Some(existing) = workspace
+                            .draft
+                            .iter_mut()
+                            .find(|canvas| canvas.id == resolved_canvas.id)
+                    {
+                        *existing = resolved_canvas;
+                    }
+                    (workspace.draft.clone(), workspace.wayland_refresh_hz)
+                };
+                if had_resolved_canvas {
+                    let _ = crate::control::request(
+                        &config.control_socket,
+                        &crate::control::Request::UpdateBackendDraft {
+                            backend: crate::runtime::Backend::Wayland,
+                            editor_id: editor_id.clone(),
+                            canvases: draft,
+                            wayland_refresh_hz: Some(refresh),
+                        },
+                    );
+                }
+                next_keepalive = Instant::now() + Duration::from_secs(5);
+            }
+            Some(CoordinatorTransition::Closed { correlation, .. }) => {
+                release_editor_backend(&config.control_socket, &editor_id, correlation.as_ref())?;
+            }
+            None => {}
+        }
+        if let Some(transition) = completed_transition {
+            crate::diagnostics::emit(
+                "native_editor_workspace_transition",
+                &serde_json::json!({
+                    "from": if matches!(&transition, CoordinatorTransition::Opened(_)) { "closed" } else { "open" },
+                    "to": if matches!(&transition, CoordinatorTransition::Opened(_)) { "open" } else { "closed" },
+                    "reason": match &transition { CoordinatorTransition::Opened(_) => "open", CoordinatorTransition::Closed { reason, .. } => reason },
+                    "run_id": match &transition { CoordinatorTransition::Opened(_) => None, CoordinatorTransition::Closed { correlation, .. } => correlation.as_ref().map(|item| item.run_id.as_str()) },
+                    "interaction_id": match &transition { CoordinatorTransition::Opened(_) => None, CoordinatorTransition::Closed { correlation, .. } => correlation.as_ref().map(|item| item.interaction_id) },
+                    "action": match &transition { CoordinatorTransition::Opened(_) => None, CoordinatorTransition::Closed { correlation, .. } => correlation.as_ref().map(|item| item.action) },
+                    "phase": "previous_surface_set_removed",
+                    "worker_count": workers.len(),
+                    "duration_us": pending_transition_started.map(|started| duration_us(started.elapsed())),
+                    "status": "success",
+                }),
+            );
         }
         for canvas in &projected {
             if !editing
@@ -1177,12 +1653,15 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             let stopping = Arc::clone(&canvas_stop);
             let state = Arc::clone(&feed_state);
             let stopped = Arc::clone(&feed_stop);
-            let preview = Arc::clone(&preview);
-            let workspace_open = Arc::clone(&workspace_open);
             let workspace_ui = Arc::clone(&workspace_ui);
-            let suppressed = Arc::clone(&suppressed);
             let refresh_rate = Arc::clone(&wayland_refresh_hz);
             let wakes = Arc::clone(&canvas_wakes);
+            let coordinator = coordinator_tx.clone();
+            let role = if editing {
+                SurfaceRole::EditorStage
+            } else {
+                SurfaceRole::DisplayCanvas
+            };
             let join = std::thread::Builder::new()
                 .name(format!("overlay-wayland-{}", canvas.id))
                 .spawn(move || {
@@ -1191,25 +1670,25 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                         stopping,
                         state,
                         stopped,
-                        preview,
-                        workspace_open,
                         workspace_ui,
-                        suppressed,
                         refresh_rate,
                         wakes,
+                        coordinator,
+                        role,
                     )
                 })
                 .map_err(|error| error.to_string())?;
             workers.insert(
                 canvas.id.clone(),
-                Worker {
+                NativeWorker {
                     output: Some(canvas.output.clone()),
+                    role,
                     stop: canvas_stop,
                     join,
                 },
             );
         }
-        std::thread::sleep(Duration::from_millis(250));
+        std::thread::sleep(Duration::from_millis(10));
     }
     let shutdown_started = Instant::now();
     for (id, worker) in &workers {
@@ -1218,12 +1697,14 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             &serde_json::json!({
                 "canvas_id": id,
                 "output": worker.output,
+                "role": match worker.role { SurfaceRole::DisplayCanvas => "display", SurfaceRole::EditorStage => "editor_stage" },
                 "phase": "stop_requested",
                 "reason": "parent_lease_closed",
             }),
         );
     }
-    broadcast_stops(workers.values().map(|worker| &worker.stop));
+    let shutdown_ids = workers.keys().cloned().collect::<Vec<_>>();
+    stop_workers(shutdown_ids.iter(), &workers, &canvas_wakes);
     for (id, worker) in workers {
         let output = worker.output.clone();
         let result = worker.join.join();
@@ -1237,12 +1718,16 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             &serde_json::json!({
                 "canvas_id": id,
                 "output": output,
+                "role": match worker.role { SurfaceRole::DisplayCanvas => "display", SurfaceRole::EditorStage => "editor_stage" },
                 "phase": "stopped",
                 "duration_us": duration_us(shutdown_started.elapsed()),
                 "status": if result.as_ref().is_ok_and(std::result::Result::is_ok) { "success" } else { "error" },
                 "error_type": error_type,
             }),
         );
+    }
+    if editor_phase == EditorPhase::Editing {
+        release_editor_backend(&config.control_socket, &editor_id, None)?;
     }
     Ok(())
 }
@@ -1331,12 +1816,11 @@ fn run_canvas(
     external_stop: Arc<std::sync::atomic::AtomicBool>,
     feed_state: Arc<std::sync::Mutex<OverlayState>>,
     feed_stop: Arc<std::sync::atomic::AtomicBool>,
-    preview: Arc<std::sync::Mutex<Option<String>>>,
-    workspace_open: Arc<std::sync::atomic::AtomicBool>,
-    workspace_ui: Arc<std::sync::Mutex<NativeWorkspace>>,
-    suppressed: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    workspace_ui: Arc<std::sync::Mutex<NativeEditorSession>>,
     wayland_refresh_hz: Arc<std::sync::Mutex<scorepeek_overlay_ui::WaylandRefreshRate>>,
     wakes: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Ping>>>,
+    coordinator: std::sync::mpsc::Sender<CoordinatorCommand>,
+    role: SurfaceRole,
 ) -> Result<(), String> {
     let startup_started = Instant::now();
     let report = Rc::new(RefCell::new(RunReport::new()));
@@ -1451,7 +1935,6 @@ fn run_canvas(
         .push("renderer_context_initialized");
     let appearance = Appearance { skin: canvas.skin };
     let widgets = canvas.widgets.iter().map(widget_layout).collect();
-    let control_socket = config.control_socket.clone();
     let app_started = Instant::now();
     let mut app = App::new(
         appearance,
@@ -1463,18 +1946,16 @@ fn run_canvas(
         feed_stop,
         external_stop,
         canvas,
-        control_socket,
         config.skin_store.clone(),
         outputs,
         Rc::clone(&report),
         pending_resolved_output,
-        preview,
-        workspace_open,
         workspace_ui,
         wakes,
-        suppressed,
         wayland_refresh_hz,
         startup_started,
+        coordinator,
+        role,
     )?;
     crate::diagnostics::emit(
         "native_startup_timing",
@@ -1487,6 +1968,7 @@ fn run_canvas(
         }),
     );
     let result = app.run();
+    app.emit_unpainted_interaction_terminals();
     crate::diagnostics::emit(
         "native_renderer_shutdown",
         &serde_json::json!({
@@ -1593,9 +2075,9 @@ struct App {
     surface_canvas: crate::config::Canvas,
     surface_output: Option<String>,
     canvas: crate::config::Canvas,
-    control_socket: std::path::PathBuf,
     appearance: Reactive<Appearance>,
-    editor_id: String,
+    role: SurfaceRole,
+    coordinator: std::sync::mpsc::Sender<CoordinatorCommand>,
     editing: Reactive<bool>,
     interactive: Reactive<bool>,
     panel_open: Reactive<bool>,
@@ -1613,19 +2095,14 @@ struct App {
     shared_widgets: Reactive<Vec<WidgetLayout>>,
     interaction: Option<Drag>,
     output_selection_epoch: u64,
-    next_keepalive: Instant,
     managed: Reactive<Vec<scorepeek_overlay_ui::CanvasPresentation>>,
-    generation: u64,
     outputs: Reactive<Vec<OutputDescription>>,
     visible: Reactive<bool>,
     pending_resolved_output: Option<String>,
     next_output_persist: Instant,
-    preview: Arc<std::sync::Mutex<Option<String>>>,
-    workspace_open: Arc<std::sync::atomic::AtomicBool>,
-    workspace_ui: Arc<std::sync::Mutex<NativeWorkspace>>,
+    workspace_ui: Arc<std::sync::Mutex<NativeEditorSession>>,
     workspace_wakes: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Ping>>>,
     surface_canvas_ids: Reactive<std::collections::BTreeSet<String>>,
-    suppressed: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     settings: Reactive<NativeCanvasSettings>,
     surface_logical: [u32; 2],
     title_edit: Reactive<Option<TitleEdit>>,
@@ -1661,38 +2138,54 @@ impl App {
         feed_stop: Arc<std::sync::atomic::AtomicBool>,
         external_stop: Arc<std::sync::atomic::AtomicBool>,
         canvas: crate::config::Canvas,
-        control_socket: std::path::PathBuf,
         skin_store: std::path::PathBuf,
         outputs: Vec<OutputDescription>,
         report: Rc<RefCell<RunReport>>,
         pending_resolved_output: Option<String>,
-        preview: Arc<std::sync::Mutex<Option<String>>>,
-        workspace_open: Arc<std::sync::atomic::AtomicBool>,
-        workspace_ui: Arc<std::sync::Mutex<NativeWorkspace>>,
+        workspace_ui: Arc<std::sync::Mutex<NativeEditorSession>>,
         workspace_wakes: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Ping>>>,
-        suppressed: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
         wayland_refresh_hz: Arc<std::sync::Mutex<scorepeek_overlay_ui::WaylandRefreshRate>>,
         startup_started: Instant,
+        coordinator: std::sync::mpsc::Sender<CoordinatorCommand>,
+        role: SurfaceRole,
     ) -> Result<Self, String> {
         let shared_state = Rc::new(RefCell::new(OverlayState::default()));
         let reactive = Rc::new(RefCell::new(None));
         let shared_widgets = Rc::new(RefCell::new(widgets));
-        let editing = Rc::new(Cell::new(false));
-        let interactive = Rc::new(Cell::new(false));
-        let (ui, output_selection_epoch) = {
+        let editing = Rc::new(Cell::new(role == SurfaceRole::EditorStage));
+        let (ui, output_selection_epoch, initial_draft, initial_readonly) = {
             let workspace = workspace_ui
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            (workspace.ui, workspace.output_selection_epoch)
+            (
+                workspace.ui,
+                workspace.output_selection_epoch,
+                workspace.draft.clone(),
+                workspace.readonly,
+            )
         };
+        let interactive = Rc::new(Cell::new(
+            role == SurfaceRole::EditorStage
+                && workspace_ui
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .active_output
+                    .as_deref()
+                    == shell.output_name.as_deref(),
+        ));
         let panel_open = Rc::new(Cell::new(ui.panel_open));
         let widget_add_open = Rc::new(Cell::new(ui.widget_add_open));
-        let dirty = Rc::new(Cell::new(false));
+        let dirty = Rc::new(Cell::new(
+            workspace_ui
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .dirty,
+        ));
         let undo_available = Rc::new(Cell::new(false));
         let selected = Rc::new(RefCell::new(None));
         let pending_widget = Rc::new(Cell::new(None));
         let pending_point = Rc::new(Cell::new([340.0, 24.0]));
-        let managed = Rc::new(RefCell::new(Vec::new()));
+        let managed = Rc::new(RefCell::new(initial_draft));
         let outputs = Rc::new(RefCell::new(outputs));
         let appearance = Rc::new(Cell::new(appearance));
         let refresh_rate = Rc::new(Cell::new(
@@ -1717,8 +2210,8 @@ impl App {
             panel_width,
             new_canvas_skin: canvas.skin,
         }));
-        let initially_visible = canvas.show_on.is_none();
-        shell.set_input_enabled(initially_visible);
+        let initially_visible = role == SurfaceRole::EditorStage || canvas.show_on.is_none();
+        shell.set_input_enabled(role == SurfaceRole::DisplayCanvas || interactive.get());
         let visible = Rc::new(Cell::new(initially_visible));
         let surface_canvas_ids = Rc::new(RefCell::new(std::collections::BTreeSet::from([canvas
             .id
@@ -1795,6 +2288,7 @@ impl App {
             .borrow()
             .clone()
             .expect("native overlay must publish its reactive state during initial build");
+        reactive.readonly.set_if_changed(initial_readonly);
         let surface_logical = [canvas.width, canvas.height];
 
         if pending_resolved_output.is_some() {
@@ -1817,11 +2311,6 @@ impl App {
             if workspace.active_output.is_none() {
                 workspace.active_output = workspace.outputs.keys().next().cloned();
             }
-            workspace
-                .surfaces
-                .entry(surface_output.clone().unwrap_or_default())
-                .or_default()
-                .insert(canvas.id.clone());
         }
         Ok(Self {
             renderer,
@@ -1848,9 +2337,9 @@ impl App {
             surface_canvas: canvas.clone(),
             surface_output,
             canvas,
-            control_socket,
             appearance: reactive.appearance,
-            editor_id: format!("wayland-{}", std::process::id()),
+            role,
+            coordinator,
             editing: reactive.editing,
             interactive: reactive.interactive,
             panel_open: reactive.panel_open,
@@ -1869,19 +2358,14 @@ impl App {
             interaction: None,
             output_selection_epoch,
 
-            next_keepalive: Instant::now(),
             managed: reactive.managed,
-            generation: 0,
             outputs: reactive.outputs,
             pending_resolved_output,
             next_output_persist: Instant::now() + Duration::from_secs(1),
             visible: reactive.visible,
-            preview,
-            workspace_open,
             workspace_ui,
             workspace_wakes,
             surface_canvas_ids: reactive.surface_canvas_ids,
-            suppressed,
             settings: reactive.settings,
             surface_logical,
             title_edit: reactive.title_edit,
@@ -1909,18 +2393,8 @@ impl App {
                 .external_stop
                 .load(std::sync::atomic::Ordering::Acquire)
         {
-            let editing_before = self.editing.get();
             self.sync_workspace_projection();
-            let should_edit = self
-                .workspace_open
-                .load(std::sync::atomic::Ordering::Acquire)
-                && self.is_editor_host();
-            if should_edit && !self.editing.get() {
-                self.set_editing(true);
-                self.sync_workspace_projection();
-            } else if self.editing.get() && !should_edit {
-                self.set_editing(false);
-            }
+            let should_edit = self.role == SurfaceRole::EditorStage;
             let should_interact = should_edit
                 && self
                     .workspace_ui
@@ -1938,13 +2412,6 @@ impl App {
                 ));
             }
             self.retry_resolved_output();
-            if self.editing.get() && Instant::now() >= self.next_keepalive {
-                let _ = self.request(crate::control::Request::KeepAliveBackend {
-                    backend: crate::runtime::Backend::Wayland,
-                    editor_id: self.editor_id.clone(),
-                });
-                self.next_keepalive = Instant::now() + Duration::from_secs(5);
-            }
             let events = match self.shell.dispatch(Duration::from_millis(500)) {
                 Ok(events) => events,
                 Err(_)
@@ -1969,20 +2436,13 @@ impl App {
                     .iter()
                     .map(|output| (output.name.clone(), output.clone()))
                     .collect();
-                let active_changed = {
-                    let mut selected_canvas = self
-                        .preview
+                let active_changed = replace_workspace_outputs(
+                    &mut self
+                        .workspace_ui
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    replace_workspace_outputs(
-                        &mut self
-                            .workspace_ui
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner),
-                        &mut selected_canvas,
-                        outputs,
-                    )
-                };
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    outputs,
+                );
                 if active_changed {
                     self.wake_workspace();
                 }
@@ -2059,45 +2519,15 @@ impl App {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
-            let workspace_peer = self
-                .workspace_open
-                .load(std::sync::atomic::Ordering::Acquire)
-                && !self.editing.get();
-            let visible = if workspace_peer {
-                let selected = self
-                    .preview
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone();
-                let screen = self
-                    .workspace_ui
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .ui
-                    .preview_screen;
-                selected.as_deref() != Some(self.surface_canvas.id.as_str())
-                    && scorepeek_overlay_ui::canvas_visible(
-                        self.surface_canvas.show_on.as_deref(),
-                        scorepeek_overlay_ui::ScreenView {
-                            kind: Some(screen),
-                            ..scorepeek_overlay_ui::ScreenView::default()
-                        },
-                    )
-            } else {
-                self.editing.get()
-                    || scorepeek_overlay_ui::canvas_visible(
-                        self.surface_canvas.show_on.as_deref(),
-                        latest.screen,
-                    )
-            };
+            let visible = self.editing.get()
+                || scorepeek_overlay_ui::canvas_visible(
+                    self.surface_canvas.show_on.as_deref(),
+                    latest.screen,
+                );
             let visibility_changed = self.visible.get() != visible;
             if visibility_changed {
                 self.visible.set(visible);
-                let accepts_input = visible
-                    && (!self
-                        .workspace_open
-                        .load(std::sync::atomic::Ordering::Acquire)
-                        || self.interactive.get());
+                let accepts_input = visible && (!self.editing.get() || self.interactive.get());
                 self.shell.set_input_enabled(accepts_input);
                 crate::diagnostics::emit(
                     "native_canvas_visibility",
@@ -2143,8 +2573,7 @@ impl App {
                 self.update_editor_skin();
                 wake = true;
             }
-            let changed =
-                should_poll_dioxus(wake, editing_before, self.editing.get()) && self.poll_dioxus();
+            let changed = wake && self.poll_dioxus();
             self.pending_paint |= changed || visibility_changed;
             let reason = if configured {
                 Some(if self.paint_count == 0 {
@@ -2197,117 +2626,25 @@ impl App {
             .iter()
             .map(|output| output.name.clone())
             .collect();
-        let resolved = crate::control::request(
-            &self.control_socket,
-            &crate::control::Request::ResolveWaylandOutputs {
-                outputs: output_names,
-            },
-        );
-        if !resolved.is_ok_and(|response| response.ok) {
-            self.next_output_persist = Instant::now() + Duration::from_secs(1);
-            return;
-        }
-        let fallback = self.canvas.clone();
-        self.pending_resolved_output = None;
-        self.workspace_open
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.select_canvas(Some(self.canvas.id.clone()));
-        self.set_editing(true);
-        self.canvas.x = fallback.x;
-        self.canvas.y = fallback.y;
-        self.canvas.width = fallback.width;
-        self.canvas.height = fallback.height;
-        self.canvas.output.clone_from(&output);
-        {
-            let mut settings = self.settings.borrow_mut();
-            settings.x = fallback.x;
-            settings.y = fallback.y;
-            settings.width = fallback.width;
-            settings.height = fallback.height;
-            settings.output = Some(output.clone());
-        }
-        self.persist_canvas();
+        let mut fallback = self.canvas.clone();
+        fallback.output.clone_from(&output);
+        self.next_output_persist = Instant::now() + Duration::from_secs(1);
+        let _ = self.coordinator.send(CoordinatorCommand::ResolveOutput {
+            output_names,
+            output: self.surface_output.clone(),
+            canvas: self.canvas.id.clone(),
+            preview_screen: self.shared_state.borrow().screen.kind,
+            resolved_canvas: fallback.presentation(),
+        });
         crate::diagnostics::emit(
             "native_output_fallback",
             &serde_json::json!({
                 "canvas_id": self.canvas.id,
                 "selected_output": output,
-                "status": "editor_opened",
+                "status": "resolve_requested",
             }),
         );
     }
-    #[allow(clippy::needless_pass_by_value)]
-    fn request(&mut self, request: crate::control::Request) -> Option<crate::control::Response> {
-        let updates_readonly = control_updates_readonly(&request);
-        let request_name = control_request_name(&request);
-        let started = Instant::now();
-        let result = crate::control::request(&self.control_socket, &request);
-        let duration = started.elapsed();
-        if let Some(interaction) = self.pending_interactions.back_mut() {
-            interaction.control_us = interaction.control_us.saturating_add(duration_us(duration));
-            crate::diagnostics::emit(
-                "native_editor_control_timing",
-                &serde_json::json!({
-                    "run_id": self.report.borrow().run_id,
-                    "interaction_id": interaction.id,
-                    "action": interaction.action,
-                    "request": request_name,
-                    "duration_us": duration_us(duration),
-                    "status": if result.is_ok() { "success" } else { "error" },
-                    "error_type": result.as_ref().err().map(|_| "control_request_failed"),
-                }),
-            );
-        }
-        let response = result.ok()?;
-        let mut workspace_changed = false;
-        if updates_readonly {
-            self.readonly.set_if_changed(response.readonly);
-        }
-        if let Some(generation) = response.generation {
-            workspace_changed = self.generation != generation
-                || self.dirty.get() != response.dirty
-                || *self.managed.borrow() != response.canvases;
-            if workspace_changed {
-                self.generation = generation;
-                self.dirty.set_if_changed(response.dirty);
-                self.managed.borrow_mut().clone_from(&response.canvases);
-                let mut workspace = self
-                    .workspace_ui
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                workspace.draft.clone_from(&response.canvases);
-                workspace.dirty = response.dirty;
-                drop(workspace);
-                let selected = if self.editing.get() {
-                    self.preview
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .clone()
-                } else {
-                    Some(self.surface_canvas.id.clone())
-                };
-                if let Some(presentation) = response
-                    .canvases
-                    .iter()
-                    .find(|item| Some(item.id.as_str()) == selected.as_deref())
-                    && self.canvas.presentation() != *presentation
-                {
-                    self.apply_selected_presentation(presentation);
-                }
-            }
-        }
-        if let Some(refresh) = response.wayland_refresh_hz
-            && self.refresh_rate.get() != refresh
-        {
-            workspace_changed = true;
-            self.set_refresh_rate_draft(refresh);
-        }
-        if workspace_changed {
-            self.wake_workspace();
-        }
-        Some(response)
-    }
-
     fn apply_selected_presentation(
         &mut self,
         presentation: &scorepeek_overlay_ui::CanvasPresentation,
@@ -2324,31 +2661,17 @@ impl App {
         self.settings.borrow_mut().apply_presentation(presentation);
     }
 
-    fn is_editor_host(&self) -> bool {
-        let key = self.surface_output.clone().unwrap_or_default();
-        let mut workspace = self
-            .workspace_ui
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let pinned = workspace.editor_hosts.get(&key).map(String::as_str);
-        let host = workspace
-            .surfaces
-            .get(&key)
-            .and_then(|surfaces| editor_surface_host(surfaces, pinned));
-        if let Some(host) = &host {
-            workspace.editor_hosts.insert(key, host.clone());
-        }
-        host.as_deref() == Some(self.surface_canvas.id.as_str())
-    }
-
+    #[allow(clippy::too_many_lines)]
     fn sync_workspace_projection(&mut self) {
         let (
             ui,
             draft,
             dirty,
+            readonly,
             undo_available,
             selected_widget,
             pending_widget,
+            interaction,
             wayland_refresh_hz,
             active_output,
             output_selection_epoch,
@@ -2361,9 +2684,11 @@ impl App {
                 workspace.ui,
                 workspace.draft.clone(),
                 workspace.dirty,
+                workspace.readonly,
                 workspace.undo.is_some(),
                 workspace.selected_widget.clone(),
                 workspace.pending_widget,
+                workspace.interaction.clone(),
                 workspace.wayland_refresh_hz,
                 workspace.active_output.clone(),
                 workspace.output_selection_epoch,
@@ -2371,9 +2696,10 @@ impl App {
         };
         if self.output_selection_epoch != output_selection_epoch {
             self.output_selection_epoch = output_selection_epoch;
-            self.preview
+            self.workspace_ui
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .selected_canvas
                 .take();
             self.selected.set(None);
             self.pending_widget.set(None);
@@ -2395,9 +2721,10 @@ impl App {
         self.panel_open.set_if_changed(ui.panel_open);
         self.widget_add_open.set_if_changed(ui.widget_add_open);
         let has_selection = self
-            .preview
+            .workspace_ui
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .selected_canvas
             .is_some();
         let settings_changed = {
             let settings = self.settings.borrow();
@@ -2409,20 +2736,25 @@ impl App {
             settings.has_selection = has_selection;
         }
         self.dirty.set_if_changed(dirty);
+        self.readonly.set_if_changed(readonly);
         self.undo_available.set_if_changed(undo_available);
         if *self.selected.borrow() != selected_widget {
             self.finish_title_edit(false);
             *self.selected.borrow_mut() = selected_widget;
         }
         self.pending_widget.set_if_changed(pending_widget);
+        if self.interactive.get() && self.interaction.is_none() && interaction.is_some() {
+            self.interaction = interaction;
+        }
         if self.interaction.is_none() && *self.managed.borrow() != draft {
             self.managed.borrow_mut().clone_from(&draft);
         }
         if self.editing.get() && self.interaction.is_none() {
             let selected = self
-                .preview
+                .workspace_ui
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .selected_canvas
                 .clone();
             let presentation = selected.as_deref().and_then(|id| {
                 self.managed
@@ -2441,78 +2773,6 @@ impl App {
                 self.apply_selected_presentation(&presentation);
                 self.update_editor_skin();
             }
-        }
-    }
-    fn acquire(&mut self) {
-        let _ = self.request(crate::control::Request::AcquireBackend {
-            backend: crate::runtime::Backend::Wayland,
-            editor_id: self.editor_id.clone(),
-        });
-    }
-    fn set_editing(&mut self, value: bool) {
-        let previous = self.editing.get();
-        if value {
-            self.editing.set(true);
-            self.editor_pointer_observation = EditorPointerObservation::AwaitingPress;
-            self.preview_skin_runtime = None;
-            self.acquire();
-            self.next_keepalive = Instant::now() + Duration::from_secs(5);
-            self.update_editor_skin();
-        } else if !self
-            .workspace_open
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            let _ = self.request(crate::control::Request::ReleaseBackend {
-                backend: crate::runtime::Backend::Wayland,
-                editor_id: self.editor_id.clone(),
-            });
-        }
-        if !value {
-            self.finish_title_edit(false);
-            self.finish_refresh_edit(false);
-            self.editing.set(false);
-            self.dirty.set(false);
-            self.canvas = self.surface_canvas.clone();
-            let presentation = self.canvas.presentation();
-            self.apply_selected_presentation(&presentation);
-            self.update_editor_skin();
-            self.preview_skin_runtime = None;
-        }
-        self.set_editor_geometry(value);
-        if value {
-            self.visible.set(true);
-        }
-        let runtime_visible = scorepeek_overlay_ui::canvas_visible(
-            self.surface_canvas.show_on.as_deref(),
-            self.feed_state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .screen,
-        );
-        self.shell.set_input_enabled(transition_input_enabled(
-            value,
-            self.interactive.get(),
-            runtime_visible,
-        ));
-        self.interaction = None;
-
-        if !value {
-            self.selected.borrow_mut().take();
-            self.pending_widget.set(None);
-        }
-        self.sync_workspace_ui();
-        if previous != value {
-            crate::diagnostics::emit(
-                "native_editor_stage_transition",
-                &serde_json::json!({
-                    "run_id": self.report.borrow().run_id,
-                    "canvas_id": self.surface_canvas.id,
-                    "output": self.surface_output,
-                    "from": if previous { "editor" } else { "display" },
-                    "to": if value { "editor" } else { "display" },
-                    "status": "success",
-                }),
-            );
         }
     }
     fn set_editor_geometry(&mut self, editing: bool) {
@@ -2543,17 +2803,12 @@ impl App {
         }
         if !self.editing.get() {
             if button == 0x111 && pressed {
-                self.workspace_ui
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .active_output
-                    .clone_from(&self.surface_output);
-                self.workspace_open
-                    .store(true, std::sync::atomic::Ordering::Release);
-                if let Some(screen) = self.shared_state.borrow().screen.kind {
-                    self.settings.borrow_mut().preview_screen = screen;
-                }
-                self.select_canvas(Some(self.canvas.id.clone()));
+                let _ = self.coordinator.send(CoordinatorCommand::Open {
+                    output: self.surface_output.clone(),
+                    canvas: self.canvas.id.clone(),
+                    preview_screen: self.shared_state.borrow().screen.kind,
+                    resolved_canvas: None,
+                });
             }
             return;
         }
@@ -2852,7 +3107,6 @@ impl App {
                 source_output: self.surface_output.clone(),
                 started,
                 action_us: 0,
-                control_us: 0,
                 skin_us: 0,
                 dioxus_us: 0,
             },
@@ -2897,10 +3151,15 @@ impl App {
     #[allow(clippy::too_many_lines)]
     fn editor_action_inner(&mut self, action: &EditorAction) {
         if let EditorAction::SelectOutput(output) = action {
-            self.workspace_ui
+            let mut workspace = self
+                .workspace_ui
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .active_output = Some(output.clone());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            workspace.active_output = Some(output.clone());
+            workspace.output_selection_epoch = workspace.output_selection_epoch.saturating_add(1);
+            workspace.interaction = None;
+            drop(workspace);
+            self.interaction = None;
             self.select_canvas(None);
             return;
         }
@@ -2922,23 +3181,14 @@ impl App {
                 return;
             }
             EditorAction::Close | EditorAction::Discard => {
-                let mut workspace = self
-                    .workspace_ui
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if *action == EditorAction::Discard {
-                    self.suppressed
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .extend(std::mem::take(&mut workspace.fallback));
-                }
-                workspace.undo = None;
-                drop(workspace);
-                self.workspace_open
-                    .store(false, std::sync::atomic::Ordering::Release);
-                self.select_canvas(None);
-                self.pending_widget.set(None);
-                self.set_editing(false);
+                let _ = self.coordinator.send(CoordinatorCommand::Close {
+                    reason: if *action == EditorAction::Discard {
+                        "discard"
+                    } else {
+                        "close"
+                    },
+                    correlation: self.current_interaction_correlation(),
+                });
                 return;
             }
             EditorAction::Undo => {
@@ -3117,6 +3367,7 @@ impl App {
             .selected_widget
             .clone_from(&self.selected.borrow());
         workspace.pending_widget = self.pending_widget.get();
+        workspace.interaction.clone_from(&self.interaction);
         drop(workspace);
         self.wake_workspace();
     }
@@ -3132,24 +3383,36 @@ impl App {
         }
     }
 
+    fn current_interaction_correlation(&self) -> Option<InteractionCorrelation> {
+        self.pending_interactions
+            .back()
+            .map(|interaction| InteractionCorrelation {
+                run_id: self.report.borrow().run_id.clone(),
+                interaction_id: interaction.id,
+                action: interaction.action,
+            })
+    }
+
     fn select_canvas(&self, next: Option<String>) {
+        let mut workspace = self
+            .workspace_ui
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         replace_canvas_selection(
-            &mut self
-                .preview
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            &mut workspace.selected_canvas,
             &mut self.selected.borrow_mut(),
             next,
         );
+        drop(workspace);
         self.sync_workspace_ui();
     }
     fn update_draft(&mut self) {
         let canvases = self.managed.borrow().clone();
-        let _ = self.request(crate::control::Request::UpdateBackendDraft {
-            backend: crate::runtime::Backend::Wayland,
-            editor_id: self.editor_id.clone(),
+        self.dirty.set_if_changed(true);
+        let _ = self.coordinator.send(CoordinatorCommand::UpdateDraft {
             canvases,
-            wayland_refresh_hz: Some(self.refresh_rate.get()),
+            wayland_refresh_hz: self.refresh_rate.get(),
+            correlation: self.current_interaction_correlation(),
         });
     }
     fn save_and_close(&mut self) {
@@ -3161,36 +3424,11 @@ impl App {
         self.apply_editor_model(model);
         self.persist_canvas();
         let canvases = self.managed.borrow().clone();
-        let response = self.request(crate::control::Request::CommitBackend {
-            backend: crate::runtime::Backend::Wayland,
-            editor_id: self.editor_id.clone(),
+        let _ = self.coordinator.send(CoordinatorCommand::Save {
             canvases,
-            wayland_refresh_hz: Some(self.refresh_rate.get()),
+            wayland_refresh_hz: self.refresh_rate.get(),
+            correlation: self.current_interaction_correlation(),
         });
-        if response.as_ref().is_some_and(|response| response.ok) {
-            let mut workspace = self
-                .workspace_ui
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            workspace.fallback.clear();
-            workspace.undo = None;
-            drop(workspace);
-            crate::diagnostics::emit(
-                "native_editor_workspace_transition",
-                &serde_json::json!({
-                    "run_id": self.report.borrow().run_id,
-                    "source_output": self.surface_output,
-                    "from": "open",
-                    "to": "closed",
-                    "reason": "save",
-                    "status": "success",
-                }),
-            );
-            self.workspace_open
-                .store(false, std::sync::atomic::Ordering::Release);
-            self.select_canvas(None);
-            self.set_editing(false);
-        }
     }
 
     fn set_refresh_rate_draft(&self, refresh: scorepeek_overlay_ui::WaylandRefreshRate) {
@@ -3296,6 +3534,27 @@ impl App {
         crate::diagnostics::emit("surface_configured", &*self.report.borrow());
         Ok(geometry_changed)
     }
+    fn emit_unpainted_interaction_terminals(&mut self) {
+        for interaction in self.pending_interactions.drain(..) {
+            crate::diagnostics::emit(
+                "native_editor_interaction",
+                &serde_json::json!({
+                    "run_id": self.report.borrow().run_id,
+                    "interaction_id": interaction.id,
+                    "action": interaction.action,
+                    "source_output": interaction.source_output,
+                    "paint_output": self.surface_output,
+                    "phase": "closed_before_paint",
+                    "action_us": interaction.action_us,
+                    "skin_us": interaction.skin_us,
+                    "dioxus_us": interaction.dioxus_us,
+                    "duration_us": duration_us(interaction.started.elapsed()),
+                    "status": "canceled",
+                }),
+            );
+        }
+    }
+
     fn paint(&mut self, reason: PaintReason, now: Duration) -> Result<(), String> {
         let first_paint = self.paint_count == 0;
         let paint_started = Instant::now();
@@ -3328,7 +3587,6 @@ impl App {
                         "paint_output": self.surface_output,
                         "phase": "paint_failed",
                         "action_us": interaction.action_us,
-                        "control_us": interaction.control_us,
                         "skin_us": interaction.skin_us,
                         "dioxus_us": interaction.dioxus_us,
                         "paint_us": duration_us(paint_duration),
@@ -3362,7 +3620,6 @@ impl App {
                     "paint_output": self.surface_output,
                     "phase": "painted",
                     "action_us": interaction.action_us,
-                    "control_us": interaction.control_us,
                     "skin_us": interaction.skin_us,
                     "dioxus_us": interaction.dioxus_us,
                     "paint_us": duration_us(paint_duration),
@@ -3414,83 +3671,9 @@ impl App {
     }
 }
 
-impl Drop for App {
-    fn drop(&mut self) {
-        {
-            let mut workspace = self
-                .workspace_ui
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let key = self.surface_output.clone().unwrap_or_default();
-            if let Some(surfaces) = workspace.surfaces.get_mut(&key) {
-                surfaces.remove(&self.surface_canvas.id);
-                if surfaces.is_empty() {
-                    workspace.surfaces.remove(&key);
-                }
-            }
-            if workspace.editor_hosts.get(&key) == Some(&self.surface_canvas.id) {
-                let next = workspace
-                    .surfaces
-                    .get(&key)
-                    .and_then(|surfaces| surfaces.first())
-                    .cloned();
-                if let Some(next) = next {
-                    workspace.editor_hosts.insert(key, next);
-                } else {
-                    workspace.editor_hosts.remove(&key);
-                }
-            }
-        }
-        let workspace_open = self
-            .workspace_open
-            .load(std::sync::atomic::Ordering::Acquire);
-        if release_backend_on_drop(self.editing.get(), workspace_open) {
-            let _ = crate::control::request(
-                &self.control_socket,
-                &crate::control::Request::ReleaseBackend {
-                    backend: crate::runtime::Backend::Wayland,
-                    editor_id: self.editor_id.clone(),
-                },
-            );
-        }
-    }
-}
-
-const fn release_backend_on_drop(editing: bool, workspace_open: bool) -> bool {
-    editing && !workspace_open
-}
-const fn should_poll_dioxus(surface_wake: bool, editing_before: bool, editing_after: bool) -> bool {
-    surface_wake || editing_before != editing_after
-}
 const fn surface_input_enabled(editing: bool, interactive: bool, visible: bool) -> bool {
     visible && (!editing || interactive)
 }
-const fn transition_input_enabled(editing: bool, interactive: bool, runtime_visible: bool) -> bool {
-    surface_input_enabled(editing, interactive, editing || runtime_visible)
-}
-const fn control_updates_readonly(request: &crate::control::Request) -> bool {
-    matches!(
-        request,
-        crate::control::Request::AcquireBackend { .. }
-            | crate::control::Request::KeepAliveBackend { .. }
-            | crate::control::Request::ReleaseBackend { .. }
-            | crate::control::Request::UpdateBackendDraft { .. }
-            | crate::control::Request::CommitBackend { .. }
-    )
-}
-
-const fn control_request_name(request: &crate::control::Request) -> &'static str {
-    match request {
-        crate::control::Request::AcquireBackend { .. } => "acquire_backend",
-        crate::control::Request::KeepAliveBackend { .. } => "keep_alive_backend",
-        crate::control::Request::ReleaseBackend { .. } => "release_backend",
-        crate::control::Request::GetBackend { .. } => "get_backend",
-        crate::control::Request::ResolveWaylandOutputs { .. } => "resolve_wayland_outputs",
-        crate::control::Request::UpdateBackendDraft { .. } => "update_backend_draft",
-        crate::control::Request::CommitBackend { .. } => "commit_backend",
-    }
-}
-
 const fn editor_action_name(action: &EditorAction) -> &'static str {
     match action {
         EditorAction::TogglePanel => "toggle_panel",
@@ -4652,7 +4835,6 @@ mod skin_tests {
             source_output: Some("output".into()),
             started: Instant::now(),
             action_us: 0,
-            control_us: 0,
             skin_us: 0,
             dioxus_us: 0,
         };
@@ -5007,16 +5189,29 @@ mod skin_tests {
 
     #[test]
     fn stage_shutdown_is_broadcast_before_any_worker_is_reaped() {
-        let stops = (0..3)
-            .map(|_| Arc::new(std::sync::atomic::AtomicBool::new(false)))
-            .collect::<Vec<_>>();
+        struct Worker(Arc<std::sync::atomic::AtomicBool>);
+        impl WorkerControl for Worker {
+            fn request_stop(&self) {
+                self.0.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let workers = (0..3)
+            .map(|index| {
+                (
+                    index.to_string(),
+                    Worker(Arc::new(std::sync::atomic::AtomicBool::new(false))),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let wakes = std::sync::Mutex::new(std::collections::BTreeMap::new());
+        let ids = workers.keys().cloned().collect::<Vec<_>>();
 
-        broadcast_stops(&stops);
+        stop_workers(ids.iter(), &workers, &wakes);
 
         assert!(
-            stops
-                .iter()
-                .all(|stop| stop.load(std::sync::atomic::Ordering::Acquire))
+            workers
+                .values()
+                .all(|worker| worker.0.load(std::sync::atomic::Ordering::Acquire))
         );
     }
 
@@ -5051,13 +5246,13 @@ mod skin_tests {
 
     #[test]
     fn active_output_disconnect_selects_a_remaining_output_and_clears_selection() {
-        let mut workspace = NativeWorkspace {
+        let mut workspace = NativeEditorSession {
             active_output: Some("WL-2".into()),
             selected_widget: Some("score".into()),
             pending_widget: Some(scorepeek_overlay_ui::WidgetKind::Score),
-            ..NativeWorkspace::default()
+            ..NativeEditorSession::default()
         };
-        let mut selected_canvas = Some("canvas-on-wl-2".into());
+        workspace.selected_canvas = Some("canvas-on-wl-2".into());
         let outputs = [OutputDescription {
             name: "WL-1".into(),
             model: "Nested output 1".into(),
@@ -5067,16 +5262,12 @@ mod skin_tests {
         .map(|output| (output.name.clone(), output))
         .collect();
 
-        assert!(replace_workspace_outputs(
-            &mut workspace,
-            &mut selected_canvas,
-            outputs
-        ));
+        assert!(replace_workspace_outputs(&mut workspace, outputs));
         assert_eq!(workspace.active_output.as_deref(), Some("WL-1"));
         assert_eq!(workspace.output_selection_epoch, 1);
         assert!(workspace.selected_widget.is_none());
         assert!(workspace.pending_widget.is_none());
-        assert!(selected_canvas.is_none());
+        assert!(workspace.selected_canvas.is_none());
     }
 
     #[test]
@@ -5102,49 +5293,59 @@ mod skin_tests {
     }
 
     #[test]
-    fn surface_handoff_keeps_the_backend_workspace_lease() {
-        assert!(!release_backend_on_drop(true, true));
-        assert!(release_backend_on_drop(true, false));
-        assert!(!release_backend_on_drop(false, false));
-    }
-
-    #[test]
-    fn peer_editor_transition_polls_without_a_local_surface_event() {
-        assert!(should_poll_dioxus(false, true, false));
-        assert!(should_poll_dioxus(false, false, true));
-        assert!(should_poll_dioxus(true, false, false));
-        assert!(!should_poll_dioxus(false, false, false));
-    }
-
-    #[test]
     fn only_active_editor_stage_accepts_input() {
         assert!(surface_input_enabled(true, true, true));
         assert!(!surface_input_enabled(true, false, true));
         assert!(!surface_input_enabled(true, true, false));
         assert!(surface_input_enabled(false, false, true));
-
-        assert!(!transition_input_enabled(false, false, false));
-        assert!(transition_input_enabled(false, false, true));
-        assert!(transition_input_enabled(true, true, false));
-        assert!(!transition_input_enabled(true, false, true));
     }
 
     #[test]
-    fn added_surface_does_not_replace_the_pinned_editor_host() {
-        let mut surfaces =
-            std::collections::BTreeSet::from(["canvas-b".to_owned(), "canvas-a".to_owned()]);
-
-        let pinned = editor_surface_host(&surfaces, None).unwrap();
-        assert_eq!(pinned, "canvas-a");
-
-        surfaces.insert("canvas-0-added".to_owned());
-        assert_eq!(
-            editor_surface_host(&surfaces, Some(&pinned)).as_deref(),
-            Some("canvas-a")
+    fn one_close_command_ends_the_editor_session_after_canvas_selection_changes() {
+        let mut phase = EditorPhase::Editing;
+        let mut workspace = NativeEditorSession {
+            selected_canvas: Some("canvas-a".into()),
+            selected_widget: Some("score".into()),
+            ..NativeEditorSession::default()
+        };
+        let mut suppressed = std::collections::BTreeSet::new();
+        replace_canvas_selection(
+            &mut workspace.selected_canvas,
+            &mut workspace.selected_widget,
+            Some("canvas-b".into()),
         );
+
+        assert_eq!(workspace.selected_canvas.as_deref(), Some("canvas-b"));
+
         assert_eq!(
-            editor_surface_host(&surfaces, Some("removed-canvas")).as_deref(),
-            Some("canvas-0-added")
+            apply_coordinator_command(
+                &mut phase,
+                &mut workspace,
+                &mut suppressed,
+                CoordinatorCommand::Close {
+                    reason: "close",
+                    correlation: None,
+                },
+            ),
+            Some(CoordinatorTransition::Closed {
+                reason: "close",
+                correlation: None,
+            })
+        );
+        assert_eq!(phase, EditorPhase::Display);
+        assert!(workspace.selected_canvas.is_none());
+        assert!(workspace.selected_widget.is_none());
+        assert_eq!(
+            apply_coordinator_command(
+                &mut phase,
+                &mut workspace,
+                &mut suppressed,
+                CoordinatorCommand::Close {
+                    reason: "close",
+                    correlation: None,
+                },
+            ),
+            None
         );
     }
 
@@ -5708,21 +5909,6 @@ mod skin_tests {
                 "{selector}: {rect:?}"
             );
         }
-    }
-
-    #[test]
-    fn canvas_list_does_not_replace_the_lease_state() {
-        assert!(control_updates_readonly(
-            &crate::control::Request::KeepAliveBackend {
-                backend: crate::runtime::Backend::Wayland,
-                editor_id: "editor".into(),
-            }
-        ));
-        assert!(!control_updates_readonly(
-            &crate::control::Request::GetBackend {
-                backend: crate::runtime::Backend::Wayland,
-            }
-        ));
     }
 
     #[test]

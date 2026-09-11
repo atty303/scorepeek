@@ -64,6 +64,10 @@ checkpoint; implementation history belongs in Git.
   outside the contract, while renderer projection generations remain run-local transport state.
   The Wayland rasterization cap remains a runtime setting outside the shared canvas editor transaction.
   Installed skin packages remain canvas-owned and immutable for each running projection.
+  The native adapter has one parent-owned editor coordinator and `NativeEditorSession` for its
+  phase, draft projection, active output, canvas/widget selection, gesture, undo and panel state.
+  Canvas and output workers are explicit display or editor-stage views; they do not elect a host,
+  own the workspace-open state, or independently acquire, keep alive and release the editor lease.
 - ADR 0141 makes the Gamescope receiver always request a 1920x1080-bounded capture domain. Gamescope
   can preserve aspect ratio, so the negotiated observed dimensions remain authoritative. Its
   startup full-output contract and corrupted transition buffer may be replaced only before the
@@ -312,7 +316,11 @@ checkpoint; implementation history belongs in Git.
   WebSocket; canvas lifecycle, skin/sample changes and editor close/reopen remain reload boundaries.
   A follow-up Browser run covered two canvases, UNKNOWN preview, widget placement and drag, canvas and
   widget properties, undo, save/reopen and discard/reopen without changing the iframe URL during
-  same-skin edits. The browser reports no warning or error. The checked-in Wayland runner starts
+  same-skin edits. A current 1920x1080 Codex Browser run also verified that the first canvas fills
+  the complete output, opacity changes preserve the 1920x1080 iframe and issue only a skin render
+  after its single initialization, widget creation and drag update in place, and Save/Close followed
+  by right-click reopen restores the saved 75-percent opacity and widget placement. The browser
+  reports no warning or error. The checked-in Wayland runner starts
   the production native child against an isolated config. Inside a real nested Scroll compositor, an
   empty workspace promoted its bootstrap stage to the discovered WL-1 1716x1494 output; compositor
   pointer input selected UNKNOWN and DJ BLACKBOX, created and saved a canvas with exact 1716x1494
@@ -366,8 +374,9 @@ checkpoint; implementation history belongs in Git.
   without preventing another output from processing editor state or shutting down. Every native
   present publishes a Wayland frame callback, and duplicate configure events with unchanged logical
   size, physical size and scale do not repaint. Each output keeps one deterministic
-  editor host surface for the lifetime of the workspace instead of transferring the editor when
-  canvas selection changes, and unchanged geometry does not issue another layer-surface commit.
+  editor stage view per output for the lifetime of the workspace instead of transferring editor
+  authority when canvas selection changes, and unchanged geometry does not issue another
+  layer-surface commit.
   The child remained live with all surface workers present, stopped cleanly, and produced no new
   coredump. A live right-drag and confirmation on this host produced neither compositor animation
   nor missing canvas background; this is one target-host confirmation, not a general compositor
@@ -377,9 +386,10 @@ checkpoint; implementation history belongs in Git.
   remained inside paint while its peer waited forever on the shared renderer mutex. The corrected
   run painted each 1140x1494 stage once, then completed app stop, renderer suspension, buffer detach
   and both worker joins without a timeout; terminal worker durations were 198 and 410 milliseconds.
-  Save first transitions every full-output editor stage out of editor display, then broadcasts stop
-  to all removed stages before joining them; normal canvas-owned surfaces are created afterward.
-  Structured workspace, per-stage, renderer-shutdown and surface-unmap records identify any missing
+  Save or Close first changes the parent coordinator phase, then broadcasts stop and wake to all
+  removed editor stages before joining their unmap completion. The lease is released after the
+  editor surface set is gone, and normal canvas-owned surfaces are created afterward. Structured
+  coordinator, per-stage, renderer-shutdown and surface-unmap records identify any missing
   transition without writing diagnostics into ordinary overlay output. If app dispatch and final
   buffer-detach publication both fail, the unmap failure remains the primary typed failure and the
   earlier app error remains in the native summary as a secondary failure. A disconnected active
@@ -387,11 +397,20 @@ checkpoint; implementation history belongs in Git.
   active-output replacement and shared widget/placement selection reset; the workspace epoch also
   invalidates each stage's local canvas, title and drag selection while persisted canvas output
   assignments remain unchanged.
+  Fresh two-output nested Scroll runs selected canvas-1 then canvas-2 and closed the clean editor
+  once. The latest selection painted in 42.3 milliseconds; Close applied in 0.44 milliseconds,
+  both editor stages completed unmap/join and the coordinator removed the previous surface set in
+  49.6 milliseconds, and the correlated backend release took 0.26 milliseconds. Screenshots of
+  both outputs contained no editor panel afterward. A separate dirty Save painted in 42.3
+  milliseconds, updated the draft in 0.55 milliseconds, committed in 0.41 milliseconds, removed
+  both stages in 59.6 milliseconds and released the lease in 0.26 milliseconds. Only afterward did
+  both display canvases start; their first paints arrived in 0.38 seconds. The run's cold editor
+  startup still exposed a roughly 2.04-second Wasmtime compile rather than a hidden timeout.
   A mixed-resolution model
   regression switches from a 1728x3072 output to 5120x1440 and moves a 560-pixel canvas to x=4560,
   proving that the active output and drag viewport change atomically. A fresh 28-operation native
-  PNG/layout/manifest run is complete with no selector-layout failures. The exact Save pointer action
-  and 5120x1440 movement remain target-interaction checks rather than claims from the nested output.
+  PNG/layout/manifest run is complete with no selector-layout failures. Exact 5120x1440 pointer
+  movement remains a target-interaction check rather than a claim from the nested output.
   A later target play session reproduced missing PNG widget backgrounds after semantic-screen canvas
   switching. The same image-present, image-absent, image-present sequence now reproduces headlessly:
   Vello 0.10 replaces its persistent image atlas on the image-free frame while retaining stale image
