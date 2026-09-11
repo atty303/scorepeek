@@ -418,7 +418,10 @@ checkpoint; implementation history belongs in Git.
   output is replaced by the first remaining output in stable order. A model regression verifies
   active-output replacement and shared widget/placement selection reset; the workspace epoch also
   invalidates each stage's local canvas, title and drag selection while persisted canvas output
-  assignments remain unchanged.
+  assignments remain unchanged. Output and epoch changes atomically clear shared selection and
+  interaction state. A stage that observes that epoch late resets only its local state, so selecting
+  the current output and then selecting its canvas cannot have that subsequent shared canvas
+  selection erased by delayed stage synchronization.
   Fresh two-output nested Scroll runs selected canvas-1 then canvas-2 and closed the clean editor
   once. The latest selection painted in 42.3 milliseconds; Close applied in 0.44 milliseconds,
   both editor stages completed unmap/join and the coordinator removed the previous surface set in

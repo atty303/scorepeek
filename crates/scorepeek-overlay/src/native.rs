@@ -441,6 +441,29 @@ struct NativeEditorSession {
     wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
 }
 
+fn observe_output_selection_epoch(
+    observed_epoch: &mut u64,
+    workspace: &NativeEditorSession,
+) -> bool {
+    if *observed_epoch == workspace.output_selection_epoch {
+        return false;
+    }
+    *observed_epoch = workspace.output_selection_epoch;
+    true
+}
+
+fn select_workspace_output(workspace: &mut NativeEditorSession, output: String) {
+    workspace.active_output = Some(output);
+    workspace.output_selection_epoch = workspace.output_selection_epoch.saturating_add(1);
+    replace_canvas_selection(
+        &mut workspace.selected_canvas,
+        &mut workspace.selected_widget,
+        None,
+    );
+    workspace.pending_widget = None;
+    workspace.interaction = None;
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SurfaceRole {
     DisplayCanvas,
@@ -2751,7 +2774,6 @@ impl App {
             interaction,
             wayland_refresh_hz,
             active_output,
-            output_selection_epoch,
         ) = {
             let workspace = self
                 .workspace_ui
@@ -2768,16 +2790,16 @@ impl App {
                 workspace.interaction.clone(),
                 workspace.wayland_refresh_hz,
                 workspace.active_output.clone(),
-                workspace.output_selection_epoch,
             )
         };
-        if self.output_selection_epoch != output_selection_epoch {
-            self.output_selection_epoch = output_selection_epoch;
-            self.workspace_ui
+        let output_selection_changed = {
+            let workspace = self
+                .workspace_ui
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .selected_canvas
-                .take();
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            observe_output_selection_epoch(&mut self.output_selection_epoch, &workspace)
+        };
+        if output_selection_changed {
             self.selected.set(None);
             self.pending_widget.set(None);
             self.interaction = None;
@@ -3232,12 +3254,14 @@ impl App {
                 .workspace_ui
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            workspace.active_output = Some(output.clone());
-            workspace.output_selection_epoch = workspace.output_selection_epoch.saturating_add(1);
-            workspace.interaction = None;
+            select_workspace_output(&mut workspace, output.clone());
             drop(workspace);
             self.interaction = None;
-            self.select_canvas(None);
+            self.selected.set(None);
+            self.pending_widget.set(None);
+            self.finish_title_edit(false);
+            self.finish_refresh_edit(false);
+            self.wake_workspace();
             return;
         }
         if !matches!(action, EditorAction::AcceptTitle | EditorAction::EditTitle) {
@@ -5397,6 +5421,48 @@ mod skin_tests {
         assert!(workspace.selected_widget.is_none());
         assert!(workspace.pending_widget.is_none());
         assert!(workspace.selected_canvas.is_none());
+    }
+
+    #[test]
+    fn same_output_epoch_observation_preserves_a_subsequent_canvas_selection() {
+        let mut workspace = NativeEditorSession {
+            active_output: Some("WL-1".into()),
+            selected_canvas: Some("canvas-on-wl-1".into()),
+            selected_widget: Some("score".into()),
+            pending_widget: Some(scorepeek_overlay_ui::WidgetKind::Score),
+            interaction: Some(Drag {
+                canvas: "canvas-on-wl-1".into(),
+                widget: None,
+                start: [0, 0],
+                corner: None,
+                original: Vec::new(),
+            }),
+            ..NativeEditorSession::default()
+        };
+        let mut immediate_peer_epoch = 0;
+
+        select_workspace_output(&mut workspace, "WL-1".into());
+        assert!(observe_output_selection_epoch(
+            &mut immediate_peer_epoch,
+            &workspace
+        ));
+        assert!(workspace.selected_canvas.is_none());
+        assert!(workspace.selected_widget.is_none());
+        assert!(workspace.pending_widget.is_none());
+        assert!(workspace.interaction.is_none());
+
+        replace_canvas_selection(
+            &mut workspace.selected_canvas,
+            &mut workspace.selected_widget,
+            Some("canvas-on-wl-1".into()),
+        );
+        let mut delayed_source_epoch = 0;
+        assert!(observe_output_selection_epoch(
+            &mut delayed_source_epoch,
+            &workspace
+        ));
+        assert_eq!(workspace.active_output.as_deref(), Some("WL-1"));
+        assert_eq!(workspace.selected_canvas.as_deref(), Some("canvas-on-wl-1"));
     }
 
     #[test]
