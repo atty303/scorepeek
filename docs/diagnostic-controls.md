@@ -114,9 +114,8 @@ destination path or artifact contents.
 
 ## Recording completeness
 
-Under [ADR 0116](decisions/0116-limit-recording-completeness-to-runtime-loss.md), completeness
-describes runtime persistence loss: queue/capacity limits, writer or encoder failure, unavailable
+Completeness describes runtime persistence loss: queue/capacity limits, writer or encoder failure, unavailable
 workers, abandoned admitted work, flush timeouts, and interrupted publication. It does not certify
 recognition accuracy or input validity. An operation may fail while its diagnostics are complete.
-Internal typed facts are not independently schema-validated by the recorder. Historical loss
-reasons remain readable; saved sessions are not rewritten by this change.
+Internal typed facts are not independently schema-validated by the recorder. Supported stored loss
+reasons remain readable.

@@ -54,7 +54,8 @@ be established, the field is `unknown`.
 | miss count, fast, slow, combo break | Supplemental result values | Complete non-negative value at most notes, a displayed dash as `not_displayed`, or an explicit `unknown(reason)`; unknown does not block the event |
 | previous best clear/score/miss | Reference snapshot | Each field is independently `known`, `not_displayed`, or `unknown(reason)`; recognized `NO PLAY` normalizes all three to `not_played`; score is at most `2 * notes` and miss is at most notes |
 | DJ level, score delta, NEW RECORD, percentage | Derived or excluded | Do not save from OCR; derive from score, notes, and previous score when needed |
-| options, graph, play speed, dead/loveletter, rival/radar | Deferred capability only after its named layout and presence/absence predicates pass a dedicated release gate | Complete field-specific evidence; no placeholder or fixed RANDOM value is emitted |
+| play options | Supplemental result value | The complete fixed panel ROI is parsed against the finite ordered vocabulary; two matching typed observations are required. Conflict or incomplete evidence is `unknown` and does not block an otherwise accepted result. |
+| graph, play speed, dead/loveletter, rival/radar | Not represented | No placeholder or inferred value is emitted. |
 
 A provisional result lifecycle value requires all mandatory result fields to be `known`, two
 matching numeric observations, joint catalog consistency, and an active RESULT attempt ID. It does
@@ -73,7 +74,9 @@ not get guessed values and do not block the shared result payload.
 | song | Always | Accepted central title and artist consistent with play mode, selected difficulty, selected level, and the active right-list title when readable |
 | selected difficulty and level | Always | Unique selected state and complete level consistent with the accepted catalog chart |
 | INFINITAS status | Catalog metadata, not an image field | `confirmed_present`, `unknown`, or `conflicted` from the active catalog snapshot; never inferred from source absence |
-| has score data, clear, DJ level, score, miss, per-difficulty levels | Optional v1 capability after each presence/absence predicate is calibrated | Unique complete values; validated no-score state makes score fields `not_applicable` |
+| score and miss count | Supplemental SELECT-best fields | Each value stabilizes independently after two equal fresh observations. An unreadable value is `unknown`; the measured dash pattern is explicit no-record. |
+| clear type | Supplemental SELECT-best field | One registered clear value after two equal fresh observations; explicit no-record clears the stored supplement. |
+| DJ level | Derived presentation | Calculated from EX SCORE and catalog notes; never OCR input. |
 
 `music_selection_changed` is a UI-only lifecycle. `Selected` requires a unique catalog song/chart
 under title, artist, selected difficulty, and stable SELECT play type. The resolver emits no initial
@@ -104,7 +107,7 @@ the separately calibrated stricter title/context policy. The event preserves
   not a coverage gap. The context does not infer mode, attempts, or play count.
 - Replay compares deterministic domain fields and issues. Transport event IDs
   and delivery wall time are excluded.
-- Every field needs positive, legitimate-absence where applicable, ambiguous,
-  corrupt, overlay, and negative fixture cases before it is advertised.
+- Every represented field needs positive, legitimate-absence where applicable,
+  ambiguous, corrupt, overlay, and negative fixture cases.
 - Adding a field or changing applicability is an event-schema change and must
   update this document, typed schema, corpus labels, and replay gates together.

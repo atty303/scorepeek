@@ -57,8 +57,7 @@ delivery without stopping recognition or the independent score consumer. The run
 a stale socket and removes only the inode it owns.
 
 Raw OCR, candidates, resolver scores, processing timings, paths, and history arrays stay outside the
-public API. Versioned run-event artifacts and existing bounded health samples retain diagnostic
-state. See [ADR 0139](decisions/0139-unify-result-state-and-provisional-persistence.md).
+public API. Versioned run-event artifacts and bounded health samples retain diagnostic state.
 
 ## SQLite interaction
 

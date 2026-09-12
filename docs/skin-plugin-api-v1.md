@@ -1,7 +1,7 @@
 # scorepeek skin plugin API v1
 
-This is the language-neutral authoring contract for `api_version = 1`. Before scorepeek's first
-public distribution, v1 may change in place as recorded by ADR 0143.
+This is the current language-neutral authoring contract for `api_version = 1`.
+Unknown API versions are rejected.
 
 ## ZIP layout
 

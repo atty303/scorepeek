@@ -2,34 +2,36 @@
 
 ## Authority and scope
 
-- This repository is the source of truth for `scorepeek` design and future
-  implementation.
+- This repository is the source of truth for the current `scorepeek` design
+  and implementation.
 - Do not edit, vendor, merge, subtree, cherry-pick, or import runtime data from
   the upstream `kaktuswald/inf-notebook` repository. It may be consulted once
   as a research hint, but committed layout values must be independently
   measured from scorepeek captures. Upstream code, coordinates, resources,
   catalogs, and generated artifacts are not project inputs.
-- The accepted roadmap is `docs/plan.ja.md`. Long-lived decisions live under
-  `docs/decisions/`; supersede an ADR with a new ADR instead of rewriting an
-  accepted decision.
-- The current milestone is capture, recognition, and the versioned event API.
-  ADR 0120 includes local score persistence as an independent event consumer; ADR 0122 adds native and OBS live overlays as independent consumers.
+- Keep only living artifacts in the current tree. Current capabilities and
+  operation belong in README, architecture and domain references; current
+  unfinished work belongs in `docs/plan.ja.md`. Superseded design, completed
+  work, experiments and point-in-time verification belong in Git history.
 
-## Checkpoint and resumption
+## Task start and resumption
 
-- At task start, take the repository VCS snapshot first, then read `STATUS.md`,
-  `docs/plan.ja.md`, and the active ADR index at `docs/decisions/README.md`.
-- `STATUS.md` is the single source of truth for the state included in its
-  commit. Replace it when updating; do not use it as an append-only log.
-- When a logical commit changes the milestone, verified/unverified boundary,
-  blocker or required approval, or next executable task, update `STATUS.md` in
-  that same commit.
+- At task start, take the repository VCS snapshot first, then read `README.md`,
+  `docs/architecture.md`, `docs/plan.ja.md`, and the domain references
+  relevant to the change.
+- Treat committed code and tests as implementation facts. Treat current
+  references and user-confirmed contracts as intent. If they conflict in a way
+  that changes user-visible behavior or unfinished scope, stop and ask instead
+  of guessing.
+- When a logical commit changes current behavior, update or remove its owning
+  living documentation in that commit. When planned work is completed or
+  abandoned, remove it from `docs/plan.ja.md` in that commit.
 - A dirty working tree is outside the committed checkpoint. Inspect every
   existing change and preserve it; never discard, overwrite, or describe it as
   checkpoint state.
-- Use Git history for work history. Keep conversation history, experiments,
-  rejected candidates, and trial-and-error details out of `STATUS.md`; record
-  only verified facts and the next execution boundary.
+- Use self-contained commit messages and approved Git notes for work history.
+  Do not create repository documents whose only purpose is to preserve old
+  decisions, completed checkpoints, rejected candidates, or trial-and-error.
 
 ## Engineering rules
 
@@ -48,8 +50,8 @@
   External catalog adapters must preserve source revision, lineage, provenance,
   and content hashes; they must parse data without executing downloaded code.
 - OCR models, dictionaries, and configs require immutable revisions, hashes,
-  licenses, and reproducible export records. ADR 0050 permits only the fixed registered
-  PP-OCRv6-small bundle to be fetched into the XDG cache during common CLI initialization;
+  licenses, and reproducible export records. Only the fixed registered
+  PP-OCRv6-small bundle may be fetched into the XDG cache during common CLI initialization;
   unregistered runtime downloads, alternate-model selection, and arbitrary local model paths
   remain prohibited.
 - Catalog federation must not use fuzzy identity merging, weighted majority, or
@@ -124,14 +126,13 @@
   server and remove agent-owned temporary artifacts after inspection. See
   `docs/overlay-visual-debugging.md` for scenario actions and artifact semantics.
 - Compare native and browser images manually to find unsupported native CSS or paint differences;
-  pixel equality is not an acceptance condition. Treat these as development-host evidence only.
-  Actual Wayland composition and input delivery, and rendering inside OBS, remain separate explicit
-  live verification boundaries.
-- Keep live Bazzite/Portal/OBS/Gamescope/GPU tests as explicit tasks. Never
-  represent development-host or synthetic success as target-machine
-  validation.
-- Before declaring a capture backend supported, satisfy its target performance,
-  lifecycle, and recognition gates from the plan.
+  pixel equality is not an acceptance condition. Browser integration, fake Wayland and the checked-in
+  nested compositor scenario are the routine completion gates. Use actual Wayland composition/input
+  or rendering inside OBS when investigating an adapter-specific failure or when the user explicitly
+  requests a live check; they are not standing gates for every overlay change.
+- Keep operations against live Bazzite, Gamescope, OBS, or GPU state as
+  explicit tasks. Never represent development-host or synthetic success as
+  target-machine validation.
 
 ## Version control
 

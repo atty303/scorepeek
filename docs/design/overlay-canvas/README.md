@@ -7,7 +7,7 @@ selection gates and shared native/browser verification workflow. Existing master
 the references for their respective skins; adding the skill does not redesign them retroactively.
 
 These independently generated mockups define the worlds and information design of the three bundled overlay
-skins. ADR 0133 makes these sheets the reference for faithful panel proportions, contours,
+skins. They are the current reference for faithful panel proportions, contours,
 materials, typography hierarchy and information density. Runtime values remain semantic and charts retain their data meaning.
 
 - `cyan-system.png`: technical navy, silver and cyan
@@ -24,9 +24,8 @@ material edges and graph axes in addition to the five-widget arrangement.
 
 ## Material reference
 
-The initial imagegen concepts in Codex task `01a06cdb-d1c0-7621-8759-0cf6b8ed9e18`
-are the reference for material detail. The five-widget sheets above retain authority over
-information structure; their flatter rendering does not replace the initial material treatment.
+The five-widget sheets above own information structure. The checked-in frame artwork owns the
+material treatment:
 
 - CYAN SYSTEM: layered luminous rails, dark geometric glass at edges, silver-white type.
 - RESULT AURORA: crystalline silver bevels, purple corner joints, a fine gold inner rim,
@@ -72,18 +71,7 @@ Keep the below-baseline metrics in `typography.rs` synchronized when changing th
 
 ## Stream composition materials
 
-ADR 0138 adds optional `*-background.png` assets for canvas gaps. The built-in image generation tool
-created these independent textures from the existing generated design references on 2026-09-07.
-They contain no game imagery or baked-in widgets. The generation prompts requested:
-
-- Result Aurora: full-canvas violet/indigo faceted glass and diagonal light ribbons, with occasional
-  gold sparks; extend the approved stream mockup's gap texture, removing all frames and text.
-- Cyan System: angular navy machined planes, cyan light conduits and fine precision circuitry,
-  distributed across the canvas so narrow gaps expose recognizable texture.
-- DJ Blackbox: overlapping graphite and brushed gunmetal planes, perforated metal, restrained lime
-  and amber seams, preserving the original hardware world.
-
-All three requested a 16:9 landscape texture, no text, logos, border, foreground object or UI,
-and visible medium-scale material variation rather than a mostly black surface. Runtime composition
-uses the unchanged generated PNGs in `crates/scorepeek-overlay-ui/assets/skins/`, with a separate
-slow light layer for optional motion. Aperture geometry and frame width remain semantic code.
+The `*-background.png` assets fill canvas gaps without game imagery or baked-in widgets.
+They are 16:9 textures with no text, logo, border, foreground object, or UI. Runtime composition
+uses the checked-in PNGs in `crates/scorepeek-overlay-ui/assets/skins/`, with a separate slow
+light layer for optional motion. Aperture geometry and frame width remain semantic code.

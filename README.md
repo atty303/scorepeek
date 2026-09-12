@@ -1,76 +1,68 @@
 # scorepeek
 
 `scorepeek` is a private, Linux-first companion that turns IIDX game screens
-into structured recognition events. It is an independent implementation: the
-Windows application that inspired the project is neither a Git parent nor a
-runtime, catalog, resource, or release input.
+into structured recognition events, local score history, and live overlays. It
+is an independent implementation: the Windows application that inspired the
+project is neither a Git parent nor a runtime, catalog, resource, or release
+input.
 
-## Status
+## Current capabilities
 
-The repository currently contains the accepted design, research evidence,
-validation scaffold, a Rust target-inventory probe, and the first catalog-core
-slice: strict synthetic fixture adapters, deterministic fail-closed federation,
-quarantine results, durable content-addressed local snapshots, and bounded live
-Tachi, Textage, and dqn/iidxapi acquisition through `scorepeek catalog sync`.
-It also contains an opt-in daily systemd user schedule for that same command.
-The offline-only `scorepeek-corpus` tool now owns the first private-corpus
-contract, bounded content-addressed source ingest, canonical complete-label
-authoring, deterministic episode/replay-index generation, a seed-only
-procedural synthetic title renderer, and replay-index validation.
-It also pins an offline static FFmpeg/ffprobe toolchain for bounded private
-media probing and explicit observed RGB8 frame extraction. Complete recording
-runs can be imported as reusable dataset roots, sealed by digest, and
-explicitly synchronized with private S3-compatible storage. Shared canonical
-normalization, a measured result layout, and a locked offline PP-OCRv6 field
-spike are implemented for one exact OBS/vkcapture profile and recording. The
-same title crop now passes a diagnostic Paddle/official-ONNX/Rust parity gate
-for the complete preprocessed input, exported CTC probability tensor, and token
-order. Rust also scores every exactly encodable non-search title in one active
-catalog through a shared CTC trie and fails closed against explicit absolute and
-runner-up thresholds or incomplete registered-dictionary coverage. A supported
-capture route, training/export pipeline, and runnable recognition service are
-not yet implemented.
+The current Rust runtime:
 
-The first implementation milestone is:
+- synchronizes and fail-closed federates Tachi, Textage, and dqn/iidxapi
+  catalog data;
+- creates machine-local Gamescope capture profiles and receives Gamescope
+  direct PipeWire frames;
+- normalizes admitted BGRx frames to contiguous RGB8 1920x1080;
+- recognizes semantic screens, song/chart identity, RESULT performance,
+  play options, and MUSIC SELECT self-best values with registered text and
+  numeric models;
+- publishes Event API v2 snapshots and ordered NDJSON on
+  `$XDG_RUNTIME_DIR/scorepeek/events.sock`;
+- persists provisional, retracted, and confirmed results plus SELECT
+  supplements in SQLite;
+- renders independent Wayland and OBS overlays from installable Wasm/CSS skin
+  packages; and
+- optionally records bounded diagnostics and canonical sessions for private
+  corpus replay.
 
-```text
-opaque capture-profile frame
-  -> versioned domain normalizer
-  -> conceptual canonical RGB8 1920x1080 frame
-  -> scorepeek-owned field recognizers
-  -> CTC title logits scored against a federated IIDX catalog
-  -> fail-closed Unix-socket NDJSON events
-```
+The Gamescope runtime, recognition, score persistence, and overlay paths have
+also been exercised on the target machine. Browser integration, fake Wayland,
+and the checked-in nested compositor scenario remain the routine reproducible
+overlay gates.
 
-The game-session runtime will be Rust. Python is limited to reproducible,
-offline OCR tooling: the current Paddle inference spike, later training, and
-ONNX export.
+The game-session runtime is Rust. Python is limited to reproducible offline OCR
+preparation, training, and ONNX export tooling.
 
 ## Project boundaries
 
-- Own one game layout in the canonical frame contract and calibrate each
-  capture profile to it; do not copy upstream code, coordinates, visual
-  resources, or music data.
-- Synchronize Tachi, Textage, and an official-INFINITAS-derived roster locally,
-  preserving source lineage and quarantining ambiguous federation results.
-- Use catalog strings only as an inference-time OCR lexicon, not as model
+- Own the canonical game layout and independently measure every committed
+  coordinate from scorepeek captures. Do not copy upstream code, coordinates,
+  visual resources, catalogs, or generated artifacts.
+- Calibrate the Gamescope capture profile explicitly. Runtime recognition does
+  not remeasure geometry, relax thresholds, switch profiles, or fall back to a
+  different capture route.
+- Preserve source lineage and quarantine ambiguous catalog federation results.
+- Use external catalog strings only as runtime decoder input, not as OCR
   training text.
-- Keep real captures and labels, raw source snapshots, generated catalogs,
-  models, player data, and credentials outside the repository.
-- Validate Wayland Portal, Gamescope direct PipeWire, and a conditional OBS
-  profile independently on the target Bazzite machine before selecting a
-  default; none is a pixel correctness reference.
-- Persist local scores as an independent event consumer; keep UI and external-service integration outside v1.
+- Keep real captures and complete labels, raw source snapshots, generated
+  catalogs, private models, player data, and credentials outside the
+  repository, except for explicitly approved synthetic or narrow template
+  fixtures.
+- Fail closed: missing resources, ambiguous evidence, schema drift, or
+  unsupported input produce typed unavailability rather than guessed values.
 
-See [the current committed checkpoint](STATUS.md),
-[the Japanese implementation plan](docs/plan.ja.md), the
-[architecture overview](docs/architecture.md), the
-[source policy](docs/sources.md), and [research evidence](docs/research.md).
+See the [architecture map](docs/architecture.md),
+[current implementation plan](docs/plan.ja.md),
+[field semantics](docs/field-semantics.md),
+[Event API v2](docs/event-api.md), and
+[external source policy](docs/sources.md).
 
 ## Local distribution
 
-Cargo-dist 0.32.0 builds the ordinary Linux x86-64 CLI archive locally. This repository does not
-publish a GitHub Release, tag, installer or source archive.
+Cargo-dist 0.32.0 builds the Linux x86-64 CLI archive locally. This repository
+does not publish a GitHub Release, tag, installer, or source archive.
 
 ```text
 mise run dist:plan
@@ -78,9 +70,8 @@ mise run dist:build
 mise run dist:test
 ```
 
-The build writes `target/distrib/scorepeek-x86_64-unknown-linux-gnu.tar.xz` and its `.sha256`
-sidecar. Verify the checksum, extract the archive and copy the executable to the usual user-local
-binary directory:
+The build writes `target/distrib/scorepeek-x86_64-unknown-linux-gnu.tar.xz`
+and its `.sha256` sidecar:
 
 ```text
 cd target/distrib
@@ -91,179 +82,165 @@ scorepeek --version
 scorepeek doctor
 ```
 
-The archive does not contain private catalogs, OCR models, capture bindings, frames or credentials.
-Catalogs remain separately managed operator data under `$XDG_DATA_HOME/scorepeek` (normally
-`$HOME/.local/share/scorepeek`). The fixed PP-OCRv6-small model is different: the first ordinary
-command downloads its three registered files from the immutable official revision and publishes
-them below `$XDG_CACHE_HOME/scorepeek/models` (normally `$HOME/.cache/scorepeek/models`). The
-registered source is Apache-2.0. `--help`, `--version`, and `doctor` do not initialize the model.
-Deleting the cache is safe; the next ordinary command downloads it again and therefore needs a
-network connection. For offline use, successfully run one ordinary command while online first.
-The release task itself does not acquire the model or include it in the archive.
-Developers may instead provide a complete fixed small bundle with
-`scorepeek --model-bundle /absolute/directory <command...>`; scorepeek verifies the same registered
-contract and does not use the network. This is not an alternate-model selector.
+The archive does not contain catalogs, OCR models, capture profiles, frames,
+scores, or credentials.
 
-RESULT and MUSIC SELECT digits require the separately frozen private numeric bundle. The current
-registration uses the SELECT-adapted HOG/MLP weights (ADR 0115); older bundles do not satisfy it.
-Install its create-only,
-digest-bound model before `run` with
-`scorepeek numeric-model install --bundle /absolute/numeric-model-bundle`. There is no general-text
-numeric fallback: a missing or mismatched active bundle makes `run` fail closed. `scorepeek doctor`
-uses `scorepeek-doctor-v2`; it reports the unchanged `scorepeek-target-inventory-v1` under
-`target_inventory` and the active numeric model identity or typed unavailability under
-`numeric_model`.
+## Catalog and models
 
-After transferring or synchronizing one active catalog, create a capture profile on the machine
-that will run the game. Scorepeek starts and stops a dedicated calibration Gamescope containing its
-own marker; arguments after `--` are used only to launch that calibration process:
+`scorepeek catalog sync` acquires source data, federates it, and atomically
+activates a valid snapshot under `$XDG_DATA_HOME/scorepeek` (normally
+`$HOME/.local/share/scorepeek`). A failed sync leaves the last-known-good
+catalog active.
+
+```text
+scorepeek catalog sync
+```
+
+The fixed registered PP-OCRv6-small files are fetched from their immutable
+official revision into `$XDG_CACHE_HOME/scorepeek/models` during common CLI
+initialization. `--help`, `--version`, `doctor`, `numeric-model install`, and
+`skin install`, `skin list`, or `skin uninstall` bypass that initialization;
+other commands initialize the bundle before dispatch even when they do not
+perform OCR themselves. For offline use, run one of those initializing commands
+while online first. Developers may provide the same complete registered bundle with
+`scorepeek --model-bundle /absolute/directory COMMAND ...`; this is not an
+alternate-model selector.
+
+RESULT and MUSIC SELECT digits use the installed private fixed-slot HOG/MLP
+numeric bundle. Install it create-only before `run`:
+
+```text
+scorepeek numeric-model install --bundle /absolute/numeric-model-bundle
+```
+
+A missing or mismatched active numeric bundle makes recognition fail closed;
+the text recognizer is not a numeric fallback. `scorepeek doctor` reports the
+target inventory and active numeric model identity or typed unavailability.
+
+The optional user-systemd schedule invokes the same catalog sync operation:
+
+```text
+mise run catalog:schedule:systemd:verify
+mise run catalog:schedule:systemd:install
+```
+
+Installation and enabling are explicit operations. The live schedule test uses
+isolated temporary XDG roots and removes its acquired data:
+
+```text
+mise run catalog:schedule:systemd:test:live
+```
+
+## Gamescope setup and run
+
+Create a capture profile on the machine that runs the game. Scorepeek starts
+and stops only a dedicated calibration Gamescope containing its own marker;
+arguments after `--` belong to that calibration process.
 
 ```text
 scorepeek setup gamescope --profile bazzite-4k -- -W 3840 -H 2160 -w 1920 -h 1080 -r 120 -S fit -F linear
 scorepeek profile list
 ```
 
-Setup stores the profile under `$XDG_CONFIG_HOME/scorepeek/profiles` (normally
-`$HOME/.config/scorepeek/profiles`). Operator-selected local roots and inputs follow normal
-filesystem symlinks, including Bazzite's `/home -> /var/home`; resolved files still have to satisfy
-their type, size, digest, schema, and admission contracts. Setup measures the positive
-axis-aligned X/Y scale and translation from the captured marker and saves only the observed BGRx
-dimensions and rational source rectangle needed by the production normalizer. Padding,
-non-centered and fractional offsets, non-integer or different X/Y scales, and aspect distortion
-are accepted when every canonical pixel-center sample is present; a signed half-pixel source
-origin can represent normal scaler phase. Crop, rotation, mirror, shear,
-perspective, or unreadable marker interiors are rejected because the current normalizer cannot
-recover them. Gamescope version, backend, filter, scaler, refresh, launch arguments, stride, and
-memory allocation are not profile identity.
+Profiles are stored below `$XDG_CONFIG_HOME/scorepeek/profiles` (normally
+`$HOME/.config/scorepeek/profiles`). Setup measures positive axis-aligned X/Y
+scale and translation and stores the observed BGRx dimensions and rational
+source rectangle. Padding, non-centered or fractional offsets, unequal X/Y
+scales, and aspect distortion are accepted when every canonical sample is
+present. Crop, rotation, mirror, shear, perspective, and unreadable marker
+interiors are rejected.
 
-Setup does not start INFINITAS and proves only the capture transform; it does not turn an
-unverified configuration into a supported profile. Existing local profile schemas must be
-recreated with setup. Start the watcher before or after the ordinary Gamescope/game session:
+Start scorepeek before or after the ordinary Gamescope/game session:
 
 ```text
-scorepeek run --profile bazzite-4k --record
+scorepeek run --profile bazzite-4k
 ```
 
-The default shared recording-memory limit is 1024 MiB. Override it for a recorded invocation with:
+When exactly one profile exists, `--profile` may be omitted. Scorepeek waits
+for exactly one Gamescope video source and stays alive across sequential source
+lifetimes. It does not start, stop, signal, or restart the operator's ordinary
+Gamescope, Steam, or game processes.
+
+Recording is disabled by default. Add `--record` to retain structured
+capture, recognition, event, and canonical replay artifacts. The shared
+recording-memory limit defaults to 1024 MiB:
 
 ```text
 scorepeek run --profile bazzite-4k --record --record-memory-mib 2048
 ```
 
-When exactly one profile exists, `scorepeek run` selects it automatically. Multiple profiles require
-`--profile NAME`. Recording is disabled by default; add `--record` to retain structured watcher,
-diagnostic, recognition, event, and canonical replay artifacts. Routine recording does not retain
-legacy QOI images beside the canonical segments. The TUI reports recording memory usage and marks
-the session `degraded` immediately after a recording loss; `recording_ready` means the atomically
-published session can be imported even while the watcher continues running. The watcher waits when no source
-exists, attaches only when exactly one Gamescope video source exists, and stays running across
-sequential Gamescope lifetimes. A unique startup source that is not ready for admission is retried at
-a bounded interval, so scorepeek can remain running while Gamescope and the game finish starting.
-Stop scorepeek with SIGINT (normally Ctrl-C) or SIGTERM. Scorepeek
-does not start, signal, stop, or restart ordinary Gamescope, Steam, or INFINITAS processes.
-Each Gamescope session is admitted from the actual source format, dimensions, current byte layout,
-and saved geometry. Music-select/result scene detection and OCR during ordinary `run` are the
-authority for recognition support; scorepeek does not re-estimate geometry or switch profiles at
-runtime.
+Recording loss marks evidence degraded but does not change recognition,
+events, or score persistence. See [private corpus](docs/private-corpus.md) and
+[diagnostic controls](docs/diagnostic-controls.md).
 
-On a terminal, `run` shows Watcher, Latest result, Music Select Resolver, and RESULT/attempt
-Resolver panes. Latest result explicitly shows inactive, provisional, retracted, or confirmed state;
-only confirmed results enter the count/history. The Music Select Resolver shows
-selected chart identity, self-best SCORE/MISS/clear values, per-field `1/2` stabilization, and the
-snapshot output gate/revision. Missing identity evidence retains the interval as `held`, blocks
-value adoption and restarts field stabilization. UNKNOWN suspends the retained interval. Contrary
-song/mode/difficulty evidence clears values; SELECT exit returns it to inactive. Recovery with
-identical values does not re-emit a snapshot. The 80x25 layout keeps existing attempt gates visible.
-DJ rank is calculated from EX SCORE and chart notes, not recognized from the screen.
+## Events and scores
 
-Machine consumers connect to `$XDG_RUNTIME_DIR/scorepeek/events.sock` for an initial
-`scorepeek-event-snapshot-v2` followed by `scorepeek-event-v2` NDJSON. One `result_changed` event
-publishes inactive, provisional, retracted, and confirmed RESULT state, alongside current selection,
-supplemental SELECT best, and operational status. Raw OCR
-and resolver diagnostics stay internal and in opt-in recordings. The old observation socket is removed.
-Reconnection restores current state; this live API does not recover every missed play or implement
-history replay. An independent in-process consumer saves scores without requiring a socket connection.
-Redirected stdout remains deduplicated human-readable status.
-See [Event API v2](docs/event-api.md) for wire fields, consumer state and delivery limits, and
-[the SELECT best decision](docs/decisions/0114-observe-music-select-best-snapshots.md).
+On a terminal, `run` shows Watcher, Latest result, Music Select Resolver, and
+RESULT/attempt Resolver panes. Latest result explicitly shows inactive,
+provisional, retracted, or confirmed state; only confirmed results enter the
+process count/history.
 
-`run` saves provisional plays immediately and confirms or retracts the same attempt in
-`$XDG_DATA_HOME/scorepeek/scores.sqlite3`
-(defaulting to `$HOME/.local/share/scorepeek/scores.sqlite3`). Use `--scores-db PATH` to select another
-DB, including a guest DB, or `--no-scores` to disable saving. These options are independent of
-`--record`; switching DBs requires restarting run. A selected DB is never silently replaced by the default.
+Machine consumers receive one `scorepeek-event-snapshot-v2` followed by
+`scorepeek-event-v2` records from
+`$XDG_RUNTIME_DIR/scorepeek/events.sock`. Reconnection restores current
+state, not a complete event log. Raw OCR, candidates, resolver metrics, and
+recording paths remain internal. See [Event API v2](docs/event-api.md).
 
-SELECT-only charts are saved without creating plays. SELECT retains only the latest known supplement
-per field, allowing later observations to correct it; unknown/not-displayed leave it unchanged.
-Explicit no-record clears that supplemental field. Combined bests use RESULT history, its previous-best
-values and current SELECT supplements. Guest DBs still receive the current game account's supplements.
-Save failure is shown as degraded while recognition continues. An abnormal end promotes a remaining
-provisional play to confirmed on the next database open and records recovery provenance; a committed
-retraction is removed immediately. See [the current result lifecycle](docs/decisions/0139-unify-result-state-and-provisional-persistence.md)
-for schema, source attribution, failure limits and timestamp semantics. No history query CLI is included.
+The independent in-process score consumer writes
+`$XDG_DATA_HOME/scorepeek/scores.sqlite3` by default. Select another database
+or disable persistence per invocation:
 
-### Live overlays
-
-The release executable embeds both renderers. Enable either or both and optionally select the
-strict TOML document:
-
-```sh
-scorepeek run --overlay-wayland --overlay-obs --overlay-config ./overlay.toml
+```text
+scorepeek run --scores-db /absolute/guest.sqlite3
+scorepeek run --no-scores
 ```
 
-Without `--overlay-config`, the document is `$XDG_CONFIG_HOME/scorepeek/overlay.toml` (or the
-standard HOME fallback). The first run creates schema-v2 status, MUSIC SELECT, DECIDE/PLAY and
-RESULT canvases for each backend. Use `http://127.0.0.1:3939/overlay` for one full-screen OBS Browser
-Source, or a stable URL such as `http://127.0.0.1:3939/canvas/obs-selection` for one canvas. The
-listen address is `obs_listen` in TOML. Omit both enable flags for an overlay-free run.
+Provisional RESULTs are saved immediately, retractions delete the same
+attempt, and RESULT finalization confirms it. SELECT-only charts may hold
+current per-field supplements without creating plays. Save failure degrades
+score health while recognition and Event API delivery continue.
 
-Right-click anywhere on the Wayland canvas or the OBS page in Browser Source Interaction to enter
-its editor; DONE is the only exit. Drag/resize widgets, add or remove them, switch among installed
-skins, and configure manifest-declared appearance properties. OBS also manages its canvas
-list there. Each canvas can be always visible or restricted to MUSIC SELECT, MODE SELECT, DECIDE,
-PLAY and RESULT; UNKNOWN and socket loss retain the previous layout for the configured grace period.
-Wayland content opacity, canvas z-order and the grace period are also editable without a keyboard.
-Wayland normally uses left-drag to move a canvas, keeps at least 32 pixels visible on its
-selected output, and recreates a surface when its output selection changes. When `output` is absent,
-the initial native canvas uses the first named output in stable name order and a 20-pixel upper-right
-inset, so its editor is reachable on a multi-output desktop. An absent or disconnected configured
-output is replaced in TOML with that reachable output. Selecting another output in the editor saves
-that explicit choice. All edits pass through the parent and are atomically saved to TOML.
+## Live overlays
 
-Selection shows title/artist plus a separate SP/DP, difficulty, level and notes rail. Score, recorded
-state, RESULT detail and history come only from committed SQLite readback. History dates use local
-notification time. The graph labels DJ LEVEL thresholds and uses a fixed 0-100% MISS RATE axis.
-`--no-scores` disables those DB-derived values. Overlay failure does not stop recognition or saving.
-See [the screen-aware canvas contract](docs/decisions/0127-switch-overlay-canvases-by-semantic-screen.md) and
-[RESULT ingest lifecycle](docs/decisions/0126-publish-result-ingest-lifecycle.md).
+Enable either or both renderers and optionally select the strict schema-v8 TOML
+document:
 
-Canvas composition is produced by the selected skin's package-owned Wasm DOM, CSS and resources.
-The host retains canvas/widget geometry, empty-widget aspect locks and canvas opacity.
-Native title editing uses Enter/APPLY to confirm and Esc/CANCEL to cancel; navigating away cancels
-an unfinished title. Confirmed edits join the normal backend draft and its UNDO/SAVE/DISCARD flow.
-Japanese conversion uses the compositor's text-input-v3 IME. The native runtime requires
-`libxkbcommon.so.0`; mise supplies fixed XKB build metadata and libraries without host development
-packages. Keyboard focus is requested only during an explicit title edit.
+```text
+scorepeek run --overlay-wayland --overlay-obs --overlay-config /absolute/overlay.toml
+```
 
-Build the repository examples with `mise run overlay:skins:build`, then install one with
-`scorepeek skin install target/skins/cyan-system.zip`; `scorepeek skin list` and
-`scorepeek skin uninstall ID` provide the other local management operations. Skin ZIPs are not
-embedded in the scorepeek binary. Development: `mise run overlay:web:check` needs no bundle;
-`mise run overlay:web:test` builds and checks real assets and owned-child cleanup.
-`mise run overlay:test:live
---scores-db PATH` is an explicit desktop gate requiring a dedicated test database. GUI and target
-performance verification remain separate from unit tests.
+Without `--overlay-config`, the document is
+`$XDG_CONFIG_HOME/scorepeek/overlay.toml`. A missing document starts with
+empty Wayland and OBS workspaces; the editor creates canvases. For OBS, use
+`http://127.0.0.1:3939/overlay` for the complete workspace or
+`http://127.0.0.1:3939/canvas/CANVAS_ID` for one canvas. `obs_listen`
+controls the listen address.
 
-and leaves `mise run catalog:sync` as the manual route.
+Right-click the Wayland stage or OBS page in Browser Source Interaction to
+enter the shared editor. Canvas movement uses secondary-button drag; widget
+movement and resize use the primary button. Each canvas has an explicit output,
+name, screen visibility, opacity, geometry, widgets, and installed skin.
+Disconnected outputs and invalid geometry remain explicit editor errors until
+the operator reassigns or fits them. A legacy document without canvas outputs
+is upgraded only after named output discovery can assign the stable first
+output.
 
-`mise run catalog:schedule:systemd:verify` can also perform that non-mutating
-unit validation independently. `mise run catalog:schedule:systemd:test:live` is an explicit
-networked live gate: it uses private temporary XDG roots and a transient
-one-second timer, starts a manual sync while the scheduled run holds the writer
-lock, verifies both aggregate-only invocations succeed, and removes the
-acquired bytes and generated catalog afterward. Output equality is reported but
-is not required because an upstream source may legitimately change between the
-serialized acquisitions. It does not install or enable the persistent timer.
+Score, recorded state, RESULT detail, history, and graphs come only from
+committed SQLite readback. Overlay failure does not stop recognition, score
+persistence, or the other backend. Canvas DOM, CSS, and resources come from
+the selected skin package; the host owns canvas/widget geometry and semantic
+input. See [skin plugin API v1](docs/skin-plugin-api-v1.md) and
+[overlay visual debugging](docs/overlay-visual-debugging.md).
+
+Build and install the repository skins explicitly:
+
+```text
+mise run overlay:skins:build
+scorepeek skin install target/skins/cyan-system.zip
+scorepeek skin list
+```
+
+Skin ZIPs are not embedded in the executable.
 
 ## Licensing
 
@@ -271,11 +248,3 @@ No public license or redistribution grant is asserted. Development is private,
 and every external source, font, model, and runtime artifact must retain its
 provenance, immutable revision, digest, and applicable license or permission.
 Third-party data is fetched locally and is not republished from this repository.
-
-### Overlay skins
-
-CYAN SYSTEM, RESULT AURORA and DJ BLACKBOX are stored per canvas in TOML and can be changed from the
-canvas editor. The native and browser renderers share the same semantic DOM and CSS skin variables.
-Approved generated frame and aurora artwork is embedded as CSS backgrounds; live text and SVG/chart
-values are never baked into those images. Oxanium is embedded for Latin/numeric text and Japanese
-uses system-font fallback. See the [approved design masters](docs/design/overlay-canvas/README.md).

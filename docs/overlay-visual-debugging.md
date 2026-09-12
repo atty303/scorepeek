@@ -116,8 +116,9 @@ Also exercise output navigation, UNKNOWN preview, add/delete/undo, save/reopen a
 these cover state transitions that a single drag does not.
 
 Native and browser images are evidence for human or Codex comparison; pixel equality is not an
-acceptance condition. Actual Wayland composition/input delivery and rendering inside OBS remain live
-verification boundaries.
+acceptance condition. Browser integration, fake Wayland, and the checked-in nested compositor
+scenario are the routine completion gates. Use actual Wayland or OBS when investigating a
+backend-specific failure.
 
 A scenario may set `skin` to any installed reverse-domain skin ID. The visual tasks build and
 install the three repository packages into an isolated XDG store before running the scenario.
@@ -189,7 +190,7 @@ The selected canvas or widget also carries one noninteractive high-contrast labe
 name and viewport-relative `x,y · width×height` geometry. The label remains present between gestures;
 dragging and resizing update the same shared DOM text. For a selected EMPTY widget it replaces the
 otherwise duplicated empty-aperture geometry label.
-Browser capture and actual Wayland composition/input remain separate verification gates.
+Browser capture and native rendering remain distinct evidence surfaces.
 
 `tests/fixtures/visual-empty-editor.json` starts with no visible canvas and toggles the
 last canvas on/off. Inspect the panel, scroll body and footer in every PNG/layout pair;

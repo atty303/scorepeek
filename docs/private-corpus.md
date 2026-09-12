@@ -8,7 +8,7 @@ objects, or deduplicate frames by pixel content.
 ## Recording boundary
 
 `scorepeek run` performs production recognition without saving artifacts. `scorepeek run --record`
-starts capture diagnostics, recognition observation v22, run-event v11, the canonical session
+starts capture diagnostics, recognition observation v22, run-event v12, the canonical session
 recorder, and joined diagnostic session v5 together. `--profile NAME` may appear before or after
 `--record`. Routine capture diagnostics retain structured facts but no legacy QOI pixels. The
 canonical recording is therefore the session's only retained frame authority.
@@ -32,7 +32,7 @@ While a session is active, every temporary component is grouped under
 Successful joined-session publication removes the whole staging session. Publication failure keeps
 that one session tree intact for diagnosis. The immutable joined result remains at
 `$XDG_STATE_HOME/scorepeek/diagnostic-sessions/<session-id>/`. No separate watcher-status file is
-written; the TUI, observation socket, and run-event stream are the watcher observation surfaces.
+written; the TUI, public event socket, and run-event stream are the watcher observation surfaces.
 
 The canonical recorder indexes every 10 Hz due tick with original sequence, monotonic time, raw
 screen, active semantic episode ID, and either `retained` or a typed intentional-elision reason.
@@ -89,7 +89,8 @@ Regression truth uses only `scorepeek-private-session-regression-label-v5`. Each
 The existing `expected_result.play_type` is also SELECT play-type truth. `play_mode` must agree as
 `single_play` with `single` or `double_play` with `double`; no separate SELECT label or legacy
 conversion exists. Real full frames, complete labels, and generated corpus objects remain outside
-the repository. ADR 0112's two explicitly approved 100x80 SP/DP template crops are the sole narrow
+the repository. The two independently measured 100x80 SP/DP templates under
+`crates/scorepeek/assets/music-select-play-type-v1` are the sole narrow
 repository-inclusion exception.
 
 Every span endpoint must be retained on its expected raw screen, except that a PLAY endpoint may be
@@ -163,18 +164,10 @@ Observed-to-canonical correctness is independent of attempt regression. Verify i
 profile-calibration artifact or an explicitly bound observed/canonical pair. `corpus replay` never
 starts the normalizer; FFmpeg is used only to decode the already-canonical lossless segments.
 
-## Promotion boundary
-
-The old private corpus remains untouched until a fresh v5 session can be recorded, verified,
-imported, reviewed, and replayed from a temporary root. One-worker and default-pool runs must emit
-identical domain events. OCR wall time and whole-corpus wall time must both improve before the pool
-is called a speedup. Target install, numeric-manifest activation, public socket authority, push,
-release, and deletion of the old corpus are separate verified boundaries.
-
 SELECT best replay uses the same production observer and reducer. Per-session replay summaries
-include `music_select_best_snapshots`; these never enter the accepted-result oracle. The separate
-private field-label probe is described in [ADR 0114](decisions/0114-observe-music-select-best-snapshots.md).
-
+include `music_select_best_snapshots`; these never enter the accepted-result oracle. The current
+field semantics and snapshot authority are defined in
+[field semantics](field-semantics.md) and [Event API v2](event-api.md).
 
 ## SELECT event traces
 
