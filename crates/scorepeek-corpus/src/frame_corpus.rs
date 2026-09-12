@@ -32,7 +32,11 @@ use crate::replay_trace::{ReplayTrace, TraceStatus};
 use crate::segment_remote::{RemoteSegment, SegmentRemote};
 
 const DIAGNOSTIC_SCHEMA: &str = "scorepeek-private-diagnostic-session-v5";
-const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v2";
+const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v3";
+const CORPUS_OBSERVATION_SCHEMA: &str = "scorepeek-private-corpus-observation-v1";
+const LEGACY_SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v2";
+const MIGRATION_INCOMPLETE_MARKER: &str = ".scorepeek-corpus-migration-incomplete";
+const MIGRATION_INCOMPLETE_BYTES: &[u8] = b"scorepeek-private-corpus-migration-v1\n";
 const DRAFT_SCHEMA: &str = "scorepeek-private-session-review-draft-v2";
 const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v5";
 const SUITE_SCHEMA: &str = "scorepeek-private-regression-suite-v1";
@@ -41,6 +45,7 @@ const MAX_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_ARTIFACT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_ARTIFACTS: usize = 20_000;
 const MAX_NDJSON_RECORDS: usize = 250_000;
+const MAX_CORPUS_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_NDJSON_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_EVIDENCE_FRAMES: usize = 1_024;
 const MAX_EVIDENCE_BYTES: u64 = 1024 * 1024 * 1024;
@@ -452,6 +457,32 @@ impl Drop for OwnedStaging {
     }
 }
 
+struct OwnedMigrationOutput {
+    path: PathBuf,
+    published: bool,
+}
+
+impl OwnedMigrationOutput {
+    fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_owned(),
+            published: false,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.published = true;
+    }
+}
+
+impl Drop for OwnedMigrationOutput {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CaptureSession {
@@ -719,6 +750,17 @@ pub struct DiagnosticImportSummary {
     remote_transferred_objects: u64,
     remote_reused_objects: u64,
     remote_segment_bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CorpusMigrationSummary {
+    schema: &'static str,
+    source: PathBuf,
+    output: PathBuf,
+    session_count: usize,
+    observation_count: u64,
+    object_count: usize,
+    generation_sha256: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -2598,6 +2640,28 @@ fn import_canonical_diagnostic(
     let mut artifacts = Vec::with_capacity(manifest.artifacts.len());
     for artifact in &manifest.artifacts {
         let source = diagnostic.join(safe_relative(&artifact.path)?);
+        if matches!(
+            artifact.path.as_str(),
+            "recognition/manifest.json" | "events.ndjson" | "event-manifest.json"
+        ) {
+            continue;
+        }
+        if artifact.path == "recognition/observations.ndjson" {
+            if artifact.bytes > MAX_CORPUS_OBSERVATION_BYTES {
+                return invalid("diagnostic observation artifact exceeds the corpus bound");
+            }
+            let bytes = fs::read(&source)?;
+            let (normalized, _) = normalize_observation_stream(&bytes, false)?;
+            let sha256 = digest(&normalized);
+            publish_object_bytes(store, &sha256, &normalized)?;
+            artifacts.push(CorpusArtifact {
+                kind: "analysis".to_owned(),
+                source_path: "analysis/observations.ndjson".to_owned(),
+                sha256,
+                bytes: normalized.len() as u64,
+            });
+            continue;
+        }
         if segment_paths.contains(&artifact.path) {
             if let Some(remote) = remote {
                 remote.upload_verified(File::open(&source)?, &artifact.sha256, artifact.bytes)?;
@@ -2646,7 +2710,7 @@ fn import_canonical_diagnostic(
             .join("identities")
             .join(format!("{identity_sha256}.json")),
         &canonical_json(&SessionIdentity {
-            schema: "scorepeek-private-capture-session-identity-v2",
+            schema: "scorepeek-private-capture-session-identity-v3",
             source_session_id: &session.source_session_id,
             capture_generation: session.capture_generation,
             session_sha256: &session_sha256,
@@ -3236,6 +3300,309 @@ fn ppm_bytes(crop: &Rgb8Crop) -> Result<Vec<u8>, CorpusError> {
 
 pub fn replay_corpus(store: &Path) -> Result<CorpusReplaySummary, CorpusError> {
     replay_corpus_with_options(store, CorpusReplayOptions::default())
+}
+
+/// Rebuilds the active corpus generation into the current storage contracts.
+///
+/// The source is never modified. The output must be an absent absolute path and is published only
+/// after every referenced local object and rewritten document has been verified.
+pub fn migrate_corpus_store(
+    source: &Path,
+    output: &Path,
+) -> Result<CorpusMigrationSummary, CorpusError> {
+    if !source.is_absolute() || !output.is_absolute() {
+        return invalid(
+            "corpus migration requires an existing absolute source and absent absolute output",
+        );
+    }
+    let parent = output.parent().ok_or_else(|| {
+        CorpusError::InvalidRequest("corpus migration output has no parent".into())
+    })?;
+    let staging = parent.join(format!(
+        ".{}.scorepeek-staging",
+        output
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("corpus")
+    ));
+    recover_migration_output(output, &staging)?;
+    if output.exists() {
+        return invalid("corpus migration output already exists");
+    }
+    if staging.exists() {
+        return invalid("corpus migration staging already exists");
+    }
+    ensure_store(&staging)?;
+    let mut staging_guard = OwnedStaging::new(&staging);
+    let (_, suite) = load_active_suite(source)?.ok_or_else(|| {
+        CorpusError::InvalidRequest("active regression suite is unavailable".into())
+    })?;
+    let mut entries = Vec::with_capacity(suite.entries.len());
+    let mut observation_count = 0_u64;
+    for entry in &suite.entries {
+        let (mut session, session_bytes) = read_json::<CaptureSession>(
+            &source
+                .join("sessions")
+                .join(format!("{}.json", entry.session_sha256)),
+        )?;
+        if session.schema != LEGACY_SESSION_SCHEMA || digest(&session_bytes) != entry.session_sha256
+        {
+            return invalid("corpus migration source session is not the admitted legacy contract");
+        }
+        let mut artifacts = Vec::new();
+        for artifact in &session.artifacts {
+            if matches!(
+                artifact.source_path.as_str(),
+                "recognition/manifest.json" | "events.ndjson" | "event-manifest.json"
+            ) {
+                continue;
+            }
+            if artifact.source_path == "recognition/observations.ndjson" {
+                if artifact.bytes > MAX_CORPUS_OBSERVATION_BYTES {
+                    return invalid("corpus migration observation artifact exceeds its bound");
+                }
+                let object = source.join("objects").join(&artifact.sha256);
+                verify_file(&object, &artifact.sha256, artifact.bytes)?;
+                let bytes = fs::read(object)?;
+                let (normalized, count) = normalize_observation_stream(&bytes, true)?;
+                let normalized_sha256 = digest(&normalized);
+                publish_object_bytes(&staging, &normalized_sha256, &normalized)?;
+                artifacts.push(CorpusArtifact {
+                    kind: "analysis".to_owned(),
+                    source_path: "analysis/observations.ndjson".to_owned(),
+                    sha256: normalized_sha256,
+                    bytes: normalized.len() as u64,
+                });
+                observation_count = observation_count.saturating_add(count);
+                continue;
+            }
+            let object = source.join("objects").join(&artifact.sha256);
+            if object.is_file() {
+                publish_object(&staging, &object, &artifact.sha256, artifact.bytes)?;
+            } else if !artifact.source_path.starts_with("recognition/segment-") {
+                return invalid("corpus migration source object is unavailable");
+            }
+            artifacts.push(artifact.clone());
+        }
+        SESSION_SCHEMA.clone_into(&mut session.schema);
+        session.artifacts = artifacts;
+        let migrated_session_bytes = canonical_json(&session)?;
+        let migrated_session_sha256 = digest(&migrated_session_bytes);
+        publish_document(
+            &staging
+                .join("sessions")
+                .join(format!("{migrated_session_sha256}.json")),
+            &migrated_session_bytes,
+        )?;
+        let identity_key = canonical_json(&serde_json::json!({
+            "source_session_id": session.source_session_id,
+            "capture_generation": session.capture_generation,
+        }))?;
+        publish_document(
+            &staging
+                .join("identities")
+                .join(format!("{}.json", digest(&identity_key))),
+            &canonical_json(&SessionIdentity {
+                schema: "scorepeek-private-capture-session-identity-v3",
+                source_session_id: &session.source_session_id,
+                capture_generation: session.capture_generation,
+                session_sha256: &migrated_session_sha256,
+            })?,
+        )?;
+        let (mut label, label_bytes) = read_regression_label(
+            &source
+                .join("labels")
+                .join(format!("{}.json", entry.label_sha256)),
+        )?;
+        if digest(&label_bytes) != entry.label_sha256
+            || label.session_sha256 != entry.session_sha256
+        {
+            return invalid("corpus migration label binding differs");
+        }
+        label.session_sha256.clone_from(&migrated_session_sha256);
+        let migrated_label_bytes = canonical_json(&label)?;
+        let migrated_label_sha256 = digest(&migrated_label_bytes);
+        publish_document(
+            &staging
+                .join("labels")
+                .join(format!("{migrated_label_sha256}.json")),
+            &migrated_label_bytes,
+        )?;
+        entries.push(SuiteEntry {
+            session_sha256: migrated_session_sha256,
+            label_sha256: migrated_label_sha256,
+        });
+    }
+    let migrated_suite = RegressionSuite {
+        schema: SUITE_SCHEMA.to_owned(),
+        previous_generation_sha256: None,
+        entries,
+    };
+    let suite_bytes = canonical_json(&migrated_suite)?;
+    let generation_sha256 = digest(&suite_bytes);
+    publish_document(
+        &staging
+            .join("suites")
+            .join(format!("{generation_sha256}.json")),
+        &suite_bytes,
+    )?;
+    publish_active(&staging, &generation_sha256)?;
+    let object_count = fs::read_dir(staging.join("objects"))?.count();
+    create_private_directory(output)?;
+    let mut output_guard = OwnedMigrationOutput::new(output);
+    write_new(
+        &output.join(MIGRATION_INCOMPLETE_MARKER),
+        MIGRATION_INCOMPLETE_BYTES,
+    )?;
+    File::open(output)?.sync_all()?;
+    File::open(parent)?.sync_all()?;
+    for entry in fs::read_dir(&staging)? {
+        let entry = entry?;
+        if entry.file_name() == "active-suite.json" {
+            continue;
+        }
+        fs::rename(entry.path(), output.join(entry.file_name()))?;
+    }
+    fs::rename(
+        staging.join("active-suite.json"),
+        output.join("active-suite.json"),
+    )?;
+    fs::remove_dir(&staging)?;
+    File::open(output)?.sync_all()?;
+    fs::remove_file(output.join(MIGRATION_INCOMPLETE_MARKER))?;
+    File::open(output)?.sync_all()?;
+    File::open(parent)?.sync_all()?;
+    output_guard.disarm();
+    staging_guard.disarm();
+    Ok(CorpusMigrationSummary {
+        schema: "scorepeek-private-corpus-migration-v1",
+        source: source.to_owned(),
+        output: output.to_owned(),
+        session_count: migrated_suite.entries.len(),
+        observation_count,
+        object_count,
+        generation_sha256,
+    })
+}
+
+fn recover_migration_output(output: &Path, staging: &Path) -> Result<(), CorpusError> {
+    let marker = output.join(MIGRATION_INCOMPLETE_MARKER);
+    match fs::read(&marker) {
+        Ok(bytes) if bytes == MIGRATION_INCOMPLETE_BYTES => {
+            let metadata = output.symlink_metadata()?;
+            if !metadata.is_dir() {
+                return invalid("corpus migration recovery target is not a directory");
+            }
+            fs::remove_dir_all(output)?;
+            if staging.is_dir() {
+                fs::remove_dir_all(staging)?;
+            }
+            if let Some(parent) = output.parent() {
+                File::open(parent)?.sync_all()?;
+            }
+            Ok(())
+        }
+        Ok(_) => invalid("corpus migration output marker differs"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if output.is_dir() && staging.is_dir() && fs::read_dir(output)?.next().is_none() {
+                fs::remove_dir(output)?;
+                fs::remove_dir_all(staging)?;
+                if let Some(parent) = output.parent() {
+                    File::open(parent)?.sync_all()?;
+                }
+            }
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn normalize_observation_stream(
+    bytes: &[u8],
+    allow_legacy: bool,
+) -> Result<(Vec<u8>, u64), CorpusError> {
+    let mut normalized = Vec::new();
+    let mut count = 0_u64;
+    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+        if count >= MAX_NDJSON_RECORDS as u64 {
+            return invalid("corpus observation count exceeds its bound");
+        }
+        if line.len() > MAX_NDJSON_RECORD_BYTES || line.last() != Some(&b'\n') {
+            return invalid("corpus observation record exceeds its bound");
+        }
+        let value: Value = serde_json::from_slice(line)?;
+        let schema = value["schema"].as_str().ok_or_else(|| {
+            CorpusError::InvalidRequest("corpus observation schema is unavailable".into())
+        })?;
+        if schema != "scorepeek-recognition-observation-v22"
+            && !(allow_legacy
+                && matches!(
+                    schema,
+                    "scorepeek-recognition-observation-v5"
+                        | "scorepeek-recognition-observation-v6"
+                        | "scorepeek-recognition-observation-v7"
+                        | "scorepeek-recognition-observation-v8"
+                        | "scorepeek-recognition-observation-v9"
+                        | "scorepeek-recognition-observation-v10"
+                        | "scorepeek-recognition-observation-v11"
+                        | "scorepeek-recognition-observation-v12"
+                        | "scorepeek-recognition-observation-v13"
+                        | "scorepeek-recognition-observation-v14"
+                        | "scorepeek-recognition-observation-v15"
+                        | "scorepeek-recognition-observation-v16"
+                        | "scorepeek-recognition-observation-v17"
+                        | "scorepeek-recognition-observation-v18"
+                        | "scorepeek-recognition-observation-v19"
+                        | "scorepeek-recognition-observation-v20"
+                        | "scorepeek-recognition-observation-v21"
+                ))
+        {
+            return invalid("corpus observation source schema differs");
+        }
+        let sequence = value["tick_sequence"].as_u64().ok_or_else(|| {
+            CorpusError::InvalidRequest("corpus observation sequence is invalid".into())
+        })?;
+        let timestamp_ms = value["source_timestamp_ms"]
+            .as_u64()
+            .or_else(|| {
+                value
+                    .pointer("/timing/source_pts_ms")
+                    .and_then(Value::as_u64)
+            })
+            .or_else(|| {
+                value
+                    .pointer("/timing/monotonic_end_ms")
+                    .and_then(Value::as_u64)
+            })
+            .ok_or_else(|| {
+                CorpusError::InvalidRequest("corpus observation timestamp is invalid".into())
+            })?;
+        let screen = value["screen"]
+            .as_str()
+            .or_else(|| value.pointer("/decision/screen").and_then(Value::as_str))
+            .or_else(|| value.pointer("/fields/screen").and_then(Value::as_str))
+            .ok_or_else(|| {
+                CorpusError::InvalidRequest("corpus observation screen is invalid".into())
+            })?;
+        let record = serde_json::json!({
+            "schema": CORPUS_OBSERVATION_SCHEMA,
+            "tick_sequence": sequence,
+            "source_timestamp_ms": timestamp_ms,
+            "screen": screen,
+            "fields": value.get("fields").cloned().unwrap_or(Value::Null),
+            "decision": value.get("decision").cloned().unwrap_or(Value::Null),
+            "song_id": value.get("song_id").cloned().unwrap_or(Value::Null),
+        });
+        normalized.extend_from_slice(&canonical_json(&record)?);
+        if normalized.len() as u64 > MAX_CORPUS_OBSERVATION_BYTES {
+            return invalid("normalized corpus observations exceed their byte bound");
+        }
+        count = count.saturating_add(1);
+    }
+    if count == 0 {
+        return invalid("corpus observation stream is empty");
+    }
+    Ok((normalized, count))
 }
 
 pub fn replay_corpus_with_options(
@@ -6313,6 +6680,25 @@ fn publish_object(
     Ok(())
 }
 
+fn publish_object_bytes(store: &Path, sha256: &str, bytes: &[u8]) -> Result<(), CorpusError> {
+    let destination = store.join("objects").join(sha256);
+    if destination.exists() {
+        return verify_file(&destination, sha256, bytes.len() as u64);
+    }
+    let staging = store.join("objects").join(format!(".{sha256}.staging"));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&staging)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    verify_file(&staging, sha256, bytes.len() as u64)?;
+    fs::rename(staging, destination)?;
+    File::open(store.join("objects"))?.sync_all()?;
+    Ok(())
+}
+
 fn publish_document(path: &Path, bytes: &[u8]) -> Result<(), CorpusError> {
     if path.exists() {
         let existing = fs::read(path)?;
@@ -6358,6 +6744,7 @@ fn publish_active(store: &Path, generation_sha256: &str) -> Result<(), CorpusErr
 }
 
 fn load_active_suite(store: &Path) -> Result<Option<(String, RegressionSuite)>, CorpusError> {
+    ensure_complete_corpus_store(store)?;
     let active_path = store.join("active-suite.json");
     if !active_path.exists() {
         return Ok(None);
@@ -6375,6 +6762,13 @@ fn load_active_suite(store: &Path) -> Result<Option<(String, RegressionSuite)>, 
         return invalid("active suite generation is invalid");
     }
     Ok(Some((active.generation_sha256, suite)))
+}
+
+pub(crate) fn ensure_complete_corpus_store(store: &Path) -> Result<(), CorpusError> {
+    if store.join(MIGRATION_INCOMPLETE_MARKER).exists() {
+        return invalid("corpus store migration is incomplete");
+    }
+    Ok(())
 }
 
 fn session_frame_map(session: &CaptureSession) -> BTreeMap<u64, String> {
@@ -6752,6 +7146,32 @@ mod tests {
         assert_eq!(parse_timestamp_ms("12.345678").unwrap(), 12_345);
         assert_eq!(parse_timestamp_ms("1.5").unwrap(), 1_500);
         assert!(parse_timestamp_ms("-0.1").is_err());
+    }
+
+    #[test]
+    fn corpus_migration_recovers_only_its_marked_partial_output() {
+        let temporary = tempfile::tempdir().unwrap();
+        let output = temporary.path().join("current");
+        fs::create_dir(&output).unwrap();
+        fs::write(
+            output.join(MIGRATION_INCOMPLETE_MARKER),
+            MIGRATION_INCOMPLETE_BYTES,
+        )
+        .unwrap();
+        fs::write(output.join("partial"), b"partial").unwrap();
+        recover_migration_output(&output, &temporary.path().join("staging")).unwrap();
+        assert!(!output.exists());
+
+        fs::create_dir(&output).unwrap();
+        assert!(recover_migration_output(&output, &temporary.path().join("staging")).is_ok());
+        assert!(output.exists());
+
+        fs::remove_dir(&output).unwrap();
+        let staging = temporary.path().join("staging");
+        fs::create_dir(&staging).unwrap();
+        fs::create_dir(&output).unwrap();
+        recover_migration_output(&output, &staging).unwrap();
+        assert!(!output.exists());
     }
 
     #[test]

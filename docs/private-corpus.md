@@ -59,8 +59,13 @@ scorepeek-corpus diagnostic verify /absolute/recorded-session
 scorepeek-corpus corpus import-diagnostic --store /absolute/private-corpus-v2 --diagnostic /absolute/recorded-session --review-draft /absolute/review.json
 ```
 
-Import publishes the diagnostic components as immutable digest-addressed objects. The review draft
-lists retained sequence identities; it does not create a separate image object per tick.
+Import publishes source evidence as immutable digest-addressed objects. Volatile recognition
+artifact and run-event schemas are not corpus storage contracts: import normalizes only the
+sequence, source time, screen, fields, and decision needed by offline analysis into
+`scorepeek-private-corpus-observation-v1`. Canonical segments, their tick index, capture bindings,
+catalog evidence, and operator labels remain available to reproduce current recognition. The
+review draft lists retained sequence identities; it does not create a separate image object per
+tick.
 
 Set `SCOREPEEK_CORPUS_S3_URL=s3://bucket/optional/prefix` and
 `SCOREPEEK_CORPUS_S3_REGION=REGION` to keep canonical Matroska segments out of the local corpus.

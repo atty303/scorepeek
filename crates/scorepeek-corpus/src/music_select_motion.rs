@@ -30,25 +30,8 @@ use crate::{CorpusError, ErrorContext, digest_bytes, read_bounded_regular};
 
 const ACTIVE_SCHEMA: &str = "scorepeek-private-regression-suite-active-v1";
 const SUITE_SCHEMA: &str = "scorepeek-private-regression-suite-v1";
-const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v1";
-const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v5";
-const CURRENT_OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v6";
-const LATEST_OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v7";
-const CURRENT_OBSERVATION_SCHEMA_V8: &str = "scorepeek-recognition-observation-v8";
-const CURRENT_OBSERVATION_SCHEMA_V9: &str = "scorepeek-recognition-observation-v9";
-const CURRENT_OBSERVATION_SCHEMA_V10: &str = "scorepeek-recognition-observation-v10";
-const CURRENT_OBSERVATION_SCHEMA_V11: &str = "scorepeek-recognition-observation-v11";
-const CURRENT_OBSERVATION_SCHEMA_V12: &str = "scorepeek-recognition-observation-v12";
-const CURRENT_OBSERVATION_SCHEMA_V13: &str = "scorepeek-recognition-observation-v13";
-const CURRENT_OBSERVATION_SCHEMA_V14: &str = "scorepeek-recognition-observation-v14";
-const CURRENT_OBSERVATION_SCHEMA_V15: &str = "scorepeek-recognition-observation-v15";
-const CURRENT_OBSERVATION_SCHEMA_V16: &str = "scorepeek-recognition-observation-v16";
-const CURRENT_OBSERVATION_SCHEMA_V17: &str = "scorepeek-recognition-observation-v17";
-const CURRENT_OBSERVATION_SCHEMA_V18: &str = "scorepeek-recognition-observation-v18";
-const CURRENT_OBSERVATION_SCHEMA_V19: &str = "scorepeek-recognition-observation-v19";
-const CURRENT_OBSERVATION_SCHEMA_V21: &str = "scorepeek-recognition-observation-v21";
-const CURRENT_OBSERVATION_SCHEMA_V22: &str = "scorepeek-recognition-observation-v22";
-const CURRENT_OBSERVATION_SCHEMA_V20: &str = "scorepeek-recognition-observation-v20";
+const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v3";
+const OBSERVATION_SCHEMA: &str = "scorepeek-private-corpus-observation-v1";
 const DRAFT_SCHEMA: &str = "scorepeek-private-music-select-motion-review-draft-v1";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-music-select-motion-review-summary-v1";
 const DECISIONS_SCHEMA: &str = "scorepeek-private-music-select-motion-review-decisions-v2";
@@ -1755,7 +1738,7 @@ fn load_dwell_observations(
         ))
     })?;
     let catalog_song_ids = active.catalog.songs().keys().copied().collect();
-    let artifact = bound_artifact(session, "recognition/observations.ndjson")?;
+    let artifact = bound_artifact(session, "analysis/observations.ndjson")?;
     let bytes = read_bound_object(store, artifact, MAX_OBSERVATION_BYTES)?;
     let mut observations = BTreeMap::new();
     for line in bytes.split_inclusive(|byte| *byte == b'\n') {
@@ -2275,6 +2258,7 @@ fn load_bound_session(
     store: &Path,
     session_sha256: &str,
 ) -> Result<(ActiveSuite, CaptureSession), CorpusError> {
+    crate::frame_corpus::ensure_complete_corpus_store(store)?;
     let active: ActiveSuite = read_json(&store.join("active-suite.json"))?;
     if active.schema != ACTIVE_SCHEMA || !valid_sha256(&active.generation_sha256) {
         return invalid("active motion-review suite is invalid");
@@ -2309,7 +2293,7 @@ fn read_observations(
     store: &Path,
     session: &CaptureSession,
 ) -> Result<Vec<ObservationRecord>, CorpusError> {
-    let artifact = bound_artifact(session, "recognition/observations.ndjson")?;
+    let artifact = bound_artifact(session, "analysis/observations.ndjson")?;
     let bytes = read_bound_object(store, artifact, MAX_OBSERVATION_BYTES)?;
     let mut records = Vec::new();
     for line in bytes.split_inclusive(|byte| *byte == b'\n') {
@@ -2347,37 +2331,11 @@ fn read_observations(
 }
 
 fn supported_observation_schema(value: &Value) -> bool {
-    matches!(
-        value.as_str(),
-        Some(
-            OBSERVATION_SCHEMA
-                | CURRENT_OBSERVATION_SCHEMA
-                | LATEST_OBSERVATION_SCHEMA
-                | CURRENT_OBSERVATION_SCHEMA_V8
-                | CURRENT_OBSERVATION_SCHEMA_V9
-                | CURRENT_OBSERVATION_SCHEMA_V10
-                | CURRENT_OBSERVATION_SCHEMA_V11
-                | CURRENT_OBSERVATION_SCHEMA_V12
-                | CURRENT_OBSERVATION_SCHEMA_V13
-                | CURRENT_OBSERVATION_SCHEMA_V14
-                | CURRENT_OBSERVATION_SCHEMA_V15
-                | CURRENT_OBSERVATION_SCHEMA_V16
-                | CURRENT_OBSERVATION_SCHEMA_V17
-                | CURRENT_OBSERVATION_SCHEMA_V18
-                | CURRENT_OBSERVATION_SCHEMA_V19
-                | CURRENT_OBSERVATION_SCHEMA_V20
-                | CURRENT_OBSERVATION_SCHEMA_V21
-                | CURRENT_OBSERVATION_SCHEMA_V22,
-        )
-    )
+    value.as_str() == Some(OBSERVATION_SCHEMA)
 }
 
 fn stored_screen(value: &Value, error: &str) -> Result<ScreenClass, CorpusError> {
-    match value["screen"]
-        .as_str()
-        .or_else(|| value.pointer("/decision/screen").and_then(Value::as_str))
-        .or_else(|| value.pointer("/fields/screen").and_then(Value::as_str))
-    {
+    match value["screen"].as_str() {
         Some("result") => Ok(ScreenClass::Result),
         Some("music_select") => Ok(ScreenClass::MusicSelect),
         Some("mode_select") => Ok(ScreenClass::ModeSelect),
@@ -3236,16 +3194,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        CURRENT_OBSERVATION_SCHEMA, CURRENT_OBSERVATION_SCHEMA_V8, CURRENT_OBSERVATION_SCHEMA_V9,
-        CURRENT_OBSERVATION_SCHEMA_V10, CURRENT_OBSERVATION_SCHEMA_V11,
-        CURRENT_OBSERVATION_SCHEMA_V12, CURRENT_OBSERVATION_SCHEMA_V13,
-        CURRENT_OBSERVATION_SCHEMA_V14, CURRENT_OBSERVATION_SCHEMA_V15,
-        CURRENT_OBSERVATION_SCHEMA_V16, CURRENT_OBSERVATION_SCHEMA_V17,
-        CURRENT_OBSERVATION_SCHEMA_V18, CURRENT_OBSERVATION_SCHEMA_V19,
-        CURRENT_OBSERVATION_SCHEMA_V20, CURRENT_OBSERVATION_SCHEMA_V21,
-        CURRENT_OBSERVATION_SCHEMA_V22, CorrectSongExpectation, CorrectSongLabel,
-        CorrectSongLabels, LATEST_OBSERVATION_SCHEMA, MAX_PROCESS_STDERR_BYTES, MotionEvidence,
-        MotionReviewDecision, MotionReviewDecisions, MusicSelectDwellPolicy,
+        CorrectSongExpectation, CorrectSongLabel, CorrectSongLabels, MAX_PROCESS_STDERR_BYTES,
+        MotionEvidence, MotionReviewDecision, MotionReviewDecisions, MusicSelectDwellPolicy,
         MusicSelectTemporalCandidatePolicy, OBSERVATION_SCHEMA, ObservationRecord,
         OperatorReviewState, RegionMotion, ReviewCompleteness, ReviewState, ReviewedMotionPair,
         ReviewedMotionSet, ReviewedMotionSpan, VideoIdentity, apply_music_select_motion_review,
@@ -3258,33 +3208,12 @@ mod tests {
     };
 
     #[test]
-    fn music_select_readers_accept_current_and_legacy_observation_schemas() {
-        for schema in [
-            OBSERVATION_SCHEMA,
-            CURRENT_OBSERVATION_SCHEMA,
-            LATEST_OBSERVATION_SCHEMA,
-            CURRENT_OBSERVATION_SCHEMA_V8,
-            CURRENT_OBSERVATION_SCHEMA_V9,
-            CURRENT_OBSERVATION_SCHEMA_V10,
-            CURRENT_OBSERVATION_SCHEMA_V11,
-            CURRENT_OBSERVATION_SCHEMA_V12,
-            CURRENT_OBSERVATION_SCHEMA_V13,
-            CURRENT_OBSERVATION_SCHEMA_V14,
-            CURRENT_OBSERVATION_SCHEMA_V15,
-            CURRENT_OBSERVATION_SCHEMA_V16,
-            CURRENT_OBSERVATION_SCHEMA_V17,
-            CURRENT_OBSERVATION_SCHEMA_V18,
-            CURRENT_OBSERVATION_SCHEMA_V19,
-            CURRENT_OBSERVATION_SCHEMA_V20,
-            CURRENT_OBSERVATION_SCHEMA_V21,
-            CURRENT_OBSERVATION_SCHEMA_V22,
-        ] {
-            assert!(supported_observation_schema(&serde_json::Value::String(
-                schema.to_owned()
-            )));
-        }
+    fn music_select_readers_accept_only_the_corpus_observation_schema() {
+        assert!(supported_observation_schema(&serde_json::Value::String(
+            OBSERVATION_SCHEMA.to_owned()
+        )));
         assert!(!supported_observation_schema(&serde_json::Value::String(
-            "scorepeek-recognition-observation-v23".to_owned()
+            "scorepeek-recognition-observation-v22".to_owned()
         )));
     }
 
@@ -3863,7 +3792,7 @@ mod tests {
             "artifacts": [
                 artifact("capture/profile.json", &profile_ref),
                 artifact("capture/run.json", &run_ref),
-                artifact("recognition/observations.ndjson", &observations_ref),
+                artifact("analysis/observations.ndjson", &observations_ref),
             ],
         }))
         .unwrap();

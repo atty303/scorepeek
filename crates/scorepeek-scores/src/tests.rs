@@ -614,7 +614,7 @@ fn reopening_promotes_provisional_with_recovery_provenance() {
 }
 
 #[test]
-fn version_one_migrates_transactionally_and_preserves_legacy_rows_as_confirmed() {
+fn version_one_migrates_transactionally_to_stored_results() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("legacy.db");
     let connection = Connection::open(&path).unwrap();
@@ -645,6 +645,7 @@ fn version_one_migrates_transactionally_and_preserves_legacy_rows_as_confirmed()
         .unwrap();
     drop(connection);
 
+    assert_eq!(Store::migrate(&path).unwrap(), 1);
     let mut store = Store::open(&path).unwrap();
     assert_eq!(store.recovered_provisional_count(), 0);
     let migrated: (i64, String, String) = store
@@ -655,7 +656,16 @@ fn version_one_migrates_transactionally_and_preserves_legacy_rows_as_confirmed()
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!(migrated, (2, "confirmed".into(), "legacy:1".into()));
+    assert_eq!(migrated, (3, "confirmed".into(), "legacy:1".into()));
+    let stored_schema: String = store
+        .connection
+        .query_row(
+            "SELECT json_extract(event_json,'$.schema') FROM play_results",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored_schema, "scorepeek-stored-result-v1");
     assert!(apply(&mut store, &result_state(2, 2, 250, "provisional")));
     assert_eq!(values(&store).0, Some(250));
     assert!(apply(&mut store, &result_state(3, 2, 250, "retracted")));

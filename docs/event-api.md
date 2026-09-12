@@ -64,8 +64,9 @@ public API. Versioned run-event artifacts and bounded health samples retain diag
 Provisional and confirmed states upsert one play row keyed by session and attempt; a replacement does
 not change its first-provisional display timestamp. Retraction deletes that play immediately and
 recomputes affected RESULT/previous-best facts, so history, BEST, and graph reads no longer include
-it. Confirmation updates the same row. The schema-v1 database migration to v2 preserves existing
-plays as confirmed. On database open, an unclosed provisional row is promoted to confirmed with
+it. Confirmation updates the same row. The database stores one
+`scorepeek-stored-result-v1` projection instead of retaining a public event envelope. On database
+open, an unclosed provisional row is promoted to confirmed with
 recovery provenance but no synthetic old-session socket event. A database-specific lifetime lock
 admits only one score writer, so another live writer's provisional row cannot be mistaken for crash
 residue. Persistence failure is represented by score-store health/status; the removed

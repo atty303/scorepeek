@@ -5756,7 +5756,10 @@ mod tests {
                 let json: String = database
                     .query_row("SELECT event_json FROM play_results", [], |row| row.get(0))
                     .unwrap();
-                assert_eq!(serde_json::from_str::<Value>(&json).unwrap(), *result);
+                let stored = serde_json::from_str::<Value>(&json).unwrap();
+                assert_eq!(stored["schema"], "scorepeek-stored-result-v1");
+                assert_eq!(stored["result"], result["state"]["result"]);
+                assert_eq!(stored["event_id"], result["event_id"]);
                 let values: (i64, i64, i64) = database
                     .query_row("SELECT score,miss,clear FROM chart_bests", [], |row| {
                         Ok((row.get(0)?, row.get(1)?, row.get(2)?))

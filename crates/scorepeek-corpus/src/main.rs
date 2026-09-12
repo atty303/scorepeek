@@ -9,9 +9,9 @@ use scorepeek_corpus::{
     apply_review, author_numeric_dataset, author_numeric_sentinel,
     evaluate_music_select_correctness, evaluate_music_select_dwell, evaluate_temporal_corpus,
     import_diagnostic, inspect_music_list_row_observation_draft, inspect_review,
-    measure_music_list_motion, plan_music_list_motion_review, plan_music_select_motion_review,
-    render_synthetic_title_set, replay_corpus_with_options, verify_diagnostic,
-    verify_music_list_motion, verify_music_list_row_observation_draft,
+    measure_music_list_motion, migrate_corpus_store, plan_music_list_motion_review,
+    plan_music_select_motion_review, render_synthetic_title_set, replay_corpus_with_options,
+    verify_diagnostic, verify_music_list_motion, verify_music_list_row_observation_draft,
 };
 
 fn main() -> ExitCode {
@@ -316,6 +316,16 @@ fn run_frame_corpus(args: &[OsString]) -> Option<Result<(), String>> {
         return Some(run_corpus_replay(&args[2..]));
     }
     let result = match args {
+        [corpus, migrate, source_flag, source, output_flag, output]
+            if corpus == "corpus"
+                && migrate == "migrate-current"
+                && source_flag == "--source"
+                && output_flag == "--output" =>
+        {
+            migrate_corpus_store(&PathBuf::from(source), &PathBuf::from(output))
+                .map_err(|error| format!("corpus migration failed: {error}"))
+                .and_then(|summary| print_json(&summary, "corpus migration"))
+        }
         [diagnostic, verify, directory] if diagnostic == "diagnostic" && verify == "verify" => {
             verify_diagnostic(&PathBuf::from(directory))
                 .map_err(|error| format!("diagnostic verification failed: {error}"))

@@ -16,26 +16,9 @@ use crate::{CorpusError, ErrorContext, digest_bytes, encode_digest, read_bounded
 
 const ACTIVE_SCHEMA: &str = "scorepeek-private-regression-suite-active-v1";
 const SUITE_SCHEMA: &str = "scorepeek-private-regression-suite-v1";
-const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v2";
+const SESSION_SCHEMA: &str = "scorepeek-private-capture-session-v3";
 const LABEL_SCHEMA: &str = "scorepeek-private-session-regression-label-v5";
-const OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v5";
-const CURRENT_OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v6";
-const LATEST_OBSERVATION_SCHEMA: &str = "scorepeek-recognition-observation-v7";
-const CURRENT_OBSERVATION_SCHEMA_V8: &str = "scorepeek-recognition-observation-v8";
-const CURRENT_OBSERVATION_SCHEMA_V9: &str = "scorepeek-recognition-observation-v9";
-const CURRENT_OBSERVATION_SCHEMA_V10: &str = "scorepeek-recognition-observation-v10";
-const CURRENT_OBSERVATION_SCHEMA_V11: &str = "scorepeek-recognition-observation-v11";
-const CURRENT_OBSERVATION_SCHEMA_V12: &str = "scorepeek-recognition-observation-v12";
-const CURRENT_OBSERVATION_SCHEMA_V13: &str = "scorepeek-recognition-observation-v13";
-const CURRENT_OBSERVATION_SCHEMA_V14: &str = "scorepeek-recognition-observation-v14";
-const CURRENT_OBSERVATION_SCHEMA_V15: &str = "scorepeek-recognition-observation-v15";
-const CURRENT_OBSERVATION_SCHEMA_V16: &str = "scorepeek-recognition-observation-v16";
-const CURRENT_OBSERVATION_SCHEMA_V17: &str = "scorepeek-recognition-observation-v17";
-const CURRENT_OBSERVATION_SCHEMA_V18: &str = "scorepeek-recognition-observation-v18";
-const CURRENT_OBSERVATION_SCHEMA_V19: &str = "scorepeek-recognition-observation-v19";
-const CURRENT_OBSERVATION_SCHEMA_V21: &str = "scorepeek-recognition-observation-v21";
-const CURRENT_OBSERVATION_SCHEMA_V22: &str = "scorepeek-recognition-observation-v22";
-const CURRENT_OBSERVATION_SCHEMA_V20: &str = "scorepeek-recognition-observation-v20";
+const OBSERVATION_SCHEMA: &str = "scorepeek-private-corpus-observation-v1";
 const SUMMARY_SCHEMA: &str = "scorepeek-private-temporal-evaluation-v1";
 const MAX_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OBSERVATION_BYTES: u64 = 512 * 1024 * 1024;
@@ -278,6 +261,7 @@ pub fn evaluate_temporal_corpus(
     store: &Path,
     policies: &[TemporalEvaluationPolicy],
 ) -> Result<TemporalEvaluationSummary, CorpusError> {
+    crate::frame_corpus::ensure_complete_corpus_store(store)?;
     let policies = validate_policies(policies)?;
     let active: ActiveSuite = read_json(&store.join("active-suite.json"))?;
     if active.schema != ACTIVE_SCHEMA || !valid_sha256(&active.generation_sha256) {
@@ -659,7 +643,7 @@ fn read_observations(
     let artifact = session
         .artifacts
         .iter()
-        .find(|artifact| artifact.source_path == "recognition/observations.ndjson")
+        .find(|artifact| artifact.source_path == "analysis/observations.ndjson")
         .ok_or_else(|| {
             CorpusError::InvalidReplay(
                 "temporal evaluation observation artifact is unavailable".to_owned(),
@@ -716,25 +700,7 @@ fn read_line(reader: &mut BufReader<File>, line: &mut Vec<u8>) -> Result<bool, C
 }
 
 fn parse_record(value: &Value) -> Result<TemporalRecord, CorpusError> {
-    if value["schema"] != OBSERVATION_SCHEMA
-        && value["schema"] != CURRENT_OBSERVATION_SCHEMA
-        && value["schema"] != LATEST_OBSERVATION_SCHEMA
-        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V8
-        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V9
-        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V10
-        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V11
-        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V12
-        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V13
-        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V14
-        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V15
-        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V16
-        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V17
-        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V18
-        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V19
-        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V20
-        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V21
-        && value["schema"] != CURRENT_OBSERVATION_SCHEMA_V22
-    {
+    if value["schema"] != OBSERVATION_SCHEMA {
         return invalid("temporal evaluation observation schema differs");
     }
     let sequence = value["tick_sequence"].as_u64().ok_or_else(|| {
@@ -743,13 +709,9 @@ fn parse_record(value: &Value) -> Result<TemporalRecord, CorpusError> {
     let timestamp_ms = value["source_timestamp_ms"].as_u64().ok_or_else(|| {
         CorpusError::InvalidReplay("temporal observation timestamp is invalid".to_owned())
     })?;
-    let screen_name = value["screen"]
-        .as_str()
-        .or_else(|| value.pointer("/decision/screen").and_then(Value::as_str))
-        .or_else(|| value.pointer("/fields/screen").and_then(Value::as_str))
-        .ok_or_else(|| {
-            CorpusError::InvalidReplay("temporal observation screen is invalid".to_owned())
-        })?;
+    let screen_name = value["screen"].as_str().ok_or_else(|| {
+        CorpusError::InvalidReplay("temporal observation screen is invalid".to_owned())
+    })?;
     let screen = match screen_name {
         "result" => ScreenClass::Result,
         "music_select" => ScreenClass::MusicSelect,
@@ -759,10 +721,8 @@ fn parse_record(value: &Value) -> Result<TemporalRecord, CorpusError> {
         "unknown" => ScreenClass::Unknown,
         _ => return invalid("temporal observation screen is unsupported"),
     };
-    let decision_screen = value.pointer("/decision/screen").and_then(Value::as_str);
     let has_result_observation = screen == ScreenClass::Result
-        && (decision_screen == Some("result")
-            || value.get("song_id").and_then(Value::as_str).is_some()
+        && (value.get("song_id").and_then(Value::as_str).is_some()
             || value.pointer("/fields/clear_type").is_some());
     let song = if has_result_observation {
         accepted_song(value)?
@@ -968,7 +928,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_observation_v5_shapes_preserve_only_accepted_result_values() {
+    fn corpus_observations_preserve_only_accepted_result_values() {
         let expected = "00000000-0000-0000-0000-000000000001";
         let current = serde_json::json!({
             "schema": OBSERVATION_SCHEMA,
@@ -992,6 +952,7 @@ mod tests {
             "schema": OBSERVATION_SCHEMA,
             "tick_sequence": 8,
             "source_timestamp_ms": 800,
+            "screen": "result",
             "fields": {"screen": "result", "clear_type": {"open_text": ""}},
             "decision": {"screen": "result", "resolution": {"status": "unknown"}}
         });
@@ -1184,7 +1145,7 @@ mod tests {
             "schema": SESSION_SCHEMA,
             "canonical_frames": [{"sequence": 2}],
             "artifacts": [{
-                "source_path": "recognition/observations.ndjson",
+                "source_path": "analysis/observations.ndjson",
                 "sha256": observation_sha256,
                 "bytes": observations.len()
             }]

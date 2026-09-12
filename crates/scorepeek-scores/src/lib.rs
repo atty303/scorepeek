@@ -482,6 +482,48 @@ type Prepared<'a> = (
     Option<ResultMutation>,
     Option<u64>,
 );
+
+const DATABASE_VERSION: i64 = 3;
+const STORED_RESULT_SCHEMA: &str = "scorepeek-stored-result-v1";
+
+fn stored_result_from_event(raw: &Value) -> Result<Value, Error> {
+    let result = match (raw["schema"].as_str(), raw["event"].as_str()) {
+        (Some("scorepeek-event-v2"), Some("result_changed")) => raw["state"]["result"].clone(),
+        (Some("scorepeek-event-v1"), Some("result_detected")) => raw["result"].clone(),
+        _ => return Err(Error::UnsupportedContract),
+    };
+    serde_json::from_value::<ResultData>(result.clone())?;
+    Ok(serde_json::json!({
+        "schema": STORED_RESULT_SCHEMA,
+        "event_id": raw["event_id"],
+        "invocation_id": raw["invocation_id"],
+        "sequence": raw["sequence"],
+        "emitted_unix_ms": raw["emitted_unix_ms"],
+        "capture": raw["capture"],
+        "result": result,
+    }))
+}
+
+fn migrate_stored_results(tx: &Transaction<'_>) -> Result<u64, Error> {
+    let mut statement = tx.prepare("SELECT rowid,event_json FROM play_results ORDER BY rowid")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    let migrated = u64::try_from(rows.len()).unwrap_or(u64::MAX);
+    for (rowid, json) in rows {
+        let raw: Value = serde_json::from_str(&json)?;
+        let stored = stored_result_from_event(&raw)?;
+        tx.execute(
+            "UPDATE play_results SET event_json=?1 WHERE rowid=?2",
+            params![serde_json::to_string(&stored)?, rowid],
+        )?;
+    }
+    tx.pragma_update(None, "user_version", DATABASE_VERSION)?;
+    Ok(migrated)
+}
 fn prepare_result<'a>(
     result: &'a ResultData,
     song: Option<&SongPresentation>,
@@ -586,6 +628,47 @@ pub struct Store {
     recovered_provisional_count: u64,
 }
 impl Store {
+    /// Explicitly migrates an existing version-one or version-two database to the current storage
+    /// projection. Normal [`Store::open`] never performs this migration.
+    /// # Errors
+    /// Returns filesystem, `SQLite`, malformed-row, lock, or unsupported-version errors.
+    pub fn migrate(path: &Path) -> Result<u64, Error> {
+        if !path.is_file() {
+            return Err(Error::UnsupportedDatabase(0));
+        }
+        let writer_lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(writer_lock_path(path))?;
+        writer_lock.try_lock().map_err(std::io::Error::from)?;
+        let mut connection = Connection::open(path)?;
+        connection.busy_timeout(Duration::from_millis(250))?;
+        connection.pragma_update(None, "journal_mode", "WAL")?;
+        connection.pragma_update(None, "synchronous", "FULL")?;
+        let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if !matches!(version, 1 | 2) {
+            return Err(Error::UnsupportedDatabase(version));
+        }
+        if version == 1 {
+            tx.execute_batch(
+                "ALTER TABLE play_results ADD COLUMN session_id TEXT;
+                 ALTER TABLE play_results ADD COLUMN attempt_id INTEGER;
+                 ALTER TABLE play_results ADD COLUMN state TEXT NOT NULL DEFAULT 'confirmed';
+                 ALTER TABLE play_results ADD COLUMN latest_event_id TEXT;
+                 ALTER TABLE play_results ADD COLUMN recovery_confirmed INTEGER NOT NULL DEFAULT 0;
+                 UPDATE play_results SET latest_event_id=event_id WHERE latest_event_id IS NULL;
+                 CREATE UNIQUE INDEX plays_attempt ON play_results(session_id,attempt_id);
+                 CREATE TABLE result_attempt_origins(session_id TEXT NOT NULL, attempt_id INTEGER NOT NULL, event_id TEXT NOT NULL, emitted_unix_ms INTEGER NOT NULL, received_unix_ms INTEGER NOT NULL, PRIMARY KEY(session_id,attempt_id));",
+            )?;
+        }
+        let migrated = migrate_stored_results(&tx)?;
+        tx.commit()?;
+        Ok(migrated)
+    }
+
     /// Opens or creates a database without deleting existing data.
     /// # Errors
     /// Returns filesystem, `SQLite` or unsupported-version errors.
@@ -606,7 +689,7 @@ impl Store {
         connection.busy_timeout(Duration::from_millis(250))?;
         let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if !(0..=2).contains(&version) {
+        if !matches!(version, 0 | DATABASE_VERSION) {
             return Err(Error::UnsupportedDatabase(version));
         }
         if version == 0 {
@@ -616,22 +699,9 @@ impl Store {
                  CREATE UNIQUE INDEX plays_attempt ON play_results(session_id,attempt_id);\n\
                  CREATE TABLE result_attempt_origins(session_id TEXT NOT NULL, attempt_id INTEGER NOT NULL, event_id TEXT NOT NULL, emitted_unix_ms INTEGER NOT NULL, received_unix_ms INTEGER NOT NULL, PRIMARY KEY(session_id,attempt_id));\n\
                  CREATE TABLE chart_bests (song_id TEXT NOT NULL, play_type TEXT NOT NULL, difficulty TEXT NOT NULL, presentation TEXT, {}, score INTEGER, miss INTEGER, clear INTEGER, PRIMARY KEY(song_id,play_type,difficulty));\n\
-                 PRAGMA user_version=2;",
+                 PRAGMA user_version=3;",
                 COLUMNS.iter().map(|column| format!("{column} TEXT")).collect::<Vec<_>>().join(",")
             ))?;
-        }
-        if version == 1 {
-            tx.execute_batch(
-                "ALTER TABLE play_results ADD COLUMN session_id TEXT;
-                 ALTER TABLE play_results ADD COLUMN attempt_id INTEGER;
-                 ALTER TABLE play_results ADD COLUMN state TEXT NOT NULL DEFAULT 'confirmed';
-                 ALTER TABLE play_results ADD COLUMN latest_event_id TEXT;
-                 ALTER TABLE play_results ADD COLUMN recovery_confirmed INTEGER NOT NULL DEFAULT 0;
-                 UPDATE play_results SET latest_event_id=event_id WHERE latest_event_id IS NULL;
-                 CREATE UNIQUE INDEX plays_attempt ON play_results(session_id,attempt_id);
-                 CREATE TABLE result_attempt_origins(session_id TEXT NOT NULL, attempt_id INTEGER NOT NULL, event_id TEXT NOT NULL, emitted_unix_ms INTEGER NOT NULL, received_unix_ms INTEGER NOT NULL, PRIMARY KEY(session_id,attempt_id));
-                 PRAGMA user_version=2;",
-            )?;
         }
         let recovered_provisional_count = tx.execute(
             "UPDATE play_results SET state='confirmed', recovery_confirmed=1 WHERE state='provisional'",
@@ -715,6 +785,7 @@ impl Store {
                     incoming: &incoming,
                     attempt_id: attempt_id.ok_or(Error::UnsupportedContract)?,
                     received_unix_ms,
+                    stored_result: stored_result_from_event(&raw)?,
                 },
             )?;
         }
@@ -767,6 +838,7 @@ struct ResultWrite<'a> {
     incoming: &'a [Fields; 2],
     attempt_id: u64,
     received_unix_ms: u64,
+    stored_result: Value,
 }
 
 fn apply_result_mutation(
@@ -800,7 +872,7 @@ fn apply_result_mutation(
                 )?;
             tx.execute(
                 "INSERT INTO play_results(event_id,session_id,attempt_id,state,latest_event_id,recovery_confirmed,song_id,play_type,difficulty,emitted_unix_ms,received_unix_ms,score,miss,clear,event_json) VALUES (?1,?2,?3,?4,?14,0,?5,?6,?7,?8,?9,?10,?11,?12,?13) ON CONFLICT(session_id,attempt_id) DO UPDATE SET state=excluded.state,latest_event_id=excluded.latest_event_id,recovery_confirmed=0,song_id=excluded.song_id,play_type=excluded.play_type,difficulty=excluded.difficulty,score=excluded.score,miss=excluded.miss,clear=excluded.clear,event_json=excluded.event_json WHERE play_results.state != 'confirmed' OR excluded.state = 'confirmed'",
-                params![first_event_id, session_id, attempt_id, state, write.chart.scorepeek_song_id, write.play_type, write.difficulty, first_emitted_unix_ms, first_received_unix_ms, write.incoming[0][0].as_ref().and_then(|f| f.value), write.incoming[0][1].as_ref().and_then(|f| f.value), write.incoming[0][2].as_ref().and_then(|f| f.value), serde_json::to_string(write.raw)?, write.envelope.event_id],
+                params![first_event_id, session_id, attempt_id, state, write.chart.scorepeek_song_id, write.play_type, write.difficulty, first_emitted_unix_ms, first_received_unix_ms, write.incoming[0][0].as_ref().and_then(|f| f.value), write.incoming[0][1].as_ref().and_then(|f| f.value), write.incoming[0][2].as_ref().and_then(|f| f.value), serde_json::to_string(&write.stored_result)?, write.envelope.event_id],
             )?;
         }
         ResultMutation::Retract => {
@@ -844,19 +916,10 @@ fn writer_lock_path(path: &Path) -> PathBuf {
 
 fn stored_result_facts(json: &str, received_unix_ms: i64) -> Result<[Fields; 2], Error> {
     let raw: Value = serde_json::from_str(json)?;
-    let result = match (
-        raw["schema"].as_str(),
-        raw["event"].as_str(),
-        raw["state"]["status"].as_str(),
-    ) {
-        (Some("scorepeek-event-v2"), Some("result_changed"), Some("provisional" | "confirmed")) => {
-            serde_json::from_value::<ResultData>(raw["state"]["result"].clone())?
-        }
-        (Some("scorepeek-event-v1"), Some("result_detected"), _) => {
-            serde_json::from_value::<ResultData>(raw["result"].clone())?
-        }
-        _ => return Err(Error::UnsupportedContract),
-    };
+    if raw["schema"].as_str() != Some(STORED_RESULT_SCHEMA) {
+        return Err(Error::UnsupportedContract);
+    }
+    let result = serde_json::from_value::<ResultData>(raw["result"].clone())?;
     let origin = Origin {
         event_id: raw["event_id"]
             .as_str()

@@ -49,7 +49,7 @@ pub fn chart_history(
     connection.busy_timeout(Duration::from_millis(250))?;
     let transaction = connection.transaction()?;
     let version: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version != 2 {
+    if version != 3 {
         return Err(Error::UnsupportedDatabase(version));
     }
     let best = transaction.query_row(
@@ -94,7 +94,7 @@ pub fn chart_dashboard(
     connection.busy_timeout(Duration::from_millis(250))?;
     let tx = connection.transaction()?;
     let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version != 2 {
+    if version != 3 {
         return Err(Error::UnsupportedDatabase(version));
     }
     let row:Option<(Option<i64>,Option<i64>,Option<i64>)>=tx.query_row("SELECT score,miss,clear FROM chart_bests WHERE song_id=?1 AND play_type=?2 AND difficulty=?3",params![song_id,play_type,difficulty],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
@@ -166,7 +166,7 @@ mod tests {
             std::thread::current().name().unwrap_or("test")
         ));
         let mut connection = Connection::open(&path).unwrap();
-        connection.pragma_update(None, "user_version", 2).unwrap();
+        connection.pragma_update(None, "user_version", 3).unwrap();
         connection
             .execute_batch(
                 "CREATE TABLE chart_bests(song_id TEXT,play_type TEXT,difficulty TEXT,score INTEGER,miss INTEGER,clear INTEGER);
