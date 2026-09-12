@@ -259,6 +259,10 @@ url = "https://files.pythonhosted.org/packages/2c/82/36356bd30ef13ea767c53a4be7c
 checksum = "sha256:ff5a7fe9b4248396023938ef14b344e9fb47d24882ebab1ffa926b62f0a10ebd"
 url = "https://files.pythonhosted.org/packages/2c/82/36356bd30ef13ea767c53a4be7c508621e77c2d52e60b48929710de07230/pkgconf-3.0.1.post0-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl"
 
+[[tools."npm:playwright"]]
+version = "1.63.0"
+backend = "npm:playwright"
+
 [[tools.python]]
 version = "3.12.13"
 backend = "core:python"

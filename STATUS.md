@@ -709,8 +709,41 @@ checkpoint; implementation history belongs in Git.
   output/canvas reselection, widget and canvas drags, skin motion and screen visibility cycles. A
   production Chromium `/overlay` run at 1920x1080 confirmed one-output OBS behavior, stable iframe
   identity across canvas/property/widget projection updates, interaction-free CSS animation paint,
-  persisted save/reopen and restoration on discard/reopen. These development routes do not replace
-  target-live multi-output Wayland composition/input or rendering inside OBS.
+  persisted save/reopen and restoration on discard/reopen.
+
+- ADR 0150 keeps expanded skin packages in one process-wide immutable cache, uses its retained skin
+  identity for empty-editor bootstrap without reopening ZIPs, and gives each visible canvas exactly
+  one retained Wasm runtime and skin tree. Session signals, memos and stage transport
+  carry only skin identity and presentation data. Unchanged Wayland frames continue polling Dioxus
+  and repainting animation but do not rebuild or clone projections, reopen packages, recreate
+  runtimes or surfaces, or reconcile unchanged skin input. Passive pointer motion outside drag or
+  placement is dropped before writing the shared Dioxus signal, remains a defensive reducer no-op,
+  and does not publish a native stage replica; drag and placement remain revisioned. Canvas hide/delete,
+  skin replacement, output reassignment/removal and editor close unmount retained trees and drop
+  runtimes before surface unmap and worker join.
+  A checked-in fake-Wayland lifecycle test covers two outputs and canvases, visibility, reassignment,
+  replacement, deletion, output removal, close/reopen, stale replicas, nested wheel targeting and
+  separate 60- and 120-frame animation intervals with stable
+  projection/config/package/runtime/reconciliation/skin-input counters while Dioxus poll, shared
+  motion, Blitz layout, resource resolution, Vello scene construction and fake present/commit
+  continue on every frame; idle Wasm and JSON-tree work remain unchanged. A canvas-owner lease prevents
+  reverse output delivery from mounting duplicate runtimes, and a conformance test fixes the exact
+  stale-hover mismatch normalized at the Blitz wheel boundary. Browser iframe replicas now
+  reactively consume complete effective session/revision-tagged authority specifications and reject
+  delayed WebSocket state.
+  The self-contained `overlay:web:browser:test` task builds skin packages and the current embedded
+  browser/server pair, ensures pinned headless Chromium is installed, then runs the routine
+  `mise run test` Playwright scenario. It starts the production embedded server in an
+  ordinary Chromium browser and confirms matching editor-handle and iframe skin geometry after a
+  delayed WebSocket mutation, complete skin/property replacement, canvas/widget lifecycle,
+  same-output multiple-canvas creation, nested Navigator/Inspector scrolling, browser button-focus
+  semantics and clean console output.
+  Raw-Blitz conformance tests separately prove the two narrow native normalizations for wheel target
+  coordinates and button focus. A two-output headless nested-Scroll
+  observation sustained about 61 Hz per output and recorded resource unmount before renderer
+  suspend and surface unmap. Browser plus fake Wayland are the routine completion gates; actual OBS
+  or a live compositor is required only to investigate an adapter-specific failure, not as a
+  standing unverified editor boundary.
 
 - Validate layout v4 in a fresh target-live run with the installed binary.
   Retained-frame inspection does not recover unrecorded PLAY spans or backfill missing RESULTs.

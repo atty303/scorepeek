@@ -3,6 +3,7 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 xdg=$(mktemp -d "${TMPDIR:-/tmp}/scorepeek-skins.XXXXXX")
+export MISE_DATA_DIR="${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}"
 cleanup() {
   rm -rf "$xdg"
 }

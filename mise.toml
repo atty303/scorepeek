@@ -5,6 +5,7 @@ min_version = "2026.8.3"
 actionlint = "1.7.12"
 cargo-dist = "0.32.0"
 hk = "1.54.1"
+"npm:playwright" = "1.63.0"
 python = "3.12.13"
 rclone = "1.74.2"
 rust = { version = "1.97.1", components = ["clippy", "rustfmt"] }
@@ -114,14 +115,33 @@ sources = [
 outputs = ["target/dx/scorepeek-overlay-web/release/web/public/index.html"]
 
 [tasks."overlay:web:test"]
-description = "Test real embedded assets and child lifecycle in isolated storage"
-depends = ["overlay:web:bundle", "overlay:skins:build"]
+description = "Test the production browser route, embedded assets, and child lifecycle"
+depends = ["overlay:web:browser:test"]
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
+cargo test --locked -p scorepeek-overlay-web
 cargo test --locked -p scorepeek-overlay --features embedded-web --lib
-exec cargo test --locked -p scorepeek --features embedded-web --test overlay
+cargo test --locked -p scorepeek --features embedded-web --test overlay
 '''
+
+[tasks."overlay:web:browser:install"]
+description = "Install the headless Chromium revision pinned by the repository Playwright tool"
+run = "playwright install --only-shell chromium"
+
+[tasks."overlay:web:browser:server:build"]
+description = "Build the OBS-equivalent browser test server with the current embedded bundle"
+depends = ["overlay:web:bundle"]
+run = "cargo build --locked -p scorepeek-overlay --features embedded-web --example visual_obs"
+
+[tasks."overlay:web:browser:test"]
+description = "Test the production browser editor and canvas replicas in pinned Chromium"
+depends = [
+  "overlay:web:browser:server:build",
+  "overlay:skins:build",
+  "overlay:web:browser:install",
+]
+run = "scripts/test-overlay-browser.bash"
 
 [tasks."overlay:wayland:build:check"]
 description = "Build and test the standalone Wayland shell without host development metadata"
@@ -179,6 +199,7 @@ exec hk fix --all
 
 [tasks.test]
 description = "Run all reproducible checks"
+depends = ["overlay:skins:build"]
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail

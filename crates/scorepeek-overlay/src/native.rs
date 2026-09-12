@@ -1,4 +1,6 @@
 mod text;
+#[cfg(test)]
+use scorepeek_overlay_ui::editor_model::EditorEffectKind;
 use scorepeek_overlay_ui::editor_model::{
     EditorBackendReply, EditorEffect, EditorInput, EditorSession, StageProjection,
 };
@@ -111,6 +113,9 @@ struct PointerInput {
 
 impl PointerInput {
     fn focus_clicked_button(document: &mut DioxusDocument, point: [f32; 2]) {
+        // Browsers focus an enabled button on primary click. Blitz currently only performs its
+        // pointer-down focus default for text inputs, so keep this proven renderer difference at
+        // the native event adapter rather than teaching shared Dioxus components about native.
         let button = {
             let inner = document.inner.borrow();
             let mut candidate = inner.element_from_point(point[0], point[1]);
@@ -134,7 +139,7 @@ impl PointerInput {
         }
     }
 
-    fn dispatch(
+    fn dispatch_blitz(
         &mut self,
         document: &mut DioxusDocument,
         point: [f64; 2],
@@ -178,8 +183,19 @@ impl PointerInput {
             Some(false) => UiEvent::PointerUp(event),
             None => UiEvent::PointerMove(event),
         });
-        if pressed == Some(false) && button == MouseEventButton::Main {
-            Self::focus_clicked_button(document, [x, y]);
+    }
+
+    fn dispatch(
+        &mut self,
+        document: &mut DioxusDocument,
+        point: [f64; 2],
+        button: u32,
+        pressed: Option<bool>,
+    ) {
+        self.dispatch_blitz(document, point, button, pressed);
+        if pressed == Some(false) && button == 0x110 {
+            let point = dioxus::html::geometry::ClientPoint::new(point[0], point[1]).to_f32();
+            Self::focus_clicked_button(document, [point.x, point.y]);
         }
     }
     fn click(&mut self, document: &mut DioxusDocument, point: [f64; 2]) {
@@ -192,8 +208,11 @@ impl PointerInput {
         use blitz_traits::events::{
             BlitzWheelDelta, BlitzWheelEvent, Point, PointerCoords, UiEvent,
         };
-        self.dispatch(document, point, 0x110, None);
+        // Browser wheel targeting is resolved from the wheel event's coordinates. Blitz currently
+        // routes the default scroll action through its previously stored hover chain, so reproduce
+        // the browser contract at this adapter boundary without synthesizing a Dioxus pointermove.
         let point = dioxus::html::geometry::ClientPoint::new(point[0], point[1]).to_f32();
+        document.inner.borrow_mut().set_hover_to(point.x, point.y);
         document.handle_ui_event(UiEvent::Wheel(BlitzWheelEvent {
             delta: BlitzWheelDelta::Pixels(delta[0], delta[1]),
             coords: PointerCoords {
@@ -211,29 +230,8 @@ impl PointerInput {
     }
 }
 
-/// The browser retains focus when a keyed DOM element is patched in place. Blitz can replace the
-/// native node during the equivalent Dioxus rebuild, so carry only the standard HTML `id` identity
-/// across that renderer boundary. No editor action or control meaning is interpreted here.
 fn poll_native_document(document: &mut DioxusDocument, waker: &Waker) -> bool {
-    let focus_id = {
-        let inner = document.inner.borrow();
-        inner
-            .get_focussed_node_id()
-            .and_then(|node| inner.get_node(node))
-            .and_then(|node| node.element_data())
-            .and_then(|element| element.id.as_ref())
-            .map(ToString::to_string)
-    };
-    let changed = document.poll(Some(TaskContext::from_waker(waker)));
-    let replacement = if changed {
-        focus_id.and_then(|focus_id| document.inner.borrow().get_element_by_id(&focus_id))
-    } else {
-        None
-    };
-    if let Some(node) = replacement {
-        document.inner.borrow_mut().set_focus_to(node);
-    }
-    changed
+    document.poll(Some(TaskContext::from_waker(waker)))
 }
 
 #[cfg(test)]
@@ -280,14 +278,112 @@ fn worker_needs_replacement(
         || finished
 }
 
-#[cfg(test)]
-fn passive_pointer_move(action: &SurfaceAction, dragging: bool) -> Option<[i32; 2]> {
-    if dragging {
-        return None;
-    }
-    match action {
-        SurfaceAction::Move(point) => Some(*point),
-        _ => None,
+#[derive(Debug, Default, PartialEq, Eq)]
+struct WorkerReconciliation {
+    stop_join: Vec<String>,
+    start: Vec<String>,
+}
+
+fn reconcile_worker_lifecycle<'a>(
+    workers: impl IntoIterator<Item = (&'a str, Option<&'a str>, bool)>,
+    projected: &[crate::config::Canvas],
+) -> WorkerReconciliation {
+    let desired_ids = projected
+        .iter()
+        .map(|canvas| canvas.id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let live = workers
+        .into_iter()
+        .map(|(id, output, finished)| (id.to_owned(), output.map(str::to_owned), finished))
+        .collect::<Vec<_>>();
+    let stop_join = live
+        .iter()
+        .filter(|(id, output, finished)| {
+            worker_needs_replacement(id, output.as_deref(), &desired_ids, projected, *finished)
+        })
+        .map(|(id, _, _)| id.clone())
+        .collect::<Vec<_>>();
+    let retained = live
+        .iter()
+        .filter(|(id, _, _)| !stop_join.contains(id))
+        .map(|(id, _, _)| id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let start = projected
+        .iter()
+        .filter(|canvas| !retained.contains(canvas.id.as_str()))
+        .map(|canvas| canvas.id.clone())
+        .collect();
+    WorkerReconciliation { stop_join, start }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProjectionCacheKey {
+    editing: bool,
+    session_id: u64,
+    revision: u64,
+}
+
+#[derive(Default)]
+struct NativeProjectionCache {
+    key: Option<ProjectionCacheKey>,
+    canvases: Vec<crate::config::Canvas>,
+    rebuilds: u64,
+}
+
+impl NativeProjectionCache {
+    fn resolve<'a>(
+        &'a mut self,
+        fallback_skin: Option<scorepeek_overlay_ui::Skin>,
+        session: &EditorSession,
+        desired: &[crate::config::Canvas],
+    ) -> Result<&'a [crate::config::Canvas], String> {
+        let key = ProjectionCacheKey {
+            editing: session.editing,
+            session_id: session.session_id,
+            revision: session.revision,
+        };
+        if self.key == Some(key) {
+            return Ok(&self.canvases);
+        }
+        self.canvases = if session.editing {
+            let output_descriptions = session
+                .outputs
+                .iter()
+                .map(|output| OutputDescription {
+                    name: output.name.clone(),
+                    model: output.model.clone(),
+                    logical_size: output.logical_size,
+                })
+                .collect::<Vec<_>>();
+            let draft = session
+                .draft
+                .iter()
+                .map(|presentation| {
+                    let mut canvas = crate::config::empty_canvas(
+                        presentation.id.clone(),
+                        crate::runtime::Backend::Wayland,
+                    );
+                    canvas.apply_presentation(presentation);
+                    canvas
+                })
+                .collect::<Vec<_>>();
+            editor_stage_canvases(fallback_skin, &draft, &output_descriptions)?
+        } else {
+            desired.to_vec()
+        };
+        self.key = Some(key);
+        self.rebuilds = self.rebuilds.saturating_add(1);
+        crate::diagnostics::emit(
+            "native_projection_rebuilt",
+            &serde_json::json!({
+                "session_id": key.session_id,
+                "revision": key.revision,
+                "editing": key.editing,
+                "surface_count": self.canvases.len(),
+                "rebuild_count": self.rebuilds,
+            }),
+        );
+        Ok(&self.canvases)
     }
 }
 
@@ -301,6 +397,18 @@ fn editor_skin_presentation_changed(
         || before.width != after.width
         || before.height != after.height
         || before.widgets != after.widgets
+}
+
+fn editor_skin_previews_changed(
+    previews: &std::collections::BTreeMap<String, EditorSkinPreview>,
+    stage: &StageProjection,
+) -> bool {
+    stage.canvases.len() != previews.len()
+        || stage.canvases.iter().any(|canvas| {
+            previews.get(&canvas.id).is_none_or(|preview| {
+                editor_skin_presentation_changed(&preview.canvas.presentation(), canvas)
+            })
+        })
 }
 
 fn accepts_stage_projection(current: &StageProjection, candidate: &StageProjection) -> bool {
@@ -370,6 +478,8 @@ enum SurfaceRole {
 #[derive(Clone, Default)]
 struct PublishedStages {
     by_output: std::collections::BTreeMap<String, StageProjection>,
+    #[cfg(test)]
+    publications: u64,
 }
 
 #[derive(Clone)]
@@ -426,19 +536,27 @@ impl NativeEditorAuthority {
     }
 
     fn dispatch(&mut self, input: EditorInput) -> Vec<EditorEffect> {
-        let before = self.runtime.session.read().revision;
+        let before = {
+            let session = self.runtime.session.read();
+            (session.session_id, session.revision)
+        };
         crate::diagnostics::emit(
             "native_editor_action_received",
-            &serde_json::json!({"session_id":self.runtime.session.read().session_id,"revision":before,"input":input.diagnostic_name()}),
+            &serde_json::json!({"session_id":before.0,"revision":before.1,"input":input.diagnostic_name()}),
         );
         let effects = self.runtime.dispatch.call(input);
         self.poll();
-        let after = self.runtime.session.read().revision;
+        let after = {
+            let session = self.runtime.session.read();
+            (session.session_id, session.revision)
+        };
         crate::diagnostics::emit(
             "native_editor_action_reduced",
-            &serde_json::json!({"session_id":self.runtime.session.read().session_id,"before_revision":before,"revision":after,"effect_count":effects.len()}),
+            &serde_json::json!({"session_id":after.0,"before_revision":before.1,"revision":after.1,"effect_count":effects.len()}),
         );
-        self.publish();
+        if after != before {
+            self.publish();
+        }
         effects
     }
 
@@ -452,13 +570,18 @@ impl NativeEditorAuthority {
         let session_id = self.runtime.session.read().session_id;
         let revision = self.runtime.session.read().revision;
         let output_count = stages.len();
-        self.published
+        let mut published = self
+            .published
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .by_output = stages
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        published.by_output = stages
             .into_iter()
             .map(|stage| (stage.output.name.clone(), stage))
             .collect();
+        #[cfg(test)]
+        {
+            published.publications = published.publications.saturating_add(1);
+        }
         crate::diagnostics::emit(
             "native_editor_projection_published",
             &serde_json::json!({"session_id":session_id,"revision":revision,"output_count":output_count}),
@@ -784,46 +907,6 @@ fn skin_error_type(error: &str) -> &'static str {
     }
 }
 
-fn installed_editor_skins() -> Vec<scorepeek_overlay_ui::editor::EditorSkin> {
-    static INSTALLED: std::sync::OnceLock<Vec<scorepeek_overlay_ui::editor::EditorSkin>> =
-        std::sync::OnceLock::new();
-    INSTALLED.get_or_init(load_installed_editor_skins).clone()
-}
-
-fn load_installed_editor_skins() -> Vec<scorepeek_overlay_ui::editor::EditorSkin> {
-    #[cfg(test)]
-    return embedded_editor_skins();
-
-    #[cfg(not(test))]
-    {
-        let store = crate::skin::StoreRoot::discover();
-        store
-            .list()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|skin| {
-                let package = store.open(&skin.id).ok()?;
-                Some(scorepeek_overlay_ui::editor::EditorSkin {
-                    id: skin.id.parse().ok()?,
-                    name: skin.name,
-                    release: skin.release,
-                    preview: format!("/skin/{}/{}", skin.id, crate::skin::PREVIEW_PATH),
-                    preview_video: None,
-                    canvas_properties: serde_json::from_value(
-                        serde_json::to_value(package.manifest.canvas_properties).ok()?,
-                    )
-                    .ok()?,
-                    widget_properties: serde_json::from_value(
-                        serde_json::to_value(package.manifest.widget_properties).ok()?,
-                    )
-                    .ok()?,
-                })
-            })
-            .collect()
-    }
-}
-
-#[cfg(test)]
 fn embedded_editor_skins() -> Vec<scorepeek_overlay_ui::editor::EditorSkin> {
     [
         include_str!("../../../skins/cyan-system/skin.toml"),
@@ -1031,10 +1114,19 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
     let editor_id = format!("wayland-{}", std::process::id());
     let wayland_refresh_hz = Arc::new(std::sync::Mutex::new(config.wayland_refresh_hz));
     let start_editing = config.edit_on_start || desired.is_empty();
-    let probe = desired
-        .first()
-        .cloned()
-        .map_or_else(|| editor_bootstrap(&config), Ok)?;
+    let skin_assets = Arc::new(SkinAssetCache::new(crate::skin::StoreRoot::new(
+        config.skin_store.clone(),
+    )));
+    let installed_skins = skin_assets.installed_editor_skins().unwrap_or_default();
+    let fallback_skin = installed_skins.first().map(|skin| skin.id);
+    let probe = desired.first().cloned().map_or_else(
+        || {
+            fallback_skin
+                .map(editor_bootstrap)
+                .ok_or_else(|| String::from("Wayland editor requires at least one installed skin"))
+        },
+        Ok,
+    )?;
     let outputs = discover_editor_outputs(&probe)?;
     let initial = desired
         .iter()
@@ -1054,7 +1146,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
         )
         .unwrap_or(u64::MAX),
     );
-    session.set_skins(installed_editor_skins());
+    session.set_skins(installed_skins);
     session.set_outputs(
         outputs
             .iter()
@@ -1082,6 +1174,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
         );
     }
     let mut was_editing = authority.session().editing;
+    let mut projection_cache = NativeProjectionCache::default();
     let mut next_keepalive = Instant::now() + Duration::from_secs(5);
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
         while let Ok(command) = coordinator_rx.try_recv() {
@@ -1227,52 +1320,20 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
         }
         was_editing = authority.session().editing;
         let editing = was_editing;
-        let projected = if editing {
-            let session = authority.session();
-            let output_descriptions = session
-                .outputs
-                .iter()
-                .map(|output| OutputDescription {
-                    name: output.name.clone(),
-                    model: output.model.clone(),
-                    logical_size: output.logical_size,
-                })
-                .collect::<Vec<_>>();
-            let draft = session
-                .draft
-                .iter()
-                .map(|presentation| {
-                    let mut canvas = crate::config::empty_canvas(
-                        presentation.id.clone(),
-                        crate::runtime::Backend::Wayland,
-                    );
-                    canvas.apply_presentation(presentation);
-                    canvas
-                })
-                .collect::<Vec<_>>();
-            editor_stage_canvases(&config, &draft, &output_descriptions)?
-        } else {
-            desired.clone()
-        };
-        let desired_ids = projected
-            .iter()
-            .map(|canvas| canvas.id.clone())
-            .collect::<std::collections::BTreeSet<_>>();
-        let remove = workers
-            .iter()
-            .filter(|(id, worker)| {
-                worker_needs_replacement(
-                    id,
+        let session = authority.session();
+        let projected = projection_cache.resolve(fallback_skin, &session, &desired)?;
+        let reconciliation = reconcile_worker_lifecycle(
+            workers.iter().map(|(id, worker)| {
+                (
+                    id.as_str(),
                     worker.output.as_deref(),
-                    &desired_ids,
-                    &projected,
                     worker.join.is_finished(),
                 )
-            })
-            .map(|(id, _)| id.clone())
-            .collect::<Vec<_>>();
-        stop_workers(remove.iter(), &workers, &canvas_wakes);
-        for id in remove {
+            }),
+            projected,
+        );
+        stop_workers(reconciliation.stop_join.iter(), &workers, &canvas_wakes);
+        for id in reconciliation.stop_join {
             if let Some(worker) = workers.remove(&id) {
                 let output = worker.output.clone();
                 match worker.join.join() {
@@ -1302,11 +1363,15 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&id);
         }
-        for canvas in &projected {
-            if workers.contains_key(&canvas.id)
-                || failed
-                    .get(&canvas.id)
-                    .is_some_and(|failure| recent_same_failure(failure, canvas))
+        for id in reconciliation.start {
+            let Some(canvas) = projected.iter().find(|canvas| canvas.id == id) else {
+                return Err(format!(
+                    "worker reconciliation referenced missing projected canvas {id}"
+                ));
+            };
+            if failed
+                .get(&canvas.id)
+                .is_some_and(|failure| recent_same_failure(failure, canvas))
             {
                 continue;
             }
@@ -1320,6 +1385,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             let refresh = Arc::clone(&wayland_refresh_hz);
             let wakes = Arc::clone(&canvas_wakes);
             let coordinator = coordinator_tx.clone();
+            let assets = Arc::clone(&skin_assets);
             let role = if editing {
                 SurfaceRole::EditorStage
             } else {
@@ -1338,6 +1404,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                         &wakes,
                         coordinator,
                         role,
+                        assets,
                     )
                 })
                 .map_err(|error| error.to_string())?;
@@ -1386,13 +1453,7 @@ fn discover_editor_outputs(
     Ok(shell.output_descriptions)
 }
 
-fn editor_bootstrap(config: &Config) -> Result<crate::config::Canvas, String> {
-    let skin = crate::skin::StoreRoot::new(config.skin_store.clone())
-        .list()?
-        .first()
-        .ok_or("Wayland editor requires at least one installed skin")?
-        .id
-        .parse::<scorepeek_overlay_ui::Skin>()?;
+fn editor_bootstrap(skin: scorepeek_overlay_ui::Skin) -> crate::config::Canvas {
     let mut bootstrap = crate::config::empty_canvas(
         "__scorepeek-editor-bootstrap".into(),
         crate::runtime::Backend::Wayland,
@@ -1403,21 +1464,24 @@ fn editor_bootstrap(config: &Config) -> Result<crate::config::Canvas, String> {
     bootstrap.width = 1920;
     bootstrap.height = 1080;
     bootstrap.show_on = Some(Vec::new());
-    Ok(bootstrap)
+    bootstrap
 }
 
 fn editor_stage_canvases(
-    config: &Config,
+    fallback_skin: Option<scorepeek_overlay_ui::Skin>,
     canvases: &[crate::config::Canvas],
     outputs: &[OutputDescription],
 ) -> Result<Vec<crate::config::Canvas>, String> {
     if outputs.is_empty() {
-        return Ok(vec![editor_bootstrap(config)?]);
+        return fallback_skin
+            .map(editor_bootstrap)
+            .map(|bootstrap| vec![bootstrap])
+            .ok_or_else(|| "Wayland editor requires at least one installed skin".into());
     }
     let skin = if let Some(canvas) = canvases.first() {
         canvas.skin
     } else {
-        editor_bootstrap(config)?.skin
+        fallback_skin.ok_or("Wayland editor requires at least one installed skin")?
     };
     Ok(editor_stage_projections(canvases, outputs, skin))
 }
@@ -1461,6 +1525,7 @@ fn run_canvas(
     wakes: &Arc<std::sync::Mutex<std::collections::BTreeMap<String, Ping>>>,
     coordinator: std::sync::mpsc::Sender<CoordinatorCommand>,
     role: SurfaceRole,
+    skin_assets: Arc<SkinAssetCache>,
 ) -> Result<(), String> {
     let startup_started = Instant::now();
     let report = Rc::new(RefCell::new(RunReport::new()));
@@ -1586,7 +1651,7 @@ fn run_canvas(
         feed_stop,
         external_stop,
         canvas,
-        config.skin_store.clone(),
+        skin_assets,
         outputs,
         Rc::clone(&report),
         pending_resolved_output,
@@ -1607,44 +1672,52 @@ fn run_canvas(
         }),
     );
     let result = app.run();
-    crate::diagnostics::emit(
-        "native_renderer_shutdown",
-        &serde_json::json!({
-            "run_id": report.borrow().run_id,
-            "canvas_id": app.surface_canvas.id,
-            "output": app.surface_output,
-            "phase": "app_stopped",
-        }),
+    let unmap = shutdown_native_surface(
+        &mut app,
+        |app| {
+            app.unmount_skin_resources();
+            crate::diagnostics::emit(
+                "native_renderer_shutdown",
+                &serde_json::json!({
+                    "run_id": report.borrow().run_id,
+                    "canvas_id": app.surface_canvas.id,
+                    "output": app.surface_output,
+                    "phase": "app_stopped",
+                }),
+            );
+        },
+        |app| {
+            crate::diagnostics::emit(
+                "native_renderer_shutdown",
+                &serde_json::json!({
+                    "run_id": report.borrow().run_id,
+                    "canvas_id": app.surface_canvas.id,
+                    "output": app.surface_output,
+                    "phase": "suspend_requested",
+                }),
+            );
+            crate::diagnostics::emit(
+                "native_renderer_shutdown",
+                &serde_json::json!({
+                    "run_id": report.borrow().run_id,
+                    "canvas_id": app.surface_canvas.id,
+                    "output": app.surface_output,
+                    "phase": "suspend_started",
+                }),
+            );
+            app.renderer.suspend();
+            crate::diagnostics::emit(
+                "native_renderer_shutdown",
+                &serde_json::json!({
+                    "run_id": report.borrow().run_id,
+                    "canvas_id": app.surface_canvas.id,
+                    "output": app.surface_output,
+                    "phase": "suspend_completed",
+                }),
+            );
+        },
+        |app| app.shell.unmap(),
     );
-    crate::diagnostics::emit(
-        "native_renderer_shutdown",
-        &serde_json::json!({
-            "run_id": report.borrow().run_id,
-            "canvas_id": app.surface_canvas.id,
-            "output": app.surface_output,
-            "phase": "suspend_requested",
-        }),
-    );
-    crate::diagnostics::emit(
-        "native_renderer_shutdown",
-        &serde_json::json!({
-            "run_id": report.borrow().run_id,
-            "canvas_id": app.surface_canvas.id,
-            "output": app.surface_output,
-            "phase": "suspend_started",
-        }),
-    );
-    app.renderer.suspend();
-    crate::diagnostics::emit(
-        "native_renderer_shutdown",
-        &serde_json::json!({
-            "run_id": report.borrow().run_id,
-            "canvas_id": app.surface_canvas.id,
-            "output": app.surface_output,
-            "phase": "suspend_completed",
-        }),
-    );
-    let unmap = app.shell.unmap();
     crate::diagnostics::emit(
         "native_surface_unmap",
         &serde_json::json!({
@@ -1662,7 +1735,11 @@ fn run_canvas(
         report.render_calls = app.render_calls;
         report.editor_skin_update_requests = app.editor_skin_updates.requests;
         report.editor_skin_render_count = app.editor_skin_updates.renders;
-        report.skin_package_open_count = app.skin_package_open_count;
+        report.skin_package_open_count = app
+            .skin_assets
+            .open_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        report.skin_runtime_create_count = app.skin_runtime_create_count;
         report.elapsed_ms = u64::try_from(app.started.elapsed().as_millis()).unwrap_or(u64::MAX);
         report.wayland_refresh_hz = *app
             .wayland_refresh_hz
@@ -1720,15 +1797,11 @@ struct App {
     next_output_persist: Instant,
     surface_logical: [u32; 2],
     wayland_refresh_hz: Arc<std::sync::Mutex<scorepeek_overlay_ui::WaylandRefreshRate>>,
-    skin_runtime: crate::skin::Runtime,
+    display_skin: Option<NativeDisplaySkin>,
     editor_skin_previews: std::collections::BTreeMap<String, EditorSkinPreview>,
-    skin_tree: crate::skin::NativeTree,
     next_skin_render: Option<Instant>,
-    skin_release: String,
-    skin_manifest: crate::skin::Manifest,
-    skin_store: std::path::PathBuf,
-    skin_assets: Arc<std::sync::Mutex<Option<crate::skin::Package>>>,
-    skin_package_open_count: u64,
+    skin_assets: Arc<SkinAssetCache>,
+    skin_runtime_create_count: u64,
     startup_started: Instant,
     /// Renderer/protocol composition state used only to normalize Wayland key events to DOM.
     text_composition: TextComposition,
@@ -1743,17 +1816,32 @@ enum TextComposition {
 
 struct EditorSkinPreview {
     canvas: crate::config::Canvas,
-    package: crate::skin::Package,
+    package: Arc<crate::skin::Package>,
     runtime: crate::skin::Runtime,
     tree: crate::skin::NativeTree,
     next_render: Option<Instant>,
+    last_input: serde_json::Value,
+}
+
+struct NativeDisplaySkin {
+    runtime: crate::skin::Runtime,
+    tree: crate::skin::NativeTree,
+    release: String,
+    manifest: crate::skin::Manifest,
+}
+
+#[derive(Default)]
+struct EditorSkinReconciliation {
+    retry_owner: bool,
+    wasm_calls: u64,
+    tree_updates: u64,
+    input_generations: u64,
 }
 
 fn create_editor_skin_preview(
     document: &mut DioxusDocument,
     presentation: &scorepeek_overlay_ui::CanvasPresentation,
-    skin_store: &std::path::Path,
-    skin_assets: &Arc<std::sync::Mutex<Option<crate::skin::Package>>>,
+    skin_assets: &Arc<SkinAssetCache>,
     report: &Rc<RefCell<RunReport>>,
     output: Option<&str>,
     state: &OverlayState,
@@ -1761,12 +1849,10 @@ fn create_editor_skin_preview(
     let mut canvas =
         crate::config::empty_canvas(presentation.id.clone(), crate::runtime::Backend::Wayland);
     canvas.apply_presentation(presentation);
-    let package = crate::skin::StoreRoot::new(skin_store.to_path_buf()).open(canvas.skin.name())?;
-    *skin_assets
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(package.clone());
+    let package = skin_assets.load(canvas.skin.name())?;
     let mut runtime = new_native_skin_runtime(&package, report, &canvas.id, output, &[])?;
-    let rendered = runtime.init(&native_skin_input(&canvas, state, &package.manifest))?;
+    let input = native_skin_input(&canvas, state, &package.manifest);
+    let rendered = runtime.init(&input)?;
     let root_id = editor_skin_root_id(&canvas.id);
     let root = document
         .inner
@@ -1774,13 +1860,16 @@ fn create_editor_skin_preview(
         .query_selector(&format!("#{root_id}"))
         .map_err(|error| format!("query editor skin root: {error:?}"))?
         .ok_or_else(|| format!("editor skin root is missing for {}", canvas.id))?;
-    let css = std::str::from_utf8(
-        package
-            .resource(crate::skin::STYLE_PATH)
-            .ok_or("skin.css missing")?,
-    )
-    .map_err(|error| format!("skin.css is not UTF-8: {error}"))?;
-    let mut tree = crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, css);
+    let css = namespace_skin_css(
+        canvas.skin.name(),
+        std::str::from_utf8(
+            package
+                .resource(crate::skin::STYLE_PATH)
+                .ok_or("skin.css missing")?,
+        )
+        .map_err(|error| format!("skin.css is not UTF-8: {error}"))?,
+    );
+    let mut tree = crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, &css);
     tree.apply(&mut document.inner.borrow_mut(), &rendered);
     Ok(EditorSkinPreview {
         canvas,
@@ -1788,7 +1877,126 @@ fn create_editor_skin_preview(
         runtime,
         tree,
         next_render: skin_deadline(&rendered.schedule, false),
+        last_input: input,
     })
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn reconcile_editor_skin_previews(
+    document: &mut DioxusDocument,
+    previews: &mut std::collections::BTreeMap<String, EditorSkinPreview>,
+    presentations: &[scorepeek_overlay_ui::CanvasPresentation],
+    skin_assets: &Arc<SkinAssetCache>,
+    report: &Rc<RefCell<RunReport>>,
+    output: Option<&str>,
+    state: &OverlayState,
+    runtime_create_count: &mut u64,
+) -> Result<EditorSkinReconciliation, String> {
+    let output = output.ok_or("editor skin preview requires an output owner")?;
+    let mut reconciliation = EditorSkinReconciliation::default();
+    let live = presentations
+        .iter()
+        .map(|presentation| presentation.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let removed = previews
+        .keys()
+        .filter(|id| !live.contains(id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    for id in removed {
+        if let Some(mut preview) = previews.remove(&id) {
+            preview.tree.unmount(&mut document.inner.borrow_mut());
+            skin_assets.release_editor_owner(&id, output);
+        }
+    }
+
+    let mut retry_owner = false;
+    for presentation in presentations {
+        if !previews.contains_key(&presentation.id) {
+            if !skin_assets.acquire_editor_owner(&presentation.id, output) {
+                retry_owner = true;
+                continue;
+            }
+            let preview = match create_editor_skin_preview(
+                document,
+                presentation,
+                skin_assets,
+                report,
+                Some(output),
+                state,
+            ) {
+                Ok(preview) => preview,
+                Err(error) => {
+                    skin_assets.release_editor_owner(&presentation.id, output);
+                    return Err(error);
+                }
+            };
+            previews.insert(presentation.id.clone(), preview);
+            *runtime_create_count = runtime_create_count.saturating_add(1);
+            reconciliation.wasm_calls = reconciliation.wasm_calls.saturating_add(1);
+            reconciliation.tree_updates = reconciliation.tree_updates.saturating_add(1);
+            reconciliation.input_generations = reconciliation.input_generations.saturating_add(1);
+            continue;
+        }
+        let preview = previews
+            .get_mut(&presentation.id)
+            .expect("checked editor preview");
+        if preview.canvas.presentation() != *presentation {
+            preview.canvas.apply_presentation(presentation);
+        }
+        let desired_skin = preview.canvas.skin.name();
+        if preview.package.manifest.id != desired_skin {
+            let next_package = skin_assets.load(desired_skin)?;
+            let mut next_runtime = new_native_skin_runtime(
+                &next_package,
+                report,
+                &preview.canvas.id,
+                Some(output),
+                &[],
+            )?;
+            let next_input = native_skin_input(&preview.canvas, state, &next_package.manifest);
+            let rendered = next_runtime.init(&next_input)?;
+            let css = namespace_skin_css(
+                desired_skin,
+                std::str::from_utf8(
+                    next_package
+                        .resource(crate::skin::STYLE_PATH)
+                        .ok_or("skin.css missing")?,
+                )
+                .map_err(|error| format!("skin.css is not UTF-8: {error}"))?,
+            );
+            preview
+                .tree
+                .replace(&mut document.inner.borrow_mut(), &css, &rendered);
+            preview.package = next_package;
+            preview.runtime = next_runtime;
+            preview.next_render = skin_deadline(&rendered.schedule, false);
+            preview.last_input = next_input;
+            *runtime_create_count = runtime_create_count.saturating_add(1);
+            reconciliation.wasm_calls = reconciliation.wasm_calls.saturating_add(1);
+            reconciliation.tree_updates = reconciliation.tree_updates.saturating_add(1);
+            reconciliation.input_generations = reconciliation.input_generations.saturating_add(1);
+            continue;
+        }
+        let input = native_skin_input(&preview.canvas, state, &preview.package.manifest);
+        reconciliation.input_generations = reconciliation.input_generations.saturating_add(1);
+        let due = preview
+            .next_render
+            .is_some_and(|deadline| Instant::now() >= deadline);
+        if !due && input == preview.last_input {
+            continue;
+        }
+        let rendered = preview.runtime.render(&input)?;
+        preview
+            .tree
+            .apply(&mut document.inner.borrow_mut(), &rendered);
+        preview.next_render = skin_deadline(&rendered.schedule, false);
+        preview.last_input = input;
+        reconciliation.wasm_calls = reconciliation.wasm_calls.saturating_add(1);
+        reconciliation.tree_updates = reconciliation.tree_updates.saturating_add(1);
+    }
+    reconciliation.retry_owner = retry_owner;
+    Ok(reconciliation)
 }
 
 impl App {
@@ -1803,7 +2011,7 @@ impl App {
         feed_stop: Arc<std::sync::atomic::AtomicBool>,
         external_stop: Arc<std::sync::atomic::AtomicBool>,
         canvas: crate::config::Canvas,
-        skin_store: std::path::PathBuf,
+        skin_assets: Arc<SkinAssetCache>,
         outputs: Vec<OutputDescription>,
         report: Rc<RefCell<RunReport>>,
         pending_resolved_output: Option<String>,
@@ -1847,7 +2055,11 @@ impl App {
             run_id: report.borrow().run_id.clone(),
             sequence: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
-        let package = crate::skin::StoreRoot::new(skin_store.clone()).open(canvas.skin.name())?;
+        let display_package = if role == SurfaceRole::DisplayCanvas {
+            Some(skin_assets.load(canvas.skin.name())?)
+        } else {
+            None
+        };
         let vdom = VirtualDom::new_with_props(
             native_overlay,
             NativeOverlayProps {
@@ -1856,7 +2068,7 @@ impl App {
                 port,
             },
         );
-        let (document_config, skin_assets) = document_config_with_skin_handle(package.clone());
+        let (document_config, _) = document_config_inner_with_handle(Arc::clone(&skin_assets));
         let mut document = DioxusDocument::new(vdom, document_config);
         document.initial_build();
         let projection = published
@@ -1864,42 +2076,58 @@ impl App {
             .as_ref()
             .copied()
             .expect("native overlay publishes its projection during initial build");
-        let mut skin_runtime = new_native_skin_runtime(
-            &package,
-            &report,
-            &canvas.id,
-            shell.output_name.as_deref(),
-            &[],
-        )?;
         let current_state = OverlayState::default();
-        let skin_input = native_skin_input(&canvas, &current_state, &package.manifest);
-        let started = Instant::now();
-        let initial_skin = skin_runtime.init(&skin_input).inspect_err(|error| {
+        let (display_skin, display_next_render) = if let Some(package) = display_package {
+            let mut runtime = new_native_skin_runtime(
+                &package,
+                &report,
+                &canvas.id,
+                shell.output_name.as_deref(),
+                &[],
+            )?;
+            let skin_input = native_skin_input(&canvas, &current_state, &package.manifest);
+            let started = Instant::now();
+            let initial = runtime.init(&skin_input).inspect_err(|error| {
+                crate::diagnostics::emit(
+                    "skin_render",
+                    &serde_json::json!({"skin_id":package.manifest.id,"release":package.manifest.release,"canvas_id":canvas.id,"backend":"native","phase":"init","status":"failed","error_type":skin_error_type(error)}),
+                );
+            })?;
+            let root = document
+                .inner
+                .borrow()
+                .query_selector("#scorepeek-skin-root")
+                .map_err(|error| format!("query native skin root: {error:?}"))?
+                .ok_or("native skin root is missing")?;
+            let css = namespace_skin_css(
+                canvas.skin.name(),
+                std::str::from_utf8(
+                    package
+                        .resource(crate::skin::STYLE_PATH)
+                        .ok_or("skin.css missing")?,
+                )
+                .map_err(|error| format!("skin.css is not UTF-8: {error}"))?,
+            );
+            let mut tree =
+                crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, &css);
+            tree.apply(&mut document.inner.borrow_mut(), &initial);
             crate::diagnostics::emit(
                 "skin_render",
-                &serde_json::json!({"skin_id":package.manifest.id,"release":package.manifest.release,"canvas_id":canvas.id,"backend":"native","phase":"init","status":"failed","error_type":skin_error_type(error)}),
+                &serde_json::json!({"skin_id":package.manifest.id,"release":package.manifest.release,"canvas_id":canvas.id,"backend":"native","phase":"init","status":"success","duration_us":u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),"tree_applied":true}),
             );
-        })?;
-        let root = document
-            .inner
-            .borrow()
-            .query_selector("#scorepeek-skin-root")
-            .map_err(|error| format!("query native skin root: {error:?}"))?
-            .ok_or("native skin root is missing")?;
-        let css = std::str::from_utf8(
-            package
-                .resource(crate::skin::STYLE_PATH)
-                .ok_or("skin.css missing")?,
-        )
-        .map_err(|error| format!("skin.css is not UTF-8: {error}"))?
-        .to_owned();
-        let mut skin_tree =
-            crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, &css);
-        skin_tree.apply(&mut document.inner.borrow_mut(), &initial_skin);
-        crate::diagnostics::emit(
-            "skin_render",
-            &serde_json::json!({"skin_id":package.manifest.id,"release":package.manifest.release,"canvas_id":canvas.id,"backend":"native","phase":"init","status":"success","duration_us":u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),"tree_applied":true}),
-        );
+            let next = skin_deadline(&initial.schedule, false);
+            (
+                Some(NativeDisplaySkin {
+                    runtime,
+                    tree,
+                    release: package.manifest.release.clone(),
+                    manifest: package.manifest.clone(),
+                }),
+                next,
+            )
+        } else {
+            (None, None)
+        };
         let visible = match &*projection.borrow() {
             NativeDocumentProjection::Display { visible, .. } => *visible,
             NativeDocumentProjection::Editor(_) => true,
@@ -1909,17 +2137,35 @@ impl App {
             NativeDocumentProjection::Editor(projection) => projection.canvases.clone(),
             NativeDocumentProjection::Display { .. } => Vec::new(),
         };
-        let mut editor_skin_previews = std::collections::BTreeMap::new();
+        let mut editor_skin_previews =
+            std::collections::BTreeMap::<String, EditorSkinPreview>::new();
+        let mut editor_skin_updates = EditorSkinUpdates::default();
         for presentation in &editor_presentations {
-            let preview = create_editor_skin_preview(
+            let Some(output) = shell.output_name.as_deref() else {
+                return Err("editor skin preview requires an output owner".into());
+            };
+            if !skin_assets.acquire_editor_owner(&presentation.id, output) {
+                editor_skin_updates.request();
+                continue;
+            }
+            let preview = match create_editor_skin_preview(
                 &mut document,
                 presentation,
-                &skin_store,
                 &skin_assets,
                 &report,
                 shell.output_name.as_deref(),
                 &current_state,
-            )?;
+            ) {
+                Ok(preview) => preview,
+                Err(error) => {
+                    skin_assets.release_editor_owner(&presentation.id, output);
+                    for (id, mut mounted) in editor_skin_previews {
+                        mounted.tree.unmount(&mut document.inner.borrow_mut());
+                        skin_assets.release_editor_owner(&id, output);
+                    }
+                    return Err(error);
+                }
+            };
             editor_skin_previews.insert(presentation.id.clone(), preview);
         }
         let editor_next_render = editor_skin_previews
@@ -1951,7 +2197,7 @@ impl App {
             pending_paint: false,
             full_layout_pending: false,
             cadence: FrameCadence::default(),
-            editor_skin_updates: EditorSkinUpdates::default(),
+            editor_skin_updates,
             report,
             feed_state,
             current_state,
@@ -1967,19 +2213,19 @@ impl App {
             next_output_persist: Instant::now() + Duration::from_secs(1),
             surface_logical,
             wayland_refresh_hz,
-            skin_runtime,
+            display_skin,
             editor_skin_previews,
-            skin_tree,
             next_skin_render: if role == SurfaceRole::EditorStage {
                 editor_next_render
             } else {
-                skin_deadline(&initial_skin.schedule, false)
+                display_next_render
             },
-            skin_release: package.manifest.release.clone(),
-            skin_manifest: package.manifest.clone(),
-            skin_store,
             skin_assets,
-            skin_package_open_count: 1_u64.saturating_add(editor_preview_count),
+            skin_runtime_create_count: if role == SurfaceRole::DisplayCanvas {
+                1
+            } else {
+                editor_preview_count
+            },
             startup_started,
             text_composition: TextComposition::Idle,
         })
@@ -1990,6 +2236,29 @@ impl App {
             &*self.projection.borrow(),
             NativeDocumentProjection::Editor(_)
         )
+    }
+
+    fn unmount_skin_resources(&mut self) {
+        for (id, preview) in &mut self.editor_skin_previews {
+            preview.tree.unmount(&mut self.document.inner.borrow_mut());
+            if let Some(output) = self.surface_output.as_deref() {
+                self.skin_assets.release_editor_owner(id, output);
+            }
+        }
+        self.editor_skin_previews.clear();
+        if let Some(mut display) = self.display_skin.take() {
+            display.tree.unmount(&mut self.document.inner.borrow_mut());
+        }
+        self.next_skin_render = None;
+        self.animating = false;
+        crate::diagnostics::emit(
+            "native_skin_resources_unmounted",
+            &serde_json::json!({
+                "run_id": self.report.borrow().run_id,
+                "canvas_id": self.surface_canvas.id,
+                "output": self.surface_output,
+            }),
+        );
     }
 
     fn visible(&self) -> bool {
@@ -2006,42 +2275,52 @@ impl App {
     fn sync_projection(&mut self) -> bool {
         let next = match self.role {
             SurfaceRole::DisplayCanvas => return false,
-            SurfaceRole::EditorStage => self
-                .surface_output
-                .as_ref()
-                .and_then(|output| {
-                    self.published_stages
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .by_output
-                        .get(output)
-                        .cloned()
-                })
-                .map(NativeDocumentProjection::Editor),
+            SurfaceRole::EditorStage => {
+                let Some(output) = self.surface_output.as_ref() else {
+                    return false;
+                };
+                let stages = self
+                    .published_stages
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let Some(candidate) = stages.by_output.get(output) else {
+                    return false;
+                };
+                if let NativeDocumentProjection::Editor(current) = &*self.projection.borrow()
+                    && !accepts_stage_projection(current, candidate)
+                {
+                    return false;
+                }
+                Some(NativeDocumentProjection::Editor(candidate.clone()))
+            }
         };
         let Some(next) = next else { return false };
-        if let (
-            NativeDocumentProjection::Editor(current),
-            NativeDocumentProjection::Editor(candidate),
-        ) = (&*self.projection.borrow(), &next)
-            && !accepts_stage_projection(current, candidate)
-        {
-            return false;
-        }
         let changed = *self.projection.borrow() != next;
         if !changed {
             return false;
         }
         let previous = self.canvas.presentation();
         if let NativeDocumentProjection::Editor(stage) = &next {
-            let previews_changed = stage.canvases.len() != self.editor_skin_previews.len()
-                || stage.canvases.iter().any(|canvas| {
-                    self.editor_skin_previews
-                        .get(&canvas.id)
-                        .is_none_or(|preview| {
-                            editor_skin_presentation_changed(&preview.canvas.presentation(), canvas)
-                        })
-                });
+            let live = stage
+                .canvases
+                .iter()
+                .map(|canvas| canvas.id.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            let removed = self
+                .editor_skin_previews
+                .keys()
+                .filter(|id| !live.contains(id.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            for id in removed {
+                if let Some(mut preview) = self.editor_skin_previews.remove(&id) {
+                    preview.tree.unmount(&mut self.document.inner.borrow_mut());
+                    if let Some(output) = self.surface_output.as_deref() {
+                        self.skin_assets.release_editor_owner(&id, output);
+                    }
+                }
+            }
+            let previews_changed = editor_skin_previews_changed(&self.editor_skin_previews, stage);
             if let Some(canvas) = stage.selected_canvas.as_ref() {
                 self.canvas = crate::config::empty_canvas(
                     canvas.id.clone(),
@@ -2212,6 +2491,9 @@ impl App {
                     self.render_skin(&latest)?;
                 }
             }
+            // A Wayland frame is a browser-like Dioxus turn. Poll unconditionally before skin
+            // reconciliation so newly projected canvas roots exist before their retained trees mount.
+            let changed = self.poll_dioxus();
             let mut skin_changed = false;
             if self.editing()
                 && self
@@ -2221,9 +2503,6 @@ impl App {
                 self.update_editor_skin();
                 skin_changed = true;
             }
-            // A Wayland frame is a browser-like Dioxus turn. Poll unconditionally; idle VDOM
-            // polls are cheap and prevent omitted manual wake predicates from freezing the UI.
-            let changed = self.poll_dioxus();
             self.sync_text_input();
             self.pending_paint |=
                 changed || projection_changed || visibility_changed || input_damage || skin_changed;
@@ -2318,78 +2597,24 @@ impl App {
         } else {
             self.current_state.clone()
         };
-        let presentations = match &*self.projection.borrow() {
-            NativeDocumentProjection::Editor(projection) => projection.canvases.clone(),
+        let projection = self.projection.borrow();
+        let presentations = match &*projection {
+            NativeDocumentProjection::Editor(projection) => &projection.canvases,
             NativeDocumentProjection::Display { .. } => return Ok(()),
         };
-        let ids = presentations
-            .iter()
-            .map(|canvas| canvas.id.clone())
-            .collect::<std::collections::BTreeSet<_>>();
-        self.editor_skin_previews
-            .retain(|canvas_id, _| ids.contains(canvas_id));
-        for presentation in &presentations {
-            if !self.editor_skin_previews.contains_key(&presentation.id) {
-                let preview = create_editor_skin_preview(
-                    &mut self.document,
-                    presentation,
-                    &self.skin_store,
-                    &self.skin_assets,
-                    &self.report,
-                    self.surface_output.as_deref(),
-                    &state,
-                )?;
-                self.editor_skin_previews
-                    .insert(presentation.id.clone(), preview);
-                self.skin_package_open_count = self.skin_package_open_count.saturating_add(1);
-                continue;
-            }
-            let preview = self
-                .editor_skin_previews
-                .get_mut(&presentation.id)
-                .expect("checked editor preview");
-            preview.canvas.apply_presentation(presentation);
-            let desired_skin = preview.canvas.skin.name();
-            let changed_package = preview.package.manifest.id != desired_skin;
-            if changed_package {
-                preview.package =
-                    crate::skin::StoreRoot::new(self.skin_store.clone()).open(desired_skin)?;
-                preview.runtime = new_native_skin_runtime(
-                    &preview.package,
-                    &self.report,
-                    &preview.canvas.id,
-                    self.surface_output.as_deref(),
-                    &[],
-                )?;
-                self.skin_package_open_count = self.skin_package_open_count.saturating_add(1);
-            }
-            *self
-                .skin_assets
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(preview.package.clone());
-            let input = native_skin_input(&preview.canvas, &state, &preview.package.manifest);
-            let output = if changed_package {
-                preview.runtime.init(&input)?
-            } else {
-                preview.runtime.render(&input)?
-            };
-            if changed_package {
-                let css = std::str::from_utf8(
-                    preview
-                        .package
-                        .resource(crate::skin::STYLE_PATH)
-                        .ok_or("skin.css missing")?,
-                )
-                .map_err(|error| format!("skin.css is not UTF-8: {error}"))?;
-                preview
-                    .tree
-                    .replace(&mut self.document.inner.borrow_mut(), css, &output);
-            } else {
-                preview
-                    .tree
-                    .apply(&mut self.document.inner.borrow_mut(), &output);
-            }
-            preview.next_render = skin_deadline(&output.schedule, false);
+        if reconcile_editor_skin_previews(
+            &mut self.document,
+            &mut self.editor_skin_previews,
+            presentations,
+            &self.skin_assets,
+            &self.report,
+            self.surface_output.as_deref(),
+            &state,
+            &mut self.skin_runtime_create_count,
+        )?
+        .retry_owner
+        {
+            self.editor_skin_updates.request();
         }
         self.next_skin_render = self
             .editor_skin_previews
@@ -2465,18 +2690,22 @@ impl App {
 
     fn render_skin(&mut self, state: &OverlayState) -> Result<(), String> {
         let started = Instant::now();
-        let output = self.skin_runtime.render(&native_skin_input(
-            &self.canvas,
-            state,
-            &self.skin_manifest,
-        ))?;
-        self.skin_tree
+        let display = self
+            .display_skin
+            .as_mut()
+            .ok_or("display skin runtime missing outside display role")?;
+        let output =
+            display
+                .runtime
+                .render(&native_skin_input(&self.canvas, state, &display.manifest))?;
+        display
+            .tree
             .apply(&mut self.document.inner.borrow_mut(), &output);
         self.next_skin_render = skin_deadline(&output.schedule, false);
         self.animating = matches!(output.schedule, crate::skin::Schedule::NextFrame);
         crate::diagnostics::emit(
             "skin_render",
-            &serde_json::json!({"skin_id":self.canvas.skin.name(),"release":self.skin_release,"canvas_id":self.canvas.id,"backend":"native","phase":"render","status":"success","duration_us":duration_us(started.elapsed()),"next_tick":format!("{:?}",output.schedule),"tree_applied":true}),
+            &serde_json::json!({"skin_id":self.canvas.skin.name(),"release":display.release,"canvas_id":self.canvas.id,"backend":"native","phase":"render","status":"success","duration_us":duration_us(started.elapsed()),"next_tick":format!("{:?}",output.schedule),"tree_applied":true}),
         );
         Ok(())
     }
@@ -2631,6 +2860,17 @@ fn native_shutdown_result(
     }
 }
 
+fn shutdown_native_surface<T, E>(
+    target: &mut T,
+    unmount: impl FnOnce(&mut T),
+    suspend: impl FnOnce(&mut T),
+    unmap: impl FnOnce(&mut T) -> Result<(), E>,
+) -> Result<(), E> {
+    unmount(target);
+    suspend(target);
+    unmap(target)
+}
+
 #[derive(Serialize)]
 struct RunReport {
     run_id: String,
@@ -2646,6 +2886,7 @@ struct RunReport {
     editor_skin_update_requests: u64,
     editor_skin_render_count: u64,
     skin_package_open_count: u64,
+    skin_runtime_create_count: u64,
     wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
     elapsed_ms: u64,
     effective_paint_hz: Option<f64>,
@@ -2684,6 +2925,7 @@ impl RunReport {
             editor_skin_update_requests: 0,
             editor_skin_render_count: 0,
             skin_package_open_count: 0,
+            skin_runtime_create_count: 0,
             wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate::Auto,
             elapsed_ms: 0,
             effective_paint_hz: None,
@@ -2709,9 +2951,161 @@ impl Operations {
     }
 }
 
-struct EmbeddedSkinAssets {
-    active: Arc<std::sync::Mutex<Option<crate::skin::Package>>>,
+struct SkinAssetCache {
     store: crate::skin::StoreRoot,
+    packages: std::sync::Mutex<std::collections::BTreeMap<String, Arc<crate::skin::Package>>>,
+    editor_owners: std::sync::Mutex<std::collections::BTreeMap<String, String>>,
+    open_count: std::sync::atomic::AtomicU64,
+}
+
+impl SkinAssetCache {
+    fn new(store: crate::skin::StoreRoot) -> Self {
+        Self {
+            store,
+            packages: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            editor_owners: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            open_count: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn with_package(store: crate::skin::StoreRoot, package: Arc<crate::skin::Package>) -> Self {
+        let id = package.manifest.id.clone();
+        Self {
+            store,
+            packages: std::sync::Mutex::new(std::collections::BTreeMap::from([(id, package)])),
+            editor_owners: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            open_count: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+
+    fn acquire_editor_owner(&self, canvas: &str, output: &str) -> bool {
+        let mut owners = self
+            .editor_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(owner) = owners.get(canvas) {
+            owner == output
+        } else {
+            owners.insert(canvas.to_owned(), output.to_owned());
+            true
+        }
+    }
+
+    fn release_editor_owner(&self, canvas: &str, output: &str) {
+        let mut owners = self
+            .editor_owners
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if owners.get(canvas).is_some_and(|owner| owner == output) {
+            owners.remove(canvas);
+        }
+    }
+
+    fn load(&self, id: &str) -> Result<Arc<crate::skin::Package>, String> {
+        let mut packages = self
+            .packages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(package) = packages.get(id).cloned() {
+            return Ok(package);
+        }
+        let package = Arc::new(self.store.open(id)?);
+        self.open_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(Arc::clone(packages.entry(id.to_owned()).or_insert(package)))
+    }
+
+    fn installed_editor_skins(
+        &self,
+    ) -> Result<Vec<scorepeek_overlay_ui::editor::EditorSkin>, String> {
+        let entries = match std::fs::read_dir(self.store.path()) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(format!("list skin store: {error}")),
+        };
+        let mut packages = self
+            .packages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for entry in entries {
+            let path = entry
+                .map_err(|error| format!("list skin store entry: {error}"))?
+                .path();
+            if path.extension().is_none_or(|extension| extension != "zip") {
+                continue;
+            }
+            let package = Arc::new(crate::skin::Package::open(&path)?);
+            let id = package.manifest.id.clone();
+            if packages.insert(id.clone(), package).is_some() {
+                return Err(format!("skin store contains duplicate package id {id}"));
+            }
+            self.open_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        packages
+            .values()
+            .map(|package| {
+                let manifest = &package.manifest;
+                Ok(scorepeek_overlay_ui::editor::EditorSkin {
+                    id: manifest.id.parse()?,
+                    name: manifest.name.clone(),
+                    release: manifest.release.clone(),
+                    preview: format!("/skin/{}/{}", manifest.id, crate::skin::PREVIEW_PATH),
+                    preview_video: None,
+                    canvas_properties: serde_json::from_value(
+                        serde_json::to_value(&manifest.canvas_properties)
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?,
+                    widget_properties: serde_json::from_value(
+                        serde_json::to_value(&manifest.widget_properties)
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?,
+                })
+            })
+            .collect()
+    }
+}
+
+fn namespace_skin_css(id: &str, css: &str) -> String {
+    let mut output = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(offset) = rest.find("url(") {
+        let (before, value) = rest.split_at(offset + 4);
+        output.push_str(before);
+        let Some(end) = value.find(')') else {
+            output.push_str(value);
+            return output;
+        };
+        let (raw, after) = value.split_at(end);
+        let trimmed = raw.trim();
+        let quote = trimmed
+            .as_bytes()
+            .first()
+            .copied()
+            .filter(|byte| matches!(byte, b'\'' | b'"'));
+        let path = quote.map_or(trimmed, |_| &trimmed[1..trimmed.len().saturating_sub(1)]);
+        if path.starts_with('/') || path.starts_with("data:") || path.starts_with('#') {
+            output.push_str(raw);
+        } else {
+            let quote = quote.map_or('"', char::from);
+            output.push(quote);
+            output.push_str("/skin/");
+            output.push_str(id);
+            output.push('/');
+            output.push_str(path);
+            output.push(quote);
+        }
+        output.push(')');
+        rest = &after[1..];
+    }
+    output.push_str(rest);
+    output
+}
+
+struct EmbeddedSkinAssets {
+    cache: Arc<SkinAssetCache>,
 }
 
 impl blitz_traits::net::NetProvider for EmbeddedSkinAssets {
@@ -2725,7 +3119,7 @@ impl blitz_traits::net::NetProvider for EmbeddedSkinAssets {
         if let Some(rest) = path.strip_prefix("skin/")
             && let Some((id, resource)) = rest.split_once('/')
             && crate::skin::validate_id(id).is_ok()
-            && let Ok(package) = self.store.open(id)
+            && let Ok(package) = self.cache.load(id)
             && let Some(bytes) = package.resource(resource)
         {
             handler.bytes(
@@ -2736,18 +3130,6 @@ impl blitz_traits::net::NetProvider for EmbeddedSkinAssets {
         }
         if let Some(svg) = scorepeek_overlay_ui::composition::aperture_asset(request.url.path()) {
             handler.bytes(request.url.to_string(), blitz_traits::net::Bytes::from(svg));
-            return;
-        }
-        let active = self
-            .active
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(package) = active.as_ref() {
-            let bytes = package.resource(path).unwrap_or_default();
-            handler.bytes(
-                request.url.to_string(),
-                blitz_traits::net::Bytes::copy_from_slice(bytes),
-            );
             return;
         }
         let bytes = scorepeek_overlay_ui::skin_asset(request.url.path()).unwrap_or_default();
@@ -2824,24 +3206,26 @@ pub fn document_config() -> DocumentConfig {
 }
 
 fn document_config_inner(package: Option<crate::skin::Package>) -> DocumentConfig {
-    document_config_inner_with_handle(Arc::new(std::sync::Mutex::new(package))).0
+    let store = crate::skin::StoreRoot::discover();
+    let cache = match package {
+        Some(package) => Arc::new(SkinAssetCache::with_package(store, Arc::new(package))),
+        None => Arc::new(SkinAssetCache::new(store)),
+    };
+    document_config_inner_with_handle(cache).0
 }
 
 fn document_config_with_skin_handle(
-    package: crate::skin::Package,
-) -> (
-    DocumentConfig,
-    Arc<std::sync::Mutex<Option<crate::skin::Package>>>,
-) {
-    document_config_inner_with_handle(Arc::new(std::sync::Mutex::new(Some(package))))
+    package: Arc<crate::skin::Package>,
+) -> (DocumentConfig, Arc<SkinAssetCache>) {
+    document_config_inner_with_handle(Arc::new(SkinAssetCache::with_package(
+        crate::skin::StoreRoot::discover(),
+        package,
+    )))
 }
 
 fn document_config_inner_with_handle(
-    active: Arc<std::sync::Mutex<Option<crate::skin::Package>>>,
-) -> (
-    DocumentConfig,
-    Arc<std::sync::Mutex<Option<crate::skin::Package>>>,
-) {
+    cache: Arc<SkinAssetCache>,
+) -> (DocumentConfig, Arc<SkinAssetCache>) {
     let mut font_ctx = blitz_dom::FontContext::default();
     font_ctx
         .collection
@@ -2855,12 +3239,11 @@ fn document_config_inner_with_handle(
         font_ctx: Some(font_ctx),
         base_url: Some("http://scorepeek.invalid/".into()),
         net_provider: Some(Arc::new(EmbeddedSkinAssets {
-            active: Arc::clone(&active),
-            store: crate::skin::StoreRoot::discover(),
+            cache: Arc::clone(&cache),
         })),
         ..DocumentConfig::default()
     };
-    (config, active)
+    (config, cache)
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2998,14 +3381,10 @@ struct VisualDebugSession {
     authority: NativeEditorAuthority,
     commands: std::sync::mpsc::Receiver<CoordinatorCommand>,
     state: OverlayState,
-    skins: std::collections::BTreeMap<String, VisualSkin>,
-    skin_assets: Arc<std::sync::Mutex<Option<crate::skin::Package>>>,
-}
-
-struct VisualSkin {
-    runtime: crate::skin::Runtime,
-    tree: crate::skin::NativeTree,
-    package: crate::skin::Package,
+    skins: std::collections::BTreeMap<String, EditorSkinPreview>,
+    skin_assets: Arc<SkinAssetCache>,
+    report: Rc<RefCell<RunReport>>,
+    runtime_create_count: u64,
 }
 
 impl VisualDebugSession {
@@ -3051,7 +3430,7 @@ impl VisualDebugSession {
         };
         let mut model = EditorSession::new(canvases, scenario.logical_size, "visual");
         model.set_session_id(1);
-        model.set_skins(installed_editor_skins());
+        model.set_skins(embedded_editor_skins());
         model.set_outputs(vec![output.clone()]);
         model.active_output = Some(output.name.clone());
         model.selected_canvas = Some(selected);
@@ -3091,9 +3470,13 @@ impl VisualDebugSession {
                 .then(|| store.open(canvas.skin.name()))
                 .transpose()?
         };
-        let (document_config, skin_assets) = package.as_ref().map_or_else(
-            || document_config_inner_with_handle(Arc::new(std::sync::Mutex::new(None))),
-            |package| document_config_with_skin_handle(package.clone()),
+        let (document_config, skin_assets) = package.map_or_else(
+            || {
+                document_config_inner_with_handle(Arc::new(SkinAssetCache::new(
+                    crate::skin::StoreRoot::discover(),
+                )))
+            },
+            |package| document_config_with_skin_handle(Arc::new(package)),
         );
         let mut document = DioxusDocument::new(
             VirtualDom::new_with_props(native_overlay, props),
@@ -3114,15 +3497,15 @@ impl VisualDebugSession {
             NativeDocumentProjection::Display { .. } => vec![canvas.clone()],
         };
         for mounted in mounted_canvases {
+            if scenario.editing {
+                continue;
+            }
             let store = crate::skin::StoreRoot::discover();
             let package_path = store.path().join(format!("{}.zip", mounted.skin.name()));
             if !package_path.exists() {
                 continue;
             }
-            let package = store.open(mounted.skin.name())?;
-            *skin_assets
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(package.clone());
+            let package = skin_assets.load(mounted.skin.name())?;
             let root_selector = if scenario.editing {
                 format!("#{}", editor_skin_root_id(&mounted.id))
             } else {
@@ -3134,30 +3517,42 @@ impl VisualDebugSession {
                 .query_selector(&root_selector)
                 .map_err(|error| format!("query native skin root: {error:?}"))?
                 .ok_or("native skin root is missing")?;
-            let css = std::str::from_utf8(
-                package
-                    .resource(crate::skin::STYLE_PATH)
-                    .ok_or("skin.css missing")?,
-            )
-            .map_err(|error| format!("skin.css is not UTF-8: {error}"))?;
+            let css = namespace_skin_css(
+                mounted.skin.name(),
+                std::str::from_utf8(
+                    package
+                        .resource(crate::skin::STYLE_PATH)
+                        .ok_or("skin.css missing")?,
+                )
+                .map_err(|error| format!("skin.css is not UTF-8: {error}"))?,
+            );
             let mut runtime = crate::skin::Runtime::new(&package)?;
-            let initial = runtime.init(&native_skin_input_presentation(
-                &mounted,
-                &state,
-                &package.manifest,
-            ))?;
+            let input = native_skin_input_presentation(&mounted, &state, &package.manifest);
+            let initial = runtime.init(&input)?;
             let mut tree =
-                crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, css);
+                crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, &css);
             tree.apply(&mut document.inner.borrow_mut(), &initial);
             skins.insert(
                 mounted.id.clone(),
-                VisualSkin {
+                EditorSkinPreview {
+                    canvas: {
+                        let mut canvas = crate::config::empty_canvas(
+                            mounted.id.clone(),
+                            crate::runtime::Backend::Wayland,
+                        );
+                        canvas.apply_presentation(&mounted);
+                        canvas
+                    },
                     runtime,
                     tree,
                     package,
+                    next_render: skin_deadline(&initial.schedule, false),
+                    last_input: input,
                 },
             );
         }
+        let report = Rc::new(RefCell::new(RunReport::new()));
+        let runtime_create_count = u64::try_from(skins.len()).unwrap_or(u64::MAX);
         let mut session = Self {
             document,
             pointer: PointerInput::default(),
@@ -3170,6 +3565,8 @@ impl VisualDebugSession {
             state,
             skins,
             skin_assets,
+            report,
+            runtime_create_count,
         };
         session.resolve();
         Ok(session)
@@ -3223,11 +3620,36 @@ impl VisualDebugSession {
         resolve_with_loaded_resources(&mut inner, 1.0);
     }
 
+    #[allow(clippy::too_many_lines)]
     fn render_skin(&mut self) -> Result<(), String> {
+        let editor = match &*self.projection.borrow() {
+            NativeDocumentProjection::Editor(stage) => {
+                Some((stage.canvases.clone(), stage.output.name.clone()))
+            }
+            NativeDocumentProjection::Display { .. } => None,
+        };
+        if let Some((canvases, output)) = editor {
+            let _ = reconcile_editor_skin_previews(
+                &mut self.document,
+                &mut self.skins,
+                &canvases,
+                &self.skin_assets,
+                &self.report,
+                Some(&output),
+                &self.state,
+                &mut self.runtime_create_count,
+            )?;
+            return Ok(());
+        }
         let canvases = match &*self.projection.borrow() {
             NativeDocumentProjection::Display { canvas, .. } => vec![canvas.clone()],
-            NativeDocumentProjection::Editor(stage) => stage.canvases.clone(),
+            NativeDocumentProjection::Editor(_) => unreachable!(),
         };
+        let live = canvases
+            .iter()
+            .map(|canvas| canvas.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        self.skins.retain(|id, _| live.contains(id.as_str()));
         for canvas in canvases {
             let desired_skin = canvas.skin.name();
             if !self.skins.contains_key(&canvas.id) {
@@ -3236,7 +3658,7 @@ impl VisualDebugSession {
                 if !package_path.exists() {
                     continue;
                 }
-                let package = store.open(desired_skin)?;
+                let package = self.skin_assets.load(desired_skin)?;
                 let root_selector = if matches!(
                     &*self.projection.borrow(),
                     NativeDocumentProjection::Editor(_)
@@ -3254,27 +3676,38 @@ impl VisualDebugSession {
                 else {
                     continue;
                 };
-                let css = std::str::from_utf8(
-                    package
-                        .resource(crate::skin::STYLE_PATH)
-                        .ok_or("skin.css missing")?,
-                )
-                .map_err(|error| format!("skin.css is not UTF-8: {error}"))?;
+                let css = namespace_skin_css(
+                    desired_skin,
+                    std::str::from_utf8(
+                        package
+                            .resource(crate::skin::STYLE_PATH)
+                            .ok_or("skin.css missing")?,
+                    )
+                    .map_err(|error| format!("skin.css is not UTF-8: {error}"))?,
+                );
                 let mut runtime = crate::skin::Runtime::new(&package)?;
-                let output = runtime.init(&native_skin_input_presentation(
-                    &canvas,
-                    &self.state,
-                    &package.manifest,
-                ))?;
+                let initial_input =
+                    native_skin_input_presentation(&canvas, &self.state, &package.manifest);
+                let output = runtime.init(&initial_input)?;
                 let mut tree =
-                    crate::skin::NativeTree::new(&mut self.document.inner.borrow_mut(), root, css);
+                    crate::skin::NativeTree::new(&mut self.document.inner.borrow_mut(), root, &css);
                 tree.apply(&mut self.document.inner.borrow_mut(), &output);
                 self.skins.insert(
                     canvas.id.clone(),
-                    VisualSkin {
+                    EditorSkinPreview {
+                        canvas: {
+                            let mut configured = crate::config::empty_canvas(
+                                canvas.id.clone(),
+                                crate::runtime::Backend::Wayland,
+                            );
+                            configured.apply_presentation(&canvas);
+                            configured
+                        },
                         runtime,
                         tree,
                         package,
+                        next_render: skin_deadline(&output.schedule, false),
+                        last_input: initial_input,
                     },
                 );
             }
@@ -3283,13 +3716,9 @@ impl VisualDebugSession {
             };
             let changed = skin.package.manifest.id != desired_skin;
             if changed {
-                skin.package = crate::skin::StoreRoot::discover().open(desired_skin)?;
+                skin.package = self.skin_assets.load(desired_skin)?;
                 skin.runtime = crate::skin::Runtime::new(&skin.package)?;
             }
-            *self
-                .skin_assets
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(skin.package.clone());
             let input =
                 native_skin_input_presentation(&canvas, &self.state, &skin.package.manifest);
             let output = if changed {
@@ -3298,14 +3727,17 @@ impl VisualDebugSession {
                 skin.runtime.render(&input)?
             };
             if changed {
-                let css = std::str::from_utf8(
-                    skin.package
-                        .resource(crate::skin::STYLE_PATH)
-                        .ok_or("skin.css missing")?,
-                )
-                .map_err(|error| format!("skin.css is not UTF-8: {error}"))?;
+                let css = namespace_skin_css(
+                    desired_skin,
+                    std::str::from_utf8(
+                        skin.package
+                            .resource(crate::skin::STYLE_PATH)
+                            .ok_or("skin.css missing")?,
+                    )
+                    .map_err(|error| format!("skin.css is not UTF-8: {error}"))?,
+                );
                 skin.tree
-                    .replace(&mut self.document.inner.borrow_mut(), css, &output);
+                    .replace(&mut self.document.inner.borrow_mut(), &css, &output);
             } else {
                 skin.tree
                     .apply(&mut self.document.inner.borrow_mut(), &output);
@@ -3342,7 +3774,16 @@ impl VisualDebugSession {
         );
         // The editor and display projections mount different Dioxus roots. Rebuild the
         // visual harness trees against the new roots just as production surface roles do.
-        self.skins.clear();
+        let previous_output = match &*self.projection.borrow() {
+            NativeDocumentProjection::Editor(stage) => Some(stage.output.name.clone()),
+            NativeDocumentProjection::Display { .. } => None,
+        };
+        for (id, mut skin) in std::mem::take(&mut self.skins) {
+            skin.tree.unmount(&mut self.document.inner.borrow_mut());
+            if let Some(output) = previous_output.as_deref() {
+                self.skin_assets.release_editor_owner(&id, output);
+            }
+        }
         if let Some(output) = output {
             self.projection.set(if editing {
                 NativeDocumentProjection::Editor(self.authority.session().stage_projection(&output))
@@ -3768,6 +4209,28 @@ mod skin_tests {
     }
 
     #[test]
+    fn passive_pointer_motion_does_not_publish_a_native_stage_replica() {
+        let mut session = EditorSession::new(Vec::new(), [1920, 1080], "test");
+        session.set_outputs(vec![EditorOutput {
+            name: "DP-1".into(),
+            model: "test".into(),
+            logical_size: Some([1920, 1080]),
+        }]);
+        session.editing = true;
+        session.advance_revision();
+        let published = Arc::new(std::sync::Mutex::new(PublishedStages::default()));
+        let mut authority = NativeEditorAuthority::new(session, Arc::clone(&published));
+        let before = published.lock().unwrap().publications;
+
+        let effects = authority.dispatch(EditorInput::Surface(
+            scorepeek_overlay_ui::editor_surface::SurfaceAction::Move([320, 180]),
+        ));
+
+        assert!(effects.is_empty());
+        assert_eq!(published.lock().unwrap().publications, before);
+    }
+
+    #[test]
     fn native_run_ids_are_unique_across_parallel_surfaces() {
         let ids = (0..32)
             .map(|_| std::thread::spawn(|| RunReport::new().run_id))
@@ -3791,6 +4254,1211 @@ mod skin_tests {
         updates.request();
         assert!(updates.take_if_ready(false, false));
         assert_eq!(updates.requests, 101);
+    }
+
+    #[test]
+    fn native_animation_work_does_not_copy_skin_archives_per_frame() {
+        let manifest: crate::skin::Manifest =
+            toml::from_str(include_str!("../../../skins/cyan-system/skin.toml")).unwrap();
+        let package = crate::skin::Package::test_with_entries(
+            manifest,
+            std::collections::BTreeMap::from([("artwork.bin".into(), vec![0; 8 * 1024 * 1024])]),
+        );
+        let package = Arc::new(package);
+        let cache =
+            SkinAssetCache::with_package(crate::skin::StoreRoot::discover(), Arc::clone(&package));
+
+        // Four live canvases at 120 Hz model one second of production editor animation.
+        for _ in 0..(4 * 120) {
+            let resolved = cache.load(&package.manifest.id).unwrap();
+            assert!(Arc::ptr_eq(&resolved, &package));
+        }
+
+        assert_eq!(cache.packages.lock().unwrap().len(), 1);
+        assert_eq!(
+            cache.open_count.load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn editor_canvas_owner_prevents_reverse_delivery_from_mounting_two_runtimes() {
+        let cache = SkinAssetCache::new(crate::skin::StoreRoot::discover());
+        assert!(cache.acquire_editor_owner("canvas-1", "WL-1"));
+        assert!(!cache.acquire_editor_owner("canvas-1", "WL-2"));
+        cache.release_editor_owner("canvas-1", "WL-2");
+        assert!(!cache.acquire_editor_owner("canvas-1", "WL-2"));
+        cache.release_editor_owner("canvas-1", "WL-1");
+        assert!(cache.acquire_editor_owner("canvas-1", "WL-2"));
+        assert_eq!(
+            cache.editor_owners.lock().unwrap().get("canvas-1"),
+            Some(&"WL-2".to_owned())
+        );
+    }
+
+    #[test]
+    fn native_skin_resources_are_namespaced_by_immutable_skin_identity() {
+        let css = namespace_skin_css(
+            "dev.atty303.skin",
+            "a{src:url('font.ttf')}b{background:url(\"/shared.png\")}c{mask:url(data:image/png;base64,abc)}",
+        );
+        assert!(
+            css.contains("url('/skin/dev.atty303.skin/font.ttf')"),
+            "{css}"
+        );
+        assert!(css.contains("url(\"/shared.png\")"), "{css}");
+        assert!(css.contains("url(data:image/png;base64,abc)"), "{css}");
+    }
+
+    #[test]
+    fn unchanged_native_frames_do_not_rebuild_surface_projection() {
+        let config = crate::config::visual_debug_config();
+        let draft = config
+            .canvases
+            .iter()
+            .filter(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
+            .map(crate::config::Canvas::presentation)
+            .collect::<Vec<_>>();
+        let mut session = EditorSession::new(draft, [1920, 1080], "fake-wayland");
+        session.set_session_id(7);
+        session.set_outputs(vec![EditorOutput {
+            name: "WL-1".into(),
+            model: "fake output".into(),
+            logical_size: Some([1920, 1080]),
+        }]);
+        session.editing = true;
+        session.advance_revision();
+        let mut cache = NativeProjectionCache::default();
+
+        for _ in 0..120 {
+            assert_eq!(
+                cache
+                    .resolve(Some(scorepeek_overlay_ui::Skin::CyanSystem), &session, &[])
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+
+        assert_eq!(cache.rebuilds, 1);
+        session.advance_revision();
+        let _ = cache
+            .resolve(Some(scorepeek_overlay_ui::Skin::CyanSystem), &session, &[])
+            .unwrap();
+        assert_eq!(cache.rebuilds, 2);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn fake_wayland_axis_scrolls_ancestor_beneath_nested_editor_rows() {
+        let canvases = crate::config::visual_debug_config()
+            .canvases
+            .into_iter()
+            .filter(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
+            .map(|mut canvas| {
+                canvas.output = "WL-1".into();
+                canvas.presentation()
+            })
+            .collect();
+        let scenario = VisualDebugScenario {
+            canvases: Some(canvases),
+            skin: None,
+            logical_size: [1280, 1080],
+            scale: 1.0,
+            canvas_id: Some("wayland-status".into()),
+            editing: true,
+            selectors: Vec::new(),
+            actions: Vec::new(),
+        };
+        let offset = |session: &VisualDebugSession| {
+            let inner = session.document.inner.borrow();
+            let node = inner.query_selector(".navigator-scroll").unwrap().unwrap();
+            inner.get_node(node).unwrap().scroll_offset().y
+        };
+
+        let point_in_navigator = |session: &VisualDebugSession, selector: &str| {
+            let inner = session.document.inner.borrow();
+            let target = inner
+                .get_client_bounding_rect(inner.query_selector(selector).unwrap().unwrap())
+                .unwrap();
+            let viewport = inner
+                .get_client_bounding_rect(
+                    inner.query_selector(".navigator-scroll").unwrap().unwrap(),
+                )
+                .unwrap();
+            [
+                target.x + target.width / 2.0,
+                target
+                    .y
+                    .max(viewport.y + 2.0)
+                    .min(viewport.y + viewport.height - 2.0),
+            ]
+        };
+        for (selector, message, delta) in [
+            (
+                ".workspace-output-option .navigator-item-select",
+                "output row",
+                -80.0,
+            ),
+            (
+                ".workspace-output-option .tree-disclosure",
+                "disclosure child",
+                -80.0,
+            ),
+        ] {
+            let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+            let prior = offset(&session);
+            let point = point_in_navigator(&session, selector);
+            session
+                .pointer
+                .wheel(&mut session.document, point, [0.0, delta]);
+            session.resolve();
+            assert!(
+                (offset(&session) - prior).abs() > f64::EPSILON,
+                "axis over an {message} must reach navigator scroll"
+            );
+        }
+        let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        let before = offset(&session);
+        let canvas_point = {
+            let inner = session.document.inner.borrow();
+            let node = inner.query_selector(".canvas-select").unwrap().unwrap();
+            let target = inner.get_client_bounding_rect(node).unwrap();
+            let viewport = inner
+                .get_client_bounding_rect(
+                    inner.query_selector(".navigator-scroll").unwrap().unwrap(),
+                )
+                .unwrap();
+            [
+                target.x + target.width / 2.0,
+                target.y.max(viewport.y) + 4.0,
+            ]
+        };
+        session
+            .pointer
+            .dispatch(&mut session.document, [1000.0, 500.0], 0x110, None);
+        let raw_point =
+            dioxus::html::geometry::ClientPoint::new(canvas_point[0], canvas_point[1]).to_f32();
+        session
+            .document
+            .handle_ui_event(blitz_traits::events::UiEvent::Wheel(
+                blitz_traits::events::BlitzWheelEvent {
+                    delta: blitz_traits::events::BlitzWheelDelta::Pixels(0.0, -120.0),
+                    coords: blitz_traits::events::PointerCoords {
+                        page_x: raw_point.x,
+                        page_y: raw_point.y,
+                        screen_x: raw_point.x,
+                        screen_y: raw_point.y,
+                        client_x: raw_point.x,
+                        client_y: raw_point.y,
+                    },
+                    buttons: session.pointer.buttons,
+                    mods: dioxus::html::Modifiers::default(),
+                    element: blitz_traits::events::Point::default(),
+                },
+            ));
+        session.resolve();
+        assert!(
+            (offset(&session) - before).abs() <= f64::EPSILON,
+            "unadapted Blitz routes wheel through stale hover instead of event coordinates"
+        );
+        session
+            .pointer
+            .wheel(&mut session.document, canvas_point, [0.0, -120.0]);
+        session.resolve();
+        let after_canvas = offset(&session);
+        assert!(
+            (after_canvas - before).abs() > f64::EPSILON,
+            "axis over a canvas row must reach navigator scroll"
+        );
+
+        let widget_point = {
+            let inner = session.document.inner.borrow();
+            let viewport = inner
+                .get_client_bounding_rect(
+                    inner.query_selector(".navigator-scroll").unwrap().unwrap(),
+                )
+                .unwrap();
+            let target = inner
+                .get_client_bounding_rect(inner.query_selector(".widget-row").unwrap().unwrap())
+                .unwrap();
+            [
+                target.x + target.width / 2.0,
+                target
+                    .y
+                    .max(viewport.y + 2.0)
+                    .min(viewport.y + viewport.height - 2.0),
+            ]
+        };
+        session
+            .pointer
+            .wheel(&mut session.document, widget_point, [0.0, 240.0]);
+        session.resolve();
+        let after_widget = offset(&session);
+        assert!(
+            (after_widget - after_canvas).abs() > f64::EPSILON,
+            "axis over a widget row must reach navigator scroll"
+        );
+
+        let inspector_offset = |session: &VisualDebugSession| {
+            let inner = session.document.inner.borrow();
+            let node = inner.query_selector(".inspector-scroll").unwrap().unwrap();
+            inner.get_node(node).unwrap().scroll_offset().y
+        };
+        let inspector_point = {
+            let inner = session.document.inner.borrow();
+            let target = inner
+                .get_client_bounding_rect(
+                    inner
+                        .query_selector(".editor-number-field")
+                        .unwrap()
+                        .unwrap(),
+                )
+                .unwrap();
+            [
+                target.x + target.width / 2.0,
+                target.y + target.height / 2.0,
+            ]
+        };
+        let inspector_before = inspector_offset(&session);
+        session
+            .pointer
+            .wheel(&mut session.document, inspector_point, [0.0, -240.0]);
+        session.resolve();
+        assert!(
+            (inspector_offset(&session) - inspector_before).abs() > f64::EPSILON,
+            "axis over an Inspector field must reach its scroll ancestor"
+        );
+    }
+
+    #[test]
+    fn blitz_adapter_preserves_browser_interaction_identity_across_empty_vdom_diff() {
+        let scenario = VisualDebugScenario {
+            canvases: None,
+            skin: None,
+            logical_size: [1280, 720],
+            scale: 1.0,
+            canvas_id: Some("wayland-status".into()),
+            editing: true,
+            selectors: Vec::new(),
+            actions: Vec::new(),
+        };
+        let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        session.click(".editor-number-field").unwrap();
+        let focus_before = session
+            .document
+            .inner
+            .borrow()
+            .get_focussed_node_id()
+            .expect("number field must be focused");
+        let point = {
+            let inner = session.document.inner.borrow();
+            let target = inner
+                .get_client_bounding_rect(inner.query_selector(".widget-row").unwrap().unwrap())
+                .unwrap();
+            [
+                target.x + target.width / 2.0,
+                target.y + target.height / 2.0,
+            ]
+        };
+
+        session
+            .pointer
+            .dispatch(&mut session.document, point, 0x110, None);
+        let hover_before = session
+            .document
+            .inner
+            .borrow()
+            .get_hover_node_id()
+            .expect("pointer move must establish hover");
+        session.resolve();
+        let inner = session.document.inner.borrow();
+
+        assert_eq!(
+            inner.get_hover_node_id(),
+            Some(hover_before),
+            "browser keeps hover when a Dioxus render produces no semantic DOM replacement"
+        );
+        assert_eq!(
+            inner.get_focussed_node_id(),
+            Some(focus_before),
+            "browser keeps keyboard focus when pointer motion does not replace the focused DOM node"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn projection_model_describes_wayland_lifecycle_without_resource_churn() {
+        #[derive(Default)]
+        struct FakeWayland {
+            projection_cache: NativeProjectionCache,
+            surfaces: std::collections::BTreeMap<String, String>,
+            trees: std::collections::BTreeSet<(String, String)>,
+            runtimes: std::collections::BTreeMap<(String, String), scorepeek_overlay_ui::Skin>,
+            revisions: std::collections::BTreeMap<String, (u64, u64)>,
+            creates: u64,
+            unmaps: u64,
+            runtime_creates: u64,
+            runtime_drops: u64,
+        }
+        impl FakeWayland {
+            #[allow(clippy::too_many_lines)]
+            fn apply(&mut self, session: &EditorSession) {
+                let display = session
+                    .draft
+                    .iter()
+                    .map(|presentation| {
+                        let mut canvas = crate::config::empty_canvas(
+                            presentation.id.clone(),
+                            crate::runtime::Backend::Wayland,
+                        );
+                        canvas.apply_presentation(presentation);
+                        canvas
+                    })
+                    .collect::<Vec<_>>();
+                let projected = self
+                    .projection_cache
+                    .resolve(
+                        Some(scorepeek_overlay_ui::Skin::CyanSystem),
+                        session,
+                        &display,
+                    )
+                    .unwrap();
+                let lifecycle = reconcile_worker_lifecycle(
+                    self.surfaces
+                        .iter()
+                        .map(|(id, output)| (id.as_str(), Some(output.as_str()), false)),
+                    projected,
+                );
+                for id in lifecycle.stop_join {
+                    let output = self.surfaces.remove(&id).unwrap();
+                    self.unmaps += 1;
+                    self.revisions.remove(&output);
+                    let dropped = self
+                        .runtimes
+                        .keys()
+                        .filter(|(owner, _)| owner == &output)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    self.runtime_drops += u64::try_from(dropped.len()).unwrap();
+                    for key in dropped {
+                        self.runtimes.remove(&key);
+                        self.trees.remove(&key);
+                    }
+                }
+                for id in lifecycle.start {
+                    let canvas = projected
+                        .iter()
+                        .find(|canvas| canvas.id == id)
+                        .expect("fake adapter receives production lifecycle IDs only");
+                    self.surfaces.insert(id, canvas.output.clone());
+                    self.creates += 1;
+                }
+                let outputs = if session.editing {
+                    session.outputs.clone()
+                } else {
+                    session
+                        .draft
+                        .iter()
+                        .filter_map(|canvas| canvas.output.as_ref())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .map(|name| EditorOutput {
+                            name: name.clone(),
+                            model: "fake".into(),
+                            logical_size: None,
+                        })
+                        .collect()
+                };
+                for output in outputs {
+                    let revision = (session.session_id, session.revision);
+                    if self
+                        .revisions
+                        .get(&output.name)
+                        .is_some_and(|old| *old >= revision)
+                    {
+                        continue;
+                    }
+                    self.revisions.insert(output.name.clone(), revision);
+                    let live = session
+                        .stage_projection(&output)
+                        .canvases
+                        .into_iter()
+                        .map(|canvas| ((output.name.clone(), canvas.id), canvas.skin))
+                        .collect::<std::collections::BTreeMap<_, _>>();
+                    let removed = self
+                        .runtimes
+                        .keys()
+                        .filter(|key| key.0 == output.name && !live.contains_key(*key))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    for key in removed {
+                        self.runtimes.remove(&key);
+                        self.trees.remove(&key);
+                        self.runtime_drops += 1;
+                    }
+                    for (key, skin) in live {
+                        match self.runtimes.insert(key.clone(), skin) {
+                            None => self.runtime_creates += 1,
+                            Some(previous) if previous != skin => {
+                                self.runtime_drops += 1;
+                                self.runtime_creates += 1;
+                            }
+                            Some(_) => {}
+                        }
+                        self.trees.insert(key);
+                    }
+                }
+            }
+        }
+
+        let mut canvases = crate::config::visual_debug_config()
+            .canvases
+            .into_iter()
+            .filter(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
+            .take(2)
+            .map(|canvas| canvas.presentation())
+            .collect::<Vec<_>>();
+        canvases[0].output = Some("WL-1".into());
+        canvases[1].output = Some("WL-2".into());
+        let mut session = EditorSession::new(canvases, [1920, 1080], "fake-wayland");
+        session.set_session_id(11);
+        session.set_outputs(vec![
+            EditorOutput {
+                name: "WL-1".into(),
+                model: "fake one".into(),
+                logical_size: Some([1920, 1080]),
+            },
+            EditorOutput {
+                name: "WL-2".into(),
+                model: "fake two".into(),
+                logical_size: Some([1280, 720]),
+            },
+        ]);
+        session.editing = true;
+        session.readonly = false;
+        session.selected_canvas = Some(session.draft[0].id.clone());
+        session.advance_revision();
+        let mut fake = FakeWayland::default();
+        fake.apply(&session);
+        assert_eq!(
+            (fake.surfaces.len(), fake.runtimes.len(), fake.trees.len()),
+            (2, 2, 2)
+        );
+        let steady = (
+            fake.projection_cache.rebuilds,
+            fake.creates,
+            fake.unmaps,
+            fake.runtime_creates,
+            fake.runtime_drops,
+        );
+        for _ in 0..120 {
+            fake.apply(&session);
+        }
+        assert_eq!(
+            (
+                fake.projection_cache.rebuilds,
+                fake.creates,
+                fake.unmaps,
+                fake.runtime_creates,
+                fake.runtime_drops,
+            ),
+            steady,
+            "120 steady frames must not rebuild projections, surfaces, or heavyweight runtimes"
+        );
+
+        session.draft[1].show_on = Some(vec![scorepeek_overlay_ui::ScreenKind::Result]);
+        session.advance_revision();
+        fake.apply(&session);
+        assert_eq!(fake.runtimes.len(), 1, "hidden canvases must be unmounted");
+        session.reduce(EditorInput::Action(EditorAction::PreviewScreen(
+            scorepeek_overlay_ui::ScreenKind::Result,
+        )));
+        fake.apply(&session);
+        assert_eq!(fake.runtimes.len(), 2, "visible canvases must be remounted");
+
+        session.reduce(EditorInput::Action(EditorAction::Output("WL-2".into())));
+        fake.apply(&session);
+        assert_eq!(
+            fake.surfaces.len(),
+            2,
+            "moving a canvas must not duplicate editor stages"
+        );
+        assert!(fake.runtimes.keys().all(|(output, _)| output == "WL-2"));
+
+        let creates = fake.runtime_creates;
+        let drops = fake.runtime_drops;
+        session.draft[0].skin = scorepeek_overlay_ui::Skin::ResultAurora;
+        session.advance_revision();
+        fake.apply(&session);
+        assert_eq!(fake.runtime_creates, creates + 1);
+        assert_eq!(fake.runtime_drops, drops + 1);
+        assert_eq!(
+            fake.runtimes.len(),
+            2,
+            "a skin switch replaces only its owner"
+        );
+
+        session.reduce(EditorInput::Action(EditorAction::DeleteCanvas));
+        fake.apply(&session);
+        assert_eq!(fake.runtimes.len(), 1);
+        assert_eq!(fake.trees, fake.runtimes.keys().cloned().collect(),);
+
+        session.reduce(EditorInput::SetOutputs(vec![EditorOutput {
+            name: "WL-2".into(),
+            model: "fake two".into(),
+            logical_size: Some([1280, 720]),
+        }]));
+        fake.apply(&session);
+        assert_eq!(
+            fake.surfaces.values().collect::<Vec<_>>(),
+            vec![&"WL-2".to_owned()]
+        );
+        assert!(fake.unmaps >= 1);
+
+        session.editing = false;
+        session.advance_revision();
+        fake.apply(&session);
+        assert!(
+            fake.surfaces
+                .keys()
+                .all(|id| !id.starts_with("__scorepeek-editor-stage"))
+        );
+        assert_eq!(fake.trees, fake.runtimes.keys().cloned().collect());
+        assert_eq!(
+            fake.runtime_creates - fake.runtime_drops,
+            fake.runtimes.len() as u64
+        );
+
+        let display_creates = fake.creates;
+        session.editing = true;
+        session.advance_revision();
+        fake.apply(&session);
+        assert_eq!(
+            fake.surfaces.len(),
+            session.outputs.len(),
+            "reopening creates exactly one editor stage for each current output"
+        );
+        assert!(fake.creates > display_creates);
+        assert_eq!(fake.trees, fake.runtimes.keys().cloned().collect());
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
+        struct TestSkinStore(std::path::PathBuf);
+        impl Drop for TestSkinStore {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        static NEXT_STORE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+        struct FakeStage {
+            output: String,
+            projection: Reactive<NativeDocumentProjection>,
+            document: DioxusDocument,
+            previews: std::collections::BTreeMap<String, EditorSkinPreview>,
+            assets: Arc<SkinAssetCache>,
+            report: Rc<RefCell<RunReport>>,
+            skin_updates: EditorSkinUpdates,
+            runtime_creates: u64,
+            projection_accepts: u64,
+            dioxus_polls: u64,
+            reconciliations: u64,
+            input_generations: u64,
+            wasm_calls: u64,
+            tree_updates: u64,
+            layouts: u64,
+            resource_resolves: u64,
+            scenes: u64,
+            presents: u64,
+            commits: u64,
+            motion_seconds: f64,
+        }
+        impl FakeStage {
+            fn new(stage: StageProjection, assets: Arc<SkinAssetCache>) -> Result<Self, String> {
+                let output = stage.output.name.clone();
+                let initial = NativeDocumentProjection::Editor(stage);
+                let published = Rc::new(RefCell::new(None));
+                let (sender, _receiver) = std::sync::mpsc::channel();
+                let props = NativeOverlayProps {
+                    initial,
+                    published: Rc::clone(&published),
+                    port: NativeEditorPort {
+                        coordinator: sender,
+                        source_output: Some(output.clone()),
+                        run_id: "fake-wayland-stage".into(),
+                        sequence: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                    },
+                };
+                let mut document = DioxusDocument::new(
+                    VirtualDom::new_with_props(native_overlay, props),
+                    document_config_inner_with_handle(Arc::clone(&assets)).0,
+                );
+                document.initial_build();
+                let projection = published
+                    .borrow()
+                    .as_ref()
+                    .copied()
+                    .ok_or("fake stage did not publish its projection")?;
+                let mut skin_updates = EditorSkinUpdates::default();
+                skin_updates.request();
+                let mut stage = Self {
+                    output,
+                    projection,
+                    document,
+                    previews: std::collections::BTreeMap::new(),
+                    assets,
+                    report: Rc::new(RefCell::new(RunReport::new())),
+                    skin_updates,
+                    runtime_creates: 0,
+                    projection_accepts: 0,
+                    dioxus_polls: 0,
+                    reconciliations: 0,
+                    input_generations: 0,
+                    wasm_calls: 0,
+                    tree_updates: 0,
+                    layouts: 0,
+                    resource_resolves: 0,
+                    scenes: 0,
+                    presents: 0,
+                    commits: 0,
+                    motion_seconds: 0.0,
+                };
+                stage.frame()?;
+                Ok(stage)
+            }
+
+            fn accept(&mut self, next: StageProjection) -> Result<(), String> {
+                let accepted = match &*self.projection.borrow() {
+                    NativeDocumentProjection::Editor(current) => {
+                        accepts_stage_projection(current, &next) && current != &next
+                    }
+                    NativeDocumentProjection::Display { .. } => false,
+                };
+                if accepted {
+                    if editor_skin_previews_changed(&self.previews, &next) {
+                        self.skin_updates.request();
+                    }
+                    self.projection.set(NativeDocumentProjection::Editor(next));
+                    self.projection_accepts += 1;
+                }
+                self.frame()
+            }
+
+            fn frame(&mut self) -> Result<(), String> {
+                self.dioxus_polls += 1;
+                while poll_native_document(&mut self.document, Waker::noop()) {}
+                if self.skin_updates.take_if_ready(true, false) {
+                    let canvases = match &*self.projection.borrow() {
+                        NativeDocumentProjection::Editor(stage) => stage.canvases.clone(),
+                        NativeDocumentProjection::Display { .. } => unreachable!(),
+                    };
+                    self.reconciliations += 1;
+                    let reconciliation = reconcile_editor_skin_previews(
+                        &mut self.document,
+                        &mut self.previews,
+                        &canvases,
+                        &self.assets,
+                        &self.report,
+                        Some(&self.output),
+                        &scorepeek_overlay_ui::editor_sample_state(),
+                        &mut self.runtime_creates,
+                    )?;
+                    self.input_generations = self
+                        .input_generations
+                        .saturating_add(reconciliation.input_generations);
+                    self.wasm_calls = self.wasm_calls.saturating_add(reconciliation.wasm_calls);
+                    self.tree_updates = self
+                        .tree_updates
+                        .saturating_add(reconciliation.tree_updates);
+                    if reconciliation.retry_owner {
+                        self.skin_updates.request();
+                    }
+                }
+                let mut inner = self.document.inner.borrow_mut();
+                inner.set_viewport(Viewport::new(1920, 1080, 1.0, ColorScheme::Dark));
+                self.motion_seconds += 1.0 / 120.0;
+                apply_motion(&mut inner, self.motion_seconds);
+                inner.resolve(self.motion_seconds);
+                self.layouts += 1;
+                resolve_with_loaded_resources(&mut inner, self.motion_seconds);
+                self.resource_resolves += 1;
+                let mut scene = anyrender::Scene::new();
+                paint_native_scene(&mut scene, &mut inner, 1.0, 1920, 1080);
+                self.scenes += 1;
+                self.presents += 1;
+                self.commits += 1;
+                Ok(())
+            }
+
+            fn shutdown(mut self, operations: &mut Vec<String>) {
+                let phases = RefCell::new(Vec::new());
+                shutdown_native_surface(
+                    &mut self,
+                    |stage| {
+                        for (id, mut preview) in std::mem::take(&mut stage.previews) {
+                            preview.tree.unmount(&mut stage.document.inner.borrow_mut());
+                            stage.assets.release_editor_owner(&id, &stage.output);
+                            phases
+                                .borrow_mut()
+                                .push(format!("runtime-drop:{id}:{}", stage.output));
+                        }
+                    },
+                    |stage| {
+                        phases
+                            .borrow_mut()
+                            .push(format!("suspend:{}", stage.output));
+                    },
+                    |stage| {
+                        phases.borrow_mut().push(format!("unmap:{}", stage.output));
+                        Ok::<(), ()>(())
+                    },
+                )
+                .unwrap();
+                operations.extend(phases.into_inner());
+                operations.push(format!("join:{}", self.output));
+            }
+        }
+
+        struct FakeAdapter {
+            projection_cache: NativeProjectionCache,
+            published: Arc<std::sync::Mutex<PublishedStages>>,
+            surfaces: std::collections::BTreeMap<String, String>,
+            stages: std::collections::BTreeMap<String, FakeStage>,
+            assets: Arc<SkinAssetCache>,
+            operations: Vec<String>,
+            config_conversions: u64,
+        }
+        impl FakeAdapter {
+            fn new(
+                published: Arc<std::sync::Mutex<PublishedStages>>,
+                assets: Arc<SkinAssetCache>,
+            ) -> Self {
+                Self {
+                    projection_cache: NativeProjectionCache::default(),
+                    published,
+                    surfaces: std::collections::BTreeMap::new(),
+                    stages: std::collections::BTreeMap::new(),
+                    assets,
+                    operations: Vec::new(),
+                    config_conversions: 0,
+                }
+            }
+
+            fn apply(&mut self, authority: &mut NativeEditorAuthority) -> Result<(), String> {
+                authority.poll();
+                let session = authority.session();
+                let display = session
+                    .draft
+                    .iter()
+                    .map(|presentation| {
+                        let mut canvas = crate::config::empty_canvas(
+                            presentation.id.clone(),
+                            crate::runtime::Backend::Wayland,
+                        );
+                        canvas.apply_presentation(presentation);
+                        canvas
+                    })
+                    .collect::<Vec<_>>();
+                let projected = self.projection_cache.resolve(
+                    Some(scorepeek_overlay_ui::Skin::CyanSystem),
+                    &session,
+                    &display,
+                )?;
+                let lifecycle = reconcile_worker_lifecycle(
+                    self.surfaces
+                        .iter()
+                        .map(|(id, output)| (id.as_str(), Some(output.as_str()), false)),
+                    projected,
+                );
+                for id in lifecycle.stop_join {
+                    if let Some(output) = self.surfaces.remove(&id) {
+                        self.operations.push(format!("stop:{output}"));
+                        if let Some(stage) = self.stages.remove(&output) {
+                            stage.shutdown(&mut self.operations);
+                        } else {
+                            self.operations.push(format!("unmap:{output}"));
+                            self.operations.push(format!("join:{output}"));
+                        }
+                    }
+                }
+                for id in lifecycle.start {
+                    let canvas = projected
+                        .iter()
+                        .find(|canvas| canvas.id == id)
+                        .expect("production lifecycle returned an unknown canvas");
+                    self.config_conversions += 1;
+                    self.operations.push(format!("configure:{}", canvas.output));
+                    self.surfaces.insert(id, canvas.output.clone());
+                }
+                if session.editing {
+                    let published = self
+                        .published
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .by_output
+                        .clone();
+                    for projection in published.values().rev().cloned() {
+                        if let Some(stage) = self.stages.get_mut(&projection.output.name) {
+                            stage.accept(projection)?;
+                        } else {
+                            self.stages.insert(
+                                projection.output.name.clone(),
+                                FakeStage::new(projection, Arc::clone(&self.assets))?,
+                            );
+                        }
+                    }
+                    for projection in published.into_values() {
+                        self.stages
+                            .get_mut(&projection.output.name)
+                            .expect("stage created for every output")
+                            .accept(projection)?;
+                    }
+                }
+                Ok(())
+            }
+
+            fn runtime_creates(&self) -> u64 {
+                self.stages
+                    .values()
+                    .map(|stage| stage.runtime_creates)
+                    .sum()
+            }
+        }
+
+        let mut canvases = crate::config::visual_debug_config()
+            .canvases
+            .into_iter()
+            .filter(|canvas| canvas.backend == crate::runtime::Backend::Wayland)
+            .take(2)
+            .map(|canvas| canvas.presentation())
+            .collect::<Vec<_>>();
+        canvases[0].output = Some("WL-1".into());
+        canvases[1].output = Some("WL-2".into());
+        let mut session = EditorSession::new(canvases, [1920, 1080], "fake-wayland");
+        session.set_session_id(41);
+        session.set_skins(embedded_editor_skins());
+        session.set_outputs(vec![
+            EditorOutput {
+                name: "WL-1".into(),
+                model: "fake one".into(),
+                logical_size: Some([1920, 1080]),
+            },
+            EditorOutput {
+                name: "WL-2".into(),
+                model: "fake two".into(),
+                logical_size: Some([1280, 720]),
+            },
+        ]);
+        session.readonly = false;
+        session.reduce(EditorInput::Open {
+            output: Some("WL-1".into()),
+            canvas: Some(session.draft[0].id.clone()),
+            preview: scorepeek_overlay_ui::ScreenKind::MusicSelect,
+        });
+        let published = Arc::new(std::sync::Mutex::new(PublishedStages::default()));
+        let mut authority = NativeEditorAuthority::new(session, Arc::clone(&published));
+        let acquired = authority.session().draft.clone();
+        authority.dispatch(EditorInput::BackendCompleted {
+            effect: EditorEffectKind::Acquire,
+            reply: EditorBackendReply {
+                ok: true,
+                readonly: false,
+                error: None,
+                canvases: acquired,
+                dirty: false,
+            },
+        });
+        let store_path = std::env::temp_dir().join(format!(
+            "scorepeek-fake-wayland-skins-{}-{}",
+            std::process::id(),
+            NEXT_STORE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let store_guard = TestSkinStore(store_path.clone());
+        let store = crate::skin::StoreRoot::new(store_path);
+        let package_root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/skins");
+        for package in ["cyan-system.zip", "result-aurora.zip", "dj-blackbox.zip"] {
+            store
+                .install(&package_root.join(package))
+                .unwrap_or_else(|error| panic!("install test skin {package}: {error}"));
+        }
+        let assets = Arc::new(SkinAssetCache::new(store));
+        let mut fake = FakeAdapter::new(published, assets);
+        fake.apply(&mut authority).unwrap();
+        assert_eq!((fake.surfaces.len(), fake.stages.len()), (2, 2));
+        assert_eq!(
+            fake.stages
+                .values()
+                .map(|stage| stage.previews.len())
+                .sum::<usize>(),
+            2
+        );
+        let heavy = (
+            fake.projection_cache.rebuilds,
+            fake.config_conversions,
+            fake.runtime_creates(),
+            fake.assets
+                .open_count
+                .load(std::sync::atomic::Ordering::Relaxed),
+            fake.stages
+                .values()
+                .map(|stage| stage.reconciliations)
+                .sum::<u64>(),
+            fake.stages
+                .values()
+                .map(|stage| stage.input_generations)
+                .sum::<u64>(),
+        );
+        let frame_counts = |fake: &FakeAdapter| {
+            fake.stages
+                .values()
+                .map(|stage| {
+                    (
+                        stage.dioxus_polls,
+                        stage.wasm_calls,
+                        stage.tree_updates,
+                        stage.layouts,
+                        stage.resource_resolves,
+                        stage.scenes,
+                        stage.presents,
+                        stage.commits,
+                    )
+                })
+                .fold((0, 0, 0, 0, 0, 0, 0, 0), |a, b| {
+                    (
+                        a.0 + b.0,
+                        a.1 + b.1,
+                        a.2 + b.2,
+                        a.3 + b.3,
+                        a.4 + b.4,
+                        a.5 + b.5,
+                        a.6 + b.6,
+                        a.7 + b.7,
+                    )
+                })
+        };
+        for frame_count in [60_u64, 120] {
+            let frame_before = frame_counts(&fake);
+            for _ in 0..frame_count {
+                for stage in fake.stages.values_mut() {
+                    stage.frame().unwrap();
+                }
+            }
+            assert_eq!(
+                (
+                    fake.projection_cache.rebuilds,
+                    fake.config_conversions,
+                    fake.runtime_creates(),
+                    fake.assets
+                        .open_count
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                    fake.stages
+                        .values()
+                        .map(|stage| stage.reconciliations)
+                        .sum::<u64>(),
+                    fake.stages
+                        .values()
+                        .map(|stage| stage.input_generations)
+                        .sum::<u64>(),
+                ),
+                heavy,
+                "steady frames must poll and paint without rebuilding projection/config/runtime"
+            );
+            let frame_after = frame_counts(&fake);
+            let expected = frame_count * u64::try_from(fake.stages.len()).unwrap();
+            assert_eq!(frame_after.0 - frame_before.0, expected);
+            assert_eq!(
+                (
+                    frame_after.1 - frame_before.1,
+                    frame_after.2 - frame_before.2
+                ),
+                (0, 0),
+                "CSS animation frames must not rerun idle Wasm or rebuild its JSON tree"
+            );
+            assert_eq!(frame_after.3 - frame_before.3, expected);
+            assert_eq!(frame_after.4 - frame_before.4, expected);
+            assert_eq!(frame_after.5 - frame_before.5, expected);
+            assert_eq!(frame_after.6 - frame_before.6, expected);
+            assert_eq!(frame_after.7 - frame_before.7, expected);
+        }
+
+        authority.dispatch(EditorInput::Action(EditorAction::CanvasVisibleNone));
+        fake.apply(&mut authority).unwrap();
+        assert_eq!(
+            fake.stages
+                .values()
+                .map(|stage| stage.previews.len())
+                .sum::<usize>(),
+            1,
+            "visibility removal must unmount the selected canvas preview"
+        );
+        authority.dispatch(EditorInput::Action(EditorAction::CanvasVisibleAll));
+        fake.apply(&mut authority).unwrap();
+        assert_eq!(
+            fake.stages
+                .values()
+                .map(|stage| stage.previews.len())
+                .sum::<usize>(),
+            2
+        );
+
+        let runtime_creates = fake.runtime_creates();
+        let replacement_skin = if authority.session().current().unwrap().skin
+            == scorepeek_overlay_ui::Skin::ResultAurora
+        {
+            scorepeek_overlay_ui::Skin::CyanSystem
+        } else {
+            scorepeek_overlay_ui::Skin::ResultAurora
+        };
+        authority.dispatch(EditorInput::Action(EditorAction::Skin(replacement_skin)));
+        fake.apply(&mut authority).unwrap();
+        assert_eq!(
+            fake.runtime_creates(),
+            runtime_creates + 1,
+            "skin replacement must create exactly one replacement runtime"
+        );
+
+        authority.dispatch(EditorInput::Action(EditorAction::DeleteCanvas));
+        fake.apply(&mut authority).unwrap();
+        assert_eq!(
+            fake.stages
+                .values()
+                .map(|stage| stage.previews.len())
+                .sum::<usize>(),
+            1
+        );
+        assert_eq!(
+            fake.assets
+                .editor_owners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            1,
+            "canvas deletion must release its runtime owner"
+        );
+        authority.dispatch(EditorInput::Action(EditorAction::AddCanvas));
+        fake.apply(&mut authority).unwrap();
+        assert_eq!(
+            fake.stages
+                .values()
+                .map(|stage| stage.previews.len())
+                .sum::<usize>(),
+            2
+        );
+
+        let stale_wl2 = fake
+            .published
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .by_output
+            .get("WL-2")
+            .cloned()
+            .unwrap();
+        authority.dispatch(EditorInput::Action(EditorAction::Output("WL-2".into())));
+        fake.apply(&mut authority).unwrap();
+        assert_eq!(
+            fake.stages
+                .values()
+                .map(|stage| stage.previews.len())
+                .sum::<usize>(),
+            2
+        );
+        assert_eq!(
+            fake.assets
+                .editor_owners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            2,
+            "reverse delivery still leaves one owner per canvas"
+        );
+        let wl2 = fake.stages.get_mut("WL-2").unwrap();
+        let accepted = wl2.projection_accepts;
+        let current_revision = match &*wl2.projection.borrow() {
+            NativeDocumentProjection::Editor(stage) => stage.revision,
+            NativeDocumentProjection::Display { .. } => unreachable!(),
+        };
+        wl2.accept(stale_wl2).unwrap();
+        assert_eq!(wl2.projection_accepts, accepted);
+        assert_eq!(
+            match &*wl2.projection.borrow() {
+                NativeDocumentProjection::Editor(stage) => stage.revision,
+                NativeDocumentProjection::Display { .. } => unreachable!(),
+            },
+            current_revision,
+            "an out-of-order transport replica must not replace the current stage"
+        );
+
+        let wl2_output = authority.session().outputs[1].clone();
+        authority.dispatch(EditorInput::SetOutputs(vec![wl2_output]));
+        fake.apply(&mut authority).unwrap();
+        assert_eq!(fake.surfaces.len(), 1);
+        let stop = fake
+            .operations
+            .iter()
+            .position(|op| op == "stop:WL-1")
+            .unwrap();
+        let suspend = fake
+            .operations
+            .iter()
+            .position(|op| op == "suspend:WL-1")
+            .unwrap();
+        let unmap = fake
+            .operations
+            .iter()
+            .position(|op| op == "unmap:WL-1")
+            .unwrap();
+        let join = fake
+            .operations
+            .iter()
+            .position(|op| op == "join:WL-1")
+            .unwrap();
+        assert!(stop < suspend && suspend < unmap && unmap < join);
+        assert!(
+            fake.operations
+                .iter()
+                .enumerate()
+                .filter(|(_, op)| op.starts_with("runtime-drop:") && op.ends_with(":WL-1"))
+                .all(|(index, _)| index < suspend),
+            "all retained skin resources must drop before renderer suspension"
+        );
+
+        let effects = authority.dispatch(EditorInput::Action(EditorAction::Close));
+        assert!(
+            effects
+                .iter()
+                .any(|effect| effect.kind() == EditorEffectKind::Close)
+        );
+        let closing = authority.session().draft.clone();
+        authority.dispatch(EditorInput::BackendCompleted {
+            effect: EditorEffectKind::Close,
+            reply: EditorBackendReply {
+                ok: true,
+                readonly: false,
+                error: None,
+                canvases: closing,
+                dirty: false,
+            },
+        });
+        fake.apply(&mut authority).unwrap();
+        assert!(fake.stages.is_empty());
+        let reopen_canvas = authority
+            .session()
+            .draft
+            .first()
+            .map(|canvas| canvas.id.clone());
+        authority.dispatch(EditorInput::Open {
+            output: Some("WL-2".into()),
+            canvas: reopen_canvas,
+            preview: scorepeek_overlay_ui::ScreenKind::MusicSelect,
+        });
+        fake.apply(&mut authority).unwrap();
+        assert_eq!(fake.stages.len(), 1);
+        drop(fake);
+        drop(store_guard);
     }
 
     #[test]
@@ -3863,19 +5531,6 @@ mod skin_tests {
         );
         session.document.inner.borrow_mut().resolve(0.0);
         assert!((width(&session) - 160.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn passive_pointer_motion_does_not_enter_the_editor_model_path() {
-        assert_eq!(
-            passive_pointer_move(&SurfaceAction::Move([320, 180]), false),
-            Some([320, 180])
-        );
-        assert_eq!(
-            passive_pointer_move(&SurfaceAction::Move([320, 180]), true),
-            None
-        );
-        assert_eq!(passive_pointer_move(&SurfaceAction::End, false), None);
     }
 
     fn resize_widget(
@@ -4277,6 +5932,102 @@ mod skin_tests {
     }
 
     #[test]
+    fn visual_debug_canvas_delete_drops_runtime_tree_and_dom_together() {
+        let scenario = VisualDebugScenario {
+            canvases: None,
+            skin: None,
+            logical_size: [1920, 1080],
+            scale: 1.0,
+            canvas_id: Some("wayland-status".into()),
+            editing: true,
+            selectors: Vec::new(),
+            actions: Vec::new(),
+        };
+        let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        session
+            .authority
+            .dispatch(EditorInput::Action(EditorAction::DeleteCanvas));
+        let output = match &*session.projection.borrow() {
+            NativeDocumentProjection::Editor(stage) => stage.output.clone(),
+            NativeDocumentProjection::Display { .. } => panic!("expected editor stage"),
+        };
+        session.projection.set(NativeDocumentProjection::Editor(
+            session.authority.session().stage_projection(&output),
+        ));
+        session.resolve();
+
+        let expected = match &*session.projection.borrow() {
+            NativeDocumentProjection::Editor(stage) => stage.canvases.len(),
+            NativeDocumentProjection::Display { .. } => unreachable!(),
+        };
+        assert_eq!(session.skins.len(), expected);
+        assert_eq!(
+            session
+                .document
+                .inner
+                .borrow()
+                .query_selector_all(".scorepeek-skin-scope .overlay-canvas")
+                .unwrap()
+                .len(),
+            expected
+        );
+    }
+
+    #[test]
+    fn visual_debug_new_canvas_mounts_its_skin_on_the_same_reactive_turn() {
+        let scenario = VisualDebugScenario {
+            canvases: None,
+            skin: None,
+            logical_size: [1920, 1080],
+            scale: 1.0,
+            canvas_id: Some("wayland-status".into()),
+            editing: true,
+            selectors: Vec::new(),
+            actions: Vec::new(),
+        };
+        let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        loop {
+            let id = {
+                session
+                    .authority
+                    .session()
+                    .draft
+                    .first()
+                    .map(|canvas| canvas.id.clone())
+            };
+            let Some(id) = id else { break };
+            session
+                .authority
+                .dispatch(EditorInput::Action(EditorAction::SelectCanvas(id)));
+            session
+                .authority
+                .dispatch(EditorInput::Action(EditorAction::DeleteCanvas));
+        }
+        session
+            .authority
+            .dispatch(EditorInput::Action(EditorAction::AddCanvas));
+        let output = session.authority.session().outputs[0].clone();
+        session.projection.set(NativeDocumentProjection::Editor(
+            session.authority.session().stage_projection(&output),
+        ));
+
+        session.resolve();
+
+        assert_eq!(session.skins.len(), 1);
+        assert_eq!(
+            session
+                .document
+                .inner
+                .borrow()
+                .query_selector_all(".scorepeek-skin-scope .overlay-canvas")
+                .unwrap()
+                .len(),
+            1,
+            "projection, Dioxus root creation, and skin mount must complete without another input"
+        );
+    }
+
+    #[test]
     fn visual_debug_role_transition_remounts_skin_content_in_the_display_root() {
         let scenario = VisualDebugScenario {
             canvases: None,
@@ -4518,8 +6269,20 @@ mod skin_tests {
         };
         let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
         session
+            .scroll(
+                ".workspace-output-option .navigator-item-select",
+                0.0,
+                -120.0,
+            )
+            .unwrap();
+        session
             .click(".widget-row[data-widget-id='status']")
             .unwrap();
+        assert_eq!(
+            session.authority.session().selected_widget.as_deref(),
+            Some("status"),
+            "the native navigator click must select the status widget"
+        );
         session.scroll(".inspector-scroll", 0.0, 1200.0).unwrap();
         session.focus(".property-value-input").unwrap();
         session.key(&scorepeek_overlay_handles::TextCommand::SelectAll);
@@ -4593,6 +6356,39 @@ mod skin_tests {
             selectors: Vec::new(),
             actions: Vec::new(),
         };
+        let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
+        let point = {
+            let inner = session.document.inner.borrow();
+            let trigger = inner
+                .query_selector(".screen-picker .list-picker-trigger")
+                .unwrap()
+                .unwrap();
+            let rect = inner.get_client_bounding_rect(trigger).unwrap();
+            [rect.x + rect.width / 2.0, rect.y + rect.height / 2.0]
+        };
+        session
+            .pointer
+            .dispatch_blitz(&mut session.document, point, 0x110, None);
+        session
+            .pointer
+            .dispatch_blitz(&mut session.document, point, 0x110, Some(true));
+        session
+            .pointer
+            .dispatch_blitz(&mut session.document, point, 0x110, Some(false));
+        session.resolve();
+        let raw_trigger = session
+            .document
+            .inner
+            .borrow()
+            .query_selector(".screen-picker .list-picker-trigger")
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            session.document.inner.borrow().get_focussed_node_id(),
+            Some(raw_trigger),
+            "raw Blitz does not implement the browser button-click focus default"
+        );
+
         let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
         session
             .click(".screen-picker .list-picker-trigger")

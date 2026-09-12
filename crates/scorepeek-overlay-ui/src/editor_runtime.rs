@@ -34,7 +34,18 @@ pub fn use_editor_runtime(initialize: impl FnOnce() -> EditorSession + 'static) 
             .filter(|canvas| session.visible(canvas))
             .cloned()
     });
-    let dispatch = Callback::new(move |input| session.write().reduce(input));
+    let dispatch = Callback::new(move |input| {
+        if matches!(
+            input,
+            EditorInput::Surface(crate::editor_surface::SurfaceAction::Move(_))
+        ) {
+            let current = session.read();
+            if current.drag.is_none() && current.placing.is_none() {
+                return Vec::new();
+            }
+        }
+        session.write().reduce(input)
+    });
     EditorRuntime {
         session,
         active_output,

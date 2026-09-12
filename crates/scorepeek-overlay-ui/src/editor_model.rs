@@ -1362,7 +1362,11 @@ impl EditorSession {
                 corner,
                 point,
             } => self.begin_drag(canvas, widget, corner, point),
-            SurfaceAction::Move(point) => self.move_pointer(point),
+            SurfaceAction::Move(point) => {
+                if self.drag.is_some() || self.placing.is_some() {
+                    self.move_pointer(point);
+                }
+            }
             SurfaceAction::End => return self.end_drag(),
             SurfaceAction::Place(point) => return self.place(point),
             SurfaceAction::Cancel => {
@@ -2360,6 +2364,52 @@ mod skin_tests {
         );
         assert_eq!(model.revision, before + 1);
         assert_eq!(model.stage_projections()[0].revision, model.revision);
+    }
+
+    #[test]
+    fn passive_pointer_motion_does_not_change_editor_authority_or_projection() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "DP-1".into(),
+            model: "first".into(),
+            logical_size: Some([1920, 1080]),
+        }]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        let before = model.clone();
+        let projections = model.stage_projections();
+
+        let effects = model.reduce(EditorInput::Surface(
+            crate::editor_surface::SurfaceAction::Move([320, 180]),
+        ));
+
+        assert!(effects.is_empty());
+        assert!(model == before);
+        assert!(model.stage_projections() == projections);
+    }
+
+    #[test]
+    fn placement_pointer_motion_remains_revisioned() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "DP-1".into(),
+            model: "first".into(),
+            logical_size: Some([1920, 1080]),
+        }]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        model.placing = Some(crate::WidgetKind::Empty);
+        let before = model.revision;
+
+        let effects = model.reduce(EditorInput::Surface(
+            crate::editor_surface::SurfaceAction::Move([320, 180]),
+        ));
+
+        assert!(effects.is_empty());
+        assert_eq!(model.point, [320, 180]);
+        assert_eq!(model.revision, before + 1);
     }
 
     #[test]

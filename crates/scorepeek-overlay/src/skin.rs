@@ -283,6 +283,14 @@ pub struct Package {
 }
 
 impl Package {
+    #[cfg(test)]
+    pub(crate) fn test_with_entries(
+        manifest: Manifest,
+        entries: BTreeMap<String, Vec<u8>>,
+    ) -> Self {
+        Self { manifest, entries }
+    }
+
     /// Reads and structurally validates one self-contained skin ZIP.
     /// # Errors
     /// Returns ZIP, path, manifest, module, CSS or preview errors.
@@ -784,6 +792,15 @@ impl NativeTree {
         mutator.append_children(self.style, &[text]);
         mutator.append_children(self.root, &[self.style]);
     }
+
+    /// Removes every package-owned node while leaving the host-owned root intact.
+    pub fn unmount(&mut self, document: &mut blitz_dom::BaseDocument) {
+        let mut mutator = document.mutate();
+        if let Some(mounted) = self.mounted.take() {
+            mutator.remove_and_drop_node(mounted.node);
+        }
+        mutator.remove_and_drop_node(self.style);
+    }
 }
 
 fn reconcile(
@@ -1246,6 +1263,12 @@ mod tests {
         assert!(browser.contains("value.attributes === undefined"));
         assert!(browser.contains("value.children === undefined"));
         assert!(browser.contains("element.style.cssText = value"));
+        assert!(browser.contains("scorepeek-editor-presentation"));
+        assert!(browser.contains("awaitingEditorGeometry && !sameSpecification"));
+        assert!(browser.contains("message.revision <= lastEditorRevision"));
+        assert!(browser.contains("let spec = JSON.parse"));
+        assert!(!browser.contains("const spec = JSON.parse"));
+        assert!(browser.contains("spec = message.specification"));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 (() => {
-  const spec = JSON.parse(document.querySelector("#scorepeek-skin").textContent);
+  let spec = JSON.parse(document.querySelector("#scorepeek-skin").textContent);
   const wasmUrl = new URL(spec.wasm, location.href).href;
   const root = document.querySelector("#skin-root");
   let worker;
@@ -11,6 +11,9 @@
   let started = 0;
   let phase = "init";
   let state = { screen: "unknown" };
+  let lastEditorSession;
+  let lastEditorRevision = -1;
+  let awaitingEditorGeometry = false;
 
   const workerSource = `
     let instance;
@@ -148,16 +151,34 @@
 
   const sample = new URLSearchParams(location.search).get("sample") === "1" ? "?sample=1" : "";
   const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/${encodeURIComponent(spec.canvas.id)}${sample}`);
+  function sameSpecification(candidate) { return JSON.stringify(candidate) === JSON.stringify(spec); }
   socket.onmessage = event => {
     const message = JSON.parse(event.data);
     if (message.type === "state") { state = message.state; requestRender(); }
     if (message.type === "presentation") {
-      spec.canvas = message.specification.canvas;
-      spec.widgets = message.specification.widgets;
+      if (awaitingEditorGeometry && !sameSpecification(message.specification)) return;
+      awaitingEditorGeometry = false;
+      spec = message.specification;
       requestRender();
     }
     if (message.type === "canvas_unavailable") fail("canvas_unavailable");
   };
+  addEventListener("message", event => {
+    if (event.source !== parent || event.origin !== location.origin || typeof event.data !== "string") return;
+    let message;
+    try { message = JSON.parse(event.data); } catch (_) { return; }
+    if (message.type !== "scorepeek-editor-presentation"
+        || message.specification?.canvas?.id !== spec.canvas.id
+        || !Number.isSafeInteger(message.session_id)
+        || !Number.isSafeInteger(message.revision)
+        || (message.session_id === lastEditorSession
+            && message.revision <= lastEditorRevision)) return;
+    lastEditorSession = message.session_id;
+    lastEditorRevision = message.revision;
+    awaitingEditorGeometry = true;
+    spec = message.specification;
+    requestRender();
+  });
   document.addEventListener("visibilitychange", () => { if (!document.hidden) requestRender(); });
   start();
 })();

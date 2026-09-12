@@ -12,8 +12,9 @@ use scorepeek_overlay_ui::editor_surface::{
     EditorCanvas, EditorSelectionMetrics, EditorSurface, PlacementPreview, SurfaceAction,
 };
 use std::rc::Rc;
-use wasm_bindgen::{JsCast as _, closure::Closure};
+use wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
 
+#[allow(clippy::too_many_lines)]
 pub fn app() -> Element {
     let runtime = use_editor_runtime(|| {
         let (canvases, skins) = read_initial();
@@ -60,6 +61,23 @@ pub fn app() -> Element {
             let _ = target.set_pointer_capture(raw.pointer_id());
         }
     });
+    let stages = runtime.stages;
+    use_effect(move || {
+        if let Some(projection) = stages.read().first() {
+            for canvas in &projection.canvases {
+                if let Some(specification) =
+                    canvas_replica_specification(canvas, &projection.view.skins)
+                {
+                    publish_canvas_replica(
+                        &canvas.id,
+                        &specification,
+                        projection.session_id,
+                        projection.revision,
+                    );
+                }
+            }
+        }
+    });
     let projection = runtime.stages.read().first().cloned();
     rsx! {
         EditorSurface {onaction:surface,
@@ -67,7 +85,21 @@ pub fn app() -> Element {
                 if let Some(projection)=&projection {
                 for canvas in &projection.canvases {
                     EditorCanvas {key:"{canvas.id}",canvas:canvas.clone(),editing:projection.interactive,selected:projection.selected_canvas.as_ref().is_some_and(|selected|selected.id==canvas.id),selected_widget:projection.selected_widget.clone(),onaction:surface,oncapture:capture,
-                        iframe {src:format!("/canvas/{}?sample={}&skin={}",encode_id(&canvas.id),u8::from(projection.interactive&&projection.view.chrome.sample),encode_id(canvas.skin.name())),tabindex:-1}
+                        iframe {
+                            id: "scorepeek-replica-{encode_id(&canvas.id)}",
+                            "data-replica-canvas": "{canvas.id}",
+                            src:format!("/canvas/{}?sample={}&skin={}",encode_id(&canvas.id),u8::from(projection.interactive&&projection.view.chrome.sample),encode_id(canvas.skin.name())),
+                            tabindex:-1,
+                            onload: {
+                                let canvas_id = canvas.id.clone();
+                                let specification = canvas_replica_specification(canvas, &projection.view.skins);
+                                let session_id = projection.session_id;
+                                let revision = projection.revision;
+                                move |_| if let Some(specification) = specification.clone() {
+                                    publish_canvas_replica(&canvas_id, &specification, session_id, revision);
+                                }
+                            }
+                        }
                     }
                 }
                 if let Some(canvas) = &projection.selected_canvas {
@@ -98,6 +130,180 @@ pub fn app() -> Element {
                 }
             }
         }
+    }
+}
+
+fn canvas_replica_specification(
+    canvas: &CanvasPresentation,
+    skins: &[scorepeek_overlay_ui::editor::EditorSkin],
+) -> Option<serde_json::Value> {
+    let skin = skins.iter().find(|skin| skin.id == canvas.skin)?;
+    let canvas_properties = skin
+        .canvas_properties
+        .iter()
+        .map(|(key, property)| {
+            (
+                key.clone(),
+                property.effective(canvas.skin_properties.get(key)),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let widgets = canvas
+        .widgets
+        .iter()
+        .map(|widget| {
+            let properties = skin
+                .widget_properties
+                .get(widget.kind.name())
+                .or_else(|| skin.widget_properties.get("*"))
+                .map(|definitions| {
+                    definitions
+                        .iter()
+                        .map(|(key, property)| {
+                            (
+                                key.clone(),
+                                property.effective(widget.skin_properties.get(key)),
+                            )
+                        })
+                        .collect::<std::collections::BTreeMap<_, _>>()
+                })
+                .unwrap_or_default();
+            serde_json::json!({
+                "id": widget.id,
+                "kind": widget.kind,
+                "x": widget.x,
+                "y": widget.y,
+                "width": widget.width,
+                "height": widget.height,
+                "settings": widget.settings,
+                "properties": properties,
+            })
+        })
+        .collect::<Vec<_>>();
+    Some(serde_json::json!({
+        "canvas": {
+            "id": canvas.id,
+            "skin": canvas.skin,
+            "width": canvas.width,
+            "height": canvas.height,
+            "properties": canvas_properties,
+        },
+        "widgets": widgets,
+        "wasm": format!("/skin/{}/{}", canvas.skin.name(), "skin.wasm"),
+    }))
+}
+
+fn publish_canvas_replica(
+    canvas_id: &str,
+    specification: &serde_json::Value,
+    session_id: u64,
+    revision: u64,
+) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    let Some(element) =
+        document.get_element_by_id(&format!("scorepeek-replica-{}", encode_id(canvas_id)))
+    else {
+        return;
+    };
+    let Ok(frame) = element.dyn_into::<web_sys::HtmlIFrameElement>() else {
+        return;
+    };
+    let Some(target) = frame.content_window() else {
+        return;
+    };
+    let message = serde_json::json!({
+        "type": "scorepeek-editor-presentation",
+        "session_id": session_id,
+        "revision": revision,
+        "specification": specification,
+    });
+    let Ok(message) = serde_json::to_string(&message) else {
+        return;
+    };
+    let origin = window.location().origin().unwrap_or_else(|_| "/".into());
+    let _ = target.post_message(&JsValue::from_str(&message), &origin);
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use super::*;
+    use scorepeek_overlay_ui::editor::{EditorProperty, EditorSkin};
+    use scorepeek_overlay_ui::{Background, Skin, WidgetKind, WidgetLayout, WidgetSettings};
+
+    #[test]
+    fn iframe_replica_specification_contains_effective_properties_and_complete_geometry() {
+        let skin = EditorSkin {
+            id: Skin::CyanSystem,
+            name: "test".into(),
+            release: "1.0.0".into(),
+            preview: String::new(),
+            preview_video: None,
+            canvas_properties: std::collections::BTreeMap::from([(
+                "tint".into(),
+                EditorProperty::Color {
+                    default: "#ffffff".into(),
+                },
+            )]),
+            widget_properties: std::collections::BTreeMap::from([(
+                "empty".into(),
+                std::collections::BTreeMap::from([(
+                    "amount".into(),
+                    EditorProperty::Integer {
+                        default: 1,
+                        minimum: 0,
+                        maximum: 10,
+                    },
+                )]),
+            )]),
+        };
+        let mut canvas = CanvasPresentation {
+            background: Background::None,
+            id: "canvas-1".into(),
+            name: "Canvas 1".into(),
+            skin: Skin::CyanSystem,
+            skin_properties: std::collections::BTreeMap::from([(
+                "tint".into(),
+                serde_json::json!("#112233"),
+            )]),
+            show_on: None,
+            opacity_percent: 100,
+            output: Some("OBS".into()),
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 360,
+            widgets: vec![WidgetLayout {
+                id: "widget-1".into(),
+                kind: WidgetKind::Empty,
+                x: 12,
+                y: 16,
+                width: 120,
+                height: 80,
+                settings: WidgetSettings::default(),
+                skin_properties: std::collections::BTreeMap::from([(
+                    "amount".into(),
+                    serde_json::json!(7),
+                )]),
+            }],
+        };
+
+        let customized =
+            canvas_replica_specification(&canvas, std::slice::from_ref(&skin)).unwrap();
+        assert_eq!(customized["canvas"]["properties"]["tint"], "#112233");
+        assert_eq!(customized["widgets"][0]["properties"]["amount"], 7);
+        assert_eq!(customized["widgets"][0]["x"], 12);
+
+        canvas.skin_properties.clear();
+        canvas.widgets[0].skin_properties.clear();
+        let reset = canvas_replica_specification(&canvas, &[skin]).unwrap();
+        assert_eq!(reset["canvas"]["properties"]["tint"], "#ffffff");
+        assert_eq!(reset["widgets"][0]["properties"]["amount"], 1);
     }
 }
 

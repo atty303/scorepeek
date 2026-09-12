@@ -285,7 +285,8 @@ impl EditorProperty {
             Self::String { .. } => "string",
         }
     }
-    pub(crate) fn effective(&self, value: Option<&serde_json::Value>) -> serde_json::Value {
+    #[must_use]
+    pub fn effective(&self, value: Option<&serde_json::Value>) -> serde_json::Value {
         let valid = value.filter(|value| match self {
             Self::Boolean { .. } => value.is_boolean(),
             Self::Integer {
@@ -664,9 +665,8 @@ pub fn ObjectNavigator(view: EditorView, onaction: EventHandler<EditorAction>) -
                         onselect: move |index| onaction.call(EditorAction::AddWidget(index)),
                         oncursor: move |index| onaction.call(EditorAction::SetPickerCursor("widget-add".into(), index)),
                     }
-                } else {
-                    Button { class: "add-canvas", disabled: view.access.readonly || view.active_output.is_none(), onclick: move |_| onaction.call(EditorAction::AddCanvas), "+ Add canvas" }
                 }
+                Button { class: "add-canvas", disabled: view.access.readonly || view.active_output.is_none(), onclick: move |_| onaction.call(EditorAction::AddCanvas), "+ Add canvas" }
             }
         }
     }

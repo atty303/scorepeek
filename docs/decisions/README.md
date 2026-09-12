@@ -6,6 +6,7 @@ authoritative.
 
 ## Current
 
+- [ADR 0150: Retain overlay skin resources and test renderer adapters](0150-retain-overlay-skin-resources-and-test-adapters.md) keeps heavyweight package/runtime ownership out of reactive frame state, makes browser behavior canonical, and uses browser plus fake-Wayland integration as the routine editor gate.
 - [ADR 0149: Own overlay editor state in Dioxus](0149-own-overlay-editor-state-in-dioxus.md) makes one Dioxus `EditorSession` signal the editor authority, derives views with memos, and limits Wayland output stages to complete revisioned replicas without native editor-semantic fallbacks.
 - [ADR 0148: Simplify overlay editor context and keep native preview live](0148-simplify-overlay-editor-context-and-keep-native-preview-live.md) removes repeated editor metadata, flattens appearance and output controls, routes native wheel input through Blitz, and keeps visible editor preview motion repainting.
 - [ADR 0147: Refine the overlay editor visual hierarchy](0147-refine-overlay-editor-visual-hierarchy.md) fixes the shared editor's balanced spacing and typography, compact one-line context status, flat inspector grouping, guided object tree, control hierarchy, and artwork-independent selection geometry.
