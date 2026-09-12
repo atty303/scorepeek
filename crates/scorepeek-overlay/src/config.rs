@@ -649,7 +649,9 @@ fn validate_canvas(
 
 /// Legacy-shaped composition used only by the deterministic visual debugger and its tests.
 /// Runtime initialization intentionally remains the empty-workspace document.
-pub(crate) fn visual_debug_config() -> OverlayConfig {
+#[doc(hidden)]
+#[must_use]
+pub fn visual_debug_config() -> OverlayConfig {
     use scorepeek_overlay_ui::ScreenKind;
 
     let mut config = OverlayConfig::initial();

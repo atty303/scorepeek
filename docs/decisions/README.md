@@ -6,6 +6,7 @@ authoritative.
 
 ## Current
 
+- [ADR 0152: Close overlay integration contracts at renderer boundaries](0152-close-overlay-integration-contracts.md) fixes delayed browser draft/bootstrap races, routes fake Wayland events and frames through production functions, separates retained-work metrics, and adds a bounded nested Scroll observation task.
 - [ADR 0151: Unify canvas background authority and native resource resolution](0151-unify-canvas-background-authority-and-resource-resolution.md) makes the shared canvas field the only background authority and reproduces browser iframe resource-base semantics at the native renderer boundary.
 - [ADR 0150: Retain overlay skin resources and test renderer adapters](0150-retain-overlay-skin-resources-and-test-adapters.md) keeps heavyweight package/runtime ownership out of reactive frame state, makes browser behavior canonical, and uses browser plus fake-Wayland integration as the routine editor gate.
 - [ADR 0149: Own overlay editor state in Dioxus](0149-own-overlay-editor-state-in-dioxus.md) makes one Dioxus `EditorSession` signal the editor authority, derives views with memos, and limits Wayland output stages to complete revisioned replicas without native editor-semantic fallbacks.

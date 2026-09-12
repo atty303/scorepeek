@@ -331,19 +331,49 @@ mod server {
             .into_response()
     }
 
-    async fn index(Path(id): Path<String>, State(shared): State<Arc<Shared>>) -> Response {
-        let canvases = shared
-            .canvases
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(canvas) = canvases.iter().find(|canvas| canvas.id == id) else {
+    async fn index(
+        Path(id): Path<String>,
+        RawQuery(query): RawQuery,
+        State(shared): State<Arc<Shared>>,
+    ) -> Response {
+        let editor_bootstrap = query
+            .as_deref()
+            .is_some_and(|query| query.split('&').any(|part| part == "editor=1"));
+        let canvas = if editor_bootstrap {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                let changed = shared.changed.notified();
+                let canvas = shared
+                    .canvases
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .find(|canvas| canvas.id == id)
+                    .cloned();
+                if canvas.is_some() {
+                    break canvas;
+                }
+                if tokio::time::timeout_at(deadline, changed).await.is_err() {
+                    break None;
+                }
+            }
+        } else {
+            shared
+                .canvases
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .find(|canvas| canvas.id == id)
+                .cloned()
+        };
+        let Some(canvas) = canvas else {
             return StatusCode::NOT_FOUND.into_response();
         };
         let skin_id = canvas.skin.name();
         let Ok(package) = shared.skins.open(skin_id) else {
             return StatusCode::NOT_FOUND.into_response();
         };
-        let specification = canvas_specification(canvas, &package);
+        let specification = canvas_specification(&canvas, &package);
         let Ok(specification) = serde_json::to_string(&specification) else {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         };

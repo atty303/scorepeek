@@ -68,6 +68,198 @@ struct EditorSkinUpdates {
     renders: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+struct WorkStat {
+    calls: u64,
+    total_ns: u64,
+}
+
+#[derive(Clone, Default, Serialize)]
+struct FrameWorkProfile {
+    phases: std::collections::BTreeMap<&'static str, WorkStat>,
+    unmeasured_calls: std::collections::BTreeMap<&'static str, u64>,
+    frames: std::collections::VecDeque<FrameWorkSample>,
+    dropped_frames: u64,
+}
+
+#[derive(Clone, Default, Serialize)]
+struct FrameWorkSample {
+    sequence: u64,
+    phases: std::collections::BTreeMap<&'static str, WorkStat>,
+    unmeasured_calls: std::collections::BTreeMap<&'static str, u64>,
+    live_canvases: u64,
+    live_widgets: u64,
+}
+
+impl FrameWorkProfile {
+    const FRAME_CAPACITY: usize = 256;
+    const REQUIRED_PHASES: [&'static str; 16] = [
+        "dioxus_poll",
+        "projection_rebuild",
+        "canvas_config",
+        "package_open",
+        "package_clone",
+        "wasm_runtime_create",
+        "skin_input",
+        "wasm_render",
+        "json_tree",
+        "tree_reconciliation",
+        "resource_lookup",
+        "resource_decode",
+        "blitz_layout",
+        "scene",
+        "gpu_present",
+        "surface_commit",
+    ];
+
+    fn record(&mut self, phase: &'static str, elapsed: Duration) {
+        self.record_stat(
+            phase,
+            WorkStat {
+                calls: 1,
+                total_ns: u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
+            },
+        );
+    }
+
+    fn record_stat(&mut self, phase: &'static str, delta: WorkStat) {
+        let stat = self.phases.entry(phase).or_default();
+        stat.calls = stat.calls.saturating_add(delta.calls);
+        stat.total_ns = stat.total_ns.saturating_add(delta.total_ns);
+    }
+
+    fn measure<T>(&mut self, phase: &'static str, operation: impl FnOnce() -> T) -> T {
+        let started = Instant::now();
+        let result = operation();
+        self.record(phase, started.elapsed());
+        result
+    }
+
+    fn unmeasured(&mut self, phase: &'static str) {
+        let calls = self.unmeasured_calls.entry(phase).or_default();
+        *calls = calls.saturating_add(1);
+    }
+
+    fn snapshot(&self) -> FrameWorkSample {
+        FrameWorkSample {
+            sequence: self
+                .dropped_frames
+                .saturating_add(u64::try_from(self.frames.len()).unwrap_or(u64::MAX))
+                .saturating_add(1),
+            phases: self.phases.clone(),
+            unmeasured_calls: self.unmeasured_calls.clone(),
+            live_canvases: 0,
+            live_widgets: 0,
+        }
+    }
+
+    fn finish_frame(&mut self, before: &FrameWorkSample, live_canvases: u64, live_widgets: u64) {
+        let mut phases = self
+            .phases
+            .iter()
+            .filter_map(|(phase, after)| {
+                let before = before.phases.get(phase).copied().unwrap_or_default();
+                let delta = WorkStat {
+                    calls: after.calls.saturating_sub(before.calls),
+                    total_ns: after.total_ns.saturating_sub(before.total_ns),
+                };
+                (delta.calls > 0).then_some((*phase, delta))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        for phase in Self::REQUIRED_PHASES {
+            phases.entry(phase).or_default();
+        }
+        let unmeasured_calls = self
+            .unmeasured_calls
+            .iter()
+            .filter_map(|(phase, after)| {
+                let delta = after.saturating_sub(*before.unmeasured_calls.get(phase).unwrap_or(&0));
+                (delta > 0).then_some((*phase, delta))
+            })
+            .collect();
+        if self.frames.len() == Self::FRAME_CAPACITY {
+            self.frames.pop_front();
+            self.dropped_frames = self.dropped_frames.saturating_add(1);
+        }
+        self.frames.push_back(FrameWorkSample {
+            sequence: before.sequence,
+            phases,
+            unmeasured_calls,
+            live_canvases,
+            live_widgets,
+        });
+    }
+
+    #[cfg(test)]
+    fn calls(&self, phase: &'static str) -> u64 {
+        self.phases.get(phase).map_or(0, |stat| stat.calls)
+    }
+}
+
+trait NativeFramePresenter {
+    fn is_active(&self) -> bool;
+
+    fn set_text_input(&mut self, input: Option<scorepeek_overlay_handles::TextInputState>);
+
+    fn request_frame_commit(&mut self);
+
+    fn present(
+        &mut self,
+        document: &mut blitz_dom::BaseDocument,
+        scale: f64,
+        width: u32,
+        height: u32,
+        work: &mut FrameWorkProfile,
+    ) -> Result<(), String>;
+}
+
+struct WindowPresenter<'a> {
+    shell: &'a mut Shell,
+    renderer: &'a mut VelloWindowRenderer,
+}
+
+impl NativeFramePresenter for WindowPresenter<'_> {
+    fn is_active(&self) -> bool {
+        self.renderer.is_active()
+    }
+
+    fn set_text_input(&mut self, input: Option<scorepeek_overlay_handles::TextInputState>) {
+        self.shell.set_text_input(input);
+    }
+
+    fn request_frame_commit(&mut self) {
+        self.shell.request_frame_and_commit();
+    }
+
+    fn present(
+        &mut self,
+        document: &mut blitz_dom::BaseDocument,
+        scale: f64,
+        width: u32,
+        height: u32,
+        work: &mut FrameWorkProfile,
+    ) -> Result<(), String> {
+        self.shell.request_frame();
+        let started = Instant::now();
+        let mut scene_elapsed = Duration::ZERO;
+        self.renderer.render(|scene| {
+            let scene_started = Instant::now();
+            paint_native_scene(scene, document, scale, width, height);
+            scene_elapsed = scene_started.elapsed();
+            work.record("scene", scene_elapsed);
+        });
+        // anyrender-vello exposes scene construction and a combined renderer/present call, but
+        // does not expose the wl_surface commit as a separately timed operation. Keep scene time
+        // disjoint and mark commit as unavailable instead of publishing a fabricated zero.
+        work.record(
+            "gpu_present",
+            started.elapsed().saturating_sub(scene_elapsed),
+        );
+        work.unmeasured("surface_commit");
+        Ok(())
+    }
+}
+
 impl EditorSkinUpdates {
     fn request(&mut self) {
         self.pending = true;
@@ -231,7 +423,93 @@ impl PointerInput {
 }
 
 fn poll_native_document(document: &mut DioxusDocument, waker: &Waker) -> bool {
-    document.poll(Some(TaskContext::from_waker(waker)))
+    // Browser DOM reconciliation retains the focused control's selection. Blitz currently resets
+    // it while applying an otherwise unrelated Dioxus rebuild, so preserve that renderer fact at
+    // the native DOM adapter boundary without interpreting the editor field or its value.
+    let selection = text::focused_selection(document);
+    let changed = document.poll(Some(TaskContext::from_waker(waker)));
+    if changed && let Some(selection) = selection {
+        text::restore_focused_selection(document, &selection);
+    }
+    changed
+}
+
+fn poll_native_document_for_frame(
+    document: &mut DioxusDocument,
+    waker: &Waker,
+    full_layout_pending: &mut bool,
+    work: &mut FrameWorkProfile,
+) -> bool {
+    let started = Instant::now();
+    let mut changed = false;
+    while poll_native_document(document, waker) {
+        changed = true;
+    }
+    *full_layout_pending |= changed;
+    work.record("dioxus_poll", started.elapsed());
+    changed
+}
+
+#[derive(Clone, Copy, Default)]
+#[allow(clippy::struct_excessive_bools)]
+struct NativeEventOutcome {
+    frame: bool,
+    configured: bool,
+    input_damage: bool,
+    closed: bool,
+}
+
+trait NativeEventConsumer {
+    fn configure_event(
+        &mut self,
+        logical: [u32; 2],
+        physical: [u32; 2],
+        scale_120: u32,
+    ) -> Result<bool, String>;
+    fn pointer_motion_event(&mut self, point: [f64; 2]);
+    fn pointer_button_event(&mut self, button: u32, pressed: bool, point: [f64; 2]);
+    fn pointer_scroll_event(&mut self, delta: [f64; 2], point: [f64; 2]);
+    fn text_event(&mut self, command: &scorepeek_overlay_handles::TextCommand);
+    fn ime_event(&mut self, update: scorepeek_overlay_handles::TextUpdate);
+    fn keyboard_focus_event(&mut self, focused: bool);
+}
+
+fn dispatch_native_event(
+    consumer: &mut impl NativeEventConsumer,
+    event: Event,
+) -> Result<NativeEventOutcome, String> {
+    let mut outcome = NativeEventOutcome::default();
+    match event {
+        Event::Configure {
+            logical,
+            physical,
+            scale_120,
+        } => outcome.configured = consumer.configure_event(logical, physical, scale_120)?,
+        Event::Wake => {}
+        Event::PointerMotion { x, y } => {
+            consumer.pointer_motion_event([x, y]);
+            outcome.input_damage = true;
+        }
+        Event::PointerButton {
+            button,
+            pressed,
+            x,
+            y,
+        } => {
+            consumer.pointer_button_event(button, pressed, [x, y]);
+            outcome.input_damage = true;
+        }
+        Event::PointerScroll { dx, dy, x, y } => {
+            consumer.pointer_scroll_event([dx, dy], [x, y]);
+            outcome.input_damage = true;
+        }
+        Event::Text(command) => consumer.text_event(&command),
+        Event::Ime(update) => consumer.ime_event(update),
+        Event::KeyboardFocus(focused) => consumer.keyboard_focus_event(focused),
+        Event::Frame => outcome.frame = true,
+        Event::Closed => outcome.closed = true,
+    }
+    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -415,6 +693,43 @@ fn accepts_stage_projection(current: &StageProjection, candidate: &StageProjecti
     current.session_id != candidate.session_id || candidate.revision > current.revision
 }
 
+fn accept_stage_projection_replica(
+    projection: Reactive<NativeDocumentProjection>,
+    document: &mut DioxusDocument,
+    previews: &mut std::collections::BTreeMap<String, EditorSkinPreview>,
+    assets: &SkinAssetCache,
+    output: &str,
+    candidate: &StageProjection,
+) -> bool {
+    let accepted = match &*projection.borrow() {
+        NativeDocumentProjection::Editor(current) => {
+            accepts_stage_projection(current, candidate) && current != candidate
+        }
+        NativeDocumentProjection::Display { .. } => false,
+    };
+    if !accepted {
+        return false;
+    }
+    let live = candidate
+        .canvases
+        .iter()
+        .map(|canvas| canvas.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let removed = previews
+        .keys()
+        .filter(|id| !live.contains(id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    for id in removed {
+        if let Some(mut preview) = previews.remove(&id) {
+            preview.tree.unmount(&mut document.inner.borrow_mut());
+            assets.release_editor_owner(&id, output);
+        }
+    }
+    projection.set(NativeDocumentProjection::Editor(candidate.clone()));
+    true
+}
+
 #[derive(Clone, Copy)]
 enum PaintSignal {
     None,
@@ -466,6 +781,51 @@ impl PaintState {
         } else {
             None
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PaintAdmission {
+    Paint(PaintReason),
+    RequestFrameCommit,
+    None,
+}
+
+fn admit_native_paint(
+    renderer_active: bool,
+    configured: bool,
+    visibility_changed: bool,
+    state: PaintState,
+    now: Duration,
+    refresh: scorepeek_overlay_ui::WaylandRefreshRate,
+    cadence: &FrameCadence,
+) -> PaintAdmission {
+    if !renderer_active {
+        return PaintAdmission::None;
+    }
+    let reason = if configured {
+        Some(if cadence.last_paint.is_none() {
+            PaintReason::InitialConfigure
+        } else {
+            PaintReason::Reconfigure
+        })
+    } else if visibility_changed && !state.visible {
+        Some(PaintReason::VisibilityClear)
+    } else {
+        state.ordinary_reason()
+    };
+    if let Some(reason) = reason {
+        if cadence.permits(now, refresh, reason) {
+            PaintAdmission::Paint(reason)
+        } else if state.visible {
+            PaintAdmission::RequestFrameCommit
+        } else {
+            PaintAdmission::None
+        }
+    } else if state.editor_frame_needed() {
+        PaintAdmission::RequestFrameCommit
+    } else {
+        PaintAdmission::None
     }
 }
 
@@ -1085,6 +1445,7 @@ fn execute_native_editor_effects(
         );
         pending.extend(authority.dispatch(EditorInput::BackendCompleted {
             effect: effect.kind(),
+            requested_draft: effect.requested_draft().map(<[_]>::to_vec),
             reply,
         }));
     }
@@ -1095,6 +1456,31 @@ fn execute_native_editor_effects(
 /// Returns Wayland, GPU or event-loop failures.
 #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result<(), String> {
+    run_with_editor_scenario(config, input, Vec::new())
+}
+
+/// A timed editor action used by the checked-in nested compositor scenario.
+#[doc(hidden)]
+pub struct NativeEditorScenarioStep {
+    pub after: Duration,
+    pub target_canvas: &'static str,
+    pub name: &'static str,
+    pub action: EditorAction,
+}
+
+/// Runs the production native coordinator with a deterministic scenario input.
+///
+/// The driver only replaces human timing. Every action still crosses the
+/// production coordinator and is reduced by the sole `EditorSession` authority.
+/// # Errors
+/// Returns Wayland, GPU or event-loop failures.
+#[doc(hidden)]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+pub fn run_with_editor_scenario(
+    config: Config,
+    input: impl std::io::Read + Send + 'static,
+    scenario: Vec<NativeEditorScenarioStep>,
+) -> Result<(), String> {
     use std::collections::BTreeMap;
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     watch_parent(input, Arc::clone(&stop))?;
@@ -1119,6 +1505,45 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
     let mut workers = BTreeMap::<String, NativeWorker>::new();
     let mut failed = BTreeMap::<String, (Option<String>, Instant)>::new();
     let (coordinator_tx, coordinator_rx) = std::sync::mpsc::channel();
+    if !scenario.is_empty() {
+        let scenario_tx = coordinator_tx.clone();
+        std::thread::Builder::new()
+            .name("overlay-wayland-scenario".into())
+            .spawn(move || {
+                for (interaction_id, step) in scenario.into_iter().enumerate() {
+                    std::thread::sleep(step.after);
+                    if scenario_tx
+                        .send(CoordinatorCommand::EditorInput {
+                            input: EditorInput::Action(EditorAction::SelectCanvas(
+                                step.target_canvas.into(),
+                            )),
+                            correlation: Some(InteractionCorrelation {
+                                run_id: "nested-editor-setup".into(),
+                                interaction_id: u64::try_from(interaction_id).unwrap_or(u64::MAX),
+                                action: "target_canvas_selected",
+                            }),
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                    if scenario_tx
+                        .send(CoordinatorCommand::EditorInput {
+                            input: EditorInput::Action(step.action),
+                            correlation: Some(InteractionCorrelation {
+                                run_id: "nested-editor-scenario".into(),
+                                interaction_id: u64::try_from(interaction_id).unwrap_or(u64::MAX),
+                                action: step.name,
+                            }),
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .map_err(|error| error.to_string())?;
+    }
     let editor_id = format!("wayland-{}", std::process::id());
     let wayland_refresh_hz = Arc::new(std::sync::Mutex::new(config.wayland_refresh_hz));
     let start_editing = config.edit_on_start || desired.is_empty();
@@ -1174,12 +1599,13 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
     }
     let mut was_editing = authority.session().editing;
     let mut projection_cache = NativeProjectionCache::default();
+    let mut coordinator_work = FrameWorkProfile::default();
     let mut next_keepalive = Instant::now() + Duration::from_secs(5);
     while !stop.load(std::sync::atomic::Ordering::Acquire) {
         while let Ok(command) = coordinator_rx.try_recv() {
             match command {
                 CoordinatorCommand::EditorInput { input, correlation } => {
-                    if let Some(correlation) = correlation {
+                    if let Some(correlation) = correlation.as_ref() {
                         crate::diagnostics::emit(
                             "native_editor_input_transport",
                             &serde_json::json!({
@@ -1190,6 +1616,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                             }),
                         );
                     }
+                    let before_revision = authority.session().revision;
                     let effects = authority.dispatch(input);
                     let refresh = *wayland_refresh_hz
                         .lock()
@@ -1201,6 +1628,21 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
                         &editor_id,
                         refresh,
                     );
+                    if let Some(correlation) = correlation {
+                        let session = authority.session();
+                        crate::diagnostics::emit(
+                            "native_editor_input_applied",
+                            &serde_json::json!({
+                                "run_id": correlation.run_id,
+                                "interaction_id": correlation.interaction_id,
+                                "action": correlation.action,
+                                "session_id": session.session_id,
+                                "revision": session.revision,
+                                "changed": session.revision > before_revision,
+                                "status": "applied",
+                            }),
+                        );
+                    }
                 }
                 CoordinatorCommand::Open {
                     output,
@@ -1320,7 +1762,10 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
         was_editing = authority.session().editing;
         let editing = was_editing;
         let session = authority.session();
+        let projection_started = Instant::now();
         let projected = projection_cache.resolve(fallback_skin, &session, &desired)?;
+        coordinator_work.record("projection", projection_started.elapsed());
+        let lifecycle_started = Instant::now();
         let reconciliation = reconcile_worker_lifecycle(
             workers.iter().map(|(id, worker)| {
                 (
@@ -1331,6 +1776,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             }),
             projected,
         );
+        coordinator_work.record("surface_lifecycle", lifecycle_started.elapsed());
         stop_workers(reconciliation.stop_join.iter(), &workers, &canvas_wakes);
         for id in reconciliation.stop_join {
             if let Some(worker) = workers.remove(&id) {
@@ -1374,8 +1820,10 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             {
                 continue;
             }
+            let config_started = Instant::now();
             let mut canvas_config = config.clone();
             canvas_config.canvases = vec![canvas.clone()];
+            coordinator_work.record("canvas_config", config_started.elapsed());
             let canvas_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let stopping = Arc::clone(&canvas_stop);
             let state = Arc::clone(&feed_state);
@@ -1433,6 +1881,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
             config.wayland_refresh_hz,
         );
     }
+    crate::diagnostics::emit("native_coordinator_work", &coordinator_work);
     Ok(())
 }
 
@@ -1749,7 +2198,28 @@ fn run_canvas(
             .skin_assets
             .open_count
             .load(std::sync::atomic::Ordering::Relaxed);
+        report.skin_package_open_ns = app
+            .skin_assets
+            .open_ns
+            .load(std::sync::atomic::Ordering::Relaxed);
+        report.skin_package_clone_count = app
+            .skin_assets
+            .clone_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        report.skin_package_clone_ns = app
+            .skin_assets
+            .clone_ns
+            .load(std::sync::atomic::Ordering::Relaxed);
+        report.resource_lookup_count = app
+            .skin_assets
+            .resource_lookup_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        report.resource_lookup_ns = app
+            .skin_assets
+            .resource_lookup_ns
+            .load(std::sync::atomic::Ordering::Relaxed);
         report.skin_runtime_create_count = app.skin_runtime_create_count;
+        report.frame_work = app.frame_work.clone();
         report.elapsed_ms = u64::try_from(app.started.elapsed().as_millis()).unwrap_or(u64::MAX);
         report.wayland_refresh_hz = *app
             .wayland_refresh_hz
@@ -1812,6 +2282,8 @@ struct App {
     next_skin_render: Option<Instant>,
     skin_assets: Arc<SkinAssetCache>,
     skin_runtime_create_count: u64,
+    frame_work: FrameWorkProfile,
+    pending_frame_start: Option<FrameWorkSample>,
     startup_started: Instant,
     /// Renderer/protocol composition state used only to normalize Wayland key events to DOM.
     text_composition: TextComposition,
@@ -1841,6 +2313,57 @@ struct NativeDisplaySkin {
     manifest: crate::skin::Manifest,
 }
 
+fn create_native_display_skin(
+    document: &mut DioxusDocument,
+    canvas: &crate::config::Canvas,
+    package: &Arc<crate::skin::Package>,
+    report: &Rc<RefCell<RunReport>>,
+    output: Option<&str>,
+    state: &OverlayState,
+) -> Result<(NativeDisplaySkin, Option<Instant>), String> {
+    let mut runtime = new_native_skin_runtime(package, report, &canvas.id, output, &[])?;
+    let skin_input = native_skin_input(canvas, state, &package.manifest);
+    let started = Instant::now();
+    let mut initial = runtime.init(&skin_input).inspect_err(|error| {
+        crate::diagnostics::emit(
+            "skin_render",
+            &serde_json::json!({"skin_id":package.manifest.id,"release":package.manifest.release,"canvas_id":canvas.id,"backend":"native","phase":"init","status":"failed","error_type":skin_error_type(error)}),
+        );
+    })?;
+    namespace_native_skin_output(&package.manifest.id, &mut initial);
+    let root = document
+        .inner
+        .borrow()
+        .query_selector("#scorepeek-skin-root")
+        .map_err(|error| format!("query native skin root: {error:?}"))?
+        .ok_or("native skin root is missing")?;
+    let css = namespace_skin_css(
+        canvas.skin.name(),
+        std::str::from_utf8(
+            package
+                .resource(crate::skin::STYLE_PATH)
+                .ok_or("skin.css missing")?,
+        )
+        .map_err(|error| format!("skin.css is not UTF-8: {error}"))?,
+    );
+    let mut tree = crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, &css);
+    tree.apply(&mut document.inner.borrow_mut(), &initial);
+    crate::diagnostics::emit(
+        "skin_render",
+        &serde_json::json!({"skin_id":package.manifest.id,"release":package.manifest.release,"canvas_id":canvas.id,"backend":"native","phase":"init","status":"success","duration_us":u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),"tree_applied":true}),
+    );
+    let next = skin_deadline(&initial.schedule, false);
+    Ok((
+        NativeDisplaySkin {
+            runtime,
+            tree,
+            release: package.manifest.release.clone(),
+            manifest: package.manifest.clone(),
+        },
+        next,
+    ))
+}
+
 #[derive(Default)]
 struct EditorSkinReconciliation {
     retry_owner: bool,
@@ -1856,14 +2379,24 @@ fn create_editor_skin_preview(
     report: &Rc<RefCell<RunReport>>,
     output: Option<&str>,
     state: &OverlayState,
+    work: &mut FrameWorkProfile,
 ) -> Result<EditorSkinPreview, String> {
-    let mut canvas =
-        crate::config::empty_canvas(presentation.id.clone(), crate::runtime::Backend::Wayland);
-    canvas.apply_presentation(presentation);
-    let package = skin_assets.load(canvas.skin.name())?;
-    let mut runtime = new_native_skin_runtime(&package, report, &canvas.id, output, &[])?;
-    let input = native_skin_input(&canvas, state, &package.manifest);
-    let mut rendered = runtime.init(&input)?;
+    let canvas = work.measure("canvas_config", || {
+        let mut canvas =
+            crate::config::empty_canvas(presentation.id.clone(), crate::runtime::Backend::Wayland);
+        canvas.apply_presentation(presentation);
+        canvas
+    });
+    let package = skin_assets.load_profiled(canvas.skin.name(), work)?;
+    let mut runtime = work.measure("wasm_runtime_create", || {
+        new_native_skin_runtime(&package, report, &canvas.id, output, &[])
+    })?;
+    let input = work.measure("skin_input", || {
+        native_skin_input(&canvas, state, &package.manifest)
+    });
+    let (mut rendered, timing) = runtime.init_measured(&input)?;
+    work.record("wasm_render", timing.wasm);
+    work.record("json_tree", timing.json_tree);
     namespace_native_skin_output(&package.manifest.id, &mut rendered);
     let root_id = editor_skin_root_id(&canvas.id);
     let root = document
@@ -1882,7 +2415,9 @@ fn create_editor_skin_preview(
         .map_err(|error| format!("skin.css is not UTF-8: {error}"))?,
     );
     let mut tree = crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, &css);
-    tree.apply(&mut document.inner.borrow_mut(), &rendered);
+    work.measure("tree_reconciliation", || {
+        tree.apply(&mut document.inner.borrow_mut(), &rendered);
+    });
     Ok(EditorSkinPreview {
         canvas,
         package,
@@ -1904,7 +2439,9 @@ fn reconcile_editor_skin_previews(
     output: Option<&str>,
     state: &OverlayState,
     runtime_create_count: &mut u64,
+    work: &mut FrameWorkProfile,
 ) -> Result<EditorSkinReconciliation, String> {
+    let reconcile_started = Instant::now();
     let output = output.ok_or("editor skin preview requires an output owner")?;
     let mut reconciliation = EditorSkinReconciliation::default();
     let live = presentations
@@ -1937,6 +2474,7 @@ fn reconcile_editor_skin_previews(
                 report,
                 Some(output),
                 state,
+                work,
             ) {
                 Ok(preview) => preview,
                 Err(error) => {
@@ -1956,20 +2494,28 @@ fn reconcile_editor_skin_previews(
             .expect("checked editor preview");
         let presentation_changed = preview.canvas.presentation() != *presentation;
         if presentation_changed {
-            preview.canvas.apply_presentation(presentation);
+            work.measure("canvas_config", || {
+                preview.canvas.apply_presentation(presentation);
+            });
         }
         let desired_skin = preview.canvas.skin.name();
         if preview.package.manifest.id != desired_skin {
-            let next_package = skin_assets.load(desired_skin)?;
-            let mut next_runtime = new_native_skin_runtime(
-                &next_package,
-                report,
-                &preview.canvas.id,
-                Some(output),
-                &[],
-            )?;
-            let next_input = native_skin_input(&preview.canvas, state, &next_package.manifest);
-            let mut rendered = next_runtime.init(&next_input)?;
+            let next_package = skin_assets.load_profiled(desired_skin, work)?;
+            let mut next_runtime = work.measure("wasm_runtime_create", || {
+                new_native_skin_runtime(
+                    &next_package,
+                    report,
+                    &preview.canvas.id,
+                    Some(output),
+                    &[],
+                )
+            })?;
+            let next_input = work.measure("skin_input", || {
+                native_skin_input(&preview.canvas, state, &next_package.manifest)
+            });
+            let (mut rendered, timing) = next_runtime.init_measured(&next_input)?;
+            work.record("wasm_render", timing.wasm);
+            work.record("json_tree", timing.json_tree);
             namespace_native_skin_output(&next_package.manifest.id, &mut rendered);
             let css = namespace_skin_css(
                 desired_skin,
@@ -1980,9 +2526,11 @@ fn reconcile_editor_skin_previews(
                 )
                 .map_err(|error| format!("skin.css is not UTF-8: {error}"))?,
             );
-            preview
-                .tree
-                .replace(&mut document.inner.borrow_mut(), &css, &rendered);
+            work.measure("tree_reconciliation", || {
+                preview
+                    .tree
+                    .replace(&mut document.inner.borrow_mut(), &css, &rendered);
+            });
             preview.package = next_package;
             preview.runtime = next_runtime;
             preview.next_render = skin_deadline(&rendered.schedule, false);
@@ -2000,17 +2548,23 @@ fn reconcile_editor_skin_previews(
         if !due && !presentation_changed && preview.last_state == *state {
             continue;
         }
-        let input = native_skin_input(&preview.canvas, state, &preview.package.manifest);
+        let input = work.measure("skin_input", || {
+            native_skin_input(&preview.canvas, state, &preview.package.manifest)
+        });
         reconciliation.input_generations = reconciliation.input_generations.saturating_add(1);
         if !due && input == preview.last_input {
             preview.last_state = state.clone();
             continue;
         }
-        let mut rendered = preview.runtime.render(&input)?;
+        let (mut rendered, timing) = preview.runtime.render_measured(&input)?;
+        work.record("wasm_render", timing.wasm);
+        work.record("json_tree", timing.json_tree);
         namespace_native_skin_output(&preview.package.manifest.id, &mut rendered);
-        preview
-            .tree
-            .apply(&mut document.inner.borrow_mut(), &rendered);
+        work.measure("tree_reconciliation", || {
+            preview
+                .tree
+                .apply(&mut document.inner.borrow_mut(), &rendered);
+        });
         preview.next_render = skin_deadline(&rendered.schedule, false);
         preview.last_input = input;
         preview.last_state = state.clone();
@@ -2018,7 +2572,59 @@ fn reconcile_editor_skin_previews(
         reconciliation.tree_updates = reconciliation.tree_updates.saturating_add(1);
     }
     reconciliation.retry_owner = retry_owner;
+    work.record("skin_reconciliation", reconcile_started.elapsed());
     Ok(reconciliation)
+}
+
+impl NativeEventConsumer for App {
+    fn configure_event(
+        &mut self,
+        logical: [u32; 2],
+        physical: [u32; 2],
+        scale_120: u32,
+    ) -> Result<bool, String> {
+        let changed = self.configure(logical, physical, scale_120)?;
+        if self.editing()
+            && let Some(output) = self.surface_output.clone()
+        {
+            let _ = self.coordinator.send(CoordinatorCommand::EditorInput {
+                input: EditorInput::Resize {
+                    output,
+                    logical_size: logical,
+                },
+                correlation: None,
+            });
+        }
+        Ok(changed)
+    }
+
+    fn pointer_motion_event(&mut self, point: [f64; 2]) {
+        self.pointer
+            .dispatch(&mut self.document, point, 0x110, None);
+    }
+
+    fn pointer_button_event(&mut self, button: u32, pressed: bool, point: [f64; 2]) {
+        self.pointer_button(button, pressed, point[0], point[1]);
+    }
+
+    fn pointer_scroll_event(&mut self, delta: [f64; 2], point: [f64; 2]) {
+        self.pointer.wheel(&mut self.document, point, delta);
+    }
+
+    fn text_event(&mut self, command: &scorepeek_overlay_handles::TextCommand) {
+        self.input_command(command);
+    }
+
+    fn ime_event(&mut self, update: scorepeek_overlay_handles::TextUpdate) {
+        self.input_composition(update);
+    }
+
+    fn keyboard_focus_event(&mut self, focused: bool) {
+        if !focused {
+            self.shell.set_text_input(None);
+            self.set_text_composing(false);
+        }
+    }
 }
 
 impl App {
@@ -2100,54 +2706,15 @@ impl App {
             .expect("native overlay publishes its projection during initial build");
         let current_state = OverlayState::default();
         let (display_skin, display_next_render) = if let Some(package) = display_package {
-            let mut runtime = new_native_skin_runtime(
+            let (skin, next) = create_native_display_skin(
+                &mut document,
+                &canvas,
                 &package,
                 &report,
-                &canvas.id,
                 shell.output_name.as_deref(),
-                &[],
+                &current_state,
             )?;
-            let skin_input = native_skin_input(&canvas, &current_state, &package.manifest);
-            let started = Instant::now();
-            let mut initial = runtime.init(&skin_input).inspect_err(|error| {
-                crate::diagnostics::emit(
-                    "skin_render",
-                    &serde_json::json!({"skin_id":package.manifest.id,"release":package.manifest.release,"canvas_id":canvas.id,"backend":"native","phase":"init","status":"failed","error_type":skin_error_type(error)}),
-                );
-            })?;
-            namespace_native_skin_output(&package.manifest.id, &mut initial);
-            let root = document
-                .inner
-                .borrow()
-                .query_selector("#scorepeek-skin-root")
-                .map_err(|error| format!("query native skin root: {error:?}"))?
-                .ok_or("native skin root is missing")?;
-            let css = namespace_skin_css(
-                canvas.skin.name(),
-                std::str::from_utf8(
-                    package
-                        .resource(crate::skin::STYLE_PATH)
-                        .ok_or("skin.css missing")?,
-                )
-                .map_err(|error| format!("skin.css is not UTF-8: {error}"))?,
-            );
-            let mut tree =
-                crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, &css);
-            tree.apply(&mut document.inner.borrow_mut(), &initial);
-            crate::diagnostics::emit(
-                "skin_render",
-                &serde_json::json!({"skin_id":package.manifest.id,"release":package.manifest.release,"canvas_id":canvas.id,"backend":"native","phase":"init","status":"success","duration_us":u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),"tree_applied":true}),
-            );
-            let next = skin_deadline(&initial.schedule, false);
-            (
-                Some(NativeDisplaySkin {
-                    runtime,
-                    tree,
-                    release: package.manifest.release.clone(),
-                    manifest: package.manifest.clone(),
-                }),
-                next,
-            )
+            (Some(skin), next)
         } else {
             (None, None)
         };
@@ -2163,6 +2730,7 @@ impl App {
         let mut editor_skin_previews =
             std::collections::BTreeMap::<String, EditorSkinPreview>::new();
         let mut editor_skin_updates = EditorSkinUpdates::default();
+        let mut frame_work = FrameWorkProfile::default();
         for presentation in &editor_presentations {
             let Some(output) = shell.output_name.as_deref() else {
                 return Err("editor skin preview requires an output owner".into());
@@ -2178,6 +2746,7 @@ impl App {
                 &report,
                 shell.output_name.as_deref(),
                 &current_state,
+                &mut frame_work,
             ) {
                 Ok(preview) => preview,
                 Err(error) => {
@@ -2249,6 +2818,8 @@ impl App {
             } else {
                 editor_preview_count
             },
+            frame_work,
+            pending_frame_start: None,
             startup_started,
             text_composition: TextComposition::Idle,
         })
@@ -2291,78 +2862,59 @@ impl App {
         }
     }
 
-    fn dragging(&self) -> bool {
-        matches!(&*self.projection.borrow(), NativeDocumentProjection::Editor(stage) if stage.drag.is_some())
-    }
-
     fn sync_projection(&mut self) -> bool {
-        let next = match self.role {
-            SurfaceRole::DisplayCanvas => return false,
-            SurfaceRole::EditorStage => {
-                let Some(output) = self.surface_output.as_ref() else {
-                    return false;
-                };
-                let stages = self
-                    .published_stages
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let Some(candidate) = stages.by_output.get(output) else {
-                    return false;
-                };
-                if let NativeDocumentProjection::Editor(current) = &*self.projection.borrow()
-                    && !accepts_stage_projection(current, candidate)
-                {
-                    return false;
-                }
-                Some(NativeDocumentProjection::Editor(candidate.clone()))
-            }
-        };
-        let Some(next) = next else { return false };
-        let changed = *self.projection.borrow() != next;
-        if !changed {
+        if self.role == SurfaceRole::DisplayCanvas {
             return false;
         }
+        let Some(output) = self.surface_output.as_ref() else {
+            return false;
+        };
+        let rebuild_started = Instant::now();
+        let candidate = {
+            let stages = self
+                .published_stages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(candidate) = stages.by_output.get(output) else {
+                return false;
+            };
+            let current = self.projection.borrow();
+            let NativeDocumentProjection::Editor(current) = &*current else {
+                return false;
+            };
+            if !accepts_stage_projection(current, candidate) || current == candidate {
+                return false;
+            }
+            candidate.clone()
+        };
+        self.frame_work
+            .record("projection_rebuild", rebuild_started.elapsed());
         let previous = self.canvas.presentation();
-        if let NativeDocumentProjection::Editor(stage) = &next {
-            let live = stage
-                .canvases
-                .iter()
-                .map(|canvas| canvas.id.as_str())
-                .collect::<std::collections::BTreeSet<_>>();
-            let removed = self
-                .editor_skin_previews
-                .keys()
-                .filter(|id| !live.contains(id.as_str()))
-                .cloned()
-                .collect::<Vec<_>>();
-            for id in removed {
-                if let Some(mut preview) = self.editor_skin_previews.remove(&id) {
-                    preview.tree.unmount(&mut self.document.inner.borrow_mut());
-                    if let Some(output) = self.surface_output.as_deref() {
-                        self.skin_assets.release_editor_owner(&id, output);
-                    }
-                }
-            }
-            let previews_changed = editor_skin_previews_changed(&self.editor_skin_previews, stage);
-            if let Some(canvas) = stage.selected_canvas.as_ref() {
-                self.canvas = crate::config::empty_canvas(
-                    canvas.id.clone(),
-                    crate::runtime::Backend::Wayland,
-                );
-                self.canvas.apply_presentation(canvas);
-            }
-            if previews_changed
-                || stage
-                    .selected_canvas
-                    .as_ref()
-                    .is_some_and(|canvas| editor_skin_presentation_changed(&previous, canvas))
-            {
-                self.editor_skin_updates.request();
-            }
+        let previews_changed = editor_skin_previews_changed(&self.editor_skin_previews, &candidate);
+        if !accept_stage_projection_replica(
+            self.projection,
+            &mut self.document,
+            &mut self.editor_skin_previews,
+            &self.skin_assets,
+            output,
+            &candidate,
+        ) {
+            return false;
         }
-        let interactive =
-            matches!(&next, NativeDocumentProjection::Editor(stage) if stage.interactive);
-        self.projection.set(next);
+        if let Some(canvas) = candidate.selected_canvas.as_ref() {
+            self.canvas =
+                crate::config::empty_canvas(canvas.id.clone(), crate::runtime::Backend::Wayland);
+            self.canvas.apply_presentation(canvas);
+        }
+        if previews_changed
+            || candidate
+                .selected_canvas
+                .as_ref()
+                .is_some_and(|canvas| editor_skin_presentation_changed(&previous, canvas))
+        {
+            self.editor_skin_updates.request();
+        }
+        let interactive = candidate.interactive;
         self.shell.set_input_enabled(interactive);
         self.shell.set_keyboard_enabled(interactive);
         crate::diagnostics::emit(
@@ -2372,6 +2924,11 @@ impl App {
                 "output": self.surface_output,
                 "session_id": match &*self.projection.borrow() { NativeDocumentProjection::Editor(stage) => Some(stage.session_id), NativeDocumentProjection::Display { .. } => None },
                 "revision": match &*self.projection.borrow() { NativeDocumentProjection::Editor(stage) => Some(stage.revision), NativeDocumentProjection::Display { .. } => None },
+                "canvases": candidate.canvases.iter().map(|canvas| serde_json::json!({
+                    "id": canvas.id,
+                    "output": canvas.output,
+                    "widget_count": canvas.widgets.len(),
+                })).collect::<Vec<_>>(),
             }),
         );
         true
@@ -2385,6 +2942,10 @@ impl App {
                 .external_stop
                 .load(std::sync::atomic::Ordering::Acquire)
         {
+            let frame_start = self
+                .pending_frame_start
+                .clone()
+                .unwrap_or_else(|| self.frame_work.snapshot());
             let projection_changed = self.sync_projection();
             self.retry_resolved_output();
             let events = match self.shell.dispatch(Duration::from_millis(500)) {
@@ -2396,6 +2957,7 @@ impl App {
                 {
                     return Ok(());
                 }
+                Err(error) if error == "output_removed" => return Ok(()),
                 Err(error) => return Err(error),
             };
             let mut frame = false;
@@ -2411,55 +2973,13 @@ impl App {
                 });
             }
             for event in events {
-                match event {
-                    Event::Configure {
-                        logical,
-                        physical,
-                        scale_120,
-                    } => {
-                        configured |= self.configure(logical, physical, scale_120)?;
-                        if self.editing()
-                            && let Some(output) = self.surface_output.clone()
-                        {
-                            let _ = self.coordinator.send(CoordinatorCommand::EditorInput {
-                                input: EditorInput::Resize {
-                                    output,
-                                    logical_size: logical,
-                                },
-                                correlation: None,
-                            });
-                        }
-                    }
-                    Event::Wake => {}
-                    Event::PointerMotion { x, y } => {
-                        self.pointer
-                            .dispatch(&mut self.document, [x, y], 0x110, None);
-                        input_damage = true;
-                    }
-                    Event::PointerButton {
-                        button,
-                        pressed,
-                        x,
-                        y,
-                    } => {
-                        self.pointer_button(button, pressed, x, y);
-                        input_damage = true;
-                    }
-                    Event::PointerScroll { dx, dy, x, y } => {
-                        self.pointer.wheel(&mut self.document, [x, y], [dx, dy]);
-                        input_damage = true;
-                    }
-                    Event::Text(command) => self.input_command(&command),
-                    Event::Ime(update) => self.input_composition(update),
-                    Event::KeyboardFocus(focused) => {
-                        if !focused {
-                            self.shell.set_text_input(None);
-                            self.set_text_composing(false);
-                        }
-                    }
-                    Event::Frame => frame = true,
-                    Event::Closed => return Ok(()),
+                let outcome = dispatch_native_event(self, event)?;
+                if outcome.closed {
+                    return Ok(());
                 }
+                configured |= outcome.configured;
+                input_damage |= outcome.input_damage;
+                frame |= outcome.frame;
             }
             let latest = self
                 .feed_state
@@ -2506,53 +3026,183 @@ impl App {
                     self.render_skin(&latest)?;
                 }
             }
-            // A Wayland frame is a browser-like Dioxus turn. Poll unconditionally before skin
-            // reconciliation so newly projected canvas roots exist before their retained trees mount.
-            let changed = self.poll_dioxus();
-            let mut skin_changed = false;
-            if self.editing()
-                && self
-                    .editor_skin_updates
-                    .take_if_ready(frame, self.dragging())
-            {
-                self.update_editor_skin();
-                skin_changed = true;
-            }
-            self.sync_text_input();
-            self.pending_paint |=
-                changed || projection_changed || visibility_changed || input_damage || skin_changed;
-            let paint_state = PaintState {
-                editing: self.editing(),
-                visible,
-                signal: PaintSignal::from_state(frame, self.pending_paint),
-                animating: self.animating,
-            };
-            let reason = if configured {
-                Some(if self.paint_count == 0 {
-                    PaintReason::InitialConfigure
-                } else {
-                    PaintReason::Reconfigure
-                })
-            } else if visibility_changed && !visible {
-                Some(PaintReason::VisibilityClear)
-            } else {
-                paint_state.ordinary_reason()
-            };
-            if self.renderer.is_active()
-                && let Some(reason) = reason
-            {
-                let now = self.started.elapsed();
-                let refresh = *self
-                    .wayland_refresh_hz
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if self.cadence.permits(now, refresh, reason) {
-                    self.paint(reason, now)?;
-                } else if visible {
-                    self.shell.request_frame_and_commit();
+            let now = self.started.elapsed();
+            let refresh = *self
+                .wayland_refresh_hz
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if self.editing() {
+                let first_paint = self.paint_count == 0;
+                let paint_started = Instant::now();
+                let editor_state =
+                    if self.current_state.system == scorepeek_overlay_ui::LampState::Inactive {
+                        scorepeek_overlay_ui::editor_sample_state()
+                    } else {
+                        self.current_state.clone()
+                    };
+                let mut presenter = WindowPresenter {
+                    shell: &mut self.shell,
+                    renderer: &mut self.renderer,
+                };
+                let result = run_native_editor_stage_turn(
+                    &mut self.document,
+                    self.projection,
+                    &mut self.editor_skin_previews,
+                    &self.skin_assets,
+                    &self.report,
+                    self.surface_output.as_deref().unwrap_or_default(),
+                    &editor_state,
+                    &mut self.editor_skin_updates,
+                    &mut self.skin_runtime_create_count,
+                    &mut self.next_skin_render,
+                    &mut self.animating,
+                    &mut self.full_layout_pending,
+                    &mut self.pending_paint,
+                    &mut self.cadence,
+                    &mut self.frame_work,
+                    &self.waker,
+                    &frame_start,
+                    NativeEditorStageTurnInput {
+                        frame: if frame {
+                            NativeFrameBoundary::Frame
+                        } else {
+                            NativeFrameBoundary::Deferred
+                        },
+                        surface: if configured {
+                            NativeSurfaceReadiness::Configured
+                        } else {
+                            NativeSurfaceReadiness::Pending
+                        },
+                        projection_changed,
+                        input_damage,
+                        now,
+                        seconds: now.as_secs_f64(),
+                        refresh,
+                    },
+                    &mut presenter,
+                )?;
+                if !result.text_input_active {
+                    self.set_text_composing(false);
                 }
-            } else if self.renderer.is_active() && paint_state.editor_frame_needed() {
-                self.shell.request_frame_and_commit();
+                if result.dioxus_changed {
+                    let projection = self.projection.borrow();
+                    let (session_id, revision) = match &*projection {
+                        NativeDocumentProjection::Editor(stage) => {
+                            (Some(stage.session_id), Some(stage.revision))
+                        }
+                        NativeDocumentProjection::Display { .. } => (None, None),
+                    };
+                    crate::diagnostics::emit(
+                        "native_editor_dioxus_rebuilt",
+                        &serde_json::json!({"run_id":self.report.borrow().run_id,"output":self.surface_output,"session_id":session_id,"revision":revision}),
+                    );
+                }
+                if let Some(reason) = result.paint {
+                    self.paint_count = self.paint_count.saturating_add(1);
+                    self.render_calls = self.render_calls.saturating_add(1);
+                    if reason == PaintReason::Steady {
+                        self.steady_paint_count = self.steady_paint_count.saturating_add(1);
+                    } else if reason.bypasses_cap() {
+                        *self
+                            .report
+                            .borrow_mut()
+                            .cap_bypass_paints
+                            .entry(reason.name().to_owned())
+                            .or_default() += 1;
+                    }
+                    if first_paint {
+                        self.report
+                            .borrow_mut()
+                            .operations
+                            .push("dioxus_blitz_initial_paint");
+                        crate::diagnostics::emit(
+                            "native_startup_timing",
+                            &serde_json::json!({"run_id":self.report.borrow().run_id,"canvas_id":self.surface_canvas.id,"phase":"first_paint","paint_us":duration_us(paint_started.elapsed()),"elapsed_us":duration_us(self.startup_started.elapsed()),"status":"success"}),
+                        );
+                    }
+                    let projection = self.projection.borrow();
+                    let (session_id, revision) = match &*projection {
+                        NativeDocumentProjection::Editor(stage) => {
+                            (stage.session_id, stage.revision)
+                        }
+                        NativeDocumentProjection::Display { .. } => (0, 0),
+                    };
+                    crate::diagnostics::emit(
+                        "native_editor_painted",
+                        &serde_json::json!({"run_id":self.report.borrow().run_id,"output":self.surface_output,"session_id":session_id,"revision":revision,"paint_us":duration_us(paint_started.elapsed())}),
+                    );
+                }
+            } else {
+                let first_paint = self.paint_count == 0;
+                let paint_started = Instant::now();
+                let mut presenter = WindowPresenter {
+                    shell: &mut self.shell,
+                    renderer: &mut self.renderer,
+                };
+                let result = run_native_display_turn(
+                    &mut self.document,
+                    &self.skin_assets,
+                    &mut self.full_layout_pending,
+                    &mut self.pending_paint,
+                    &mut self.animating,
+                    &mut self.cadence,
+                    &mut self.frame_work,
+                    &self.waker,
+                    &frame_start,
+                    NativeDisplayTurnInput {
+                        frame: if frame {
+                            NativeFrameBoundary::Frame
+                        } else {
+                            NativeFrameBoundary::Deferred
+                        },
+                        surface: if configured {
+                            NativeSurfaceReadiness::Configured
+                        } else {
+                            NativeSurfaceReadiness::Pending
+                        },
+                        projection_changed,
+                        visibility_changed,
+                        input_damage,
+                        visible,
+                        live_widgets: u64::try_from(self.canvas.widgets.len()).unwrap_or(u64::MAX),
+                        now,
+                        seconds: now.as_secs_f64(),
+                        refresh,
+                    },
+                    &mut presenter,
+                )?;
+                if result.dioxus_changed {
+                    self.set_text_composing(false);
+                }
+                if let Some(reason) = result.paint {
+                    self.paint_count = self.paint_count.saturating_add(1);
+                    self.render_calls = self.render_calls.saturating_add(1);
+                    if reason == PaintReason::Steady {
+                        self.steady_paint_count = self.steady_paint_count.saturating_add(1);
+                    } else if reason.bypasses_cap() {
+                        *self
+                            .report
+                            .borrow_mut()
+                            .cap_bypass_paints
+                            .entry(reason.name().to_owned())
+                            .or_default() += 1;
+                    }
+                    if first_paint {
+                        self.report
+                            .borrow_mut()
+                            .operations
+                            .push("dioxus_blitz_initial_paint");
+                        crate::diagnostics::emit(
+                            "native_startup_timing",
+                            &serde_json::json!({"run_id":self.report.borrow().run_id,"canvas_id":self.surface_canvas.id,"phase":"first_paint","paint_us":duration_us(paint_started.elapsed()),"elapsed_us":duration_us(self.startup_started.elapsed()),"status":"success"}),
+                        );
+                    }
+                }
+            }
+            if frame {
+                self.pending_frame_start = None;
+            } else if self.pending_paint && self.pending_frame_start.is_none() {
+                self.pending_frame_start = Some(frame_start);
             }
         }
         Ok(())
@@ -2586,69 +3236,13 @@ impl App {
             .dispatch(&mut self.document, [x, y], button, Some(pressed));
     }
 
-    fn update_editor_skin(&mut self) {
-        let started = Instant::now();
-        self.editor_skin_updates.pending = false;
-        self.editor_skin_updates.renders = self.editor_skin_updates.renders.saturating_add(1);
-        let result = self.render_editor_skin();
-        if let Err(error) = &result {
-            self.next_skin_render = None;
-            self.animating = false;
-            crate::diagnostics::emit(
-                "skin_render",
-                &serde_json::json!({"skin_id":self.canvas.skin.name(),"canvas_id":self.canvas.id,"backend":"native","phase":"editor-preview","status":"failed","error_type":skin_error_type(error)}),
-            );
-        }
-        let duration = duration_us(started.elapsed());
-        crate::diagnostics::emit(
-            "native_editor_skin_timing",
-            &serde_json::json!({"run_id":self.report.borrow().run_id,"canvas_id":self.canvas.id,"output":self.surface_output,"duration_us":duration,"startup_elapsed_us":duration_us(self.startup_started.elapsed()),"status":if result.is_ok(){"success"}else{"error"}}),
-        );
-    }
-
-    fn render_editor_skin(&mut self) -> Result<(), String> {
-        let state = if self.current_state.system == scorepeek_overlay_ui::LampState::Inactive {
-            scorepeek_overlay_ui::editor_sample_state()
-        } else {
-            self.current_state.clone()
-        };
-        let projection = self.projection.borrow();
-        let presentations = match &*projection {
-            NativeDocumentProjection::Editor(projection) => &projection.canvases,
-            NativeDocumentProjection::Display { .. } => return Ok(()),
-        };
-        if reconcile_editor_skin_previews(
-            &mut self.document,
-            &mut self.editor_skin_previews,
-            presentations,
-            &self.skin_assets,
-            &self.report,
-            self.surface_output.as_deref(),
-            &state,
-            &mut self.skin_runtime_create_count,
-        )?
-        .retry_owner
-        {
-            self.editor_skin_updates.request();
-        }
-        self.next_skin_render = self
-            .editor_skin_previews
-            .values()
-            .filter_map(|preview| preview.next_render)
-            .min();
-        self.animating = self
-            .editor_skin_previews
-            .values()
-            .any(|preview| preview.next_render.is_some());
-        Ok(())
-    }
-
     fn poll_dioxus(&mut self) -> bool {
-        let mut changed = false;
-        while poll_native_document(&mut self.document, &self.waker) {
-            changed = true;
-        }
-        self.full_layout_pending |= changed;
+        let changed = poll_native_document_for_frame(
+            &mut self.document,
+            &self.waker,
+            &mut self.full_layout_pending,
+            &mut self.frame_work,
+        );
         if changed && self.editing() {
             let (session_id, revision) = match &*self.projection.borrow() {
                 NativeDocumentProjection::Editor(stage) => {
@@ -2662,45 +3256,6 @@ impl App {
             );
         }
         changed
-    }
-
-    fn sync_text_input(&mut self) {
-        if !matches!(&*self.projection.borrow(), NativeDocumentProjection::Editor(stage) if stage.interactive)
-        {
-            self.shell.set_text_input(None);
-            self.set_text_composing(false);
-            return;
-        }
-        let input = {
-            let document = self.document.inner.borrow();
-            let node = document.get_focussed_node_id().filter(|node| {
-                document.get_node(*node).is_some_and(|node| {
-                    node.element_data()
-                        .is_some_and(|element| element.text_input_data().is_some())
-                })
-            });
-            node.and_then(|node| {
-                let rect = document.get_client_bounding_rect(node)?;
-                let input = document.get_node(node)?.element_data()?.text_input_data()?;
-                let selection = input.editor.raw_selection().text_range();
-                Some(scorepeek_overlay_handles::TextInputState {
-                    from_ime: input.editor.raw_compose().is_some(),
-                    text: input.editor.raw_text().to_owned(),
-                    cursor: i32::try_from(selection.end).unwrap_or(i32::MAX),
-                    anchor: i32::try_from(selection.start).unwrap_or(i32::MAX),
-                    rectangle: [
-                        snap_i32(rect.x),
-                        snap_i32(rect.y),
-                        snap_i32(rect.width).max(1),
-                        snap_i32(rect.height).max(1),
-                    ],
-                })
-            })
-        };
-        if input.is_none() {
-            self.set_text_composing(false);
-        }
-        self.shell.set_text_input(input);
     }
 
     fn render_skin(&mut self, state: &OverlayState) -> Result<(), String> {
@@ -2777,78 +3332,6 @@ impl App {
         crate::diagnostics::emit("surface_configured", &*self.report.borrow());
         Ok(geometry_changed)
     }
-
-    fn paint(&mut self, reason: PaintReason, now: Duration) -> Result<(), String> {
-        let first_paint = self.paint_count == 0;
-        let started = Instant::now();
-        self.paint_exclusive()?;
-        self.cadence.record(now);
-        self.pending_paint = false;
-        if reason == PaintReason::Steady {
-            self.steady_paint_count = self.steady_paint_count.saturating_add(1);
-        } else if reason.bypasses_cap() {
-            *self
-                .report
-                .borrow_mut()
-                .cap_bypass_paints
-                .entry(reason.name().to_owned())
-                .or_default() += 1;
-        }
-        if first_paint {
-            crate::diagnostics::emit(
-                "native_startup_timing",
-                &serde_json::json!({"run_id":self.report.borrow().run_id,"canvas_id":self.surface_canvas.id,"phase":"first_paint","paint_us":duration_us(started.elapsed()),"elapsed_us":duration_us(self.startup_started.elapsed()),"status":"success"}),
-            );
-        }
-        if self.editing() {
-            let projection = self.projection.borrow();
-            let (session_id, revision) = match &*projection {
-                NativeDocumentProjection::Editor(stage) => (stage.session_id, stage.revision),
-                NativeDocumentProjection::Display { .. } => (0, 0),
-            };
-            crate::diagnostics::emit(
-                "native_editor_painted",
-                &serde_json::json!({"run_id":self.report.borrow().run_id,"output":self.surface_output,"session_id":session_id,"revision":revision,"paint_us":duration_us(started.elapsed())}),
-            );
-        }
-        Ok(())
-    }
-
-    fn paint_exclusive(&mut self) -> Result<(), String> {
-        if !self.renderer.is_active() {
-            return Err("native renderer inactive".into());
-        }
-        let visible = self.visible();
-        let mut inner = self.document.inner.borrow_mut();
-        let seconds = self.started.elapsed().as_secs_f64();
-        if visible {
-            apply_motion(&mut inner, seconds);
-        }
-        let incremental_layout = inner.incremental_layout();
-        if self.full_layout_pending {
-            inner.set_incremental_layout(false);
-        }
-        resolve_with_loaded_resources(&mut inner, seconds);
-        if self.full_layout_pending {
-            inner.set_incremental_layout(incremental_layout);
-            self.full_layout_pending = false;
-        }
-        self.animating = visible;
-        self.shell.request_frame();
-        let (width, height) = inner.viewport().window_size;
-        let scale = inner.viewport().scale_f64();
-        self.renderer
-            .render(|scene| paint_native_scene(scene, &mut inner, scale, width, height));
-        self.paint_count = self.paint_count.saturating_add(1);
-        self.render_calls = self.render_calls.saturating_add(1);
-        if self.paint_count == 1 {
-            self.report
-                .borrow_mut()
-                .operations
-                .push("dioxus_blitz_initial_paint");
-        }
-        Ok(())
-    }
 }
 
 const fn surface_input_enabled(editing: bool, interactive: bool, visible: bool) -> bool {
@@ -2856,6 +3339,10 @@ const fn surface_input_enabled(editing: bool, interactive: bool, visible: bool) 
 }
 fn duration_us(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
+fn duration_ns(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 fn canvas_worker_error_type(error: &str) -> &'static str {
@@ -2902,7 +3389,13 @@ struct RunReport {
     editor_skin_update_requests: u64,
     editor_skin_render_count: u64,
     skin_package_open_count: u64,
+    skin_package_open_ns: u64,
+    skin_package_clone_count: u64,
+    skin_package_clone_ns: u64,
+    resource_lookup_count: u64,
+    resource_lookup_ns: u64,
     skin_runtime_create_count: u64,
+    frame_work: FrameWorkProfile,
     wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
     elapsed_ms: u64,
     effective_paint_hz: Option<f64>,
@@ -2941,7 +3434,13 @@ impl RunReport {
             editor_skin_update_requests: 0,
             editor_skin_render_count: 0,
             skin_package_open_count: 0,
+            skin_package_open_ns: 0,
+            skin_package_clone_count: 0,
+            skin_package_clone_ns: 0,
+            resource_lookup_count: 0,
+            resource_lookup_ns: 0,
             skin_runtime_create_count: 0,
+            frame_work: FrameWorkProfile::default(),
             wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate::Auto,
             elapsed_ms: 0,
             effective_paint_hz: None,
@@ -2972,6 +3471,11 @@ struct SkinAssetCache {
     packages: std::sync::Mutex<std::collections::BTreeMap<String, Arc<crate::skin::Package>>>,
     editor_owners: std::sync::Mutex<std::collections::BTreeMap<String, String>>,
     open_count: std::sync::atomic::AtomicU64,
+    open_ns: std::sync::atomic::AtomicU64,
+    clone_count: std::sync::atomic::AtomicU64,
+    clone_ns: std::sync::atomic::AtomicU64,
+    resource_lookup_count: std::sync::atomic::AtomicU64,
+    resource_lookup_ns: std::sync::atomic::AtomicU64,
 }
 
 impl SkinAssetCache {
@@ -2981,6 +3485,11 @@ impl SkinAssetCache {
             packages: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             editor_owners: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             open_count: std::sync::atomic::AtomicU64::new(0),
+            open_ns: std::sync::atomic::AtomicU64::new(0),
+            clone_count: std::sync::atomic::AtomicU64::new(0),
+            clone_ns: std::sync::atomic::AtomicU64::new(0),
+            resource_lookup_count: std::sync::atomic::AtomicU64::new(0),
+            resource_lookup_ns: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -2991,6 +3500,11 @@ impl SkinAssetCache {
             packages: std::sync::Mutex::new(std::collections::BTreeMap::from([(id, package)])),
             editor_owners: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             open_count: std::sync::atomic::AtomicU64::new(1),
+            open_ns: std::sync::atomic::AtomicU64::new(0),
+            clone_count: std::sync::atomic::AtomicU64::new(0),
+            clone_ns: std::sync::atomic::AtomicU64::new(0),
+            resource_lookup_count: std::sync::atomic::AtomicU64::new(0),
+            resource_lookup_ns: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -3018,17 +3532,76 @@ impl SkinAssetCache {
     }
 
     fn load(&self, id: &str) -> Result<Arc<crate::skin::Package>, String> {
+        let clone_started = Instant::now();
         let mut packages = self
             .packages
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(package) = packages.get(id).cloned() {
+            self.clone_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.clone_ns.fetch_add(
+                duration_ns(clone_started.elapsed()),
+                std::sync::atomic::Ordering::Relaxed,
+            );
             return Ok(package);
         }
+        let open_started = Instant::now();
         let package = Arc::new(self.store.open(id)?);
         self.open_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(Arc::clone(packages.entry(id.to_owned()).or_insert(package)))
+        self.open_ns.fetch_add(
+            duration_ns(open_started.elapsed()),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        let clone_started = Instant::now();
+        let package = Arc::clone(packages.entry(id.to_owned()).or_insert(package));
+        self.clone_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.clone_ns.fetch_add(
+            duration_ns(clone_started.elapsed()),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        Ok(package)
+    }
+
+    fn load_profiled(
+        &self,
+        id: &str,
+        work: &mut FrameWorkProfile,
+    ) -> Result<Arc<crate::skin::Package>, String> {
+        let open_before = WorkStat {
+            calls: self.open_count.load(std::sync::atomic::Ordering::Relaxed),
+            total_ns: self.open_ns.load(std::sync::atomic::Ordering::Relaxed),
+        };
+        let clone_before = WorkStat {
+            calls: self.clone_count.load(std::sync::atomic::Ordering::Relaxed),
+            total_ns: self.clone_ns.load(std::sync::atomic::Ordering::Relaxed),
+        };
+        let result = self.load(id);
+        let open_after = WorkStat {
+            calls: self.open_count.load(std::sync::atomic::Ordering::Relaxed),
+            total_ns: self.open_ns.load(std::sync::atomic::Ordering::Relaxed),
+        };
+        let clone_after = WorkStat {
+            calls: self.clone_count.load(std::sync::atomic::Ordering::Relaxed),
+            total_ns: self.clone_ns.load(std::sync::atomic::Ordering::Relaxed),
+        };
+        work.record_stat(
+            "package_open",
+            WorkStat {
+                calls: open_after.calls.saturating_sub(open_before.calls),
+                total_ns: open_after.total_ns.saturating_sub(open_before.total_ns),
+            },
+        );
+        work.record_stat(
+            "package_clone",
+            WorkStat {
+                calls: clone_after.calls.saturating_sub(clone_before.calls),
+                total_ns: clone_after.total_ns.saturating_sub(clone_before.total_ns),
+            },
+        );
+        result
     }
 
     fn installed_editor_skins(
@@ -3050,6 +3623,7 @@ impl SkinAssetCache {
             if path.extension().is_none_or(|extension| extension != "zip") {
                 continue;
             }
+            let open_started = Instant::now();
             let package = Arc::new(crate::skin::Package::open(&path)?);
             let id = package.manifest.id.clone();
             if packages.insert(id.clone(), package).is_some() {
@@ -3057,6 +3631,10 @@ impl SkinAssetCache {
             }
             self.open_count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.open_ns.fetch_add(
+                duration_ns(open_started.elapsed()),
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
         packages
             .values()
@@ -3181,28 +3759,32 @@ impl blitz_traits::net::NetProvider for EmbeddedSkinAssets {
         request: blitz_traits::net::Request,
         handler: Box<dyn blitz_traits::net::NetHandler>,
     ) {
+        let started = Instant::now();
         let path = request.url.path().trim_start_matches('/');
-        if let Some(rest) = path.strip_prefix("skin/")
+        let bytes = if let Some(rest) = path.strip_prefix("skin/")
             && let Some((id, resource)) = rest.split_once('/')
             && crate::skin::validate_id(id).is_ok()
             && let Ok(package) = self.cache.load(id)
             && let Some(bytes) = package.resource(resource)
         {
-            handler.bytes(
-                request.url.to_string(),
-                blitz_traits::net::Bytes::copy_from_slice(bytes),
-            );
-            return;
-        }
-        if let Some(svg) = scorepeek_overlay_ui::composition::aperture_asset(request.url.path()) {
-            handler.bytes(request.url.to_string(), blitz_traits::net::Bytes::from(svg));
-            return;
-        }
-        let bytes = scorepeek_overlay_ui::skin_asset(request.url.path()).unwrap_or_default();
-        handler.bytes(
-            request.url.to_string(),
-            blitz_traits::net::Bytes::from_static(bytes),
+            blitz_traits::net::Bytes::copy_from_slice(bytes)
+        } else if let Some(svg) =
+            scorepeek_overlay_ui::composition::aperture_asset(request.url.path())
+        {
+            blitz_traits::net::Bytes::from(svg)
+        } else {
+            blitz_traits::net::Bytes::from_static(
+                scorepeek_overlay_ui::skin_asset(request.url.path()).unwrap_or_default(),
+            )
+        };
+        self.cache
+            .resource_lookup_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.cache.resource_lookup_ns.fetch_add(
+            duration_ns(started.elapsed()),
+            std::sync::atomic::Ordering::Relaxed,
         );
+        handler.bytes(request.url.to_string(), bytes);
     }
 }
 
@@ -3263,6 +3845,400 @@ fn resolve_with_loaded_resources(document: &mut blitz_dom::BaseDocument, seconds
     // resolve again so their layers are available to the current paint.
     document.handle_messages();
     document.resolve(seconds);
+}
+
+fn editor_text_input_state(
+    document: &DioxusDocument,
+    interactive: bool,
+) -> Option<scorepeek_overlay_handles::TextInputState> {
+    if !interactive {
+        return None;
+    }
+    let document = document.inner.borrow();
+    let node = document.get_focussed_node_id().filter(|node| {
+        document.get_node(*node).is_some_and(|node| {
+            node.element_data()
+                .is_some_and(|element| element.text_input_data().is_some())
+        })
+    });
+    node.and_then(|node| {
+        let rect = document.get_client_bounding_rect(node)?;
+        let input = document.get_node(node)?.element_data()?.text_input_data()?;
+        let selection = input.editor.raw_selection().text_range();
+        Some(scorepeek_overlay_handles::TextInputState {
+            from_ime: input.editor.raw_compose().is_some(),
+            text: input.editor.raw_text().to_owned(),
+            cursor: i32::try_from(selection.end).unwrap_or(i32::MAX),
+            anchor: i32::try_from(selection.start).unwrap_or(i32::MAX),
+            rectangle: [
+                snap_i32(rect.x),
+                snap_i32(rect.y),
+                snap_i32(rect.width).max(1),
+                snap_i32(rect.height).max(1),
+            ],
+        })
+    })
+}
+
+#[derive(Clone, Copy)]
+enum NativeFrameBoundary {
+    Deferred,
+    Frame,
+}
+
+impl NativeFrameBoundary {
+    const fn is_frame(self) -> bool {
+        matches!(self, Self::Frame)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum NativeSurfaceReadiness {
+    Pending,
+    Configured,
+}
+
+impl NativeSurfaceReadiness {
+    const fn is_configured(self) -> bool {
+        matches!(self, Self::Configured)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct NativeEditorStageTurnInput {
+    frame: NativeFrameBoundary,
+    surface: NativeSurfaceReadiness,
+    projection_changed: bool,
+    input_damage: bool,
+    now: Duration,
+    seconds: f64,
+    refresh: scorepeek_overlay_ui::WaylandRefreshRate,
+}
+
+#[derive(Default)]
+#[cfg_attr(not(test), allow(dead_code))]
+struct NativeEditorStageTurnResult {
+    dioxus_changed: bool,
+    reconciled: bool,
+    reconciliation: EditorSkinReconciliation,
+    paint: Option<PaintReason>,
+    text_input_active: bool,
+}
+
+#[derive(Clone, Copy)]
+#[allow(clippy::struct_excessive_bools)]
+struct NativeDisplayTurnInput {
+    frame: NativeFrameBoundary,
+    surface: NativeSurfaceReadiness,
+    projection_changed: bool,
+    visibility_changed: bool,
+    input_damage: bool,
+    visible: bool,
+    live_widgets: u64,
+    now: Duration,
+    seconds: f64,
+    refresh: scorepeek_overlay_ui::WaylandRefreshRate,
+}
+
+#[derive(Default)]
+struct NativeDisplayTurnResult {
+    dioxus_changed: bool,
+    paint: Option<PaintReason>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_native_display_turn(
+    document: &mut DioxusDocument,
+    assets: &Arc<SkinAssetCache>,
+    full_layout_pending: &mut bool,
+    pending_paint: &mut bool,
+    animating: &mut bool,
+    cadence: &mut FrameCadence,
+    work: &mut FrameWorkProfile,
+    waker: &Waker,
+    frame_start: &FrameWorkSample,
+    input: NativeDisplayTurnInput,
+    presenter: &mut impl NativeFramePresenter,
+) -> Result<NativeDisplayTurnResult, String> {
+    let frame = input.frame.is_frame();
+    let dioxus_changed =
+        frame && poll_native_document_for_frame(document, waker, full_layout_pending, work);
+    presenter.set_text_input(None);
+    *pending_paint |= dioxus_changed
+        || input.projection_changed
+        || input.visibility_changed
+        || input.input_damage;
+    let admission = admit_native_paint(
+        presenter.is_active(),
+        input.surface.is_configured(),
+        input.visibility_changed,
+        PaintState {
+            editing: false,
+            visible: input.visible,
+            signal: PaintSignal::from_state(frame, *pending_paint),
+            animating: *animating,
+        },
+        input.now,
+        input.refresh,
+        cadence,
+    );
+    let paint = match admission {
+        PaintAdmission::Paint(reason) => {
+            render_native_frame(
+                &mut document.inner.borrow_mut(),
+                input.seconds,
+                input.visible,
+                full_layout_pending,
+                presenter,
+                assets,
+                work,
+            )?;
+            cadence.record(input.now);
+            *pending_paint = false;
+            *animating = input.visible;
+            Some(reason)
+        }
+        PaintAdmission::RequestFrameCommit => {
+            presenter.request_frame_commit();
+            None
+        }
+        PaintAdmission::None => None,
+    };
+    if frame {
+        work.finish_frame(
+            frame_start,
+            u64::from(input.visible),
+            if input.visible { input.live_widgets } else { 0 },
+        );
+    }
+    Ok(NativeDisplayTurnResult {
+        dioxus_changed,
+        paint,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_native_editor_stage_turn(
+    document: &mut DioxusDocument,
+    projection: Reactive<NativeDocumentProjection>,
+    previews: &mut std::collections::BTreeMap<String, EditorSkinPreview>,
+    assets: &Arc<SkinAssetCache>,
+    report: &Rc<RefCell<RunReport>>,
+    output: &str,
+    editor_state: &OverlayState,
+    updates: &mut EditorSkinUpdates,
+    runtime_create_count: &mut u64,
+    next_skin_render: &mut Option<Instant>,
+    animating: &mut bool,
+    full_layout_pending: &mut bool,
+    pending_paint: &mut bool,
+    cadence: &mut FrameCadence,
+    work: &mut FrameWorkProfile,
+    waker: &Waker,
+    frame_start: &FrameWorkSample,
+    input: NativeEditorStageTurnInput,
+    presenter: &mut impl NativeFramePresenter,
+) -> Result<NativeEditorStageTurnResult, String> {
+    let frame = input.frame.is_frame();
+    if next_skin_render.is_some_and(|deadline| Instant::now() >= deadline) {
+        updates.request();
+    }
+    // Native DOM work is driven by the compositor frame, matching the browser's
+    // animation-frame boundary. Input/configure turns only accumulate damage and
+    // request the next frame; they must not introduce extra VDOM polls between
+    // frame callbacks.
+    let dioxus_changed =
+        frame && poll_native_document_for_frame(document, waker, full_layout_pending, work);
+    let dragging = matches!(&*projection.borrow(), NativeDocumentProjection::Editor(editor_projection) if editor_projection.drag.is_some());
+    let mut reconciliation = EditorSkinReconciliation::default();
+    let mut skin_changed = false;
+    // The projection Signal and its skin roots become current together during
+    // the Dioxus frame rebuild. Never reconcile a newly accepted projection on
+    // an earlier wake/input turn, where its DOM roots do not exist yet.
+    if frame && updates.take_if_ready(frame, dragging) {
+        updates.renders = updates.renders.saturating_add(1);
+        let canvases = match &*projection.borrow() {
+            NativeDocumentProjection::Editor(editor_projection) => {
+                editor_projection.canvases.clone()
+            }
+            NativeDocumentProjection::Display { .. } => {
+                return Err("editor stage turn received a display projection".into());
+            }
+        };
+        reconciliation = reconcile_editor_skin_previews(
+            document,
+            previews,
+            &canvases,
+            assets,
+            report,
+            Some(output),
+            editor_state,
+            runtime_create_count,
+            work,
+        )?;
+        if reconciliation.retry_owner {
+            updates.request();
+        }
+        *next_skin_render = previews
+            .values()
+            .filter_map(|preview| preview.next_render)
+            .min();
+        *animating = previews
+            .values()
+            .any(|preview| preview.next_render.is_some());
+        skin_changed = true;
+    }
+    let interactive = matches!(&*projection.borrow(), NativeDocumentProjection::Editor(editor_projection) if editor_projection.interactive);
+    let text_input = editor_text_input_state(document, interactive);
+    let text_input_active = text_input.is_some();
+    presenter.set_text_input(text_input);
+    *pending_paint |=
+        dioxus_changed || input.projection_changed || input.input_damage || skin_changed;
+    let paint_state = PaintState {
+        editing: true,
+        visible: true,
+        signal: PaintSignal::from_state(frame, *pending_paint),
+        animating: *animating,
+    };
+    let admission = admit_native_paint(
+        presenter.is_active(),
+        input.surface.is_configured(),
+        false,
+        paint_state,
+        input.now,
+        input.refresh,
+        cadence,
+    );
+    let paint = match admission {
+        PaintAdmission::Paint(reason) => {
+            render_native_frame(
+                &mut document.inner.borrow_mut(),
+                input.seconds,
+                true,
+                full_layout_pending,
+                presenter,
+                assets,
+                work,
+            )?;
+            cadence.record(input.now);
+            *pending_paint = false;
+            *animating = true;
+            Some(reason)
+        }
+        PaintAdmission::RequestFrameCommit => {
+            presenter.request_frame_commit();
+            None
+        }
+        PaintAdmission::None => None,
+    };
+    if frame {
+        let live_canvases = u64::try_from(previews.len()).unwrap_or(u64::MAX);
+        let live_widgets = previews.values().fold(0_u64, |count, preview| {
+            count.saturating_add(u64::try_from(preview.canvas.widgets.len()).unwrap_or(u64::MAX))
+        });
+        work.finish_frame(frame_start, live_canvases, live_widgets);
+    }
+    Ok(NativeEditorStageTurnResult {
+        dioxus_changed,
+        reconciled: skin_changed,
+        reconciliation,
+        paint,
+        text_input_active,
+    })
+}
+
+fn render_native_frame(
+    document: &mut blitz_dom::BaseDocument,
+    seconds: f64,
+    visible: bool,
+    full_layout_pending: &mut bool,
+    presenter: &mut impl NativeFramePresenter,
+    assets: &SkinAssetCache,
+    work: &mut FrameWorkProfile,
+) -> Result<(), String> {
+    let package_open_before = WorkStat {
+        calls: assets.open_count.load(std::sync::atomic::Ordering::Relaxed),
+        total_ns: assets.open_ns.load(std::sync::atomic::Ordering::Relaxed),
+    };
+    let package_clone_before = WorkStat {
+        calls: assets
+            .clone_count
+            .load(std::sync::atomic::Ordering::Relaxed),
+        total_ns: assets.clone_ns.load(std::sync::atomic::Ordering::Relaxed),
+    };
+    let lookup_before = WorkStat {
+        calls: assets
+            .resource_lookup_count
+            .load(std::sync::atomic::Ordering::Relaxed),
+        total_ns: assets
+            .resource_lookup_ns
+            .load(std::sync::atomic::Ordering::Relaxed),
+    };
+    if visible {
+        work.measure("motion", || apply_motion(document, seconds));
+    }
+    let incremental_layout = document.incremental_layout();
+    if *full_layout_pending {
+        document.set_incremental_layout(false);
+    }
+    work.measure("blitz_layout", || document.resolve(seconds));
+    work.measure("resource_decode", || document.handle_messages());
+    work.measure("blitz_layout", || document.resolve(seconds));
+    if *full_layout_pending {
+        document.set_incremental_layout(incremental_layout);
+        *full_layout_pending = false;
+    }
+    let (width, height) = document.viewport().window_size;
+    let scale = document.viewport().scale_f64();
+    let result = presenter.present(document, scale, width, height, work);
+    let lookup_after = WorkStat {
+        calls: assets
+            .resource_lookup_count
+            .load(std::sync::atomic::Ordering::Relaxed),
+        total_ns: assets
+            .resource_lookup_ns
+            .load(std::sync::atomic::Ordering::Relaxed),
+    };
+    let package_open_after = WorkStat {
+        calls: assets.open_count.load(std::sync::atomic::Ordering::Relaxed),
+        total_ns: assets.open_ns.load(std::sync::atomic::Ordering::Relaxed),
+    };
+    let package_clone_after = WorkStat {
+        calls: assets
+            .clone_count
+            .load(std::sync::atomic::Ordering::Relaxed),
+        total_ns: assets.clone_ns.load(std::sync::atomic::Ordering::Relaxed),
+    };
+    work.record_stat(
+        "package_open",
+        WorkStat {
+            calls: package_open_after
+                .calls
+                .saturating_sub(package_open_before.calls),
+            total_ns: package_open_after
+                .total_ns
+                .saturating_sub(package_open_before.total_ns),
+        },
+    );
+    work.record_stat(
+        "package_clone",
+        WorkStat {
+            calls: package_clone_after
+                .calls
+                .saturating_sub(package_clone_before.calls),
+            total_ns: package_clone_after
+                .total_ns
+                .saturating_sub(package_clone_before.total_ns),
+        },
+    );
+    work.record_stat(
+        "resource_lookup",
+        WorkStat {
+            calls: lookup_after.calls.saturating_sub(lookup_before.calls),
+            total_ns: lookup_after.total_ns.saturating_sub(lookup_before.total_ns),
+        },
+    );
+    result
 }
 
 /// Registers embedded artwork and the Latin font, preserving Japanese system fallbacks.
@@ -3653,13 +4629,15 @@ impl VisualDebugSession {
             NativeDocumentProjection::Display { .. } => None,
         };
         if let Some(output) = output {
-            let next = NativeDocumentProjection::Editor(
-                self.authority.session().stage_projection(&output),
+            let candidate = self.authority.session().stage_projection(&output);
+            changed |= accept_stage_projection_replica(
+                self.projection,
+                &mut self.document,
+                &mut self.skins,
+                &self.skin_assets,
+                &output.name,
+                &candidate,
             );
-            let changed = { *self.projection.borrow() != next };
-            if changed {
-                self.projection.set(next);
-            }
         }
         changed
     }
@@ -3697,6 +4675,7 @@ impl VisualDebugSession {
             NativeDocumentProjection::Display { .. } => None,
         };
         if let Some((canvases, output)) = editor {
+            let mut work = FrameWorkProfile::default();
             let _ = reconcile_editor_skin_previews(
                 &mut self.document,
                 &mut self.skins,
@@ -3706,6 +4685,7 @@ impl VisualDebugSession {
                 Some(&output),
                 &self.state,
                 &mut self.runtime_create_count,
+                &mut work,
             )?;
             return Ok(());
         }
@@ -4483,6 +5463,61 @@ mod skin_tests {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn fake_wayland_axis_scrolls_ancestor_beneath_nested_editor_rows() {
+        struct FakeProtocolTarget<'a>(&'a mut VisualDebugSession);
+        impl NativeEventConsumer for FakeProtocolTarget<'_> {
+            fn configure_event(
+                &mut self,
+                _logical: [u32; 2],
+                physical: [u32; 2],
+                scale_120: u32,
+            ) -> Result<bool, String> {
+                self.0
+                    .document
+                    .inner
+                    .borrow_mut()
+                    .set_viewport(Viewport::new(
+                        physical[0],
+                        physical[1],
+                        f32::from(u16::try_from(scale_120).map_err(|error| error.to_string())?)
+                            / 120.0,
+                        ColorScheme::Dark,
+                    ));
+                Ok(true)
+            }
+            fn pointer_motion_event(&mut self, point: [f64; 2]) {
+                self.0
+                    .pointer
+                    .dispatch(&mut self.0.document, point, 0x110, None);
+            }
+            fn pointer_button_event(&mut self, button: u32, pressed: bool, point: [f64; 2]) {
+                self.0
+                    .pointer
+                    .dispatch(&mut self.0.document, point, button, Some(pressed));
+            }
+            fn pointer_scroll_event(&mut self, delta: [f64; 2], point: [f64; 2]) {
+                self.0.pointer.wheel(&mut self.0.document, point, delta);
+            }
+            fn text_event(&mut self, command: &scorepeek_overlay_handles::TextCommand) {
+                text::dispatch_control_key(&mut self.0.document, command, false);
+            }
+            fn ime_event(&mut self, update: scorepeek_overlay_handles::TextUpdate) {
+                let _ = text::dispatch_control_composition(&mut self.0.document, update);
+            }
+            fn keyboard_focus_event(&mut self, _focused: bool) {}
+        }
+        let axis = |session: &mut VisualDebugSession, point: [f64; 2], delta: [f64; 2]| {
+            let outcome = dispatch_native_event(
+                &mut FakeProtocolTarget(session),
+                Event::PointerScroll {
+                    dx: delta[0],
+                    dy: delta[1],
+                    x: point[0],
+                    y: point[1],
+                },
+            )
+            .unwrap();
+            assert!(outcome.input_damage);
+        };
         let canvases = crate::config::visual_debug_config()
             .canvases
             .into_iter()
@@ -4541,9 +5576,7 @@ mod skin_tests {
             let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
             let prior = offset(&session);
             let point = point_in_navigator(&session, selector);
-            session
-                .pointer
-                .wheel(&mut session.document, point, [0.0, delta]);
+            axis(&mut session, point, [0.0, delta]);
             session.resolve();
             assert!(
                 (offset(&session) - prior).abs() > f64::EPSILON,
@@ -4594,9 +5627,7 @@ mod skin_tests {
             (offset(&session) - before).abs() <= f64::EPSILON,
             "unadapted Blitz routes wheel through stale hover instead of event coordinates"
         );
-        session
-            .pointer
-            .wheel(&mut session.document, canvas_point, [0.0, -120.0]);
+        axis(&mut session, canvas_point, [0.0, -120.0]);
         session.resolve();
         let after_canvas = offset(&session);
         assert!(
@@ -4622,9 +5653,7 @@ mod skin_tests {
                     .min(viewport.y + viewport.height - 2.0),
             ]
         };
-        session
-            .pointer
-            .wheel(&mut session.document, widget_point, [0.0, 240.0]);
+        axis(&mut session, widget_point, [0.0, 240.0]);
         session.resolve();
         let after_widget = offset(&session);
         assert!(
@@ -4653,9 +5682,7 @@ mod skin_tests {
             ]
         };
         let inspector_before = inspector_offset(&session);
-        session
-            .pointer
-            .wheel(&mut session.document, inspector_point, [0.0, -240.0]);
+        axis(&mut session, inspector_point, [0.0, -240.0]);
         session.resolve();
         assert!(
             (inspector_offset(&session) - inspector_before).abs() > f64::EPSILON,
@@ -4976,7 +6003,7 @@ mod skin_tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::items_after_statements, clippy::too_many_lines)]
     fn fake_wayland_adapter_drives_production_stage_and_skin_lifecycle() {
         struct TestSkinStore(std::path::PathBuf);
         impl Drop for TestSkinStore {
@@ -4986,10 +6013,13 @@ mod skin_tests {
         }
         static NEXT_STORE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+        #[allow(clippy::struct_excessive_bools)]
         struct FakeStage {
             output: String,
             projection: Reactive<NativeDocumentProjection>,
             document: DioxusDocument,
+            coordinator: std::sync::mpsc::Sender<CoordinatorCommand>,
+            commands: std::sync::mpsc::Receiver<CoordinatorCommand>,
             previews: std::collections::BTreeMap<String, EditorSkinPreview>,
             assets: Arc<SkinAssetCache>,
             report: Rc<RefCell<RunReport>>,
@@ -5001,25 +6031,38 @@ mod skin_tests {
             input_generations: u64,
             wasm_calls: u64,
             tree_updates: u64,
+            work: FrameWorkProfile,
             layouts: u64,
             resource_resolves: u64,
             scenes: u64,
             presents: u64,
             commits: u64,
             motion_seconds: f64,
+            elapsed: Duration,
+            full_layout_pending: bool,
+            pending_paint: bool,
+            animating: bool,
+            cadence: FrameCadence,
+            paint_count: u64,
+            physical_size: [u32; 2],
+            scale: f32,
+            pointer: PointerInput,
+            text_composing: bool,
             renderer: anyrender_vello::VelloImageRenderer,
+            pending_frame_start: Option<FrameWorkSample>,
+            next_skin_render: Option<Instant>,
         }
         impl FakeStage {
             fn new(stage: StageProjection, assets: Arc<SkinAssetCache>) -> Result<Self, String> {
                 let output = stage.output.name.clone();
                 let initial = NativeDocumentProjection::Editor(stage);
                 let published = Rc::new(RefCell::new(None));
-                let (sender, _receiver) = std::sync::mpsc::channel();
+                let (sender, commands) = std::sync::mpsc::channel();
                 let props = NativeOverlayProps {
                     initial,
                     published: Rc::clone(&published),
                     port: NativeEditorPort {
-                        coordinator: sender,
+                        coordinator: sender.clone(),
                         source_output: Some(output.clone()),
                         run_id: "fake-wayland-stage".into(),
                         sequence: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -5037,10 +6080,12 @@ mod skin_tests {
                     .ok_or("fake stage did not publish its projection")?;
                 let mut skin_updates = EditorSkinUpdates::default();
                 skin_updates.request();
-                let mut stage = Self {
+                let stage = Self {
                     output,
                     projection,
                     document,
+                    coordinator: sender,
+                    commands,
                     previews: std::collections::BTreeMap::new(),
                     assets,
                     report: Rc::new(RefCell::new(RunReport::new())),
@@ -5052,79 +6097,196 @@ mod skin_tests {
                     input_generations: 0,
                     wasm_calls: 0,
                     tree_updates: 0,
+                    work: FrameWorkProfile::default(),
                     layouts: 0,
                     resource_resolves: 0,
                     scenes: 0,
                     presents: 0,
                     commits: 0,
                     motion_seconds: 0.0,
+                    elapsed: Duration::ZERO,
+                    full_layout_pending: true,
+                    pending_paint: true,
+                    animating: false,
+                    cadence: FrameCadence::default(),
+                    paint_count: 0,
+                    physical_size: [1, 1],
+                    scale: 1.0,
+                    pointer: PointerInput::default(),
+                    text_composing: false,
                     renderer: anyrender_vello::VelloImageRenderer::new(1920, 1080),
+                    pending_frame_start: None,
+                    next_skin_render: None,
                 };
-                stage.frame()?;
                 Ok(stage)
             }
 
-            fn accept(&mut self, next: StageProjection) -> Result<(), String> {
-                let accepted = match &*self.projection.borrow() {
-                    NativeDocumentProjection::Editor(current) => {
-                        accepts_stage_projection(current, &next) && current != &next
-                    }
-                    NativeDocumentProjection::Display { .. } => false,
-                };
+            fn accept(&mut self, next: &StageProjection) {
+                let frame_start = self.work.snapshot();
+                let rebuild_started = Instant::now();
+                let previews_changed = editor_skin_previews_changed(&self.previews, next);
+                let accepted = accept_stage_projection_replica(
+                    self.projection,
+                    &mut self.document,
+                    &mut self.previews,
+                    &self.assets,
+                    &self.output,
+                    next,
+                );
                 if accepted {
-                    if editor_skin_previews_changed(&self.previews, &next) {
+                    if self.pending_frame_start.is_none() {
+                        self.pending_frame_start = Some(frame_start);
+                    }
+                    self.work
+                        .record("projection_rebuild", rebuild_started.elapsed());
+                    if previews_changed {
                         self.skin_updates.request();
                     }
-                    self.projection.set(NativeDocumentProjection::Editor(next));
                     self.projection_accepts += 1;
+                    self.pending_paint = true;
                 }
-                self.frame()
             }
 
             fn frame(&mut self) -> Result<(), String> {
-                self.dioxus_polls += 1;
-                while poll_native_document(&mut self.document, Waker::noop()) {}
-                if self.skin_updates.take_if_ready(true, false) {
-                    let canvases = match &*self.projection.borrow() {
-                        NativeDocumentProjection::Editor(stage) => stage.canvases.clone(),
-                        NativeDocumentProjection::Display { .. } => unreachable!(),
-                    };
-                    self.reconciliations += 1;
-                    let reconciliation = reconcile_editor_skin_previews(
-                        &mut self.document,
-                        &mut self.previews,
-                        &canvases,
-                        &self.assets,
-                        &self.report,
-                        Some(&self.output),
-                        &scorepeek_overlay_ui::editor_sample_state(),
-                        &mut self.runtime_creates,
-                    )?;
-                    self.input_generations = self
-                        .input_generations
-                        .saturating_add(reconciliation.input_generations);
-                    self.wasm_calls = self.wasm_calls.saturating_add(reconciliation.wasm_calls);
-                    self.tree_updates = self
-                        .tree_updates
-                        .saturating_add(reconciliation.tree_updates);
-                    if reconciliation.retry_owner {
-                        self.skin_updates.request();
+                self.turn(
+                    NativeEventOutcome {
+                        frame: true,
+                        ..NativeEventOutcome::default()
+                    },
+                    120,
+                )
+            }
+
+            fn turn(&mut self, outcome: NativeEventOutcome, hz: u32) -> Result<(), String> {
+                let seconds = 1.0 / f64::from(hz);
+                self.elapsed += Duration::from_secs_f64(seconds);
+                if outcome.frame {
+                    self.dioxus_polls += 1;
+                    self.motion_seconds += seconds;
+                }
+                struct FakePresenter<'a> {
+                    scenes: &'a mut u64,
+                    presents: &'a mut u64,
+                    commits: &'a mut u64,
+                    text_input_active: &'a mut bool,
+                }
+                impl NativeFramePresenter for FakePresenter<'_> {
+                    fn is_active(&self) -> bool {
+                        true
+                    }
+
+                    fn set_text_input(
+                        &mut self,
+                        input: Option<scorepeek_overlay_handles::TextInputState>,
+                    ) {
+                        *self.text_input_active = input.is_some();
+                    }
+
+                    fn request_frame_commit(&mut self) {
+                        *self.commits = self.commits.saturating_add(1);
+                    }
+
+                    fn present(
+                        &mut self,
+                        document: &mut blitz_dom::BaseDocument,
+                        scale: f64,
+                        width: u32,
+                        height: u32,
+                        work: &mut FrameWorkProfile,
+                    ) -> Result<(), String> {
+                        let mut scene = anyrender::Scene::new();
+                        work.measure("scene", || {
+                            paint_native_scene(&mut scene, document, scale, width, height);
+                        });
+                        work.measure("gpu_present", || {
+                            *self.presents = self.presents.saturating_add(1);
+                        });
+                        work.measure("surface_commit", || {
+                            *self.commits = self.commits.saturating_add(1);
+                        });
+                        *self.scenes = self.scenes.saturating_add(1);
+                        Ok(())
                     }
                 }
-                let mut inner = self.document.inner.borrow_mut();
-                inner.set_viewport(Viewport::new(1920, 1080, 1.0, ColorScheme::Dark));
-                self.motion_seconds += 1.0 / 120.0;
-                apply_motion(&mut inner, self.motion_seconds);
-                inner.resolve(self.motion_seconds);
-                self.layouts += 1;
-                resolve_with_loaded_resources(&mut inner, self.motion_seconds);
-                self.resource_resolves += 1;
-                let mut scene = anyrender::Scene::new();
-                paint_native_scene(&mut scene, &mut inner, 1.0, 1920, 1080);
-                self.scenes += 1;
-                self.presents += 1;
-                self.commits += 1;
+                let refresh = scorepeek_overlay_ui::WaylandRefreshRate::capped(
+                    u16::try_from(hz).map_err(|error| error.to_string())?,
+                )?;
+                let frame_start = if outcome.frame {
+                    self.pending_frame_start
+                        .take()
+                        .unwrap_or_else(|| self.work.snapshot())
+                } else {
+                    self.work.snapshot()
+                };
+                let mut text_input_active = false;
+                let mut presenter = FakePresenter {
+                    scenes: &mut self.scenes,
+                    presents: &mut self.presents,
+                    commits: &mut self.commits,
+                    text_input_active: &mut text_input_active,
+                };
+                let result = run_native_editor_stage_turn(
+                    &mut self.document,
+                    self.projection,
+                    &mut self.previews,
+                    &self.assets,
+                    &self.report,
+                    &self.output,
+                    &scorepeek_overlay_ui::editor_sample_state(),
+                    &mut self.skin_updates,
+                    &mut self.runtime_creates,
+                    &mut self.next_skin_render,
+                    &mut self.animating,
+                    &mut self.full_layout_pending,
+                    &mut self.pending_paint,
+                    &mut self.cadence,
+                    &mut self.work,
+                    Waker::noop(),
+                    &frame_start,
+                    NativeEditorStageTurnInput {
+                        frame: if outcome.frame {
+                            NativeFrameBoundary::Frame
+                        } else {
+                            NativeFrameBoundary::Deferred
+                        },
+                        surface: if outcome.configured {
+                            NativeSurfaceReadiness::Configured
+                        } else {
+                            NativeSurfaceReadiness::Pending
+                        },
+                        projection_changed: false,
+                        input_damage: outcome.input_damage,
+                        now: self.elapsed,
+                        seconds: self.motion_seconds,
+                        refresh,
+                    },
+                    &mut presenter,
+                )?;
+                if result.reconciled {
+                    self.reconciliations = self.reconciliations.saturating_add(1);
+                }
+                self.input_generations = self
+                    .input_generations
+                    .saturating_add(result.reconciliation.input_generations);
+                self.wasm_calls = self
+                    .wasm_calls
+                    .saturating_add(result.reconciliation.wasm_calls);
+                self.tree_updates = self
+                    .tree_updates
+                    .saturating_add(result.reconciliation.tree_updates);
+                if result.paint.is_some() {
+                    self.paint_count = self.paint_count.saturating_add(1);
+                    self.layouts = self.layouts.saturating_add(1);
+                    self.resource_resolves = self.resource_resolves.saturating_add(1);
+                }
+                if !outcome.frame && self.pending_paint && self.pending_frame_start.is_none() {
+                    self.pending_frame_start = Some(frame_start);
+                }
                 Ok(())
+            }
+
+            fn drain_commands(&mut self) -> Vec<CoordinatorCommand> {
+                std::iter::from_fn(|| self.commands.try_recv().ok()).collect()
             }
 
             fn render_pixels(&mut self) -> Vec<u8> {
@@ -5167,14 +6329,337 @@ mod skin_tests {
             }
         }
 
+        impl NativeEventConsumer for FakeStage {
+            fn configure_event(
+                &mut self,
+                logical: [u32; 2],
+                physical: [u32; 2],
+                scale_120: u32,
+            ) -> Result<bool, String> {
+                let scale =
+                    f32::from(u16::try_from(scale_120).map_err(|error| error.to_string())?) / 120.0;
+                self.document.inner.borrow_mut().set_viewport(Viewport::new(
+                    physical[0],
+                    physical[1],
+                    scale,
+                    ColorScheme::Dark,
+                ));
+                self.physical_size = physical;
+                self.scale = scale;
+                self.pending_paint = true;
+                let _ = self.coordinator.send(CoordinatorCommand::EditorInput {
+                    input: EditorInput::Resize {
+                        output: self.output.clone(),
+                        logical_size: logical,
+                    },
+                    correlation: None,
+                });
+                Ok(logical != [0, 0])
+            }
+
+            fn pointer_motion_event(&mut self, point: [f64; 2]) {
+                self.pointer
+                    .dispatch(&mut self.document, point, 0x110, None);
+            }
+
+            fn pointer_button_event(&mut self, button: u32, pressed: bool, point: [f64; 2]) {
+                self.pointer
+                    .dispatch(&mut self.document, point, button, Some(pressed));
+            }
+
+            fn pointer_scroll_event(&mut self, delta: [f64; 2], point: [f64; 2]) {
+                self.pointer.wheel(&mut self.document, point, delta);
+            }
+
+            fn text_event(&mut self, command: &scorepeek_overlay_handles::TextCommand) {
+                text::dispatch_control_key(&mut self.document, command, self.text_composing);
+            }
+
+            fn ime_event(&mut self, update: scorepeek_overlay_handles::TextUpdate) {
+                if let Some(composing) =
+                    text::dispatch_control_composition(&mut self.document, update)
+                {
+                    self.text_composing = composing;
+                }
+            }
+
+            fn keyboard_focus_event(&mut self, focused: bool) {
+                if !focused {
+                    self.text_composing = false;
+                }
+            }
+        }
+
+        #[allow(clippy::struct_excessive_bools)]
+        struct FakeDisplay {
+            canvas_id: String,
+            live_widgets: u64,
+            document: DioxusDocument,
+            commands: std::sync::mpsc::Receiver<CoordinatorCommand>,
+            pointer: PointerInput,
+            text_composing: bool,
+            skin: NativeDisplaySkin,
+            assets: Arc<SkinAssetCache>,
+            work: FrameWorkProfile,
+            full_layout_pending: bool,
+            pending_paint: bool,
+            animating: bool,
+            cadence: FrameCadence,
+            elapsed: Duration,
+            motion_seconds: f64,
+            renderer: anyrender_vello::VelloImageRenderer,
+            presents: u64,
+            commits: u64,
+            paint_count: u64,
+        }
+
+        impl FakeDisplay {
+            fn new(
+                canvas: &crate::config::Canvas,
+                assets: Arc<SkinAssetCache>,
+            ) -> Result<Self, String> {
+                let published = Rc::new(RefCell::new(None));
+                let (sender, commands) = std::sync::mpsc::channel();
+                let props = NativeOverlayProps {
+                    initial: NativeDocumentProjection::Display {
+                        canvas: canvas.presentation(),
+                        visible: true,
+                    },
+                    published,
+                    port: NativeEditorPort {
+                        coordinator: sender,
+                        source_output: Some(canvas.output.clone()),
+                        run_id: "fake-wayland-display".into(),
+                        sequence: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                    },
+                };
+                let mut document = DioxusDocument::new(
+                    VirtualDom::new_with_props(native_overlay, props),
+                    document_config_inner_with_handle(Arc::clone(&assets)).0,
+                );
+                document.initial_build();
+                while poll_native_document(&mut document, Waker::noop()) {}
+                let package = assets.load(canvas.skin.name())?;
+                let report = Rc::new(RefCell::new(RunReport::new()));
+                let (skin, _) = create_native_display_skin(
+                    &mut document,
+                    canvas,
+                    &package,
+                    &report,
+                    Some(&canvas.output),
+                    &scorepeek_overlay_ui::editor_sample_state(),
+                )?;
+                Ok(Self {
+                    canvas_id: canvas.id.clone(),
+                    live_widgets: u64::try_from(canvas.widgets.len()).unwrap_or(u64::MAX),
+                    document,
+                    commands,
+                    pointer: PointerInput::default(),
+                    text_composing: false,
+                    skin,
+                    assets,
+                    work: FrameWorkProfile::default(),
+                    full_layout_pending: true,
+                    pending_paint: true,
+                    animating: false,
+                    cadence: FrameCadence::default(),
+                    elapsed: Duration::ZERO,
+                    motion_seconds: 0.0,
+                    renderer: anyrender_vello::VelloImageRenderer::new(canvas.width, canvas.height),
+                    presents: 0,
+                    commits: 0,
+                    paint_count: 0,
+                })
+            }
+
+            fn turn(&mut self, outcome: NativeEventOutcome, hz: u32) -> Result<(), String> {
+                let seconds = 1.0 / f64::from(hz);
+                self.elapsed += Duration::from_secs_f64(seconds);
+                if outcome.frame {
+                    self.motion_seconds += seconds;
+                }
+                struct FakeDisplayPresenter<'a> {
+                    renderer: &'a mut anyrender_vello::VelloImageRenderer,
+                    presents: &'a mut u64,
+                    commits: &'a mut u64,
+                }
+                impl NativeFramePresenter for FakeDisplayPresenter<'_> {
+                    fn is_active(&self) -> bool {
+                        true
+                    }
+
+                    fn set_text_input(
+                        &mut self,
+                        input: Option<scorepeek_overlay_handles::TextInputState>,
+                    ) {
+                        assert!(
+                            input.is_none(),
+                            "display surfaces never activate text input"
+                        );
+                    }
+
+                    fn request_frame_commit(&mut self) {
+                        *self.commits = self.commits.saturating_add(1);
+                    }
+
+                    fn present(
+                        &mut self,
+                        document: &mut blitz_dom::BaseDocument,
+                        scale: f64,
+                        width: u32,
+                        height: u32,
+                        work: &mut FrameWorkProfile,
+                    ) -> Result<(), String> {
+                        let mut pixels = Vec::new();
+                        let present_started = Instant::now();
+                        let mut scene_elapsed = Duration::ZERO;
+                        self.renderer.render_to_vec(
+                            |scene| {
+                                let scene_started = Instant::now();
+                                paint_native_scene(scene, document, scale, width, height);
+                                scene_elapsed += scene_started.elapsed();
+                            },
+                            &mut pixels,
+                        );
+                        work.record("scene", scene_elapsed);
+                        work.record(
+                            "gpu_present",
+                            present_started.elapsed().saturating_sub(scene_elapsed),
+                        );
+                        if pixels.is_empty() {
+                            return Err("fake display paint produced no pixels".into());
+                        }
+                        *self.presents = self.presents.saturating_add(1);
+                        work.measure("surface_commit", || {
+                            *self.commits = self.commits.saturating_add(1);
+                        });
+                        Ok(())
+                    }
+                }
+                let refresh = scorepeek_overlay_ui::WaylandRefreshRate::capped(
+                    u16::try_from(hz).map_err(|error| error.to_string())?,
+                )?;
+                let frame_start = self.work.snapshot();
+                let mut presenter = FakeDisplayPresenter {
+                    renderer: &mut self.renderer,
+                    presents: &mut self.presents,
+                    commits: &mut self.commits,
+                };
+                let result = run_native_display_turn(
+                    &mut self.document,
+                    &self.assets,
+                    &mut self.full_layout_pending,
+                    &mut self.pending_paint,
+                    &mut self.animating,
+                    &mut self.cadence,
+                    &mut self.work,
+                    Waker::noop(),
+                    &frame_start,
+                    NativeDisplayTurnInput {
+                        frame: if outcome.frame {
+                            NativeFrameBoundary::Frame
+                        } else {
+                            NativeFrameBoundary::Deferred
+                        },
+                        surface: if outcome.configured {
+                            NativeSurfaceReadiness::Configured
+                        } else {
+                            NativeSurfaceReadiness::Pending
+                        },
+                        projection_changed: false,
+                        visibility_changed: false,
+                        input_damage: outcome.input_damage,
+                        visible: true,
+                        live_widgets: self.live_widgets,
+                        now: self.elapsed,
+                        seconds: self.motion_seconds,
+                        refresh,
+                    },
+                    &mut presenter,
+                )?;
+                if result.paint.is_some() {
+                    self.paint_count = self.paint_count.saturating_add(1);
+                }
+                Ok(())
+            }
+
+            fn drain_commands(&mut self) -> Vec<CoordinatorCommand> {
+                std::iter::from_fn(|| self.commands.try_recv().ok()).collect()
+            }
+
+            fn shutdown(mut self, operations: &mut Vec<String>) {
+                self.skin
+                    .tree
+                    .unmount(&mut self.document.inner.borrow_mut());
+                operations.push(format!("runtime-drop:{}", self.canvas_id));
+                operations.push(format!("unmap:{}", self.canvas_id));
+                operations.push(format!("join:{}", self.canvas_id));
+            }
+        }
+
+        impl NativeEventConsumer for FakeDisplay {
+            fn configure_event(
+                &mut self,
+                _logical: [u32; 2],
+                physical: [u32; 2],
+                scale_120: u32,
+            ) -> Result<bool, String> {
+                let scale =
+                    f32::from(u16::try_from(scale_120).map_err(|error| error.to_string())?) / 120.0;
+                self.document.inner.borrow_mut().set_viewport(Viewport::new(
+                    physical[0],
+                    physical[1],
+                    scale,
+                    ColorScheme::Dark,
+                ));
+                Ok(true)
+            }
+
+            fn pointer_motion_event(&mut self, point: [f64; 2]) {
+                self.pointer
+                    .dispatch(&mut self.document, point, 0x110, None);
+            }
+
+            fn pointer_button_event(&mut self, button: u32, pressed: bool, point: [f64; 2]) {
+                self.pointer
+                    .dispatch(&mut self.document, point, button, Some(pressed));
+            }
+
+            fn pointer_scroll_event(&mut self, delta: [f64; 2], point: [f64; 2]) {
+                self.pointer.wheel(&mut self.document, point, delta);
+            }
+
+            fn text_event(&mut self, command: &scorepeek_overlay_handles::TextCommand) {
+                text::dispatch_control_key(&mut self.document, command, self.text_composing);
+            }
+
+            fn ime_event(&mut self, update: scorepeek_overlay_handles::TextUpdate) {
+                if let Some(composing) =
+                    text::dispatch_control_composition(&mut self.document, update)
+                {
+                    self.text_composing = composing;
+                }
+            }
+
+            fn keyboard_focus_event(&mut self, focused: bool) {
+                if !focused {
+                    self.text_composing = false;
+                }
+            }
+        }
+
         struct FakeAdapter {
             projection_cache: NativeProjectionCache,
             published: Arc<std::sync::Mutex<PublishedStages>>,
             surfaces: std::collections::BTreeMap<String, String>,
             stages: std::collections::BTreeMap<String, FakeStage>,
+            displays: std::collections::BTreeMap<String, FakeDisplay>,
             assets: Arc<SkinAssetCache>,
             operations: Vec<String>,
             config_conversions: u64,
+            work: FrameWorkProfile,
+            transported_effects: Vec<EditorEffectKind>,
+            transported_inputs: Vec<String>,
         }
         impl FakeAdapter {
             fn new(
@@ -5186,32 +6671,104 @@ mod skin_tests {
                     published,
                     surfaces: std::collections::BTreeMap::new(),
                     stages: std::collections::BTreeMap::new(),
+                    displays: std::collections::BTreeMap::new(),
                     assets,
                     operations: Vec::new(),
                     config_conversions: 0,
+                    work: FrameWorkProfile::default(),
+                    transported_effects: Vec::new(),
+                    transported_inputs: Vec::new(),
                 }
             }
 
-            fn apply(&mut self, authority: &mut NativeEditorAuthority) -> Result<(), String> {
+            fn drain_stage_transport(&mut self, authority: &mut NativeEditorAuthority) {
+                let commands = self
+                    .stages
+                    .values_mut()
+                    .flat_map(FakeStage::drain_commands)
+                    .chain(
+                        self.displays
+                            .values_mut()
+                            .flat_map(FakeDisplay::drain_commands),
+                    )
+                    .collect::<Vec<_>>();
+                for command in commands {
+                    let effects = match command {
+                        CoordinatorCommand::EditorInput { input, .. } => {
+                            self.transported_inputs.push(format!("{input:?}"));
+                            authority.dispatch(input)
+                        }
+                        CoordinatorCommand::Open {
+                            output,
+                            canvas,
+                            preview_screen,
+                        } => authority.dispatch(EditorInput::Open {
+                            output,
+                            canvas: Some(canvas),
+                            preview: preview_screen
+                                .unwrap_or(scorepeek_overlay_ui::ScreenKind::MusicSelect),
+                        }),
+                        CoordinatorCommand::ResolveOutput { .. } => Vec::new(),
+                    };
+                    for effect in effects {
+                        let kind = effect.kind();
+                        self.transported_effects.push(kind);
+                        let requested_draft = effect.requested_draft().map(<[_]>::to_vec);
+                        let canvases = requested_draft
+                            .clone()
+                            .unwrap_or_else(|| authority.session().draft.clone());
+                        let followups = authority.dispatch(EditorInput::BackendCompleted {
+                            effect: kind,
+                            requested_draft,
+                            reply: EditorBackendReply {
+                                ok: true,
+                                readonly: false,
+                                error: None,
+                                canvases,
+                                dirty: kind == EditorEffectKind::Update,
+                            },
+                        });
+                        for followup in followups {
+                            self.transported_effects.push(followup.kind());
+                        }
+                    }
+                }
+            }
+
+            fn apply_at(
+                &mut self,
+                authority: &mut NativeEditorAuthority,
+                refresh_hz: u32,
+            ) -> Result<(), String> {
+                self.drain_stage_transport(authority);
                 authority.poll();
                 let session = authority.session();
-                let display = session
-                    .draft
-                    .iter()
-                    .map(|presentation| {
-                        let mut canvas = crate::config::empty_canvas(
-                            presentation.id.clone(),
-                            crate::runtime::Backend::Wayland,
-                        );
-                        canvas.apply_presentation(presentation);
-                        canvas
-                    })
-                    .collect::<Vec<_>>();
+                let display = if session.editing {
+                    Vec::new()
+                } else {
+                    let started = Instant::now();
+                    let canvases = session
+                        .draft
+                        .iter()
+                        .map(|presentation| {
+                            let mut canvas = crate::config::empty_canvas(
+                                presentation.id.clone(),
+                                crate::runtime::Backend::Wayland,
+                            );
+                            canvas.apply_presentation(presentation);
+                            canvas
+                        })
+                        .collect::<Vec<_>>();
+                    self.work.record("canvas_config", started.elapsed());
+                    canvases
+                };
+                let started = Instant::now();
                 let projected = self.projection_cache.resolve(
                     Some(scorepeek_overlay_ui::Skin::CyanSystem),
                     &session,
                     &display,
                 )?;
+                self.work.record("projection", started.elapsed());
                 let lifecycle = reconcile_worker_lifecycle(
                     self.surfaces
                         .iter()
@@ -5220,12 +6777,18 @@ mod skin_tests {
                 );
                 for id in lifecycle.stop_join {
                     if let Some(output) = self.surfaces.remove(&id) {
+                        self.operations.push(format!("stop-object:{id}"));
                         self.operations.push(format!("stop:{output}"));
-                        if let Some(stage) = self.stages.remove(&output) {
+                        if let Some(mut stage) = self.stages.remove(&output) {
+                            let wake = dispatch_native_event(&mut stage, Event::Wake)?;
+                            assert!(!wake.closed);
+                            self.operations.push(format!("wake:{output}"));
+                            let closed = dispatch_native_event(&mut stage, Event::Closed)?;
+                            assert!(closed.closed);
+                            self.operations.push(format!("close:{output}"));
                             stage.shutdown(&mut self.operations);
-                        } else {
-                            self.operations.push(format!("unmap:{output}"));
-                            self.operations.push(format!("join:{output}"));
+                        } else if let Some(display) = self.displays.remove(&id) {
+                            display.shutdown(&mut self.operations);
                         }
                     }
                 }
@@ -5237,6 +6800,22 @@ mod skin_tests {
                     self.config_conversions += 1;
                     self.operations.push(format!("configure:{}", canvas.output));
                     self.surfaces.insert(id, canvas.output.clone());
+                    if !session.editing {
+                        let mut display = FakeDisplay::new(canvas, Arc::clone(&self.assets))?;
+                        let configured = dispatch_native_event(
+                            &mut display,
+                            Event::Configure {
+                                logical: [canvas.width, canvas.height],
+                                physical: [canvas.width, canvas.height],
+                                scale_120: 120,
+                            },
+                        )?;
+                        assert!(configured.configured);
+                        display.turn(configured, refresh_hz)?;
+                        let frame = dispatch_native_event(&mut display, Event::Frame)?;
+                        display.turn(frame, refresh_hz)?;
+                        self.displays.insert(canvas.id.clone(), display);
+                    }
                 }
                 if session.editing {
                     let published = self
@@ -5247,22 +6826,43 @@ mod skin_tests {
                         .clone();
                     for projection in published.values().rev().cloned() {
                         if let Some(stage) = self.stages.get_mut(&projection.output.name) {
-                            stage.accept(projection)?;
+                            stage.accept(&projection);
                         } else {
-                            self.stages.insert(
-                                projection.output.name.clone(),
-                                FakeStage::new(projection, Arc::clone(&self.assets))?,
-                            );
+                            let output = projection.output.name.clone();
+                            let logical = projection.output.logical_size.unwrap_or([1920, 1080]);
+                            let mut stage = FakeStage::new(projection, Arc::clone(&self.assets))?;
+                            let configured = dispatch_native_event(
+                                &mut stage,
+                                Event::Configure {
+                                    logical,
+                                    physical: logical,
+                                    scale_120: 120,
+                                },
+                            )?;
+                            assert!(configured.configured);
+                            stage.turn(configured, refresh_hz)?;
+                            self.operations.push(format!("surface-create:{output}"));
+                            self.operations.push(format!("surface-configure:{output}"));
+                            self.stages.insert(output, stage);
                         }
                     }
                     for projection in published.into_values() {
-                        self.stages
+                        let stage = self
+                            .stages
                             .get_mut(&projection.output.name)
-                            .expect("stage created for every output")
-                            .accept(projection)?;
+                            .expect("stage created for every output");
+                        stage.accept(&projection);
+                        if stage.skin_updates.pending || stage.pending_paint || stage.animating {
+                            let outcome = dispatch_native_event(stage, Event::Frame)?;
+                            stage.turn(outcome, refresh_hz)?;
+                        }
                     }
                 }
                 Ok(())
+            }
+
+            fn apply(&mut self, authority: &mut NativeEditorAuthority) -> Result<(), String> {
+                self.apply_at(authority, 120)
             }
 
             fn runtime_creates(&self) -> u64 {
@@ -5283,6 +6883,220 @@ mod skin_tests {
                 self.operations.push("output-discovery".into());
                 self.apply(authority)
             }
+
+            fn event(&mut self, output: &str, event: Event) -> Result<NativeEventOutcome, String> {
+                let stage = self
+                    .stages
+                    .get_mut(output)
+                    .ok_or_else(|| format!("fake event targets missing output {output}"))?;
+                dispatch_native_event(stage, event)
+            }
+
+            fn display_event(
+                &mut self,
+                canvas: &str,
+                event: Event,
+            ) -> Result<NativeEventOutcome, String> {
+                let display = self
+                    .displays
+                    .get_mut(canvas)
+                    .ok_or_else(|| format!("fake event targets missing canvas {canvas}"))?;
+                dispatch_native_event(display, event)
+            }
+
+            #[allow(clippy::cast_possible_truncation)]
+            fn stage_point(&self, output: &str, selector: &str) -> Result<[f64; 2], String> {
+                let stage = self
+                    .stages
+                    .get(output)
+                    .ok_or_else(|| format!("missing stage {output}"))?;
+                let inner = stage.document.inner.borrow();
+                let node = inner
+                    .query_selector(selector)
+                    .map_err(|error| format!("invalid selector {selector}: {error:?}"))?
+                    .ok_or_else(|| format!("selector did not match: {selector}"))?;
+                let rect = inner
+                    .get_client_bounding_rect(node)
+                    .ok_or_else(|| format!("selector has no layout: {selector}"))?;
+                let point = [rect.x + rect.width / 2.0, rect.y + rect.height / 2.0];
+                let mut hit = inner.element_from_point(point[0] as f32, point[1] as f32);
+                let mut reaches_target = false;
+                while let Some(hit_node) = hit {
+                    if hit_node == node {
+                        reaches_target = true;
+                        break;
+                    }
+                    hit = inner.get_node(hit_node).and_then(|item| item.parent);
+                }
+                if !reaches_target {
+                    let obscurer = inner
+                        .element_from_point(point[0] as f32, point[1] as f32)
+                        .and_then(|id| {
+                            let rect = inner.get_client_bounding_rect(id);
+                            inner
+                                .get_node(id)
+                                .and_then(|item| item.element_data())
+                                .map(|element| (element, rect))
+                        })
+                        .map_or_else(
+                            || "non-element".into(),
+                            |(element, rect)| {
+                                let class = element
+                                    .attrs
+                                    .iter()
+                                    .find(|attribute| attribute.name.local.as_ref() == "class")
+                                    .map_or("", |attribute| attribute.value.as_str());
+                                let section = element
+                                    .attrs
+                                    .iter()
+                                    .find(|attribute| {
+                                        attribute.name.local.as_ref() == "data-section"
+                                    })
+                                    .map_or("", |attribute| attribute.value.as_str());
+                                format!("{}.{class}[{section}] {rect:?}", element.name.local)
+                            },
+                        );
+                    return Err(format!(
+                        "selector center is obscured: {selector} at {},{} by {obscurer}",
+                        point[0], point[1],
+                    ));
+                }
+                Ok(point)
+            }
+
+            #[allow(clippy::cast_possible_truncation)]
+            fn stage_descendant_point(
+                &self,
+                output: &str,
+                selector: &str,
+            ) -> Result<[f64; 2], String> {
+                let stage = self
+                    .stages
+                    .get(output)
+                    .ok_or_else(|| format!("missing stage {output}"))?;
+                let inner = stage.document.inner.borrow();
+                let node = inner
+                    .query_selector(selector)
+                    .map_err(|error| format!("invalid selector {selector}: {error:?}"))?
+                    .ok_or_else(|| format!("selector did not match: {selector}"))?;
+                let [width, height] = stage.physical_size;
+                for y_step in 1..20 {
+                    for x_step in 1..20 {
+                        let point = [
+                            f64::from(width * x_step / 20),
+                            f64::from(height * y_step / 20),
+                        ];
+                        let mut hit = inner.element_from_point(point[0] as f32, point[1] as f32);
+                        while let Some(hit_node) = hit {
+                            if hit_node == node {
+                                return Ok(point);
+                            }
+                            hit = inner.get_node(hit_node).and_then(|item| item.parent);
+                        }
+                    }
+                }
+                Err(format!("selector has no visible descendant: {selector}"))
+            }
+
+            fn click_stage(
+                &mut self,
+                authority: &mut NativeEditorAuthority,
+                output: &str,
+                selector: &str,
+            ) -> Result<(), String> {
+                let [x, y] = self
+                    .stage_point(output, selector)
+                    .or_else(|_| self.stage_descendant_point(output, selector))?;
+                for event in [
+                    Event::PointerMotion { x, y },
+                    Event::PointerButton {
+                        button: 0x110,
+                        pressed: true,
+                        x,
+                        y,
+                    },
+                    Event::PointerButton {
+                        button: 0x110,
+                        pressed: false,
+                        x,
+                        y,
+                    },
+                ] {
+                    self.event(output, event)?;
+                    self.apply(authority)?;
+                }
+                self.frame(authority, 120)
+            }
+
+            fn drag_stage(
+                &mut self,
+                authority: &mut NativeEditorAuthority,
+                output: &str,
+                selector: &str,
+                delta: [f64; 2],
+            ) -> Result<(), String> {
+                let [x, y] = self.stage_point(output, selector)?;
+                self.event(output, Event::PointerMotion { x, y })?;
+                self.event(
+                    output,
+                    Event::PointerButton {
+                        button: 0x110,
+                        pressed: true,
+                        x,
+                        y,
+                    },
+                )?;
+                self.apply(authority)?;
+                for step in 1..=4 {
+                    let fraction = f64::from(step) / 4.0;
+                    self.event(
+                        output,
+                        Event::PointerMotion {
+                            x: x + delta[0] * fraction,
+                            y: y + delta[1] * fraction,
+                        },
+                    )?;
+                    self.apply(authority)?;
+                    self.frame(authority, 120)?;
+                }
+                self.event(
+                    output,
+                    Event::PointerButton {
+                        button: 0x110,
+                        pressed: false,
+                        x: x + delta[0],
+                        y: y + delta[1],
+                    },
+                )?;
+                self.apply(authority)?;
+                self.frame(authority, 120)
+            }
+
+            fn scroll_stage(
+                &mut self,
+                authority: &mut NativeEditorAuthority,
+                output: &str,
+                selector: &str,
+                dy: f64,
+            ) -> Result<(), String> {
+                let [x, y] = self.stage_descendant_point(output, selector)?;
+                self.event(output, Event::PointerScroll { dx: 0.0, dy, x, y })?;
+                self.apply(authority)?;
+                self.frame(authority, 120)
+            }
+
+            fn frame(
+                &mut self,
+                authority: &mut NativeEditorAuthority,
+                hz: u32,
+            ) -> Result<(), String> {
+                for stage in self.stages.values_mut() {
+                    if stage.pending_frame_start.is_none() {
+                        stage.pending_frame_start = Some(stage.work.snapshot());
+                    }
+                }
+                self.apply_at(authority, hz)
+            }
         }
 
         fn assert_converged(fake: &FakeAdapter, authority: &NativeEditorAuthority) {
@@ -5296,6 +7110,27 @@ mod skin_tests {
             assert_eq!(
                 fake.surfaces, expected_surfaces,
                 "fake surfaces must exactly equal the production lifecycle projection"
+            );
+            let mut paint_targets = fake
+                .displays
+                .iter()
+                .filter(|(_, display)| display.presents > 0)
+                .map(|(id, _)| id.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            for (output, stage) in &fake.stages {
+                if stage.presents > 0
+                    && let Some((id, _)) = fake
+                        .surfaces
+                        .iter()
+                        .find(|(_, surface_output)| *surface_output == output)
+                {
+                    paint_targets.insert(id.clone());
+                }
+            }
+            assert_eq!(
+                paint_targets,
+                fake.surfaces.keys().cloned().collect(),
+                "production paint admission and fake presentation must exactly cover live surfaces"
             );
 
             let owners = fake
@@ -5313,8 +7148,43 @@ mod skin_tests {
                     owners.is_empty(),
                     "closed editor must retain no canvas owner"
                 );
+                assert_eq!(
+                    fake.displays
+                        .keys()
+                        .cloned()
+                        .collect::<std::collections::BTreeSet<_>>(),
+                    fake.surfaces.keys().cloned().collect(),
+                    "display skin runtime/tree set must exactly equal live display surfaces"
+                );
+                for (id, display) in &fake.displays {
+                    assert_eq!(&display.canvas_id, id);
+                    assert!(
+                        display.paint_count > 0,
+                        "every live display must be painted"
+                    );
+                    assert!(display.presents > 0, "every live display must be presented");
+                    assert!(display.commits > 0, "every live display must be committed");
+                    assert!(
+                        display
+                            .document
+                            .inner
+                            .borrow()
+                            .query_selector("#scorepeek-skin-root > *")
+                            .unwrap()
+                            .is_some(),
+                        "every live display must retain a mounted production skin tree"
+                    );
+                    assert!(
+                        !display.skin.release.is_empty(),
+                        "every live display must retain its production skin runtime metadata"
+                    );
+                }
                 return;
             }
+            assert!(
+                fake.displays.is_empty(),
+                "editing mode must not retain display skin runtimes"
+            );
 
             let expected_stages = session
                 .outputs
@@ -5445,7 +7315,24 @@ mod skin_tests {
         canvases[0].output = Some("WL-1".into());
         canvases[1].output = Some("WL-2".into());
         canvases[0].background = scorepeek_overlay_ui::Background::Static;
-        canvases[0].widgets.clear();
+        canvases[0].x = 0;
+        canvases[0].y = 0;
+        canvases[0].width = canvases[0].width.min(1_200);
+        canvases[0].height = canvases[0].height.min(700);
+        let mut animated_widget = canvases[1].widgets[0].clone();
+        animated_widget.x = 600;
+        animated_widget.y = 160;
+        animated_widget.width = animated_widget.width.min(480);
+        animated_widget.height = animated_widget.height.min(200);
+        let mut unrelated_widget = animated_widget.clone();
+        unrelated_widget.id = "selection-unrelated".into();
+        unrelated_widget.y = 420;
+        canvases[1].widgets = vec![animated_widget, unrelated_widget];
+        canvases[1].background = scorepeek_overlay_ui::Background::Animated;
+        canvases[1].width = 1_200;
+        canvases[1].height = 700;
+        canvases[1].x = 0;
+        canvases[1].y = 0;
         let mut session = EditorSession::new(canvases, [1920, 1080], "fake-wayland");
         session.set_session_id(41);
         session.set_skins(embedded_editor_skins());
@@ -5473,6 +7360,7 @@ mod skin_tests {
         let acquired = authority.session().draft.clone();
         authority.dispatch(EditorInput::BackendCompleted {
             effect: EditorEffectKind::Acquire,
+            requested_draft: None,
             reply: EditorBackendReply {
                 ok: true,
                 readonly: false,
@@ -5496,12 +7384,198 @@ mod skin_tests {
                 .unwrap_or_else(|error| panic!("install test skin {package}: {error}"));
         }
         let assets = Arc::new(SkinAssetCache::new(store));
+        let mut cold_load_work = FrameWorkProfile::default();
+        let cold_start = cold_load_work.snapshot();
+        assets
+            .load_profiled(
+                scorepeek_overlay_ui::Skin::CyanSystem.name(),
+                &mut cold_load_work,
+            )
+            .unwrap();
+        cold_load_work.finish_frame(&cold_start, 0, 0);
+        let cold_load = cold_load_work.frames.back().unwrap();
+        assert_eq!(cold_load.phases["package_open"].calls, 1);
+        assert_eq!(cold_load.phases["package_clone"].calls, 1);
+        assert_eq!(
+            cold_load.phases["package_open"].total_ns,
+            assets.open_ns.load(std::sync::atomic::Ordering::Relaxed)
+        );
+        assert_eq!(
+            cold_load.phases["package_clone"].total_ns,
+            assets.clone_ns.load(std::sync::atomic::Ordering::Relaxed)
+        );
         let mut fake = FakeAdapter::new(published, assets);
         fake.apply(&mut authority).unwrap();
+        let configured = fake
+            .event(
+                "WL-1",
+                Event::Configure {
+                    logical: [2_000, 1_200],
+                    physical: [2_000, 1_200],
+                    scale_120: 120,
+                },
+            )
+            .unwrap();
+        assert!(configured.configured);
+        fake.apply(&mut authority).unwrap();
+        assert_eq!(
+            authority
+                .session()
+                .outputs
+                .iter()
+                .find(|output| output.name == "WL-1")
+                .and_then(|output| output.logical_size),
+            Some([2_000, 1_200]),
+            "fake configure must traverse the production resize transport into Dioxus authority"
+        );
+        let configured = fake
+            .event(
+                "WL-1",
+                Event::Configure {
+                    logical: [1_920, 1_080],
+                    physical: [1_920, 1_080],
+                    scale_120: 120,
+                },
+            )
+            .unwrap();
+        assert!(configured.configured);
+        fake.apply(&mut authority).unwrap();
+        for event in [
+            Event::PointerMotion { x: 8.0, y: 8.0 },
+            Event::PointerButton {
+                button: 0x110,
+                pressed: true,
+                x: 8.0,
+                y: 8.0,
+            },
+            Event::PointerButton {
+                button: 0x110,
+                pressed: false,
+                x: 8.0,
+                y: 8.0,
+            },
+            Event::PointerScroll {
+                dx: 0.0,
+                dy: -20.0,
+                x: 8.0,
+                y: 8.0,
+            },
+            Event::Text(scorepeek_overlay_handles::TextCommand::Cancel),
+            Event::Ime(scorepeek_overlay_handles::TextUpdate::default()),
+            Event::KeyboardFocus(false),
+            Event::Wake,
+        ] {
+            let outcome = fake.event("WL-1", event).unwrap();
+            assert!(!outcome.closed);
+        }
+        fake.scroll_stage(&mut authority, "WL-1", ".navigator-scroll", -800.0)
+            .unwrap();
+        fake.click_stage(
+            &mut authority,
+            "WL-1",
+            ".workspace-output-option[data-output='WL-2'] > .navigator-item-line > .navigator-item-select",
+        )
+        .unwrap();
+        assert_eq!(authority.session().active_output.as_deref(), Some("WL-2"));
+        fake.scroll_stage(&mut authority, "WL-2", ".navigator-scroll", -800.0)
+            .unwrap();
+        fake.click_stage(
+            &mut authority,
+            "WL-2",
+            ".canvas-select[data-canvas-id='wayland-selection'] > .navigator-item-line > .navigator-item-select",
+        )
+        .unwrap();
+        let (drag_output, dragged_canvas, dragged_widget, before_drag) = {
+            let session = authority.session();
+            let canvas = session.current().expect("opened canvas remains selected");
+            let widget = canvas
+                .widgets
+                .iter()
+                .find(|widget| {
+                    let horizontal_center = canvas
+                        .x
+                        .saturating_add(widget.x)
+                        .saturating_add(i32::try_from(widget.width / 2).unwrap_or(i32::MAX));
+                    let center = canvas
+                        .y
+                        .saturating_add(widget.y)
+                        .saturating_add(i32::try_from(widget.height / 2).unwrap_or(i32::MAX));
+                    horizontal_center > 500 && (100..680).contains(&center)
+                })
+                .expect("fixture has a draggable widget inside the logical viewport");
+            (
+                session.active_output.clone().unwrap(),
+                canvas.id.clone(),
+                widget.id.clone(),
+                [widget.x, widget.y],
+            )
+        };
+        let revision_before_drag = authority.session().revision;
+        fake.drag_stage(
+            &mut authority,
+            &drag_output,
+            &format!(
+                ".editor-canvas[data-canvas='{dragged_canvas}'] .editor-widget-hit[data-widget='{dragged_widget}']"
+            ),
+            [64.0, 40.0],
+        )
+        .unwrap();
+        assert!(
+            authority.session().revision >= revision_before_drag + 4,
+            "transported inputs: {:?}",
+            fake.transported_inputs
+        );
+        let after_drag = {
+            let session = authority.session();
+            let widget = session
+                .draft
+                .iter()
+                .find(|canvas| canvas.id == dragged_canvas)
+                .unwrap()
+                .widgets
+                .iter()
+                .find(|widget| widget.id == dragged_widget)
+                .unwrap();
+            [widget.x, widget.y]
+        };
+        assert_eq!(after_drag, [before_drag[0] + 64, before_drag[1] + 40]);
+        assert!(
+            fake.transported_effects.contains(&EditorEffectKind::Update),
+            "protocol pointer events must traverse Dioxus and coordinator transport to authority; inputs={:?}",
+            fake.transported_inputs
+        );
+        authority.dispatch(EditorInput::Action(EditorAction::SelectOutput(
+            "WL-1".into(),
+        )));
+        authority.dispatch(EditorInput::Action(EditorAction::SelectCanvas(
+            "wayland-status".into(),
+        )));
+        fake.apply(&mut authority).unwrap();
+        assert_eq!(authority.session().active_output.as_deref(), Some("WL-1"));
         assert_converged(&fake, &authority);
         assert_eq!((fake.surfaces.len(), fake.stages.len()), (2, 2));
+        let package_clones_before = fake
+            .assets
+            .clone_count
+            .load(std::sync::atomic::Ordering::Relaxed);
         let wl1 = fake.stages.get_mut("WL-1").unwrap();
         wl1.frame().unwrap();
+        let measured_package_clones = wl1
+            .work
+            .frames
+            .back()
+            .expect("a frame callback records one workload sample")
+            .phases["package_clone"]
+            .calls;
+        let package_clones_after = fake
+            .assets
+            .clone_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            measured_package_clones,
+            package_clones_after.saturating_sub(package_clones_before),
+            "NetProvider package clones must be attributed to the frame that fetched the resource"
+        );
         let pixels = wl1.render_pixels();
         let background_offset = (40 * 1920 + 400) * 4;
         let background_pixel = pixels[background_offset..background_offset + 4].to_vec();
@@ -5528,6 +7602,9 @@ mod skin_tests {
             fake.assets
                 .open_count
                 .load(std::sync::atomic::Ordering::Relaxed),
+            fake.assets
+                .resource_lookup_count
+                .load(std::sync::atomic::Ordering::Relaxed),
             fake.stages
                 .values()
                 .map(|stage| stage.reconciliations)
@@ -5537,6 +7614,24 @@ mod skin_tests {
                 .map(|stage| stage.input_generations)
                 .sum::<u64>(),
         );
+        let work_calls = |fake: &FakeAdapter, phase: &'static str| {
+            fake.work.calls(phase)
+                + fake
+                    .stages
+                    .values()
+                    .map(|stage| stage.work.calls(phase))
+                    .sum::<u64>()
+        };
+        let retained_work = [
+            "package_clone",
+            "wasm_runtime_create",
+            "skin_input",
+            "wasm_render",
+            "json_tree",
+            "tree_reconciliation",
+            "skin_reconciliation",
+        ]
+        .map(|phase| work_calls(&fake, phase));
         let frame_counts = |fake: &FakeAdapter| {
             fake.stages
                 .values()
@@ -5565,12 +7660,27 @@ mod skin_tests {
                     )
                 })
         };
-        for frame_count in [60_u64, 120] {
+        for hz in [60_u32, 120] {
+            fake.apply(&mut authority).unwrap();
+            let sample_counts = fake
+                .stages
+                .iter()
+                .map(|(output, stage)| (output.clone(), stage.work.frames.len()))
+                .collect::<std::collections::BTreeMap<_, _>>();
             let frame_before = frame_counts(&fake);
-            for _ in 0..frame_count {
-                for stage in fake.stages.values_mut() {
-                    stage.frame().unwrap();
-                }
+            let projection_before = work_calls(&fake, "projection");
+            let config_before = work_calls(&fake, "canvas_config");
+            let work_before = [
+                "dioxus_poll",
+                "blitz_layout",
+                "resource_decode",
+                "scene",
+                "gpu_present",
+                "surface_commit",
+            ]
+            .map(|phase| work_calls(&fake, phase));
+            for _ in 0..hz {
+                fake.frame(&mut authority, hz).unwrap();
             }
             assert_eq!(
                 (
@@ -5579,6 +7689,9 @@ mod skin_tests {
                     fake.runtime_creates(),
                     fake.assets
                         .open_count
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                    fake.assets
+                        .resource_lookup_count
                         .load(std::sync::atomic::Ordering::Relaxed),
                     fake.stages
                         .values()
@@ -5592,9 +7705,48 @@ mod skin_tests {
                 heavy,
                 "steady frames must poll and paint without rebuilding projection/config/runtime"
             );
+            assert_eq!(
+                [
+                    "package_clone",
+                    "wasm_runtime_create",
+                    "skin_input",
+                    "wasm_render",
+                    "json_tree",
+                    "tree_reconciliation",
+                    "skin_reconciliation",
+                ]
+                .map(|phase| work_calls(&fake, phase)),
+                retained_work,
+                "steady production turns must not reach retained skin reconstruction phases"
+            );
             let frame_after = frame_counts(&fake);
-            let expected = frame_count * u64::try_from(fake.stages.len()).unwrap();
-            assert_eq!(frame_after.0 - frame_before.0, expected);
+            let expected = u64::from(hz) * u64::try_from(fake.stages.len()).unwrap();
+            assert_eq!(
+                work_calls(&fake, "projection") - projection_before,
+                u64::from(hz)
+            );
+            assert_eq!(work_calls(&fake, "canvas_config"), config_before);
+            let work_after = [
+                "dioxus_poll",
+                "blitz_layout",
+                "resource_decode",
+                "scene",
+                "gpu_present",
+                "surface_commit",
+            ]
+            .map(|phase| work_calls(&fake, phase));
+            assert!(
+                (expected..=expected + u64::try_from(fake.stages.len()).unwrap())
+                    .contains(&(work_after[0] - work_before[0]))
+            );
+            assert_eq!(work_after[1] - work_before[1], expected * 2);
+            for index in 2..work_after.len() {
+                assert_eq!(work_after[index] - work_before[index], expected);
+            }
+            assert!(
+                (expected..=expected + u64::try_from(fake.stages.len()).unwrap())
+                    .contains(&(frame_after.0 - frame_before.0))
+            );
             assert_eq!(
                 (
                     frame_after.1 - frame_before.1,
@@ -5607,11 +7759,65 @@ mod skin_tests {
             assert_eq!(frame_after.4 - frame_before.4, expected);
             assert_eq!(frame_after.5 - frame_before.5, expected);
             assert_eq!(frame_after.6 - frame_before.6, expected);
-            assert_eq!(frame_after.7 - frame_before.7, expected);
+            assert!(
+                (expected..=expected + u64::try_from(fake.stages.len()).unwrap())
+                    .contains(&(frame_after.7 - frame_before.7))
+            );
+            for (output, stage) in &fake.stages {
+                let before = sample_counts[output];
+                let samples = stage.work.frames.iter().skip(before).collect::<Vec<_>>();
+                assert_eq!(samples.len(), usize::try_from(hz).unwrap());
+                let expected_live_canvases =
+                    u64::try_from(stage.previews.len()).unwrap_or(u64::MAX);
+                let expected_live_widgets =
+                    stage.previews.values().fold(0_u64, |count, preview| {
+                        count.saturating_add(
+                            u64::try_from(preview.canvas.widgets.len()).unwrap_or(u64::MAX),
+                        )
+                    });
+                for sample in samples {
+                    assert!(
+                        FrameWorkProfile::REQUIRED_PHASES
+                            .iter()
+                            .all(|phase| sample.phases.contains_key(phase)),
+                        "every frame must represent every required phase as measured work, zero work, or unmeasured"
+                    );
+                    for phase in [
+                        "projection_rebuild",
+                        "canvas_config",
+                        "package_open",
+                        "package_clone",
+                        "wasm_runtime_create",
+                        "skin_input",
+                        "wasm_render",
+                        "json_tree",
+                        "tree_reconciliation",
+                    ] {
+                        assert_eq!(sample.phases[phase].calls, 0, "unexpected {phase} work");
+                    }
+                    assert_eq!(sample.phases["dioxus_poll"].calls, 1);
+                    assert_eq!(sample.phases["blitz_layout"].calls, 2);
+                    assert_eq!(sample.phases["scene"].calls, 1);
+                    assert_eq!(sample.phases["gpu_present"].calls, 1);
+                    assert_eq!(sample.phases["surface_commit"].calls, 1);
+                    assert_eq!(sample.live_canvases, expected_live_canvases);
+                    assert_eq!(sample.live_widgets, expected_live_widgets);
+                }
+            }
         }
 
         authority.dispatch(EditorInput::Action(EditorAction::CanvasVisibleNone));
         fake.apply(&mut authority).unwrap();
+        assert!(
+            fake.stages.values().any(|stage| {
+                stage
+                    .work
+                    .frames
+                    .back()
+                    .is_some_and(|sample| sample.phases["projection_rebuild"].calls > 0)
+            }),
+            "a projection accepted on a deferred turn must remain attributed to the frame that presents it"
+        );
         assert_converged(&fake, &authority);
         let pixels_after_unmount = fake.stages.get_mut("WL-1").unwrap().render_pixels();
         assert_ne!(
@@ -5655,8 +7861,13 @@ mod skin_tests {
             "skin replacement must create exactly one replacement runtime"
         );
 
-        authority.dispatch(EditorInput::Action(EditorAction::DeleteCanvas));
-        fake.apply(&mut authority).unwrap();
+        let _deleted_canvas = authority.session().selected_canvas.clone().unwrap();
+        for _ in 0..8 {
+            fake.scroll_stage(&mut authority, "WL-1", ".inspector-scroll", -2_000.0)
+                .unwrap();
+        }
+        fake.click_stage(&mut authority, "WL-1", ".delete-canvas")
+            .unwrap();
         assert_converged(&fake, &authority);
         assert_eq!(
             fake.stages
@@ -5674,11 +7885,23 @@ mod skin_tests {
             1,
             "canvas deletion must release its runtime owner"
         );
-        let live_after_delete = fake
+        for _ in 0..8 {
+            authority.dispatch(EditorInput::Action(EditorAction::AddCanvas));
+            fake.apply(&mut authority).unwrap();
+            authority.dispatch(EditorInput::Action(EditorAction::DeleteCanvas));
+            fake.apply(&mut authority).unwrap();
+        }
+        assert_converged(&fake, &authority);
+        let deleted_history_sample_sequences = fake
             .stages
-            .values()
-            .map(|stage| stage.previews.len())
-            .sum::<usize>() as u64;
+            .iter()
+            .map(|(output, stage)| {
+                (
+                    output.clone(),
+                    stage.work.frames.back().map_or(0, |sample| sample.sequence),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
         let work_before_delete_frame = fake
             .stages
             .values()
@@ -5692,16 +7915,8 @@ mod skin_tests {
             .fold((0, 0, 0), |sum, count| {
                 (sum.0 + count.0, sum.1 + count.1, sum.2 + count.2)
             });
-        for stage in fake.stages.values_mut() {
-            for preview in stage.previews.values_mut() {
-                preview.next_render = Some(
-                    Instant::now()
-                        .checked_sub(Duration::from_millis(1))
-                        .unwrap(),
-                );
-            }
-            stage.skin_updates.request();
-            stage.frame().unwrap();
+        for _ in 0..60 {
+            fake.frame(&mut authority, 60).unwrap();
         }
         let work_after_delete_frame = fake
             .stages
@@ -5722,11 +7937,33 @@ mod skin_tests {
                 work_after_delete_frame.1 - work_before_delete_frame.1,
                 work_after_delete_frame.2 - work_before_delete_frame.2,
             ),
-            (live_after_delete, live_after_delete, live_after_delete),
-            "scheduled skin work must scale with live canvases, not deleted history"
+            (0, 0, 0),
+            "CSS animation after deletion must not revisit deleted or unchanged live skin runtimes"
         );
-        authority.dispatch(EditorInput::Action(EditorAction::AddCanvas));
-        fake.apply(&mut authority).unwrap();
+        for (output, stage) in &fake.stages {
+            let expected_live_canvases = u64::try_from(stage.previews.len()).unwrap_or(u64::MAX);
+            let expected_live_widgets = stage.previews.values().fold(0_u64, |count, preview| {
+                count
+                    .saturating_add(u64::try_from(preview.canvas.widgets.len()).unwrap_or(u64::MAX))
+            });
+            let samples = stage
+                .work
+                .frames
+                .iter()
+                .filter(|sample| sample.sequence > deleted_history_sample_sequences[output])
+                .collect::<Vec<_>>();
+            assert_eq!(samples.len(), 60);
+            for sample in samples {
+                assert_eq!(sample.live_canvases, expected_live_canvases);
+                assert_eq!(sample.live_widgets, expected_live_widgets);
+                assert_eq!(sample.phases["skin_input"].calls, 0);
+                assert_eq!(sample.phases["wasm_render"].calls, 0);
+                assert_eq!(sample.phases["json_tree"].calls, 0);
+                assert_eq!(sample.phases["tree_reconciliation"].calls, 0);
+            }
+        }
+        fake.click_stage(&mut authority, "WL-1", ".add-canvas")
+            .unwrap();
         assert_converged(&fake, &authority);
         assert_eq!(
             fake.stages
@@ -5744,8 +7981,13 @@ mod skin_tests {
             .get("WL-2")
             .cloned()
             .unwrap();
-        authority.dispatch(EditorInput::Action(EditorAction::Output("WL-2".into())));
-        fake.apply(&mut authority).unwrap();
+        let _moved_canvas = authority.session().selected_canvas.clone().unwrap();
+        for _ in 0..8 {
+            fake.scroll_stage(&mut authority, "WL-1", ".inspector-scroll", -2_000.0)
+                .unwrap();
+        }
+        fake.click_stage(&mut authority, "WL-1", ".output-option[data-output='WL-2']")
+            .unwrap();
         assert_converged(&fake, &authority);
         assert_eq!(
             fake.stages
@@ -5763,34 +8005,22 @@ mod skin_tests {
             2,
             "reverse delivery still leaves one owner per canvas"
         );
+        assert_eq!(fake.stages["WL-2"].previews.len(), 2);
+        assert!(
+            fake.stages["WL-2"].previews["wayland-selection"]
+                .canvas
+                .widgets
+                .len()
+                > 1,
+            "the animated workload must include multiple widgets"
+        );
         let wl2 = fake.stages.get_mut("WL-2").unwrap();
-        assert_eq!(wl2.previews.len(), 2);
-        for preview in wl2.previews.values_mut() {
-            preview.next_render = None;
-        }
-        wl2.previews.values_mut().next().unwrap().next_render = Some(
-            Instant::now()
-                .checked_sub(Duration::from_millis(1))
-                .unwrap(),
-        );
-        let scheduled_before = (wl2.input_generations, wl2.wasm_calls, wl2.tree_updates);
-        wl2.skin_updates.request();
-        wl2.frame().unwrap();
-        assert_eq!(
-            (
-                wl2.input_generations - scheduled_before.0,
-                wl2.wasm_calls - scheduled_before.1,
-                wl2.tree_updates - scheduled_before.2,
-            ),
-            (1, 1, 1),
-            "one scheduled canvas must not rebuild input or presentation for unrelated canvases"
-        );
         let accepted = wl2.projection_accepts;
         let current_revision = match &*wl2.projection.borrow() {
             NativeDocumentProjection::Editor(stage) => stage.revision,
             NativeDocumentProjection::Display { .. } => unreachable!(),
         };
-        wl2.accept(stale_wl2).unwrap();
+        wl2.accept(&stale_wl2);
         assert_eq!(wl2.projection_accepts, accepted);
         assert_eq!(
             match &*wl2.projection.borrow() {
@@ -5842,39 +8072,75 @@ mod skin_tests {
             "all retained skin resources must drop before renderer suspension"
         );
 
-        let effects = authority.dispatch(EditorInput::Action(EditorAction::Close));
+        fake.click_stage(&mut authority, "WL-2", ".discard-action")
+            .unwrap();
         assert!(
-            effects
-                .iter()
-                .any(|effect| effect.kind() == EditorEffectKind::Close)
+            fake.transported_effects
+                .contains(&EditorEffectKind::Discard)
         );
-        let closing = authority.session().draft.clone();
-        authority.dispatch(EditorInput::BackendCompleted {
-            effect: EditorEffectKind::Close,
-            reply: EditorBackendReply {
-                ok: true,
-                readonly: false,
-                error: None,
-                canvases: closing,
-                dirty: false,
-            },
-        });
-        fake.apply(&mut authority).unwrap();
         assert_converged(&fake, &authority);
         assert!(fake.stages.is_empty());
+        let closed_display_ids = fake
+            .displays
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(!closed_display_ids.is_empty());
+        for display in fake.displays.values() {
+            let sample = display
+                .work
+                .frames
+                .back()
+                .expect("production display turn must retain its frame sample");
+            assert_eq!(sample.live_canvases, 1);
+            assert_eq!(sample.live_widgets, display.live_widgets);
+            assert!(sample.phases["scene"].calls > 0);
+            assert!(sample.phases["gpu_present"].calls > 0);
+            assert!(sample.phases["surface_commit"].calls > 0);
+            assert!(
+                FrameWorkProfile::REQUIRED_PHASES
+                    .iter()
+                    .all(|phase| sample.phases.contains_key(phase))
+            );
+        }
         let reopen_canvas = authority
             .session()
             .draft
             .first()
-            .map(|canvas| canvas.id.clone());
-        authority.dispatch(EditorInput::Open {
-            output: Some("WL-2".into()),
-            canvas: reopen_canvas,
-            preview: scorepeek_overlay_ui::ScreenKind::MusicSelect,
-        });
+            .map(|canvas| canvas.id.clone())
+            .unwrap();
+        for event in [
+            Event::PointerMotion { x: 100.0, y: 100.0 },
+            Event::PointerButton {
+                button: 0x111,
+                pressed: true,
+                x: 100.0,
+                y: 100.0,
+            },
+            Event::PointerButton {
+                button: 0x111,
+                pressed: false,
+                x: 100.0,
+                y: 100.0,
+            },
+        ] {
+            fake.display_event(&reopen_canvas, event).unwrap();
+            fake.apply(&mut authority).unwrap();
+        }
         fake.apply(&mut authority).unwrap();
         assert_converged(&fake, &authority);
         assert_eq!(fake.stages.len(), 1);
+        let operation_ids = |prefix: &str| {
+            fake.operations
+                .iter()
+                .filter_map(|operation| operation.strip_prefix(prefix).map(str::to_owned))
+                .filter(|id| closed_display_ids.contains(id))
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(operation_ids("stop-object:"), closed_display_ids);
+        assert_eq!(operation_ids("runtime-drop:"), closed_display_ids);
+        assert_eq!(operation_ids("unmap:"), closed_display_ids);
+        assert_eq!(operation_ids("join:"), closed_display_ids);
         drop(fake);
         drop(store_guard);
     }
@@ -6638,11 +8904,35 @@ mod skin_tests {
         let mut session = VisualDebugSession::new(&scenario, scenario.logical_size).unwrap();
         session.click(".editor-text-field").unwrap();
         session.key(&scorepeek_overlay_handles::TextCommand::SelectAll);
+        {
+            let document = session.document.inner.borrow();
+            let node = document.get_focussed_node_id().unwrap();
+            let input = document
+                .get_node(node)
+                .unwrap()
+                .element_data()
+                .unwrap()
+                .text_input_data()
+                .unwrap();
+            assert_eq!(input.editor.raw_selection().text_range(), 0..6);
+        }
         session.ime(scorepeek_overlay_handles::TextUpdate {
             preedit: Some("はいしん".into()),
             preedit_cursor: [12, 12],
             ..Default::default()
         });
+        {
+            let document = session.document.inner.borrow();
+            let node = document.get_focussed_node_id().unwrap();
+            let input = document
+                .get_node(node)
+                .unwrap()
+                .element_data()
+                .unwrap()
+                .text_input_data()
+                .unwrap();
+            assert_eq!(input.editor.raw_text(), "はいしん");
+        }
         assert!(
             session
                 .authority

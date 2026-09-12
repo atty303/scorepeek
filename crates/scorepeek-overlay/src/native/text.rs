@@ -1,5 +1,13 @@
 use blitz_dom::Document as _;
+use blitz_traits::events::{BlitzImeEvent, UiEvent};
 use scorepeek_overlay_handles::{TextCommand, TextUpdate};
+
+pub(super) struct FocusedSelection {
+    field_key: String,
+    text: String,
+    selection: std::ops::Range<usize>,
+    compose: Option<std::ops::Range<usize>>,
+}
 
 impl super::App {
     pub(super) fn input_command(&mut self, command: &TextCommand) {
@@ -196,6 +204,63 @@ fn focused_text(
         input.editor.raw_text().to_owned(),
         input.editor.raw_selection().text_range(),
     ))
+}
+
+pub(super) fn focused_selection(
+    document: &dioxus_native_dom::DioxusDocument,
+) -> Option<FocusedSelection> {
+    let document = document.inner.borrow();
+    let node = document.get_focussed_node_id()?;
+    let element = document.get_node(node)?.element_data()?;
+    let field_key = element.id.as_ref()?.to_string();
+    let input = element.text_input_data()?;
+    Some(FocusedSelection {
+        field_key,
+        text: input.editor.raw_text().to_owned(),
+        selection: input.editor.raw_selection().text_range(),
+        compose: input.editor.raw_compose().clone(),
+    })
+}
+
+pub(super) fn restore_focused_selection(
+    document: &mut dioxus_native_dom::DioxusDocument,
+    snapshot: &FocusedSelection,
+) {
+    let selector = format!("[id='{}']", snapshot.field_key);
+    let Ok(Some(node)) = document.inner.borrow().query_selector(&selector) else {
+        return;
+    };
+    document.inner.borrow_mut().set_focus_to(node);
+    if let Some(compose) = &snapshot.compose {
+        let prefix = &snapshot.text[..compose.start];
+        let suffix = &snapshot.text[compose.end..];
+        let preedit = snapshot.text[compose.clone()].to_owned();
+        let Some((current, _)) = focused_text(document) else {
+            return;
+        };
+        if !current.starts_with(prefix) || !current.ends_with(suffix) {
+            return;
+        }
+        let replacement_end = current.len().saturating_sub(suffix.len());
+        restore_selection(document, prefix.len()..replacement_end);
+        let cursor = Some((
+            snapshot.selection.start.saturating_sub(compose.start),
+            snapshot.selection.end.saturating_sub(compose.start),
+        ));
+        document.handle_ui_event(UiEvent::Ime(BlitzImeEvent::Preedit(preedit, cursor)));
+        return;
+    }
+    restore_selection(document, snapshot.selection.clone());
+}
+
+fn restore_selection(
+    document: &mut dioxus_native_dom::DioxusDocument,
+    selection: std::ops::Range<usize>,
+) {
+    dispatch_control_key(document, &TextCommand::SelectAll, false);
+    dispatch_control_key(document, &TextCommand::Home { select: false }, false);
+    move_focus_to(document, selection.start, false);
+    move_focus_to(document, selection.end, true);
 }
 
 pub(super) fn focused_field_key(document: &dioxus_native_dom::DioxusDocument) -> Option<String> {

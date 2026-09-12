@@ -40,6 +40,24 @@ When compositor nesting is part of the test, launch this task inside the nested 
 `WAYLAND_DISPLAY`; record that display and the compositor process independently from the parent
 desktop session.
 
+The checked-in bounded nested scenario creates two headless Scroll outputs at 120 and 60 Hz, starts
+the production Wayland runner with four fixture canvases, including animated backgrounds, and multiple widgets split across
+those outputs, and drives production `EditorInput` transport to select a named canvas, move it
+between outputs, change visibility and delete it. A virtual-pointer client closes and reopens the
+editor through Scroll. It also drives compositor-delivered motion, primary/secondary buttons and an
+axis event with the checked-in virtual-pointer client. Every deterministic lifecycle revision must
+be painted by each receiving stage; an independent compositor-input revision must be painted by the
+receiving output stage within 250 ms. Both outputs must sustain at least 55 effective paints per
+second, and every retained frame sample must contain every required phase:
+
+```text
+mise run overlay:visual:wayland:nested
+```
+
+This scenario is intentionally outside `mise run test`: it is used to confirm that the fake adapter
+still represents the observed compositor lifecycle and cadence, while the routine lifecycle,
+revision, input and retained-resource oracle remains the fake-Wayland integration test.
+
 The native child emits timestamped `native_startup_timing` records for shell connection, renderer
 creation, application initialization and first paint. `elapsed_us` is measured from that surface
 worker's start; renderer creation and paint records report the duration of their own operation.
@@ -55,6 +73,20 @@ the acquire, keepalive, draft update, commit and release effect outcome and dura
 contain only stable input/effect names and operational canvas/output identifiers; they do not record
 titles, property values or other entered content. Editor input transport is an ordered, unbounded
 process-local channel, so no accepted drag movement or keyboard/IME input is intentionally dropped.
+`native_summary.frame_work` aggregates call counts and nanoseconds for projection/config conversion,
+Dioxus polling, package/runtime/skin-tree work, motion, resource lookup and message decoding, Blitz
+layout, scene construction and renderer present/commit work. It also retains up to 256 per-frame
+deltas, starting before projection acceptance and ending after presentation, records live canvas and
+widget counts, and reports how many older samples were dropped. A required phase with no work is
+recorded as zero; a boundary unavailable from an upstream API is listed as unmeasured.
+Production scene time is separated from the renderer's combined GPU/present call. Because the
+renderer dependency does not expose the Wayland surface commit as an independently timed operation,
+production reports that phase under `unmeasured_calls`; the fake surface adapter measures its
+separate commit operation instead of inventing a zero duration.
+Package open/Arc-clone and resource lookup counts and nanoseconds are separate summary fields;
+Wasm execution and JSON tree decode/validation are measured inside the runtime rather than counted
+as the same elapsed interval. `native_coordinator_work` reports projection, canvas conversion and
+surface-lifecycle work at the coordinator boundary.
 
 Each native present publishes a Wayland frame callback, including editor and visibility-clear
 paints. A callback is not a request for continuous animation: it is the compositor acknowledgement

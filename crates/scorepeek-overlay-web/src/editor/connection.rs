@@ -64,9 +64,8 @@ pub struct Connection {
     dispatch: Callback<EditorInput, Vec<EditorEffect>>,
     pub compatibility: Signal<Compatibility>,
     socket: RefCell<Option<SocketBinding>>,
-    pending: RefCell<BTreeMap<u64, EditorEffectKind>>,
+    pending: RefCell<BTreeMap<u64, EditorEffect>>,
     next: Cell<u64>,
-    latest_draft_request: Cell<u64>,
     editor_id: String,
     timer: Cell<Option<i32>>,
     tick: RefCell<Option<Closure<dyn FnMut()>>>,
@@ -89,7 +88,6 @@ impl Connection {
             socket: RefCell::new(None),
             pending: RefCell::new(BTreeMap::new()),
             next: Cell::new(1),
-            latest_draft_request: Cell::new(0),
             editor_id,
             timer: Cell::new(None),
             tick: RefCell::new(None),
@@ -164,6 +162,7 @@ impl Connection {
                     Err(error) => {
                         this.dispatch_and_send(EditorInput::BackendCompleted {
                             effect: EditorEffectKind::KeepAlive,
+                            requested_draft: None,
                             reply: EditorBackendReply {
                                 ok: false,
                                 readonly: true,
@@ -222,10 +221,7 @@ impl Connection {
                     .is_ok()
         });
         if sent {
-            if matches!(kind, EditorEffectKind::Update | EditorEffectKind::Save) {
-                self.latest_draft_request.set(id);
-            }
-            self.pending.borrow_mut().insert(id, kind);
+            self.pending.borrow_mut().insert(id, effect.clone());
         } else {
             self.dispatch_and_send(EditorInput::TransportLost);
         }
@@ -277,25 +273,18 @@ impl Connection {
                     return;
                 }
                 if let Some(effect) = command {
-                    let stale_draft = matches!(
-                        effect,
-                        EditorEffectKind::Acquire
-                            | EditorEffectKind::Update
-                            | EditorEffectKind::Save
-                            | EditorEffectKind::Discard
-                    ) && request_id < self.latest_draft_request.get();
-                    if !stale_draft {
-                        self.dispatch_and_send(EditorInput::BackendCompleted {
-                            effect,
-                            reply: EditorBackendReply {
-                                ok: response.ok,
-                                readonly: response.readonly,
-                                error: response.error,
-                                canvases: response.canvases,
-                                dirty: response.dirty,
-                            },
-                        });
-                    }
+                    let kind = effect.kind();
+                    self.dispatch_and_send(EditorInput::BackendCompleted {
+                        effect: kind,
+                        requested_draft: effect.requested_draft().map(<[_]>::to_vec),
+                        reply: EditorBackendReply {
+                            ok: response.ok,
+                            readonly: response.readonly,
+                            error: response.error,
+                            canvases: response.canvases,
+                            dirty: response.dirty,
+                        },
+                    });
                 }
             }
         }

@@ -88,7 +88,7 @@ pub fn app() -> Element {
                         iframe {
                             id: "scorepeek-replica-{encode_id(&canvas.id)}",
                             "data-replica-canvas": "{canvas.id}",
-                            src:format!("/canvas/{}?sample={}&skin={}",encode_id(&canvas.id),u8::from(projection.interactive&&projection.view.chrome.sample),encode_id(canvas.skin.name())),
+                            src:format!("/canvas/{}?editor=1&sample={}&skin={}",encode_id(&canvas.id),u8::from(projection.interactive&&projection.view.chrome.sample),encode_id(canvas.skin.name())),
                             tabindex:-1,
                             onload: {
                                 let canvas_id = canvas.id.clone();

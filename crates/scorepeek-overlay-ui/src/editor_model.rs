@@ -152,6 +152,14 @@ impl EditorEffect {
             Self::Close => EditorEffectKind::Close,
         }
     }
+
+    #[must_use]
+    pub fn requested_draft(&self) -> Option<&[CanvasPresentation]> {
+        match self {
+            Self::Update { canvases } | Self::Save { canvases } => Some(canvases),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -192,6 +200,7 @@ pub enum EditorInput {
     VersionMismatch,
     BackendCompleted {
         effect: EditorEffectKind,
+        requested_draft: Option<Vec<CanvasPresentation>>,
         reply: EditorBackendReply,
     },
 }
@@ -410,9 +419,11 @@ impl EditorSession {
                 self.selected_canvas = None;
                 Vec::new()
             }
-            EditorInput::BackendCompleted { effect, reply } => {
-                self.reduce_backend_completed(effect, reply)
-            }
+            EditorInput::BackendCompleted {
+                effect,
+                requested_draft,
+                reply,
+            } => self.reduce_backend_completed(effect, requested_draft.as_deref(), reply),
         };
         if *self != before {
             self.revision = before.revision.saturating_add(1);
@@ -486,17 +497,21 @@ impl EditorSession {
     fn reduce_backend_completed(
         &mut self,
         effect: EditorEffectKind,
+        requested_draft: Option<&[CanvasPresentation]>,
         reply: EditorBackendReply,
     ) -> Vec<EditorEffect> {
         self.readonly = reply.readonly;
         self.notice = reply.error;
-        if matches!(
-            effect,
-            EditorEffectKind::Acquire
-                | EditorEffectKind::Update
-                | EditorEffectKind::Save
-                | EditorEffectKind::Discard
-        ) {
+        let current_request = requested_draft.is_none_or(|requested| self.draft == requested);
+        if current_request
+            && matches!(
+                effect,
+                EditorEffectKind::Acquire
+                    | EditorEffectKind::Update
+                    | EditorEffectKind::Save
+                    | EditorEffectKind::Discard
+            )
+        {
             self.draft = reply.canvases;
             if !reply.dirty {
                 self.saved.clone_from(&self.draft);
@@ -514,6 +529,11 @@ impl EditorSession {
                 self.discard_pending = false;
             }
             return Vec::new();
+        }
+        if effect == EditorEffectKind::Save && !current_request {
+            return vec![EditorEffect::Save {
+                canvases: self.draft.clone(),
+            }];
         }
         match effect {
             EditorEffectKind::Save => {
@@ -2364,6 +2384,84 @@ mod skin_tests {
         );
         assert_eq!(model.revision, before + 1);
         assert_eq!(model.stage_projections()[0].revision, model.revision);
+    }
+
+    #[test]
+    fn delayed_update_reply_does_not_replace_a_newer_drag_draft() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "DP-1".into(),
+            model: "first".into(),
+            logical_size: Some([1920, 1080]),
+        }]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        let canvas = model.selected_canvas.clone().unwrap();
+        let requested = model.draft.clone();
+        model.reduce(EditorInput::Surface(
+            crate::editor_surface::SurfaceAction::Start {
+                canvas,
+                widget: None,
+                corner: None,
+                point: [0, 0],
+            },
+        ));
+        model.reduce(EditorInput::Surface(
+            crate::editor_surface::SurfaceAction::Move([40, 24]),
+        ));
+        let current = model.draft.clone();
+
+        model.reduce(EditorInput::BackendCompleted {
+            effect: EditorEffectKind::Update,
+            requested_draft: Some(requested.clone()),
+            reply: EditorBackendReply {
+                ok: true,
+                readonly: false,
+                error: None,
+                canvases: requested,
+                dirty: true,
+            },
+        });
+
+        assert_eq!(model.draft, current);
+        assert!(model.drag.is_some());
+    }
+
+    #[test]
+    fn delayed_save_reply_resubmits_the_current_draft_before_closing() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
+        model.set_outputs(vec![crate::editor::EditorOutput {
+            name: "DP-1".into(),
+            model: "first".into(),
+            logical_size: Some([1920, 1080]),
+        }]);
+        model.editing = true;
+        model.readonly = false;
+        assert!(model.action(&EditorAction::AddCanvas));
+        let requested = model.draft.clone();
+        model.draft[0].x = 40;
+
+        let effects = model.reduce(EditorInput::BackendCompleted {
+            effect: EditorEffectKind::Save,
+            requested_draft: Some(requested.clone()),
+            reply: EditorBackendReply {
+                ok: true,
+                readonly: false,
+                error: None,
+                canvases: requested,
+                dirty: false,
+            },
+        });
+
+        assert_eq!(
+            effects,
+            vec![EditorEffect::Save {
+                canvases: model.draft.clone(),
+            }]
+        );
+        assert!(model.editing);
+        assert_ne!(model.saved, model.draft);
     }
 
     #[test]

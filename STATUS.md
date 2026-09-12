@@ -723,9 +723,10 @@ checkpoint; implementation history belongs in Git.
   runtimes before surface unmap and worker join.
   A checked-in fake-Wayland lifecycle test covers two outputs and canvases, visibility, reassignment,
   replacement, deletion, output removal, close/reopen, stale replicas, nested wheel targeting and
-  separate 60- and 120-frame animation intervals with stable
-  projection/config/package/runtime/reconciliation/skin-input counters while Dioxus poll, shared
-  motion, Blitz layout, resource resolution, Vello scene construction and fake present/commit
+  separate one-second 60 and 120 Hz animation intervals with stable
+  projection/config/package/runtime/reconciliation/skin-input/resource-lookup counters while
+  Dioxus poll, shared motion, Blitz layout, resource-message handling, Vello scene construction and
+  fake present/commit
   continue on every frame; idle Wasm and JSON-tree work remain unchanged. A canvas-owner lease prevents
   reverse output delivery from mounting duplicate runtimes, and a conformance test fixes the exact
   stale-hover mismatch normalized at the Blitz wheel boundary. Browser iframe replicas now
@@ -734,8 +735,9 @@ checkpoint; implementation history belongs in Git.
   The self-contained `overlay:web:browser:test` task builds skin packages and the current embedded
   browser/server pair, ensures pinned headless Chromium is installed, then runs the routine
   `mise run test` Playwright scenario. It starts the production embedded server in an
-  ordinary Chromium browser and confirms matching editor-handle and iframe skin geometry after a
-  delayed WebSocket mutation, complete skin/property replacement, canvas/widget lifecycle,
+  ordinary Chromium browser and confirms matching editor-handle, canvas-WebSocket and iframe skin
+  geometry after both delayed canvas delivery and a prior Update response arriving during the next
+  drag, complete skin/property replacement, canvas/widget lifecycle,
   same-output multiple-canvas creation, nested Navigator/Inspector scrolling, browser button-focus
   semantics and clean console output.
   Raw-Blitz conformance tests separately prove the two narrow native normalizations for wheel target
@@ -757,9 +759,44 @@ checkpoint; implementation history belongs in Git.
   computed fallback color and package-qualified artwork URL both while editing and after Save &
   Close returns to the normal canvas display specification. Fake-Wayland integration renders the
   production Dioxus/Wasm/tree/resource/Blitz/Vello path and requires an opaque artwork pixel whose
-  RGB differs from the fallback. The 23-step native composition scenario covers Static and Animated
+  RGB differs from the fallback. The 33-operation native composition scenario covers Static and Animated
   backgrounds alongside nested scroll, frame property changes, title IME, aspect controls and the
   editor-to-display transition; all PNG/layout pairs and the complete manifest were inspected.
+
+- ADR 0152 closes the remaining integration gaps without adding editor authority outside Dioxus.
+  Editor iframe bootstrap now waits for the accepted backend replica instead of racing a newly
+  added draft canvas into a transient empty HTTP response. Every WebSocket control request carries
+  its submitted draft back into the shared reducer; an older Update cannot replace a newer pointer
+  draft, and an older successful Save resubmits the current draft before closing. The transport no
+  longer interprets request ordering as editor semantics. Fake Wayland configure, pointer, button,
+  axis, text, IME, focus, wake, close and frame events enter the same production dispatcher; its
+  stage frames and the live application share one production-owned poll/reconcile/admit/render turn.
+  Configure forwarding is verified against authority output geometry. Wasm execution, JSON decode/validation, package
+  open/Arc clone, resource lookup, Dioxus, layout, resource messages, scene, present and commit are
+  counted at their actual runtime/cache/adapter boundaries, with bounded per-frame delta samples
+  beginning before projection acceptance and Dioxus poll and ending after present. Every required
+  phase has a measured, zero-work or unmeasured entry, plus live canvas/widget counts; repeated
+  create/delete cycles prove steady work depends on the live set rather than deleted history;
+  production surface commit is explicitly identified as unavailable from the combined renderer API
+  while the fake adapter measures its separate commit operation. The native DOM adapter preserves
+  the focused standard control's selection and active IME preedit across a Blitz rebuild because
+  Chromium retains those facts while the current Blitz reconciliation resets them; the adapter does
+  not interpret editor fields or add authority. The current Browser integration,
+  fake-Wayland lifecycle/workload, nested-axis and native background-pixel oracles pass. The fake
+  display path shares the production display-skin constructor and poll/admit/render turn, and
+  derives paint coverage from actual fake Vello presents and commits. A new
+  explicit `overlay:visual:wayland:nested` task also completed against two headless Scroll
+  outputs while moving a canvas across outputs, changing visibility, deleting a canvas, closing and
+  reopening the editor. Deterministic fixture actions select their named canvas and then cross the
+  production coordinator into the sole `EditorSession` authority; every accepted move, visibility
+  and delete revision must reach a later paint on every receiving stage. A
+  `zwlr_virtual_pointer_v1` client independently injected production motion, button and axis input
+  during animation; the latest run correlated a non-fixture changed authority revision through a
+  receiving output stage to paint in 3.545 ms, sustained at least 55 effective paints per second on both outputs, and required every
+  frame-work phase, matching unmap and complete production summaries. Projection-triggered skin
+  reconciliation now waits for the same Wayland frame as the Dioxus rebuild, preventing a moved
+  canvas runtime from looking up its root in the preceding DOM revision.
+  The task remains outside the routine suite as intended.
 
 - Validate layout v4 in a fresh target-live run with the installed binary.
   Retained-frame inspection does not recover unrecorded PLAY spans or backfill missing RESULTs.

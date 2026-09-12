@@ -36,6 +36,12 @@ pub(crate) struct RuntimeTiming {
     pub duration_us: u64,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct RenderTiming {
+    pub wasm: Duration,
+    pub json_tree: Duration,
+}
+
 enum CompiledModuleEntry {
     Compiling,
     Ready(Arc<CompiledModule>),
@@ -562,6 +568,13 @@ impl Runtime {
     /// # Errors
     /// Returns an ABI, trap, timeout, output decoding, or tree validation error.
     pub fn init(&mut self, input: &serde_json::Value) -> Result<RenderOutput, String> {
+        self.call(input, true).map(|(output, _)| output)
+    }
+
+    pub(crate) fn init_measured(
+        &mut self,
+        input: &serde_json::Value,
+    ) -> Result<(RenderOutput, RenderTiming), String> {
         self.call(input, true)
     }
 
@@ -569,6 +582,13 @@ impl Runtime {
     /// # Errors
     /// Returns an ABI, trap, timeout, output decoding, or tree validation error.
     pub fn render(&mut self, input: &serde_json::Value) -> Result<RenderOutput, String> {
+        self.call(input, false).map(|(output, _)| output)
+    }
+
+    pub(crate) fn render_measured(
+        &mut self,
+        input: &serde_json::Value,
+    ) -> Result<(RenderOutput, RenderTiming), String> {
         self.call(input, false)
     }
 
@@ -576,13 +596,14 @@ impl Runtime {
         &mut self,
         input: &serde_json::Value,
         initialize: bool,
-    ) -> Result<RenderOutput, String> {
+    ) -> Result<(RenderOutput, RenderTiming), String> {
         let bytes =
             serde_json::to_vec(input).map_err(|error| format!("serialize skin input: {error}"))?;
         let length =
             i32::try_from(bytes.len()).map_err(|_| "skin input exceeds ABI address space")?;
         self.store.set_epoch_deadline(CALL_TIMEOUT_TICKS);
         let phase = if initialize { "init" } else { "render" };
+        let wasm_started = Instant::now();
         let packed = run_with_timeout(phase, || {
             let pointer = self
                 .alloc
@@ -604,6 +625,7 @@ impl Runtime {
                 .map_err(|error| format!("skin deallocation trapped: {error}"))?;
             Ok(packed)
         })?;
+        let wasm = wasm_started.elapsed();
         let packed = packed.cast_unsigned();
         let output_pointer = usize::try_from(
             u32::try_from(packed >> 32).map_err(|_| "skin output pointer is invalid")?,
@@ -623,10 +645,17 @@ impl Runtime {
             .data(&self.store)
             .get(range)
             .ok_or("skin output is outside memory")?;
+        let json_started = Instant::now();
         let output: RenderOutput =
             serde_json::from_slice(output).map_err(|error| format!("skin output JSON: {error}"))?;
         output.validate()?;
-        Ok(output)
+        Ok((
+            output,
+            RenderTiming {
+                wasm,
+                json_tree: json_started.elapsed(),
+            },
+        ))
     }
 }
 

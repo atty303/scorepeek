@@ -8,10 +8,15 @@ if (executablePath) {
 }
 
 test("editor replicas follow drag, stale websocket delivery, scroll, and lifecycle", async ({ page }) => {
+  test.setTimeout(60_000);
   const pageErrors = [];
   const replicaLifecycle = [];
   const skinWasmRequests = [];
+  const canvasPresentations = [];
   let delayedCanvasMessages = 0;
+  let delayNextStageDraftReply = false;
+  let delayedStageDraftReplies = 0;
+  const delayedStageDraftRequests = new Set();
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("framenavigated", (frame) => {
     if (frame.url().includes("/canvas/")) replicaLifecycle.push({ phase: "loaded", url: frame.url() });
@@ -65,7 +70,36 @@ test("editor replicas follow drag, stale websocket delivery, scroll, and lifecyc
     client.onMessage((message) => server.send(message));
     server.onMessage((message) => {
       delayedCanvasMessages += 1;
+      try {
+        const envelope = JSON.parse(typeof message === "string" ? message : message.toString());
+        if (envelope.type === "presentation") canvasPresentations.push(envelope.specification);
+      } catch (_) {}
       setTimeout(() => client.send(message), 250);
+    });
+  });
+  await page.routeWebSocket("**/ws/stage?**", (client) => {
+    const server = client.connectToServer();
+    client.onMessage((message) => {
+      try {
+        const envelope = JSON.parse(typeof message === "string" ? message : message.toString());
+        if (delayNextStageDraftReply
+          && envelope.request?.command === "update_backend_draft") {
+          delayedStageDraftRequests.add(envelope.request_id);
+          delayNextStageDraftReply = false;
+        }
+      } catch (_) {}
+      server.send(message);
+    });
+    server.onMessage((message) => {
+      try {
+        const envelope = JSON.parse(typeof message === "string" ? message : message.toString());
+        if (delayedStageDraftRequests.delete(envelope.request_id)) {
+          delayedStageDraftReplies += 1;
+          setTimeout(() => client.send(message), 500);
+          return;
+        }
+      } catch (_) {}
+      client.send(message);
     });
   });
 
@@ -78,10 +112,54 @@ test("editor replicas follow drag, stale websocket delivery, scroll, and lifecyc
   await expect(widgetPicker).toBeFocused();
   await page.locator(".list-picker-option[data-index='0']").click();
 
+  for (let index = 0; index < 7; index += 1) {
+    await page.locator("#widget-picker-trigger").click();
+    await page.locator(".list-picker-option[data-index='0']").click();
+  }
+  await page.getByRole("button", { name: "obs-output", exact: true }).click();
+  await page.getByRole("button", { name: "+ Add canvas", exact: true }).click();
+  await page.locator("#widget-picker-trigger").click();
+  await page.locator(".list-picker-option[data-index='0']").click();
+  const secondWidget = page.locator(".editor-canvas[data-canvas='canvas-2'] .editor-widget-hit");
+  for (const field of ["x", "y"]) {
+    const input = page.locator(`[id='canvas-2:status-1:${field}']`);
+    await input.fill("0");
+    await input.blur();
+    await expect.poll(async () => (await secondWidget.boundingBox())[field]).toBe(0);
+  }
+  await page.getByRole("button", { name: "Canvas 2", exact: true }).click();
+  const secondCanvas = page.locator(".editor-canvas[data-canvas='canvas-2']");
+  for (const [field, value] of [["width", "600"], ["height", "300"], ["x", "0"], ["y", "400"]]) {
+    const input = page.locator(`[id='canvas-2:${field}']`);
+    await input.fill(value);
+    await input.blur();
+    await expect.poll(async () => (await secondCanvas.boundingBox())[field]).toBe(Number(value));
+  }
+  const unrelatedFrame = page.frameLocator("#scorepeek-replica-canvas-2");
+  await expect(unrelatedFrame.locator(".widget-slot")).toBeVisible();
+  await page.getByRole("button", { name: "Canvas 1", exact: true }).click();
+
   const frame = page.frameLocator("#scorepeek-replica-canvas-1");
-  const handle = page.locator(".editor-widget-hit");
-  const slot = frame.locator(".widget-slot").first();
+  const candidateHandle = page.locator(".editor-canvas[data-canvas='canvas-1'] .editor-widget-hit").last();
+  await candidateHandle.click();
+  const draggedWidgetId = await page
+    .locator(".editor-canvas[data-canvas='canvas-1'] .editor-widget-hit.selected")
+    .getAttribute("data-widget");
+  expect(draggedWidgetId).toBeTruthy();
+  const handle = page.locator(
+    `.editor-canvas[data-canvas='canvas-1'] .editor-widget-hit[data-widget='${draggedWidgetId}']`,
+  );
+  const slot = frame.locator(`.widget-slot[data-widget-id='${draggedWidgetId}']`);
+  await expect.poll(async () => [await handle.count(), await slot.count()]).toEqual([1, 1]);
   await expect(slot).toBeVisible();
+  const unrelatedSameCanvas = frame.locator(
+    `.widget-slot:not([data-widget-id='${draggedWidgetId}'])`,
+  ).first();
+  const unrelatedOtherCanvas = unrelatedFrame.locator(".widget-slot").first();
+  const unrelatedBefore = {
+    sameCanvas: await unrelatedSameCanvas.boundingBox(),
+    otherCanvas: await unrelatedOtherCanvas.boundingBox(),
+  };
   const before = await handle.boundingBox();
   expect(before).not.toBeNull();
   const updateCountBeforeDrag = await page.evaluate(() => window.__scorepeekTest.draftUpdates.length);
@@ -104,12 +182,14 @@ test("editor replicas follow drag, stale websocket delivery, scroll, and lifecyc
   const expected = { x: before.x + 140, y: before.y + 108, width: before.width, height: before.height };
   await expect.poll(async () => handle.boundingBox()).toEqual(expected);
   await expect.poll(async () => slot.boundingBox()).toEqual(expected);
+  expect(await unrelatedSameCanvas.boundingBox()).toEqual(unrelatedBefore.sameCanvas);
+  expect(await unrelatedOtherCanvas.boundingBox()).toEqual(unrelatedBefore.otherCanvas);
   await page.waitForTimeout(400);
   expect(await slot.boundingBox()).toEqual(expected);
   const dragUpdates = await page.evaluate((start) => window.__scorepeekTest.draftUpdates.slice(start), updateCountBeforeDrag);
   expect(dragUpdates).toHaveLength(1);
   const persistedCanvas = dragUpdates[0].request.canvases.find((candidate) => candidate.id === "canvas-1");
-  const persistedWidget = persistedCanvas.widgets[0];
+  const persistedWidget = persistedCanvas.widgets.find(({ id }) => id === draggedWidgetId);
   const persistedGeometry = [
     persistedWidget.x,
     persistedWidget.y,
@@ -139,27 +219,70 @@ test("editor replicas follow drag, stale websocket delivery, scroll, and lifecyc
   expect(dragReplicaRevisions.length).toBeGreaterThanOrEqual(8);
   expect(new Set(dragReplicaRevisions.map(({ revision }) => revision)).size)
     .toBeGreaterThanOrEqual(8);
-  expect(new Set(dragReplicaRevisions.map(({ geometry }) => JSON.stringify(geometry[0]))).size)
+  const draggedWidgetIndex = persistedCanvas.widgets.findIndex(({ id }) => id === draggedWidgetId);
+  expect(draggedWidgetIndex).toBeGreaterThanOrEqual(0);
+  expect(new Set(dragReplicaRevisions.map(({ geometry }) => JSON.stringify(geometry[draggedWidgetIndex]))).size)
     .toBeGreaterThanOrEqual(8);
-  expect(replicaRevisions.at(-1).geometry[0]).toEqual(persistedGeometry);
+  expect(replicaRevisions.at(-1).geometry[draggedWidgetIndex]).toEqual(persistedGeometry);
+
+  const firstDragEnd = await handle.boundingBox();
+  delayNextStageDraftReply = true;
+  await page.mouse.move(firstDragEnd.x + firstDragEnd.width / 2, firstDragEnd.y + firstDragEnd.height / 2);
+  await page.mouse.down();
+  for (let step = 1; step <= 4; step += 1) {
+    await page.mouse.move(
+      firstDragEnd.x + firstDragEnd.width / 2 + (40 * step) / 4,
+      firstDragEnd.y + firstDragEnd.height / 2 + (24 * step) / 4,
+    );
+    await page.waitForTimeout(10);
+  }
+  await page.mouse.up();
+  const delayedFirstExpected = {
+    x: firstDragEnd.x + 40,
+    y: firstDragEnd.y + 24,
+    width: firstDragEnd.width,
+    height: firstDragEnd.height,
+  };
+  await expect.poll(async () => handle.boundingBox()).toEqual(delayedFirstExpected);
+  const secondDragStart = await handle.boundingBox();
+  await page.mouse.move(secondDragStart.x + secondDragStart.width / 2, secondDragStart.y + secondDragStart.height / 2);
+  await page.mouse.down();
+  for (let step = 1; step <= 4; step += 1) {
+    await page.mouse.move(
+      secondDragStart.x + secondDragStart.width / 2 + (20 * step) / 4,
+      secondDragStart.y + secondDragStart.height / 2 + (12 * step) / 4,
+    );
+    await page.waitForTimeout(10);
+  }
+  await page.waitForTimeout(600);
+  await page.mouse.move(secondDragStart.x + secondDragStart.width / 2 + 64, secondDragStart.y + secondDragStart.height / 2 + 40);
+  await page.mouse.up();
+  const consecutiveExpected = {
+    x: firstDragEnd.x + 40 + 64,
+    y: firstDragEnd.y + 24 + 40,
+    width: firstDragEnd.width,
+    height: firstDragEnd.height,
+  };
+  await expect.poll(async () => handle.boundingBox()).toEqual(consecutiveExpected);
+  await expect.poll(async () => slot.boundingBox()).toEqual(consecutiveExpected);
+  await expect.poll(() => {
+    const presentation = canvasPresentations.findLast(
+      (candidate) => candidate.canvas.id === "canvas-1",
+    );
+    const widget = presentation?.widgets.find(({ id }) => id === draggedWidgetId);
+    return widget && [widget.x, widget.y, widget.width, widget.height];
+  }).toEqual([
+    consecutiveExpected.x,
+    consecutiveExpected.y,
+    consecutiveExpected.width,
+    consecutiveExpected.height,
+  ]);
+  expect(delayedStageDraftReplies).toBe(1);
 
   await widgetPicker.click();
   await widgetPicker.press("End");
   await widgetPicker.press("Enter");
 
-  await page.getByRole("button", { name: "obs-output", exact: true }).click();
-  await page.getByRole("button", { name: "+ Add canvas", exact: true }).click();
-  await page.locator("#widget-picker-trigger").click();
-  await page.locator(".list-picker-option[data-index='0']").click();
-  await expect(
-    page.frameLocator("#scorepeek-replica-canvas-2").locator(".widget-slot"),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Canvas 1", exact: true }).click();
-
-  for (let index = 0; index < 7; index += 1) {
-    await page.locator("#widget-picker-trigger").click();
-    await page.locator(".list-picker-option[data-index='0']").click();
-  }
   const navigator = page.locator(".navigator-scroll");
   await navigator.evaluate((node) => { node.scrollTop = 0; });
   const canvasScrollPoint = await page.locator(".canvas-select").first().evaluate((node) => {
