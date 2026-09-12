@@ -125,18 +125,18 @@
       "value": true
     },
     {
+      "action": "click",
+      "selector": ".editor-widget-hit[data-widget='cam']"
+    },
+    {
       "action": "scroll",
       "selector": ".navigator-scroll",
       "dx": 0,
       "dy": -720
     },
     {
-      "action": "click",
-      "selector": ".widget-row[data-widget-id='score']"
-    },
-    {
       "action": "scroll",
-      "selector": ".inspector-scroll",
+      "selector": ".editor-number-field",
       "dx": 0,
       "dy": -800
     },
@@ -149,24 +149,10 @@
       "selector": ".skin-property[data-property='frame-width'] button[data-index='2']"
     },
     {
-      "action": "click",
-      "selector": ".skin-property[data-property='background'] button[data-index='1']"
-    },
-    {
       "action": "scroll",
-      "selector": ".navigator-scroll",
+      "selector": ".skin-property[data-property='frame-width']",
       "dx": 0,
       "dy": 2000
-    },
-    {
-      "action": "click",
-      "selector": ".widget-row[data-widget-id='cam']"
-    },
-    {
-      "action": "scroll",
-      "selector": ".inspector-scroll",
-      "dx": 0,
-      "dy": -950
     },
     {
       "action": "click",
@@ -186,12 +172,6 @@
       "selector": ".title-accept"
     },
     {
-      "action": "scroll",
-      "selector": ".inspector-scroll",
-      "dx": 0,
-      "dy": -2000
-    },
-    {
       "action": "click",
       "selector": ".aspect-ratio[data-index='1']"
     },
@@ -208,8 +188,32 @@
       "selector": ".aspect-ratio[data-index='0']"
     },
     {
+      "action": "drag",
+      "from": [1252, 500],
+      "to": [1252, 500],
+      "button": "right"
+    },
+    {
+      "action": "scroll",
+      "selector": ".editor-number-field",
+      "dx": 0,
+      "dy": -2000
+    },
+    {
+      "action": "click",
+      "selector": ".background-control .background-option[data-index='1']"
+    },
+    {
+      "action": "click",
+      "selector": ".background-control .background-option[data-index='2']"
+    },
+    {
       "action": "set_editing",
       "value": false
+    },
+    {
+      "action": "motion",
+      "seconds": 10
     }
   ]
 }

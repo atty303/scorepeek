@@ -367,14 +367,43 @@ mod server {
         package: &crate::skin::Package,
     ) -> serde_json::Value {
         let skin_id = canvas.skin.name();
-        let canvas_properties = package
-            .manifest
-            .effective_canvas_properties(&canvas.skin_properties);
+        let canvas_properties = effective_canvas_properties(canvas, &package.manifest);
         serde_json::json!({
             "canvas":{"id":canvas.id,"skin":skin_id,"width":canvas.width,"height":canvas.height,"properties":canvas_properties},
             "widgets":canvas.widgets.iter().map(|widget| { let kind=serde_json::to_value(widget.kind).ok().and_then(|value|value.as_str().map(str::to_owned)).unwrap_or_default(); let properties=package.manifest.effective_widget_properties(&kind,&widget.skin_properties); serde_json::json!({"id":widget.id,"kind":widget.kind,"x":widget.x,"y":widget.y,"width":widget.width,"height":widget.height,"settings":widget.settings,"properties":properties}) }).collect::<Vec<_>>(),
             "wasm":format!("/skin/{skin_id}/{}", crate::skin::MODULE_PATH),
         })
+    }
+
+    fn effective_canvas_properties(
+        canvas: &crate::config::Canvas,
+        manifest: &crate::skin::Manifest,
+    ) -> std::collections::BTreeMap<String, serde_json::Value> {
+        let mut canvas_properties = manifest.effective_canvas_properties(&canvas.skin_properties);
+        canvas_properties.insert(
+            "background".into(),
+            serde_json::to_value(canvas.background)
+                .expect("Background serialization is infallible"),
+        );
+        canvas_properties
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn display_canvas_specification_uses_the_shared_background_authority() {
+        let mut canvas =
+            crate::config::empty_canvas("browser-background".into(), crate::runtime::Backend::Obs);
+        canvas.background = scorepeek_overlay_ui::Background::Static;
+        canvas
+            .skin_properties
+            .insert("background".into(), serde_json::json!("none"));
+        let manifest: crate::skin::Manifest =
+            toml::from_str(include_str!("../../../skins/cyan-system/skin.toml")).unwrap();
+
+        assert_eq!(
+            effective_canvas_properties(&canvas, &manifest)["background"],
+            "static"
+        );
     }
 
     async fn skin_asset(

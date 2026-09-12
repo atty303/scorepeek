@@ -739,11 +739,27 @@ checkpoint; implementation history belongs in Git.
   same-output multiple-canvas creation, nested Navigator/Inspector scrolling, browser button-focus
   semantics and clean console output.
   Raw-Blitz conformance tests separately prove the two narrow native normalizations for wheel target
-  coordinates and button focus. A two-output headless nested-Scroll
-  observation sustained about 61 Hz per output and recorded resource unmount before renderer
-  suspend and surface unmap. Browser plus fake Wayland are the routine completion gates; actual OBS
+  coordinates and button focus. A two-output headless nested-Scroll observation sustained about
+  61 Hz per output with empty stages. With three animated canvases on one output and one on the
+  other, the debug renderer recorded about 37.7 and 23.5 paints per second respectively, with
+  retained package/runtime counts and clean resource unmount before renderer suspend and surface
+  unmap. The remaining steady work is the measured skin render/layout/scene/present path rather than
+  projection, package, runtime or surface regeneration. Browser plus fake Wayland are the routine completion gates; actual OBS
   or a live compositor is required only to investigate an adapter-specific failure, not as a
   standing unverified editor boundary.
+
+- ADR 0151 makes `CanvasPresentation.background` the only writable background authority and passes
+  its effective value to skin Wasm on both browser and native routes. The native renderer adapter
+  now qualifies package-relative inline `url(...)`, `src` and `poster` values with the immutable
+  skin resource namespace, matching the resource base supplied by each browser iframe without
+  adding native editor state. The shared Appearance panel suppresses the manifest's duplicate
+  background property control. Browser integration verifies the full 1280x720 background box,
+  computed fallback color and package-qualified artwork URL both while editing and after Save &
+  Close returns to the normal canvas display specification. Fake-Wayland integration renders the
+  production Dioxus/Wasm/tree/resource/Blitz/Vello path and requires an opaque artwork pixel whose
+  RGB differs from the fallback. The 23-step native composition scenario covers Static and Animated
+  backgrounds alongside nested scroll, frame property changes, title IME, aspect controls and the
+  editor-to-display transition; all PNG/layout pairs and the complete manifest were inspected.
 
 - Validate layout v4 in a fresh target-live run with the installed binary.
   Retained-frame inspection does not recover unrecorded PLAY spans or backfill missing RESULTs.

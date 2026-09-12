@@ -857,7 +857,11 @@ fn native_skin_input(
     state: &OverlayState,
     manifest: &crate::skin::Manifest,
 ) -> serde_json::Value {
-    let canvas_properties = manifest.effective_canvas_properties(&canvas.skin_properties);
+    let mut canvas_properties = manifest.effective_canvas_properties(&canvas.skin_properties);
+    canvas_properties.insert(
+        "background".into(),
+        serde_json::to_value(canvas.background).expect("Background serialization is infallible"),
+    );
     serde_json::json!({
         "schema":"scorepeek-skin-input-v1",
         "backend":"native",
@@ -872,7 +876,11 @@ fn native_skin_input_presentation(
     state: &OverlayState,
     manifest: &crate::skin::Manifest,
 ) -> serde_json::Value {
-    let canvas_properties = manifest.effective_canvas_properties(&canvas.skin_properties);
+    let mut canvas_properties = manifest.effective_canvas_properties(&canvas.skin_properties);
+    canvas_properties.insert(
+        "background".into(),
+        serde_json::to_value(canvas.background).expect("Background serialization is infallible"),
+    );
     serde_json::json!({
         "schema":"scorepeek-skin-input-v1",
         "backend":"native",
@@ -1147,16 +1155,7 @@ pub fn run(config: Config, input: impl std::io::Read + Send + 'static) -> Result
         .unwrap_or(u64::MAX),
     );
     session.set_skins(installed_skins);
-    session.set_outputs(
-        outputs
-            .iter()
-            .map(|output| EditorOutput {
-                name: output.name.clone(),
-                model: output.model.clone(),
-                logical_size: output.logical_size,
-            })
-            .collect(),
-    );
+    session.set_outputs(editor_outputs_from_descriptions(&outputs));
     let published_stages = Arc::new(std::sync::Mutex::new(PublishedStages::default()));
     let mut authority = NativeEditorAuthority::new(session, Arc::clone(&published_stages));
     if start_editing {
@@ -1451,6 +1450,17 @@ fn discover_editor_outputs(
         ping.1,
     )?;
     Ok(shell.output_descriptions)
+}
+
+fn editor_outputs_from_descriptions(outputs: &[OutputDescription]) -> Vec<EditorOutput> {
+    outputs
+        .iter()
+        .map(|output| EditorOutput {
+            name: output.name.clone(),
+            model: output.model.clone(),
+            logical_size: output.logical_size,
+        })
+        .collect()
 }
 
 fn editor_bootstrap(skin: scorepeek_overlay_ui::Skin) -> crate::config::Canvas {
@@ -1821,6 +1831,7 @@ struct EditorSkinPreview {
     tree: crate::skin::NativeTree,
     next_render: Option<Instant>,
     last_input: serde_json::Value,
+    last_state: OverlayState,
 }
 
 struct NativeDisplaySkin {
@@ -1852,7 +1863,8 @@ fn create_editor_skin_preview(
     let package = skin_assets.load(canvas.skin.name())?;
     let mut runtime = new_native_skin_runtime(&package, report, &canvas.id, output, &[])?;
     let input = native_skin_input(&canvas, state, &package.manifest);
-    let rendered = runtime.init(&input)?;
+    let mut rendered = runtime.init(&input)?;
+    namespace_native_skin_output(&package.manifest.id, &mut rendered);
     let root_id = editor_skin_root_id(&canvas.id);
     let root = document
         .inner
@@ -1878,6 +1890,7 @@ fn create_editor_skin_preview(
         tree,
         next_render: skin_deadline(&rendered.schedule, false),
         last_input: input,
+        last_state: state.clone(),
     })
 }
 
@@ -1941,7 +1954,8 @@ fn reconcile_editor_skin_previews(
         let preview = previews
             .get_mut(&presentation.id)
             .expect("checked editor preview");
-        if preview.canvas.presentation() != *presentation {
+        let presentation_changed = preview.canvas.presentation() != *presentation;
+        if presentation_changed {
             preview.canvas.apply_presentation(presentation);
         }
         let desired_skin = preview.canvas.skin.name();
@@ -1955,7 +1969,8 @@ fn reconcile_editor_skin_previews(
                 &[],
             )?;
             let next_input = native_skin_input(&preview.canvas, state, &next_package.manifest);
-            let rendered = next_runtime.init(&next_input)?;
+            let mut rendered = next_runtime.init(&next_input)?;
+            namespace_native_skin_output(&next_package.manifest.id, &mut rendered);
             let css = namespace_skin_css(
                 desired_skin,
                 std::str::from_utf8(
@@ -1972,26 +1987,33 @@ fn reconcile_editor_skin_previews(
             preview.runtime = next_runtime;
             preview.next_render = skin_deadline(&rendered.schedule, false);
             preview.last_input = next_input;
+            preview.last_state = state.clone();
             *runtime_create_count = runtime_create_count.saturating_add(1);
             reconciliation.wasm_calls = reconciliation.wasm_calls.saturating_add(1);
             reconciliation.tree_updates = reconciliation.tree_updates.saturating_add(1);
             reconciliation.input_generations = reconciliation.input_generations.saturating_add(1);
             continue;
         }
-        let input = native_skin_input(&preview.canvas, state, &preview.package.manifest);
-        reconciliation.input_generations = reconciliation.input_generations.saturating_add(1);
         let due = preview
             .next_render
             .is_some_and(|deadline| Instant::now() >= deadline);
-        if !due && input == preview.last_input {
+        if !due && !presentation_changed && preview.last_state == *state {
             continue;
         }
-        let rendered = preview.runtime.render(&input)?;
+        let input = native_skin_input(&preview.canvas, state, &preview.package.manifest);
+        reconciliation.input_generations = reconciliation.input_generations.saturating_add(1);
+        if !due && input == preview.last_input {
+            preview.last_state = state.clone();
+            continue;
+        }
+        let mut rendered = preview.runtime.render(&input)?;
+        namespace_native_skin_output(&preview.package.manifest.id, &mut rendered);
         preview
             .tree
             .apply(&mut document.inner.borrow_mut(), &rendered);
         preview.next_render = skin_deadline(&rendered.schedule, false);
         preview.last_input = input;
+        preview.last_state = state.clone();
         reconciliation.wasm_calls = reconciliation.wasm_calls.saturating_add(1);
         reconciliation.tree_updates = reconciliation.tree_updates.saturating_add(1);
     }
@@ -2087,12 +2109,13 @@ impl App {
             )?;
             let skin_input = native_skin_input(&canvas, &current_state, &package.manifest);
             let started = Instant::now();
-            let initial = runtime.init(&skin_input).inspect_err(|error| {
+            let mut initial = runtime.init(&skin_input).inspect_err(|error| {
                 crate::diagnostics::emit(
                     "skin_render",
                     &serde_json::json!({"skin_id":package.manifest.id,"release":package.manifest.release,"canvas_id":canvas.id,"backend":"native","phase":"init","status":"failed","error_type":skin_error_type(error)}),
                 );
             })?;
+            namespace_native_skin_output(&package.manifest.id, &mut initial);
             let root = document
                 .inner
                 .borrow()
@@ -2381,15 +2404,7 @@ impl App {
             if self.output_descriptions != self.shell.output_descriptions {
                 self.output_descriptions
                     .clone_from(&self.shell.output_descriptions);
-                let outputs = self
-                    .output_descriptions
-                    .iter()
-                    .map(|output| EditorOutput {
-                        name: output.name.clone(),
-                        model: output.model.clone(),
-                        logical_size: output.logical_size,
-                    })
-                    .collect();
+                let outputs = editor_outputs_from_descriptions(&self.output_descriptions);
                 let _ = self.coordinator.send(CoordinatorCommand::EditorInput {
                     input: EditorInput::SetOutputs(outputs),
                     correlation: None,
@@ -2694,10 +2709,11 @@ impl App {
             .display_skin
             .as_mut()
             .ok_or("display skin runtime missing outside display role")?;
-        let output =
+        let mut output =
             display
                 .runtime
                 .render(&native_skin_input(&self.canvas, state, &display.manifest))?;
+        namespace_native_skin_output(&display.manifest.id, &mut output);
         display
             .tree
             .apply(&mut self.document.inner.borrow_mut(), &output);
@@ -3086,7 +3102,7 @@ fn namespace_skin_css(id: &str, css: &str) -> String {
             .copied()
             .filter(|byte| matches!(byte, b'\'' | b'"'));
         let path = quote.map_or(trimmed, |_| &trimmed[1..trimmed.len().saturating_sub(1)]);
-        if path.starts_with('/') || path.starts_with("data:") || path.starts_with('#') {
+        if path.starts_with('/') || path.starts_with('#') || has_uri_scheme(path) {
             output.push_str(raw);
         } else {
             let quote = quote.map_or('"', char::from);
@@ -3102,6 +3118,56 @@ fn namespace_skin_css(id: &str, css: &str) -> String {
     }
     output.push_str(rest);
     output
+}
+
+fn namespace_skin_resource(id: &str, value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('/')
+        || trimmed.starts_with('#')
+        || has_uri_scheme(trimmed)
+    {
+        value.to_owned()
+    } else {
+        format!("/skin/{id}/{value}")
+    }
+}
+
+fn has_uri_scheme(value: &str) -> bool {
+    let Some((scheme, _)) = value.split_once(':') else {
+        return false;
+    };
+    let mut characters = scheme.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic())
+        && characters
+            .all(|character| character.is_ascii_alphanumeric() || "+-.".contains(character))
+}
+
+fn namespace_native_skin_output(id: &str, output: &mut crate::skin::RenderOutput) {
+    fn visit(id: &str, node: &mut crate::skin::Node) {
+        let crate::skin::Node::Element {
+            attributes,
+            children,
+            ..
+        } = node
+        else {
+            return;
+        };
+        if let Some(style) = attributes.get_mut("style") {
+            *style = namespace_skin_css(id, style);
+        }
+        for name in ["src", "poster"] {
+            if let Some(value) = attributes.get_mut(name) {
+                *value = namespace_skin_resource(id, value);
+            }
+        }
+        for child in children {
+            visit(id, child);
+        }
+    }
+    visit(id, &mut output.tree);
 }
 
 struct EmbeddedSkinAssets {
@@ -3528,7 +3594,8 @@ impl VisualDebugSession {
             );
             let mut runtime = crate::skin::Runtime::new(&package)?;
             let input = native_skin_input_presentation(&mounted, &state, &package.manifest);
-            let initial = runtime.init(&input)?;
+            let mut initial = runtime.init(&input)?;
+            namespace_native_skin_output(&package.manifest.id, &mut initial);
             let mut tree =
                 crate::skin::NativeTree::new(&mut document.inner.borrow_mut(), root, &css);
             tree.apply(&mut document.inner.borrow_mut(), &initial);
@@ -3548,6 +3615,7 @@ impl VisualDebugSession {
                     package,
                     next_render: skin_deadline(&initial.schedule, false),
                     last_input: input,
+                    last_state: state.clone(),
                 },
             );
         }
@@ -3688,7 +3756,8 @@ impl VisualDebugSession {
                 let mut runtime = crate::skin::Runtime::new(&package)?;
                 let initial_input =
                     native_skin_input_presentation(&canvas, &self.state, &package.manifest);
-                let output = runtime.init(&initial_input)?;
+                let mut output = runtime.init(&initial_input)?;
+                namespace_native_skin_output(&package.manifest.id, &mut output);
                 let mut tree =
                     crate::skin::NativeTree::new(&mut self.document.inner.borrow_mut(), root, &css);
                 tree.apply(&mut self.document.inner.borrow_mut(), &output);
@@ -3708,6 +3777,7 @@ impl VisualDebugSession {
                         package,
                         next_render: skin_deadline(&output.schedule, false),
                         last_input: initial_input,
+                        last_state: self.state.clone(),
                     },
                 );
             }
@@ -3721,11 +3791,12 @@ impl VisualDebugSession {
             }
             let input =
                 native_skin_input_presentation(&canvas, &self.state, &skin.package.manifest);
-            let output = if changed {
+            let mut output = if changed {
                 skin.runtime.init(&input)?
             } else {
                 skin.runtime.render(&input)?
             };
+            namespace_native_skin_output(&skin.package.manifest.id, &mut output);
             if changed {
                 let css = namespace_skin_css(
                     desired_skin,
@@ -4300,7 +4371,7 @@ mod skin_tests {
     fn native_skin_resources_are_namespaced_by_immutable_skin_identity() {
         let css = namespace_skin_css(
             "dev.atty303.skin",
-            "a{src:url('font.ttf')}b{background:url(\"/shared.png\")}c{mask:url(data:image/png;base64,abc)}",
+            "a{src:url('font.ttf')}b{background:url(\"/shared.png\")}c{mask:url(data:image/png;base64,abc)}d{mask:url(https://example.test/shared.svg)}e{mask:url(https:shared.svg)}f{src:url(urn:scorepeek:asset)}",
         );
         assert!(
             css.contains("url('/skin/dev.atty303.skin/font.ttf')"),
@@ -4308,6 +4379,67 @@ mod skin_tests {
         );
         assert!(css.contains("url(\"/shared.png\")"), "{css}");
         assert!(css.contains("url(data:image/png;base64,abc)"), "{css}");
+        assert!(
+            css.contains("url(https://example.test/shared.svg)"),
+            "{css}"
+        );
+        assert!(css.contains("url(https:shared.svg)"), "{css}");
+        assert!(css.contains("url(urn:scorepeek:asset)"), "{css}");
+    }
+
+    #[test]
+    fn native_skin_inline_resources_use_the_package_namespace() {
+        let mut output = crate::skin::RenderOutput {
+            schedule: crate::skin::Schedule::Idle,
+            tree: crate::skin::Node::Element {
+                key: "background".into(),
+                tag: "div".into(),
+                attributes: std::collections::BTreeMap::from([
+                    (
+                        "style".into(),
+                        "background-image:url('background.png');mask:url(\"mask.svg\")".into(),
+                    ),
+                    ("src".into(), "preview.png".into()),
+                    ("poster".into(), "file:preview.webm".into()),
+                ]),
+                children: Vec::new(),
+            },
+        };
+
+        namespace_native_skin_output("dev.atty303.skin", &mut output);
+
+        let crate::skin::Node::Element { attributes, .. } = output.tree else {
+            panic!("probe must remain an element");
+        };
+        assert_eq!(
+            attributes.get("style").map(String::as_str),
+            Some(
+                "background-image:url('/skin/dev.atty303.skin/background.png');mask:url(\"/skin/dev.atty303.skin/mask.svg\")"
+            )
+        );
+        assert_eq!(
+            attributes.get("src").map(String::as_str),
+            Some("/skin/dev.atty303.skin/preview.png")
+        );
+        assert_eq!(
+            attributes.get("poster").map(String::as_str),
+            Some("file:preview.webm")
+        );
+    }
+
+    #[test]
+    fn native_skin_input_uses_the_canvas_background_authority() {
+        let mut canvas = crate::config::empty_canvas(
+            "background-probe".into(),
+            crate::runtime::Backend::Wayland,
+        );
+        canvas.background = scorepeek_overlay_ui::Background::Static;
+        let manifest: crate::skin::Manifest =
+            toml::from_str(include_str!("../../../skins/cyan-system/skin.toml")).unwrap();
+
+        let input = native_skin_input(&canvas, &OverlayState::default(), &manifest);
+
+        assert_eq!(input["canvas"]["properties"]["background"], "static");
     }
 
     #[test]
@@ -4875,6 +5007,7 @@ mod skin_tests {
             presents: u64,
             commits: u64,
             motion_seconds: f64,
+            renderer: anyrender_vello::VelloImageRenderer,
         }
         impl FakeStage {
             fn new(stage: StageProjection, assets: Arc<SkinAssetCache>) -> Result<Self, String> {
@@ -4925,6 +5058,7 @@ mod skin_tests {
                     presents: 0,
                     commits: 0,
                     motion_seconds: 0.0,
+                    renderer: anyrender_vello::VelloImageRenderer::new(1920, 1080),
                 };
                 stage.frame()?;
                 Ok(stage)
@@ -4991,6 +5125,17 @@ mod skin_tests {
                 self.presents += 1;
                 self.commits += 1;
                 Ok(())
+            }
+
+            fn render_pixels(&mut self) -> Vec<u8> {
+                let mut pixels = Vec::new();
+                let mut inner = self.document.inner.borrow_mut();
+                resolve_with_loaded_resources(&mut inner, self.motion_seconds);
+                self.renderer.render_to_vec(
+                    |scene| paint_native_scene(scene, &mut inner, 1.0, 1920, 1080),
+                    &mut pixels,
+                );
+                pixels
             }
 
             fn shutdown(mut self, operations: &mut Vec<String>) {
@@ -5126,6 +5271,168 @@ mod skin_tests {
                     .map(|stage| stage.runtime_creates)
                     .sum()
             }
+
+            fn output_event(
+                &mut self,
+                authority: &mut NativeEditorAuthority,
+                outputs: &[OutputDescription],
+            ) -> Result<(), String> {
+                authority.dispatch(EditorInput::SetOutputs(editor_outputs_from_descriptions(
+                    outputs,
+                )));
+                self.operations.push("output-discovery".into());
+                self.apply(authority)
+            }
+        }
+
+        fn assert_converged(fake: &FakeAdapter, authority: &NativeEditorAuthority) {
+            let session = authority.session();
+            let expected_surfaces = fake
+                .projection_cache
+                .canvases
+                .iter()
+                .map(|canvas| (canvas.id.clone(), canvas.output.clone()))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            assert_eq!(
+                fake.surfaces, expected_surfaces,
+                "fake surfaces must exactly equal the production lifecycle projection"
+            );
+
+            let owners = fake
+                .assets
+                .editor_owners
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if !session.editing {
+                assert!(
+                    fake.stages.is_empty(),
+                    "closed editor must have no stage replica"
+                );
+                assert!(
+                    owners.is_empty(),
+                    "closed editor must retain no canvas owner"
+                );
+                return;
+            }
+
+            let expected_stages = session
+                .outputs
+                .iter()
+                .map(|output| (output.name.clone(), session.stage_projection(output)))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let published = fake
+                .published
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .by_output
+                .clone();
+            assert!(
+                published == expected_stages,
+                "published projections must exactly equal authority-derived projections"
+            );
+            assert_eq!(
+                fake.stages
+                    .keys()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>(),
+                expected_stages
+                    .keys()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>(),
+                "one replica stage must exist for every current output and no other output"
+            );
+
+            let mut expected_owners = std::collections::BTreeMap::new();
+            for (output, expected) in expected_stages {
+                let stage = fake.stages.get(&output).expect("expected stage exists");
+                match &*stage.projection.borrow() {
+                    NativeDocumentProjection::Editor(actual) => assert!(
+                        actual == &expected,
+                        "stage replica must atomically accept the complete published projection"
+                    ),
+                    NativeDocumentProjection::Display { .. } => {
+                        panic!("editor stage cannot retain a display projection")
+                    }
+                }
+                let expected_canvases = expected
+                    .canvases
+                    .iter()
+                    .map(|canvas| canvas.id.clone())
+                    .collect::<std::collections::BTreeSet<_>>();
+                assert_eq!(
+                    stage
+                        .previews
+                        .keys()
+                        .cloned()
+                        .collect::<std::collections::BTreeSet<_>>(),
+                    expected_canvases,
+                    "mounted skin runtimes must exactly equal visible projected canvases"
+                );
+                let inner = stage.document.inner.borrow();
+                assert_eq!(
+                    inner
+                        .query_selector_all(".scorepeek-skin-scope .overlay-canvas")
+                        .unwrap()
+                        .len(),
+                    expected.canvases.len(),
+                    "mounted skin DOM roots must exactly equal visible projected canvases"
+                );
+                assert_eq!(
+                    inner
+                        .query_selector_all(".editor-widget-hit")
+                        .unwrap()
+                        .len(),
+                    if expected.interactive {
+                        expected
+                            .canvases
+                            .iter()
+                            .map(|canvas| canvas.widgets.len())
+                            .sum::<usize>()
+                    } else {
+                        0
+                    },
+                    "hit regions must exactly equal projected widgets"
+                );
+                for canvas in &expected.canvases {
+                    assert!(
+                        inner
+                            .query_selector(&format!(
+                                ".scorepeek-skin-scope .overlay-canvas[data-canvas-id='{}']",
+                                canvas.id
+                            ))
+                            .unwrap()
+                            .is_some(),
+                        "every projected canvas must own one skin DOM root"
+                    );
+                    assert!(
+                        inner
+                            .query_selector(&format!(".editor-canvas[data-canvas='{}']", canvas.id))
+                            .unwrap()
+                            .is_some(),
+                        "every projected canvas must own one editor hit root"
+                    );
+                    expected_owners.insert(canvas.id.clone(), output.clone());
+                    if expected.interactive {
+                        for widget in &canvas.widgets {
+                            assert!(
+                                inner
+                                    .query_selector(&format!(
+                                        ".editor-canvas[data-canvas='{}'] .editor-widget-hit[data-widget='{}']",
+                                        canvas.id, widget.id
+                                    ))
+                                    .unwrap()
+                                    .is_some(),
+                                "every interactive projected widget must own one matching hit region"
+                            );
+                        }
+                    }
+                }
+            }
+            assert_eq!(
+                owners, expected_owners,
+                "canvas leases must exactly equal mounted stage/runtime ownership"
+            );
         }
 
         let mut canvases = crate::config::visual_debug_config()
@@ -5137,21 +5444,24 @@ mod skin_tests {
             .collect::<Vec<_>>();
         canvases[0].output = Some("WL-1".into());
         canvases[1].output = Some("WL-2".into());
+        canvases[0].background = scorepeek_overlay_ui::Background::Static;
+        canvases[0].widgets.clear();
         let mut session = EditorSession::new(canvases, [1920, 1080], "fake-wayland");
         session.set_session_id(41);
         session.set_skins(embedded_editor_skins());
-        session.set_outputs(vec![
-            EditorOutput {
+        let initial_outputs = vec![
+            OutputDescription {
                 name: "WL-1".into(),
                 model: "fake one".into(),
                 logical_size: Some([1920, 1080]),
             },
-            EditorOutput {
+            OutputDescription {
                 name: "WL-2".into(),
                 model: "fake two".into(),
                 logical_size: Some([1280, 720]),
             },
-        ]);
+        ];
+        session.set_outputs(editor_outputs_from_descriptions(&initial_outputs));
         session.readonly = false;
         session.reduce(EditorInput::Open {
             output: Some("WL-1".into()),
@@ -5188,7 +5498,22 @@ mod skin_tests {
         let assets = Arc::new(SkinAssetCache::new(store));
         let mut fake = FakeAdapter::new(published, assets);
         fake.apply(&mut authority).unwrap();
+        assert_converged(&fake, &authority);
         assert_eq!((fake.surfaces.len(), fake.stages.len()), (2, 2));
+        let wl1 = fake.stages.get_mut("WL-1").unwrap();
+        wl1.frame().unwrap();
+        let pixels = wl1.render_pixels();
+        let background_offset = (40 * 1920 + 400) * 4;
+        let background_pixel = pixels[background_offset..background_offset + 4].to_vec();
+        assert_eq!(
+            background_pixel[3], 255,
+            "the production native tree/resource/layout/scene path must paint the skin background"
+        );
+        assert_ne!(
+            &background_pixel[..3],
+            &[14, 25, 37],
+            "the native pixel oracle must see package artwork, not only its fallback color"
+        );
         assert_eq!(
             fake.stages
                 .values()
@@ -5287,6 +5612,13 @@ mod skin_tests {
 
         authority.dispatch(EditorInput::Action(EditorAction::CanvasVisibleNone));
         fake.apply(&mut authority).unwrap();
+        assert_converged(&fake, &authority);
+        let pixels_after_unmount = fake.stages.get_mut("WL-1").unwrap().render_pixels();
+        assert_ne!(
+            pixels_after_unmount[background_offset..background_offset + 4],
+            background_pixel,
+            "the retained renderer must not preserve pixels from an unmounted canvas"
+        );
         assert_eq!(
             fake.stages
                 .values()
@@ -5297,6 +5629,7 @@ mod skin_tests {
         );
         authority.dispatch(EditorInput::Action(EditorAction::CanvasVisibleAll));
         fake.apply(&mut authority).unwrap();
+        assert_converged(&fake, &authority);
         assert_eq!(
             fake.stages
                 .values()
@@ -5315,6 +5648,7 @@ mod skin_tests {
         };
         authority.dispatch(EditorInput::Action(EditorAction::Skin(replacement_skin)));
         fake.apply(&mut authority).unwrap();
+        assert_converged(&fake, &authority);
         assert_eq!(
             fake.runtime_creates(),
             runtime_creates + 1,
@@ -5323,6 +5657,7 @@ mod skin_tests {
 
         authority.dispatch(EditorInput::Action(EditorAction::DeleteCanvas));
         fake.apply(&mut authority).unwrap();
+        assert_converged(&fake, &authority);
         assert_eq!(
             fake.stages
                 .values()
@@ -5339,8 +5674,60 @@ mod skin_tests {
             1,
             "canvas deletion must release its runtime owner"
         );
+        let live_after_delete = fake
+            .stages
+            .values()
+            .map(|stage| stage.previews.len())
+            .sum::<usize>() as u64;
+        let work_before_delete_frame = fake
+            .stages
+            .values()
+            .map(|stage| {
+                (
+                    stage.input_generations,
+                    stage.wasm_calls,
+                    stage.tree_updates,
+                )
+            })
+            .fold((0, 0, 0), |sum, count| {
+                (sum.0 + count.0, sum.1 + count.1, sum.2 + count.2)
+            });
+        for stage in fake.stages.values_mut() {
+            for preview in stage.previews.values_mut() {
+                preview.next_render = Some(
+                    Instant::now()
+                        .checked_sub(Duration::from_millis(1))
+                        .unwrap(),
+                );
+            }
+            stage.skin_updates.request();
+            stage.frame().unwrap();
+        }
+        let work_after_delete_frame = fake
+            .stages
+            .values()
+            .map(|stage| {
+                (
+                    stage.input_generations,
+                    stage.wasm_calls,
+                    stage.tree_updates,
+                )
+            })
+            .fold((0, 0, 0), |sum, count| {
+                (sum.0 + count.0, sum.1 + count.1, sum.2 + count.2)
+            });
+        assert_eq!(
+            (
+                work_after_delete_frame.0 - work_before_delete_frame.0,
+                work_after_delete_frame.1 - work_before_delete_frame.1,
+                work_after_delete_frame.2 - work_before_delete_frame.2,
+            ),
+            (live_after_delete, live_after_delete, live_after_delete),
+            "scheduled skin work must scale with live canvases, not deleted history"
+        );
         authority.dispatch(EditorInput::Action(EditorAction::AddCanvas));
         fake.apply(&mut authority).unwrap();
+        assert_converged(&fake, &authority);
         assert_eq!(
             fake.stages
                 .values()
@@ -5359,6 +5746,7 @@ mod skin_tests {
             .unwrap();
         authority.dispatch(EditorInput::Action(EditorAction::Output("WL-2".into())));
         fake.apply(&mut authority).unwrap();
+        assert_converged(&fake, &authority);
         assert_eq!(
             fake.stages
                 .values()
@@ -5376,6 +5764,27 @@ mod skin_tests {
             "reverse delivery still leaves one owner per canvas"
         );
         let wl2 = fake.stages.get_mut("WL-2").unwrap();
+        assert_eq!(wl2.previews.len(), 2);
+        for preview in wl2.previews.values_mut() {
+            preview.next_render = None;
+        }
+        wl2.previews.values_mut().next().unwrap().next_render = Some(
+            Instant::now()
+                .checked_sub(Duration::from_millis(1))
+                .unwrap(),
+        );
+        let scheduled_before = (wl2.input_generations, wl2.wasm_calls, wl2.tree_updates);
+        wl2.skin_updates.request();
+        wl2.frame().unwrap();
+        assert_eq!(
+            (
+                wl2.input_generations - scheduled_before.0,
+                wl2.wasm_calls - scheduled_before.1,
+                wl2.tree_updates - scheduled_before.2,
+            ),
+            (1, 1, 1),
+            "one scheduled canvas must not rebuild input or presentation for unrelated canvases"
+        );
         let accepted = wl2.projection_accepts;
         let current_revision = match &*wl2.projection.borrow() {
             NativeDocumentProjection::Editor(stage) => stage.revision,
@@ -5392,9 +5801,16 @@ mod skin_tests {
             "an out-of-order transport replica must not replace the current stage"
         );
 
-        let wl2_output = authority.session().outputs[1].clone();
-        authority.dispatch(EditorInput::SetOutputs(vec![wl2_output]));
-        fake.apply(&mut authority).unwrap();
+        fake.output_event(
+            &mut authority,
+            &[OutputDescription {
+                name: "WL-2".into(),
+                model: "fake two".into(),
+                logical_size: Some([1280, 720]),
+            }],
+        )
+        .unwrap();
+        assert_converged(&fake, &authority);
         assert_eq!(fake.surfaces.len(), 1);
         let stop = fake
             .operations
@@ -5444,6 +5860,7 @@ mod skin_tests {
             },
         });
         fake.apply(&mut authority).unwrap();
+        assert_converged(&fake, &authority);
         assert!(fake.stages.is_empty());
         let reopen_canvas = authority
             .session()
@@ -5456,6 +5873,7 @@ mod skin_tests {
             preview: scorepeek_overlay_ui::ScreenKind::MusicSelect,
         });
         fake.apply(&mut authority).unwrap();
+        assert_converged(&fake, &authority);
         assert_eq!(fake.stages.len(), 1);
         drop(fake);
         drop(store_guard);

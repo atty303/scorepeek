@@ -138,7 +138,7 @@ fn canvas_replica_specification(
     skins: &[scorepeek_overlay_ui::editor::EditorSkin],
 ) -> Option<serde_json::Value> {
     let skin = skins.iter().find(|skin| skin.id == canvas.skin)?;
-    let canvas_properties = skin
+    let mut canvas_properties = skin
         .canvas_properties
         .iter()
         .map(|(key, property)| {
@@ -148,6 +148,10 @@ fn canvas_replica_specification(
             )
         })
         .collect::<std::collections::BTreeMap<_, _>>();
+    canvas_properties.insert(
+        "background".into(),
+        serde_json::to_value(canvas.background).expect("Background serialization is infallible"),
+    );
     let widgets = canvas
         .widgets
         .iter()
@@ -244,12 +248,21 @@ mod tests {
             release: "1.0.0".into(),
             preview: String::new(),
             preview_video: None,
-            canvas_properties: std::collections::BTreeMap::from([(
-                "tint".into(),
-                EditorProperty::Color {
-                    default: "#ffffff".into(),
-                },
-            )]),
+            canvas_properties: std::collections::BTreeMap::from([
+                (
+                    "tint".into(),
+                    EditorProperty::Color {
+                        default: "#ffffff".into(),
+                    },
+                ),
+                (
+                    "background".into(),
+                    EditorProperty::Enum {
+                        default: "none".into(),
+                        values: vec!["none".into(), "static".into(), "animated".into()],
+                    },
+                ),
+            ]),
             widget_properties: std::collections::BTreeMap::from([(
                 "empty".into(),
                 std::collections::BTreeMap::from([(
@@ -263,7 +276,7 @@ mod tests {
             )]),
         };
         let mut canvas = CanvasPresentation {
-            background: Background::None,
+            background: Background::Static,
             id: "canvas-1".into(),
             name: "Canvas 1".into(),
             skin: Skin::CyanSystem,
@@ -296,6 +309,7 @@ mod tests {
         let customized =
             canvas_replica_specification(&canvas, std::slice::from_ref(&skin)).unwrap();
         assert_eq!(customized["canvas"]["properties"]["tint"], "#112233");
+        assert_eq!(customized["canvas"]["properties"]["background"], "static");
         assert_eq!(customized["widgets"][0]["properties"]["amount"], 7);
         assert_eq!(customized["widgets"][0]["x"], 12);
 
