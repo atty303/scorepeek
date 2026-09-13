@@ -109,6 +109,12 @@ CSS, preview, and package-relative resources. Native executes the Wasm module
 through Wasmtime; OBS executes it in a Web Worker. The current authoring
 contract is [skin plugin API v1](skin-plugin-api-v1.md).
 
+An active Wayland surface presents once per compositor frame callback; an inactive canvas detaches
+its buffer while retaining its renderer and skin instance. Reactivation renders the skin immediately
+but waits for the layer-shell remap configure before presenting. OBS expresses the same
+active/inactive meaning by including or removing the canvas iframe from composition. Skin runtime
+schedules drive Wasm/DOM updates independently of either backend's presentation mechanism.
+
 Browser integration, fake Wayland, and the checked-in nested compositor
 scenario are the routine overlay completion gates. Real OBS or a live
 compositor is used when an adapter-specific failure needs investigation, not as

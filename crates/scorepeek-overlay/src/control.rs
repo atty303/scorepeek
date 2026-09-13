@@ -2,7 +2,7 @@ use crate::{
     config::{Canvas, OverlayConfig, empty_canvas, save_atomic},
     runtime::Backend,
 };
-use scorepeek_overlay_ui::{CanvasPresentation, WaylandRefreshRate};
+use scorepeek_overlay_ui::CanvasPresentation;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -42,15 +42,11 @@ pub enum Request {
         backend: Backend,
         editor_id: String,
         canvases: Vec<CanvasPresentation>,
-        #[serde(default)]
-        wayland_refresh_hz: Option<WaylandRefreshRate>,
     },
     CommitBackend {
         backend: Backend,
         editor_id: String,
         canvases: Vec<CanvasPresentation>,
-        #[serde(default)]
-        wayland_refresh_hz: Option<WaylandRefreshRate>,
     },
 }
 
@@ -64,8 +60,6 @@ pub struct Response {
     pub generation: Option<u64>,
     #[serde(default)]
     pub dirty: bool,
-    #[serde(default)]
-    pub wayland_refresh_hz: Option<WaylandRefreshRate>,
 }
 
 struct Lease {
@@ -73,7 +67,6 @@ struct Lease {
     touched: Instant,
     projection_generation: u64,
     draft: Vec<CanvasPresentation>,
-    wayland_refresh_hz: Option<WaylandRefreshRate>,
 }
 struct State {
     config: OverlayConfig,
@@ -234,7 +227,6 @@ fn handle(mut stream: UnixStream, path: &Path, shared: &Mutex<State>) {
             canvases: Vec::new(),
             generation: None,
             dirty: false,
-            wayland_refresh_hz: None,
         },
     };
     if let Ok(mut bytes) = serde_json::to_vec(&response) {
@@ -271,7 +263,6 @@ fn failed_response(
             canvases: Vec::new(),
             generation: None,
             dirty: false,
-            wayland_refresh_hz: None,
         };
     };
     let Some((backend, editor_id)) = identity else {
@@ -282,7 +273,6 @@ fn failed_response(
             canvases: Vec::new(),
             generation: None,
             dirty: false,
-            wayland_refresh_hz: None,
         };
     };
     let owns_lease = state
@@ -350,7 +340,6 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
                     .filter(|canvas| canvas.backend == backend)
                     .map(Canvas::presentation)
                     .collect();
-                let wayland_refresh_hz = backend_refresh(&state.config, backend);
                 state.leases.insert(
                     backend,
                     Lease {
@@ -358,7 +347,6 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
                         touched: Instant::now(),
                         projection_generation,
                         draft,
-                        wayland_refresh_hz,
                     },
                 );
             }
@@ -397,11 +385,9 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
             backend,
             editor_id,
             canvases,
-            wayland_refresh_hz,
         } => {
             let replacements = build_replacements(&state.config, backend, canvases.clone())?;
             drop(replacements);
-            let wayland_refresh_hz = validate_backend_refresh(backend, wayland_refresh_hz)?;
             let lease = state
                 .leases
                 .get_mut(&backend)
@@ -409,7 +395,6 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
                 .ok_or("editor lease lost")?;
             lease.touched = Instant::now();
             lease.draft = canvases;
-            lease.wayland_refresh_hz = wayland_refresh_hz;
             lease.projection_generation = lease.projection_generation.saturating_add(1);
             Ok(lease_response(&state, backend))
         }
@@ -417,19 +402,14 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
             backend,
             editor_id,
             canvases,
-            wayland_refresh_hz,
         } => {
             require_lease(&mut state, backend, &editor_id)?;
             let replacements = build_replacements(&state.config, backend, canvases)?;
-            let wayland_refresh_hz = validate_backend_refresh(backend, wayland_refresh_hz)?;
             let mut candidate = state.config.clone();
             candidate
                 .canvases
                 .retain(|canvas| canvas.backend != backend);
             candidate.canvases.extend(replacements);
-            if let Some(refresh) = wayland_refresh_hz {
-                candidate.wayland_refresh_hz = refresh;
-            }
             candidate.projection_generations.increment(backend)?;
             if let Err(error) = save_atomic(path, &candidate) {
                 state.observe(
@@ -447,13 +427,11 @@ fn apply(request: Request, path: &Path, shared: &Mutex<State>) -> Result<Respons
                 .iter()
                 .filter(|canvas| canvas.backend == backend)
                 .count();
-            let saved_refresh = backend_refresh(&state.config, backend);
             state.observe(
                 "overlay_editor_commit",
                 serde_json::json!({
                     "backend": backend, "status":"saved",
-                    "canvas_count":canvas_count,
-                    "wayland_refresh_hz":saved_refresh
+                    "canvas_count":canvas_count
                 }),
             );
             Ok(backend_response(&state.config, backend, false))
@@ -469,7 +447,6 @@ fn empty_response(readonly: bool) -> Response {
         canvases: Vec::new(),
         generation: None,
         dirty: false,
-        wayland_refresh_hz: None,
     }
 }
 
@@ -515,22 +492,6 @@ fn build_replacements(
     Ok(replacements)
 }
 
-fn backend_refresh(config: &OverlayConfig, backend: Backend) -> Option<WaylandRefreshRate> {
-    (backend == Backend::Wayland).then_some(config.wayland_refresh_hz)
-}
-
-fn validate_backend_refresh(
-    backend: Backend,
-    refresh: Option<WaylandRefreshRate>,
-) -> Result<Option<WaylandRefreshRate>, String> {
-    match (backend, refresh) {
-        (Backend::Wayland, Some(refresh)) => Ok(Some(refresh)),
-        (Backend::Wayland, None) => Err("Wayland backend refresh rate is required".into()),
-        (Backend::Obs, None) => Ok(None),
-        (Backend::Obs, Some(_)) => Err("OBS refresh rate is owned by Browser Source".into()),
-    }
-}
-
 fn backend_response(config: &OverlayConfig, backend: Backend, readonly: bool) -> Response {
     Response {
         ok: true,
@@ -544,7 +505,6 @@ fn backend_response(config: &OverlayConfig, backend: Backend, readonly: bool) ->
             .collect(),
         generation: Some(config.projection_generations.get(backend)),
         dirty: false,
-        wayland_refresh_hz: backend_refresh(config, backend),
     }
 }
 
@@ -563,9 +523,7 @@ fn lease_response(state: &State, backend: Backend) -> Response {
         error: None,
         canvases: lease.draft.clone(),
         generation: Some(lease.projection_generation),
-        dirty: lease.draft != saved
-            || lease.wayland_refresh_hz != backend_refresh(&state.config, backend),
-        wayland_refresh_hz: lease.wayland_refresh_hz,
+        dirty: lease.draft != saved,
     }
 }
 
@@ -661,7 +619,6 @@ mod tests {
                 backend: Backend::Obs,
                 editor_id: "first".into(),
                 canvases: draft.clone(),
-                wayland_refresh_hz: None,
             },
             &path,
             &shared,
@@ -684,7 +641,6 @@ mod tests {
                 backend: Backend::Obs,
                 editor_id: "first".into(),
                 canvases: draft,
-                wayland_refresh_hz: None,
             },
             &path,
             &shared,
@@ -759,7 +715,6 @@ mod tests {
                 backend: Backend::Obs,
                 editor_id: "current".into(),
                 canvases: draft.clone(),
-                wayland_refresh_hz: None,
             },
             &path,
             &shared,
@@ -797,7 +752,6 @@ mod tests {
                 backend: Backend::Obs,
                 editor_id: "abandoned".into(),
                 canvases: draft,
-                wayland_refresh_hz: None,
             },
             &path,
             &shared,
@@ -837,7 +791,6 @@ mod tests {
                 backend: Backend::Wayland,
                 editor_id: "editor".into(),
                 canvases: changed,
-                wayland_refresh_hz: Some(WaylandRefreshRate::Auto),
             },
             &path,
             &shared,
@@ -849,7 +802,6 @@ mod tests {
                 backend: Backend::Wayland,
                 editor_id: "editor".into(),
                 canvases: saved,
-                wayland_refresh_hz: Some(WaylandRefreshRate::Auto),
             },
             &path,
             &shared,
@@ -860,85 +812,6 @@ mod tests {
             restored.generation,
             changed.generation.map(|value| value + 1)
         );
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn wayland_refresh_rate_participates_in_draft_and_atomic_commit() {
-        let (path, shared) = fixture("wayland-refresh");
-        let acquired = apply(
-            Request::AcquireBackend {
-                backend: Backend::Wayland,
-                editor_id: "editor".into(),
-            },
-            &path,
-            &shared,
-        )
-        .unwrap();
-        assert_eq!(acquired.wayland_refresh_hz, Some(WaylandRefreshRate::Auto));
-        let capped = WaylandRefreshRate::capped(30).unwrap();
-        let updated = apply(
-            Request::UpdateBackendDraft {
-                backend: Backend::Wayland,
-                editor_id: "editor".into(),
-                canvases: acquired.canvases.clone(),
-                wayland_refresh_hz: Some(capped),
-            },
-            &path,
-            &shared,
-        )
-        .unwrap();
-        assert!(updated.dirty);
-        assert_eq!(updated.wayland_refresh_hz, Some(capped));
-        assert!(!path.exists());
-
-        let committed = apply(
-            Request::CommitBackend {
-                backend: Backend::Wayland,
-                editor_id: "editor".into(),
-                canvases: acquired.canvases,
-                wayland_refresh_hz: Some(capped),
-            },
-            &path,
-            &shared,
-        )
-        .unwrap();
-        assert!(!committed.dirty);
-        assert_eq!(committed.wayland_refresh_hz, Some(capped));
-        assert_eq!(
-            crate::config::load_or_create(&path)
-                .unwrap()
-                .0
-                .wayland_refresh_hz,
-            capped
-        );
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn obs_control_rejects_wayland_only_refresh_rate() {
-        let (path, shared) = fixture("obs-refresh");
-        let acquired = apply(
-            Request::AcquireBackend {
-                backend: Backend::Obs,
-                editor_id: "editor".into(),
-            },
-            &path,
-            &shared,
-        )
-        .unwrap();
-        let error = apply(
-            Request::UpdateBackendDraft {
-                backend: Backend::Obs,
-                editor_id: "editor".into(),
-                canvases: acquired.canvases,
-                wayland_refresh_hz: Some(WaylandRefreshRate::Auto),
-            },
-            &path,
-            &shared,
-        )
-        .unwrap_err();
-        assert!(error.contains("owned by Browser Source"));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -961,7 +834,6 @@ mod tests {
                 backend: Backend::Wayland,
                 editor_id: "editor".into(),
                 canvases: invalid,
-                wayland_refresh_hz: Some(WaylandRefreshRate::Auto),
             },
             &path,
             &shared,

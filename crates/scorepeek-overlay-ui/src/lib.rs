@@ -1,6 +1,6 @@
 //! Shared canvas widgets for native and browser renderers.
 use dioxus::prelude::*;
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use serde::{Deserialize, Serialize};
 
 mod appearance;
 mod assets;
@@ -28,97 +28,6 @@ pub const SKIN_CSS: &str = concat!(
     include_str!("../styles/rich.css"),
     include_str!("../styles/composition.css")
 );
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum WaylandRefreshRate {
-    #[default]
-    Auto,
-    Capped(u16),
-}
-
-impl WaylandRefreshRate {
-    pub const MAX_HZ: u16 = 1_000;
-
-    /// Builds an explicitly capped Wayland paint rate.
-    ///
-    /// # Errors
-    /// Returns an error when `hz` is outside the supported 1 through 1000 Hz range.
-    pub fn capped(hz: u16) -> Result<Self, &'static str> {
-        if (1..=Self::MAX_HZ).contains(&hz) {
-            Ok(Self::Capped(hz))
-        } else {
-            Err("refresh rate must be auto or an integer from 1 through 1000 Hz")
-        }
-    }
-
-    #[must_use]
-    pub const fn hz(self) -> Option<u16> {
-        match self {
-            Self::Auto => None,
-            Self::Capped(hz) => Some(hz),
-        }
-    }
-}
-
-impl Serialize for WaylandRefreshRate {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            Self::Auto => serializer.serialize_str("auto"),
-            Self::Capped(hz) => serializer.serialize_u16(*hz),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for WaylandRefreshRate {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct Visitor;
-        impl de::Visitor<'_> for Visitor {
-            type Value = WaylandRefreshRate;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("\"auto\" or an integer from 1 through 1000")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                if value == "auto" {
-                    Ok(WaylandRefreshRate::Auto)
-                } else {
-                    Err(E::custom("refresh rate string must be \"auto\""))
-                }
-            }
-
-            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                u16::try_from(value)
-                    .ok()
-                    .and_then(|hz| WaylandRefreshRate::capped(hz).ok())
-                    .ok_or_else(|| E::custom("refresh rate must be from 1 through 1000 Hz"))
-            }
-
-            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                u16::try_from(value)
-                    .ok()
-                    .and_then(|hz| WaylandRefreshRate::capped(hz).ok())
-                    .ok_or_else(|| E::custom("refresh rate must be from 1 through 1000 Hz"))
-            }
-        }
-        deserializer.deserialize_any(Visitor)
-    }
-}
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Chart {

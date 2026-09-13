@@ -74,7 +74,6 @@ fn embedded_assets_and_owned_child_shutdown_without_models_or_database() {
         scores_db: None,
         listen: address,
         unknown_grace_ms: 1_000,
-        wayland_refresh_hz: scorepeek_overlay::WaylandRefreshRate::Auto,
         edit_on_start: false,
     };
     let executable = std::env::var_os("SCOREPEEK_TEST_BINARY").map_or_else(

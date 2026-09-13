@@ -110,7 +110,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         scores_db: None,
         listen: document.obs_listen.parse().expect("fixture listen address"),
         unknown_grace_ms: document.unknown_grace_ms,
-        wayland_refresh_hz: document.wayland_refresh_hz,
         edit_on_start: true,
     };
     let scenario = if integration_fixture {

@@ -12,12 +12,18 @@ flush immediately, and sync on important transitions and short intervals. Persis
 degrades diagnostics only: the run continues, the in-memory ring remains available, and disk
 writing is not retried in that invocation.
 
-`$XDG_RUNTIME_DIR/scorepeek/diagnostics.sock` is independent of public `events.sock`. A connection
-receives one header, the available portion of the 128 MiB byte-bounded ring, then live records. A
-client that falls behind is disconnected and the observer exits nonzero instead of resynchronizing.
+`$XDG_RUNTIME_DIR/scorepeek/diagnostics.sock` is independent of public `events.sock`. An observer
+requests either live-only delivery or an explicit replay window before the server sends data.
+Live-only delivery starts with the first record produced after the request. A replay receives the
+records from the requested number of seconds that remain in the 128 MiB byte-bounded ring, then
+live records. If capacity has truncated the requested window, the header sets `replay_truncated`
+and reports `replay_available_us`, and the CLI warns on stderr while continuing with the available
+suffix. A client that falls behind is disconnected and the observer exits nonzero instead of
+resynchronizing.
 
 ```text
 scorepeek diagnostic observe
+scorepeek diagnostic observe --replay 30
 scorepeek diagnostic inspect --latest
 scorepeek diagnostic inspect --run-id RUN_ID
 ```

@@ -55,7 +55,7 @@ mise run overlay:visual:wayland:nested
 ```
 
 This scenario is intentionally outside `mise run test`: it is used to confirm that the fake adapter
-still represents the observed compositor lifecycle and cadence, while the routine lifecycle,
+still represents the observed compositor lifecycle and frame-callback loop, while the routine lifecycle,
 revision, input and retained-resource oracle remains the fake-Wayland integration test.
 
 The native child emits timestamped `native_startup_timing` records for shell connection, renderer
@@ -88,11 +88,17 @@ Wasm execution and JSON tree decode/validation are measured inside the runtime r
 as the same elapsed interval. `native_coordinator_work` reports projection, canvas conversion and
 surface-lifecycle work at the coordinator boundary.
 
-Each native present publishes a Wayland frame callback, including editor and visibility-clear
-paints. A callback is not a request for continuous animation: it is the compositor acknowledgement
-that permits a later state change to reuse frame-paced surface resources. Repeated configure events
-with unchanged logical size, physical size and scale update no state and do not trigger another
-paint.
+Each active native surface presents on every compositor frame callback and publishes the next
+single-flight callback with that present. The presenter has no independent refresh cap or paint
+admission flag. When a display canvas becomes inactive, its current buffer is detached and committed
+immediately; it does not wait for a transparent paint. Its DOM, renderer and skin runtime remain
+allocated, but both the callback-driven presenter and the skin runtime schedule are paused. Becoming
+active performs an immediate skin render and bufferless commit, waits for the layer-shell configure,
+then presents to remap the surface and resumes both loops. Frame callbacks received before that
+configure cannot admit the remap paint.
+The skin schedule (`idle`, `next-frame`, or `after-ms`) drives Wasm/DOM updates and is independent of
+the presenter callback rate. Repeated configure events with unchanged logical size, physical size
+and scale update no state.
 
 For the OBS route, give the server a new dedicated configuration path and optionally a loopback
 listen address. The configuration file must not already exist, and non-loopback addresses are
@@ -183,6 +189,10 @@ canvas-worker failure.
 OBS `/overlay` boots the editor WASM bundle and places display-only skin canvas iframes inside
 the shared editor canvas. Native supplies rendered canvas content in the same component
 slot. This content layer is noninteractive and isolated below the shared hit regions.
+In display mode the shared screen filter removes inactive canvas iframes from the stage DOM, which
+destroys their worker-backed skin runtime; an active canvas participates in the browser/OBS
+composition with no scorepeek-owned paint-rate loop. Editor preview uses the same lifecycle when
+its selected screen changes.
 Selected widget handles take precedence when they coincide with canvas corners; selecting
 the canvas in the panel clears widget selection and exposes canvas handles. Widget artwork
 and content come from the same package Wasm full-tree ABI in both routes.

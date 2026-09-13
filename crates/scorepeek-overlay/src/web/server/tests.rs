@@ -122,7 +122,6 @@ impl Fixture {
             scores_db: None,
             listen: address,
             unknown_grace_ms: document.unknown_grace_ms,
-            wayland_refresh_hz: document.wayland_refresh_hz,
             edit_on_start: false,
         };
         let shared = Arc::new(Shared {

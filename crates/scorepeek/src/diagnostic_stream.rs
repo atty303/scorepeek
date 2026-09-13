@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::env;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, BufRead as _, BufReader, Read as _, Seek as _, SeekFrom, Write as _};
+use std::net::Shutdown;
 use std::os::unix::fs::{
     DirBuilderExt as _, FileTypeExt as _, MetadataExt as _, OpenOptionsExt as _,
     PermissionsExt as _,
@@ -17,6 +18,7 @@ use serde_json::{Value, json};
 
 pub const RECORD_SCHEMA: &str = "scorepeek-diagnostic-event-v1";
 pub const HEADER_SCHEMA: &str = "scorepeek-diagnostic-stream-header-v1";
+pub const REQUEST_SCHEMA: &str = "scorepeek-diagnostic-stream-request-v1";
 pub const SOCKET_NAME: &str = "diagnostics.sock";
 pub const STREAM_NAME: &str = "diagnostics.ndjson";
 const ACTIVE_LOCK_NAME: &str = "active.lock";
@@ -25,6 +27,7 @@ pub const RING_BYTES: usize = 128 * 1024 * 1024;
 pub const RETAINED_RUNS: usize = 10;
 
 const MAX_CLIENTS: usize = 8;
+const MAX_REQUEST_BYTES: usize = 1024;
 const SYNC_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
@@ -55,6 +58,7 @@ struct State {
     persistence: Persistence,
     partial: bool,
     active: bool,
+    started_at: Instant,
 }
 
 #[derive(Clone)]
@@ -62,6 +66,7 @@ struct Record {
     sequence: u64,
     bytes: Arc<[u8]>,
     important: bool,
+    observed_at: Instant,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -133,6 +138,7 @@ impl RunDiagnostics {
                 persistence,
                 partial: persistence.partial(),
                 active: true,
+                started_at: Instant::now(),
             }),
             changed: Condvar::new(),
         });
@@ -247,7 +253,7 @@ impl DiagnosticSink {
         if bytes.len() > MAX_RECORD_BYTES {
             append_small_failure(&mut state, operation, bytes.len());
         } else {
-            append(&mut state, Arc::from(bytes), important);
+            append(&mut state, Arc::from(bytes), important, Instant::now());
         }
         self.shared.changed.notify_all();
     }
@@ -287,11 +293,11 @@ fn append_small_failure(state: &mut State, operation: &str, bytes: usize) {
     });
     if let Ok(mut bytes) = serde_json::to_vec(&value) {
         bytes.push(b'\n');
-        append(state, Arc::from(bytes), true);
+        append(state, Arc::from(bytes), true, Instant::now());
     }
 }
 
-fn append(state: &mut State, bytes: Arc<[u8]>, important: bool) {
+fn append(state: &mut State, bytes: Arc<[u8]>, important: bool, observed_at: Instant) {
     while state.ring_bytes.saturating_add(bytes.len()) > RING_BYTES {
         let Some(removed) = state.records.pop_front() else {
             break;
@@ -306,6 +312,7 @@ fn append(state: &mut State, bytes: Arc<[u8]>, important: bool) {
         sequence,
         bytes,
         important,
+        observed_at,
     });
 }
 
@@ -496,7 +503,7 @@ fn mark_persistence_failure(state: &mut State, persistence: Persistence, error_t
     });
     if let Ok(mut bytes) = serde_json::to_vec(&value) {
         bytes.push(b'\n');
-        append(state, Arc::from(bytes), true);
+        append(state, Arc::from(bytes), true, Instant::now());
     }
 }
 
@@ -555,6 +562,8 @@ fn remove_stale_socket(path: &Path) -> Result<(), String> {
 
 struct Client {
     stream: UnixStream,
+    request: Vec<u8>,
+    initialized: bool,
     next_sequence: u64,
     pending: Arc<[u8]>,
     offset: usize,
@@ -600,12 +609,14 @@ fn accept_clients(listener: &UnixListener, shared: &Shared, clients: &mut Vec<Cl
                     .state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let oldest = oldest_sequence(&state);
-                let header = encode_header(&state);
+                let next_sequence = state.next_sequence;
+                drop(state);
                 clients.push(Client {
                     stream,
-                    next_sequence: oldest,
-                    pending: Arc::from(header),
+                    request: Vec::new(),
+                    initialized: false,
+                    next_sequence,
+                    pending: Arc::from([]),
                     offset: 0,
                     pending_record: false,
                 });
@@ -616,17 +627,66 @@ fn accept_clients(listener: &UnixListener, shared: &Shared, clients: &mut Vec<Cl
     }
 }
 
-fn encode_header(state: &State) -> Vec<u8> {
+#[derive(Clone, Copy)]
+struct StreamStart {
+    sequence: u64,
+    replay_seconds: Option<u64>,
+    replay_available_us: u64,
+    replay_truncated: bool,
+}
+
+fn select_stream_start(state: &State, replay_seconds: Option<u64>, now: Instant) -> StreamStart {
+    let available = state.records.front().map_or_else(
+        || now.saturating_duration_since(state.started_at),
+        |record| now.saturating_duration_since(record.observed_at),
+    );
+    let replay_available_us = u64::try_from(available.as_micros()).unwrap_or(u64::MAX);
+    let Some(seconds) = replay_seconds else {
+        return StreamStart {
+            sequence: state.next_sequence,
+            replay_seconds: None,
+            replay_available_us,
+            replay_truncated: false,
+        };
+    };
+    let cutoff = now.checked_sub(Duration::from_secs(seconds));
+    let sequence = cutoff
+        .and_then(|cutoff| {
+            state
+                .records
+                .iter()
+                .find(|record| record.observed_at >= cutoff)
+                .map(|record| record.sequence)
+        })
+        .unwrap_or_else(|| cutoff.map_or_else(|| oldest_sequence(state), |_| state.next_sequence));
+    let replay_truncated = state.dropped_before_oldest > 0
+        && state
+            .records
+            .front()
+            .is_some_and(|oldest| cutoff.is_none_or(|cutoff| oldest.observed_at > cutoff));
+    StreamStart {
+        sequence,
+        replay_seconds: Some(seconds),
+        replay_available_us,
+        replay_truncated,
+    }
+}
+
+fn encode_header(state: &State, start: StreamStart) -> Vec<u8> {
     let mut bytes = serde_json::to_vec(&json!({
         "schema": HEADER_SCHEMA,
         "run_id": state.run_id,
         "oldest_sequence": oldest_sequence(state),
+        "stream_start_sequence": start.sequence,
         "next_sequence": state.next_sequence,
         "dropped_before_oldest": state.dropped_before_oldest,
-        "gap": state.dropped_before_oldest > 0,
+        "gap": false,
         "active": state.active,
         "partial": state.partial,
         "persistence": state.persistence.name(),
+        "replay_seconds": start.replay_seconds,
+        "replay_available_us": start.replay_available_us,
+        "replay_truncated": start.replay_truncated,
     }))
     .expect("diagnostic header is serializable");
     bytes.push(b'\n');
@@ -634,6 +694,12 @@ fn encode_header(state: &State) -> Vec<u8> {
 }
 
 fn advance_client(client: &mut Client, shared: &Shared) -> bool {
+    if !client.initialized && !initialize_client(client, shared) {
+        return false;
+    }
+    if !client.initialized {
+        return true;
+    }
     if client.offset < client.pending.len() {
         match client.stream.write(&client.pending[client.offset..]) {
             Ok(0) => return false,
@@ -674,6 +740,64 @@ fn advance_client(client: &mut Client, shared: &Shared) -> bool {
     client.pending_record = true;
     drop(state);
     advance_client(client, shared)
+}
+
+fn initialize_client(client: &mut Client, shared: &Shared) -> bool {
+    let mut bytes = [0_u8; MAX_REQUEST_BYTES];
+    match client.stream.read(&mut bytes) {
+        Ok(0) => return false,
+        Ok(read) => client.request.extend_from_slice(&bytes[..read]),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+            ) =>
+        {
+            return true;
+        }
+        Err(_) => return false,
+    }
+    if client.request.len() > MAX_REQUEST_BYTES {
+        return false;
+    }
+    let Some(newline) = client.request.iter().position(|byte| *byte == b'\n') else {
+        return true;
+    };
+    if newline + 1 != client.request.len() {
+        return false;
+    }
+    let Ok(replay_seconds) = decode_request(&client.request[..newline]) else {
+        return false;
+    };
+    let state = shared
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let start = select_stream_start(&state, replay_seconds, Instant::now());
+    client.next_sequence = start.sequence;
+    client.pending = Arc::from(encode_header(&state, start));
+    client.offset = 0;
+    client.pending_record = false;
+    client.initialized = true;
+    true
+}
+
+fn decode_request(bytes: &[u8]) -> Result<Option<u64>, ()> {
+    let value: Value = serde_json::from_slice(bytes).map_err(|_| ())?;
+    let object = value.as_object().ok_or(())?;
+    if object.get("schema").and_then(Value::as_str) != Some(REQUEST_SCHEMA) {
+        return Err(());
+    }
+    match object.get("mode").and_then(Value::as_str) {
+        Some("live") if object.len() == 2 => Ok(None),
+        Some("replay") if object.len() == 3 => object
+            .get("seconds")
+            .and_then(Value::as_u64)
+            .filter(|seconds| *seconds > 0)
+            .map(Some)
+            .ok_or(()),
+        _ => Err(()),
+    }
 }
 
 fn join_thread(thread: &mut Option<JoinHandle<()>>) {
@@ -910,24 +1034,36 @@ pub fn default_store() -> Result<PathBuf, String> {
         .ok_or_else(|| "XDG_STATE_HOME or HOME is required for diagnostics".to_owned())
 }
 
-/// Streams the active in-memory diagnostic ring to stdout as NDJSON.
+/// Streams live diagnostics to stdout as NDJSON, optionally preceded by a bounded replay window.
 ///
 /// # Errors
 ///
 /// Returns an error for unavailable runtime state, connection failures, gaps, or malformed data.
-pub fn observe() -> Result<(), String> {
+pub fn observe(replay_seconds: Option<u64>) -> Result<(), String> {
     let runtime = env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .ok_or_else(|| "XDG_RUNTIME_DIR is unavailable".to_owned())?;
-    let stream = UnixStream::connect(runtime.join("scorepeek").join(SOCKET_NAME))
+    let mut stream = UnixStream::connect(runtime.join("scorepeek").join(SOCKET_NAME))
         .map_err(|error| format!("diagnostic socket could not be connected: {error}"))?;
+    let request = replay_seconds.map_or_else(
+        || json!({"schema":REQUEST_SCHEMA,"mode":"live"}),
+        |seconds| json!({"schema":REQUEST_SCHEMA,"mode":"replay","seconds":seconds}),
+    );
+    serde_json::to_writer(&mut stream, &request)
+        .map_err(|error| format!("diagnostic socket request failed: {error}"))?;
+    stream
+        .write_all(b"\n")
+        .and_then(|()| stream.shutdown(Shutdown::Write))
+        .map_err(|error| format!("diagnostic socket request failed: {error}"))?;
     let stdout = io::stdout();
-    copy_observation_stream(BufReader::new(stream), stdout.lock())
+    let stderr = io::stderr();
+    copy_observation_stream(BufReader::new(stream), stdout.lock(), stderr.lock())
 }
 
 fn copy_observation_stream(
     mut reader: impl std::io::BufRead,
     mut output: impl std::io::Write,
+    mut warning: impl std::io::Write,
 ) -> Result<(), String> {
     let mut line = Vec::new();
     let mut expected = None;
@@ -949,14 +1085,24 @@ fn copy_observation_stream(
             if value["schema"] != HEADER_SCHEMA {
                 return Err("diagnostic socket header schema is unsupported".to_owned());
             }
-            expected = value["oldest_sequence"].as_u64();
+            expected = value["stream_start_sequence"]
+                .as_u64()
+                .or_else(|| value["oldest_sequence"].as_u64());
             output
                 .write_all(&line)
                 .map_err(|error| format!("diagnostic output failed: {error}"))?;
-            if value["gap"] == true || value["dropped_before_oldest"].as_u64().unwrap_or(0) > 0 {
-                return Err(
-                    "diagnostic socket connected after records had already been evicted".to_owned(),
-                );
+            if value["replay_truncated"] == true {
+                let requested = value["replay_seconds"].as_u64().unwrap_or(0);
+                let available_us = value["replay_available_us"].as_u64().unwrap_or(0);
+                writeln!(
+                    warning,
+                    "scorepeek: requested {requested}s diagnostic replay, but the ring retains only {:.3}s; streaming the available suffix",
+                    Duration::from_micros(available_us).as_secs_f64()
+                )
+                .map_err(|error| format!("diagnostic warning output failed: {error}"))?;
+            }
+            if value["gap"] == true {
+                return Err("diagnostic socket declared an initial sequence gap".to_owned());
             }
             continue;
         }
@@ -997,6 +1143,7 @@ mod tests {
                 persistence,
                 partial: persistence.partial(),
                 active: true,
+                started_at: Instant::now(),
             }),
             changed: Condvar::new(),
         })
@@ -1043,7 +1190,7 @@ mod tests {
         let shared = shared("run-1-0-1", Persistence::Active);
         let mut state = shared.state.lock().unwrap();
         for _ in 0..100_000 {
-            append(&mut state, Arc::from(&b"{}\n"[..]), false);
+            append(&mut state, Arc::from(&b"{}\n"[..]), false, Instant::now());
         }
         assert_eq!(record_at(&state, 1).map(|record| record.sequence), Some(1));
         assert_eq!(
@@ -1073,9 +1220,74 @@ mod tests {
         let mut input = header.clone();
         input.push(b'\n');
         let mut output = Vec::new();
-        let error = copy_observation_stream(std::io::Cursor::new(input), &mut output).unwrap_err();
-        assert!(error.contains("evicted"));
+        let mut warning = Vec::new();
+        let error = copy_observation_stream(std::io::Cursor::new(input), &mut output, &mut warning)
+            .unwrap_err();
+        assert!(error.contains("initial sequence gap"));
         assert_eq!(output, [header, vec![b'\n']].concat());
+        assert!(warning.is_empty());
+    }
+
+    #[test]
+    fn truncated_replay_is_streamed_with_a_warning() {
+        let mut input = serde_json::to_vec(&json!({
+            "schema":HEADER_SCHEMA,
+            "run_id":"run-1-0-1",
+            "oldest_sequence":5,
+            "next_sequence":5,
+            "dropped_before_oldest":5,
+            "gap":false,
+            "active":true,
+            "partial":false,
+            "replay_seconds":30,
+            "replay_available_us":12_500_000,
+            "replay_truncated":true,
+        }))
+        .unwrap();
+        input.push(b'\n');
+        input.extend_from_slice(
+            &serde_json::to_vec(&json!({
+                "sequence":5,
+                "operation":"diagnostic_run_finished"
+            }))
+            .unwrap(),
+        );
+        input.push(b'\n');
+        let mut output = Vec::new();
+        let mut warning = Vec::new();
+        copy_observation_stream(std::io::Cursor::new(input), &mut output, &mut warning).unwrap();
+        let warning = String::from_utf8(warning).unwrap();
+        assert!(warning.contains("requested 30s"));
+        assert!(warning.contains("12.500s"));
+    }
+
+    #[test]
+    fn stream_start_is_live_by_default_and_time_bounded_for_replay() {
+        let shared = shared("run-1-0-1", Persistence::Active);
+        let mut state = shared.state.lock().unwrap();
+        let now = Instant::now();
+        append(
+            &mut state,
+            Arc::from(&b"{}\n"[..]),
+            false,
+            now.checked_sub(Duration::from_secs(20)).unwrap(),
+        );
+        append(
+            &mut state,
+            Arc::from(&b"{}\n"[..]),
+            false,
+            now.checked_sub(Duration::from_secs(5)).unwrap(),
+        );
+        state.dropped_before_oldest = 1;
+        let live = select_stream_start(&state, None, now);
+        assert_eq!(live.sequence, state.next_sequence);
+        assert!(!live.replay_truncated);
+        let recent = select_stream_start(&state, Some(10), now);
+        assert_eq!(recent.sequence, 2);
+        assert!(!recent.replay_truncated);
+        let unavailable = select_stream_start(&state, Some(30), now);
+        assert_eq!(unavailable.sequence, 1);
+        assert!(unavailable.replay_truncated);
     }
 
     #[test]
@@ -1156,7 +1368,7 @@ mod tests {
     }
 
     #[test]
-    fn socket_sends_header_ring_and_live_terminal() {
+    fn socket_is_live_only_unless_replay_is_requested() {
         let temporary = tempfile::tempdir().unwrap();
         let shared = shared("run-1-0-1", Persistence::Unavailable);
         let sink = DiagnosticSink {
@@ -1164,10 +1376,16 @@ mod tests {
         };
         sink.record("before_connect", &json!({}), false);
         let (path, server) = start_server_at(Arc::clone(&shared), temporary.path()).unwrap();
-        let stream = UnixStream::connect(path).unwrap();
+        let mut stream = UnixStream::connect(path).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
+        stream
+            .write_all(
+                format!("{{\"schema\":\"{REQUEST_SCHEMA}\",\"mode\":\"live\"}}\n").as_bytes(),
+            )
+            .unwrap();
+        stream.shutdown(Shutdown::Write).unwrap();
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
@@ -1175,6 +1393,47 @@ mod tests {
             serde_json::from_str::<Value>(&line).unwrap()["schema"],
             HEADER_SCHEMA
         );
+        sink.record("diagnostic_run_finished", &json!({"status":"test"}), true);
+        {
+            let mut state = shared.state.lock().unwrap();
+            state.active = false;
+            shared.changed.notify_all();
+        }
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&line).unwrap()["operation"],
+            "diagnostic_run_finished"
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn socket_replays_the_requested_time_window_before_live_records() {
+        let temporary = tempfile::tempdir().unwrap();
+        let shared = shared("run-1-0-1", Persistence::Unavailable);
+        let sink = DiagnosticSink {
+            shared: Arc::clone(&shared),
+        };
+        sink.record("before_connect", &json!({}), false);
+        let (path, server) = start_server_at(Arc::clone(&shared), temporary.path()).unwrap();
+        let mut stream = UnixStream::connect(path).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream
+            .write_all(
+                format!("{{\"schema\":\"{REQUEST_SCHEMA}\",\"mode\":\"replay\",\"seconds\":30}}\n")
+                    .as_bytes(),
+            )
+            .unwrap();
+        stream.shutdown(Shutdown::Write).unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let header: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(header["replay_seconds"], 30);
+        assert_eq!(header["replay_truncated"], false);
         line.clear();
         reader.read_line(&mut line).unwrap();
         assert_eq!(

@@ -35,7 +35,7 @@ use std::{
 use wayland_client::{
     Connection, QueueHandle,
     globals::registry_queue_init,
-    protocol::{wl_buffer, wl_output, wl_shm, wl_shm_pool, wl_surface},
+    protocol::{wl_buffer, wl_callback, wl_output, wl_shm, wl_shm_pool, wl_surface},
 };
 use wayland_protocols::{
     wp::cursor_shape::v1::client::{
@@ -177,7 +177,7 @@ impl Shell {
             viewport: None,
             configured: false,
             needs_configure: false,
-            frame_pending: false,
+            frame_callback: None,
             fallback: [width, height],
             events: Vec::new(),
             failure: None,
@@ -381,23 +381,13 @@ impl Shell {
     }
     /// Requests at most one frame callback for the next renderer commit.
     pub fn request_frame(&mut self) {
-        if !self.state.frame_pending {
+        if self.state.frame_callback.is_none() {
             let surface = self.owner.layer.wl_surface();
-            surface.frame(&self.state.qh, FrameCallbackData(surface.clone()));
-            self.state.frame_pending = true;
+            self.state.frame_callback =
+                Some(surface.frame(&self.state.qh, FrameCallbackData(surface.clone())));
         }
     }
 
-    /// Requests a frame callback and publishes that request without attaching a new buffer.
-    ///
-    /// Use this when rendering is intentionally deferred; a renderer commit is otherwise what
-    /// normally publishes the callback request.
-    pub fn request_frame_and_commit(&mut self) {
-        if !self.state.frame_pending {
-            self.request_frame();
-            self.owner.layer.wl_surface().commit();
-        }
-    }
     pub fn set_geometry(&mut self, x: i32, y: i32, width: u32, height: u32) {
         let width = width.max(32);
         let height = height.max(32);
@@ -409,17 +399,31 @@ impl Shell {
         self.state.height = height;
         self.owner.layer.set_margin(y, 0, 0, x);
         self.owner.layer.set_size(width, height);
+        if self.state.configured {
+            self.owner.layer.commit();
+        }
+    }
+
+    /// Detaches the current buffer and resets the layer-surface configure handshake.
+    /// # Errors
+    /// Returns a Wayland connection flush failure.
+    pub fn unmap(&mut self) -> Result<(), String> {
+        self.owner.unmap()?;
+        self.state.configured = false;
+        self.state.needs_configure = false;
+        self.started = Instant::now();
+        Ok(())
+    }
+
+    /// Starts the layer-shell remap handshake with a bufferless commit.
+    pub fn begin_remap(&mut self) {
+        self.state.configured = false;
+        self.state.needs_configure = false;
+        self.started = Instant::now();
         self.owner.layer.commit();
     }
 
-    /// Detaches the current buffer after renderer teardown releases its surface resources.
-    /// # Errors
-    /// Returns a Wayland connection flush failure.
-    pub fn unmap(&self) -> Result<(), String> {
-        self.owner.unmap()
-    }
-
-    /// Enables the whole surface input region or replaces it with an empty one.
+    /// Stages the whole surface input region or replaces it with an empty one.
     pub fn set_input_enabled(&mut self, enabled: bool) {
         let surface = self.owner.layer.wl_surface();
         if enabled {
@@ -427,7 +431,9 @@ impl Shell {
         } else if let Ok(region) = Region::new(&self.state.compositor) {
             surface.set_input_region(Some(region.wl_region()));
         }
-        surface.commit();
+        if self.state.configured {
+            surface.commit();
+        }
     }
 
     /// Selects a compositor-provided cursor shape while the pointer is over this surface.
@@ -468,7 +474,7 @@ struct Platform {
     viewport: Option<WpViewport>,
     configured: bool,
     needs_configure: bool,
-    frame_pending: bool,
+    frame_callback: Option<wl_callback::WlCallback>,
     fallback: [u32; 2],
     events: Vec<Event>,
     failure: Option<String>,
@@ -720,7 +726,7 @@ impl CompositorHandler for Platform {
         if !is_overlay {
             return;
         }
-        self.frame_pending = false;
+        self.frame_callback = None;
         self.events.push(Event::Frame);
     }
 

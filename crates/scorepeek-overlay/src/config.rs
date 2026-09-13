@@ -1,5 +1,5 @@
 use crate::runtime::Backend;
-use scorepeek_overlay_ui::{Skin, WaylandRefreshRate};
+use scorepeek_overlay_ui::Skin;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -16,8 +16,9 @@ pub const PENDING_WAYLAND_OUTPUT_ID: &str = "__pending-wayland-output__";
 #[serde(deny_unknown_fields)]
 pub struct OverlayConfig {
     pub schema_version: u32,
-    #[serde(default)]
-    pub wayland_refresh_hz: WaylandRefreshRate,
+    #[doc(hidden)]
+    #[serde(default, rename = "wayland_refresh_hz", skip_serializing)]
+    pub legacy_wayland_refresh_hz: Option<serde_json::Value>,
     #[serde(default = "default_unknown_grace_ms")]
     pub unknown_grace_ms: u32,
     /// Run-local projection generations; omitted from the persisted v7 document.
@@ -115,7 +116,7 @@ impl OverlayConfig {
     pub fn initial() -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
-            wayland_refresh_hz: WaylandRefreshRate::Auto,
+            legacy_wayland_refresh_hz: None,
             unknown_grace_ms: default_unknown_grace_ms(),
             projection_generations: ProjectionGenerations::default(),
             obs_listen: default_listen(),
@@ -139,11 +140,6 @@ impl OverlayConfig {
         }
         if self.unknown_grace_ms > 10_000 {
             return Err("overlay unknown_grace_ms must be at most 10000".into());
-        }
-        if let WaylandRefreshRate::Capped(hz) = self.wayland_refresh_hz
-            && !(1..=WaylandRefreshRate::MAX_HZ).contains(&hz)
-        {
-            return Err("overlay wayland_refresh_hz must be auto or from 1 through 1000".into());
         }
         let listen = self
             .obs_listen
@@ -579,26 +575,27 @@ mod tests {
         let decoded: OverlayConfig = toml::from_str(&text).unwrap();
         assert_eq!(decoded, config);
         assert!(config.validated().unwrap().1.is_empty());
-        assert!(text.contains("wayland_refresh_hz = \"auto\""));
+        assert!(!text.contains("wayland_refresh_hz"));
         assert!(config.canvases.is_empty());
         assert!(!text.contains("revision"));
     }
 
     #[test]
-    fn wayland_refresh_rate_round_trips_as_auto_or_integer() {
-        let mut config = visual_debug_config();
-        config.wayland_refresh_hz = WaylandRefreshRate::capped(30).unwrap();
-        let text = toml::to_string(&config).unwrap();
-        assert!(text.contains("wayland_refresh_hz = 30"));
-        assert_eq!(toml::from_str::<OverlayConfig>(&text).unwrap(), config);
-
-        for invalid in ["0", "1001", "\"AUTO\"", "\"30\""] {
-            let text = toml::to_string(&OverlayConfig::initial()).unwrap().replace(
-                "wayland_refresh_hz = \"auto\"",
-                &format!("wayland_refresh_hz = {invalid}"),
-            );
-            assert!(toml::from_str::<OverlayConfig>(&text).is_err(), "{invalid}");
-        }
+    fn legacy_wayland_refresh_rate_is_accepted_but_not_serialized() {
+        let text = format!(
+            "wayland_refresh_hz = 30\n{}",
+            toml::to_string(&OverlayConfig::initial()).unwrap()
+        );
+        let config = toml::from_str::<OverlayConfig>(&text).unwrap();
+        assert_eq!(
+            config.legacy_wayland_refresh_hz,
+            Some(serde_json::json!(30))
+        );
+        assert!(
+            !toml::to_string(&config)
+                .unwrap()
+                .contains("wayland_refresh_hz")
+        );
     }
 
     #[test]

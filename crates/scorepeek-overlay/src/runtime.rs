@@ -34,8 +34,6 @@ pub struct Config {
     pub listen: SocketAddr,
     pub unknown_grace_ms: u32,
     #[serde(default)]
-    pub wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
-    #[serde(default)]
     pub edit_on_start: bool,
 }
 

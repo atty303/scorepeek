@@ -31,36 +31,6 @@ use scorepeek_overlay_ui::{Appearance, OXANIUM, OverlayState, WidgetLayout};
 use serde::{Deserialize, Serialize};
 use smithay_client_toolkit::reexports::calloop::ping::{Ping, make_ping};
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum PaintReason {
-    Steady,
-    InitialConfigure,
-    Reconfigure,
-    VisibilityClear,
-    Editor,
-}
-
-impl PaintReason {
-    const fn name(self) -> &'static str {
-        match self {
-            Self::Steady => "steady",
-            Self::InitialConfigure => "initial_configure",
-            Self::Reconfigure => "reconfigure",
-            Self::VisibilityClear => "visibility_clear",
-            Self::Editor => "editor",
-        }
-    }
-
-    const fn bypasses_cap(self) -> bool {
-        !matches!(self, Self::Steady)
-    }
-}
-
-#[derive(Default)]
-struct FrameCadence {
-    last_paint: Option<Duration>,
-}
-
 #[derive(Default)]
 struct EditorSkinUpdates {
     pending: bool,
@@ -201,7 +171,7 @@ trait NativeFramePresenter {
 
     fn set_text_input(&mut self, input: Option<scorepeek_overlay_handles::TextInputState>);
 
-    fn request_frame_commit(&mut self);
+    fn unmap(&mut self) -> Result<(), String>;
 
     fn present(
         &mut self,
@@ -227,8 +197,8 @@ impl NativeFramePresenter for WindowPresenter<'_> {
         self.shell.set_text_input(input);
     }
 
-    fn request_frame_commit(&mut self) {
-        self.shell.request_frame_and_commit();
+    fn unmap(&mut self) -> Result<(), String> {
+        self.shell.unmap()
     }
 
     fn present(
@@ -272,29 +242,6 @@ impl EditorSkinUpdates {
         }
         self.pending = false;
         true
-    }
-}
-
-impl FrameCadence {
-    fn permits(
-        &self,
-        now: Duration,
-        rate: scorepeek_overlay_ui::WaylandRefreshRate,
-        reason: PaintReason,
-    ) -> bool {
-        if reason.bypasses_cap() {
-            return true;
-        }
-        let Some(hz) = rate.hz() else {
-            return true;
-        };
-        self.last_paint.is_none_or(|last| {
-            now.saturating_sub(last) >= Duration::from_secs_f64(1.0 / f64::from(hz))
-        })
-    }
-
-    fn record(&mut self, now: Duration) {
-        self.last_paint = Some(now);
     }
 }
 
@@ -750,105 +697,6 @@ fn accept_stage_projection_replica(
     true
 }
 
-#[derive(Clone, Copy)]
-enum PaintSignal {
-    None,
-    Frame,
-    Damage,
-    DamageAndFrame,
-}
-
-impl PaintSignal {
-    const fn from_state(frame: bool, pending: bool) -> Self {
-        match (frame, pending) {
-            (false, false) => Self::None,
-            (true, false) => Self::Frame,
-            (false, true) => Self::Damage,
-            (true, true) => Self::DamageAndFrame,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct PaintState {
-    editing: bool,
-    visible: bool,
-    signal: PaintSignal,
-    animating: bool,
-}
-
-impl PaintState {
-    const fn editor_frame_needed(self) -> bool {
-        self.editing && self.visible && matches!(self.signal, PaintSignal::Damage)
-    }
-
-    const fn ordinary_reason(self) -> Option<PaintReason> {
-        if self.editing && self.visible && matches!(self.signal, PaintSignal::DamageAndFrame) {
-            Some(PaintReason::Editor)
-        } else if self.visible
-            && ((!self.editing
-                && matches!(
-                    self.signal,
-                    PaintSignal::Damage | PaintSignal::DamageAndFrame
-                ))
-                || (self.animating
-                    && matches!(
-                        self.signal,
-                        PaintSignal::Frame | PaintSignal::DamageAndFrame
-                    )))
-        {
-            Some(PaintReason::Steady)
-        } else {
-            None
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PaintAdmission {
-    Paint(PaintReason),
-    RequestFrameCommit,
-    None,
-}
-
-fn admit_native_paint(
-    renderer_active: bool,
-    configured: bool,
-    visibility_changed: bool,
-    state: PaintState,
-    now: Duration,
-    refresh: scorepeek_overlay_ui::WaylandRefreshRate,
-    cadence: &FrameCadence,
-) -> PaintAdmission {
-    if !renderer_active {
-        return PaintAdmission::None;
-    }
-    let reason = if configured {
-        Some(if cadence.last_paint.is_none() {
-            PaintReason::InitialConfigure
-        } else {
-            PaintReason::Reconfigure
-        })
-    } else if visibility_changed && !state.visible {
-        Some(PaintReason::VisibilityClear)
-    } else {
-        state.ordinary_reason()
-    };
-    if let Some(reason) = reason {
-        if cadence.permits(now, refresh, reason) {
-            PaintAdmission::Paint(reason)
-        } else if state.visible {
-            PaintAdmission::RequestFrameCommit
-        } else {
-            PaintAdmission::None
-        }
-    } else if state.editor_frame_needed() {
-        PaintAdmission::RequestFrameCommit
-    } else {
-        PaintAdmission::None
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SurfaceRole {
     DisplayCanvas,
@@ -1204,13 +1052,6 @@ fn native_overlay(props: NativeOverlayProps) -> Element {
     }
 }
 
-#[cfg(test)]
-fn parse_refresh_rate(text: &str) -> Result<scorepeek_overlay_ui::WaylandRefreshRate, String> {
-    text.parse::<u16>()
-        .map_err(|_| "Enter an integer from 1 through 1000 Hz".to_owned())
-        .and_then(|hz| scorepeek_overlay_ui::WaylandRefreshRate::capped(hz).map_err(str::to_owned))
-}
-
 struct CalloopWaker(Ping);
 
 fn widget_layout(widget: &crate::config::Widget) -> WidgetLayout {
@@ -1427,7 +1268,6 @@ fn execute_native_editor_effect(
     effect: &EditorEffect,
     control_socket: &std::path::Path,
     editor_id: &str,
-    wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
     fallback: &[scorepeek_overlay_ui::CanvasPresentation],
 ) -> EditorBackendReply {
     let request = match effect {
@@ -1443,13 +1283,11 @@ fn execute_native_editor_effect(
             backend: crate::runtime::Backend::Wayland,
             editor_id: editor_id.to_owned(),
             canvases: canvases.clone(),
-            wayland_refresh_hz: Some(wayland_refresh_hz),
         },
         EditorEffect::Save { canvases } => crate::control::Request::CommitBackend {
             backend: crate::runtime::Backend::Wayland,
             editor_id: editor_id.to_owned(),
             canvases: canvases.clone(),
-            wayland_refresh_hz: Some(wayland_refresh_hz),
         },
         EditorEffect::Discard | EditorEffect::Close => crate::control::Request::ReleaseBackend {
             backend: crate::runtime::Backend::Wayland,
@@ -1508,18 +1346,11 @@ fn execute_native_editor_effects(
     effects: Vec<EditorEffect>,
     control_socket: &std::path::Path,
     editor_id: &str,
-    wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
 ) {
     let mut pending = std::collections::VecDeque::from(effects);
     while let Some(effect) = pending.pop_front() {
         let fallback = authority.session().draft.clone();
-        let reply = execute_native_editor_effect(
-            &effect,
-            control_socket,
-            editor_id,
-            wayland_refresh_hz,
-            &fallback,
-        );
+        let reply = execute_native_editor_effect(&effect, control_socket, editor_id, &fallback);
         pending.extend(authority.dispatch(EditorInput::BackendCompleted {
             effect: effect.kind(),
             requested_draft: effect.requested_draft().map(<[_]>::to_vec),
@@ -1622,7 +1453,6 @@ pub fn run_with_editor_scenario(
             .map_err(|error| error.to_string())?;
     }
     let editor_id = format!("wayland-{}", std::process::id());
-    let wayland_refresh_hz = Arc::new(std::sync::Mutex::new(config.wayland_refresh_hz));
     let start_editing = config.edit_on_start || desired.is_empty();
     let skin_assets = Arc::new(SkinAssetCache::new(crate::skin::StoreRoot::new(
         config.skin_store.clone(),
@@ -1666,13 +1496,7 @@ pub fn run_with_editor_scenario(
             canvas: desired.first().map(|canvas| canvas.id.clone()),
             preview: scorepeek_overlay_ui::ScreenKind::MusicSelect,
         });
-        execute_native_editor_effects(
-            &mut authority,
-            effects,
-            &config.control_socket,
-            &editor_id,
-            config.wayland_refresh_hz,
-        );
+        execute_native_editor_effects(&mut authority, effects, &config.control_socket, &editor_id);
     }
     let mut was_editing = authority.session().editing;
     let mut projection_cache = NativeProjectionCache::default();
@@ -1695,15 +1519,11 @@ pub fn run_with_editor_scenario(
                     }
                     let before_revision = authority.session().revision;
                     let effects = authority.dispatch(input);
-                    let refresh = *wayland_refresh_hz
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     execute_native_editor_effects(
                         &mut authority,
                         effects,
                         &config.control_socket,
                         &editor_id,
-                        refresh,
                     );
                     if let Some(correlation) = correlation {
                         let session = authority.session();
@@ -1732,15 +1552,11 @@ pub fn run_with_editor_scenario(
                         preview: preview_screen
                             .unwrap_or(scorepeek_overlay_ui::ScreenKind::MusicSelect),
                     });
-                    let refresh = *wayland_refresh_hz
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     execute_native_editor_effects(
                         &mut authority,
                         effects,
                         &config.control_socket,
                         &editor_id,
-                        refresh,
                     );
                 }
             }
@@ -1754,15 +1570,11 @@ pub fn run_with_editor_scenario(
         }
         if authority.session().editing && Instant::now() >= next_keepalive {
             let effects = authority.dispatch(EditorInput::KeepAliveTick);
-            let refresh = *wayland_refresh_hz
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
             execute_native_editor_effects(
                 &mut authority,
                 effects,
                 &config.control_socket,
                 &editor_id,
-                refresh,
             );
             next_keepalive = Instant::now() + Duration::from_secs(5);
         }
@@ -1798,15 +1610,11 @@ pub fn run_with_editor_scenario(
                     canvas: None,
                     preview: scorepeek_overlay_ui::ScreenKind::MusicSelect,
                 });
-                let refresh = *wayland_refresh_hz
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 execute_native_editor_effects(
                     &mut authority,
                     effects,
                     &config.control_socket,
                     &editor_id,
-                    refresh,
                 );
             }
         }
@@ -1871,7 +1679,6 @@ pub fn run_with_editor_scenario(
             let state = Arc::clone(&feed_state);
             let stopped = Arc::clone(&feed_stop);
             let stages = Arc::clone(&published_stages);
-            let refresh = Arc::clone(&wayland_refresh_hz);
             let wakes = Arc::clone(&canvas_wakes);
             let coordinator = coordinator_tx.clone();
             let assets = Arc::clone(&skin_assets);
@@ -1889,7 +1696,6 @@ pub fn run_with_editor_scenario(
                         state,
                         stopped,
                         stages,
-                        refresh,
                         &wakes,
                         coordinator,
                         role,
@@ -1913,13 +1719,7 @@ pub fn run_with_editor_scenario(
     let shutdown_result = reap_native_workers_on_shutdown(workers);
     if authority.session().editing {
         let effects = authority.dispatch(EditorInput::Action(EditorAction::Close));
-        execute_native_editor_effects(
-            &mut authority,
-            effects,
-            &config.control_socket,
-            &editor_id,
-            config.wayland_refresh_hz,
-        );
+        execute_native_editor_effects(&mut authority, effects, &config.control_socket, &editor_id);
     }
     crate::diagnostics::emit("native_coordinator_work", &coordinator_work);
     shutdown_result
@@ -2020,7 +1820,6 @@ fn run_canvas(
     feed_state: Arc<std::sync::Mutex<OverlayState>>,
     feed_stop: Arc<std::sync::atomic::AtomicBool>,
     published_stages: Arc<std::sync::Mutex<PublishedStages>>,
-    wayland_refresh_hz: Arc<std::sync::Mutex<scorepeek_overlay_ui::WaylandRefreshRate>>,
     wakes: &Arc<std::sync::Mutex<std::collections::BTreeMap<String, Ping>>>,
     coordinator: std::sync::mpsc::Sender<CoordinatorCommand>,
     role: SurfaceRole,
@@ -2153,7 +1952,6 @@ fn run_canvas(
         outputs,
         Rc::clone(&report),
         published_stages,
-        wayland_refresh_hz,
         startup_started,
         coordinator,
         role,
@@ -2259,14 +2057,8 @@ fn run_canvas(
         report.skin_runtime_create_count = app.skin_runtime_create_count;
         report.frame_work = app.frame_work.clone();
         report.elapsed_ms = u64::try_from(app.started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        report.wayland_refresh_hz = *app
-            .wayland_refresh_hz
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let seconds = app.started.elapsed().as_secs_f64();
         report.effective_paint_hz = (seconds > 0.0).then(|| f64::from(app.paint_count) / seconds);
-        report.effective_steady_paint_hz =
-            (seconds > 0.0).then(|| f64::from(app.steady_paint_count) / seconds);
         report.status = if result.is_ok() { "complete" } else { "failed" };
         report.failure_type = result
             .as_ref()
@@ -2292,13 +2084,10 @@ struct App {
     published_stages: Arc<std::sync::Mutex<PublishedStages>>,
     waker: Waker,
     started: Instant,
-    animating: bool,
+    surface_state: NativeDisplaySurfaceState,
     paint_count: u32,
     render_calls: u32,
-    steady_paint_count: u32,
-    pending_paint: bool,
     full_layout_pending: bool,
-    cadence: FrameCadence,
     editor_skin_updates: EditorSkinUpdates,
     report: Rc<RefCell<RunReport>>,
     feed_state: Arc<std::sync::Mutex<OverlayState>>,
@@ -2312,7 +2101,6 @@ struct App {
     coordinator: std::sync::mpsc::Sender<CoordinatorCommand>,
     output_descriptions: Vec<OutputDescription>,
     surface_logical: [u32; 2],
-    wayland_refresh_hz: Arc<std::sync::Mutex<scorepeek_overlay_ui::WaylandRefreshRate>>,
     display_skin: Option<NativeDisplaySkin>,
     editor_skin_previews: std::collections::BTreeMap<String, EditorSkinPreview>,
     next_skin_render: Option<Instant>,
@@ -2355,8 +2143,6 @@ fn render_native_display_skin(
     display: &mut NativeDisplaySkin,
     state: &OverlayState,
     next_skin_render: &mut Option<Instant>,
-    animating: &mut bool,
-    pending_paint: &mut bool,
 ) -> Result<(), String> {
     let started = Instant::now();
     let mut output =
@@ -2368,8 +2154,6 @@ fn render_native_display_skin(
         .tree
         .apply(&mut document.inner.borrow_mut(), &output);
     *next_skin_render = skin_deadline(&output.schedule, false);
-    *animating = matches!(output.schedule, crate::skin::Schedule::NextFrame);
-    *pending_paint = true;
     crate::diagnostics::emit(
         "skin_render",
         &serde_json::json!({"skin_id":canvas.skin.name(),"release":display.release,"canvas_id":canvas.id,"backend":"native","phase":"render","status":"success","duration_us":duration_us(started.elapsed()),"next_tick":format!("{:?}",output.schedule),"tree_applied":true}),
@@ -2707,7 +2491,6 @@ impl App {
         outputs: Vec<OutputDescription>,
         report: Rc<RefCell<RunReport>>,
         published_stages: Arc<std::sync::Mutex<PublishedStages>>,
-        wayland_refresh_hz: Arc<std::sync::Mutex<scorepeek_overlay_ui::WaylandRefreshRate>>,
         startup_started: Instant,
         coordinator: std::sync::mpsc::Sender<CoordinatorCommand>,
         role: SurfaceRole,
@@ -2845,13 +2628,10 @@ impl App {
             published_stages,
             waker,
             started: Instant::now(),
-            animating: false,
+            surface_state: NativeDisplaySurfaceState::AwaitingConfigure,
             paint_count: 0,
             render_calls: 0,
-            steady_paint_count: 0,
-            pending_paint: false,
             full_layout_pending: false,
-            cadence: FrameCadence::default(),
             editor_skin_updates,
             report,
             feed_state,
@@ -2865,7 +2645,6 @@ impl App {
             coordinator,
             output_descriptions: outputs,
             surface_logical,
-            wayland_refresh_hz,
             display_skin,
             editor_skin_previews,
             next_skin_render: if role == SurfaceRole::EditorStage {
@@ -2905,7 +2684,6 @@ impl App {
             display.tree.unmount(&mut self.document.inner.borrow_mut());
         }
         self.next_skin_render = None;
-        self.animating = false;
         crate::diagnostics::emit(
             "native_skin_resources_unmounted",
             &serde_json::json!({
@@ -3007,7 +2785,7 @@ impl App {
                 .pending_frame_start
                 .clone()
                 .unwrap_or_else(|| self.frame_work.snapshot());
-            let projection_changed = self.sync_projection();
+            self.sync_projection();
             let events = match self.shell.dispatch(Duration::from_millis(500)) {
                 Ok(events) => events,
                 Err(_)
@@ -3022,7 +2800,6 @@ impl App {
             };
             let mut frame = false;
             let mut configured = false;
-            let mut input_damage = false;
             if self.output_descriptions != self.shell.output_descriptions {
                 self.output_descriptions
                     .clone_from(&self.shell.output_descriptions);
@@ -3038,7 +2815,6 @@ impl App {
                     return Ok(());
                 }
                 configured |= outcome.configured;
-                input_damage |= outcome.input_damage;
                 frame |= outcome.frame;
             }
             let latest = self
@@ -3049,6 +2825,14 @@ impl App {
             let visibility_changed = update_display_visibility(self.projection, latest.screen);
             if let Some(visible) = visibility_changed {
                 self.shell.set_input_enabled(visible);
+                if visible && !self.editing() {
+                    self.shell.begin_remap();
+                    self.surface_state = NativeDisplaySurfaceState::AwaitingConfigure;
+                    configured = false;
+                }
+                if !visible && !self.editing() {
+                    self.next_skin_render = None;
+                }
             }
             let visibility_changed = visibility_changed.is_some();
             let visible = self.visible();
@@ -3076,10 +2860,6 @@ impl App {
                 }
             }
             let now = self.started.elapsed();
-            let refresh = *self
-                .wayland_refresh_hz
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if self.editing() {
                 let first_paint = self.paint_count == 0;
                 let paint_started = Instant::now();
@@ -3104,10 +2884,7 @@ impl App {
                     &mut self.editor_skin_updates,
                     &mut self.skin_runtime_create_count,
                     &mut self.next_skin_render,
-                    &mut self.animating,
                     &mut self.full_layout_pending,
-                    &mut self.pending_paint,
-                    &mut self.cadence,
                     &mut self.frame_work,
                     &self.waker,
                     &frame_start,
@@ -3122,11 +2899,7 @@ impl App {
                         } else {
                             NativeSurfaceReadiness::Pending
                         },
-                        projection_changed,
-                        input_damage,
-                        now,
                         seconds: now.as_secs_f64(),
-                        refresh,
                     },
                     &mut presenter,
                 )?;
@@ -3146,19 +2919,9 @@ impl App {
                         &serde_json::json!({"run_id":self.report.borrow().run_id,"output":self.surface_output,"session_id":session_id,"revision":revision}),
                     );
                 }
-                if let Some(reason) = result.paint {
+                if result.painted {
                     self.paint_count = self.paint_count.saturating_add(1);
                     self.render_calls = self.render_calls.saturating_add(1);
-                    if reason == PaintReason::Steady {
-                        self.steady_paint_count = self.steady_paint_count.saturating_add(1);
-                    } else if reason.bypasses_cap() {
-                        *self
-                            .report
-                            .borrow_mut()
-                            .cap_bypass_paints
-                            .entry(reason.name().to_owned())
-                            .or_default() += 1;
-                    }
                     if first_paint {
                         self.report
                             .borrow_mut()
@@ -3183,6 +2946,7 @@ impl App {
                 }
             } else {
                 let first_paint = self.paint_count == 0;
+                let was_mapped = self.surface_state.is_mapped();
                 let paint_started = Instant::now();
                 let mut presenter = WindowPresenter {
                     shell: &mut self.shell,
@@ -3192,9 +2956,7 @@ impl App {
                     &mut self.document,
                     &self.skin_assets,
                     &mut self.full_layout_pending,
-                    &mut self.pending_paint,
-                    &mut self.animating,
-                    &mut self.cadence,
+                    &mut self.surface_state,
                     &mut self.frame_work,
                     &self.waker,
                     &frame_start,
@@ -3209,32 +2971,29 @@ impl App {
                         } else {
                             NativeSurfaceReadiness::Pending
                         },
-                        projection_changed,
-                        visibility_changed,
-                        input_damage,
                         visible,
                         live_widgets: u64::try_from(self.canvas.widgets.len()).unwrap_or(u64::MAX),
-                        now,
                         seconds: now.as_secs_f64(),
-                        refresh,
                     },
                     &mut presenter,
                 )?;
                 if result.dioxus_changed {
                     self.set_text_composing(false);
                 }
-                if let Some(reason) = result.paint {
+                if result.unmapped {
+                    crate::diagnostics::emit(
+                        "native_surface_visibility",
+                        &serde_json::json!({"run_id":self.report.borrow().run_id,"canvas_id":self.surface_canvas.id,"output":self.surface_output,"active":false,"status":"success"}),
+                    );
+                }
+                if result.painted {
                     self.paint_count = self.paint_count.saturating_add(1);
                     self.render_calls = self.render_calls.saturating_add(1);
-                    if reason == PaintReason::Steady {
-                        self.steady_paint_count = self.steady_paint_count.saturating_add(1);
-                    } else if reason.bypasses_cap() {
-                        *self
-                            .report
-                            .borrow_mut()
-                            .cap_bypass_paints
-                            .entry(reason.name().to_owned())
-                            .or_default() += 1;
+                    if !was_mapped {
+                        crate::diagnostics::emit(
+                            "native_surface_visibility",
+                            &serde_json::json!({"run_id":self.report.borrow().run_id,"canvas_id":self.surface_canvas.id,"output":self.surface_output,"active":true,"status":"success"}),
+                        );
                     }
                     if first_paint {
                         self.report
@@ -3250,7 +3009,7 @@ impl App {
             }
             if frame {
                 self.pending_frame_start = None;
-            } else if self.pending_paint && self.pending_frame_start.is_none() {
+            } else if visible && self.pending_frame_start.is_none() {
                 self.pending_frame_start = Some(frame_start);
             }
         }
@@ -3298,8 +3057,6 @@ impl App {
             display,
             state,
             &mut self.next_skin_render,
-            &mut self.animating,
-            &mut self.pending_paint,
         )
     }
 
@@ -3418,11 +3175,8 @@ struct RunReport {
     resource_lookup_ns: u64,
     skin_runtime_create_count: u64,
     frame_work: FrameWorkProfile,
-    wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate,
     elapsed_ms: u64,
     effective_paint_hz: Option<f64>,
-    effective_steady_paint_hz: Option<f64>,
-    cap_bypass_paints: std::collections::BTreeMap<String, u64>,
     operations: Operations,
     status: &'static str,
     failure_type: Option<&'static str>,
@@ -3463,11 +3217,8 @@ impl RunReport {
             resource_lookup_ns: 0,
             skin_runtime_create_count: 0,
             frame_work: FrameWorkProfile::default(),
-            wayland_refresh_hz: scorepeek_overlay_ui::WaylandRefreshRate::Auto,
             elapsed_ms: 0,
             effective_paint_hz: None,
-            effective_steady_paint_hz: None,
-            cap_bypass_paints: std::collections::BTreeMap::new(),
             operations: Operations::default(),
             status: "running",
             failure_type: None,
@@ -3926,24 +3677,34 @@ impl NativeSurfaceReadiness {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeDisplaySurfaceState {
+    Unmapped,
+    AwaitingConfigure,
+    Mapped,
+}
+
+impl NativeDisplaySurfaceState {
+    const fn is_mapped(self) -> bool {
+        matches!(self, Self::Mapped)
+    }
+}
+
 #[derive(Clone, Copy)]
 struct NativeEditorStageTurnInput {
     frame: NativeFrameBoundary,
     surface: NativeSurfaceReadiness,
-    projection_changed: bool,
-    input_damage: bool,
-    now: Duration,
     seconds: f64,
-    refresh: scorepeek_overlay_ui::WaylandRefreshRate,
 }
 
 #[derive(Default)]
 #[cfg_attr(not(test), allow(dead_code))]
+#[allow(clippy::struct_excessive_bools)]
 struct NativeEditorStageTurnResult {
     dioxus_changed: bool,
     reconciled: bool,
     reconciliation: EditorSkinReconciliation,
-    paint: Option<PaintReason>,
+    painted: bool,
     text_input_active: bool,
 }
 
@@ -3952,20 +3713,16 @@ struct NativeEditorStageTurnResult {
 struct NativeDisplayTurnInput {
     frame: NativeFrameBoundary,
     surface: NativeSurfaceReadiness,
-    projection_changed: bool,
-    visibility_changed: bool,
-    input_damage: bool,
     visible: bool,
     live_widgets: u64,
-    now: Duration,
     seconds: f64,
-    refresh: scorepeek_overlay_ui::WaylandRefreshRate,
 }
 
 #[derive(Default)]
 struct NativeDisplayTurnResult {
     dioxus_changed: bool,
-    paint: Option<PaintReason>,
+    painted: bool,
+    unmapped: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3973,9 +3730,7 @@ fn run_native_display_turn(
     document: &mut DioxusDocument,
     assets: &Arc<SkinAssetCache>,
     full_layout_pending: &mut bool,
-    pending_paint: &mut bool,
-    animating: &mut bool,
-    cadence: &mut FrameCadence,
+    surface_state: &mut NativeDisplaySurfaceState,
     work: &mut FrameWorkProfile,
     waker: &Waker,
     frame_start: &FrameWorkSample,
@@ -3983,49 +3738,44 @@ fn run_native_display_turn(
     presenter: &mut impl NativeFramePresenter,
 ) -> Result<NativeDisplayTurnResult, String> {
     let frame = input.frame.is_frame();
-    let dioxus_changed =
-        frame && poll_native_document_for_frame(document, waker, full_layout_pending, work);
     presenter.set_text_input(None);
-    *pending_paint |= dioxus_changed
-        || input.projection_changed
-        || input.visibility_changed
-        || input.input_damage;
-    let admission = admit_native_paint(
-        presenter.is_active(),
-        input.surface.is_configured(),
-        input.visibility_changed,
-        PaintState {
-            editing: false,
-            visible: input.visible,
-            signal: PaintSignal::from_state(frame, *pending_paint),
-            animating: *animating,
-        },
-        input.now,
-        input.refresh,
-        cadence,
-    );
-    let paint = match admission {
-        PaintAdmission::Paint(reason) => {
-            render_native_frame(
-                &mut document.inner.borrow_mut(),
-                input.seconds,
-                input.visible,
-                full_layout_pending,
-                presenter,
-                assets,
-                work,
-            )?;
-            cadence.record(input.now);
-            *pending_paint = false;
-            *animating = input.visible;
-            Some(reason)
-        }
-        PaintAdmission::RequestFrameCommit => {
-            presenter.request_frame_commit();
-            None
-        }
-        PaintAdmission::None => None,
+    if !input.visible {
+        let unmapped = if *surface_state != NativeDisplaySurfaceState::Unmapped
+            || input.surface.is_configured()
+        {
+            presenter
+                .unmap()
+                .map_err(|error| format!("unmap Wayland surface: {error}"))?;
+            *surface_state = NativeDisplaySurfaceState::Unmapped;
+            true
+        } else {
+            false
+        };
+        return Ok(NativeDisplayTurnResult {
+            dioxus_changed: false,
+            painted: false,
+            unmapped,
+        });
+    }
+    let boundary = match *surface_state {
+        NativeDisplaySurfaceState::Unmapped => false,
+        NativeDisplaySurfaceState::AwaitingConfigure => input.surface.is_configured(),
+        NativeDisplaySurfaceState::Mapped => input.surface.is_configured() || frame,
     };
+    if !boundary || !presenter.is_active() {
+        return Ok(NativeDisplayTurnResult::default());
+    }
+    let dioxus_changed = poll_native_document_for_frame(document, waker, full_layout_pending, work);
+    render_native_frame(
+        &mut document.inner.borrow_mut(),
+        input.seconds,
+        true,
+        full_layout_pending,
+        presenter,
+        assets,
+        work,
+    )?;
+    *surface_state = NativeDisplaySurfaceState::Mapped;
     if frame {
         work.finish_frame(
             frame_start,
@@ -4035,7 +3785,8 @@ fn run_native_display_turn(
     }
     Ok(NativeDisplayTurnResult {
         dioxus_changed,
-        paint,
+        painted: true,
+        unmapped: false,
     })
 }
 
@@ -4051,10 +3802,7 @@ fn run_native_editor_stage_turn(
     updates: &mut EditorSkinUpdates,
     runtime_create_count: &mut u64,
     next_skin_render: &mut Option<Instant>,
-    animating: &mut bool,
     full_layout_pending: &mut bool,
-    pending_paint: &mut bool,
-    cadence: &mut FrameCadence,
     work: &mut FrameWorkProfile,
     waker: &Waker,
     frame_start: &FrameWorkSample,
@@ -4105,54 +3853,25 @@ fn run_native_editor_stage_turn(
             .values()
             .filter_map(|preview| preview.next_render)
             .min();
-        *animating = previews
-            .values()
-            .any(|preview| preview.next_render.is_some());
         skin_changed = true;
     }
     let interactive = matches!(&*projection.borrow(), NativeDocumentProjection::Editor(editor_projection) if editor_projection.interactive);
     let text_input = editor_text_input_state(document, interactive);
     let text_input_active = text_input.is_some();
     presenter.set_text_input(text_input);
-    *pending_paint |=
-        dioxus_changed || input.projection_changed || input.input_damage || skin_changed;
-    let paint_state = PaintState {
-        editing: true,
-        visible: true,
-        signal: PaintSignal::from_state(frame, *pending_paint),
-        animating: *animating,
-    };
-    let admission = admit_native_paint(
-        presenter.is_active(),
-        input.surface.is_configured(),
-        false,
-        paint_state,
-        input.now,
-        input.refresh,
-        cadence,
-    );
-    let paint = match admission {
-        PaintAdmission::Paint(reason) => {
-            render_native_frame(
-                &mut document.inner.borrow_mut(),
-                input.seconds,
-                true,
-                full_layout_pending,
-                presenter,
-                assets,
-                work,
-            )?;
-            cadence.record(input.now);
-            *pending_paint = false;
-            *animating = true;
-            Some(reason)
-        }
-        PaintAdmission::RequestFrameCommit => {
-            presenter.request_frame_commit();
-            None
-        }
-        PaintAdmission::None => None,
-    };
+    let boundary = frame || input.surface.is_configured();
+    let painted = boundary && presenter.is_active();
+    if painted {
+        render_native_frame(
+            &mut document.inner.borrow_mut(),
+            input.seconds,
+            true,
+            full_layout_pending,
+            presenter,
+            assets,
+            work,
+        )?;
+    }
     if frame {
         let live_canvases = u64::try_from(previews.len()).unwrap_or(u64::MAX);
         let live_widgets = previews.values().fold(0_u64, |count, preview| {
@@ -4164,7 +3883,7 @@ fn run_native_editor_stage_turn(
         dioxus_changed,
         reconciled: skin_changed,
         reconciliation,
-        paint,
+        painted,
         text_input_active,
     })
 }
@@ -6146,9 +5865,6 @@ mod skin_tests {
             motion_seconds: f64,
             elapsed: Duration,
             full_layout_pending: bool,
-            pending_paint: bool,
-            animating: bool,
-            cadence: FrameCadence,
             paint_count: u64,
             physical_size: [u32; 2],
             scale: f32,
@@ -6212,9 +5928,6 @@ mod skin_tests {
                     motion_seconds: 0.0,
                     elapsed: Duration::ZERO,
                     full_layout_pending: true,
-                    pending_paint: true,
-                    animating: false,
-                    cadence: FrameCadence::default(),
                     paint_count: 0,
                     physical_size: [1, 1],
                     scale: 1.0,
@@ -6249,7 +5962,6 @@ mod skin_tests {
                         self.skin_updates.request();
                     }
                     self.projection_accepts += 1;
-                    self.pending_paint = true;
                 }
             }
 
@@ -6288,8 +6000,8 @@ mod skin_tests {
                         *self.text_input_active = input.is_some();
                     }
 
-                    fn request_frame_commit(&mut self) {
-                        *self.commits = self.commits.saturating_add(1);
+                    fn unmap(&mut self) -> Result<(), String> {
+                        Ok(())
                     }
 
                     fn present(
@@ -6314,9 +6026,6 @@ mod skin_tests {
                         Ok(())
                     }
                 }
-                let refresh = scorepeek_overlay_ui::WaylandRefreshRate::capped(
-                    u16::try_from(hz).map_err(|error| error.to_string())?,
-                )?;
                 let frame_start = if outcome.frame {
                     self.pending_frame_start
                         .take()
@@ -6342,10 +6051,7 @@ mod skin_tests {
                     &mut self.skin_updates,
                     &mut self.runtime_creates,
                     &mut self.next_skin_render,
-                    &mut self.animating,
                     &mut self.full_layout_pending,
-                    &mut self.pending_paint,
-                    &mut self.cadence,
                     &mut self.work,
                     Waker::noop(),
                     &frame_start,
@@ -6360,11 +6066,7 @@ mod skin_tests {
                         } else {
                             NativeSurfaceReadiness::Pending
                         },
-                        projection_changed: false,
-                        input_damage: outcome.input_damage,
-                        now: self.elapsed,
                         seconds: self.motion_seconds,
-                        refresh,
                     },
                     &mut presenter,
                 )?;
@@ -6380,13 +6082,10 @@ mod skin_tests {
                 self.tree_updates = self
                     .tree_updates
                     .saturating_add(result.reconciliation.tree_updates);
-                if result.paint.is_some() {
+                if result.painted {
                     self.paint_count = self.paint_count.saturating_add(1);
                     self.layouts = self.layouts.saturating_add(1);
                     self.resource_resolves = self.resource_resolves.saturating_add(1);
-                }
-                if !outcome.frame && self.pending_paint && self.pending_frame_start.is_none() {
-                    self.pending_frame_start = Some(frame_start);
                 }
                 Ok(())
             }
@@ -6452,7 +6151,6 @@ mod skin_tests {
                 ));
                 self.physical_size = physical;
                 self.scale = scale;
-                self.pending_paint = true;
                 let _ = self.coordinator.send(CoordinatorCommand::EditorInput {
                     input: EditorInput::Resize {
                         output: self.output.clone(),
@@ -6508,14 +6206,13 @@ mod skin_tests {
             assets: Arc<SkinAssetCache>,
             work: FrameWorkProfile,
             full_layout_pending: bool,
-            pending_paint: bool,
-            animating: bool,
-            cadence: FrameCadence,
+            surface_state: NativeDisplaySurfaceState,
             elapsed: Duration,
             motion_seconds: f64,
             renderer: anyrender_vello::VelloImageRenderer,
             presents: u64,
             commits: u64,
+            unmaps: u64,
             paint_count: u64,
         }
 
@@ -6566,28 +6263,40 @@ mod skin_tests {
                     assets,
                     work: FrameWorkProfile::default(),
                     full_layout_pending: true,
-                    pending_paint: true,
-                    animating: false,
-                    cadence: FrameCadence::default(),
+                    surface_state: NativeDisplaySurfaceState::AwaitingConfigure,
                     elapsed: Duration::ZERO,
                     motion_seconds: 0.0,
                     renderer: anyrender_vello::VelloImageRenderer::new(canvas.width, canvas.height),
                     presents: 0,
                     commits: 0,
+                    unmaps: 0,
                     paint_count: 0,
                 })
             }
 
             fn turn(&mut self, outcome: NativeEventOutcome, hz: u32) -> Result<(), String> {
+                self.turn_visibility(outcome, hz, true)
+            }
+
+            fn turn_visibility(
+                &mut self,
+                outcome: NativeEventOutcome,
+                hz: u32,
+                visible: bool,
+            ) -> Result<(), String> {
                 let seconds = 1.0 / f64::from(hz);
                 self.elapsed += Duration::from_secs_f64(seconds);
                 if outcome.frame {
                     self.motion_seconds += seconds;
                 }
+                if visible && self.surface_state == NativeDisplaySurfaceState::Unmapped {
+                    self.surface_state = NativeDisplaySurfaceState::AwaitingConfigure;
+                }
                 struct FakeDisplayPresenter<'a> {
                     renderer: &'a mut anyrender_vello::VelloImageRenderer,
                     presents: &'a mut u64,
                     commits: &'a mut u64,
+                    unmaps: &'a mut u64,
                 }
                 impl NativeFramePresenter for FakeDisplayPresenter<'_> {
                     fn is_active(&self) -> bool {
@@ -6604,8 +6313,9 @@ mod skin_tests {
                         );
                     }
 
-                    fn request_frame_commit(&mut self) {
-                        *self.commits = self.commits.saturating_add(1);
+                    fn unmap(&mut self) -> Result<(), String> {
+                        *self.unmaps = self.unmaps.saturating_add(1);
+                        Ok(())
                     }
 
                     fn present(
@@ -6642,22 +6352,18 @@ mod skin_tests {
                         Ok(())
                     }
                 }
-                let refresh = scorepeek_overlay_ui::WaylandRefreshRate::capped(
-                    u16::try_from(hz).map_err(|error| error.to_string())?,
-                )?;
                 let frame_start = self.work.snapshot();
                 let mut presenter = FakeDisplayPresenter {
                     renderer: &mut self.renderer,
                     presents: &mut self.presents,
                     commits: &mut self.commits,
+                    unmaps: &mut self.unmaps,
                 };
                 let result = run_native_display_turn(
                     &mut self.document,
                     &self.assets,
                     &mut self.full_layout_pending,
-                    &mut self.pending_paint,
-                    &mut self.animating,
-                    &mut self.cadence,
+                    &mut self.surface_state,
                     &mut self.work,
                     Waker::noop(),
                     &frame_start,
@@ -6672,18 +6378,13 @@ mod skin_tests {
                         } else {
                             NativeSurfaceReadiness::Pending
                         },
-                        projection_changed: false,
-                        visibility_changed: false,
-                        input_damage: outcome.input_damage,
-                        visible: true,
+                        visible,
                         live_widgets: self.live_widgets,
-                        now: self.elapsed,
                         seconds: self.motion_seconds,
-                        refresh,
                     },
                     &mut presenter,
                 )?;
-                if result.paint.is_some() {
+                if result.painted {
                     self.paint_count = self.paint_count.saturating_add(1);
                 }
                 Ok(())
@@ -6701,8 +6402,6 @@ mod skin_tests {
                     &mut self.skin,
                     state,
                     &mut next_skin_render,
-                    &mut self.animating,
-                    &mut self.pending_paint,
                 )
             }
 
@@ -6970,10 +6669,8 @@ mod skin_tests {
                             .get_mut(&projection.output.name)
                             .expect("stage created for every output");
                         stage.accept(&projection);
-                        if stage.skin_updates.pending || stage.pending_paint || stage.animating {
-                            let outcome = dispatch_native_event(stage, Event::Frame)?;
-                            stage.turn(outcome, refresh_hz)?;
-                        }
+                        let outcome = dispatch_native_event(stage, Event::Frame)?;
+                        stage.turn(outcome, refresh_hz)?;
                     }
                 }
                 Ok(())
@@ -7248,7 +6945,7 @@ mod skin_tests {
             assert_eq!(
                 paint_targets,
                 fake.surfaces.keys().cloned().collect(),
-                "production paint admission and fake presentation must exactly cover live surfaces"
+                "fake presentation must exactly cover live surfaces"
             );
 
             let owners = fake
@@ -8210,19 +7907,109 @@ mod skin_tests {
             .values_mut()
             .next()
             .expect("closed editor must create a display surface");
-        assert!(!display.pending_paint);
         let paints_before_state = display.paint_count;
         display.render_skin(&state).unwrap();
-        assert!(
-            display.pending_paint,
-            "a state-driven skin tree update must damage the native surface"
-        );
         let frame = dispatch_native_event(display, Event::Frame).unwrap();
         display.turn(frame, 120).unwrap();
         assert!(
             display.paint_count > paints_before_state,
             "a state-driven skin tree update must reach native paint"
         );
+        let paints_before_hide = display.paint_count;
+        display
+            .turn_visibility(NativeEventOutcome::default(), 120, false)
+            .unwrap();
+        assert_eq!(display.unmaps, 1);
+        assert_eq!(display.paint_count, paints_before_hide);
+        display
+            .turn_visibility(
+                NativeEventOutcome {
+                    frame: true,
+                    ..NativeEventOutcome::default()
+                },
+                120,
+                false,
+            )
+            .unwrap();
+        assert_eq!(display.unmaps, 1);
+        assert_eq!(display.paint_count, paints_before_hide);
+        display
+            .turn_visibility(NativeEventOutcome::default(), 120, true)
+            .unwrap();
+        assert!(!display.surface_state.is_mapped());
+        assert_eq!(display.paint_count, paints_before_hide);
+        display
+            .turn_visibility(
+                NativeEventOutcome {
+                    frame: true,
+                    ..NativeEventOutcome::default()
+                },
+                120,
+                true,
+            )
+            .unwrap();
+        assert!(!display.surface_state.is_mapped());
+        assert_eq!(display.paint_count, paints_before_hide);
+        display
+            .turn_visibility(
+                NativeEventOutcome {
+                    configured: true,
+                    ..NativeEventOutcome::default()
+                },
+                120,
+                true,
+            )
+            .unwrap();
+        assert!(display.surface_state.is_mapped());
+        assert!(display.paint_count > paints_before_hide);
+        let paints_before_callbacks = display.paint_count;
+        for expected in 1..=2 {
+            let frame = dispatch_native_event(display, Event::Frame).unwrap();
+            display.turn(frame, 120).unwrap();
+            assert_eq!(display.paint_count, paints_before_callbacks + expected);
+        }
+        let paints_before_interrupted_remap = display.paint_count;
+        let unmaps_before_interrupted_remap = display.unmaps;
+        display
+            .turn_visibility(NativeEventOutcome::default(), 120, false)
+            .unwrap();
+        display
+            .turn_visibility(NativeEventOutcome::default(), 120, true)
+            .unwrap();
+        assert_eq!(
+            display.surface_state,
+            NativeDisplaySurfaceState::AwaitingConfigure
+        );
+        display
+            .turn_visibility(NativeEventOutcome::default(), 120, false)
+            .unwrap();
+        assert_eq!(display.unmaps, unmaps_before_interrupted_remap + 2);
+        display
+            .turn_visibility(
+                NativeEventOutcome {
+                    configured: true,
+                    ..NativeEventOutcome::default()
+                },
+                120,
+                false,
+            )
+            .unwrap();
+        assert_eq!(display.unmaps, unmaps_before_interrupted_remap + 3);
+        display
+            .turn_visibility(NativeEventOutcome::default(), 120, true)
+            .unwrap();
+        display
+            .turn_visibility(
+                NativeEventOutcome {
+                    configured: true,
+                    ..NativeEventOutcome::default()
+                },
+                120,
+                true,
+            )
+            .unwrap();
+        assert!(display.surface_state.is_mapped());
+        assert!(display.paint_count > paints_before_interrupted_remap);
         for display in fake.displays.values() {
             let sample = display
                 .work
@@ -8514,94 +8301,6 @@ mod skin_tests {
     }
 
     #[test]
-    fn frame_cadence_coalesces_steady_paints_and_bypasses_lifecycle_work() {
-        let capped = scorepeek_overlay_ui::WaylandRefreshRate::capped(30).unwrap();
-        let period = Duration::from_secs_f64(1.0 / 30.0);
-        let mut cadence = FrameCadence::default();
-
-        assert!(cadence.permits(Duration::ZERO, capped, PaintReason::Steady));
-        cadence.record(Duration::ZERO);
-        assert!(!cadence.permits(
-            period.checked_sub(Duration::from_nanos(1)).unwrap(),
-            capped,
-            PaintReason::Steady
-        ));
-        assert!(cadence.permits(period, capped, PaintReason::Steady));
-        assert!(cadence.permits(Duration::from_millis(1), capped, PaintReason::Reconfigure));
-        cadence.record(Duration::from_millis(1));
-        assert!(!cadence.permits(Duration::from_millis(2), capped, PaintReason::Steady));
-        assert!(cadence.permits(
-            Duration::from_millis(2),
-            scorepeek_overlay_ui::WaylandRefreshRate::Auto,
-            PaintReason::Steady,
-        ));
-        assert!(cadence.permits(
-            Duration::from_millis(1),
-            scorepeek_overlay_ui::WaylandRefreshRate::Auto,
-            PaintReason::Editor,
-        ));
-        assert!(skin_deadline(&crate::skin::Schedule::NextFrame, false).is_some());
-        assert!(skin_deadline(&crate::skin::Schedule::NextFrame, true).is_none());
-    }
-
-    #[test]
-    fn editor_damage_waits_for_a_frame_and_visible_preview_motion_keeps_painting() {
-        let idle_damage = PaintState {
-            editing: true,
-            visible: true,
-            signal: PaintSignal::Damage,
-            animating: false,
-        };
-        assert!(idle_damage.editor_frame_needed());
-        assert_eq!(idle_damage.ordinary_reason(), None);
-        assert_eq!(
-            PaintState {
-                signal: PaintSignal::DamageAndFrame,
-                ..idle_damage
-            }
-            .ordinary_reason(),
-            Some(PaintReason::Editor)
-        );
-        assert_eq!(
-            PaintState {
-                editing: false,
-                ..idle_damage
-            }
-            .ordinary_reason(),
-            Some(PaintReason::Steady)
-        );
-        assert_eq!(
-            PaintState {
-                signal: PaintSignal::Frame,
-                animating: true,
-                ..idle_damage
-            }
-            .ordinary_reason(),
-            Some(PaintReason::Steady)
-        );
-        for state in [
-            PaintState {
-                signal: PaintSignal::DamageAndFrame,
-                ..idle_damage
-            },
-            PaintState {
-                signal: PaintSignal::None,
-                ..idle_damage
-            },
-            PaintState {
-                editing: false,
-                ..idle_damage
-            },
-            PaintState {
-                visible: false,
-                ..idle_damage
-            },
-        ] {
-            assert!(!state.editor_frame_needed());
-        }
-    }
-
-    #[test]
     fn editor_stages_are_output_owned_when_canvas_assignment_changes() {
         let mut canvases = crate::config::visual_debug_config()
             .canvases
@@ -8636,40 +8335,6 @@ mod skin_tests {
                 ("__scorepeek-editor-stage-1", "WL-2"),
             ]
         );
-    }
-
-    #[test]
-    fn early_compositor_callbacks_reach_later_permitted_motion_paints() {
-        let capped = scorepeek_overlay_ui::WaylandRefreshRate::capped(30).unwrap();
-        let mut cadence = FrameCadence::default();
-        let mut paints = Vec::new();
-        for now in [0, 16, 32, 48, 64, 80, 96].map(Duration::from_millis) {
-            if cadence.permits(now, capped, PaintReason::Steady) {
-                cadence.record(now);
-                paints.push(now);
-            }
-            // A denied production callback is published with request_frame_and_commit(), so the
-            // next compositor callback in this sequence remains reachable without a state event.
-        }
-        assert_eq!(
-            paints,
-            [
-                Duration::ZERO,
-                Duration::from_millis(48),
-                Duration::from_millis(96)
-            ]
-        );
-    }
-
-    #[test]
-    fn refresh_rate_parser_rejects_incomplete_and_out_of_range_drafts() {
-        assert_eq!(
-            parse_refresh_rate("30").unwrap(),
-            scorepeek_overlay_ui::WaylandRefreshRate::capped(30).unwrap()
-        );
-        for invalid in ["", "0", "1001", "auto", "29.97"] {
-            assert!(parse_refresh_rate(invalid).is_err(), "{invalid}");
-        }
     }
 
     #[test]

@@ -59,7 +59,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         scores_db: None,
         listen,
         unknown_grace_ms: document.unknown_grace_ms,
-        wayland_refresh_hz: document.wayland_refresh_hz,
         edit_on_start: false,
     };
     eprintln!("Open http://{listen}/overlay and press Enter to stop.");

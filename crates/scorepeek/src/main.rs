@@ -155,7 +155,24 @@ fn try_diagnostic_stream_command(args: &[OsString]) -> Option<Result<(), String>
             })
         }
         [diagnostic, observe] if diagnostic == "diagnostic" && observe == "observe" => {
-            diagnostic_stream::observe()
+            diagnostic_stream::observe(None)
+        }
+        [diagnostic, observe, replay, seconds]
+            if diagnostic == "diagnostic" && observe == "observe" && replay == "--replay" =>
+        {
+            seconds
+                .to_str()
+                .ok_or_else(|| "diagnostic replay seconds must be UTF-8".to_owned())
+                .and_then(|seconds| {
+                    seconds
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|seconds| *seconds > 0)
+                        .ok_or_else(|| {
+                            "diagnostic replay seconds must be a positive integer".to_owned()
+                        })
+                })
+                .and_then(|seconds| diagnostic_stream::observe(Some(seconds)))
         }
         _ => return None,
     };
@@ -871,7 +888,6 @@ fn run_routine_live_session(
                             .parse()
                             .map_err(|error| format!("overlay obs_listen: {error}"))?,
                         unknown_grace_ms: overlay_config.unknown_grace_ms,
-                        wayland_refresh_hz: overlay_config.wayland_refresh_hz,
                         edit_on_start: backend == scorepeek_overlay::runtime::Backend::Wayland
                             && (overlays.wayland_edit
                                 || !overlay_config
@@ -3499,7 +3515,7 @@ fn absolute_directory(path: PathBuf, name: &str) -> Result<PathBuf, String> {
 
 fn print_usage() {
     println!(
-        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...\n  scorepeek profile list\n  scorepeek run [--profile NAME] [--scores-db PATH | --no-scores] [--overlay-wayland] [--overlay-obs] [--overlay-config PATH] [--record [--record-memory-mib MIB]]\n  scorepeek diagnostic inspect --latest\n  scorepeek diagnostic inspect --run-id RUN_ID\n  scorepeek diagnostic observe\n  scorepeek catalog sync\n  scorepeek skin install ZIP\n  scorepeek skin uninstall ID\n  scorepeek skin list\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...",
+        "scorepeek {}\n\nUsage:\n  scorepeek --help\n  scorepeek --version\n  scorepeek doctor\n  scorepeek setup gamescope --profile NAME -- GAMESCOPE_ARGS...\n  scorepeek profile list\n  scorepeek run [--profile NAME] [--scores-db PATH | --no-scores] [--overlay-wayland] [--overlay-obs] [--overlay-config PATH] [--record [--record-memory-mib MIB]]\n  scorepeek diagnostic inspect --latest\n  scorepeek diagnostic inspect --run-id RUN_ID\n  scorepeek diagnostic observe [--replay SECONDS]\n  scorepeek catalog sync\n  scorepeek skin install ZIP\n  scorepeek skin uninstall ID\n  scorepeek skin list\n  scorepeek [--model-bundle DIRECTORY] COMMAND ...",
         env!("CARGO_PKG_VERSION")
     );
     println!(
