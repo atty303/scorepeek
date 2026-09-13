@@ -112,6 +112,12 @@
 - `mise run check` is non-mutating, `mise run fix` applies supported fixes, and
   `mise run test` is the complete reproducible validation entry point.
 - Define fast checks once in `hk.pkl`; hooks and mise tasks must reuse them.
+- For incidents in `scorepeek run`, use the structured diagnostic stream as the
+  primary investigation surface: read `scorepeek diagnostic observe` while the
+  run is active, or `scorepeek diagnostic inspect --latest` after it exits.
+  Use `events.sock` to investigate only the public Event API contract, and ask
+  for `--record` only when canonical-frame or pixel evidence is required. See
+  `docs/diagnostics.md` for stream, retention, gap, and degradation semantics.
 - When a change affects rendered overlay UI or CSS, run the checked-in native scenario
   into a new temporary directory with `mise run overlay:visual:native -- crates/scorepeek-overlay/tests/fixtures/visual-debug.json <new-output-dir>`. Inspect every PNG,
   the corresponding selector-layout JSON and `manifest.json`; positive DOM rectangles alone do not
