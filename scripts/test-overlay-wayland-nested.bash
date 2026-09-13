@@ -121,6 +121,7 @@ json_log | jq -se '
 ' >/dev/null
 json_log | jq -se 'any(.[]; .operation == "native_summary" and (.data.frame_work.frames | type) == "array")' >/dev/null
 json_log | jq -se 'any(.[]; .operation == "native_surface_unmap")' >/dev/null
+json_log | jq -se 'all(.[]; .operation != "native_canvas_failed")' >/dev/null
 json_log | jq -se 'any(.[]; .operation == "nested_wayland_scenario" and .action == "pointer-drag-injected")' >/dev/null
 test "$summary_count" -eq "$complete_count"
 test "$complete_count" -ge 4

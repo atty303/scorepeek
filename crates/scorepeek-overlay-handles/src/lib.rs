@@ -127,7 +127,7 @@ pub struct Shell {
     owner: Arc<SurfaceHandle>,
     state: Platform,
     event_loop: EventLoop<'static, Platform>,
-    started: Instant,
+    configure_phase: ConfigurePhase,
     pub output_name: Option<String>,
     pub available_outputs: Vec<String>,
     pub output_descriptions: Vec<OutputDescription>,
@@ -135,6 +135,20 @@ pub struct Shell {
     pub output_logical_size: Option<[u32; 2]>,
     pub fractional_scaling: bool,
 }
+
+#[derive(Clone, Copy, Debug)]
+enum ConfigurePhase {
+    Awaiting(Instant),
+    Ready,
+    Unmapped,
+}
+
+impl ConfigurePhase {
+    fn timed_out(self) -> bool {
+        matches!(self, Self::Awaiting(started) if started.elapsed() >= Duration::from_secs(5))
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OutputDescription {
     pub name: String,
@@ -297,7 +311,7 @@ impl Shell {
             fractional_scaling: app.viewport.is_some(),
             state: app,
             event_loop,
-            started: Instant::now(),
+            configure_phase: ConfigurePhase::Awaiting(Instant::now()),
         })
     }
     #[must_use]
@@ -315,7 +329,10 @@ impl Shell {
         if let Some(error) = self.state.failure.take() {
             return Err(error);
         }
-        if !self.state.configured && self.started.elapsed() >= Duration::from_secs(5) {
+        if self.state.configured {
+            self.configure_phase = ConfigurePhase::Ready;
+        }
+        if self.configure_phase.timed_out() {
             return Err("configure_timeout".into());
         }
         if self.state.needs_configure && self.state.configured {
@@ -411,7 +428,7 @@ impl Shell {
         self.owner.unmap()?;
         self.state.configured = false;
         self.state.needs_configure = false;
-        self.started = Instant::now();
+        self.configure_phase = ConfigurePhase::Unmapped;
         Ok(())
     }
 
@@ -419,7 +436,7 @@ impl Shell {
     pub fn begin_remap(&mut self) {
         self.state.configured = false;
         self.state.needs_configure = false;
-        self.started = Instant::now();
+        self.configure_phase = ConfigurePhase::Awaiting(Instant::now());
         self.owner.layer.commit();
     }
 

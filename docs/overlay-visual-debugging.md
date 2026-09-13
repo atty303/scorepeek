@@ -41,10 +41,12 @@ When compositor nesting is part of the test, launch this task inside the nested 
 desktop session.
 
 The checked-in bounded nested scenario creates two headless Scroll outputs at 120 and 60 Hz, starts
-the production Wayland runner with four fixture canvases, including animated backgrounds, and multiple widgets split across
-those outputs, and drives production `EditorInput` transport to select a named canvas, move it
+the production Wayland runner with four screen-filtered fixture canvases, including an explicit
+all-screen canvas, animated backgrounds, and multiple widgets split across those outputs. It drives
+production `EditorInput` transport to select a named canvas, move it
 between outputs, change visibility and delete it. A virtual-pointer client closes and reopens the
-editor through Scroll. It also drives compositor-delivered motion, primary/secondary buttons and an
+editor through Scroll, and rejects any display-canvas worker failure during that transition. It also
+drives compositor-delivered motion, primary/secondary buttons and an
 axis event with the checked-in virtual-pointer client. Every deterministic lifecycle revision must
 be painted by each receiving stage; an independent compositor-input revision must be painted by the
 receiving output stage within 250 ms. Both outputs must sustain at least 55 effective paints per

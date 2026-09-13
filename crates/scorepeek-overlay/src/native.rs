@@ -2495,10 +2495,17 @@ impl App {
         coordinator: std::sync::mpsc::Sender<CoordinatorCommand>,
         role: SurfaceRole,
     ) -> Result<Self, String> {
+        let current_state = feed_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let initial = match role {
             SurfaceRole::DisplayCanvas => NativeDocumentProjection::Display {
                 canvas: canvas.presentation(),
-                visible: canvas.show_on.is_none(),
+                visible: scorepeek_overlay_ui::canvas_visible(
+                    canvas.show_on.as_deref(),
+                    current_state.screen,
+                ),
             },
             SurfaceRole::EditorStage => published_stages
                 .lock()
@@ -2550,7 +2557,6 @@ impl App {
             .as_ref()
             .copied()
             .expect("native overlay publishes its projection during initial build");
-        let current_state = OverlayState::default();
         let (display_skin, display_next_render) = if let Some(package) = display_package {
             let (skin, next) = create_native_display_skin(
                 &mut document,
@@ -2825,7 +2831,10 @@ impl App {
             let visibility_changed = update_display_visibility(self.projection, latest.screen);
             if let Some(visible) = visibility_changed {
                 self.shell.set_input_enabled(visible);
-                if visible && !self.editing() {
+                if visible
+                    && !self.editing()
+                    && self.surface_state == NativeDisplaySurfaceState::Unmapped
+                {
                     self.shell.begin_remap();
                     self.surface_state = NativeDisplaySurfaceState::AwaitingConfigure;
                     configured = false;

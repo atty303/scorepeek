@@ -32,7 +32,9 @@ fn load_document(
             }
             .into();
             canvas.background = scorepeek_overlay_ui::Background::Animated;
-            canvas.show_on = None;
+            if canvas.id == "wayland-status" {
+                canvas.show_on = Some(scorepeek_overlay_ui::editor_model::SCREENS.to_vec());
+            }
             if let Some(widget) = canvas.widgets.first().cloned() {
                 let mut extra = widget;
                 extra.id = format!("{}-nested-extra", canvas.id);
