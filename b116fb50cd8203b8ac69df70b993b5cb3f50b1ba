@@ -1,0 +1,324 @@
+# Task cycle transcript: restructure Scorepeek around living artifacts
+
+## Context
+
+- Baseline commit: parent of `794784d9a9ef95b0cd2b8efe43703a3a74a010e8`
+- Work line: `main`
+- Generated commits:
+  - `794784d9a9ef95b0cd2b8efe43703a3a74a010e8` — replace the ADR/STATUS/research archive with current living references
+  - `09e9c78398685166b9c7b416bb77626bd90fcdc0` — add and execute bounded migrations to current stored schemas
+  - `b116fb50cd8203b8ac69df70b993b5cb3f50b1ba` — remove completed migration and legacy read paths; final anchor
+- Repository: `/var/home/atty/src/atty303/scorepeek`
+- Principal guidance and skills: `dig`, `maintain-agent-guidance`, `develop-repository`, `author-skills`, `review`, `investigate-problem`, and `design-program-observability` where migration operations crossed durable state boundaries.
+- Environment: development host plus reachable target `infinitas.lan`; local/target XDG state, local private corpus, and configured remote metadata were inventoried without exposing credentials or private content. Sandbox restrictions affected `.git/FETCH_HEAD`, Unix sockets, SSH config visibility, loopback E2E, and mise state writes; relevant checks were rerun in the approved target-equivalent environment. No push was requested or performed.
+
+## Chronological conversation
+
+### User
+
+現行docsをみてimmutable adrを続ける価値があると思うか？
+
+### Agent summary
+
+Performed a read-only audit. Initially recommended retaining immutable accepted decisions but narrowing ADR creation because roughly 150 ADRs, partial supersession chains, STATUS, plan, and implementation had made current behavior expensive to reconstruct.
+
+### User
+
+git historyがあるからadrがimmutableにする必要ないと思うんだよね。まじで現状が把握できない
+
+### Agent summary
+
+Re-evaluated the premise and agreed that this repository should use Git as the history owner and mutable living documents as the current-state owner, rather than preserving old decisions in the current tree.
+
+### User
+
+最初にお前がimmutable adrを提案して、お前が現状を作ったんだがな
+
+### Agent summary
+
+Acknowledged that the agent had proposed and repeatedly expanded the immutable ADR structure, and that the resulting partial-supersession archaeology was an agent-created design error requiring correction rather than defense.
+
+### User
+
+git repoにはその時点のlivingだけを置くべきだ。docsもcodeもなにもかも。
+
+### Agent summary
+
+Recorded the governing invariant: the current Git tree contains only currently active code, tests, configuration, contracts, constraints, procedures, and unfinished plans; history belongs to Git. Compatibility and migration remain living only while current data still needs them.
+
+### User
+
+[$dig](/var/home/atty/.agents/skills/dig/SKILL.md) [$maintain-agent-guidance](/var/home/atty/.agents/skills/maintain-agent-guidance/SKILL.md) この会話を元にrepoを再構成する
+
+### Agent summary
+
+Started a one-question-at-a-time design tree, with no edits until common understanding. Q1 asked whether numbered ADRs remain.
+
+### User
+
+A
+
+### Agent summary
+
+Q1: remove `docs/decisions/` and integrate only current contracts/reasons into the nearest code or living reference. Q2 asked how implemented behavior and active future plans are separated.
+
+### User
+
+A
+
+### Agent summary
+
+Q2: architecture/references contain implemented current contracts; the plan contains only active unimplemented work and is updated when implementation lands. Q3 asked whether STATUS remains.
+
+### User
+
+A
+
+### Agent summary
+
+Q3: delete `STATUS.md`; README/references own capabilities, plan owns unfinished work, and commits own checkpoints. Q4 asked whether the living-tree rule is Scorepeek-only or common.
+
+### User
+
+A
+
+### Agent summary
+
+Q4: apply the rule to all atty303 Git repositories through the common Engineering Policy while preserving repository-specific overrides. Q5 asked when old-schema readers and migrations count as living.
+
+### User
+
+B
+
+### Agent summary
+
+Q5: retain compatibility only for actually existing current user data; inventory and migrate it before removing readers, rather than keeping hypothetical compatibility indefinitely. Q6 asked how code/test/doc conflicts determine the current product contract.
+
+### User
+
+A
+
+### Agent summary
+
+Q6: code and tests are implementation facts; current references and user-confirmed contracts express intent. Conflicts that change user-visible behavior, stored data, public API, authority, or safety require confirmation rather than guessing. Q7 asked how point-in-time verification belongs in the tree.
+
+### User
+
+A
+
+### Agent summary
+
+Q7: keep only current acceptance criteria, unresolved boundaries, runtime identity, and reproducibility inputs; move old test counts, observations, comparisons, and digests to Git history unless still operationally required. Q8 asked whether research/experiment documents remain.
+
+### User
+
+B. livingで問題がでたとき再調査は避けたい。その目的で再編成する。あと履歴はcommit messageはnotesも活用する
+
+### Agent summary
+
+Q8: do not keep research-history documents merely as archives; integrate current conclusions and procedures into living owners, while using detailed commit messages and Git notes to prevent needless re-investigation. Q9 asked how historical evidence is selected.
+
+### User
+
+A.作業完了時に残す価値があるか自律判断し、アウトラインを提示して承認を求める
+
+### Agent summary
+
+Q9: under the then-current policy, the agent would assess value at completion and request approval for a note outline. This approval requirement was later superseded by the automatic-note policy recorded on `778fc82`. Q10 asked how commit messages and notes divide history.
+
+### User
+
+A. それならtreeにはいらないかも。commit message/notesにすべて残せばいい
+
+### Agent summary
+
+Q10: current-tree research archives are unnecessary; self-contained commit messages own the principal reason and impact, while notes own detailed evidence. Q11 asked whether `docs/research/` should also be absent.
+
+### User
+
+A
+
+### Agent summary
+
+Q11: create no research-history tree; preserve only current conclusions/procedures in living owners. Q12 asked how notes are synchronized across environments.
+
+### User
+
+A
+
+### Agent summary
+
+Q12: use the standard `refs/notes/commits`, fetch it with the common VCS workflow, and push it explicitly and separately from code. Q13 asked for living documentation granularity and reference direction.
+
+### User
+
+A
+
+### Agent summary
+
+Q13: keep architecture as a short component/data-flow/authority map pointing to one owning domain reference for each detailed contract. Q14 asked the plan format.
+
+### User
+
+A
+
+### Agent summary
+
+Q14: the plan contains only unfinished product outcomes, dependencies, acceptance gates, and explicit non-goals, not completed implementation history. Q15 asked migration/removal ordering.
+
+### User
+
+B
+
+### Agent summary
+
+Q15: inventory first, obtain authority for state-changing migration, migrate and verify, then remove completed migration/legacy readers and fixtures. Q16 asked whether current product capability itself should be pruned.
+
+### User
+
+A
+
+### Agent summary
+
+Q16: preserve current product scope; remove only superseded, unreachable, duplicate, unreferenced, or migration-completed compatibility paths, not low-use or merely unverified features. Q17 asked whether notes support belongs in the common VCS wrapper.
+
+### User
+
+A
+
+### Agent summary
+
+Q17: add notes fetch/read/add/status and separate notes push to the shared workflow. Q18 asked for commit boundaries.
+
+### User
+
+A
+
+### Agent summary
+
+Q18: separate common policy/tooling, Scorepeek docs/guidance, read-only inventory, authorized migrations, and legacy removal into distinct stages and logical commits. Q19 asked where current non-obvious reasons remain.
+
+### User
+
+A
+
+### Agent summary
+
+Q19: keep still-valid constraints, invariants, and non-obvious reasons near current source/tests/references; past alternatives and former structure belong to commits/notes. Q20 asked whether to retain a complete old-ADR ownership mapping in a note.
+
+### User
+
+A
+
+### Agent summary
+
+Q20: retain the mapping as migration evidence in a Git note, not in the tree. The later automatic-note policy replaces the old outline-approval mechanism, and this note serves as the retroactive task record. Q21 asked whether repository checks should forbid reintroduction of the old documentation structure.
+
+### User
+
+B
+
+### Agent summary
+
+Q21: do not add a structural prohibition check; maintain the semantic rule through common policy and review. Q22 asked about changelogs, release notes, and migration guides.
+
+### User
+
+A
+
+### Agent summary
+
+Q22: they remain living only while current users need them for release, upgrade, migration, or compatibility action, then are removed. Q23 asked which storage surfaces are inventoried.
+
+### User
+
+A
+
+### Agent summary
+
+Q23: inspect development-host XDG state, target-host state, private-corpus metadata, and configured remote metadata; read only schema/version/count/digest/reference metadata, not frames, scores, or credentials. Q24 asked whether to create an archive tag or branch.
+
+### User
+
+A
+
+### Agent summary
+
+Q24: create neither; the migration commit parent and note are sufficient history. Q25 presented the consolidated design.
+
+### User
+
+A
+
+### Agent summary
+
+Common understanding was confirmed. The agent summarized the living-tree invariant, documentation ownership, history ownership, compatibility lifecycle, storage inventory scope, external-state authorization, five-stage execution, and then awaited implementation authority.
+
+### User
+
+実行して。文書と実装が衝突していて意図が汲み取れないところは推測せずまとめてこちらに確認してくれ。将来の計画もすでに古くなっているものがあるから実装から判断できないものは確認してくれ
+
+### Agent summary
+
+Implemented the common living-tree/notes policy first, then audited Scorepeek current code/tests and living intent. Grouped four unresolved user-visible/stale-plan questions rather than guessing.
+
+### User
+
+1不要
+2。a
+3.ok
+4.実機確認も完了している
+
+### Agent summary
+
+Recorded removal of the unnecessary future item, selection of option A for the second ambiguity, acceptance of the third interpretation, and that real-device verification was already complete for the fourth. Updated the docs scope accordingly while retaining compatibility readers until data inventory and migration.
+
+The documentation pass deleted numbered ADRs, STATUS, and research-only documents; compressed architecture to current authority/data flow; updated README and domain references to implementation facts; and reduced the plan to genuinely unfinished work. Independent review found and resolved stale model-initialization wording, a deleted-plan reference, and a point-in-time recording report. Full tests passed outside sandbox after loopback restrictions prevented the sandbox run from observing browser E2E. Commit `794784d` was created and the required build succeeded.
+
+Read-only inventory found current and legacy data on the development host. The first attempt to reach the target returned a transient route failure and was correctly left unconfirmed rather than interpreted as target absence.
+
+### User
+
+infinitas.lanも到達できるが
+
+### Agent summary
+
+Rechecked the exact target-equivalent route. Name resolution and SSH succeeded; the earlier `No route to host` did not recur and was classified as transient. Inventory then found target overlay/profile/numeric data current, a v2 score DB with 93 play results including 30 old public-event envelopes, and current recording staging. Configured remote metadata was inspected through existing tools without printing protected values.
+
+The corpus audit distinguished four active referenced sessions from three unimported diagnostic units and other inactive historical objects. Before mutating state, the agent presented the migration scope and authority boundary.
+
+### User
+
+3の未importはimportしない。既に削除した。
+他は実行して
+
+### Agent summary
+
+Excluded the three unimported units and left them untouched. Implemented bounded migrations that normalize score DB records to a storage-owned current projection and corpus observations to one corpus-owned schema, retaining canonical recordings and labels for replay. Initial independent review found four correctness problems: unverified object digest/size and unbounded reads, migration hidden in normal store open, an outdated integration assertion, and a non-atomic absent-output claim. All were fixed and re-reviewed.
+
+Isolated migrations and full tests succeeded. Commit `09e9c78` was created and built. With process/WAL/output preconditions checked, the development and target DBs were backed up and migrated; target readback confirmed 93/93 current rows. The private corpus was rebuilt with four active sessions and 46,249 observations. A full replay initially stopped because the numeric store was at its generation bound and the active generation was old; existing numeric state was not changed. A temporary isolated XDG root registered the already-held current bundle and linked the existing catalog read-only. Full replay then passed for four sessions, 22 episodes, 15,971 canonical frames, and 28 remote segments. The old corpus root was retained as a rollback backup and the verified new root became active.
+
+After successful state migration, the one-time migrators, legacy schema readers/converters, legacy fixtures/tests, and completed plan were removed. Current diagnostic v5, RunEvent v12, overlay v8, and current storage contracts remained. Full `mise run test` passed outside sandbox, including the Rust workspace, OCR suite, browser E2E, and native overlay; `mise run check`, active corpus temporal evaluation, and fresh final review also passed.
+
+Commit creation was attempted with repository-required signing. The 1Password signing agent repeatedly rejected only the signing request while public-key listing still worked; the changes and index remained intact, and signing was not disabled.
+
+### User
+
+&#x20;commit
+
+### Agent summary
+
+Retried the same signed VCS commit after the signing agent became available. Commit `b116fb50cd8203b8ac69df70b993b5cb3f50b1ba` succeeded, followed by the required build and clean final verification. The repository was left on `main`, three commits ahead of `origin/main`, with no push.
+
+## Durable migration evidence
+
+- Development score DB backup: `/home/atty/.local/share/scorepeek/scores.sqlite3.pre-v3-20260913`
+- Target score DB backup: the same logical path on `infinitas.lan`
+- Retained old corpus root: `/home/atty/.local/share/scorepeek/private-corpus-v2.pre-current-20260913`
+- Active corpus after migration: four sessions, 46,249 observations, 26 objects; temporal evaluation generation `884839afa4beb4b22e6e0867f3cd4a9ed7dbb7abab5141`, 22 episodes, zero exclusions
+- The three unimported diagnostic units were explicitly excluded and were not imported or modified.
+- Local and target DB migration and corpus activation were already completed and verified before legacy code removal. This evidence is retained because reacquiring it would require inspecting or replaying real stored state and remote segments; current source alone cannot establish that the operator's data migration completed.
+
+## Current authority
+
+This note is descriptive history. Current source, tests, living documentation, and newer user instructions are normative. Counts, host reachability, backups, and corpus generation are point-in-time evidence and must be rechecked when a future operation depends on current state.
