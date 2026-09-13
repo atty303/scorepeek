@@ -2,18 +2,16 @@ Task: Fix the observed OBS and Wayland overlay regressions and make panic/exit c
 Anchor: a91373df11d7122803ab6340188568eb267bf14c
 Base: 939e8a0e8e5d98f26bab3dc97ab6c6e1740792d9
 Line: main
-Commits: a91373df11d7122803ab6340188568eb267bf14c
-Authority: User authorized repository implementation with "実行して"; no deployment or push was authorized.
+Commits: a91373df11d7122803ab6340188568eb267bf14c implements the passive OBS editor, Wayland transition and repaint, typed panic propagation, bounded retry suppression, and child-exit diagnostics.
+Guidance: repository AGENTS.md; investigate-problem; design-program-observability; develop-repository; review.
 Artifact: durable
 Control domain: Same-user local Scorepeek processes, Wayland/OBS adapters, local IPC, and configuration; no new external code, data, dependency, credential, public sink, schema, or migration.
-
-Outcome:
+Environment: Investigation used the active infinitas.lan run diagnostics and local process evidence; repository verification did not deploy, push, or repeat real-host OBS/Wayland validation.
+Evidence:
 - OBS/browser display connections remain passive across load and reload; explicit right-click enters the editor, including when it races the initial transport handshake.
 - Wayland visibility transitions release the Dioxus reactive read before writing, and native skin state/tree updates request paint.
 - Native worker panic payloads and stable error types are emitted, both reconciliation and shutdown reap preserve failure, and retry suppression remains bounded.
 - Overlay child exit observations include stable status/error types, including forced shutdown after the deadline.
-
-Verification:
 - mise run check
 - mise run test
 - mise run overlay:web:test (browser 1, overlay-web 8, overlay 96, integration 2)
@@ -21,7 +19,19 @@ Verification:
 - Fresh independent review plus two delta reviews; final review had no actionable findings.
 - mise run build after commit
 - Real infinitas.lan OBS/Wayland reload and play-transition validation was not performed.
-
+Authority: The committed Scorepeek source and tests are authoritative; the user authorized repository implementation with "実行して" after correcting the diagnosis toward the recent refactor and requiring panic causes in diagnostics, with no deployment or push authorized.
 Transcript:
-- U1: 実行して
-- A1: Implemented and verified the passive editor, Wayland transition/repaint, and typed panic/child-exit diagnostic fixes; committed locally without deployment or push.
+- U1: 今infinitas.lanで起動したrunでobs sourceをreloadしたら勝手にeditorが起動した。なんで？
+  - A: Inspected the active run and found that an OBS display connection was initialized in editing state, so a source reload acquired an editor lease without an explicit user interaction.
+- U2: 今wanland側もoverlayは出ているがsystem statusがinactiveになっている。これはなぜ？
+  - A: Compared live diagnostics and process state; the Wayland display tree and state were applied but a paint-damage request was missing, leaving status observations stale despite a visible overlay surface.
+- U3: 今game起動した。obsはactiveになったがwaylandはinactiveのままだ。
+  - A: Confirmed the OBS-active and Wayland-inactive divergence and isolated the fault to the native adapter path rather than shared game-state activation.
+- U4: 今楽曲プレイしたらwayland overlayが消えた。おそらく画面遷移で死んでる
+  - A: Examined diagnostics and crash evidence and found repeated Dioxus canvas panics on the music-select transition, followed by a SIGSEGV during rapid wgpu/Vulkan recreation.
+- U5: それは回復経路の問題で、このoverlay設定は過去に動いていたのでwaylandやgpu側の問題ではない。直近のrefactoringが原因の可能性が高い。panicの原因を診断に出せていないのは問題では
+  - A: Accepted the correction, traced the regression to a reactive read held across a write in the recent refactor, and identified that panic payloads were discarded while reconciliation could bypass bounded retry suppression; retained the no-unbounded-restart contract.
+- U6: ここまでの修正点をまとめて
+  - A: Summarized the proposed passive OBS editor behavior, Wayland borrow and repaint corrections, typed panic and child-exit diagnostics, and bounded recovery behavior without changing the repository yet.
+- U7: 実行して
+  - A: Implemented the agreed fixes, ran repository and overlay verification including the nested Wayland scenario, completed independent review, committed a91373d, and rebuilt the binary; no deployment or push was performed.
