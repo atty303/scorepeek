@@ -1,0 +1,26 @@
+User request
+
+修正して
+
+Assistant work
+
+- Fixed the Wayland display-canvas lifecycle behind the reported behavior where an all-screen canvas stayed hidden until the editor opened and disappeared again when the editor closed.
+- Initialized display visibility and the first skin render from the latest feed state instead of treating every explicit `show_on` list as initially inactive.
+- Preserved an already received initial configure event by remapping only surfaces that are actually unmapped.
+- Split the shell configure lifecycle into awaiting, ready, and intentionally unmapped phases so inactive surfaces do not hit the five-second configure timeout and restart.
+- Changed the nested Wayland fixture to retain real screen filters, added an explicit all-screen canvas, and made any `native_canvas_failed` record fail the scenario.
+- Updated the living visual-debugging documentation for the strengthened scenario.
+
+Verification
+
+- Before the product fix, the strengthened nested test reproduced `configure_timeout` after about 5.169 seconds, left `wayland-status` at paint_count 0, and failed its assertion.
+- After the fix, `mise run overlay:visual:wayland:nested` passed with 25,828 microseconds input-to-paint latency and no `native_canvas_failed` record.
+- Formatting and targeted checks for all five changed files passed.
+- The Rust/native portions of `mise run test` passed. Its sandboxed Playwright phase exited after receiving zero feed records; rerunning the same `mise run overlay:web:browser:test` gate outside the browser-restricted sandbox passed 1/1.
+- A fresh read-only reviewer found no actionable issue. It identified non-nested real compositor, hotplug, and fractional-scaling order as unverified residual risks, consistent with the task scope excluding target deployment.
+- Post-commit `mise run build` passed and rebuilt `target/debug/scorepeek` with embedded web UI.
+
+Scope
+
+- Commit: 69708727c48e9afa13813c4d6fd1595c68502f5b
+- No push, deployment, live process restart, or external service change was performed.
