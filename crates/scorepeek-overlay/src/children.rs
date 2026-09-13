@@ -13,6 +13,18 @@ use std::{
 pub const ENTRYPOINT: &str = "__scorepeek-overlay";
 const MAX_DIAGNOSTIC_LINE_BYTES: u64 = 1024 * 1024;
 
+fn process_exit_observation(backend: &str, status: std::process::ExitStatus) -> serde_json::Value {
+    serde_json::json!({
+        "backend": backend,
+        "operation":"process_exit",
+        "status":if status.success() { "success" } else { "error" },
+        "error_type":if status.success() { None } else if status.signal().is_some() { Some("signal") } else { Some("exit_status") },
+        "success":status.success(),
+        "code":status.code(),
+        "signal":status.signal()
+    })
+}
+
 #[derive(Default)]
 pub struct Children {
     status: std::collections::BTreeMap<String, &'static str>,
@@ -98,9 +110,7 @@ impl Children {
                     if let Some(reader) = reader.take() {
                         let _ = reader.join();
                     }
-                    self.observations.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(
-                        serde_json::json!({"backend": name, "operation":"process_exit", "success":status.success(), "code":status.code(), "signal":status.signal()})
-                    );
+                    push_observation(&self.observations, process_exit_observation(name, status));
                     exits.push(format!("{name} overlay exited: {status}"));
                     false
                 }
@@ -136,19 +146,36 @@ impl Children {
 
     /// Closes all leases together, then reaps only processes owned by this instance.
     pub fn shutdown(&mut self) {
+        self.shutdown_with_timeout(Duration::from_secs(2));
+    }
+
+    fn shutdown_with_timeout(&mut self, timeout: Duration) {
         for (_, child, _) in &mut self.owned {
             child.stdin.take();
         }
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + timeout;
         while !self.owned.is_empty() && Instant::now() < deadline {
             self.poll();
             std::thread::sleep(Duration::from_millis(10));
         }
-        for (_, mut child, reader) in self.owned.drain(..) {
+        for (name, mut child, reader) in self.owned.drain(..) {
             let _ = child.kill();
-            let _ = child.wait();
+            let waited = child.wait();
             if let Some(reader) = reader {
                 let _ = reader.join();
+            }
+            match waited {
+                Ok(status) => {
+                    self.status.insert(name.clone(), "failed");
+                    push_observation(&self.observations, process_exit_observation(&name, status));
+                }
+                Err(error) => {
+                    self.status.insert(name.clone(), "failed");
+                    push_observation(
+                        &self.observations,
+                        serde_json::json!({"backend":name,"operation":"process_wait","status":"error","error_type":"wait_failed","error":error.to_string()}),
+                    );
+                }
             }
         }
     }
@@ -237,5 +264,31 @@ fn push_observation(observations: &Mutex<Vec<serde_json::Value>>, value: serde_j
 impl Drop for Children {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forced_shutdown_records_the_child_exit() {
+        let child = Command::new("sh")
+            .args(["-c", "sleep 10"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut children = Children::default();
+        children.status.insert("Wayland".into(), "running");
+        children.owned.push(("Wayland".into(), child, None));
+
+        children.shutdown_with_timeout(Duration::ZERO);
+
+        assert_eq!(children.summary(), " Wayland=failed");
+        let observations = children.take_observations();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0]["operation"], "process_exit");
+        assert_eq!(observations[0]["status"], "error");
+        assert_eq!(observations[0]["error_type"], "signal");
     }
 }

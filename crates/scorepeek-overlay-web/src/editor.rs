@@ -26,7 +26,6 @@ pub fn app() -> Element {
             model: "OBS Browser Source".into(),
             logical_size: Some(viewport()),
         }]);
-        model.editing = true;
         model.readonly = true;
         model
     });
@@ -45,7 +44,11 @@ pub fn app() -> Element {
     });
     let transport = connection.clone();
     let surface = Callback::new(move |action: SurfaceAction| {
-        if compatibility() != Compatibility::Ready {
+        let compatibility = compatibility();
+        if compatibility != Compatibility::Ready
+            && !(compatibility == Compatibility::Checking
+                && matches!(action, SurfaceAction::Enter(_)))
+        {
             return;
         }
         for effect in dispatch.call(EditorInput::Surface(action)) {

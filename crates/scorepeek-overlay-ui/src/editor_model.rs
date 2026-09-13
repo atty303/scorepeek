@@ -2051,6 +2051,50 @@ mod skin_tests {
     }
 
     #[test]
+    fn passive_transport_ready_does_not_acquire_until_surface_entry() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "obs");
+
+        let effects = model.reduce(EditorInput::TransportReady {
+            screen: Some(ScreenKind::MusicSelect),
+            sample: false,
+            canvases: Vec::new(),
+            first: true,
+        });
+
+        assert!(effects.is_empty());
+        assert!(!model.editing);
+        assert_eq!(
+            model.reduce(EditorInput::Surface(
+                crate::editor_surface::SurfaceAction::Enter(None)
+            )),
+            vec![EditorEffect::Acquire]
+        );
+        assert!(model.editing);
+    }
+
+    #[test]
+    fn surface_entry_before_transport_ready_is_acquired_when_transport_connects() {
+        let mut model = Model::new(Vec::new(), [1920, 1080], "obs");
+
+        assert_eq!(
+            model.reduce(EditorInput::Surface(
+                crate::editor_surface::SurfaceAction::Enter(None)
+            )),
+            vec![EditorEffect::Acquire]
+        );
+        assert!(model.editing);
+        assert_eq!(
+            model.reduce(EditorInput::TransportReady {
+                screen: Some(ScreenKind::MusicSelect),
+                sample: false,
+                canvases: Vec::new(),
+                first: true,
+            }),
+            vec![EditorEffect::Acquire]
+        );
+    }
+
+    #[test]
     fn chrome_navigation_is_revisioned_editor_session_state() {
         let mut model = Model::new(Vec::new(), [1920, 1080], "ignored");
         model.editing = true;

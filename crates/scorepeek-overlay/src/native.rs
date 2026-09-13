@@ -594,6 +594,26 @@ fn reconcile_worker_lifecycle<'a>(
     WorkerReconciliation { stop_join, start }
 }
 
+fn update_display_visibility(
+    projection: Reactive<NativeDocumentProjection>,
+    screen: scorepeek_overlay_ui::ScreenView,
+) -> Option<bool> {
+    let update = {
+        let current = projection.borrow();
+        match &*current {
+            NativeDocumentProjection::Display { canvas, visible } => {
+                let next_visible =
+                    scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), screen);
+                (*visible != next_visible).then(|| (canvas.clone(), next_visible))
+            }
+            NativeDocumentProjection::Editor(_) => None,
+        }
+    };
+    let (canvas, visible) = update?;
+    projection.set(NativeDocumentProjection::Display { canvas, visible });
+    Some(visible)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ProjectionCacheKey {
     editing: bool,
@@ -1340,6 +1360,69 @@ fn recent_same_failure(
         && failure.1.elapsed() < Duration::from_secs(5)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum NativeWorkerExit {
+    Completed,
+    Failed {
+        error_type: &'static str,
+        error: String,
+    },
+}
+
+fn classify_native_worker_exit(
+    result: std::thread::Result<Result<(), String>>,
+) -> NativeWorkerExit {
+    match result {
+        Ok(Ok(())) => NativeWorkerExit::Completed,
+        Ok(Err(error)) => NativeWorkerExit::Failed {
+            error_type: canvas_worker_error_type(&error),
+            error,
+        },
+        Err(payload) => NativeWorkerExit::Failed {
+            error_type: "panic",
+            error: payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| {
+                    payload
+                        .downcast_ref::<&str>()
+                        .map(|message| (*message).to_owned())
+                })
+                .unwrap_or_else(|| "unknown canvas worker panic".to_owned()),
+        },
+    }
+}
+
+fn emit_native_worker_failure(
+    canvas_id: &str,
+    output: Option<&str>,
+    error_type: &str,
+    error: &str,
+) {
+    crate::diagnostics::emit(
+        "native_canvas_failed",
+        &serde_json::json!({"canvas_id":canvas_id,"output":output,"status":"error","error_type":error_type,"error":error}),
+    );
+}
+
+fn reap_native_workers_on_shutdown(
+    workers: std::collections::BTreeMap<String, NativeWorker>,
+) -> Result<(), String> {
+    let mut first_failure = None;
+    for (id, worker) in workers {
+        let output = worker.output.clone();
+        if let NativeWorkerExit::Failed { error_type, error } =
+            classify_native_worker_exit(worker.join.join())
+        {
+            emit_native_worker_failure(&id, output.as_deref(), error_type, &error);
+            first_failure.get_or_insert_with(|| {
+                format!("native canvas worker {id} failed during shutdown ({error_type}): {error}")
+            });
+        }
+    }
+    first_failure.map_or(Ok(()), Err)
+}
+
 fn execute_native_editor_effect(
     effect: &EditorEffect,
     control_socket: &std::path::Path,
@@ -1749,25 +1832,16 @@ pub fn run_with_editor_scenario(
         for id in reconciliation.stop_join {
             if let Some(worker) = workers.remove(&id) {
                 let output = worker.output.clone();
-                match worker.join.join() {
-                    Ok(Ok(())) => {
+                match classify_native_worker_exit(worker.join.join()) {
+                    NativeWorkerExit::Completed => {
                         failed.remove(&id);
                     }
-                    Ok(Err(error)) => {
+                    NativeWorkerExit::Failed { error_type, error } => {
                         if let Some(canvas) = projected.iter().find(|canvas| canvas.id == id) {
                             failed
                                 .insert(id.clone(), (Some(canvas.output.clone()), Instant::now()));
                         }
-                        crate::diagnostics::emit(
-                            "native_canvas_failed",
-                            &serde_json::json!({"canvas_id":id,"output":output,"error":error}),
-                        );
-                    }
-                    Err(_) => {
-                        crate::diagnostics::emit(
-                            "native_canvas_failed",
-                            &serde_json::json!({"canvas_id":id,"output":output,"error":"panicked"}),
-                        );
+                        emit_native_worker_failure(&id, output.as_deref(), error_type, &error);
                     }
                 }
             }
@@ -1836,9 +1910,7 @@ pub fn run_with_editor_scenario(
     }
     let ids = workers.keys().cloned().collect::<Vec<_>>();
     stop_workers(ids.iter(), &workers, &canvas_wakes);
-    for (_, worker) in workers {
-        let _ = worker.join.join();
-    }
+    let shutdown_result = reap_native_workers_on_shutdown(workers);
     if authority.session().editing {
         let effects = authority.dispatch(EditorInput::Action(EditorAction::Close));
         execute_native_editor_effects(
@@ -1850,7 +1922,7 @@ pub fn run_with_editor_scenario(
         );
     }
     crate::diagnostics::emit("native_coordinator_work", &coordinator_work);
-    Ok(())
+    shutdown_result
 }
 
 fn discover_editor_outputs(
@@ -2275,6 +2347,34 @@ struct NativeDisplaySkin {
     tree: crate::skin::NativeTree,
     release: String,
     manifest: crate::skin::Manifest,
+}
+
+fn render_native_display_skin(
+    document: &mut DioxusDocument,
+    canvas: &crate::config::Canvas,
+    display: &mut NativeDisplaySkin,
+    state: &OverlayState,
+    next_skin_render: &mut Option<Instant>,
+    animating: &mut bool,
+    pending_paint: &mut bool,
+) -> Result<(), String> {
+    let started = Instant::now();
+    let mut output =
+        display
+            .runtime
+            .render(&native_skin_input(canvas, state, &display.manifest))?;
+    namespace_native_skin_output(&display.manifest.id, &mut output);
+    display
+        .tree
+        .apply(&mut document.inner.borrow_mut(), &output);
+    *next_skin_render = skin_deadline(&output.schedule, false);
+    *animating = matches!(output.schedule, crate::skin::Schedule::NextFrame);
+    *pending_paint = true;
+    crate::diagnostics::emit(
+        "skin_render",
+        &serde_json::json!({"skin_id":canvas.skin.name(),"release":display.release,"canvas_id":canvas.id,"backend":"native","phase":"render","status":"success","duration_us":duration_us(started.elapsed()),"next_tick":format!("{:?}",output.schedule),"tree_applied":true}),
+    );
+    Ok(())
 }
 
 fn create_native_display_skin(
@@ -2946,22 +3046,11 @@ impl App {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
-            let mut visibility_changed = false;
-            if let NativeDocumentProjection::Display { canvas, visible } =
-                &*self.projection.borrow()
-            {
-                let next_visible =
-                    scorepeek_overlay_ui::canvas_visible(canvas.show_on.as_deref(), latest.screen);
-                if *visible != next_visible {
-                    let canvas = canvas.clone();
-                    self.projection.set(NativeDocumentProjection::Display {
-                        canvas,
-                        visible: next_visible,
-                    });
-                    self.shell.set_input_enabled(next_visible);
-                    visibility_changed = true;
-                }
+            let visibility_changed = update_display_visibility(self.projection, latest.screen);
+            if let Some(visible) = visibility_changed {
+                self.shell.set_input_enabled(visible);
             }
+            let visibility_changed = visibility_changed.is_some();
             let visible = self.visible();
             if self.current_state != latest {
                 self.current_state = latest.clone();
@@ -3199,26 +3288,19 @@ impl App {
     }
 
     fn render_skin(&mut self, state: &OverlayState) -> Result<(), String> {
-        let started = Instant::now();
         let display = self
             .display_skin
             .as_mut()
             .ok_or("display skin runtime missing outside display role")?;
-        let mut output =
-            display
-                .runtime
-                .render(&native_skin_input(&self.canvas, state, &display.manifest))?;
-        namespace_native_skin_output(&display.manifest.id, &mut output);
-        display
-            .tree
-            .apply(&mut self.document.inner.borrow_mut(), &output);
-        self.next_skin_render = skin_deadline(&output.schedule, false);
-        self.animating = matches!(output.schedule, crate::skin::Schedule::NextFrame);
-        crate::diagnostics::emit(
-            "skin_render",
-            &serde_json::json!({"skin_id":self.canvas.skin.name(),"release":display.release,"canvas_id":self.canvas.id,"backend":"native","phase":"render","status":"success","duration_us":duration_us(started.elapsed()),"next_tick":format!("{:?}",output.schedule),"tree_applied":true}),
-        );
-        Ok(())
+        render_native_display_skin(
+            &mut self.document,
+            &self.canvas,
+            display,
+            state,
+            &mut self.next_skin_render,
+            &mut self.animating,
+            &mut self.pending_paint,
+        )
     }
 
     fn configure(
@@ -5177,6 +5259,90 @@ mod skin_tests {
     use super::*;
 
     #[test]
+    fn display_visibility_update_releases_the_signal_read_before_writing() {
+        let mut canvas =
+            crate::config::empty_canvas("screen-filtered".into(), crate::runtime::Backend::Wayland);
+        canvas.show_on = Some(vec![scorepeek_overlay_ui::ScreenKind::MusicSelect]);
+        let published = Rc::new(RefCell::new(None));
+        let (coordinator, _commands) = std::sync::mpsc::channel();
+        let props = NativeOverlayProps {
+            initial: NativeDocumentProjection::Display {
+                canvas: canvas.presentation(),
+                visible: false,
+            },
+            published: Rc::clone(&published),
+            port: NativeEditorPort {
+                coordinator,
+                source_output: Some("WL-1".into()),
+                run_id: "visibility-test".into(),
+                sequence: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            },
+        };
+        let mut document = DioxusDocument::new(
+            VirtualDom::new_with_props(native_overlay, props),
+            document_config(),
+        );
+        document.initial_build();
+        let projection = published.borrow().as_ref().copied().unwrap();
+
+        assert_eq!(
+            update_display_visibility(
+                projection,
+                scorepeek_overlay_ui::ScreenView {
+                    kind: Some(scorepeek_overlay_ui::ScreenKind::MusicSelect),
+                    ..scorepeek_overlay_ui::ScreenView::default()
+                }
+            ),
+            Some(true)
+        );
+        assert!(matches!(
+            &*projection.borrow(),
+            NativeDocumentProjection::Display { visible: true, .. }
+        ));
+        assert_eq!(
+            update_display_visibility(
+                projection,
+                scorepeek_overlay_ui::ScreenView {
+                    kind: Some(scorepeek_overlay_ui::ScreenKind::MusicSelect),
+                    ..scorepeek_overlay_ui::ScreenView::default()
+                }
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn canvas_worker_panic_retains_its_payload_and_error_type() {
+        let result = std::panic::catch_unwind(|| -> Result<(), String> {
+            panic!("already borrowed: BorrowMutError")
+        });
+
+        assert_eq!(
+            classify_native_worker_exit(result),
+            NativeWorkerExit::Failed {
+                error_type: "panic",
+                error: "already borrowed: BorrowMutError".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn shutdown_reap_propagates_a_late_canvas_worker_panic() {
+        let worker = NativeWorker {
+            output: Some("WL-1".into()),
+            stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            join: std::thread::spawn(|| -> Result<(), String> { panic!("late shutdown panic") }),
+        };
+        let workers = std::collections::BTreeMap::from([("canvas-1".into(), worker)]);
+
+        let error = reap_native_workers_on_shutdown(workers).unwrap_err();
+
+        assert!(error.contains("canvas-1"));
+        assert!(error.contains("panic"));
+        assert!(error.contains("late shutdown panic"));
+    }
+
+    #[test]
     fn stage_replica_rejects_stale_revisions_and_accepts_a_new_session() {
         let mut session = EditorSession::new(Vec::new(), [1920, 1080], "test");
         session.set_session_id(7);
@@ -6332,7 +6498,7 @@ mod skin_tests {
 
         #[allow(clippy::struct_excessive_bools)]
         struct FakeDisplay {
-            canvas_id: String,
+            canvas: crate::config::Canvas,
             live_widgets: u64,
             document: DioxusDocument,
             commands: std::sync::mpsc::Receiver<CoordinatorCommand>,
@@ -6390,7 +6556,7 @@ mod skin_tests {
                     &scorepeek_overlay_ui::editor_sample_state(),
                 )?;
                 Ok(Self {
-                    canvas_id: canvas.id.clone(),
+                    canvas: canvas.clone(),
                     live_widgets: u64::try_from(canvas.widgets.len()).unwrap_or(u64::MAX),
                     document,
                     commands,
@@ -6527,13 +6693,26 @@ mod skin_tests {
                 std::iter::from_fn(|| self.commands.try_recv().ok()).collect()
             }
 
+            fn render_skin(&mut self, state: &OverlayState) -> Result<(), String> {
+                let mut next_skin_render = None;
+                render_native_display_skin(
+                    &mut self.document,
+                    &self.canvas,
+                    &mut self.skin,
+                    state,
+                    &mut next_skin_render,
+                    &mut self.animating,
+                    &mut self.pending_paint,
+                )
+            }
+
             fn shutdown(mut self, operations: &mut Vec<String>) {
                 self.skin
                     .tree
                     .unmount(&mut self.document.inner.borrow_mut());
-                operations.push(format!("runtime-drop:{}", self.canvas_id));
-                operations.push(format!("unmap:{}", self.canvas_id));
-                operations.push(format!("join:{}", self.canvas_id));
+                operations.push(format!("runtime-drop:{}", self.canvas.id));
+                operations.push(format!("unmap:{}", self.canvas.id));
+                operations.push(format!("join:{}", self.canvas.id));
             }
         }
 
@@ -7096,7 +7275,7 @@ mod skin_tests {
                     "display skin runtime/tree set must exactly equal live display surfaces"
                 );
                 for (id, display) in &fake.displays {
-                    assert_eq!(&display.canvas_id, id);
+                    assert_eq!(&display.canvas.id, id);
                     assert!(
                         display.paint_count > 0,
                         "every live display must be painted"
@@ -8025,6 +8204,25 @@ mod skin_tests {
             .cloned()
             .collect::<std::collections::BTreeSet<_>>();
         assert!(!closed_display_ids.is_empty());
+        let state = scorepeek_overlay_ui::editor_sample_state();
+        let display = fake
+            .displays
+            .values_mut()
+            .next()
+            .expect("closed editor must create a display surface");
+        assert!(!display.pending_paint);
+        let paints_before_state = display.paint_count;
+        display.render_skin(&state).unwrap();
+        assert!(
+            display.pending_paint,
+            "a state-driven skin tree update must damage the native surface"
+        );
+        let frame = dispatch_native_event(display, Event::Frame).unwrap();
+        display.turn(frame, 120).unwrap();
+        assert!(
+            display.paint_count > paints_before_state,
+            "a state-driven skin tree update must reach native paint"
+        );
         for display in fake.displays.values() {
             let sample = display
                 .work

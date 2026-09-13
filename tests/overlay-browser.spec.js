@@ -17,6 +17,7 @@ test("editor replicas follow drag, stale websocket delivery, scroll, and lifecyc
   let delayNextStageDraftReply = false;
   let delayedStageDraftReplies = 0;
   const delayedStageDraftRequests = new Set();
+  const stageConnections = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("framenavigated", (frame) => {
     if (frame.url().includes("/canvas/")) replicaLifecycle.push({ phase: "loaded", url: frame.url() });
@@ -79,6 +80,14 @@ test("editor replicas follow drag, stale websocket delivery, scroll, and lifecyc
   });
   await page.routeWebSocket("**/ws/stage?**", (client) => {
     const server = client.connectToServer();
+    let holdInitialMessages = true;
+    const initialMessages = [];
+    stageConnections.push({
+      release() {
+        holdInitialMessages = false;
+        for (const message of initialMessages.splice(0)) client.send(message);
+      },
+    });
     client.onMessage((message) => {
       try {
         const envelope = JSON.parse(typeof message === "string" ? message : message.toString());
@@ -91,6 +100,10 @@ test("editor replicas follow drag, stale websocket delivery, scroll, and lifecyc
       server.send(message);
     });
     server.onMessage((message) => {
+      if (holdInitialMessages) {
+        initialMessages.push(message);
+        return;
+      }
       try {
         const envelope = JSON.parse(typeof message === "string" ? message : message.toString());
         if (delayedStageDraftRequests.delete(envelope.request_id)) {
@@ -104,7 +117,11 @@ test("editor replicas follow drag, stale websocket delivery, scroll, and lifecyc
   });
 
   await page.goto(`${baseURL}/overlay`);
+  await expect.poll(() => stageConnections.length).toBe(1);
   const addCanvas = page.getByRole("button", { name: "+ Add canvas", exact: true });
+  await expect(page.locator(".editor-panel")).toHaveCount(0);
+  await page.locator("#stage").click({ button: "right" });
+  stageConnections[0].release();
   await expect(addCanvas).toBeEnabled();
   await addCanvas.click();
   const widgetPicker = page.locator("#widget-picker-trigger");
@@ -387,6 +404,12 @@ test("editor replicas follow drag, stale websocket delivery, scroll, and lifecyc
   await expect(frame.locator(".canvas-background-art")).toBeVisible();
   expect(await frame.locator(".canvas-background-art").evaluate((node) =>
     getComputedStyle(node).backgroundImage)).toContain("/skin/");
+  const stageConnectionsBeforeReload = stageConnections.length;
+  await page.reload();
+  await expect.poll(() => stageConnections.length).toBe(stageConnectionsBeforeReload + 1);
+  stageConnections.at(-1).release();
+  await expect(frame.locator(".canvas-background-art")).toBeVisible();
+  await expect(page.locator(".editor-panel")).toHaveCount(0);
   expect(delayedCanvasMessages).toBeGreaterThan(0);
   expect(pageErrors).toEqual([]);
 });
